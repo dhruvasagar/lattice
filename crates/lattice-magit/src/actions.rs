@@ -121,14 +121,14 @@ pub(crate) fn classify_line_text(
         });
     }
     for label in FILE_LABELS {
-        if let Some(rest) = trimmed.strip_prefix(label) {
-            if rest.starts_with(char::is_whitespace) {
-                let path = PathBuf::from(rest.trim_start());
-                let staged = header_above()
-                    .map(|h| h.starts_with("Staged"))
-                    .unwrap_or(false);
-                return Some(StatusLine::File { path, staged });
-            }
+        if let Some(rest) = trimmed.strip_prefix(label)
+            && rest.starts_with(char::is_whitespace)
+        {
+            let path = PathBuf::from(rest.trim_start());
+            let staged = header_above()
+                .map(|h| h.starts_with("Staged"))
+                .unwrap_or(false);
+            return Some(StatusLine::File { path, staged });
         }
     }
     // Only "Recent commits" entries fall through to here: "<sha> <subject>".
@@ -411,10 +411,18 @@ async fn expand_payload(
     context: i64,
 ) -> Option<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>)> {
     tokio::task::spawn_blocking(move || {
-        let text = run_show(&workdir, &sl, context)?.trim().to_string();
-        if text.is_empty() {
+        let raw = run_show(&workdir, &sl, context)?;
+        if raw.trim().is_empty() {
             return None;
         }
+        // MG.46: only the trailing newline goes. A patch is not free
+        // text — each hunk's `@@` header declares how many body lines
+        // follow, and `hunk_fold_source` bounds the fold by that count.
+        // `.trim()` also ate a trailing blank context line (git emits
+        // one as a lone space), leaving the text one line shorter than
+        // its own header claimed, and the fold then ran past the end of
+        // the diff into the status rows below.
+        let text = raw.trim_end_matches('\n').to_string();
         let line_count = text.lines().count();
         let spans = crate::highlight::diff_styled_spans(&text);
         Some((text, line_count, spans))
@@ -837,7 +845,7 @@ fn jump_to_section(ctx: &ActionContext<'_>, prefix: &str) -> Effect {
         .and_then(|store| store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32)))
         .and_then(|handle| {
             let snap = handle.snapshot();
-            (0..snap.buffer.line_count() as u32).find(|l| {
+            (0..snap.buffer.line_count()).find(|l| {
                 snap.buffer
                     .line(*l)
                     .is_some_and(|t| t.trim_start().starts_with(prefix))
@@ -883,10 +891,10 @@ fn files_in_rows(
 pub(crate) fn distinct_files(lines: impl Iterator<Item = Option<StatusLine>>) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for line in lines.flatten() {
-        if let StatusLine::File { path, .. } = line {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
+        if let StatusLine::File { path, .. } = line
+            && !paths.contains(&path)
+        {
+            paths.push(path);
         }
     }
     paths
@@ -1083,7 +1091,7 @@ impl crate::buffer_state::MagitView for StatusView {
         // A Recent-commits row is `"  <sha> <subject>"`; every other
         // row kind (file entries carry a status label, stashes carry
         // `stash@{`) fails the hex test.
-        let tok = line.trim().split_whitespace().next()?;
+        let tok = line.split_whitespace().next()?;
         (tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit())).then(|| tok.to_string())
     }
 
@@ -1544,6 +1552,67 @@ mod expand_payload_tests {
                 .any(|row| row.iter().any(|s| s.style == Style::DiffAdd)),
             "a changed file's diff must carry added lines"
         );
+    }
+
+    /// MG.46: **the patch must be inlined verbatim**, because a hunk's
+    /// `@@` header declares how many body lines it has and the fold
+    /// source bounds the hunk by that count.
+    ///
+    /// A blank trailing context line is a single space, and `.trim()`
+    /// on the whole patch removed it — leaving the text one line
+    /// shorter than its own header claimed. The hunk fold then ran past
+    /// the end of the diff into the status rows below it, which is the
+    /// same symptom `hunk_fold_source` was fixed for and the reason
+    /// only trailing newlines may be stripped.
+    #[test]
+    fn a_trailing_blank_context_line_survives_into_the_expansion() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        // The file ends with a blank line, so the diff's last context
+        // line is a lone space.
+        std::fs::write(p.join("a.txt"), "one\ntwo\n\n").expect("write base");
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        std::fs::write(p.join("a.txt"), "one\ntwo CHANGED\n\n").expect("write modified");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (text, line_count, spans) = rt
+            .block_on(expand_payload(p.to_path_buf(), unstaged("a.txt"), 3))
+            .expect("a modified tracked file has a diff");
+
+        let body: Vec<&str> = text.lines().collect();
+        let at = body
+            .iter()
+            .position(|l| l.starts_with("@@"))
+            .expect("the patch has a hunk header");
+        // Every row after the header is hunk body, including the blank
+        // context line git emits as a lone space.
+        let declared = body[at]
+            .split_whitespace()
+            .find_map(|t| {
+                t.strip_prefix('+')?
+                    .split_once(',')
+                    .map(|(_, c)| c.to_string())
+            })
+            .and_then(|c| c.parse::<usize>().ok())
+            .expect("the header declares a new-side count");
+        let present = body[at + 1..]
+            .iter()
+            .filter(|l| l.is_empty() || l.starts_with([' ', '+']))
+            .count();
+        assert_eq!(
+            present, declared,
+            "the inlined body must supply every line its header declares; \
+             got {body:?}",
+        );
+        assert_eq!(line_count, text.lines().count());
+        assert_eq!(spans.len(), line_count, "one span row per line");
     }
 
     /// An entry with nothing to show declines rather than inserting a

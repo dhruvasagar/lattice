@@ -264,7 +264,7 @@ pub(crate) fn side_by_side_effects(
     use lattice_grammar::Effect;
     Effect::Many(vec![
         Effect::OpenSyntheticBuffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name(&git_ref, path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(git_ref, path),
             mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id().to_string(),
         },
         Effect::Diffsplit {
@@ -326,8 +326,29 @@ impl Mode for MagitHunkMode {
         ])
     }
 
+    /// MG.46: **the diff text folds by hunk, never by code structure.**
+    ///
+    /// This mode owns what is inside the diff, so it owns which folds
+    /// may exist there. `foldmethod=manual` leaves `ManualPrimary` —
+    /// which produces nothing — as the primary, so the only folds are
+    /// this mode's own file ▸ hunk overlays plus magit-status's entry
+    /// overlay.
+    ///
+    /// Without it, a user whose global `foldmethod` is `indent` or
+    /// `syntax` gets the primary provider run over the diff *as if it
+    /// were source*. It is not: a hunk is a fragment with `+`/`-`/` `
+    /// prefixes on every row, so the folds it derives are structurally
+    /// meaningless — and the last one, opened by an indent that the
+    /// fragment never closes, runs to the end of the buffer and
+    /// swallows the rest of the magit-status document.
+    ///
+    /// Scoped to the mode rather than the buffer kind: the override
+    /// reverts when the mode deactivates, and it reaches exactly the
+    /// five diff-rendering majors this mode activates on.
     fn options(&self) -> OptionOverrideSet {
-        OptionOverrideSet::new()
+        lattice_config::overrides! {
+            lattice_config::FoldMethodOption = lattice_core::FoldMethod::Manual,
+        }
     }
 
     fn required_capabilities(&self) -> CapabilitySet {
@@ -381,6 +402,54 @@ impl Mode for MagitHunkMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.46: **diff text never folds by code structure.**
+    ///
+    /// The mode that owns what is inside a hunk owns which folds may
+    /// exist there. Pinned as an option override rather than left to
+    /// the user's global `foldmethod`: with `indent` or `syntax` set
+    /// globally, the primary provider runs over the diff as if it were
+    /// source, and the last fold — opened by an indent the fragment
+    /// never closes — swallows the rest of the magit-status buffer.
+    #[test]
+    fn diff_buffers_fold_only_by_hunk_not_by_code_structure() {
+        let opts = MagitHunkMode.options();
+        let ov = opts
+            .iter()
+            .find(|o| {
+                o.option_type_id == std::any::TypeId::of::<lattice_config::FoldMethodOption>()
+            })
+            .expect("magit-hunk-mode must pin `foldmethod`");
+        assert_eq!(
+            ov.downcast_value::<lattice_core::FoldMethod>().copied(),
+            Some(lattice_core::FoldMethod::Manual),
+            "`foldmethod` must be `manual` so only this mode's own \
+             file/hunk overlays produce folds",
+        );
+    }
+
+    /// The override must reach every major that renders a diff — the
+    /// same five this mode binds its hunk chords on. A major that
+    /// rendered diff text without it would fold that text as code.
+    #[test]
+    fn the_fold_override_covers_every_diff_rendering_major() {
+        let ActivationPolicy::Majors(majors) = MagitHunkMode.activation_policy() else {
+            panic!("magit-hunk-mode scopes itself to specific majors");
+        };
+        for expected in [
+            MagitStatusMode::mode_id(),
+            MagitDiffMode::mode_id(),
+            MagitCommitMode::mode_id(),
+            MagitRevisionMode::mode_id(),
+            MagitStashShowMode::mode_id(),
+        ] {
+            assert!(
+                majors.contains(&expected),
+                "{expected:?} renders diff text, so it must inherit the \
+                 `foldmethod=manual` override",
+            );
+        }
+    }
 
     /// MG.19: the baseline is the version the diff was taken against,
     /// per source.

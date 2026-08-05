@@ -94,6 +94,119 @@ fn file_of(header: &str) -> String {
     }
 }
 
+/// The `(old, new)` line counts a `@@ -a,b +c,d @@` header declares.
+///
+/// A count may be omitted (`@@ -1 +1 @@`), which means 1. `None` for a
+/// combined header (`@@@`, from `diff --cc`), whose body lines carry
+/// one prefix char per parent — [`hunk_extent`] falls back to a prefix
+/// scan for those.
+fn hunk_counts(header: &str) -> Option<(usize, usize)> {
+    if header.starts_with("@@@") {
+        return None;
+    }
+    let body = header.strip_prefix("@@")?;
+    let ranges = body.split("@@").next()?;
+    let mut old = None;
+    let mut new = None;
+    for tok in ranges.split_whitespace() {
+        let (slot, digits) = match tok.split_at_checked(1)? {
+            ("-", rest) => (&mut old, rest),
+            ("+", rest) => (&mut new, rest),
+            _ => continue,
+        };
+        let count = match digits.split_once(',') {
+            Some((_, c)) => c.parse().ok()?,
+            // No comma: a one-line range.
+            None => 1usize,
+        };
+        *slot = Some(count);
+    }
+    Some((old?, new?))
+}
+
+/// Is `line` a line of a hunk's body?
+///
+/// `\` is git's "No newline at end of file" marker, which belongs to
+/// the hunk but counts against neither side. An empty line is a
+/// context line whose trailing space was stripped somewhere upstream.
+fn is_body_line(line: &str) -> bool {
+    line.is_empty() || line.starts_with([' ', '+', '-', '\\'])
+}
+
+/// The last line belonging to the hunk whose header is at `header`.
+///
+/// **This is the bound the whole file turns on.** A hunk declares its
+/// own length, so its extent is derived from that rather than from
+/// "wherever the next `@@` or `diff --git` happens to be". In a
+/// pure-diff buffer the two agree. In magit-status they do not: the
+/// diff is an *embedded fragment*, and the rows after it are entry
+/// rows, section headers and commit rows. Bounding by the next marker
+/// (or, for the final hunk, by the end of the buffer) is what made a
+/// fold swallow the rest of the status buffer.
+///
+/// The declared counts are an upper bound, not a promise — the scan
+/// also stops at the first line that is not hunk body, so a truncated
+/// or hand-written patch still terminates at its real end. `  modified
+/// a.rs` is why the counts have to lead: an entry row is
+/// indistinguishable from a context line by prefix alone.
+fn hunk_extent(lines: &[String], header: usize) -> usize {
+    let total = lines.len();
+    let (mut old_left, mut new_left) = match hunk_counts(&lines[header]) {
+        Some(c) => c,
+        // Combined diff: fall back to a prefix scan, which is still
+        // bounded by the first non-body line.
+        None => {
+            let mut last = header;
+            for (i, line) in lines.iter().enumerate().take(total).skip(header + 1) {
+                if !is_body_line(line) {
+                    break;
+                }
+                last = i;
+            }
+            return last;
+        }
+    };
+    let mut last = header;
+    for (i, line) in lines.iter().enumerate().take(total).skip(header + 1) {
+        if old_left == 0 && new_left == 0 {
+            break;
+        }
+        let consumed = match line.chars().next() {
+            // A context line spends one from each side.
+            None | Some(' ') => {
+                if old_left == 0 || new_left == 0 {
+                    break;
+                }
+                old_left -= 1;
+                new_left -= 1;
+                true
+            }
+            Some('-') => {
+                if old_left == 0 {
+                    break;
+                }
+                old_left -= 1;
+                true
+            }
+            Some('+') => {
+                if new_left == 0 {
+                    break;
+                }
+                new_left -= 1;
+                true
+            }
+            // Belongs to the hunk, counts against neither side.
+            Some('\\') => true,
+            _ => false,
+        };
+        if !consumed {
+            break;
+        }
+        last = i;
+    }
+    last
+}
+
 /// Compute file ▸ hunk folds over `lines`.
 ///
 /// Split from the `FoldSource` impl so it is testable without a live
@@ -114,68 +227,61 @@ pub(crate) fn diff_folds(lines: &[String]) -> Vec<Fold> {
     let file_starts: Vec<usize> = (0..total).filter(|&i| is_file_header(&lines[i])).collect();
 
     for (n, &start) in file_starts.iter().enumerate() {
-        let end = file_starts
-            .get(n + 1)
-            .map(|&next| next - 1)
-            .unwrap_or(total.saturating_sub(1));
-        if end > start {
+        // Scan no further than the next file's header; within that,
+        // each hunk bounds itself.
+        let limit = file_starts.get(n + 1).copied().unwrap_or(total);
+        let file = file_of(&lines[start]);
+        let hunks = hunk_folds(lines, &file, start, limit);
+        // The file section ends where its last hunk ends. A section
+        // with no hunks at all (a pure rename or mode change) has only
+        // its metadata rows, which is not something to fold.
+        if let Some(end) = hunks.iter().map(|h| h.end_line).max()
+            && end > start as u32
+        {
             folds.push(Fold {
                 start_line: start as u32,
-                end_line: end as u32,
+                end_line: end,
                 closed: false,
-                identity: Some(fold_identity("magit:diff-file", &file_of(&lines[start]), 0)),
+                identity: Some(fold_identity("magit:diff-file", &file, 0)),
             });
         }
-        folds.extend(hunk_folds(lines, &file_of(&lines[start]), start, end));
+        folds.extend(hunks);
     }
 
     // No file headers: fold the hunks that are there, against a single
     // unnamed file. Without this, magit-status's single-file inline
     // expansions would lose the hunk folds they have today.
     if file_starts.is_empty() {
-        folds.extend(hunk_folds(lines, "", 0, total.saturating_sub(1)));
+        folds.extend(hunk_folds(lines, "", 0, total));
     }
     folds
 }
 
-/// One fold per `@@` hunk between `start` and `end` inclusive.
-fn hunk_folds(lines: &[String], file: &str, start: usize, end: usize) -> Vec<Fold> {
+/// One fold per `@@` hunk between `start` and `limit` (exclusive).
+fn hunk_folds(lines: &[String], file: &str, start: usize, limit: usize) -> Vec<Fold> {
     let mut folds = Vec::new();
     let mut ordinal = 0usize;
-    let mut open: Option<usize> = None;
-    if lines.is_empty() {
-        return folds;
-    }
-    for l in start..=end.min(lines.len() - 1) {
+    let mut l = start;
+    while l < limit.min(lines.len()) {
         if !lines[l].starts_with("@@") {
+            l += 1;
             continue;
         }
-        if let Some(h) = open {
-            // The fold just closed belongs to the hunk that was open,
-            // so the ordinal advances AFTER it is emitted. Bumping on
-            // sight would leave ordinal 0 unused and land every hunk's
-            // closed state on its neighbour after a refresh.
-            if l > h + 1 {
-                folds.push(Fold {
-                    start_line: h as u32,
-                    end_line: (l - 1) as u32,
-                    closed: false,
-                    identity: Some(fold_identity("magit:diff-hunk", file, ordinal)),
-                });
-            }
-            ordinal += 1;
+        let end = hunk_extent(lines, l).min(limit.saturating_sub(1));
+        if end > l {
+            folds.push(Fold {
+                start_line: l as u32,
+                end_line: end as u32,
+                closed: false,
+                identity: Some(fold_identity("magit:diff-hunk", file, ordinal)),
+            });
         }
-        open = Some(l);
-    }
-    if let Some(h) = open
-        && end > h
-    {
-        folds.push(Fold {
-            start_line: h as u32,
-            end_line: end as u32,
-            closed: false,
-            identity: Some(fold_identity("magit:diff-hunk", file, ordinal)),
-        });
+        // The ordinal advances per hunk SEEN, not per fold emitted, so
+        // a one-line hunk (which has nothing to fold) does not shift
+        // its successors' identities and land their closed state on a
+        // neighbour after a refresh.
+        ordinal += 1;
+        l = end.max(l) + 1;
     }
     folds
 }
@@ -192,7 +298,7 @@ impl FoldSource for MagitHunkFoldSource {
         let snap = handle.snapshot();
         let total = snap.buffer.line_count();
         let lines: Vec<String> = (0..total)
-            .map(|i| snap.buffer.line(i as u32).unwrap_or_default())
+            .map(|i| snap.buffer.line(i).unwrap_or_default())
             .collect();
         diff_folds(&lines)
     }
@@ -211,17 +317,17 @@ diff --git a/one.txt b/one.txt
 index 111..222 100644
 --- a/one.txt
 +++ b/one.txt
-@@ -1,2 +1,3 @@
+@@ -1,1 +1,2 @@
  ctx
 +added
-@@ -10,2 +11,3 @@
+@@ -10,1 +11,2 @@
  ctx
 +more
 diff --git a/two.txt b/two.txt
 index 333..444 100644
 --- a/two.txt
 +++ b/two.txt
-@@ -1,2 +1,3 @@
+@@ -1,1 +1,2 @@
  ctx
 +other";
 
@@ -320,10 +426,10 @@ index 333..444 100644
     #[test]
     fn a_headerless_fragment_still_gets_hunk_folds() {
         let text = "\
-@@ -1,2 +1,3 @@
+@@ -1,1 +1,2 @@
  ctx
 +added
-@@ -10,2 +11,3 @@
+@@ -10,1 +11,2 @@
  ctx
 +more";
         let folds = diff_folds(&lines(text));
@@ -388,6 +494,119 @@ index 333..444 100644
                     .any(|f| h.start_line >= f.start_line && h.end_line <= f.end_line),
                 "hunk {h:?} must nest inside one of {files:?}",
             );
+        }
+    }
+
+    /// The magit-status shape: a diff is an *embedded fragment*, not
+    /// the whole buffer. Rows follow it that are not diff text at all.
+    ///
+    /// `  modified   b.rs` is an entry row; `Recent commits` is a
+    /// section header. A file fold that ran to the next `diff --git`
+    /// (or, for the last file, to the end of the buffer) swallowed
+    /// every one of them — folding one file hid the rest of the status
+    /// buffer. A hunk's extent is declared by its own `@@` header, and
+    /// that is what must bound it.
+    const STATUS_BUFFER: &str = "\
+Unstaged changes (2)
+  modified   a.rs
+diff --git a/a.rs b/a.rs
+index 111..222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,1 +1,2 @@
+ ctx
++added
+  modified   b.rs
+diff --git a/b.rs b/b.rs
+index 333..444 100644
+--- a/b.rs
++++ b/b.rs
+@@ -1,1 +1,2 @@
+ ctx
++other
+Recent commits
+  abc1234 some commit
+  def5678 another commit";
+
+    /// MG.46: **a file fold must stop at the end of its own diff**, not
+    /// run on to the next `diff --git` header.
+    ///
+    /// a.rs's diff ends on `+added` (line 8). Line 9 is b.rs's *entry
+    /// row* — a status row that belongs to no diff at all.
+    #[test]
+    fn a_file_fold_stops_at_the_end_of_its_diff_not_the_next_header() {
+        let buf = lines(STATUS_BUFFER);
+        let folds = diff_folds(&buf);
+        let a = folds
+            .iter()
+            .find(|f| f.start_line == 2)
+            .expect("a.rs has a file fold");
+        assert_eq!(
+            a.end_line, 8,
+            "a.rs ends on `+added`, not on b.rs's entry row: {folds:?}",
+        );
+    }
+
+    /// MG.46: **the last file's fold must not run to the end of the
+    /// buffer.**
+    ///
+    /// This is the reported symptom: in magit-status the rows after the
+    /// final diff are section headers and commit entries, and folding
+    /// the last file hid all of them.
+    #[test]
+    fn the_last_file_fold_stops_at_the_end_of_its_diff() {
+        let buf = lines(STATUS_BUFFER);
+        let folds = diff_folds(&buf);
+        let b = folds
+            .iter()
+            .find(|f| f.start_line == 10)
+            .expect("b.rs has a file fold");
+        assert_eq!(
+            b.end_line, 16,
+            "b.rs ends on `+other`, not on the last commit row: {folds:?}",
+        );
+        assert!(
+            buf[b.end_line as usize].starts_with('+'),
+            "the last row of a file fold is diff text: {:?}",
+            buf[b.end_line as usize],
+        );
+    }
+
+    /// The same bound applies to hunks: a hunk ends where its `@@`
+    /// header says it does, so it never reaches rows that follow the
+    /// diff.
+    #[test]
+    fn a_hunk_fold_stops_at_the_end_of_its_own_body() {
+        let buf = lines(STATUS_BUFFER);
+        let folds = diff_folds(&buf);
+        for f in folds
+            .iter()
+            .filter(|f| buf[f.start_line as usize].starts_with("@@"))
+        {
+            let last = &buf[f.end_line as usize];
+            assert!(
+                last.starts_with([' ', '+', '-', '\\']),
+                "hunk {f:?} ends on non-diff row {last:?}",
+            );
+        }
+    }
+
+    /// No fold from this source may cover a row that is not part of a
+    /// diff — the invariant the two tests above are instances of.
+    #[test]
+    fn no_fold_covers_a_non_diff_row() {
+        let buf = lines(STATUS_BUFFER);
+        // Section headers and entry rows — everything that is not part
+        // of either inlined diff.
+        let non_diff: Vec<u32> = vec![0, 1, 9, 17, 18, 19];
+        for f in diff_folds(&buf) {
+            for &row in &non_diff {
+                assert!(
+                    !(f.start_line <= row && row <= f.end_line),
+                    "fold {f:?} covers non-diff row {row} ({:?})",
+                    buf[row as usize],
+                );
+            }
         }
     }
 

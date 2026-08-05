@@ -411,7 +411,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
         let is_transient = picker
             .state
             .as_deref()
-            .map_or(false, |p| p.transient.is_some());
+            .is_some_and(|p| p.transient.is_some());
         if is_transient {
             draw_transient_minibuffer_prompt(frame, chunks[2], app);
         } else {
@@ -449,7 +449,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
         .picker_state()
         .state
         .as_deref()
-        .map_or(false, |p| p.transient.is_some());
+        .is_some_and(|p| p.transient.is_some());
     if chrome.picker > 0 && is_transient {
         draw_transient_minibuffer_candidates(frame, chunks[3], app);
     } else if chrome.picker > 0 {
@@ -966,7 +966,7 @@ fn completion_docs_popup_rect(
     let state = completion.insert.as_deref()?;
     let doc_popup = state.doc_popup.as_ref()?;
     // Only shown when the focused candidate resolved a non-empty body.
-    if !doc_popup.body.as_ref().is_some_and(|b| !b.is_empty()) {
+    if doc_popup.body.as_ref().is_none_or(|b| b.is_empty()) {
         return None;
     }
     // Anchor: same anchor as the candidate popup.
@@ -1056,7 +1056,7 @@ fn draw_insert_completion_docs_popup(
         .insert
         .as_deref()
         .and_then(|s| s.doc_popup.as_ref())
-        .map(|d| d.scroll as u32)
+        .map(|d| d.scroll)
         .unwrap_or(0);
     // PU.5c: render the docs CONTENT through the shared compose seam reading
     // the `PaneId::COMPLETION_DOCS` `DisplayMatrix` (markdown colour + link
@@ -1738,20 +1738,20 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
         .unwrap_or(true)
 }
 
-/// Centered overlay rendering of the picker for the
-/// `picker.display = "popup"` mode. Layout inside the overlay:
-///
-///   line 1: title (`p.title`) + count `(n / m)`
-///   line 2: prompt `> <query>`
-///   line 3: separator
-///   line 4..: candidate list (vertico-style, selected row
-///            at the top so the eye tracks from prompt to
-///            selection identically to minibuffer mode)
-///
-/// Sizing mirrors the help-popup convention so the picker
-/// feels like part of the same overlay family. The overlay is
-/// painted on top of [`Clear`] so buffer content underneath
-/// doesn't bleed through.
+// Centered overlay rendering of the picker for the
+// `picker.display = "popup"` mode. Layout inside the overlay:
+//
+//   line 1: title (`p.title`) + count `(n / m)`
+//   line 2: prompt `> <query>`
+//   line 3: separator
+//   line 4..: candidate list (vertico-style, selected row
+//            at the top so the eye tracks from prompt to
+//            selection identically to minibuffer mode)
+//
+// Sizing mirrors the help-popup convention so the picker
+// feels like part of the same overlay family. The overlay is
+// painted on top of [`Clear`] so buffer content underneath
+// doesn't bleed through.
 
 /// Rows a transient's group+item list occupies — per group, one
 /// header row, one row per item and one blank separator row;
@@ -1826,7 +1826,11 @@ fn transient_group_item_lines(
                                 _ => None,
                             })
                             .unwrap_or(false);
-                        if v { "[x]".to_string() } else { "[ ]".to_string() }
+                        if v {
+                            "[x]".to_string()
+                        } else {
+                            "[ ]".to_string()
+                        }
                     }
                     // MG.43g: a variable reports the CURRENT value
                     // inline — that is the whole point of the row.
@@ -1980,10 +1984,9 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     // terminal is clipped by whoever paints last, which loses rows
     // with no scroll position that can bring them back.
     let height = (row_count as u16 + 3)
-        .min(35)
-        .max(8)
+        .clamp(8, 35)
         .min(buffer_area.height.max(3));
-    let width = buffer_area.width.saturating_sub(4).min(80).max(40);
+    let width = buffer_area.width.saturating_sub(4).clamp(40, 80);
     let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
     let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
     let area = Rect {
@@ -2041,13 +2044,14 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         ln += 1;
     }
 
-    if let Some(ref footer) = spec.footer {
-        if ln >= scroll && lines.len() < visible {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", footer),
-                TuiStyle::default().fg(Color::DarkGray),
-            )));
-        }
+    if let Some(ref footer) = spec.footer
+        && ln >= scroll
+        && lines.len() < visible
+    {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", footer),
+            TuiStyle::default().fg(Color::DarkGray),
+        )));
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
@@ -3012,10 +3016,12 @@ fn terminal_row_spans(
             }
         }
         // Current match wins style precedence on its row.
-        if let Some((m_row, c_start, c_end)) = match_overlay {
-            if row == m_row && col >= c_start && col < c_end {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
+        if let Some((m_row, c_start, c_end)) = match_overlay
+            && row == m_row
+            && col >= c_start
+            && col < c_end
+        {
+            style = style.add_modifier(Modifier::REVERSED);
         }
         // Visual selection cells paint REVERSED (per-kind predicate).
         if let Some(v) = visual {
@@ -3235,10 +3241,10 @@ fn draw_terminal_pane(
     }
 }
 
-/// M.4: per-mode pane-render adapters. Each adapter has the
-/// uniform [`crate::pane_render::PaneRenderFn`] signature; the
-/// existing per-kind draw fns retain their original signatures and
-/// the adapter forwards the relevant subset.
+// M.4: per-mode pane-render adapters. Each adapter has the
+// uniform [`crate::pane_render::PaneRenderFn`] signature; the
+// existing per-kind draw fns retain their original signatures and
+// the adapter forwards the relevant subset.
 
 fn help_pane_render(
     frame: &mut Frame,
@@ -3470,8 +3476,8 @@ fn content_to_runs(content: lattice_mode::ElementContent) -> Vec<ModelineSeg> {
 /// zone's content into role-tagged runs via the shared host resolver,
 /// lays them out into `width` columns, then maps each role → a ratatui
 /// style through the theme cache ([`crate::theme::Theme::modeline_style`]).
-/// Extracted from [`draw_pane_status_line`] so tests can assert span text
-/// + style without a frame. The whole row sits on the active/inactive
+/// Extracted from [`draw_pane_status_line`] so tests can assert span text +
+/// style without a frame. The whole row sits on the active/inactive
 /// bar; per-role foregrounds compose over it.
 fn modeline_spans(
     app: &App,
@@ -3921,58 +3927,57 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     l.to_string()
                 };
-                if i == 0 {
-                    if let Some(d) = deco
-                        && !d.spans.is_empty()
-                    {
-                        let mut spans: Vec<Span<'_>> = Vec::with_capacity(d.spans.len() + 2);
-                        let prompt_span = Span::raw(prompt.to_string());
-                        let full_first = line_str.clone();
-                        let first_line = l;
-                        let prefix_len = prompt.len_utf8();
-                        let mut pos = 0usize;
-                        for sp in &d.spans {
-                            let s = sp.range.start.min(first_line.len());
-                            let e = sp.range.end.min(first_line.len());
-                            if s < pos || e < s {
-                                continue;
-                            }
-                            if s > pos {
-                                spans.push(Span::styled(
-                                    full_first[pos + prefix_len..s + prefix_len].to_string(),
-                                    base,
-                                ));
-                            }
-                            let styled = match lattice_host::ui::theme::resolve_syntax_style(
-                                resolved, ids, sp.style,
-                            )
-                            .fg
-                            .map(crate::theme::host_color_to_ratatui)
-                            {
-                                Some(c) => base.fg(c),
-                                None => base,
-                            };
-                            spans.push(Span::styled(
-                                full_first[s + prefix_len..e + prefix_len].to_string(),
-                                styled,
-                            ));
-                            pos = e;
+                if i == 0
+                    && let Some(d) = deco
+                    && !d.spans.is_empty()
+                {
+                    let mut spans: Vec<Span<'_>> = Vec::with_capacity(d.spans.len() + 2);
+                    let prompt_span = Span::raw(prompt.to_string());
+                    let full_first = line_str.clone();
+                    let first_line = l;
+                    let prefix_len = prompt.len_utf8();
+                    let mut pos = 0usize;
+                    for sp in &d.spans {
+                        let s = sp.range.start.min(first_line.len());
+                        let e = sp.range.end.min(first_line.len());
+                        if s < pos || e < s {
+                            continue;
                         }
-                        if pos < first_line.len() {
+                        if s > pos {
                             spans.push(Span::styled(
-                                full_first[pos + prefix_len..].to_string(),
+                                full_first[pos + prefix_len..s + prefix_len].to_string(),
                                 base,
                             ));
                         }
-                        // Prepend the prompt character (":" / "/" / "?") as
-                        // the first span, BEFORE the decorated content. The
-                        // decoration spans are byte ranges into the raw line
-                        // text and start at prefix_len, so they never include
-                        // the prompt. Without this, the command line ":comp"
-                        // renders as "comp" when decorations are present.
-                        spans.insert(0, prompt_span);
-                        return Line::from(spans);
+                        let styled = match lattice_host::ui::theme::resolve_syntax_style(
+                            resolved, ids, sp.style,
+                        )
+                        .fg
+                        .map(crate::theme::host_color_to_ratatui)
+                        {
+                            Some(c) => base.fg(c),
+                            None => base,
+                        };
+                        spans.push(Span::styled(
+                            full_first[s + prefix_len..e + prefix_len].to_string(),
+                            styled,
+                        ));
+                        pos = e;
                     }
+                    if pos < first_line.len() {
+                        spans.push(Span::styled(
+                            full_first[pos + prefix_len..].to_string(),
+                            base,
+                        ));
+                    }
+                    // Prepend the prompt character (":" / "/" / "?") as
+                    // the first span, BEFORE the decorated content. The
+                    // decoration spans are byte ranges into the raw line
+                    // text and start at prefix_len, so they never include
+                    // the prompt. Without this, the command line ":comp"
+                    // renders as "comp" when decorations are present.
+                    spans.insert(0, prompt_span);
+                    return Line::from(spans);
                 }
                 Line::from(line_str)
             })
@@ -4802,7 +4807,7 @@ pub(crate) fn compose_pane_lines(
             // visually hide 5 lines but report only the first
             // fold's own 3 lines, which doesn't match what the
             // user just collapsed.
-            closed_fold_display_span(view, snap, &f)
+            closed_fold_display_span(view, snap, f)
         });
         // 4.4.h: LSP semantic-tokens overlay. Replaces the
         // foreground color (folding in modifier bits) for
@@ -5997,7 +6002,7 @@ fn render_virtual_row(
                 (rgb & 0xff) as u8,
             )
         })
-        .or_else(|| match vrow.kind {
+        .or(match vrow.kind {
             lattice_cells::VirtualRowKind::DeletionBlock
             | lattice_cells::VirtualRowKind::Generic => Some(view.app.theme.diff_deletion_block_bg),
             // Filler/Sticky/BrandingBlock: no kind backdrop. The TUI paints
@@ -6021,13 +6026,13 @@ fn render_virtual_row(
         if let Some(c) = bg {
             style = style.bg(c);
         }
-        if let Some(rgb) = fg {
-            if rgb != 0 {
-                let r = ((rgb >> 16) & 0xff) as u8;
-                let g = ((rgb >> 8) & 0xff) as u8;
-                let b = (rgb & 0xff) as u8;
-                style = style.fg(Color::Rgb(r, g, b));
-            }
+        if let Some(rgb) = fg
+            && rgb != 0
+        {
+            let r = ((rgb >> 16) & 0xff) as u8;
+            let g = ((rgb >> 8) & 0xff) as u8;
+            let b = (rgb & 0xff) as u8;
+            style = style.fg(Color::Rgb(r, g, b));
         }
         spans.push(Span::styled(std::mem::take(text), style));
     };
@@ -7771,6 +7776,149 @@ mod tests {
         assert_eq!(
             text, "🚀abc",
             "the wide-char spacer cell must be skipped, not emitted as a space",
+        );
+    }
+
+    /// MG.47: **a synthetic buffer keeps rendering its own text while the
+    /// `:` line is open.**
+    ///
+    /// Reported against magit: pressing `:` in a magit buffer made the pane
+    /// paint the file magit was opened *from*. `draw_panes` drops `is_active`
+    /// while `command_line_active`, routing the focused pane to
+    /// `draw_inactive_document` — which resolves the pane's OWN buffer from
+    /// the registry. So the content must not change when the line opens.
+    ///
+    /// `*plugins*` stands in for a magit buffer: same
+    /// `Effect::OpenSyntheticBuffer` open onto a provider-registered mode,
+    /// and this crate cannot depend on `lattice-magit`.
+    #[test]
+    fn a_synthetic_buffer_keeps_its_content_while_the_command_line_is_open() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with("ORIGINFILECONTENT\n", 24);
+        let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| -> String {
+            let buf = t.backend().buffer().clone();
+            (0..26u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.mutate_editor(|e| {
+            e.open_synthetic_buffer("*plugins*", "plugins-mode");
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let before = screen(&terminal);
+        assert!(
+            !before.contains("ORIGINFILECONTENT"),
+            "sanity: after opening the synthetic buffer the origin file's text \
+             is gone from the pane; got:\n{before}",
+        );
+
+        // Now open the `:` line. The pane must keep painting ITS buffer.
+        app.mutate_editor(|e| {
+            e.open_command_line("");
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let during = screen(&terminal);
+        assert!(
+            !during.contains("ORIGINFILECONTENT"),
+            "opening `:` must not make the pane fall back to the buffer the \
+             synthetic one was opened from; got:\n{during}",
+        );
+    }
+
+    /// MG.47, on the buffer it was actually reported against.
+    ///
+    /// The `*plugins*` case above covers the generic mechanism; magit differs
+    /// in ways that could plausibly matter to the render path — a headerline
+    /// virtual row, async content, and a `prev_pane_for_popup` stash taken at
+    /// open. This renders a real magit buffer across the `:` transition.
+    #[test]
+    fn a_magit_buffer_keeps_its_content_while_the_command_line_is_open() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with("ORIGINFILECONTENT\n", 24);
+        let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| -> String {
+            let buf = t.backend().buffer().clone();
+            (0..26u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Seed the magit buffer with known text. Without this the buffer is
+        // empty in a test (no git repo, no async refresh), and every
+        // "origin text is absent" assertion below would pass vacuously —
+        // which is exactly how this bug hid from an earlier version of this
+        // test.
+        app.mutate_editor(|e| {
+            e.open_synthetic_buffer("*magit:status*", "magit-status-mode");
+            let id = e.buffers.by_name("*magit:status*").unwrap();
+            e.append_to_owned_buffer(id, "MAGITSTATUSCONTENT\n");
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let before = screen(&terminal);
+        assert!(
+            before.contains("MAGITSTATUSCONTENT"),
+            "sanity: the magit buffer's own text must be on screen before `:` \
+             — otherwise the assertions below prove nothing; got:\n{before}",
+        );
+        assert!(
+            !before.contains("ORIGINFILECONTENT"),
+            "sanity: the magit buffer replaced the origin file in the pane",
+        );
+
+        app.mutate_editor(|e| {
+            e.open_command_line("");
+            e.publish_render_state();
+        });
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let during = screen(&terminal);
+        assert!(
+            !during.contains("ORIGINFILECONTENT"),
+            "opening `:` in a magit buffer must not repaint the pane with the \
+             file magit was opened from; got:\n{during}",
+        );
+        assert!(
+            during.contains("MAGITSTATUSCONTENT"),
+            "the pane must keep painting the magit buffer's own text while \
+             the `:` line is open; got:\n{during}",
         );
     }
 
@@ -10710,7 +10858,7 @@ mod tests {
         );
     }
 
-    /// Slice 3c.final.X.cleanup: modeline-text builder must read
+    // Slice 3c.final.X.cleanup: modeline-text builder must read
 
     /// Slice 3c.final.X.cleanup: pane-status text builder also
     /// counts as a per-frame paint path (drawn once per pane per
@@ -10718,7 +10866,7 @@ mod tests {
     #[test]
     fn pane_status_label_makes_zero_actor_calls() {
         let app = app_with("a\nb\nc\nd\ne\n", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         let _warmup = app.pane_status_label(&pane);
         let before = crate::actor_call_counter::snapshot();
         let _label = app.pane_status_label(&pane);
@@ -10883,7 +11031,7 @@ mod tests {
     fn modeline_active_spans_carry_per_role_styles() {
         use ratatui::style::{Color, Modifier};
         let app = app_with("hello", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         let spans = modeline_spans(&app, &pane, true, 60);
 
         // ML.5d: lean 3-letter tag (no brackets).
@@ -10914,7 +11062,7 @@ mod tests {
     #[test]
     fn modeline_inactive_spans_are_uniformly_muted() {
         let app = app_with("hello", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         let spans = modeline_spans(&app, &pane, false, 60);
         let muted = app.theme.modeline_inactive;
         assert!(!spans.is_empty());
@@ -10958,7 +11106,7 @@ mod tests {
     #[test]
     fn modeline_active_pane_lays_out_mode_path_position() {
         let app = app_with("hello", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         let row = render_status_row(&app, &pane, true, 40);
         assert_eq!(row.chars().count(), 40, "row fills pane width: {row:?}");
         // ML.5d: lean 3-letter tag (no brackets).
@@ -10978,7 +11126,7 @@ mod tests {
     #[test]
     fn modeline_inactive_pane_omits_modal_label() {
         let app = app_with("hello", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         let row = render_status_row(&app, &pane, false, 40);
         assert!(!row.contains("NOR"), "no modal on inactive: {row:?}");
         assert!(row.contains("[no name]"), "path still shows: {row:?}");
@@ -10992,7 +11140,7 @@ mod tests {
     #[test]
     fn modeline_narrow_pane_does_not_panic() {
         let app = app_with("hello", 10);
-        let pane = app.panes().tree.active().clone();
+        let pane = *app.panes().tree.active();
         for w in [1u16, 2, 3, 8] {
             let row = render_status_row(&app, &pane, true, w);
             assert_eq!(row.chars().count(), w as usize, "row fills width {w}");

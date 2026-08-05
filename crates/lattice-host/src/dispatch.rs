@@ -2745,10 +2745,25 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 ""
             };
             editor.last_message = None;
-            // Q16: opening the cmdline dismisses STATE A help
-            // popups (hover overlay still anchored to doc cursor).
-            // Only auto-dismiss when active_buffer is Document (State A).
-            if matches!(editor.active_buffer, BufferKind::Document) {
+            // Q16: opening the cmdline dismisses a STATE A help popup — a
+            // passive overlay (hover) still anchored to the doc cursor.
+            //
+            // MG.47: gated on the popup actually being open and unfocused,
+            // NOT on the buffer's kind. `BufferKind::Document` was standing
+            // in for "a plain file is showing", but every synthetic buffer is
+            // a Document too — that is `everything is a buffer` working as
+            // designed. So `:` in a magit buffer reached `dismiss_popup`,
+            // which pops `prev_pane_for_popup` — the bury target
+            // `open_synthetic_buffer` stashes for magit's `q` — and reassigned
+            // `pane.buffer_id` back to the file magit was opened from. The
+            // pane then painted that file while `document_buffer_id` still
+            // held magit, so the modeline named one buffer and the content
+            // showed the other.
+            //
+            // State A is exactly "a popup is shown but was never focused",
+            // and it leaves `prev_pane_for_popup` as `None` (PU-A.1a) — so
+            // this guard both says what it means and cannot move the pane.
+            if editor.popup_buffer.is_some() && !editor.popup_focused {
                 editor.dismiss_popup();
             }
             // MB.1: create/focus the `*command-line*` buffer and seed it.
@@ -3069,10 +3084,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 editor
                     .services
                     .get::<lattice_multibuffer::providers::search::CurrentDirHandle>()
+                && let Ok(mut dir) = current_dir_handle.lock()
             {
-                if let Ok(mut dir) = current_dir_handle.lock() {
-                    *dir = Some(canonical.clone());
-                }
+                *dir = Some(canonical.clone());
             }
             editor.set_message(EchoLevel::Info, canonical.display().to_string());
         }
@@ -4080,10 +4094,10 @@ impl Editor {
             virtual_rows_wake,
             syntax_ctx,
         );
-        if let Ok(mut map) = self.diff_forwarders.lock() {
-            if let Some(prev) = map.insert(buffer_id, forwarder) {
-                prev.abort();
-            }
+        if let Ok(mut map) = self.diff_forwarders.lock()
+            && let Some(prev) = map.insert(buffer_id, forwarder)
+        {
+            prev.abort();
         }
 
         // Kick off the first recompute. The bus subscription
@@ -4454,12 +4468,11 @@ impl Editor {
             map.insert(primary, session.sign_map());
             // The baseline (left) pane is slot 0 of a multi-pane session's
             // watch list; tint it from the baseline-side map.
-            if let Some(desc) = self.diff_subsystem.lookup_descriptor(primary) {
-                if let Some(&baseline) = desc.watch.first() {
-                    if baseline != primary {
-                        map.insert(baseline, session.baseline_sign_map());
-                    }
-                }
+            if let Some(desc) = self.diff_subsystem.lookup_descriptor(primary)
+                && let Some(&baseline) = desc.watch.first()
+                && baseline != primary
+            {
+                map.insert(baseline, session.baseline_sign_map());
             }
         }
         std::sync::Arc::new(map)
@@ -4923,30 +4936,28 @@ impl Editor {
         // so it never leaks. A write failure is surfaced to the user but does not
         // suppress the outcome (the user did accept); the agent's reply may then
         // overstate the save, an acceptable rare degradation.
-        if let Some(save_path) = self.programmatic_diff_accept_paths.remove(&primary) {
-            if matches!(outcome, Some(crate::diff::subsystem::DiffOutcome::Accept)) {
-                if let Some(handle) = self.buffers.document_handle(primary) {
-                    if let Err(e) = std::fs::write(&save_path, handle.text()) {
-                        self.set_message(
-                            EchoLevel::Error,
-                            format!(
-                                "openDiff accept: failed to write {}: {e}",
-                                save_path.display()
-                            ),
-                        );
-                    }
-                }
-            }
+        if let Some(save_path) = self.programmatic_diff_accept_paths.remove(&primary)
+            && matches!(outcome, Some(crate::diff::subsystem::DiffOutcome::Accept))
+            && let Some(handle) = self.buffers.document_handle(primary)
+            && let Err(e) = std::fs::write(&save_path, handle.text())
+        {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "openDiff accept: failed to write {}: {e}",
+                    save_path.display()
+                ),
+            );
         }
 
         // D.6.e: fire the completion signal first, before
         // any teardown. If the sender's receiver was
         // dropped (plugin gave up), `send` returns Err —
         // we ignore that, the teardown still proceeds.
-        if let Some(o) = outcome {
-            if let Some(tx) = session.take_completion() {
-                let _ = tx.send(o);
-            }
+        if let Some(o) = outcome
+            && let Some(tx) = session.take_completion()
+        {
+            let _ = tx.send(o);
         }
 
         // Walk every participant. Each unregister call is
@@ -5054,7 +5065,7 @@ impl Editor {
     ///   message naming the cap.
     /// - Stale members (a pane closed) are silently scrubbed
     ///   from `diffthis_members` at the start of every call.
-    pub fn do_diffthis(self: &mut Self) {
+    pub fn do_diffthis(&mut self) {
         // Gate on Document kind.
         let active_leaf = self.pane_tree.active();
         if !matches!(active_leaf.buffer, lattice_core::BufferKind::Document) {
@@ -5072,11 +5083,11 @@ impl Editor {
         // out-of-band drop), clear it. Stale member entries
         // (pane closed) are pruned too so subsequent
         // pane-group reconstruction uses live members only.
-        if let Some(g) = self.diffthis_group {
-            if self.diff_subsystem.lookup(g).is_none() {
-                self.diffthis_group = None;
-                self.diffthis_members.clear();
-            }
+        if let Some(g) = self.diffthis_group
+            && self.diff_subsystem.lookup(g).is_none()
+        {
+            self.diffthis_group = None;
+            self.diffthis_members.clear();
         }
         {
             let leaves = self.pane_tree.leaves();
@@ -5275,8 +5286,8 @@ impl Editor {
     /// D.8.e (2026-05-31): (re)build the pane group +
     /// filler-provider wiring for the diffthis group's
     /// current arity. Drop-and-recreate semantics — any
-    /// pane group bound to this session is dropped first
-    /// + all known filler providers are unregistered; then,
+    /// pane group bound to this session is dropped first +
+    /// all known filler providers are unregistered; then,
     /// if the new arity is ≥2, a fresh pane group + filler
     /// providers are installed.
     ///
@@ -5501,13 +5512,14 @@ impl Editor {
                 2,
             ))
         };
-        let pane_group_id = self.add_pane_group(members.clone(), mapper).map_err(|e| {
-            // Roll back the session if pane-group
-            // registration fails — otherwise we'd leave
-            // a session with no UI binding.
-            self.diff_subsystem.drop_session(primary);
-            e
-        })?;
+        let pane_group_id = self
+            .add_pane_group(members.clone(), mapper)
+            .inspect_err(|_e| {
+                // Roll back the session if pane-group
+                // registration fails — otherwise we'd leave
+                // a session with no UI binding.
+                self.diff_subsystem.drop_session(primary);
+            })?;
         session.bind_pane_group(pane_group_id);
 
         // Filler provider per slot. Side encoding stays the
@@ -5550,10 +5562,10 @@ impl Editor {
                     virtual_rows_wake.notify_one();
                 }
             });
-            if let Ok(mut map) = self.diff_forwarders.lock() {
-                if let Some(prev) = map.insert(primary, forwarder) {
-                    prev.abort();
-                }
+            if let Ok(mut map) = self.diff_forwarders.lock()
+                && let Some(prev) = map.insert(primary, forwarder)
+            {
+                prev.abort();
             }
         }
 
@@ -6170,8 +6182,8 @@ impl Editor {
     }
 
     /// Body (text) column width of the active pane: the published
-    /// pane width minus the gutter (line-number column + diagnostic
-    /// + diff-sign cells). Mirrors the TUI renderer's `buffer_w`
+    /// pane width minus the gutter (line-number column + diagnostic +
+    /// diff-sign cells). Mirrors the TUI renderer's `buffer_w`
     /// derivation (`lattice-ui-tui::render`: `gutter_width + DIAG +
     /// DIFF`), which reduces to `digits + 5` non-body columns with
     /// line numbers on, or `4` with them off. Returns 0 when the
@@ -6485,10 +6497,10 @@ impl Editor {
     /// In State A (passive hover) the popup check is skipped — document
     /// keeps focus.
     pub fn active_text(&self) -> lattice_core::Buffer {
-        if self.popup_focused {
-            if let Some(content) = self.popup_buffer_content() {
-                return content;
-            }
+        if self.popup_focused
+            && let Some(content) = self.popup_buffer_content()
+        {
+            return content;
         }
         match self.active_buffer {
             BufferKind::Document
@@ -7845,12 +7857,10 @@ impl Editor {
         self.command_line_decorations = None;
         self.completion_state = None;
         self.restore_editing_buffer();
-        if !line.trim().is_empty() {
-            if self.command_history.last() != Some(&line) {
-                self.command_history.push(line.clone());
-                if self.command_history.len() > COMMAND_HISTORY_CAP {
-                    self.command_history.remove(0);
-                }
+        if !line.trim().is_empty() && self.command_history.last() != Some(&line) {
+            self.command_history.push(line.clone());
+            if self.command_history.len() > COMMAND_HISTORY_CAP {
+                self.command_history.remove(0);
             }
         }
         self.execute_ex_line(&line, out);
@@ -8022,18 +8032,18 @@ impl Editor {
                         .strip_prefix("no")
                         .or_else(|| base.strip_prefix("inv"))
                         .unwrap_or(base);
-                    if self.config.lookup(opt_name).is_some() {
-                        if let Some(content) = self.build_describe_option_content(opt_name) {
-                            out.renderer_signals
-                                .push(RendererSignal::DisplayBuffer(Box::new(
-                                    DisplayBufferRequest {
-                                        content,
-                                        category:
-                                            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
-                                    },
-                                )));
-                            return;
-                        }
+                    if self.config.lookup(opt_name).is_some()
+                        && let Some(content) = self.build_describe_option_content(opt_name)
+                    {
+                        out.renderer_signals
+                            .push(RendererSignal::DisplayBuffer(Box::new(
+                            DisplayBufferRequest {
+                                content,
+                                category:
+                                    lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                            },
+                        )));
+                        return;
                     }
                 }
                 let anchor = format!("arg:{}", arg_spec.name);
@@ -9469,10 +9479,10 @@ impl Editor {
                     // into the first arg slot instead (space + its popup),
                     // which is also what the completing minibuffer does
                     // everywhere else the user has muscle memory for.
-                    if self.advance_to_first_arg_slot() {
-                        if let Ok(arg_state) = self.compute_completion_state() {
-                            self.completion_state = Some(arg_state);
-                        }
+                    if self.advance_to_first_arg_slot()
+                        && let Ok(arg_state) = self.compute_completion_state()
+                    {
+                        self.completion_state = Some(arg_state);
                     }
                     return;
                 }
@@ -18250,8 +18260,8 @@ fn outermost_fold_idx<F: Fn(&lattice_core::Fold) -> bool>(
 
 /// 5.5.G.3: pure-editor edit-cluster helpers (line operations,
 /// case toggle, open / append / overwrite, undo/redo glue,
-/// backspace). Each body either was already 100% `editor.*` reads
-/// + writes or only used [`Self::apply_edit_blocking`] /
+/// backspace). Each body either was already 100% `editor.*` reads +
+/// writes or only used [`Self::apply_edit_blocking`] /
 /// [`Self::active_text`] / host-side primitives.
 impl Editor {
     /// Vim's `J` (`with_space = true`) and `gJ` (`false`) -- splice
@@ -18433,7 +18443,7 @@ impl Editor {
             let next_line = cur_line + 1;
             let next_len = snap.buffer.line_byte_len(next_line);
             self.cursor.line = next_line;
-            self.cursor.byte = goal.min(next_len.saturating_sub(1).max(0));
+            self.cursor.byte = goal.min(next_len.saturating_sub(1));
         }
         self.goal_col = Some(goal);
         self.ensure_cursor_visible();
@@ -18850,7 +18860,7 @@ impl Editor {
         if self.viewport_height == 0 {
             return None;
         }
-        let total_lines = self.document.snapshot().buffer.line_count() as u32;
+        let total_lines = self.document.snapshot().buffer.line_count();
         if total_lines == 0 {
             return None;
         }
@@ -19644,10 +19654,10 @@ impl Editor {
                     .map(|(d, n)| (Some(d), n))
                     .unwrap_or((None, None));
                 let signals = self.do_open_oil(dir);
-                if matches!(self.active_buffer, BufferKind::Oil) {
-                    if let Some(name) = came_from {
-                        self.focus_oil_entry(&name);
-                    }
+                if matches!(self.active_buffer, BufferKind::Oil)
+                    && let Some(name) = came_from
+                {
+                    self.focus_oil_entry(&name);
                 }
                 signals
             }
@@ -19661,10 +19671,10 @@ impl Editor {
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned());
                 let signals = self.do_open_oil(dir);
-                if matches!(self.active_buffer, BufferKind::Oil) {
-                    if let Some(name) = came_from {
-                        self.focus_oil_entry(&name);
-                    }
+                if matches!(self.active_buffer, BufferKind::Oil)
+                    && let Some(name) = came_from
+                {
+                    self.focus_oil_entry(&name);
                 }
                 signals
             }
@@ -20370,13 +20380,11 @@ impl Editor {
         let seed = leaf.committed_id();
         let cursor = leaf.cursor;
         let scroll = leaf.scroll;
-        self.pane_buffer_history
-            .entry(pane_id)
-            .or_insert_with(|| {
-                crate::pane_history::PaneBufferHistory::seeded(
-                    crate::pane_history::PaneHistoryEntry::new(seed, cursor, scroll),
-                )
-            })
+        self.pane_buffer_history.entry(pane_id).or_insert_with(|| {
+            crate::pane_history::PaneBufferHistory::seeded(
+                crate::pane_history::PaneHistoryEntry::new(seed, cursor, scroll),
+            )
+        })
     }
 
     /// PBH.2: record that the active pane is leaving its current buffer
@@ -20725,10 +20733,10 @@ impl Editor {
                 return Vec::new();
             }
             let _ = self.unmount_preview(pane);
-            if self.preview_buffer == Some(prev.buffer_id) {
-                if let Some(b) = self.preview_buffer.take() {
-                    self.gc_ephemeral_buffer(b);
-                }
+            if self.preview_buffer == Some(prev.buffer_id)
+                && let Some(b) = self.preview_buffer.take()
+            {
+                self.gc_ephemeral_buffer(b);
             }
         }
         let (cursor, scroll) = self.preview_viewport_for(buffer, target_line);
@@ -21300,7 +21308,7 @@ impl Editor {
     /// search shouldn't fire in Insert anyway).
     fn terminal_mirror_search_hits(&mut self, buf_id: BufferId) {
         let current = self.current_match;
-        let all: Vec<_> = self.all_matches.iter().copied().collect();
+        let all: Vec<_> = self.all_matches.to_vec();
         let cursor = self.cursor;
         let _ = self.buffers.with_terminal_mut(buf_id, |t| {
             let Some(synthetic) = t.synthetic.as_ref() else {
@@ -21811,11 +21819,11 @@ pub fn bound_watch_set(
     let mut ordered: Vec<std::path::PathBuf> = watches.keys().cloned().collect();
     ordered.sort();
     // Active dir first so the cap can never evict the buffer in view.
-    if let Some(active) = active_dir {
-        if let Some(pos) = ordered.iter().position(|d| d.as_path() == active) {
-            ordered.remove(pos);
-            ordered.insert(0, active.to_path_buf());
-        }
+    if let Some(active) = active_dir
+        && let Some(pos) = ordered.iter().position(|d| d.as_path() == active)
+    {
+        ordered.remove(pos);
+        ordered.insert(0, active.to_path_buf());
     }
     let mut watches = watches;
     ordered
@@ -22031,12 +22039,9 @@ impl Editor {
                         flattened = flatten_pasted_newlines(text);
                         flattened.as_str()
                     };
-                    if let Ok(applied) = self
-                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(
-                            self.cursor,
-                            payload,
-                        ))
-                    {
+                    if let Ok(applied) = self.apply_edit_blocking(
+                        lattice_protocol::edit::Edit::insert(self.cursor, payload),
+                    ) {
                         self.cursor = applied.inserted_range.end;
                     }
                 }
@@ -23231,8 +23236,8 @@ impl Editor {
     /// `:terminal` behaviour — entering Insert while scrolled
     /// into history restores live-edge focus instead of leaving
     /// the user typing at the PTY prompt while looking at stale
-    /// rows. Cheap call (one alacritty `scroll_display(Bottom)`
-    /// + one snapshot republish); no-op when already at the
+    /// rows. Cheap call (one alacritty `scroll_display(Bottom)` +
+    /// one snapshot republish); no-op when already at the
     /// live edge.
     pub fn do_enter_terminal_insert(&mut self) {
         if !matches!(self.active_buffer, BufferKind::Terminal) {
@@ -25017,11 +25022,11 @@ impl Editor {
     /// override:
     ///
     /// - `Default` → use the user's `PickerResult` display
-    ///               preference (`prepare_pane_for_picker_result`).
+    ///   preference (`prepare_pane_for_picker_result`).
     /// - `Split`   → horizontal split, focus on new pane.
     /// - `VSplit`  → vertical split, focus on new pane.
     /// - `Tab`     → new tab containing one pane (current buffer);
-    ///               focus on new tab.
+    ///   focus on new tab.
     ///
     /// Returns renderer signals from the tab-create path (the
     /// split paths don't emit any). Plugin-callable directly via
@@ -28302,7 +28307,7 @@ impl Editor {
             std::sync::Arc<lattice_picker::TransientSpec>,
         )> = spec.groups.iter().find_map(|g| {
             g.items.iter().find_map(|item| {
-                if item.key.iter().any(|k| *k == key) {
+                if item.key.contains(&key) {
                     Some((item.clone(), spec.clone()))
                 } else {
                     None
@@ -28911,8 +28916,8 @@ impl Editor {
     }
 
     /// Resolve a specific pending diff review by its primary `BufferId` (the
-    /// diff-review picker's accept path). Tears the session down with `outcome`
-    /// + closes its transient panes; no-op + message if it's already gone (the
+    /// diff-review picker's accept path). Tears the session down with `outcome` +
+    /// closes its transient panes; no-op + message if it's already gone (the
     /// user resolved it elsewhere between opening the picker and accepting).
     fn resolve_diff_by_primary(
         &mut self,
@@ -29335,11 +29340,11 @@ impl Editor {
         };
         let mut buf = [0u8; 4];
         let s: &str = c.encode_utf8(&mut buf);
-        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, &*s)) {
+        match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, s)) {
             Ok(applied) => self.cursor = applied.inserted_range.end,
             Err(_) => {
                 if let Ok(applied) =
-                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &*s))
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, s))
                 {
                     self.cursor = applied.inserted_range.end;
                 }
@@ -30002,14 +30007,14 @@ impl Editor {
             ParsedSet::NameOnly(ref name) => {
                 // For non-bool, behave like `:set name` (echo current value).
                 // For bool, fall through to the write path below.
-                if let Some(opt) = self.config.lookup(name) {
-                    if !opt.is_bool() {
-                        self.set_message(
-                            EchoLevel::Info,
-                            format!("{}={}", opt.name(), opt.get_formatted()),
-                        );
-                        return Vec::new();
-                    }
+                if let Some(opt) = self.config.lookup(name)
+                    && !opt.is_bool()
+                {
+                    self.set_message(
+                        EchoLevel::Info,
+                        format!("{}={}", opt.name(), opt.get_formatted()),
+                    );
+                    return Vec::new();
                 }
                 // Bool NameOnly: write override (sets to true).
                 self.do_set_local_write(option)
@@ -30884,8 +30889,8 @@ impl Editor {
     /// PI.4: the full metadata for a plugin id, if loaded.
     pub fn plugin_meta(&self, id: u32) -> Option<PluginMeta> {
         let reg = self.services.get::<PluginMetaRegistry>()?;
-        let meta = reg.0.read().ok()?.get(&id).cloned();
-        meta
+
+        reg.0.read().ok()?.get(&id).cloned()
     }
 
     /// PI.4: every loaded plugin as `(id, meta)`, sorted by name then id.
@@ -32791,7 +32796,11 @@ impl Editor {
             lines.push("    (contributes no chords)".into());
         } else {
             // Pad the chord column so docs line up within a mode block.
-            let width = rows.iter().map(|(c, _)| c.chars().count()).max().unwrap_or(0);
+            let width = rows
+                .iter()
+                .map(|(c, _)| c.chars().count())
+                .max()
+                .unwrap_or(0);
             for (chord, doc) in rows {
                 let pad = " ".repeat(width.saturating_sub(chord.chars().count()));
                 lines.push(format!("    {chord}{pad}  {doc}"));
@@ -32897,7 +32906,11 @@ impl Editor {
                 if rows.is_empty() {
                     lines.push("  (contributes no chords)".into());
                 } else {
-                    let width = rows.iter().map(|(c, _)| c.chars().count()).max().unwrap_or(0);
+                    let width = rows
+                        .iter()
+                        .map(|(c, _)| c.chars().count())
+                        .max()
+                        .unwrap_or(0);
                     for (chord, doc) in rows {
                         let pad = " ".repeat(width.saturating_sub(chord.chars().count()));
                         // A `CharLiteral` slot renders as the `{char}`
@@ -35246,7 +35259,7 @@ impl Editor {
             .services
             .get::<lattice_mode::ActionHandlerRegistryHandle>()
         {
-            let action_handlers: &lattice_mode::ActionHandlerRegistry = &**action_handlers_arc;
+            let action_handlers: &lattice_mode::ActionHandlerRegistry = &action_handlers_arc;
             if let Some(handler) = action_handlers.lookup(inv.command) {
                 let ctx = lattice_mode::ActionContext {
                     buffer_id: lattice_protocol::ids::BufferId::new(buf_id.0 as u64),
@@ -35882,7 +35895,7 @@ impl Editor {
         let prev_cursor_line = self.cursor.line;
         let buffer = self.active_text();
         let cancel = lattice_protocol::CancellationToken::never();
-        match lattice_grammar::execute_motion_only(
+        if let Ok(target) = lattice_grammar::execute_motion_only(
             &reg,
             &buffer,
             self.document_buffer_id,
@@ -35891,10 +35904,7 @@ impl Editor {
             &cancel,
             lattice_grammar::TextObjectEnv::default(),
         ) {
-            Ok(target) => {
-                self.cursor = target;
-            }
-            Err(_) => {}
+            self.cursor = target;
         }
         // Fold-aware landing (bug fix): read-only buffers — help, the
         // dashboard — fold markdown sections too, so a vertical motion must
@@ -36145,7 +36155,7 @@ mod tests {
         );
         assert!(ed.resume_parked_transient(Some("")));
         let picker = ed.picker.as_ref().expect("menu came back");
-        assert!(picker.transient_state.get("message").is_none());
+        assert!(!picker.transient_state.contains_key("message"));
     }
 
     /// With nothing parked, the resume path must decline — that is what
@@ -38889,7 +38899,7 @@ mod tests {
         use smallvec::smallvec;
 
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(12)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x\n".repeat(12)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -38939,7 +38949,7 @@ mod tests {
         use smallvec::smallvec;
 
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(12)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x\n".repeat(12)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -39166,7 +39176,7 @@ mod tests {
         editor
             .resolved_options
             .entry(buffer_id)
-            .or_insert_with(lattice_config::ResolvedOptions::default)
+            .or_default()
             .insert::<lattice_config::Scrollbind>(val);
     }
 
@@ -39505,7 +39515,7 @@ mod tests {
         use smallvec::smallvec;
 
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x\n".repeat(6)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x\n".repeat(6)));
         let bid = editor.document_buffer_id;
         let session = editor
             .diff_subsystem
@@ -40015,7 +40025,7 @@ mod tests {
     #[test]
     fn ensure_cursor_horizontally_visible_follows_cursor_right() {
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
         editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
         editor.pane_tree.active_mut().viewport_width = 80;
@@ -40031,7 +40041,7 @@ mod tests {
     #[test]
     fn ensure_cursor_horizontally_visible_noop_under_wrap() {
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = true;
         editor.pane_tree.active_mut().viewport_width = 80;
         editor.leftcol = 25; // stale from a previous nowrap view
@@ -40324,7 +40334,7 @@ mod tests {
     fn do_horizontal_scroll_columns_and_halfscreen() {
         use lattice_grammar::HScroll;
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
         editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
         editor.pane_tree.active_mut().viewport_width = 80;
@@ -40358,7 +40368,7 @@ mod tests {
     fn do_horizontal_scroll_cursor_edges_and_wrap_noop() {
         use lattice_grammar::HScroll;
         let mut editor =
-            crate::editor::Editor::boot(lattice_core::Document::from_text(&"x".repeat(300)));
+            crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
         editor.option_cache.show_line_numbers = false; // body width = 76
         editor.pane_tree.active_mut().viewport_width = 80;
@@ -42016,7 +42026,7 @@ mod tests {
         // list shape: `[primary, secondary]`.
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
             std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
-                crate::buffer_registry::BufferRegistry::new().into(),
+                crate::buffer_registry::BufferRegistry::new(),
             ));
         let descriptor = crate::diff::subsystem::DiffDescriptor {
             sources: vec![
@@ -43751,7 +43761,7 @@ mod tests {
     fn goto_last_line_keeps_last_line_visible_with_wrap_and_fold() {
         // 12 source lines; wrap_width 4 with each line 8 cols wide ⇒
         // every visible line costs 2 display rows.
-        let doc = lattice_core::Document::from_text(&"abcdefgh\n".repeat(12));
+        let doc = lattice_core::Document::from_text("abcdefgh\n".repeat(12));
         let mut editor = Editor::boot(doc);
         seed_wrap_matrix(&editor, 4, 12);
         // Close a fold over lines 2..=5 (its 3 hidden body lines must
@@ -44430,8 +44440,10 @@ mod tests {
     /// wants the span.
     #[test]
     fn the_active_region_is_normalised_whichever_way_it_was_drawn() {
-        let mut editor = Editor::default();
-        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+        let mut editor = Editor {
+            modal: ModalState::Visual(lattice_grammar::VisualKind::Linewise),
+            ..Default::default()
+        };
 
         editor.visual_anchor = Some(Position::new(2, 0));
         editor.cursor = Position::new(5, 0);
@@ -44448,10 +44460,12 @@ mod tests {
     /// modal state is checked too, so a Normal-mode chord never sees one.
     #[test]
     fn no_region_outside_visual_even_with_an_anchor_left_behind() {
-        let mut editor = Editor::default();
-        editor.visual_anchor = Some(Position::new(2, 0));
-        editor.cursor = Position::new(5, 0);
-        editor.modal = ModalState::Normal;
+        let editor = Editor {
+            visual_anchor: Some(Position::new(2, 0)),
+            cursor: Position::new(5, 0),
+            modal: ModalState::Normal,
+            ..Default::default()
+        };
         assert!(
             editor.active_region().is_none(),
             "a Normal-mode press acts on the cursor, never on a leftover anchor"
@@ -44460,10 +44474,12 @@ mod tests {
 
     #[test]
     fn select_mode_has_a_region_too() {
-        let mut editor = Editor::default();
-        editor.modal = ModalState::Select(lattice_grammar::VisualKind::Charwise);
-        editor.visual_anchor = Some(Position::new(1, 0));
-        editor.cursor = Position::new(1, 4);
+        let editor = Editor {
+            modal: ModalState::Select(lattice_grammar::VisualKind::Charwise),
+            visual_anchor: Some(Position::new(1, 0)),
+            cursor: Position::new(1, 4),
+            ..Default::default()
+        };
         assert!(editor.active_region().is_some());
     }
 
@@ -44476,8 +44492,10 @@ mod tests {
     /// while that buffer is focused.
     #[test]
     fn cursor_move_in_applies_when_its_target_is_the_focused_buffer() {
-        let mut editor = Editor::default();
-        editor.cursor = Position::new(0, 0);
+        let mut editor = Editor {
+            cursor: Position::new(0, 0),
+            ..Default::default()
+        };
         let target = editor.document_buffer_id;
         let _ = editor.handle_effect(Effect::CursorMoveIn {
             target,
@@ -44492,8 +44510,10 @@ mod tests {
     /// row 3 of whatever file the user moved to.
     #[test]
     fn cursor_move_in_is_dropped_when_its_target_is_not_focused() {
-        let mut editor = Editor::default();
-        editor.cursor = Position::new(1, 2);
+        let mut editor = Editor {
+            cursor: Position::new(1, 2),
+            ..Default::default()
+        };
         let other = lattice_core::BufferId(editor.document_buffer_id.0 + 1);
         let _ = editor.handle_effect(Effect::CursorMoveIn {
             target: other,
@@ -44534,8 +44554,10 @@ mod tests {
     fn editor_with_highlights_service() -> Editor {
         let mut registry = lattice_mode::ServiceRegistry::new();
         registry.register(lattice_mode::PendingSyntheticHighlights::new());
-        let mut ed = Editor::default();
-        ed.services = std::sync::Arc::new(registry);
+        let ed = Editor {
+            services: std::sync::Arc::new(registry),
+            ..Default::default()
+        };
         ed
     }
 

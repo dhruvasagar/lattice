@@ -467,6 +467,99 @@ mod tests {
         );
     }
 
+    /// **Reported from real use (2026-08-05): pressing `:` in a magit buffer
+    /// repaints the pane with the file magit was opened from.**
+    ///
+    /// `draw_panes` drops `is_active` while `command_line_active`, routing the
+    /// focused pane to `draw_inactive_document` — which must resolve the
+    /// pane's OWN buffer from the registry. So the frame must not change
+    /// buffers when the `:` line opens.
+    ///
+    /// Driven through a real keypress and a real frame, because that is where
+    /// this lives: the host state was verified correct across the same
+    /// round-trip (`lattice-host/tests/synthetic_buffer_survives_command_line`)
+    /// and every one of those assertions passes. Whatever is wrong is between
+    /// the published state and the painted cells.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pressing_colon_in_magit_keeps_the_pane_on_the_magit_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with("ORIGINFILECONTENT\n", 20);
+        let origin = app.editor.document_buffer_id;
+
+        run_ex(&mut app, "magit-status");
+        assert!(
+            settle_mode(&mut app, "magit-core-mode").await,
+            "magit-core-mode must activate before the frame means anything"
+        );
+        assert_ne!(app.editor.document_buffer_id, origin);
+        let magit = app.editor.document_buffer_id;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| -> String {
+            let buf = t.backend().buffer().clone();
+            (0..24u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let paint = |app: &crate::app::App, t: &mut Terminal<TestBackend>| {
+            let snap = app.ad().snapshot.clone();
+            t.draw(|f| {
+                let _ = crate::render::draw_frame(f, app, &snap);
+            })
+            .unwrap();
+        };
+
+        paint(&app, &mut terminal);
+        let before = screen(&terminal);
+        assert!(
+            !before.contains("ORIGINFILECONTENT"),
+            "sanity: magit replaced the origin file in the pane; got:\n{before}",
+        );
+
+        // The real keypress, not `open_command_line` — a modal state that is
+        // missing a dispatch arm swallows the key, and calling the handler
+        // directly would hide that.
+        press(&mut app, key(':'));
+        paint(&app, &mut terminal);
+        let during = screen(&terminal);
+        assert!(
+            !during.contains("ORIGINFILECONTENT"),
+            "pressing `:` must not repaint the pane with the file magit was \
+             opened from; got:\n{during}",
+        );
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            magit,
+            "and the pane must still be committed to magit — `:` ran \
+             `dismiss_popup`, which pops the `prev_pane_for_popup` stash \
+             `open_synthetic_buffer` left for magit's `q` and reassigns \
+             `pane.buffer_id` to the origin",
+        );
+
+        // The second half of the report: after `<Esc>` the modeline named the
+        // origin file while the content was still magit's — the pane and the
+        // active document disagreeing.
+        app.apply(Action::CommandLineCancel);
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            app.editor.document_buffer_id,
+            "after `<Esc>` the pane and the active document must name the \
+             same buffer; disagreement is what interleaves magit's text with \
+             the other buffer's and survives a redraw",
+        );
+        assert_eq!(
+            app.editor.document_buffer_id, magit,
+            "and both must be magit — the buffer `:` was opened from",
+        );
+    }
+
     /// Reported from real use (2026-08-03): `C-c f d` to see a file's
     /// diff, then `q` to close it — and the file comes back with its
     /// line numbers gone.
@@ -756,7 +849,7 @@ mod confirm_seeding {
         );
         let picker = app.editor.picker.as_ref().expect("transient opened");
         assert!(
-            picker.transient_state.get("file").is_none(),
+            !picker.transient_state.contains_key("file"),
             "nothing was carried, so nothing should be seeded"
         );
     }

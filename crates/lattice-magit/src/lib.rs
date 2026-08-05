@@ -2247,6 +2247,31 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Stash everything but leave the index staged",
     );
     reg("action:magit-global-stash-staged", "Stash only the staged changes");
+    // MG.42-E2: composite operations.
+    reg(
+        "action:magit-global-stash-snapshot",
+        "Stash everything and put it straight back — a restore point that costs nothing",
+    );
+    reg(
+        "action:magit-global-stash-snapshot-index",
+        "Snapshot the staged changes without disturbing the working tree",
+    );
+    reg(
+        "action:magit-global-stash-snapshot-worktree",
+        "Snapshot the working tree without disturbing the index",
+    );
+    reg(
+        "action:magit-global-merge-absorb",
+        "Merge a branch and delete it (asks which)",
+    );
+    reg(
+        "action:magit-commit-instant-fixup",
+        "Record a fixup! for a commit and fold it in immediately",
+    );
+    reg(
+        "action:magit-commit-instant-squash",
+        "Record a squash! for a commit and fold it in immediately",
+    );
 
     // MG.41c: magit's destination rows. The op is the same each time —
     // only where it sends or takes refs differs — so these share one
@@ -4604,7 +4629,7 @@ mod tests {
             // MG.41c: push/pull/fetch each replaced ONE run row with
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
-            72,
+            78,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4629,7 +4654,7 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more.
-            75,
+            81,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

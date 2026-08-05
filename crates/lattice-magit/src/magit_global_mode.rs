@@ -393,6 +393,28 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         RemoteOp::STASH_KEEP_INDEX
     );
     remote_op!("action:magit-global-stash-staged", RemoteOp::STASH_STAGED);
+    // MG.42-E2: the snapshots. No input, so they fire directly.
+    macro_rules! snapshot_op {
+        ($action_name:expr, $label:expr, $extra:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    Some(spawn_git_sequence($label, stash_snapshot_steps($extra)))
+                }),
+            });
+        };
+    }
+    snapshot_op!("action:magit-global-stash-snapshot", "stash snapshot", &[]);
+    snapshot_op!(
+        "action:magit-global-stash-snapshot-index",
+        "stash snapshot (index)",
+        &["--staged"]
+    );
+    snapshot_op!(
+        "action:magit-global-stash-snapshot-worktree",
+        "stash snapshot (worktree)",
+        &["--keep-index"]
+    );
     // MG.23b: the two repo-wide index rows magit puts on `S` / `U`.
     // Both need no target — they act on the whole index — which is why
     // they land before the commit-acting rows (`A` / `_` / `O`), whose
@@ -683,6 +705,24 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
     // MG.41e: merge / tag variants. Each is the same prompt-then-finish
     // pair as its sibling; only the argv the finish half builds differs.
+    macro_rules! prompted_op_seq {
+        ($entry:expr, $prompt:expr, $finish:expr, $steps:expr, $label:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let value = ctx.prompt_value?.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    Some(spawn_git_sequence($label, $steps(value)))
+                }),
+            });
+        };
+    }
     macro_rules! prompted_op {
         ($entry:expr, $prompt:expr, $finish:expr, $argv:expr, $what:expr) => {
             contributions.push(ActionHandlerContribution {
@@ -714,6 +754,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-merge-squash-finish",
         merge_squash_argv,
         "merge --squash"
+    );
+    // MG.42-E2: absorb — merge then delete, as one operation.
+    prompted_op_seq!(
+        "action:magit-global-merge-absorb",
+        "Absorb branch: ",
+        "action:magit-global-merge-absorb-finish",
+        merge_absorb_steps,
+        "merge --absorb"
     );
     prompted_op!(
         "action:magit-global-tag-delete",
@@ -2418,6 +2466,59 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or_default().trim().to_string()
 }
 
+/// MG.42-E2: one step of a composite operation.
+pub struct GitStep {
+    /// Names this step in a failure report — "fixup commit", not the
+    /// whole argv, which is too long for a notification.
+    pub name: &'static str,
+    pub argv: Vec<String>,
+}
+
+/// MG.42-E2: run several git invocations in order as ONE operation.
+///
+/// Two properties, both load-bearing:
+///
+/// 1. **Aborts on the first failure.** Several magit operations are
+///    compositions where a half-done result is worse than none — a
+///    snapshot whose `stash apply` never ran is silently just a stash,
+///    and the user's working tree is empty when they expected it
+///    restored. Continuing past a failed step manufactures exactly
+///    that.
+/// 2. **Reports once.** One logical operation produces one
+///    `BackgroundTaskFinished`, naming the step that failed rather
+///    than the whole sequence. Per-step reporting would turn a
+///    two-command operation into two notifications, which is how a
+///    notification surface becomes noise.
+pub fn spawn_git_sequence(label: &'static str, steps: Vec<GitStep>) -> Effect {
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let shown = steps
+        .first()
+        .map(|s| format!("git {}", s.argv.join(" ")))
+        .unwrap_or_else(|| label.to_string());
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let mut last = String::new();
+            for step in steps {
+                match run_remote_op(&workdir, &step.argv) {
+                    Ok(out) => last = out,
+                    // The step name, not the argv: a notification is one
+                    // line and "fixup commit failed" localises the
+                    // problem better than a truncated command.
+                    Err(e) => return Err(format!("{}: {e}", step.name)),
+                }
+            }
+            Ok(last)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        finish_task(label, result);
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {shown}"),
+    }
+}
+
 pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let shown = format!("git {}", argv.join(" "));
@@ -2968,6 +3069,78 @@ pub(crate) fn merge_squash_argv(branch: &str) -> Vec<String> {
     vec!["merge".into(), "--squash".into(), branch.to_string()]
 }
 
+/// MG.42-E2: magit's `Z` / `I` / `W` snapshots — stash, then put it
+/// straight back.
+///
+/// The point is a restore point that costs nothing: the stack gets an
+/// entry, the working tree is untouched. `apply`, never `pop` — a pop
+/// would remove the very entry the snapshot exists to create.
+pub(crate) fn stash_snapshot_steps(extra: &[&str]) -> Vec<GitStep> {
+    let mut push: Vec<String> = vec!["stash".into(), "push".into()];
+    push.extend(extra.iter().map(|s| (*s).to_string()));
+    vec![
+        GitStep {
+            name: "stash",
+            argv: push,
+        },
+        GitStep {
+            name: "restore working tree",
+            argv: vec!["stash".into(), "apply".into()],
+        },
+    ]
+}
+
+/// MG.42-E2: magit's `F` / `S` — record a `fixup!` / `squash!` commit
+/// and immediately fold it in.
+///
+/// The rebase base is `<commit>~1`: the fixup has to be replayed
+/// alongside the commit it targets, so the rebase must start one
+/// before it. `--autostash` because the user is very often
+/// mid-edit — without it an instant fixup fails on a dirty tree,
+/// which is precisely when people reach for it.
+pub(crate) fn instant_squash_steps(kind: &'static str, commit: &str) -> Vec<GitStep> {
+    vec![
+        GitStep {
+            name: "record the marker commit",
+            argv: vec![
+                "commit".into(),
+                "--no-edit".into(),
+                format!("--{kind}"),
+                commit.to_string(),
+            ],
+        },
+        GitStep {
+            name: "autosquash",
+            argv: vec![
+                "rebase".into(),
+                "-i".into(),
+                "--autosquash".into(),
+                "--autostash".into(),
+                format!("{commit}~1"),
+            ],
+        },
+    ]
+}
+
+/// MG.42-E2: magit's `a` absorb — merge a branch, then delete it.
+///
+/// `-d`, never `-D`: git refuses to delete a branch that is not fully
+/// merged, so if the merge did not actually take, the branch survives.
+/// A forced delete here would destroy the branch precisely in the case
+/// where the merge failed.
+pub(crate) fn merge_absorb_steps(branch: &str) -> Vec<GitStep> {
+    vec![
+        GitStep {
+            name: "merge",
+            argv: merge_argv(branch),
+        },
+        GitStep {
+            name: "delete the merged branch",
+            argv: vec!["branch".into(), "-d".into(), branch.to_string()],
+        },
+    ]
+}
+
 /// MG.41e: magit's `k` — delete a tag.
 ///
 /// Local only. Deleting the remote copy is `push --delete`, a
@@ -3300,6 +3473,13 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
         // accepts the message unchanged — the same limitation, and the
         // same reason, as `run_rebase`'s `GIT_EDITOR`.
         .env("GIT_EDITOR", "true")
+        // MG.42-E2: the todo-list editor, distinct from `GIT_EDITOR`.
+        // `rebase -i --autosquash` opens the generated todo list; `true`
+        // accepts it unchanged, which is exactly what autosquash means
+        // — git has already ordered the fixup!/squash! lines. Without
+        // this an instant-fixup hangs the same way `--continue` would
+        // without `GIT_EDITOR`.
+        .env("GIT_SEQUENCE_EDITOR", "true")
         .current_dir(workdir)
         .output();
     match output {

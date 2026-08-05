@@ -98,7 +98,7 @@ The file's *presence* is the state, so there is nothing to parse and
 nothing to cache: the probe cannot go stale behind git's back the way a
 remembered flag would.
 
-## E2 — a multi-step runner
+## E2 — a multi-step runner ✅
 
 Several operations are *compositions*:
 
@@ -123,6 +123,32 @@ names the failed step; a clean run reports once, not N times.
 
 **Unblocks:** commit `F` / `S`, stash `Z` / `I` / `W`, branch `s` /
 `S`, merge `a`.
+
+**Landed.** `spawn_git_sequence(label, Vec<GitStep>)` plus the step
+builders, and five rows: stash `Z`/`I`/`W`, commit `F`/`S`, merge `a`.
+Branch `s`/`S` still wait on E3 (they need a name).
+
+Three correctness details the tests pin, each a way the operation
+could look right and be wrong:
+
+- **A snapshot `apply`s, never `pop`s.** A pop removes the very stack
+  entry the snapshot exists to create — leaving neither a restore
+  point nor a changed tree.
+- **Instant fixup rebases from `<commit>~1`, not `<commit>`.** The
+  fixup has to be replayed *alongside* its target, so the rebase must
+  start one before it; rebasing onto the commit itself leaves the
+  marker unmerged and the operation silently pointless. `--autostash`
+  because an instant fixup is reached mid-edit, which is exactly when
+  a dirty-tree failure is least welcome.
+- **Absorb deletes with `-d`, never `-D`.** Git refuses `-d` on a
+  branch that is not fully merged, so a failed merge leaves the branch
+  intact; `-D` would destroy it precisely when the merge did not take.
+
+`run_remote_op` also gained `GIT_SEQUENCE_EDITOR=true`, the todo-list
+peer of the `GIT_EDITOR` it already set. `rebase -i --autosquash` opens
+the generated todo list, and accepting it unchanged IS autosquash —
+git has already ordered the lines. Without it an instant fixup hangs
+the same way `--continue` would without `GIT_EDITOR`.
 
 ## E3 — a second input
 

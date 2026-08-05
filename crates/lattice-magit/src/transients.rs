@@ -299,6 +299,21 @@ const COMMIT_ROWS: &[TransientRow] = &[
         action: "action:magit-commit-squash",
         placeholder: "commit_squash_op",
     },
+    // MG.42-E2: magit's instant variants — record AND fold in.
+    TransientRow {
+        key: "F",
+        label: "instant fixup",
+        doc: "Record a fixup! and fold it in immediately",
+        action: "action:magit-commit-instant-fixup",
+        placeholder: "commit_instant_fixup_op",
+    },
+    TransientRow {
+        key: "S",
+        label: "instant squash",
+        doc: "Record a squash! and fold it in immediately",
+        action: "action:magit-commit-instant-squash",
+        placeholder: "commit_instant_squash_op",
+    },
 ];
 
 const STASH_ROWS: &[TransientRow] = &[
@@ -330,6 +345,29 @@ const STASH_ROWS: &[TransientRow] = &[
         doc: "Stash everything but leave the index staged",
         action: "action:magit-global-stash-keep-index",
         placeholder: "stash_keep_index_op",
+    },
+    // MG.42-E2: magit's snapshots — a restore point that leaves the
+    // working tree exactly as it was.
+    TransientRow {
+        key: "Z",
+        label: "snapshot",
+        doc: "Stash everything and put it straight back",
+        action: "action:magit-global-stash-snapshot",
+        placeholder: "stash_snapshot_op",
+    },
+    TransientRow {
+        key: "I",
+        label: "snapshot index",
+        doc: "Snapshot the staged changes, leaving the working tree alone",
+        action: "action:magit-global-stash-snapshot-index",
+        placeholder: "stash_snapshot_index_op",
+    },
+    TransientRow {
+        key: "W",
+        label: "snapshot worktree",
+        doc: "Snapshot the working tree, leaving the index alone",
+        action: "action:magit-global-stash-snapshot-worktree",
+        placeholder: "stash_snapshot_worktree_op",
     },
     // MG.41d: magit's use rows. These reuse the SAME actions the stash
     // buffer's chords fire — a menu path to an operation must not grow
@@ -558,6 +596,14 @@ const MERGE_ROWS: &[TransientRow] = &[
         doc: "Take the branch's changes as one staged change, with no merge commit",
         action: "action:magit-global-merge-squash",
         placeholder: "merge_squash_op",
+    },
+    // MG.42-E2: merge then delete, as one operation.
+    TransientRow {
+        key: "a",
+        label: "absorb",
+        doc: "Merge a branch and delete it — the delete is refused if the merge did not take",
+        action: "action:magit-global-merge-absorb",
+        placeholder: "merge_absorb_op",
     },
 ];
 
@@ -2643,5 +2689,81 @@ mod sequencer_gate_tests {
     fn gates_default_to_nothing_in_progress() {
         let g = DispatchGates::default();
         assert!(!g.cherry_pick && !g.revert && !g.rebase);
+    }
+}
+
+#[cfg(test)]
+mod sequence_step_tests {
+    use crate::magit_global_mode::{instant_squash_steps, merge_absorb_steps, stash_snapshot_steps};
+
+    /// MG.42-E2: a snapshot APPLIES, never pops. A pop would remove the
+    /// very stack entry the snapshot exists to create, leaving the user
+    /// with neither a restore point nor a changed tree.
+    #[test]
+    fn a_snapshot_applies_rather_than_pops() {
+        let steps = stash_snapshot_steps(&[]);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].argv, vec!["stash", "push"]);
+        assert_eq!(steps[1].argv, vec!["stash", "apply"]);
+        assert!(
+            !steps[1].argv.contains(&"pop".to_string()),
+            "pop would destroy the snapshot it just made",
+        );
+    }
+
+    /// The variants differ only in the push flags.
+    #[test]
+    fn snapshot_variants_pass_their_flags_to_the_push_only() {
+        for extra in [vec!["--staged"], vec!["--keep-index"]] {
+            let steps = stash_snapshot_steps(&extra);
+            assert!(steps[0].argv.contains(&extra[0].to_string()));
+            assert_eq!(steps[1].argv, vec!["stash", "apply"], "restore is unflagged");
+        }
+    }
+
+    /// The rebase base is `<commit>~1`, not `<commit>`.
+    ///
+    /// A fixup must be replayed ALONGSIDE the commit it targets, so the
+    /// rebase has to start one before it. Rebasing onto the commit
+    /// itself would leave the fixup unmerged and the operation silently
+    /// pointless.
+    #[test]
+    fn instant_squash_rebases_from_one_before_the_target() {
+        let steps = instant_squash_steps("fixup", "abc123");
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].argv.contains(&"--fixup".to_string()));
+        assert!(steps[0].argv.contains(&"abc123".to_string()));
+        assert!(
+            steps[1].argv.contains(&"abc123~1".to_string()),
+            "must rebase from one before the target: {:?}",
+            steps[1].argv,
+        );
+        assert!(
+            steps[1].argv.contains(&"--autostash".to_string()),
+            "an instant fixup is reached mid-edit; without autostash it \
+             fails exactly when it is most wanted",
+        );
+    }
+
+    #[test]
+    fn instant_squash_kind_selects_the_marker() {
+        assert!(instant_squash_steps("squash", "x")[0].argv.contains(&"--squash".to_string()));
+        assert!(instant_squash_steps("fixup", "x")[0].argv.contains(&"--fixup".to_string()));
+    }
+
+    /// Absorb deletes with `-d`, never `-D`.
+    ///
+    /// Git refuses `-d` on a branch that is not fully merged, so a
+    /// failed merge leaves the branch intact. `-D` would destroy it in
+    /// exactly the case where the merge did not take.
+    #[test]
+    fn absorb_uses_a_safe_delete() {
+        let steps = merge_absorb_steps("feature");
+        assert_eq!(steps.len(), 2);
+        assert!(steps[1].argv.contains(&"-d".to_string()));
+        assert!(
+            !steps[1].argv.contains(&"-D".to_string()),
+            "a forced delete would destroy the branch when the merge failed",
+        );
     }
 }

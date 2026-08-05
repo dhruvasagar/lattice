@@ -169,6 +169,36 @@ fn commit_op(
     }
 }
 
+/// MG.42-E2: a [`commit_op`] whose work is a SEQUENCE.
+///
+/// Same cursor-then-picker resolution as `commit_op` — the row can be
+/// reached from a buffer with no commit under the cursor — but the
+/// resolved commit feeds a multi-step composition instead of one argv.
+fn commit_sequence_op(
+    action_name: &'static str,
+    ex_command: &'static str,
+    label: &'static str,
+    steps: fn(&str) -> Vec<crate::magit_global_mode::GitStep>,
+) -> lattice_mode::ActionHandlerContribution {
+    lattice_mode::ActionHandlerContribution {
+        action_name,
+        handler: Arc::new(move |ctx: &ActionContext<'_>| {
+            let resolved = crate::buffer_state::view_for(ctx)
+                .and_then(|view| view.commit_at_cursor(ctx.cursor));
+            let Some(commit) = resolved else {
+                return Some(Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec![ex_command.to_string()],
+                });
+            };
+            Some(crate::magit_global_mode::spawn_git_sequence(
+                label,
+                steps(&commit),
+            ))
+        }),
+    }
+}
+
 /// The post-confirmation half of a destructive [`commit_op`].
 fn commit_op_execute(
     action_name: &'static str,
@@ -1027,6 +1057,20 @@ impl Mode for MagitCoreMode {
             commit_op(
                 "action:magit-commit-squash",
                 crate::magit_global_mode::CommitOp::COMMIT_SQUASH,
+            ),
+            // MG.42-E2: magit's `F` / `S` — record the marker commit
+            // AND fold it in, as one operation.
+            commit_sequence_op(
+                "action:magit-commit-instant-fixup",
+                "magit-commit-instant-fixup",
+                "instant fixup",
+                |c| crate::magit_global_mode::instant_squash_steps("fixup", c),
+            ),
+            commit_sequence_op(
+                "action:magit-commit-instant-squash",
+                "magit-commit-instant-squash",
+                "instant squash",
+                |c| crate::magit_global_mode::instant_squash_steps("squash", c),
             ),
             // The execute half of reset --hard, reached only through
             // its confirm. Re-resolves the commit at the cursor rather

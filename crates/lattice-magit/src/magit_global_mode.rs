@@ -363,6 +363,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // fail-fast + log-the-outcome shape fits any one-shot git
     // invocation whose result can't come back synchronously.
     remote_op!("action:magit-global-stash-create", RemoteOp::STASH);
+    // MG.41d: magit's `x` / `i` stash variants — same spawner, different
+    // argv, so they cost a line each rather than a handler each.
+    remote_op!(
+        "action:magit-global-stash-keep-index",
+        RemoteOp::STASH_KEEP_INDEX
+    );
+    remote_op!("action:magit-global-stash-staged", RemoteOp::STASH_STAGED);
     // MG.23b: the two repo-wide index rows magit puts on `S` / `U`.
     // Both need no target — they act on the whole index — which is why
     // they land before the commit-acting rows (`A` / `_` / `O`), whose
@@ -2061,6 +2068,19 @@ impl RemoteOp {
     pub const UNSTAGE_ALL: Self = Self {
         what: "unstage all",
         args: &["reset", "--quiet"],
+        flags: &[],
+    };
+    /// MG.41d: magit's `x` — stash everything but leave the index
+    /// staged, so a partially-staged commit can be tried in isolation.
+    pub const STASH_KEEP_INDEX: Self = Self {
+        what: "stash --keep-index",
+        args: &["stash", "push", "--keep-index"],
+        flags: &[],
+    };
+    /// MG.41d: magit's `i` — stash only what is staged.
+    pub const STASH_STAGED: Self = Self {
+        what: "stash --staged",
+        args: &["stash", "push", "--staged"],
         flags: &[],
     };
     pub const STASH: Self = Self {

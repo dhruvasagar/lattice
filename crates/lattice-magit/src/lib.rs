@@ -2162,6 +2162,11 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Fetch + fast-forward merge from the remote",
     );
     reg("action:magit-global-push", "Push to the remote");
+    reg(
+        "action:magit-global-stash-keep-index",
+        "Stash everything but leave the index staged",
+    );
+    reg("action:magit-global-stash-staged", "Stash only the staged changes");
 
     // MG.41c: magit's destination rows. The op is the same each time —
     // only where it sends or takes refs differs — so these share one
@@ -4503,7 +4508,7 @@ mod tests {
             // MG.41c: push/pull/fetch each replaced ONE run row with
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
-            63,
+            69,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4525,7 +4530,7 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more.
-            66,
+            72,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

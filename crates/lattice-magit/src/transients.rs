@@ -308,6 +308,54 @@ const STASH_ROWS: &[TransientRow] = &[
         action: "action:magit-global-stash",
         placeholder: "stash_op",
     },
+    // MG.41d: magit's other stash-creation variants.
+    TransientRow {
+        key: "i",
+        label: "index",
+        doc: "Stash only the staged changes",
+        action: "action:magit-global-stash-staged",
+        placeholder: "stash_staged_op",
+    },
+    TransientRow {
+        key: "x",
+        label: "keeping index",
+        doc: "Stash everything but leave the index staged",
+        action: "action:magit-global-stash-keep-index",
+        placeholder: "stash_keep_index_op",
+    },
+    // MG.41d: magit's use rows. These reuse the SAME actions the stash
+    // buffer's chords fire — a menu path to an operation must not grow
+    // a second handler with its own idea of the confirm contract, which
+    // is the property `the_commit_rows_reuse_the_chords_actions` pins
+    // for the reset rows.
+    TransientRow {
+        key: "a",
+        label: "apply",
+        doc: "Apply a stash, keeping it on the stack",
+        action: "action:magit-stash-apply",
+        placeholder: "stash_apply_op",
+    },
+    TransientRow {
+        key: "p",
+        label: "pop",
+        doc: "Apply a stash and drop it",
+        action: "action:magit-stash-pop",
+        placeholder: "stash_pop_op",
+    },
+    TransientRow {
+        key: "k",
+        label: "drop",
+        doc: "Delete a stash without applying it — asks first",
+        action: "action:magit-stash-drop",
+        placeholder: "stash_drop_op",
+    },
+    TransientRow {
+        key: "v",
+        label: "show",
+        doc: "Show a stash's diff",
+        action: "action:magit-stash-show",
+        placeholder: "stash_show_op",
+    },
 ];
 
 const SUBTREE_ROWS: &[TransientRow] = &[

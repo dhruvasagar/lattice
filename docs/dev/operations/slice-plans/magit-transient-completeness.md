@@ -271,9 +271,12 @@ it is pinned by a test.
   dance, not a `reset` mode.
 - **Reset `f` a file** — needs a second input (commit AND path), which
   `CommitOp` has no slot for.
-- **Stash** — the largest gap (2 of ~14) and untouched here: the
-  `i`/`w`/`x` variants, the three snapshots, and
-  `a`/`p`/`k`/`b`/`v`.
+- **Stash** — now 8 rows (was 2). `i` staged, `x` keeping index, and
+  the four use rows `a`/`p`/`k`/`v`, which reuse the SAME actions the
+  stash buffer's chords fire rather than growing twins. Still out:
+  `w` worktree-only (needs index preservation git has no single flag
+  for), the three `Z`/`I`/`W` snapshots (stash-then-reapply, so
+  multi-step), and `b` branch (two inputs).
 - **Branch `s` / `S` spin-off / spin-out** — multi-step operations
   (create, move commits, reset the original), not single git calls.
 

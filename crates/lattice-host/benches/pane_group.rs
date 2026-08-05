@@ -13,8 +13,8 @@
 //! - `pane_group_identity_propagation` — 2-pane identity-mapper
 //!   group, `propagate_pane_group_scroll` ticks. Mirrors a
 //!   `:set scrollbind`-style binding. Measures the cost of the
-//!   group walk + buffer-mismatch check + identity-mapper call
-//!   + stashed-scroll write. The propagation runs at the
+//!   group walk + buffer-mismatch check + identity-mapper call +
+//!   stashed-scroll write. The propagation runs at the
 //!   dispatch tail every publish, so this is the per-tick cost
 //!   that two-pane bound users pay.
 //!

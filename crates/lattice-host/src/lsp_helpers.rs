@@ -74,8 +74,8 @@ pub fn symbol_kind_glyph(kind: lattice_lsp::lsp_types::SymbolKind) -> &'static s
     }
 }
 
-/// 5.5.LSP.5: project an LSP `SymbolInformation` (legacy outline
-/// + workspace-symbol shape) into a `SymbolRow`. Returns `None`
+/// 5.5.LSP.5: project an LSP `SymbolInformation` (legacy outline +
+/// workspace-symbol shape) into a `SymbolRow`. Returns `None`
 /// when the location's URI doesn't resolve to a path.
 pub fn symbol_information_to_row(
     sym: &lattice_lsp::lsp_types::SymbolInformation,

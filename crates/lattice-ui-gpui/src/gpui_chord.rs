@@ -420,5 +420,4 @@ mod tests {
         assert_eq!(chord.key, KeyKind::Char('6'));
         assert!(chord.mods.is_empty(), "a bare digit must be modifier-free");
     }
-
 }

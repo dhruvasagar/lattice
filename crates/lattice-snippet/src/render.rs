@@ -216,8 +216,10 @@ mod tests {
     #[test]
     fn variable_resolves_via_context() {
         let body = parse::parse("$TM_FILENAME").unwrap();
-        let mut ctx = VariableContext::default();
-        ctx.filename = Some("foo.rs".into());
+        let ctx = VariableContext {
+            filename: Some("foo.rs".into()),
+            ..Default::default()
+        };
         let r = render(&body, &ctx);
         assert_eq!(r.text, "foo.rs");
     }

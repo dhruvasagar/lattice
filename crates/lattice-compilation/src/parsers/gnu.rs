@@ -86,39 +86,29 @@ fn short_re() -> Option<&'static Regex> {
 /// `<CR>`-jump path (which needs only the location, not severity /
 /// message).
 pub(crate) fn match_location(line: &str) -> Option<(PathBuf, u32, u32)> {
-    if let Some(re) = full_re() {
-        if let Ok(Some(caps)) = re.captures(line) {
-            if let (Some(path), Some(l), Some(c)) = (caps.get(1), caps.get(2), caps.get(3)) {
-                if let (Some(line0), Some(col0)) =
-                    (parse_1based(l.as_str()), parse_1based(c.as_str()))
-                {
-                    return Some((PathBuf::from(path.as_str()), line0, col0));
-                }
-            }
-        }
+    if let Some(re) = full_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(l), Some(c)) = (caps.get(1), caps.get(2), caps.get(3))
+        && let (Some(line0), Some(col0)) = (parse_1based(l.as_str()), parse_1based(c.as_str()))
+    {
+        return Some((PathBuf::from(path.as_str()), line0, col0));
     }
-    if let Some(re) = short_re() {
-        if let Ok(Some(caps)) = re.captures(line) {
-            if let (Some(path), Some(l)) = (caps.get(1), caps.get(2)) {
-                if is_path_like(path.as_str()) {
-                    if let Some(line0) = parse_1based(l.as_str()) {
-                        return Some((PathBuf::from(path.as_str()), line0, 0));
-                    }
-                }
-            }
-        }
+    if let Some(re) = short_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(l)) = (caps.get(1), caps.get(2))
+        && is_path_like(path.as_str())
+        && let Some(line0) = parse_1based(l.as_str())
+    {
+        return Some((PathBuf::from(path.as_str()), line0, 0));
     }
     // CM.7: grep no-space form (`path:line:text`), file-like path only.
-    if let Some(re) = grep_re() {
-        if let Ok(Some(caps)) = re.captures(line) {
-            if let (Some(path), Some(l)) = (caps.get(1), caps.get(2)) {
-                if is_file_like(path.as_str()) {
-                    if let Some(line0) = parse_1based(l.as_str()) {
-                        return Some((PathBuf::from(path.as_str()), line0, 0));
-                    }
-                }
-            }
-        }
+    if let Some(re) = grep_re()
+        && let Ok(Some(caps)) = re.captures(line)
+        && let (Some(path), Some(l)) = (caps.get(1), caps.get(2))
+        && is_file_like(path.as_str())
+        && let Some(line0) = parse_1based(l.as_str())
+    {
+        return Some((PathBuf::from(path.as_str()), line0, 0));
     }
     None
 }
@@ -163,86 +153,78 @@ impl Default for GnuStyleParser {
 impl CompilationParser for GnuStyleParser {
     fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
         // Full form: path:line:col: severity: message.
-        if let Some(re) = full_re() {
-            if let Ok(Some(caps)) = re.captures(line) {
-                if let (Some(path), Some(l), Some(c), Some(sev), Some(msg)) = (
-                    caps.get(1),
-                    caps.get(2),
-                    caps.get(3),
-                    caps.get(4),
-                    caps.get(5),
-                ) {
-                    match (parse_1based(l.as_str()), parse_1based(c.as_str())) {
-                        (Some(line0), Some(col0)) => {
-                            return vec![ErrorEntry {
-                                path: PathBuf::from(path.as_str()),
-                                line: line0,
-                                col: col0,
-                                severity: gnu_severity(sev.as_str()),
-                                message: msg.as_str().to_string(),
-                            }];
-                        }
-                        _ => {
-                            tracing::debug!(
-                                diagnostic = line,
-                                "gnu parser: unparseable line/col; skipping"
-                            );
-                            return Vec::new();
-                        }
-                    }
+        if let Some(re) = full_re()
+            && let Ok(Some(caps)) = re.captures(line)
+            && let (Some(path), Some(l), Some(c), Some(sev), Some(msg)) = (
+                caps.get(1),
+                caps.get(2),
+                caps.get(3),
+                caps.get(4),
+                caps.get(5),
+            )
+        {
+            match (parse_1based(l.as_str()), parse_1based(c.as_str())) {
+                (Some(line0), Some(col0)) => {
+                    return vec![ErrorEntry {
+                        path: PathBuf::from(path.as_str()),
+                        line: line0,
+                        col: col0,
+                        severity: gnu_severity(sev.as_str()),
+                        message: msg.as_str().to_string(),
+                    }];
+                }
+                _ => {
+                    tracing::debug!(
+                        diagnostic = line,
+                        "gnu parser: unparseable line/col; skipping"
+                    );
+                    return Vec::new();
                 }
             }
         }
 
         // Short form: path:line: message (space required; no column, Info).
-        if let Some(re) = short_re() {
-            if let Ok(Some(caps)) = re.captures(line) {
-                if let (Some(path), Some(l), Some(msg)) = (caps.get(1), caps.get(2), caps.get(3)) {
-                    if !is_path_like(path.as_str()) {
-                        // All-numeric path → a `hh:mm: text` timestamp,
-                        // not a location. Skip.
-                        return Vec::new();
-                    }
-                    match parse_1based(l.as_str()) {
-                        Some(line0) => {
-                            return vec![ErrorEntry {
-                                path: PathBuf::from(path.as_str()),
-                                line: line0,
-                                col: 0,
-                                severity: ErrorSeverity::Info,
-                                message: msg.as_str().to_string(),
-                            }];
-                        }
-                        None => {
-                            tracing::debug!(
-                                diagnostic = line,
-                                "gnu parser: unparseable line; skipping"
-                            );
-                            return Vec::new();
-                        }
-                    }
+        if let Some(re) = short_re()
+            && let Ok(Some(caps)) = re.captures(line)
+            && let (Some(path), Some(l), Some(msg)) = (caps.get(1), caps.get(2), caps.get(3))
+        {
+            if !is_path_like(path.as_str()) {
+                // All-numeric path → a `hh:mm: text` timestamp,
+                // not a location. Skip.
+                return Vec::new();
+            }
+            match parse_1based(l.as_str()) {
+                Some(line0) => {
+                    return vec![ErrorEntry {
+                        path: PathBuf::from(path.as_str()),
+                        line: line0,
+                        col: 0,
+                        severity: ErrorSeverity::Info,
+                        message: msg.as_str().to_string(),
+                    }];
+                }
+                None => {
+                    tracing::debug!(diagnostic = line, "gnu parser: unparseable line; skipping");
+                    return Vec::new();
                 }
             }
         }
 
         // CM.7: grep no-space form (`path:line:text`). Gated on a
         // file-like path so timestamps never become entries.
-        if let Some(re) = grep_re() {
-            if let Ok(Some(caps)) = re.captures(line) {
-                if let (Some(path), Some(l), Some(msg)) = (caps.get(1), caps.get(2), caps.get(3)) {
-                    if is_file_like(path.as_str()) {
-                        if let Some(line0) = parse_1based(l.as_str()) {
-                            return vec![ErrorEntry {
-                                path: PathBuf::from(path.as_str()),
-                                line: line0,
-                                col: 0,
-                                severity: ErrorSeverity::Info,
-                                message: msg.as_str().to_string(),
-                            }];
-                        }
-                    }
-                }
-            }
+        if let Some(re) = grep_re()
+            && let Ok(Some(caps)) = re.captures(line)
+            && let (Some(path), Some(l), Some(msg)) = (caps.get(1), caps.get(2), caps.get(3))
+            && is_file_like(path.as_str())
+            && let Some(line0) = parse_1based(l.as_str())
+        {
+            return vec![ErrorEntry {
+                path: PathBuf::from(path.as_str()),
+                line: line0,
+                col: 0,
+                severity: ErrorSeverity::Info,
+                message: msg.as_str().to_string(),
+            }];
         }
 
         Vec::new()

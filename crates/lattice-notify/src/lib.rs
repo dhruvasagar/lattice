@@ -337,10 +337,10 @@ impl NotificationStore {
         action: NotificationAction,
     ) -> NotificationId {
         let id = self.post(level, text);
-        if let Ok(mut v) = self.inner.lock() {
-            if let Some(slot) = v.iter_mut().find(|n| n.id == id) {
-                slot.actions.push(action);
-            }
+        if let Ok(mut v) = self.inner.lock()
+            && let Some(slot) = v.iter_mut().find(|n| n.id == id)
+        {
+            slot.actions.push(action);
         }
         self.version.fetch_add(1, Ordering::Release);
         id
@@ -609,7 +609,10 @@ fn install_background_task_subscriber(
                     store.post(NotificationLevel::Info, text);
                 }
                 TaskOutcome::Failed { message } => {
-                    store.post(NotificationLevel::Error, format!("{label} failed: {message}"));
+                    store.post(
+                        NotificationLevel::Error,
+                        format!("{label} failed: {message}"),
+                    );
                 }
             }
         }

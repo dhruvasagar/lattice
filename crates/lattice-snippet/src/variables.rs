@@ -329,16 +329,20 @@ mod tests {
 
     #[test]
     fn tm_filename_resolves() {
-        let mut ctx = VariableContext::default();
-        ctx.filename = Some("foo.rs".into());
+        let ctx = VariableContext {
+            filename: Some("foo.rs".into()),
+            ..Default::default()
+        };
         assert_eq!(ctx.resolve("TM_FILENAME"), Some("foo.rs".into()));
         assert_eq!(ctx.resolve("TM_FILENAME_BASE"), Some("foo".into()));
     }
 
     #[test]
     fn tm_line_number_is_one_based() {
-        let mut ctx = VariableContext::default();
-        ctx.line_index = Some(42);
+        let ctx = VariableContext {
+            line_index: Some(42),
+            ..Default::default()
+        };
         assert_eq!(ctx.resolve("TM_LINE_INDEX"), Some("42".into()));
         assert_eq!(ctx.resolve("TM_LINE_NUMBER"), Some("43".into()));
     }
@@ -376,8 +380,10 @@ mod tests {
 
     #[test]
     fn fixed_random_pins_random_variables() {
-        let mut ctx = VariableContext::default();
-        ctx.fixed_random = Some(123_456_789);
+        let ctx = VariableContext {
+            fixed_random: Some(123_456_789),
+            ..Default::default()
+        };
         // Modulo 1_000_000 then zero-padded to 6 digits.
         assert_eq!(ctx.resolve("RANDOM"), Some("456789".into()));
         // Hex variant -- low 6 hex digits.
@@ -391,8 +397,10 @@ mod tests {
 
     #[test]
     fn uuid_resolves_to_36_char_dashed_string() {
-        let mut ctx = VariableContext::default();
-        ctx.fixed_random = Some(0x12345678);
+        let ctx = VariableContext {
+            fixed_random: Some(0x12345678),
+            ..Default::default()
+        };
         let id = ctx.resolve("UUID").unwrap();
         assert_eq!(id.len(), 36);
         assert_eq!(id.matches('-').count(), 4);

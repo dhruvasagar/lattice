@@ -2205,15 +2205,15 @@ impl Element for EditorElement {
                 CursorShape::Block => {
                     let cell = Bounds::new(origin, size(advance, row_height));
                     window.paint_quad(fill(cell, rgb(self.theme.cursor_background)));
-                    if let Some(shaped) = &prepaint.shaped_cursor_char {
-                        if let Err(err) = shaped.paint(origin, row_height, window, cx) {
-                            tracing::warn!(
-                                target: "lattice_gpui::editor_element",
-                                pane = self.pane_idx,
-                                error = ?err,
-                                "cursor char ShapedLine::paint failed"
-                            );
-                        }
+                    if let Some(shaped) = &prepaint.shaped_cursor_char
+                        && let Err(err) = shaped.paint(origin, row_height, window, cx)
+                    {
+                        tracing::warn!(
+                            target: "lattice_gpui::editor_element",
+                            pane = self.pane_idx,
+                            error = ?err,
+                            "cursor char ShapedLine::paint failed"
+                        );
                     }
                 }
                 CursorShape::Bar => {

@@ -306,23 +306,21 @@ fn merge_three_way(
         // overlapping next hunk.
         loop {
             let mut extended = false;
-            if let Some(h) = local_hunks.get(li) {
-                if h.ranges[0].start < union_base.end {
-                    union_base =
-                        LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
-                    taken_local.push(li);
-                    li += 1;
-                    extended = true;
-                }
+            if let Some(h) = local_hunks.get(li)
+                && h.ranges[0].start < union_base.end
+            {
+                union_base = LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
+                taken_local.push(li);
+                li += 1;
+                extended = true;
             }
-            if let Some(h) = remote_hunks.get(ri) {
-                if h.ranges[0].start < union_base.end {
-                    union_base =
-                        LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
-                    taken_remote.push(ri);
-                    ri += 1;
-                    extended = true;
-                }
+            if let Some(h) = remote_hunks.get(ri)
+                && h.ranges[0].start < union_base.end
+            {
+                union_base = LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
+                taken_remote.push(ri);
+                ri += 1;
+                extended = true;
             }
             if !extended {
                 break;

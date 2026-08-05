@@ -476,7 +476,7 @@ mod tests {
             Effect::Confirm {
                 prompt,
                 yes_action,
-                args,
+                args: _,
             } => {
                 assert_eq!(prompt, "Drop stash@{2}?");
                 assert_eq!(yes_action, "action:magit-stash-drop-execute");

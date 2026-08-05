@@ -379,7 +379,7 @@ impl DiffOverlayVirtualRowProvider {
             let (baseline_range, current_anchor) = match hunk.kind {
                 HunkKind::Remove | HunkKind::Change | HunkKind::Conflict => {
                     let b = match hunk.ranges.first() {
-                        Some(r) if r.len() > 0 => *r,
+                        Some(r) if !r.is_empty() => *r,
                         _ => continue,
                     };
                     let anchor = hunk
@@ -483,8 +483,8 @@ fn render_baseline_line(
             let style = spans
                 .iter()
                 .find(|s| {
-                    let start = s.start as usize;
-                    let end = s.end as usize;
+                    let start = s.start;
+                    let end = s.end;
                     start <= byte_idx && byte_idx < end
                 })
                 .map(|s| s.style)

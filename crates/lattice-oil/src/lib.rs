@@ -82,8 +82,8 @@ impl OilBuffer {
     /// Replace the listing with `dir`'s contents in-place.
     /// Does NOT update [`OilDir`] -- the caller does that after
     /// a successful return, so the post-mutation sync is at
-    /// one App-side chokepoint (`App::set_oil_dir`). Cursor
-    /// + scroll reset to origin so the next motion starts
+    /// one App-side chokepoint (`App::set_oil_dir`). Cursor +
+    /// scroll reset to origin so the next motion starts
     /// fresh.
     ///
     /// Replaces what was the `navigate_into` API. There's no

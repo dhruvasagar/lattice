@@ -27,8 +27,8 @@
 //!   only **one** of them watches the buffer that gets poked.
 //!   Backs the §3.4 "cost per edit O(1 + actual dependents),
 //!   independent of total registered session count" claim
-//!   directly. The cost should stay flat (one HashMap lookup
-//!   + one poke) regardless of N. This is the production case
+//!   directly. The cost should stay flat (one HashMap lookup +
+//!   one poke) regardless of N. This is the production case
 //!   when project-wide diff opens 1000 sessions over 1000
 //!   different files but only one is being edited.
 //!
@@ -94,7 +94,7 @@ fn mutate_a_few_lines(rope: &Rope, n: u32) -> Rope {
         .into_iter()
         .enumerate()
         .map(|(i, l)| {
-            if (i as u32) % stride == 0 {
+            if (i as u32).is_multiple_of(stride) {
                 let mut m = l;
                 if !m.is_empty() {
                     m.replace_range(0..1, "X");

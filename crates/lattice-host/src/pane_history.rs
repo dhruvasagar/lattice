@@ -225,9 +225,9 @@ impl PaneBufferHistory {
             .filter(|e| still_live(e.buffer))
             .count();
         self.entries.retain(|e| still_live(e.buffer));
-        self.cursor = surviving_before.saturating_sub(1).min(
-            self.entries.len().saturating_sub(1),
-        );
+        self.cursor = surviving_before
+            .saturating_sub(1)
+            .min(self.entries.len().saturating_sub(1));
     }
 }
 

@@ -93,11 +93,11 @@ impl App {
         }
     }
 
-    /// M.5.3: lsp-mode activated on `buffer_id`. Emits
-    /// `LspBufferAttached` on the editor's event bus so
-    /// subscribers see the gate flip. Wire-level `didOpen` is
-    /// already driven by the `attach_driver` subscribing to
-    /// `Event::DocumentOpened` from the file-open path.
+    // M.5.3: lsp-mode activated on `buffer_id`. Emits
+    // `LspBufferAttached` on the editor's event bus so
+    // subscribers see the gate flip. Wire-level `didOpen` is
+    // already driven by the `attach_driver` subscribing to
+    // `Event::DocumentOpened` from the file-open path.
     // Phase 3 removed `on_lsp_mode_activated` /
     // `_deactivated`. The work they did is owned by the mode
     // now:

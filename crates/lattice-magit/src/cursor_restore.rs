@@ -160,10 +160,9 @@ pub(crate) fn restore_position(text: &str, restore: &HunkRestore) -> Option<Posi
 /// The row the anchor names, or `None` if the buffer no longer has it.
 fn anchor_row(lines: &[&str], anchor: &RestoreAnchor) -> Option<usize> {
     match anchor {
-        RestoreAnchor::DiffHeader { path } => lines
-            .iter()
-            .position(|l| is_file_header_for(l, path))
-            .map(|i| i),
+        RestoreAnchor::DiffHeader { path } => {
+            lines.iter().position(|l| is_file_header_for(l, path))
+        }
         RestoreAnchor::StatusEntry { path, staged } => {
             let want_staged = *staged;
             let mut in_staged_section = false;

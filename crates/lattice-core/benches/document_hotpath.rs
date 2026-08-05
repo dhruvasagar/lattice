@@ -77,10 +77,10 @@ fn viewport_walk(c: &mut Criterion) {
                 let mut chars = 0usize;
                 for row in 0..50u32 {
                     let line_idx = start + row;
-                    if line_idx < line_count {
-                        if let Some(s) = buf.line(line_idx) {
-                            chars += s.len();
-                        }
+                    if line_idx < line_count
+                        && let Some(s) = buf.line(line_idx)
+                    {
+                        chars += s.len();
                     }
                 }
                 let _ = black_box(d.selections());

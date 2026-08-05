@@ -281,7 +281,7 @@ pub(super) async fn settle_mode(app: &mut App, mode: &str) -> bool {
         a.editor
             .active_modes
             .get(&a.editor.document_buffer_id)
-            .is_some_and(|m| m.is_active(id.clone()))
+            .is_some_and(|m| m.is_active(id))
     })
     .await
 }

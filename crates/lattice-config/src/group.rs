@@ -254,8 +254,8 @@ impl OptionGroup for Search {
         "Project-search options: `:search` clustering, context lines, scan limits.";
 }
 
-/// Snippet-engine options. SN.3b (2026-06-14): `snippet.activation`
-/// + `snippet.languages` are declared by `SnippetMode` in
+/// Snippet-engine options. SN.3b (2026-06-14): `snippet.activation` +
+/// `snippet.languages` are declared by `SnippetMode` in
 /// `lattice-snippet`; this group is the customize/listing umbrella
 /// (`:customize snippet`). Same shape as `Search` above — group
 /// here, options in the owning mode's crate.
@@ -293,8 +293,7 @@ impl OptionGroup for Diagnostics {
 pub struct Pane;
 impl OptionGroup for Pane {
     const NAME: &'static str = "pane";
-    const DOC: &'static str =
-        "Per-pane behaviour: the bound on each pane's buffer history trail.";
+    const DOC: &'static str = "Per-pane behaviour: the bound on each pane's buffer history trail.";
 }
 
 /// Plugin observability options: `plugin.trace-level` (the global default

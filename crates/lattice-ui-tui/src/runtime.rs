@@ -694,16 +694,14 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // last is the real driver of present time on a slow pty (vim writes a
         // handful; a whole-viewport rewrite is kilobytes). Clear so we only log
         // frames that actually rendered fresh input (not async repaints).
-        if perf_input {
-            if let (Some(input_at), Some(t0)) = (last_input_at.take(), draw_t0) {
-                let done = Instant::now();
-                eprintln!(
-                    "[perf] input→glyph {:>7.3}ms  (draw {:>7.3}ms, {} bytes)",
-                    done.duration_since(input_at).as_secs_f64() * 1e3,
-                    done.duration_since(t0).as_secs_f64() * 1e3,
-                    PERF_FRAME_BYTES.load(Ordering::Relaxed),
-                );
-            }
+        if perf_input && let (Some(input_at), Some(t0)) = (last_input_at.take(), draw_t0) {
+            let done = Instant::now();
+            eprintln!(
+                "[perf] input→glyph {:>7.3}ms  (draw {:>7.3}ms, {} bytes)",
+                done.duration_since(input_at).as_secs_f64() * 1e3,
+                done.duration_since(t0).as_secs_f64() * 1e3,
+                PERF_FRAME_BYTES.load(Ordering::Relaxed),
+            );
         }
 
         // I.3 (event-driven wake): block until the input reader forwards a

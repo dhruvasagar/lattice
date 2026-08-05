@@ -13,7 +13,7 @@
 //!
 //!   - `clipboard=false`     — pure register write (no mirror).
 //!   - `clipboard=true`      — register write + mirror to the default
-//!                             `FakeClipboard` (instant, in-memory).
+//!     `FakeClipboard` (instant, in-memory).
 //!   - `"+`-register yank    — always mirrors regardless of the option.
 //!
 //! The three rows should sit within noise of each other: the mirror is a

@@ -102,49 +102,49 @@ impl CompilationParser for CargoRustcParser {
         // Location line first: a `-->` under a pending header completes
         // the entry. (Order matters only in that a single line can't be
         // both a header and a location.)
-        if let Some(re) = location_re() {
-            if matches!(re.is_match(line), Ok(true)) {
-                let Some((severity, message)) = self.pending.take() else {
-                    // A `-->` with no preceding error/warning header
-                    // (e.g. a `note:` location) — nothing to emit.
-                    return Vec::new();
-                };
-                match match_location(line) {
-                    Some((path, line0, col0)) => {
-                        return vec![ErrorEntry {
-                            path,
-                            line: line0,
-                            col: col0,
-                            severity,
-                            message,
-                        }];
-                    }
-                    None => {
-                        tracing::debug!(
-                            location = line,
-                            "cargo parser: unparseable line/col in location; skipping"
-                        );
-                    }
-                }
+        if let Some(re) = location_re()
+            && matches!(re.is_match(line), Ok(true))
+        {
+            let Some((severity, message)) = self.pending.take() else {
+                // A `-->` with no preceding error/warning header
+                // (e.g. a `note:` location) — nothing to emit.
                 return Vec::new();
+            };
+            match match_location(line) {
+                Some((path, line0, col0)) => {
+                    return vec![ErrorEntry {
+                        path,
+                        line: line0,
+                        col: col0,
+                        severity,
+                        message,
+                    }];
+                }
+                None => {
+                    tracing::debug!(
+                        location = line,
+                        "cargo parser: unparseable line/col in location; skipping"
+                    );
+                }
             }
+            return Vec::new();
         }
 
         // Header line: prime the pending slot. Overwrites any prior
         // un-located pending (that diagnostic had no location).
-        if let Some(re) = header_re() {
-            if let Ok(Some(caps)) = re.captures(line) {
-                let severity = match caps.get(1).map(|m| m.as_str()) {
-                    Some("error") => ErrorSeverity::Error,
-                    Some("warning") => ErrorSeverity::Warning,
-                    _ => ErrorSeverity::Info,
-                };
-                let message = caps
-                    .get(2)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_default();
-                self.pending = Some((severity, message));
-            }
+        if let Some(re) = header_re()
+            && let Ok(Some(caps)) = re.captures(line)
+        {
+            let severity = match caps.get(1).map(|m| m.as_str()) {
+                Some("error") => ErrorSeverity::Error,
+                Some("warning") => ErrorSeverity::Warning,
+                _ => ErrorSeverity::Info,
+            };
+            let message = caps
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            self.pending = Some((severity, message));
         }
 
         Vec::new()

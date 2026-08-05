@@ -108,8 +108,10 @@ fn entry_as_status_line(
 }
 
 fn build_section_index(repo: &Repository) -> SectionIndex {
-    let mut index = SectionIndex::default();
-    index.branch = current_branch(repo);
+    let mut index = SectionIndex {
+        branch: current_branch(repo),
+        ..Default::default()
+    };
     populate_ahead_behind(repo, &mut index);
     // MG.21f. Costs a stat in the overwhelmingly common case — the
     // git calls behind the progress numbers run only once a bisect is

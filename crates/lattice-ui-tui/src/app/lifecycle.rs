@@ -345,14 +345,14 @@ impl App {
     // — it sat alongside `set_selections_blocking` (its only caller),
     // which migrated host-side in the same slice.
 
-    /// Total area available to pane content in screen-cell units.
-    /// Currently the buffer area = full terminal minus the mode
-    /// line (1 row) and the echo / cmdline area (1 row). Width is
-    /// the terminal width; v1 doesn't track terminal width as
-    /// state, so we estimate from `viewport_height` and a constant
-    /// width that the renderer overrides with the real terminal
-    /// width before navigation. Good enough until B.1.c has the
-    /// per-frame terminal size cached on App.
+    // Total area available to pane content in screen-cell units.
+    // Currently the buffer area = full terminal minus the mode
+    // line (1 row) and the echo / cmdline area (1 row). Width is
+    // the terminal width; v1 doesn't track terminal width as
+    // state, so we estimate from `viewport_height` and a constant
+    // width that the renderer overrides with the real terminal
+    // width before navigation. Good enough until B.1.c has the
+    // per-frame terminal size cached on App.
     // 5.5.H: `buffer_area_rect` App-side delegate retired (zero
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::buffer_area_rect`]).
@@ -388,20 +388,20 @@ impl App {
         }
     }
 
-    /// Adopt a freshly-built help buffer as the active view. Records
-    /// the current document cursor on the position-history ring as
-    /// an `AutoJump` (so `<C-o>` from inside the help buffer returns
-    /// to the document spot the user opened from), then flips
-    /// `active_buffer` to `Help`. Used by every `:describe-*` /
-    /// `:apropos` / `:keymap` entry point.
-    ///
-    /// **Popup vs in-pane.** This is the *popup* path -- the help
-    /// content sits on the App's transient `popup_buffer` slot and
-    /// renders as a centred overlay. The complementary
-    /// [`Self::open_help_in_pane`] path registers the buffer in
-    /// [`BufferRegistry`] and swaps the active pane to it; that's
-    /// what `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` (Phase
-    /// 3) and future persistent help views route through.
+    // Adopt a freshly-built help buffer as the active view. Records
+    // the current document cursor on the position-history ring as
+    // an `AutoJump` (so `<C-o>` from inside the help buffer returns
+    // to the document spot the user opened from), then flips
+    // `active_buffer` to `Help`. Used by every `:describe-*` /
+    // `:apropos` / `:keymap` entry point.
+    //
+    // **Popup vs in-pane.** This is the *popup* path -- the help
+    // content sits on the App's transient `popup_buffer` slot and
+    // renders as a centred overlay. The complementary
+    // [`Self::open_help_in_pane`] path registers the buffer in
+    // [`BufferRegistry`] and swaps the active pane to it; that's
+    // what `:lsp-log` / `:lsp-server-log` / `:lsp-trace-log` (Phase
+    // 3) and future persistent help views route through.
 
     /// Adopt a help buffer into the unified [`BufferRegistry`] and
     /// swap the active pane to it -- the in-pane counterpart to
@@ -439,14 +439,14 @@ impl App {
         self.mutate_editor(move |e| e.seed_empty_document_locals(buffer_id));
     }
 
-    /// M.3.2.c.4 mirror for the active document: copy the App's
-    /// hot-path fields (`syntax`, `last_parsed_text_version`,
-    /// `last_synced_syntax_version`, `folds`) into the buffer-
-    /// locals map for `self.editor.document_buffer_id`. Called from
-    /// every site that mutates those fields so reader-side flips
-    /// (M.3.2.c.4 follow-up + retirement) can resolve mode-owned
-    /// state through `buffer_locals` uniformly across active /
-    /// inactive buffers.
+    // M.3.2.c.4 mirror for the active document: copy the App's
+    // hot-path fields (`syntax`, `last_parsed_text_version`,
+    // `last_synced_syntax_version`, `folds`) into the buffer-
+    // locals map for `self.editor.document_buffer_id`. Called from
+    // every site that mutates those fields so reader-side flips
+    // (M.3.2.c.4 follow-up + retirement) can resolve mode-owned
+    // state through `buffer_locals` uniformly across active /
+    // inactive buffers.
     // 5.5.H: `seed_active_document_locals` retired (zero callers
     // anywhere in the workspace). M.3.2.c.4's reader-side
     // resolution through `buffer_locals` is now driven by the
@@ -494,21 +494,21 @@ impl App {
     // `lattice_host::dispatch::Editor` (private helpers under
     // `save_blocking`). No App-side callers remain.
 
-    /// Run `textDocument/willSaveWaitUntil` against every
-    /// server advertising the request; collect their TextEdits
-    /// and apply them pre-save.
-    ///
-    /// Audit slice 5 / M4: the previous shape iterated servers
-    /// sequentially with a 500ms timeout per server, so total
-    /// UI-thread block was up to `500ms × N`. New shape runs
-    /// every server's request concurrently under one shared
-    /// 500ms budget -- worst-case UI block is bounded at 500ms
-    /// regardless of how many servers are attached. The
-    /// remaining sync `block_on` is queued for the eventual
-    /// two-phase save (kick off → return → drain on completion);
-    /// the bounded-parallel fix covers the audit's actual
-    /// concern (1.5s+ stalls for multi-server saves) without
-    /// the behavioural change of fully-async save.
+    // Run `textDocument/willSaveWaitUntil` against every
+    // server advertising the request; collect their TextEdits
+    // and apply them pre-save.
+    //
+    // Audit slice 5 / M4: the previous shape iterated servers
+    // sequentially with a 500ms timeout per server, so total
+    // UI-thread block was up to `500ms × N`. New shape runs
+    // every server's request concurrently under one shared
+    // 500ms budget -- worst-case UI block is bounded at 500ms
+    // regardless of how many servers are attached. The
+    // remaining sync `block_on` is queued for the eventual
+    // two-phase save (kick off → return → drain on completion);
+    // the bounded-parallel fix covers the audit's actual
+    // concern (1.5s+ stalls for multi-server saves) without
+    // the behavioural change of fully-async save.
     // Phase 5.8.AD.3: `run_will_save_wait_until_blocking` +
     // `fire_did_save_notifications` migrated to
     // `lattice_host::dispatch::Editor` (private helpers under
@@ -2422,7 +2422,7 @@ mod tests {
             data: BufferData::Document(DocumentEntry { id: active, handle }),
             name: Some("*lsp*".to_string()),
         });
-        let pane = a.editor.pane_tree.active().clone();
+        let pane = *a.editor.pane_tree.active();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),
@@ -2516,7 +2516,7 @@ mod tests {
             handle.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(pos, "x")]),
         );
         assert!(handle.dirty(), "fixture must produce a dirty Document");
-        let pane = a.editor.pane_tree.active().clone();
+        let pane = *a.editor.pane_tree.active();
         let label = a.pane_status_label(&pane);
         assert!(
             label.contains("*lsp*"),

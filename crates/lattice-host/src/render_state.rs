@@ -272,8 +272,8 @@ impl RenderState {
     /// Resolve the fold list + `foldenable` that a pane showing
     /// `buffer_id` must render with.
     ///
-    /// Folds are **per-buffer** (a buffer's `zf` / `za` / computed
-    /// + overlay folds are shared by every pane showing it — the
+    /// Folds are **per-buffer** (a buffer's `zf` / `za` / computed +
+    /// overlay folds are shared by every pane showing it — the
     /// user-confirmed model). The bug this fixes: both renderers
     /// previously sourced folds for *every* pane from
     /// `active_document.folds`, so an inactive pane showing a
@@ -633,6 +633,7 @@ pub struct ActiveDocumentRenderState {
     ///   - `<C-n>` → `ExitTerminalInsert`
     ///   - any other chord → encode `\x1c` + the chord's
     ///     normal PTY bytes
+    ///
     /// Cleared by both paths so the next chord starts fresh.
     pub terminal_insert_exit_pending: bool,
     /// 2026-05-25: program basename ("zsh", "bash", "cargo") of
@@ -1429,8 +1430,8 @@ pub struct PaneCellsInputs {
     /// display rows. `false` ⇒ `wrap_width` stays `0` (one
     /// display row per source line — the historical default).
     pub wrap: bool,
-    /// Columns reserved for this pane's gutter (line-number column
-    /// + diagnostic + diff-sign cells). The cells worker subtracts
+    /// Columns reserved for this pane's gutter (line-number column +
+    /// diagnostic + diff-sign cells). The cells worker subtracts
     /// this from `viewport_width` to get the soft-wrap width, so
     /// the stamped `wrap_width` — read by `segment_count` (the
     /// vertical scroll clamp) and both renderers' paint paths —
@@ -1783,6 +1784,7 @@ pub fn static_overlay_state_version(
 ///   `buffer_locals.entry(...).or_default()` / `.insert` / `.remove`
 ///   sites; otherwise stable. Largest savings because the per-entry
 ///   clone deep-walks the typed-map.
+///
 /// (ML.3c retired the `lsp_progress` inner-Arc cache with
 /// `RenderState.lsp.progress`; DR.2 retired the sibling
 /// `pane_highlights_map` cache.)
@@ -1868,10 +1870,10 @@ pub fn cached_or_build<T, F: FnOnce() -> std::sync::Arc<T>>(
     current_version: u64,
     build: F,
 ) -> std::sync::Arc<T> {
-    if let Some((v, arc)) = slot.as_ref() {
-        if *v == current_version {
-            return arc.clone();
-        }
+    if let Some((v, arc)) = slot.as_ref()
+        && *v == current_version
+    {
+        return arc.clone();
     }
     let next = build();
     *slot = Some((current_version, next.clone()));
@@ -1951,7 +1953,7 @@ pub struct CompletionRenderState {
 /// link overlay) — both renderers source the popup's CONTENT, TITLE,
 /// and line-count from the registry Document directly (PU.2 / PU.1b-4b),
 /// so no popup-side `HelpBuffer` snapshot is published.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PopupRenderState {
     pub buffer_id: Option<lattice_core::BufferId>,
     /// PU.1b-4b: the popup's State-A view scroll (= `Editor::popup_scroll`).
@@ -1975,18 +1977,6 @@ pub struct PopupRenderState {
     /// rather than the document's. Fixed once at open; survives
     /// the State A → B transition.
     pub doc_scroll_at_anchor: u32,
-}
-
-impl Default for PopupRenderState {
-    fn default() -> Self {
-        Self {
-            buffer_id: None,
-            scroll: 0,
-            placement: lattice_core::ui::popup::PopupPlacement::default(),
-            anchor: None,
-            doc_scroll_at_anchor: 0,
-        }
-    }
 }
 
 impl PopupRenderState {
@@ -2550,10 +2540,12 @@ mod tests {
     #[test]
     fn active_document_substate_reflects_editor_fields() {
         use lattice_protocol::position::Position;
-        let mut editor = Editor::default();
-        editor.cursor = Position::new(7, 3);
-        editor.scroll = 5;
-        editor.viewport_height = 30;
+        let mut editor = Editor {
+            cursor: Position::new(7, 3),
+            scroll: 5,
+            viewport_height: 30,
+            ..Default::default()
+        };
         editor.publish_render_state();
         let rs = editor.render_state.load();
         assert_eq!(rs.active_document.load().cursor, Position::new(7, 3));
@@ -2589,9 +2581,11 @@ mod tests {
     /// it used to read from `app.editor.X` directly.
     #[test]
     fn active_document_substate_reflects_translator_context_fields() {
-        let mut editor = Editor::default();
-        editor.pending_count = 7;
-        editor.op_count = 3;
+        let mut editor = Editor {
+            pending_count: 7,
+            op_count: 3,
+            ..Default::default()
+        };
         editor.publish_render_state();
         let rs = editor.render_state.load();
         assert_eq!(rs.active_document.load().pending_count, 7);
@@ -2914,8 +2908,10 @@ mod tests {
     #[test]
     fn panes_substate_reflects_pane_tree() {
         use lattice_core::ui::pane::{PaneState, PaneTree, SplitOrientation};
-        let mut editor = Editor::default();
-        editor.pane_tree = crate::versioned::Versioned::new(PaneTree::single(PaneState::default()));
+        let mut editor = Editor {
+            pane_tree: crate::versioned::Versioned::new(PaneTree::single(PaneState::default())),
+            ..Default::default()
+        };
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.pane_tree.set_active(1);
         editor.publish_render_state();
@@ -3015,7 +3011,7 @@ mod tests {
 
         // Buffer A (boot document): give it a closed fold.
         let document = lattice_core::Document::from_text(
-            &(0..10).map(|i| format!("a{i}\n")).collect::<String>(),
+            (0..10).map(|i| format!("a{i}\n")).collect::<String>(),
         );
         let mut editor = Editor::boot(document);
         let a_id = editor.document_buffer_id;
@@ -3119,7 +3115,7 @@ mod tests {
         use lattice_core::ui::pane::SplitOrientation;
 
         let document = lattice_core::Document::from_text(
-            &(0..10).map(|i| format!("a{i}\n")).collect::<String>(),
+            (0..10).map(|i| format!("a{i}\n")).collect::<String>(),
         );
         let mut editor = Editor::boot(document);
         let a_id = editor.document_buffer_id;
@@ -3364,10 +3360,12 @@ mod tests {
     /// version.)
     #[test]
     fn lifecycle_reflects_editor_state() {
-        let mut editor = Editor::default();
-        editor.should_quit = true;
-        editor.pending_redraw = true;
-        editor.terminal_width = Some(120);
+        let mut editor = Editor {
+            should_quit: true,
+            pending_redraw: true,
+            terminal_width: Some(120),
+            ..Default::default()
+        };
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert!(rs.lifecycle.should_quit);
@@ -3448,8 +3446,10 @@ mod tests {
     /// back-compat path landing on the worker's writes.
     #[test]
     fn cells_substate_is_populated_on_publish() {
-        let mut editor = Editor::default();
-        editor.viewport_height = 24;
+        let mut editor = Editor {
+            viewport_height: 24,
+            ..Default::default()
+        };
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         // I.5.2: `cells` is an inner `ArcSwap`; load the snapshot once.

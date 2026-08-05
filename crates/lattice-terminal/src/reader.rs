@@ -2,8 +2,8 @@
 //! published [`TerminalSnapshot`] cell.
 //!
 //! T2 substrate swap (2026-05-25): replaced the homegrown
-//! `TerminalGrid` placeholder with `alacritty_terminal::Term`
-//! + `vte::ansi::Processor`. Lattice now inherits a full
+//! `TerminalGrid` placeholder with `alacritty_terminal::Term` +
+//! `vte::ansi::Processor`. Lattice now inherits a full
 //! VT/xterm parser (SGR colors / alt-screen / DECCKM /
 //! cursor-visibility / OSC titles / scrollback) from the
 //! battle-tested alacritty stack — same engine alacritty,
@@ -781,8 +781,8 @@ impl SharedTerm {
 /// so dispatch-time operations (scroll, resize) can reach into
 /// the alacritty `Term`.
 ///
-/// 2026-05-25: dropped the `tokio::task::JoinHandle<()>` return
-/// + the abort_handle on TerminalBuffer. Reason: tokio's
+/// 2026-05-25: dropped the `tokio::task::JoinHandle<()>` return +
+/// the abort_handle on TerminalBuffer. Reason: tokio's
 /// `Runtime::Drop` for the editor actor's `current_thread`
 /// runtime waits for in-flight blocking tasks to complete before
 /// finishing — and a PTY reader blocked on `read(&mut buf)`

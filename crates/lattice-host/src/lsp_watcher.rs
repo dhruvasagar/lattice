@@ -115,14 +115,14 @@ impl WatcherIgnoreMatcher {
             // parse error is logged but we keep building.
             for filename in [".gitignore", ".ignore"] {
                 let p = root.join(filename);
-                if p.exists() {
-                    if let Some(e) = builder.add(&p) {
-                        tracing::warn!(
-                            path = %p.display(),
-                            error = %e,
-                            "lsp_watcher: ignore file parse failed (skipping)"
-                        );
-                    }
+                if p.exists()
+                    && let Some(e) = builder.add(&p)
+                {
+                    tracing::warn!(
+                        path = %p.display(),
+                        error = %e,
+                        "lsp_watcher: ignore file parse failed (skipping)"
+                    );
                 }
             }
             // global gitignore (e.g. ~/.gitignore_global). Empty

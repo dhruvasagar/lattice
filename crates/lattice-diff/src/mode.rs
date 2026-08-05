@@ -714,8 +714,8 @@ impl DiffModeBridge {
     }
 
     /// D.8.d (2026-05-31): record that an existing session
-    /// gained a new participant `buf`. Increments the refcount
-    /// + appends `buf` to the session's participant list so
+    /// gained a new participant `buf`. Increments the refcount +
+    /// appends `buf` to the session's participant list so
     /// subsequent [`Self::note_session_closed`] decrements
     /// every participant including this one.
     ///
@@ -841,11 +841,12 @@ impl DiffModeBridge {
             for b in owned {
                 Self::inc_conflict(&mut state, session_key, b);
             }
-        } else if !has_conflicts && currently {
-            if let Some(parts) = state.conflict_sessions.remove(&session_key) {
-                for b in parts {
-                    Self::dec_conflict(&mut state, session_key, b);
-                }
+        } else if !has_conflicts
+            && currently
+            && let Some(parts) = state.conflict_sessions.remove(&session_key)
+        {
+            for b in parts {
+                Self::dec_conflict(&mut state, session_key, b);
             }
         }
     }

@@ -183,8 +183,11 @@ use std::sync::Arc;
 /// Add a real registry Document WITHOUT activating it.
 fn add_document(editor: &mut Editor, raw_id: u32, text: &str, name: &str) -> BufferId {
     let bid = BufferId(raw_id);
-    let handle =
-        lattice_runtime::spawn_document(bid, CoreDocument::from_text(text), editor.registry.clone());
+    let handle = lattice_runtime::spawn_document(
+        bid,
+        CoreDocument::from_text(text),
+        editor.registry.clone(),
+    );
     let arc: Arc<dyn lattice_runtime::Document> = Arc::new(handle);
     editor.buffers.insert(BufferEntry {
         id: bid,
@@ -682,10 +685,16 @@ fn bd_command_purges_the_deleted_buffer_from_the_trail() {
     let origin = e.pane_tree.active().committed_id();
     let b = add_document(&mut e, 960, "b\n", "*B*");
     e.activate_buffer(b);
-    assert!(active_trail_unseeded(&e).contains(&b.0), "sanity: B recorded");
+    assert!(
+        active_trail_unseeded(&e).contains(&b.0),
+        "sanity: B recorded"
+    );
 
     // `:bd` on B (it is the active buffer).
-    assert!(e.do_buffer_delete(false), ":bd should succeed on a clean buffer");
+    assert!(
+        e.do_buffer_delete(false),
+        ":bd should succeed on a clean buffer"
+    );
 
     let trail = active_trail_unseeded(&e);
     assert!(

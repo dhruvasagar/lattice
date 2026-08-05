@@ -73,7 +73,7 @@ fn plugins_mode_chords_override_in_its_layer() {
     let LookupResult::Bound { command, .. } =
         editor
             .keymap
-            .lookup_with_context(BindingMode::Normal, &t, &[plugins_mode_t.clone()])
+            .lookup_with_context(BindingMode::Normal, &t, &[plugins_mode_t])
     else {
         panic!("`t` should be bound in the plugins-mode layer");
     };
@@ -90,7 +90,7 @@ fn plugins_mode_chords_override_in_its_layer() {
     let LookupResult::Bound { command, .. } =
         editor
             .keymap
-            .lookup_with_context(BindingMode::Normal, &x, &[plugins_mode.clone()])
+            .lookup_with_context(BindingMode::Normal, &x, &[plugins_mode])
     else {
         panic!("`x` should be bound in the plugins-mode layer");
     };

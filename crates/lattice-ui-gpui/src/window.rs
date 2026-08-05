@@ -129,8 +129,8 @@ pub(crate) fn popup_outer_dims_px(viewport_w_px: f32, viewport_h_px: f32) -> (f3
 /// top+bottom + the bold/larger title row + .pb_2 header gap).
 /// Subtract from the popup's outer height to get the inner body area.
 ///
-/// 2026-06: the `───` separator row was removed (the bold, larger title
-/// + the `.pb_2()` gap separate the header from the body); the title row
+/// 2026-06: the `───` separator row was removed (the bold, larger title +
+/// the `.pb_2()` gap separate the header from the body); the title row
 /// is now `row_px * POPUP_TITLE_SCALE` tall (the larger font's line
 /// height), locked in the paint so this stays exact.
 pub(crate) fn popup_chrome_v_px(rem: f32, row_px: f32) -> f32 {
@@ -881,6 +881,7 @@ fn preview_char_color_rgb(
 ///   chord highlight)
 /// - source      → mauve (purple/magenta)
 /// - custom      → blue (fallback for plugin annotations)
+///
 /// T.6: resolve a completion-annotation color. The *base*
 /// (unselected) color now reads from the registered
 /// `completion.annotation.{kind,doc,keybinding,source,custom}`
@@ -3857,7 +3858,7 @@ impl Render for EditorView {
                 .is_some_and(|b| !b.is_empty());
             match (comp.docs_buffer_id, doc_popup) {
                 (Some(docs_id), Some(doc_popup)) if body_present => {
-                    let scroll = doc_popup.scroll as u32;
+                    let scroll = doc_popup.scroll;
                     let content_snap = rs
                         .buffers
                         .registry
@@ -5228,7 +5229,11 @@ fn transient_rows_gpui(
                             _ => None,
                         })
                         .unwrap_or(false);
-                    if v { "[x]".to_string() } else { "[ ]".to_string() }
+                    if v {
+                        "[x]".to_string()
+                    } else {
+                        "[ ]".to_string()
+                    }
                 }
                 // MG.43g: the TUI peer's variable rendering, in
                 // lockstep. Three states — `…` (not read yet) is not

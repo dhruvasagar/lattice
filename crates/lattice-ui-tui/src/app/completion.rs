@@ -109,18 +109,12 @@ impl App {
     // — only test fixtures call it; production path goes through
     // the host directly inside `Editor::dispatch`.
 
-    /// Suffix of the top-ranked completion candidate for ghost
-    /// text. Phase 5.8.AD.4: migrated.
-    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
-        self.read_editor(move |e| e.completion_ghost_text_suffix())
-    }
-
     /// Suffix of the top-ranked completion candidate that would
     /// extend the user's current query, or `None` when the
     /// renderer should paint nothing (Phase 4.2.g.7 ghost-text
     /// polish). Returned suffix is the part of the candidate
     /// `text` BEYOND the case-insensitive prefix-match against
-    /// `state.query`.
+    /// `state.query`. Phase 5.8.AD.4: migrated.
     ///
     /// Returns `None` when:
     /// - `completion.ghost_text` option is off (default).
@@ -133,6 +127,10 @@ impl App {
     /// - The query is empty (an empty popup just lists
     ///   everything; ghosting the first arbitrary candidate
     ///   would surprise the user).
+    pub fn completion_ghost_text_suffix(&self) -> Option<String> {
+        self.read_editor(move |e| e.completion_ghost_text_suffix())
+    }
+
     // Phase 5.8.AD.4: second `completion_ghost_text_suffix` body
     // retired (delegate above suffices).
     // Phase 5.8.AD.4: `effective_commit_chars_for` migrated to host.

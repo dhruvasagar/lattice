@@ -12,23 +12,12 @@ use lattice_cells::{Cell, Headerline, HeaderlineRow};
 
 /// Shared state the compilation drain updates and the headerline
 /// renderer reads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CompilationHeadlineState {
     pub command: String,
     pub last_counts: Option<(usize, usize)>,
     pub running: bool,
     pub killed: bool,
-}
-
-impl Default for CompilationHeadlineState {
-    fn default() -> Self {
-        Self {
-            command: String::new(),
-            last_counts: None,
-            running: false,
-            killed: false,
-        }
-    }
 }
 
 /// A `Headerline` impl backed by `CompilationHeadlineState`.

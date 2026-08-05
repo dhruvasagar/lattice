@@ -124,7 +124,7 @@ fn diff_modeline_element_registered_at_boot() {
 // ── `do`/`dp` chords on the diff-mode keymap layer ──────────────────────────
 
 /// The diff-mode minor-mode layer hit for `chords`, if the layer binds them.
-fn diff_layer_hit<'a>(res: &'a KeymapResolution) -> Option<&'a LayerHit> {
+fn diff_layer_hit(res: &KeymapResolution) -> Option<&LayerHit> {
     res.hits
         .iter()
         .find(|h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == DiffMode::mode_id()))
@@ -183,7 +183,7 @@ fn diff_chords_inactive_when_diff_mode_not_active() {
 // ── CR.3: conflict-resolution chords on the diff-conflict-mode layer ─────────
 
 /// The diff-conflict-mode minor-mode layer hit for `chords`, if bound.
-fn conflict_layer_hit<'a>(res: &'a KeymapResolution) -> Option<&'a LayerHit> {
+fn conflict_layer_hit(res: &KeymapResolution) -> Option<&LayerHit> {
     res.hits.iter().find(
         |h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == DiffConflictMode::mode_id()),
     )

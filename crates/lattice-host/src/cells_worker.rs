@@ -1655,13 +1655,13 @@ fn merge_extra_spans(
     }
     for (i, line_spans) in spans.iter_mut().enumerate() {
         let src = base as usize + i;
-        if let Some(ex) = extra.get(src) {
-            if !ex.is_empty() {
-                let mut merged = Vec::with_capacity(ex.len() + line_spans.len());
-                merged.extend_from_slice(ex);
-                merged.append(line_spans);
-                *line_spans = merged;
-            }
+        if let Some(ex) = extra.get(src)
+            && !ex.is_empty()
+        {
+            let mut merged = Vec::with_capacity(ex.len() + line_spans.len());
+            merged.extend_from_slice(ex);
+            merged.append(line_spans);
+            *line_spans = merged;
         }
     }
 }
@@ -2485,10 +2485,10 @@ mod tests {
         let key = Arc::as_ptr(matrix_cell) as usize;
         MAP.with(|m| {
             let mut map = m.borrow_mut();
-            if let Some((weak, disp)) = map.get(&key) {
-                if weak.upgrade().is_some_and(|a| Arc::ptr_eq(&a, matrix_cell)) {
-                    return disp.clone();
-                }
+            if let Some((weak, disp)) = map.get(&key)
+                && weak.upgrade().is_some_and(|a| Arc::ptr_eq(&a, matrix_cell))
+            {
+                return disp.clone();
             }
             let disp: DisplayCell = Arc::new(ArcSwap::from_pointee(
                 crate::display_matrix::DisplayMatrix::empty(),

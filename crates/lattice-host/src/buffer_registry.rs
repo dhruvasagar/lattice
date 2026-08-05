@@ -434,10 +434,10 @@ impl BufferRegistry {
     ) -> Option<BufferId> {
         let inner = lock_inner(&self.inner);
         for (buffer_id, entry) in inner.by_id.iter() {
-            if let Some(d) = entry.document() {
-                if d.handle.id() == document_id {
-                    return Some(*buffer_id);
-                }
+            if let Some(d) = entry.document()
+                && d.handle.id() == document_id
+            {
+                return Some(*buffer_id);
             }
         }
         None

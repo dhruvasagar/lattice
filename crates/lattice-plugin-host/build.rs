@@ -150,7 +150,7 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let output = Command::new(&cargo)
-        .current_dir(&guest_dir)
+        .current_dir(guest_dir)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .arg("--target-dir")
         .arg(&target_dir)

@@ -238,14 +238,12 @@ impl ProjectSearchService for InMemoryProjectSearchService {
         }
     }
     fn clear(&self, view: BufferId) {
-        if let Ok(mut map) = self.inner.write() {
-            if let Some(state) = map.remove(&view) {
-                if let Ok(mut s) = state.write() {
-                    if let Some(h) = s.scan_task.take() {
-                        h.abort();
-                    }
-                }
-            }
+        if let Ok(mut map) = self.inner.write()
+            && let Some(state) = map.remove(&view)
+            && let Ok(mut s) = state.write()
+            && let Some(h) = s.scan_task.take()
+        {
+            h.abort();
         }
     }
     fn attach_task(&self, view: BufferId, handle: tokio::task::JoinHandle<()>) {
@@ -261,27 +259,27 @@ impl ProjectSearchService for InMemoryProjectSearchService {
         }
     }
     fn add_hits(&self, view: BufferId, add: usize) {
-        if let Some(state) = self.state(view) {
-            if let Ok(mut s) = state.write() {
-                s.total_hits = s.total_hits.saturating_add(add);
-            }
+        if let Some(state) = self.state(view)
+            && let Ok(mut s) = state.write()
+        {
+            s.total_hits = s.total_hits.saturating_add(add);
         }
     }
     fn set_status(&self, view: BufferId, status: SearchStatus) {
-        if let Some(state) = self.state(view) {
-            if let Ok(mut s) = state.write() {
-                s.status = status;
-            }
+        if let Some(state) = self.state(view)
+            && let Ok(mut s) = state.write()
+        {
+            s.status = status;
         }
     }
     fn len(&self) -> usize {
         self.inner.read().map(|m| m.len()).unwrap_or(0)
     }
     fn record_source_path(&self, view: BufferId, source: BufferId, path: PathBuf) {
-        if let Some(state) = self.state(view) {
-            if let Ok(mut s) = state.write() {
-                s.source_paths.insert(source, path);
-            }
+        if let Some(state) = self.state(view)
+            && let Ok(mut s) = state.write()
+        {
+            s.source_paths.insert(source, path);
         }
     }
     fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf> {
@@ -574,19 +572,17 @@ impl Mode for ProjectSearchMode {
                             // current working directory so `gr` picks up
                             // `:cd` changes.
                             if let Some(current_dir_handle) = ctx.services.get::<CurrentDirHandle>()
+                                && let Ok(dir) = current_dir_handle.lock()
+                                && let Some(ref current_dir) = *dir
                             {
-                                if let Ok(dir) = current_dir_handle.lock() {
-                                    if let Some(ref current_dir) = *dir {
-                                        options.root = current_dir.clone();
-                                    }
-                                }
+                                options.root = current_dir.clone();
                             }
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
                             // M.6.6: cancel the prior scan before replacing state.
-                            if let Some(old) = search_svc.state(view_id_for_refresh) {
-                                if let Ok(s) = old.read() {
-                                    s.cancel_token.store(true, Ordering::Relaxed);
-                                }
+                            if let Some(old) = search_svc.state(view_id_for_refresh)
+                                && let Ok(s) = old.read()
+                            {
+                                s.cancel_token.store(true, Ordering::Relaxed);
                             }
                             // Clear + reset.
                             view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
@@ -907,14 +903,14 @@ pub fn project_search(
         ProjectSearchState::scanning(query.clone(), options.clone()),
     );
 
-    if let Some(mb_reg) = services.get::<MultibufferRegistryHandle>() {
-        if let Some(view) = mb_reg.handle(view_id) {
-            view.set_headerline(HeaderlineStatus::InProgress {
-                label: format!("Searching \"{query}\""),
-                count: Some(0),
-                emphasis: Some(query.clone()),
-            });
-        }
+    if let Some(mb_reg) = services.get::<MultibufferRegistryHandle>()
+        && let Some(view) = mb_reg.handle(view_id)
+    {
+        view.set_headerline(HeaderlineStatus::InProgress {
+            label: format!("Searching \"{query}\""),
+            count: Some(0),
+            emphasis: Some(query.clone()),
+        });
     }
 
     activator.activate_minor_by_id(view_id, ProjectSearchMode::mode_id());
@@ -1027,7 +1023,7 @@ fn run_scan_blocking(
     events: Arc<EventBus>,
     cancel: Arc<AtomicBool>,
 ) {
-    let mut walker = ignore::Walk::new(&options.root);
+    let walker = ignore::Walk::new(&options.root);
     let mut files_scanned: usize = 0;
     let mut total_hits: usize = 0;
     let mut batch: Vec<FileHits> = Vec::new();
@@ -1035,7 +1031,7 @@ fn run_scan_blocking(
     let progress_interval = 200usize;
     let max_files = options.max_files.unwrap_or(usize::MAX);
 
-    while let Some(entry) = walker.next() {
+    for entry in walker {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
@@ -1066,7 +1062,7 @@ fn run_scan_blocking(
                 context_lines: options.context_lines,
             });
         }
-        if files_scanned % progress_interval == 0 {
+        if files_scanned.is_multiple_of(progress_interval) {
             events.publish_typed(ProjectSearchProgressUpdated {
                 view,
                 files_scanned,

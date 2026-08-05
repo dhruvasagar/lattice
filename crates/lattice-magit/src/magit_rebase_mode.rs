@@ -794,7 +794,7 @@ mod tests {
             Effect::Confirm {
                 prompt,
                 yes_action,
-                args,
+                args: _,
             } => {
                 assert_eq!(prompt, "Abort this rebase?");
                 assert_eq!(yes_action, "action:magit-rebase-abort-execute");

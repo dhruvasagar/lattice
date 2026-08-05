@@ -124,8 +124,8 @@ fn editor_with_doc(line_count: usize) -> Editor {
 
 /// I.5 ratchet baseline — the per-keystroke `publish_render_state`
 /// cost on a content-loaded document. This is the whole-world
-/// `build_render_state` (active-document rebuild + `build_cells_panes`
-/// + the B2.3 windowed sync `DisplayMatrix` rebuild) that I.5
+/// `build_render_state` (active-document rebuild + `build_cells_panes` +
+/// the B2.3 windowed sync `DisplayMatrix` rebuild) that I.5
 /// retires in favour of per-substate publication; the number here
 /// is the bar the ratchet drives **down** as the active-document
 /// cell split lands.
@@ -181,12 +181,12 @@ fn mutated_modes(c: &mut Criterion) {
     let toggle_id = BufferId(9_999);
     group.bench_function("mutated_modes", |b| {
         b.iter(|| {
-            if editor.active_modes.contains_key(&toggle_id) {
-                editor.active_modes.remove(&toggle_id);
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                editor.active_modes.entry(toggle_id)
+            {
+                e.insert(ActiveModes::default());
             } else {
-                editor
-                    .active_modes
-                    .insert(toggle_id, ActiveModes::default());
+                editor.active_modes.remove(&toggle_id);
             }
             editor.publish_render_state();
             black_box(editor.render_state.load_full());
@@ -207,17 +207,19 @@ fn mutated_all(c: &mut Criterion) {
             // the tree shape stable.
             let leaves = editor.pane_tree.leaves().len();
             editor.pane_tree.set_active(leaves.saturating_sub(1));
-            if editor.active_modes.contains_key(&toggle_id) {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                editor.active_modes.entry(toggle_id)
+            {
+                e.insert(ActiveModes::default());
+            } else {
                 editor.active_modes.remove(&toggle_id);
-            } else {
-                editor
-                    .active_modes
-                    .insert(toggle_id, ActiveModes::default());
             }
-            if editor.buffer_locals.contains_key(&toggle_id) {
-                editor.buffer_locals.remove(&toggle_id);
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                editor.buffer_locals.entry(toggle_id)
+            {
+                e.insert(BufferLocals::new());
             } else {
-                editor.buffer_locals.insert(toggle_id, BufferLocals::new());
+                editor.buffer_locals.remove(&toggle_id);
             }
             // ML.3c: progress no longer flows through publish, so the
             // per-iteration `$/progress` toggle is gone.

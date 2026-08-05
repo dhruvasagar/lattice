@@ -81,141 +81,6 @@ use crate::versioned::Versioned;
 use lattice_core::BufferKind;
 use lattice_protocol::position::Position as ProtoPosition;
 
-/// Renderer-agnostic editor state.
-///
-/// The renderer-agnostic half of every editor App. Each
-/// renderer's `App` struct composes one of these alongside
-/// its renderer-specific caches. Host-level code (mode
-/// lifecycle, dispatch, picker sources, LSP supervisor, ...)
-/// takes `&mut Editor` directly; renderer-side code takes
-/// `&mut App` and reaches the editor via `app.editor`.
-///
-/// **Field set grows per-cluster.** Each 5.B.x slice
-/// migrates a logical cluster of fields here from
-/// `lattice-ui-tui::App`. As clusters land, this struct
-/// accumulates state; in parallel, `App`'s direct field set
-/// shrinks. When the migration completes, every renderer-
-/// agnostic field on App lives here, every renderer-agnostic
-/// method on App lives in this crate's `impl Editor` blocks,
-/// and App becomes a thin wrapper holding `editor: Editor`
-/// plus renderer-specific caches only.
-///
-/// **Clusters landed so far:**
-/// - 5.B.4 -- macro recording state (`macros`,
-///   `macro_recording`, `last_played_macro`).
-/// - 5.B.5 -- marks + registers (`marks`, `registers`,
-///   `pending_register`, `unnamed_register`).
-/// - 5.B.6 -- position history + tag stack
-///   (`position_history`, `position_history_cursor`,
-///   `recent_files`, `tag_stack`, `pending_tag_origin`).
-/// - 5.B.7 -- search state (`search_line`, `last_search`,
-///   `current_match`, `all_matches`, `substitute_preview`).
-/// - 5.B.8 -- vim repeat + visual state (`pending_count`,
-///   `op_count`, `visual_anchor`, `last_change`,
-///   `last_visual`, `last_find`).
-/// - 5.B.9 -- replace + insert state (`replace_history`,
-///   `last_insert`, `recording_insert`,
-///   `pending_block_insert`).
-/// - 5.B.10 -- popup (subset) (`popup_buffer`,
-///   `prev_pane_for_popup`, `popup_placement`). Skipped:
-///   `popup_back_stack` -- holds `PopupSnapshot` which still
-///   lives in `lattice-ui-tui::app::popup`; follow-up slice
-///   moves the snapshot type to host before migrating the
-///   field.
-/// - 5.B.11 -- cmdline + echo (`command_line`,
-///   `last_message`, `messages`,
-///   `pending_message_event_rx`, `pending_redraw`,
-///   `command_history`, `command_history_cursor`,
-///   `command_history_pending`, `auto_submit_after_chord`).
-/// - 5.B.12 -- syntax (`lang_registry`, `syntax`,
-///   `last_parsed_text_version`, `pending_syntax_edits`,
-///   `last_synced_syntax_version`, `visible_highlights`,
-///   `pane_highlights`). Skipped:
-///   `visible_highlights_key` -- its type
-///   `VisibleHighlightsKey` lives in
-///   `lattice-ui-tui::app::highlights` with `pub(super)`
-///   visibility; follow-up slice promotes it to host first.
-/// - 5.B.13 -- picker (`picker`, `picker_registry`,
-///   `picker_mru`, `picker_mru_path`,
-///   `pending_picker_init`, `live_picker_query`,
-///   `previewing`). Picker support types (`PendingPickerInit`,
-///   `LivePickerQueryState`, `InFlightLiveQuery`,
-///   `LIVE_PICKER_DEBOUNCE`) also moved from
-///   `lattice-ui-tui::app` to `lattice_host::state`.
-/// - 5.B.14 -- config + modes (`config`, `option_cache`,
-///   `mode_registry`, `services`, `mode_guards`,
-///   `active_modes`, `buffer_locals`, `resolved_options`,
-///   `buffer_local_overrides`, `option_change_rx`,
-///   `help_topics`, `host_theme`).
-/// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
-///   `registry`, `event_bus`, `builtins`, `action_ids`,
-///   `keymap`, `completion_popup_layer`).
-/// - 5.B.16 -- active-pane state (subset) (`cursor`,
-///   `scroll`, `should_quit`, `viewport_height`,
-///   `terminal_width`, `active_buffer`,
-///   `document_buffer_id`, `buffers`). Skipped:
-///   `document`, `snapshot_cache`, `pane_tree` --
-///   their types have no natural `Default` (actor handles
-///   + tree-with-root invariants). Follow-up slice removes
-///   `#[derive(Default)]` from `Editor` in favour of an
-///   `Editor::new(...)` constructor so these can migrate.
-/// - 5.B.17 -- LSP per-buffer caches (`lsp_progress`,
-///   `lsp_selection_chain`, `lsp_selection_chain_index`,
-///   `lsp_document_highlights`,
-///   `last_document_highlight_issue_cursor`,
-///   `lsp_folds_cache`, `lsp_inlay_hints_cache`,
-///   `lsp_document_links_cache`, `lsp_code_lens_cache`,
-///   `lsp_document_color_cache`,
-///   `lsp_semantic_tokens_cache`,
-///   `lsp_pull_diagnostics_cache`).
-/// - 5.B.18 -- all remaining LSP fields: subsystem handles
-///   (`lsp`, `lsp_diagnostics`, `lsp_logger`, plus
-///   `lsp_log_event_rx`, `lsp_progress_event_rx`,
-///   `lsp_config_tree`, `buffer_uris`), server-initiated
-///   channels (`pending_apply_edit_rx`,
-///   `pending_show_message_request_rx`,
-///   `lsp_pending_show_message_requests`,
-///   `lsp_show_message_request_queue`,
-///   `lsp_next_show_message_request_id`), and all per-
-///   feature request channels (the `pending_*_rx` /
-///   `pending_*_token` pairs for hover, definition,
-///   references, symbols, format, signature-help,
-///   completion, moniker, rename, code-action,
-///   selection-range, document-highlight, folding-range,
-///   document-links, code-lens, document-color, inlay-hint,
-///   semantic-tokens, pull-diagnostics, plus the refresh
-///   channels and the lifecycle / detach channels).
-///   `LspSupervisorHandle` and `DiagnosticsLayer` gained
-///   placeholder `Default` impls (dropped-receiver
-///   channels; production overwrites in `boot.rs`).
-///   `lsp_file_watcher` stays on App for now: its inner
-///   type `LspFileWatcher` lives in `lattice-ui-tui::app::
-///   lsp_watcher` -- migrates with a follow-up that moves
-///   the watcher into a host module.
-/// - 5.B.19 -- call-site migration for all LSP per-feature
-///   request channel fields scaffolded in 5.B.18: updated
-///   all `self.pending_*` / `app.pending_*` accesses in
-///   `app/lsp.rs`, `app/boot.rs`, `app/picker.rs`,
-///   `app/mode.rs`, `app/completion.rs` to
-///   `self.editor.pending_*`; removed the now-redundant
-///   duplicate declarations from `App`. Completion cluster
-///   (`completion_registry`, `completion_state`,
-///   `insert_completion`, etc.) stays on App -- next slice.
-/// - 5.B.20 -- completion cluster tail + popup back-stack
-///   + pending config bucket. `insert_completion`,
-///   `snippet_registry`, `insert_completion_snippet_meta`,
-///   `completion_accept_freq`, `per_language_completion`,
-///   `completion_in_path_context`, `active_snippet`,
-///   `snippet_dirs`, `popup_back_stack` (popup #7 tail), and
-///   `pending_config_structural_sections` move from `App`
-///   to `Editor`. `SnippetCandidateMeta` moved from
-///   `lattice-ui-tui::app` to `lattice-host::state` so
-///   the sidecar type lives next to the field that owns it;
-///   `lattice-ui-tui::app` re-exports the type for
-///   compatibility. After this slice the only fields left on
-///   `App` are the renderer-specific caches (`theme`,
-///   `pane_render_registry`) plus the `LspFileWatcher`
-///   wrapper -- `App` becomes a thin renderer wrapper.
 /// Cross-thread wake signal for the overlay worker.
 ///
 /// Wraps `Arc<tokio::sync::Notify>` so `Editor` can keep its
@@ -374,6 +239,141 @@ pub struct PendingTransientArgument {
     pub name: String,
 }
 
+/// Renderer-agnostic editor state.
+///
+/// The renderer-agnostic half of every editor App. Each
+/// renderer's `App` struct composes one of these alongside
+/// its renderer-specific caches. Host-level code (mode
+/// lifecycle, dispatch, picker sources, LSP supervisor, ...)
+/// takes `&mut Editor` directly; renderer-side code takes
+/// `&mut App` and reaches the editor via `app.editor`.
+///
+/// **Field set grows per-cluster.** Each 5.B.x slice
+/// migrates a logical cluster of fields here from
+/// `lattice-ui-tui::App`. As clusters land, this struct
+/// accumulates state; in parallel, `App`'s direct field set
+/// shrinks. When the migration completes, every renderer-
+/// agnostic field on App lives here, every renderer-agnostic
+/// method on App lives in this crate's `impl Editor` blocks,
+/// and App becomes a thin wrapper holding `editor: Editor`
+/// plus renderer-specific caches only.
+///
+/// **Clusters landed so far:**
+/// - 5.B.4 -- macro recording state (`macros`,
+///   `macro_recording`, `last_played_macro`).
+/// - 5.B.5 -- marks + registers (`marks`, `registers`,
+///   `pending_register`, `unnamed_register`).
+/// - 5.B.6 -- position history + tag stack
+///   (`position_history`, `position_history_cursor`,
+///   `recent_files`, `tag_stack`, `pending_tag_origin`).
+/// - 5.B.7 -- search state (`search_line`, `last_search`,
+///   `current_match`, `all_matches`, `substitute_preview`).
+/// - 5.B.8 -- vim repeat + visual state (`pending_count`,
+///   `op_count`, `visual_anchor`, `last_change`,
+///   `last_visual`, `last_find`).
+/// - 5.B.9 -- replace + insert state (`replace_history`,
+///   `last_insert`, `recording_insert`,
+///   `pending_block_insert`).
+/// - 5.B.10 -- popup (subset) (`popup_buffer`,
+///   `prev_pane_for_popup`, `popup_placement`). Skipped:
+///   `popup_back_stack` -- holds `PopupSnapshot` which still
+///   lives in `lattice-ui-tui::app::popup`; follow-up slice
+///   moves the snapshot type to host before migrating the
+///   field.
+/// - 5.B.11 -- cmdline + echo (`command_line`,
+///   `last_message`, `messages`,
+///   `pending_message_event_rx`, `pending_redraw`,
+///   `command_history`, `command_history_cursor`,
+///   `command_history_pending`, `auto_submit_after_chord`).
+/// - 5.B.12 -- syntax (`lang_registry`, `syntax`,
+///   `last_parsed_text_version`, `pending_syntax_edits`,
+///   `last_synced_syntax_version`, `visible_highlights`,
+///   `pane_highlights`). Skipped:
+///   `visible_highlights_key` -- its type
+///   `VisibleHighlightsKey` lives in
+///   `lattice-ui-tui::app::highlights` with `pub(super)`
+///   visibility; follow-up slice promotes it to host first.
+/// - 5.B.13 -- picker (`picker`, `picker_registry`,
+///   `picker_mru`, `picker_mru_path`,
+///   `pending_picker_init`, `live_picker_query`,
+///   `previewing`). Picker support types (`PendingPickerInit`,
+///   `LivePickerQueryState`, `InFlightLiveQuery`,
+///   `LIVE_PICKER_DEBOUNCE`) also moved from
+///   `lattice-ui-tui::app` to `lattice_host::state`.
+/// - 5.B.14 -- config + modes (`config`, `option_cache`,
+///   `mode_registry`, `services`, `mode_guards`,
+///   `active_modes`, `buffer_locals`, `resolved_options`,
+///   `buffer_local_overrides`, `option_change_rx`,
+///   `help_topics`, `host_theme`).
+/// - 5.B.15 -- modal + dispatch (`modal`, `partial_chord`,
+///   `registry`, `event_bus`, `builtins`, `action_ids`,
+///   `keymap`, `completion_popup_layer`).
+/// - 5.B.16 -- active-pane state (subset) (`cursor`,
+///   `scroll`, `should_quit`, `viewport_height`,
+///   `terminal_width`, `active_buffer`,
+///   `document_buffer_id`, `buffers`). Skipped:
+///   `document`, `snapshot_cache`, `pane_tree` --
+///   their types have no natural `Default` (actor handles +
+///   tree-with-root invariants). Follow-up slice removes
+///   `#[derive(Default)]` from `Editor` in favour of an
+///   `Editor::new(...)` constructor so these can migrate.
+/// - 5.B.17 -- LSP per-buffer caches (`lsp_progress`,
+///   `lsp_selection_chain`, `lsp_selection_chain_index`,
+///   `lsp_document_highlights`,
+///   `last_document_highlight_issue_cursor`,
+///   `lsp_folds_cache`, `lsp_inlay_hints_cache`,
+///   `lsp_document_links_cache`, `lsp_code_lens_cache`,
+///   `lsp_document_color_cache`,
+///   `lsp_semantic_tokens_cache`,
+///   `lsp_pull_diagnostics_cache`).
+/// - 5.B.18 -- all remaining LSP fields: subsystem handles
+///   (`lsp`, `lsp_diagnostics`, `lsp_logger`, plus
+///   `lsp_log_event_rx`, `lsp_progress_event_rx`,
+///   `lsp_config_tree`, `buffer_uris`), server-initiated
+///   channels (`pending_apply_edit_rx`,
+///   `pending_show_message_request_rx`,
+///   `lsp_pending_show_message_requests`,
+///   `lsp_show_message_request_queue`,
+///   `lsp_next_show_message_request_id`), and all per-
+///   feature request channels (the `pending_*_rx` /
+///   `pending_*_token` pairs for hover, definition,
+///   references, symbols, format, signature-help,
+///   completion, moniker, rename, code-action,
+///   selection-range, document-highlight, folding-range,
+///   document-links, code-lens, document-color, inlay-hint,
+///   semantic-tokens, pull-diagnostics, plus the refresh
+///   channels and the lifecycle / detach channels).
+///   `LspSupervisorHandle` and `DiagnosticsLayer` gained
+///   placeholder `Default` impls (dropped-receiver
+///   channels; production overwrites in `boot.rs`).
+///   `lsp_file_watcher` stays on App for now: its inner
+///   type `LspFileWatcher` lives in `lattice-ui-tui::app::
+///   lsp_watcher` -- migrates with a follow-up that moves
+///   the watcher into a host module.
+/// - 5.B.19 -- call-site migration for all LSP per-feature
+///   request channel fields scaffolded in 5.B.18: updated
+///   all `self.pending_*` / `app.pending_*` accesses in
+///   `app/lsp.rs`, `app/boot.rs`, `app/picker.rs`,
+///   `app/mode.rs`, `app/completion.rs` to
+///   `self.editor.pending_*`; removed the now-redundant
+///   duplicate declarations from `App`. Completion cluster
+///   (`completion_registry`, `completion_state`,
+///   `insert_completion`, etc.) stays on App -- next slice.
+/// - 5.B.20 -- completion cluster tail + popup back-stack +
+///   pending config bucket. `insert_completion`,
+///   `snippet_registry`, `insert_completion_snippet_meta`,
+///   `completion_accept_freq`, `per_language_completion`,
+///   `completion_in_path_context`, `active_snippet`,
+///   `snippet_dirs`, `popup_back_stack` (popup #7 tail), and
+///   `pending_config_structural_sections` move from `App`
+///   to `Editor`. `SnippetCandidateMeta` moved from
+///   `lattice-ui-tui::app` to `lattice-host::state` so
+///   the sidecar type lives next to the field that owns it;
+///   `lattice-ui-tui::app` re-exports the type for
+///   compatibility. After this slice the only fields left on
+///   `App` are the renderer-specific caches (`theme`,
+///   `pane_render_registry`) plus the `LspFileWatcher`
+///   wrapper -- `App` becomes a thin renderer wrapper.
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Perf plan B.4: identity-preserving sub-state cache for
@@ -898,6 +898,13 @@ pub struct Editor {
     /// groups around lifecycle. See
     /// `docs/dev/architecture/pane-groups.md`.
     pub pane_groups: Vec<crate::pane_group::PaneGroup>,
+    /// D.0b (2026-06-08): id of the singleton identity-mapper
+    /// pane group that backs `:set scrollbind`. `None` when no
+    /// panes currently have `scrollbind=true` (the group is
+    /// dropped when the last member opts out). Rebuilt by
+    /// `rebuild_scrollbind_group` on every `scrollbind`
+    /// option-change cascade.
+    pub scrollbind_group_id: Option<lattice_core::ui::pane::PaneGroupId>,
     /// D.8.e (2026-05-31): session key of the **singleton**
     /// `:diffthis` group, if any. `:diffthis` toggles per-buffer
     /// membership in this one group; other diff sessions
@@ -916,13 +923,6 @@ pub struct Editor {
     ///   `remove_participant_buffer`; if arity drops to 0 the
     ///   subsystem auto-drops the session and this clears
     ///   back to `None`.
-    /// D.0b (2026-06-08): id of the singleton identity-mapper
-    /// pane group that backs `:set scrollbind`. `None` when no
-    /// panes currently have `scrollbind=true` (the group is
-    /// dropped when the last member opts out). Rebuilt by
-    /// `rebuild_scrollbind_group` on every `scrollbind`
-    /// option-change cascade.
-    pub scrollbind_group_id: Option<lattice_core::ui::pane::PaneGroupId>,
     pub diffthis_group: Option<lattice_core::BufferId>,
     /// D.8.e (2026-05-31): pane members corresponding to each
     /// participant of the diffthis group, in `:diffthis`-call
@@ -1687,8 +1687,8 @@ pub struct Editor {
     /// D-fix.5: per diff-participant buffer, the last `HunkIndex`
     /// revision its folds were recomputed against. `refresh_diff_folds`
     /// (run each tick on the diff-publish wake) consults this to skip
-    /// buffers whose hunks haven't moved — so a diff session's unchanged
-    /// + hunk folds refresh off-keystroke when the async recompute
+    /// buffers whose hunks haven't moved — so a diff session's unchanged +
+    /// hunk folds refresh off-keystroke when the async recompute
     /// publishes, without re-folding on every unrelated wake. Keyed by
     /// the participant `BufferId` (each side tracked independently, since
     /// each folds its own slot). Stale entries are harmless; the buffer's
@@ -1984,9 +1984,7 @@ impl Editor {
             .cells_matrices
             .lock()
             .expect("cells_matrices mutex poisoned");
-        map.entry(buffer_id)
-            .or_insert_with(std::sync::Arc::default)
-            .clone()
+        map.entry(buffer_id).or_default().clone()
     }
 
     /// B2.1 (2026-06-04): lazy port into the per-document
@@ -2007,9 +2005,7 @@ impl Editor {
             .display_matrices
             .lock()
             .expect("display_matrices mutex poisoned");
-        map.entry(buffer_id)
-            .or_insert_with(std::sync::Arc::default)
-            .clone()
+        map.entry(buffer_id).or_default().clone()
     }
 
     /// D.4.d.2.0 (2026-05-29): lazy port into the per-document
@@ -2035,8 +2031,6 @@ impl Editor {
             .virtual_rows_matrices
             .lock()
             .expect("virtual_rows_matrices mutex poisoned");
-        map.entry(buffer_id)
-            .or_insert_with(std::sync::Arc::default)
-            .clone()
+        map.entry(buffer_id).or_default().clone()
     }
 }

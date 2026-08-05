@@ -42,15 +42,15 @@ impl Lang {
     /// Detect language from a file path's extension.
     pub fn detect_from_path(path: Option<&Path>) -> Self {
         // Check known shell rc/profile filenames (dotfiles with no extension).
-        if let Some(p) = path {
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                let lower = name.to_ascii_lowercase();
-                match lower.as_str() {
-                    ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
-                    | ".zshenv" | ".zprofile" | ".zlogin" | ".zlogout" | ".profile" | ".shrc"
-                    | ".kshrc" => return Lang::Bash,
-                    _ => {}
-                }
+        if let Some(p) = path
+            && let Some(name) = p.file_name().and_then(|n| n.to_str())
+        {
+            let lower = name.to_ascii_lowercase();
+            match lower.as_str() {
+                ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
+                | ".zshenv" | ".zprofile" | ".zlogin" | ".zlogout" | ".profile" | ".shrc"
+                | ".kshrc" => return Lang::Bash,
+                _ => {}
             }
         }
         match path

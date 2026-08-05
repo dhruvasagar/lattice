@@ -542,7 +542,7 @@ mod tests {
         let mut d = Document::empty();
         d.begin_undo_group();
         for (i, ch) in "hello".chars().enumerate() {
-            d.apply_edit(Edit::insert(Position::new(0, i as u32), &ch.to_string()))
+            d.apply_edit(Edit::insert(Position::new(0, i as u32), ch.to_string()))
                 .unwrap();
         }
         d.end_undo_group();

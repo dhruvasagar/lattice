@@ -116,8 +116,7 @@ impl WitBoundary for NativeEventKind {
             // than silently dropping the event.
             NativeEventKind::BackgroundTaskFinished => {
                 return Err(
-                    "event-kind `background-task-finished` is not yet mirrored in WIT"
-                        .to_string(),
+                    "event-kind `background-task-finished` is not yet mirrored in WIT".to_string(),
                 );
             }
         })

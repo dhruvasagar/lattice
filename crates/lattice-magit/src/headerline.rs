@@ -682,8 +682,8 @@ pub(crate) fn log_fields(git_ref: &str, commits: usize, path: Option<&Path>) -> 
     fields
 }
 
-/// magit-blame: the path and the revision currently blamed — `p`
-/// walks the revision back, and without this the buffer gives no clue
+// magit-blame: the path and the revision currently blamed — `p`
+// walks the revision back, and without this the buffer gives no clue
 
 /// magit-branch: the checked-out branch and how many exist.
 pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
@@ -1139,7 +1139,10 @@ mod tests {
 
     #[test]
     fn revision_row_carries_sha_author_date_and_subject() {
-        let meta = parse_revision_meta("a1b2c3d\0Jane Doe\03 days ago\0Fix the thing\n");
+        // `\x00` rather than `\0`: the NUL separators sit next to digits
+        // here, and `\03` reads as an octal escape even though Rust has
+        // none (it is NUL followed by `3`).
+        let meta = parse_revision_meta("a1b2c3d\x00Jane Doe\x003 days ago\x00Fix the thing\n");
         assert_eq!(
             meta,
             RevisionMeta {

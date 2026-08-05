@@ -564,7 +564,9 @@ mod commit_pick {
     /// perfectly readable list that cherry-picks the wrong thing.
     #[test]
     fn rows_keep_the_sha_and_the_display_on_their_own_sides() {
-        let rows = parse_commit_rows("1111111111\01111111 first\n2222222222\02222222 second\n");
+        // `\x00`, not `\0`: the separator is immediately followed by a
+        // digit, which makes `\01` read as an octal escape.
+        let rows = parse_commit_rows("1111111111\x001111111 first\n2222222222\x002222222 second\n");
         assert_eq!(rows[0].0, "1111111111");
         assert!(rows[0].1.ends_with("first"));
         assert_eq!(rows[1].0, "2222222222");

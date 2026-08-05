@@ -100,10 +100,10 @@ impl PendingSyntheticHighlights {
     }
 
     fn fire_waker(&self) {
-        if let Ok(waker_guard) = self.waker.lock() {
-            if let Some(waker) = waker_guard.as_ref() {
-                waker.notify_one();
-            }
+        if let Ok(waker_guard) = self.waker.lock()
+            && let Some(waker) = waker_guard.as_ref()
+        {
+            waker.notify_one();
         }
     }
 }

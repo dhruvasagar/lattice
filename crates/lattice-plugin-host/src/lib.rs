@@ -1400,10 +1400,10 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
         // The plugin's OWN namespace first (`style` → `auto-pair.style`), then the
         // raw name — so a plugin reads its options with short names AND can still
         // read a core option (`tabstop`) that isn't in its namespace.
-        if let Some(id) = &self.plugin_name {
-            if let Some(opt) = registry.lookup(&format!("{id}.{name}")) {
-                return Some(opt.get_formatted());
-            }
+        if let Some(id) = &self.plugin_name
+            && let Some(opt) = registry.lookup(&format!("{id}.{name}"))
+        {
+            return Some(opt.get_formatted());
         }
         registry.lookup(&name).map(|opt| opt.get_formatted())
     }

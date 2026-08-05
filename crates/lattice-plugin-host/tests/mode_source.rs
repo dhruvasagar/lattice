@@ -93,7 +93,7 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
     let chord = lattice_protocol::parse_chord_sequence("<C-s>").expect("chord parses");
     assert!(
         matches!(
-            keymap.lookup_with_context(BindingMode::Normal, &chord, &[blame.clone()]),
+            keymap.lookup_with_context(BindingMode::Normal, &chord, &[blame]),
             LookupResult::Bound { .. }
         ),
         "the plugin mode's keymap binding resolves when the mode is active"

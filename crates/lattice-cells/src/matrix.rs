@@ -515,12 +515,13 @@ impl<'a> Iterator for DisplaySliceIter<'a> {
         // Phase A: drain `Below(line)` virtual rows for the
         // most-recently emitted document row.
         if let Some(line) = self.after_cell_below_for {
-            if let Some(vrow) = self.virtual_rows.get(self.v_idx) {
-                if vrow.anchor_line == line && vrow.position == AnchorPosition::Below {
-                    self.v_idx += 1;
-                    self.remaining -= 1;
-                    return Some(DisplayRowEntry::Virtual(vrow));
-                }
+            if let Some(vrow) = self.virtual_rows.get(self.v_idx)
+                && vrow.anchor_line == line
+                && vrow.position == AnchorPosition::Below
+            {
+                self.v_idx += 1;
+                self.remaining -= 1;
+                return Some(DisplayRowEntry::Virtual(vrow));
             }
             // No more Below(line) entries — exit phase A.
             self.after_cell_below_for = None;

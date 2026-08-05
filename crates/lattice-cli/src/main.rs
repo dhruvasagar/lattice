@@ -138,10 +138,10 @@ include!(concat!(env!("OUT_DIR"), "/wit_assets.rs"));
 ///      remembering the CLI flag name.
 fn compute_log_level(cli: &Cli) -> String {
     // 4: caller-supplied env wins outright.
-    if let Ok(env) = std::env::var("LATTICE_LOG") {
-        if !env.is_empty() {
-            return env;
-        }
+    if let Ok(env) = std::env::var("LATTICE_LOG")
+        && !env.is_empty()
+    {
+        return env;
     }
     // 3: explicit --log-level overrides verbose/quiet.
     if let Some(spec) = cli.log_level.as_deref() {

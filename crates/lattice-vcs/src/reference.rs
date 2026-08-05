@@ -171,12 +171,18 @@ mod tests {
                    refs/tags/v1.0.0\0eeee444\0e4f5g6h\0\0\0\0tagged\n";
         let refs = parse_for_each_ref(out);
         assert_eq!(refs.len(), 3);
-        assert_eq!((refs[0].kind, refs[0].name.as_str()), (RefKind::Branch, "main"));
+        assert_eq!(
+            (refs[0].kind, refs[0].name.as_str()),
+            (RefKind::Branch, "main")
+        );
         assert_eq!(
             (refs[1].kind, refs[1].name.as_str()),
             (RefKind::Remote, "origin/main")
         );
-        assert_eq!((refs[2].kind, refs[2].name.as_str()), (RefKind::Tag, "v1.0.0"));
+        assert_eq!(
+            (refs[2].kind, refs[2].name.as_str()),
+            (RefKind::Tag, "v1.0.0")
+        );
         assert!(refs[0].head, "the `*` marks the checked-out branch");
         assert!(!refs[1].head);
     }

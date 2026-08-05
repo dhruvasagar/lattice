@@ -283,6 +283,7 @@ impl App {
     ///    matches the picker's current query) or gets dropped
     ///    on the floor (if the user has moved on -- a fresher
     ///    fire will land).
+    ///
     /// Phase 5.8.AA.t: per-tick live-picker query drain. Body
     /// migrated to [`lattice_host::dispatch::Editor::drain_pending_live_picker_query`]
     /// and now folded into the `run_tick_pending` aggregator so
@@ -299,8 +300,8 @@ impl App {
 
     /// Seat `pairs` into a freshly-constructed picker for
     /// `source`. Shared by sync (Inline) and async (Future)
-    /// init paths so MRU bonus snapshot + source-id stamping
-    /// + buffer-switcher preview ergonomics behave
+    /// init paths so MRU bonus snapshot + source-id stamping +
+    /// buffer-switcher preview ergonomics behave
     /// identically regardless of how the candidates were
     /// produced.
     fn seat_picker_from_pairs(&mut self, source: String, pairs: lattice_picker::CandidateBatch) {
@@ -2092,5 +2093,4 @@ mod tests {
             msg.text,
         );
     }
-
 }

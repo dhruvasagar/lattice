@@ -165,18 +165,18 @@ impl App {
     // alongside its sole caller. Original doc-comment preserved
     // for grep:
     //
-    /// CSM.K1: bring `completion-popup-mode`'s activation state
-    /// on the active document buffer in line with `want_popup`.
-    /// Called from `sync_keymap_overlays` so the transient
-    /// popup-mode tracks the popup open / close transitions
-    /// without each `self.editor.insert_completion = ...` site having
-    /// to know about it.
-    ///
-    /// Per-buffer scope: the popup belongs to the document the
-    /// user is typing in. v1 has a single document buffer
-    /// (`self.document_buffer_id()`); multi-document support
-    /// activates this mode on whichever doc owns the popup at
-    /// open time when that lands. Deactivation is symmetric.
+    // CSM.K1: bring `completion-popup-mode`'s activation state
+    // on the active document buffer in line with `want_popup`.
+    // Called from `sync_keymap_overlays` so the transient
+    // popup-mode tracks the popup open / close transitions
+    // without each `self.editor.insert_completion = ...` site having
+    // to know about it.
+    //
+    // Per-buffer scope: the popup belongs to the document the
+    // user is typing in. v1 has a single document buffer
+    // (`self.document_buffer_id()`); multi-document support
+    // activates this mode on whichever doc owns the popup at
+    // open time when that lands. Deactivation is symmetric.
     // (Body retired: inlined into the host-side method.)
 
     /// Re-derive `App.theme`'s renderer-specific `Style` values

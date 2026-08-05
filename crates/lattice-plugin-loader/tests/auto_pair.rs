@@ -162,7 +162,7 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     let mode = ModeId::new("auto-pair-mode");
     assert!(
         matches!(
-            keymap.lookup_with_context(BindingMode::Insert, &open, &[mode.clone()]),
+            keymap.lookup_with_context(BindingMode::Insert, &open, &[mode]),
             LookupResult::Bound { .. }
         ),
         "`(` binds to the plugin's open action when auto-pair-mode is active"
@@ -178,7 +178,7 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     let quote = lattice_protocol::parse_chord_sequence("\"").expect("quote chord parses");
     assert!(
         matches!(
-            keymap.lookup_with_context(BindingMode::Insert, &quote, &[mode.clone()]),
+            keymap.lookup_with_context(BindingMode::Insert, &quote, &[mode]),
             LookupResult::Bound { .. }
         ),
         "`\"` binds to the plugin's quote action when auto-pair-mode is active"

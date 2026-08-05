@@ -9,6 +9,7 @@
 //!   - grammar via `instantiate_grammar_plugin` (sync, grammar linker),
 //!   - config  via `spawn_config_plugin`        (async, async linker),
 //!   - modes   via `spawn_mode_plugin`          (async, async linker).
+//!
 //! All three registering from the one artifact is the feasibility proof for
 //! shipping auto-pair as a single multi-seam plugin.
 //!

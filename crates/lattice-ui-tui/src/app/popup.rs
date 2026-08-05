@@ -199,14 +199,14 @@ impl App {
     // callers; host copy at
     // [`lattice_host::dispatch::Editor::pop_popup_back`]).
 
-    /// Read-side accessor for the renderer: the active popup's
-    /// placement, or `None` when no popup is open.
-    ///
-    /// Renamed from `popup_placement()` in Phase 5.B.10
-    /// because the migrated `Editor::popup_placement` field
-    /// shadowed the method via auto-deref; the rename keeps
-    /// the method's intent (Option-returning gated accessor)
-    /// distinct from the raw field.
+    // Read-side accessor for the renderer: the active popup's
+    // placement, or `None` when no popup is open.
+    //
+    // Renamed from `popup_placement()` in Phase 5.B.10
+    // because the migrated `Editor::popup_placement` field
+    // shadowed the method via auto-deref; the rename keeps
+    // the method's intent (Option-returning gated accessor)
+    // distinct from the raw field.
     // Slice 3c.final.E.swap: `active_popup_placement` moved to
     // `#[cfg(test)] impl App` below — only test callers.
 

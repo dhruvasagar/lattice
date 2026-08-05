@@ -29,8 +29,8 @@
 //! transformation token but apply as their original text in
 //! v1; full regex transformation lands as polish.
 //!
-//! This crate has **no editor dependency**. Tests parse + render
-//! + drive the active-snippet state machine without touching
+//! This crate has **no editor dependency**. Tests parse + render +
+//! drive the active-snippet state machine without touching
 //! any rope or buffer; the host wires [`ActiveSnippet`] to its
 //! buffer-mutation pipeline.
 

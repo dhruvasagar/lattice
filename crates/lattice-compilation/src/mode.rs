@@ -396,7 +396,7 @@ impl Mode for CompilationMode {
                             OutputChunk::Reset { ref header } => {
                                 let flush = std::mem::take(&mut pending);
                                 append_at_end(&handle, flush).await;
-                                reset_to(&handle, &header).await;
+                                reset_to(&handle, header).await;
                                 // CM.3d: update headerline state — extract
                                 // the command from the first line of the
                                 // header ("$ cargo build" → "cargo build").
@@ -415,10 +415,10 @@ impl Mode for CompilationMode {
                                 // and scan the header itself (rare, but keeps the
                                 // index consistent with the buffer content).
                                 severities.clear();
-                                severities.extend(scan_severities(0, &header));
+                                severities.extend(scan_severities(0, header));
                                 location_lines.clear();
-                                location_lines.extend(scan_location_lines(0, &header));
-                                next_line = count_newlines(&header);
+                                location_lines.extend(scan_location_lines(0, header));
+                                next_line = count_newlines(header);
                                 dirty = true;
                             }
                             OutputChunk::Append { text } => {

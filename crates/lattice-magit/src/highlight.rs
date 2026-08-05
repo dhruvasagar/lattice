@@ -354,14 +354,14 @@ pub(crate) fn submodule_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
                 },
             ];
             // The parenthesised describe, when there is one.
-            if line.ends_with(')') {
-                if let Some(i) = line.rfind(" (") {
-                    spans.push(StyledSpan {
-                        start: i + 1,
-                        end: line.len(),
-                        style: Style::Comment,
-                    });
-                }
+            if line.ends_with(')')
+                && let Some(i) = line.rfind(" (")
+            {
+                spans.push(StyledSpan {
+                    start: i + 1,
+                    end: line.len(),
+                    style: Style::Comment,
+                });
             }
             spans
         })

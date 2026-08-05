@@ -110,7 +110,7 @@ impl ExcerptId {
 /// Header presentation for an excerpt — title + style + the
 /// mode-owned semantic data the rich header renderer reads
 /// (MH.A2, see multibuffer-views.md §3.8).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExcerptHeader {
     /// Human-readable label. Conventionally
     /// `"<path> : <start_line+1>-<end_line+1>"` for a regular
@@ -136,17 +136,6 @@ impl ExcerptHeader {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            style: ExcerptHeaderStyle::default(),
-            path: None,
-            match_count: None,
-        }
-    }
-}
-
-impl Default for ExcerptHeader {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
             style: ExcerptHeaderStyle::default(),
             path: None,
             match_count: None,
@@ -353,11 +342,11 @@ impl Drop for MultibufferInner {
         // Unsubscribe + drop the bus reference so the forwarder
         // task (which holds a Weak<MultibufferInner>) sees the
         // upgrade fail and exits cleanly.
-        if let Ok(mut book) = self.subscriptions.lock() {
-            if let Some(bus) = book.bus.take() {
-                for id in book.ids.drain(..) {
-                    let _ = bus.unsubscribe(id);
-                }
+        if let Ok(mut book) = self.subscriptions.lock()
+            && let Some(bus) = book.bus.take()
+        {
+            for id in book.ids.drain(..) {
+                let _ = bus.unsubscribe(id);
             }
         }
     }
@@ -418,9 +407,10 @@ struct MultibufferState {
 /// Async providers transition `Idle → InProgress → Complete` /
 /// `Failed` as their scan progresses. See
 /// `multibuffer-views.md` §3.7.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HeaderlineStatus {
     /// No status rendered. The view-header virtual row is empty.
+    #[default]
     Idle,
     /// A scan / fetch / computation is running. `label` describes
     /// it; `count` is an optional running tally (hits found so
@@ -445,12 +435,6 @@ pub enum HeaderlineStatus {
     /// The operation failed. `reason` is the terminal label
     /// rendered to the user.
     Failed { reason: String },
-}
-
-impl Default for HeaderlineStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// M.4 (2026-06-01): published whenever a view's headerline
@@ -675,8 +659,8 @@ impl MultibufferDocumentHandle {
     /// Consumed by mode handlers (search `<CR>`, project-diff
     /// `<CR>`, lsp-references `<CR>` once those land) — see
     /// `mode-architecture.md` §5.3.4 (substrate-vs-helper
-    /// rule). Returning data, not behavior — the chord-binding
-    /// + open-and-position logic lives in the mode's handler
+    /// rule). Returning data, not behavior — the chord-binding +
+    /// open-and-position logic lives in the mode's handler
     /// closure registered via the M.10.1.b
     /// `ActionHandlerRegistry`.
     pub fn translate_composed_to_source(&self, cursor: Position) -> Option<(BufferId, Position)> {
@@ -1228,8 +1212,8 @@ fn source_buffer_for_document_id(
 ///
 /// Behaviourally equivalent to anchor tracking in the
 /// linewise case (which is what excerpts care about — they're
-/// line-bounded). A first-class `Anchor` primitive (line + col
-/// + generation) can land later if column-precise tracking
+/// line-bounded). A first-class `Anchor` primitive (line + col +
+/// generation) can land later if column-precise tracking
 /// proves load-bearing (none of the M.4.1 worked examples
 /// need it).
 ///
@@ -2810,7 +2794,7 @@ mod tests {
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
         let snap = mb.snapshot();
         assert_eq!(snap.buffer.as_string(), "beta\ngamma\ndelta\n");
-        assert_eq!(snap.dirty, false);
+        assert!(!snap.dirty);
         assert!(snap.path.is_none());
         assert_eq!(snap.selections.all().len(), 1);
     }
@@ -4090,7 +4074,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn incremental_append_skips_unknown_source_like_full_build() {
         let (sources, ids) = make_sources(&["a1\na2\n", "b1\nb2\n"]);
-        let bogus = BufferId(0xBADC_0DE);
+        let bogus = BufferId(0x0BAD_C0DE);
 
         let valid = vec![Excerpt::new(ids[0], 0, 0), Excerpt::new(ids[1], 1, 1)];
 
@@ -4484,7 +4468,7 @@ mod tests {
         let buffer_id = BufferId(42);
         let id = multibuffer_excerpt_header_provider_id(buffer_id);
         assert_eq!(id & 0xFFFF_FFFF, 42);
-        assert!(id < 0xD1FF_0000_0000_0000 || id >= 0xD200_0000_0000_0000);
+        assert!(!(0xD1FF_0000_0000_0000..0xD200_0000_0000_0000).contains(&id));
     }
 
     #[tokio::test(flavor = "multi_thread")]

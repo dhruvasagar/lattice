@@ -15,8 +15,6 @@ use crate::parser::CompilationParser;
 /// thread 'tests::it_works' panicked at src/lib.rs:20:9:
 /// thread 'main' panicked at src/main.rs:10:18: assertion failed
 /// ```
-
-/// `thread '<name>' panicked at path:line:col[: message]`
 const PANIC_PATTERN: &str = r"^thread '[^']+' panicked at (\S+):(\d+):(\d+)(?::\s?(.*))?$";
 
 fn panic_re() -> Option<&'static Regex> {

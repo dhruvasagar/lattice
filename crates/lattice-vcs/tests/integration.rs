@@ -108,7 +108,7 @@ fn blob_read() {
     git_commit(&repo, "initial");
 
     // Read via GitBlob
-    let head_oid = Reference::resolve(&repo, "HEAD").unwrap();
+    let _head_oid = Reference::resolve(&repo, "HEAD").unwrap();
     let rope = GitBlob::read_path(&repo, "HEAD", "hello.txt").unwrap();
     assert_eq!(rope.to_string(), "hello world\n");
 
@@ -382,7 +382,7 @@ fn merge_with_message_completes_the_merge_in_one_step() {
     // Two parents: the merge actually happened and was committed.
     let parents = git(&repo, &["log", "-1", "--format=%P"]);
     assert_eq!(
-        parents.trim().split_whitespace().count(),
+        parents.split_whitespace().count(),
         2,
         "merge-edit must produce a merge commit, not a staged merge"
     );
@@ -1169,7 +1169,10 @@ fn listing_refs_reports_branches_remotes_and_tags_with_their_targets() {
         tag.short_id, head.short_id,
         "the tag points at the same commit HEAD does"
     );
-    assert_eq!(tag.subject, "first", "the subject field is in the right slot");
+    assert_eq!(
+        tag.subject, "first",
+        "the subject field is in the right slot"
+    );
 }
 
 /// A branch ahead of its upstream reports so. This is the field the
@@ -1222,13 +1225,17 @@ fn a_note_can_be_written_read_back_and_rewritten() {
 
     lattice_vcs::Note::set(&repo, &head, "first note\n").expect("set");
     assert_eq!(
-        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        lattice_vcs::Note::show(&repo, &head)
+            .as_deref()
+            .map(str::trim),
         Some("first note")
     );
 
     lattice_vcs::Note::set(&repo, &head, "rewritten\n").expect("rewrite");
     assert_eq!(
-        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        lattice_vcs::Note::show(&repo, &head)
+            .as_deref()
+            .map(str::trim),
         Some("rewritten"),
         "a second edit must overwrite, not be refused"
     );
@@ -1288,7 +1295,9 @@ fn prune_dry_run_reports_without_removing() {
 
     lattice_vcs::Note::prune(&repo, true).expect("dry run");
     assert_eq!(
-        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        lattice_vcs::Note::show(&repo, &head)
+            .as_deref()
+            .map(str::trim),
         Some("kept"),
         "a dry run must not remove a reachable commit's note"
     );

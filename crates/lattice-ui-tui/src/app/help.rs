@@ -1553,7 +1553,10 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("describe-bindings opens help");
         let body = h.content.as_string();
-        assert!(body.contains("## builtin"), "missing builtin section\n{body}");
+        assert!(
+            body.contains("## builtin"),
+            "missing builtin section\n{body}"
+        );
         assert!(body.contains("## modes"), "missing modes section\n{body}");
         // A builtin Normal-mode chord and an active mode's chord both
         // appear — the union is the point.

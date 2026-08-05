@@ -368,7 +368,7 @@ impl ModeRegistry {
             epoch: guards.bump_epoch(buffer, mode),
         }];
         if let Err(e) =
-            self.record_implies_cascade(active, &mut plan, &entry, mode, caps, buffer, guards)
+            self.record_implies_cascade(active, &mut plan, entry, mode, caps, buffer, guards)
         {
             active.set_major(None);
             for step in plan.iter().skip(1) {
@@ -486,8 +486,7 @@ impl ModeRegistry {
             epoch: guards.bump_epoch(buffer, mode),
         });
 
-        if let Err(e) =
-            self.record_implies_cascade(active, plan, &entry, mode, caps, buffer, guards)
+        if let Err(e) = self.record_implies_cascade(active, plan, entry, mode, caps, buffer, guards)
         {
             active.remove_minor(mode);
             if let Some(pos) = plan.iter().position(|s| s.mode == mode) {

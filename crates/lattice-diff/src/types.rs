@@ -69,10 +69,11 @@ pub enum HunkKind {
 /// All three are wired and behave identically with respect to
 /// hunk *kinds*; they differ in how they choose where hunk
 /// boundaries land for ambiguous edits.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum DiffAlgorithm {
     /// Git's default since 2.7. Best general-purpose results
     /// on code; preferred for Lattice.
+    #[default]
     Histogram,
     /// The classic Eugene Myers algorithm. Slightly weaker
     /// results on rebraced code; included for completeness.
@@ -82,12 +83,6 @@ pub enum DiffAlgorithm {
     /// you want the tightest output and don't mind a slower
     /// recompute. Mapped to `imara_diff::Algorithm::MyersMinimal`.
     MyersMinimal,
-}
-
-impl Default for DiffAlgorithm {
-    fn default() -> Self {
-        Self::Histogram
-    }
 }
 
 /// A single hunk: a contiguous region of change across the

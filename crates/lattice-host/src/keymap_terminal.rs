@@ -86,12 +86,11 @@ pub fn key_to_ansi_with_mode(
     // Capital ASCII letters yield the same control byte as
     // lower-case (Ctrl-A == Ctrl-a == \x01); xterm matches this
     // even on Caps-Lock.
-    if mods.ctrl() {
-        if let KeyKind::Char(c) = chord.key {
-            if let Some(b) = ctrl_char_byte(c) {
-                return Some(vec![b]);
-            }
-        }
+    if mods.ctrl()
+        && let KeyKind::Char(c) = chord.key
+        && let Some(b) = ctrl_char_byte(c)
+    {
+        return Some(vec![b]);
     }
 
     match chord.key {

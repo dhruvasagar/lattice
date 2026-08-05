@@ -235,15 +235,15 @@ pub(crate) fn echo_level_from_wire(level: lattice_grammar::EchoLevel) -> EchoLev
     }
 }
 
-/// Convert grammar's wire-typed [`lattice_grammar::EchoLevel`] (carried
-/// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
-/// because the App's is part of the public crate API; the grammar's is a
-/// dispatch detail.
-/// Resolve user-typed command text to a `CommandId`, accepting
-/// either the canonical registry name (`ex:write`) or an alias
-/// (`write`, `w`). Used by App handlers that take a command name
-/// from user input -- mirrors the two-stage logic in
-/// `excommand::parse_invocation`.
+// Convert grammar's wire-typed [`lattice_grammar::EchoLevel`] (carried
+// by `Effect::Echo`) into the App's display-typed `EchoLevel`. Two types
+// because the App's is part of the public crate API; the grammar's is a
+// dispatch detail.
+// Resolve user-typed command text to a `CommandId`, accepting
+// either the canonical registry name (`ex:write`) or an alias
+// (`write`, `w`). Used by App handlers that take a command name
+// from user input -- mirrors the two-stage logic in
+// `excommand::parse_invocation`.
 // 5.5.F.2: `resolve_command_name_or_alias` relocated to
 // `lattice_host::excommand::resolve_command_name_or_alias` alongside
 // `aliases()`. The in-module test now imports it directly through the
@@ -1889,14 +1889,14 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Sanity check: a bare motion drives the cursor through
-    /// the full translate + apply path. If this fails, the
-    /// harness itself is broken; every other `press_*` test
-    /// is suspect.
-    /// Sanity check: an operator + motion deletes the right
-    /// span end-to-end. Exercises the `[d]` action-kind
-    /// short-circuit (pushes `d` into `partial_chord`) plus
-    /// the `[d, w]` resolution under the prefix.
+    // Sanity check: a bare motion drives the cursor through
+    // the full translate + apply path. If this fails, the
+    // harness itself is broken; every other `press_*` test
+    // is suspect.
+    // Sanity check: an operator + motion deletes the right
+    // span end-to-end. Exercises the `[d]` action-kind
+    // short-circuit (pushes `d` into `partial_chord`) plus
+    // the `[d, w]` resolution under the prefix.
     // -- count flow seam ----------------------------------------
     //
     // These pin the path translate -> attach_count -> dispatcher
@@ -3052,9 +3052,9 @@ mod tests {
         );
     }
 
-    /// Inject an `InboundApplyEdit` into the App's drain
-    /// receiver. Replaces whatever was there; tests start with
-    /// an empty receiver so this is fine.
+    // Inject an `InboundApplyEdit` into the App's drain
+    // receiver. Replaces whatever was there; tests start with
+    // an empty receiver so this is fine.
 
     fn install_lsp_candidate_with_commit_chars(
         a: &mut App,
@@ -3546,7 +3546,7 @@ mod tests {
     fn app_in_command_mode(line: &str) -> App {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
-        a.editor.set_command_line_text(&line);
+        a.editor.set_command_line_text(line);
         a
     }
 

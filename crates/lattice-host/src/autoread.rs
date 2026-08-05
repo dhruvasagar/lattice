@@ -224,8 +224,7 @@ pub fn spawn_autoread_watcher_task(
 > {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AutoreadWatcherCommand>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<NotifyEvent>();
-    let (change_tx, change_rx) =
-        lattice_mode::inbound::make_inbound_raw::<AutoreadChange>(wake);
+    let (change_tx, change_rx) = lattice_mode::inbound::make_inbound_raw::<AutoreadChange>(wake);
     // The callback runs on notify's own worker thread; forward every event to
     // the tokio channel and filter inside the task (which holds the map).
     let watcher = RecommendedWatcher::new(
@@ -533,8 +532,8 @@ mod tests {
         std::fs::write(&file, "v1\n").unwrap();
 
         let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-        let (handle, _rx) = spawn_autoread_watcher_task(std::sync::Arc::clone(&wake))
-            .expect("spawn watcher");
+        let (handle, _rx) =
+            spawn_autoread_watcher_task(std::sync::Arc::clone(&wake)).expect("spawn watcher");
         let mut names = HashSet::new();
         names.insert("watched.txt".to_string());
         let mut watches = HashMap::new();

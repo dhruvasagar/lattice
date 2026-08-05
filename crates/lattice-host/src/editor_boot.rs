@@ -45,8 +45,8 @@ use crate::buffers::{BufferFlags, BufferId};
 use crate::editor::Editor;
 use crate::pane::{PaneId, PaneState, PaneTree};
 
-/// Build a fresh LSP subsystem. Returns the supervisor handle
-/// + cloned handles to the diagnostics layer + logger so the
+/// Build a fresh LSP subsystem. Returns the supervisor handle +
+/// cloned handles to the diagnostics layer + logger so the
 /// renderer's per-frame reads can skip the supervisor lock,
 /// plus the four server-initiated channel rx ends.
 ///
@@ -180,8 +180,8 @@ impl Editor {
     ///
     /// What happens here: event bus + LSP subsystem (with all
     /// four server-initiated channels) + every per-feature LSP
-    /// rx subscription; grammar registry populated with builtins
-    /// + ex-commands + auto-generated `:<mode-name>` toggles;
+    /// rx subscription; grammar registry populated with builtins +
+    /// ex-commands + auto-generated `:<mode-name>` toggles;
     /// mode registry with foundation / syntax / lsp-log /
     /// lsp-completion / oil / file-tree / snippet / buffer-kind
     /// modes; completion registry with builtins + the seven
@@ -433,7 +433,7 @@ impl Editor {
         // can fold `snippet.activation` / `snippet.languages` into
         // it (below) and `Editor` can hold the clone the cascade
         // re-folds.
-        let snippet_activation_policy;
+
         // BC.3a: mode registration runs through `boot.modes_mut()` (the
         // registration seam). Order preserved verbatim from the prior
         // `let mr = { … }` block.
@@ -451,7 +451,7 @@ impl Editor {
         // (registered in Phase A above), so no host-side handle threading.
         lattice_oil::register_oil_modes(boot.modes_mut());
         lattice_file_tree::register_file_tree_modes(boot.modes_mut());
-        snippet_activation_policy = lattice_snippet::register_snippet_modes(
+        let snippet_activation_policy = lattice_snippet::register_snippet_modes(
             boot.modes_mut(),
             snippet_registry_handle.clone(),
         );

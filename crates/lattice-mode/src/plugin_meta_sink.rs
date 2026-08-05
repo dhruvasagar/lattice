@@ -1,8 +1,8 @@
 //! `PluginMetaSink` — the generic seam the plugin loader writes plugin
 //! provenance through (PL8.B).
 //!
-//! The host owns a `PluginMetaRegistry` (host-issued `PluginId` → manifest name
-//! + doc) that backs provenance display (`SourceLayer::Plugin(id)` renders as
+//! The host owns a `PluginMetaRegistry` (host-issued `PluginId` → manifest name +
+//! doc) that backs provenance display (`SourceLayer::Plugin(id)` renders as
 //! the manifest name) and the loaded-plugin introspection surfaces
 //! (`:list-plugins` / `:describe-plugin`). The plugin loader
 //! (`lattice-plugin-loader`) must populate it as each plugin loads — but the

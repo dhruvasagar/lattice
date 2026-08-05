@@ -162,13 +162,12 @@ fn maybe_shorten_path(path: &std::path::Path, rs: &RenderState) -> String {
         .get_typed::<lattice_config::core_options::PathRelative>()
         .map(|v| *v)
         .unwrap_or(false);
-    if relative {
-        if let Some(ref cwd) = rs.current_dir {
-            if let Ok(rel) = path.strip_prefix(cwd) {
-                let s = rel.display().to_string();
-                return if s.is_empty() { ".".to_string() } else { s };
-            }
-        }
+    if relative
+        && let Some(ref cwd) = rs.current_dir
+        && let Ok(rel) = path.strip_prefix(cwd)
+    {
+        let s = rel.display().to_string();
+        return if s.is_empty() { ".".to_string() } else { s };
     }
     path.display().to_string()
 }
@@ -585,7 +584,7 @@ mod tests {
         let document = lattice_core::Document::empty();
         let mut editor = crate::editor::Editor::boot(document);
         let rs = editor.build_render_state();
-        let pane = editor.pane_tree.active().clone();
+        let pane = *editor.pane_tree.active();
 
         // ML.5d: lean 3-letter tag, no brackets.
         let active_mode = resolve_builtin_content(CORE_MODE, &pane, true, &rs, None);
@@ -611,7 +610,7 @@ mod tests {
         // stash stays at origin (motion doesn't sync it back).
         editor.set_cursor(lattice_protocol::position::Position::new(1, 4));
         let rs = editor.build_render_state();
-        let pane = editor.pane_tree.active().clone();
+        let pane = *editor.pane_tree.active();
 
         // The pane-tree stash is still at origin.
         assert_eq!(pane.cursor, lattice_protocol::position::Position::ZERO);
@@ -632,7 +631,7 @@ mod tests {
         let document = lattice_core::Document::empty();
         let mut editor = crate::editor::Editor::boot(document);
         let rs = editor.build_render_state();
-        let pane = editor.pane_tree.active().clone();
+        let pane = *editor.pane_tree.active();
 
         let overridden = resolve_builtin_content(CORE_PATH, &pane, true, &rs, Some("[tree] /root"));
         assert_eq!(overridden.plain(), "[tree] /root");

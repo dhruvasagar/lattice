@@ -96,7 +96,7 @@ impl FoldSource for MagitStatusFoldSource {
             return Vec::new();
         };
         let snap = handle.snapshot();
-        let total = snap.buffer.line_count() as u32;
+        let total = snap.buffer.line_count();
         let mut folds = Vec::new();
         let mut line = 0u32;
         while line < total {
@@ -115,29 +115,29 @@ impl FoldSource for MagitStatusFoldSource {
             // from real entries.
             if let Some(sl) = classify_line(&g, line) {
                 let key = entry_key(&sl);
-                if let Some(&count) = g.expanded.get(&key) {
-                    if count > 0 {
-                        let count = count as u32;
-                        let body_end = (line + count).min(total.saturating_sub(1));
-                        folds.push(Fold {
-                            start_line: line,
-                            end_line: body_end,
-                            closed: false,
-                            identity: Some(fold_identity("magit:entry", &key, 0)),
-                        });
-                        // MG.45: the hunk level moved to
-                        // `MagitHunkFoldSource`, which magit-hunk-mode
-                        // registers on every buffer that renders a
-                        // diff. Emitting it here too would put two
-                        // folds over the same rows from two providers
-                        // — and it could only ever describe a
-                        // SINGLE-file expansion, because a multi-file
-                        // one (`git show`, `stash show -p`) needs a
-                        // file level between entry and hunk that this
-                        // source has no way to see.
-                        line += 1 + count;
-                        continue;
-                    }
+                if let Some(&count) = g.expanded.get(&key)
+                    && count > 0
+                {
+                    let count = count as u32;
+                    let body_end = (line + count).min(total.saturating_sub(1));
+                    folds.push(Fold {
+                        start_line: line,
+                        end_line: body_end,
+                        closed: false,
+                        identity: Some(fold_identity("magit:entry", &key, 0)),
+                    });
+                    // MG.45: the hunk level moved to
+                    // `MagitHunkFoldSource`, which magit-hunk-mode
+                    // registers on every buffer that renders a
+                    // diff. Emitting it here too would put two
+                    // folds over the same rows from two providers
+                    // — and it could only ever describe a
+                    // SINGLE-file expansion, because a multi-file
+                    // one (`git show`, `stash show -p`) needs a
+                    // file level between entry and hunk that this
+                    // source has no way to see.
+                    line += 1 + count;
+                    continue;
                 }
             }
             line += 1;

@@ -429,8 +429,8 @@ enum ActorCmd {
         language_id: String,
         text: String,
     },
-    /// Apply one committed edit to the actor's DocSync mirror
-    /// + queue the `didChange` event. The per-actor debounce
+    /// Apply one committed edit to the actor's DocSync mirror +
+    /// queue the `didChange` event. The per-actor debounce
     /// timer drives the eventual flush; rapid edits coalesce.
     /// Phase 4.x.
     RecordEdit {

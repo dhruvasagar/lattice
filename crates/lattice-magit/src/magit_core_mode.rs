@@ -297,11 +297,11 @@ fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() as u32 {
-        if let Some(t) = snap.buffer.line(l) {
-            if crate::sections::is_section_header(t.trim()) {
-                lines.push(l);
-            }
+    for l in 0..snap.buffer.line_count() {
+        if let Some(t) = snap.buffer.line(l)
+            && crate::sections::is_section_header(t.trim())
+        {
+            lines.push(l);
         }
     }
     lines
@@ -322,7 +322,7 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() as u32 {
+    for l in 0..snap.buffer.line_count() {
         if let Some(raw) = snap.buffer.line(l) {
             // Section headers and one-off status messages ("No
             // changes...") all render at column 0 — never indented —
@@ -400,7 +400,7 @@ pub(crate) fn diff_file_lines(store: &BufferStoreHandle, buffer_id: BufferId) ->
         return vec![];
     };
     let snap = h.snapshot();
-    (0..snap.buffer.line_count() as u32)
+    (0..snap.buffer.line_count())
         .filter(|l| {
             snap.buffer
                 .line(*l)
@@ -417,7 +417,7 @@ fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() as u32 {
+    for l in 0..snap.buffer.line_count() {
         if let Some(t) = snap.buffer.line(l) {
             let t = t.trim();
             if t.starts_with("@@") || t.starts_with("diff --git") {
@@ -1333,7 +1333,7 @@ impl Mode for MagitCoreMode {
     /// Guard is empty; it exists only to satisfy the lifecycle
     /// contract (a fresh Guard per activation).
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
-        Box::pin(async move { Ok(ActionRegsGuard::default()) })
+        Box::pin(async move { Ok(ActionRegsGuard) })
     }
 }
 

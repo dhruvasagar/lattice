@@ -432,7 +432,9 @@ mod tests {
             other => panic!("expected Bound on <C-h>M, got {other:?}"),
         }
 
-        let spec = registry.lookup_by_name("ex:describe-mode").expect("registered");
+        let spec = registry
+            .lookup_by_name("ex:describe-mode")
+            .expect("registered");
         assert_eq!(
             spec.args_schema.len(),
             1,
@@ -473,11 +475,8 @@ mod tests {
             BindingMode::Search,
             BindingMode::Replace,
         ] {
-            let result = handle.lookup_with_context(
-                mode,
-                &[KeyChord::ctrl('h'), KeyChord::char('M')],
-                &[],
-            );
+            let result =
+                handle.lookup_with_context(mode, &[KeyChord::ctrl('h'), KeyChord::char('M')], &[]);
             assert!(
                 matches!(result, LookupResult::Unbound),
                 "<C-h>M leaked into {mode:?}",
@@ -498,7 +497,9 @@ mod tests {
         let expected = registry
             .id_by_name("ex:describe-bindings")
             .expect("ex:describe-bindings registered");
-        let keymap_id = registry.id_by_name("ex:keymap").expect("ex:keymap still registered");
+        let keymap_id = registry
+            .id_by_name("ex:keymap")
+            .expect("ex:keymap still registered");
         match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('K')]) {
             LookupResult::Bound { command, .. } => {
                 assert_eq!(command.command.command, expected);

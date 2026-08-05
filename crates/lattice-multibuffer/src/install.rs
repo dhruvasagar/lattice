@@ -1,7 +1,7 @@
 //! BC.7 (2026-06-24): the crate-owned `install(boot)` entry point.
 //!
-//! The multibuffer subsystem registers its own **modes + commands + services
-//! + off-keystroke wake** through the generic [`SubsystemBoot`] surface,
+//! The multibuffer subsystem registers its own **modes + commands + services +
+//! off-keystroke wake** through the generic [`SubsystemBoot`] surface,
 //! collapsing the host's ~6 scattered `editor_boot` sites into one Phase-B
 //! line (`lattice_multibuffer::install(&mut boot)`) — the terminal /
 //! claude-code / diff shape.

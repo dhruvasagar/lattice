@@ -645,8 +645,8 @@ fn keymap_handle_lookup_with_three_minors_three_chord(c: &mut Criterion) {
 /// Hot path with 3 minors registered but `active_modes`
 /// empty. Confirms the fast path bypasses the composite
 /// fold and only pays one `ArcSwap::load` + lookup. Pre-
-/// review-R3 fix this incurs an unconditional `Vec` build
-/// + sort even though `active_modes` is empty; bench-row
+/// review-R3 fix this incurs an unconditional `Vec` build +
+/// sort even though `active_modes` is empty; bench-row
 /// flushes that out so the optimisation (or its absence)
 /// is visible.
 fn keymap_handle_lookup_empty_minors_with_layers_registered(c: &mut Criterion) {

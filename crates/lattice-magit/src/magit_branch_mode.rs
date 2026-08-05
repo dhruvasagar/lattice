@@ -412,7 +412,7 @@ mod tests {
             Effect::Confirm {
                 prompt,
                 yes_action,
-                args,
+                args: _,
             } => {
                 assert_eq!(prompt, "Delete branch feature/foo?");
                 assert_eq!(yes_action, "action:magit-branch-delete-execute");

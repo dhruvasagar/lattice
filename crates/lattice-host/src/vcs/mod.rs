@@ -56,6 +56,12 @@ impl Drop for VcsSubscriptionGuard {
     }
 }
 
+impl Default for VcsSubsystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VcsSubsystem {
     pub fn new() -> Self {
         Self {
@@ -154,10 +160,10 @@ impl VcsSubsystem {
                         let Some(buffer_id) = resolver.buffer_id_for(id) else {
                             continue;
                         };
-                        if let Ok(mut sessions) = self.sessions.lock() {
-                            if sessions.remove(&buffer_id).is_some() {
-                                diff_subsystem.drop_session(buffer_id);
-                            }
+                        if let Ok(mut sessions) = self.sessions.lock()
+                            && sessions.remove(&buffer_id).is_some()
+                        {
+                            diff_subsystem.drop_session(buffer_id);
                         }
                     }
                     _ => {}

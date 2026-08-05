@@ -33,8 +33,8 @@ fn entry(path: &std::path::Path, line: u32, col: u32, msg: &str) -> ErrorEntry {
 #[test]
 fn error_next_walks_entries_across_files_and_wraps() {
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\na2\na3\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\na2\na3\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
 
@@ -98,8 +98,8 @@ fn error_next_walks_entries_across_files_and_wraps() {
 #[test]
 fn error_prev_wraps_and_cc_first_last_resolve() {
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\na2\na3\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\na2\na3\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
     editor.set_error_list(vec![
@@ -160,8 +160,8 @@ fn compile_jump_to_location_moves_cursor_and_syncs_index() {
     use lattice_host::dispatch::DispatchOutcome;
 
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\na2\na3\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\nb2\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\na2\na3\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\nb2\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
     editor.set_error_list(vec![
@@ -213,8 +213,8 @@ fn compile_jump_to_location_without_matching_entry_still_jumps() {
     use lattice_host::dispatch::DispatchOutcome;
 
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\na2\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\na2\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
     editor.set_error_list(vec![entry(&file_a, 1, 0, "only")]);
@@ -285,8 +285,8 @@ fn error_list_picker_lists_entries_and_empty_echoes() {
     // CM.8: `:clist` / `:cl` opens the error list in a picker
     // (parallel to `:diagnostics`).
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
 
@@ -315,9 +315,9 @@ fn error_list_file_nav_lands_on_first_entry_of_each_file() {
     // Traversal happens with NO `*compilation*` buffer open — the list
     // is core Editor state (the vim contract, not emacs).
     let dir = tempfile::tempdir().unwrap();
-    let file_a = write_file(&dir.path().to_path_buf(), "a.txt", "a0\na1\na2\na3\n");
-    let file_b = write_file(&dir.path().to_path_buf(), "b.txt", "b0\nb1\nb2\n");
-    let file_c = write_file(&dir.path().to_path_buf(), "c.txt", "c0\nc1\n");
+    let file_a = write_file(dir.path(), "a.txt", "a0\na1\na2\na3\n");
+    let file_b = write_file(dir.path(), "b.txt", "b0\nb1\nb2\n");
+    let file_c = write_file(dir.path(), "c.txt", "c0\nc1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
     // Independence: no compilation buffer exists.

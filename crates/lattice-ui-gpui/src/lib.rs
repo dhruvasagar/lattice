@@ -352,8 +352,8 @@ impl GpuiApp {
     /// event bus, syntax, buffer registry) and supplies the
     /// renderer-side caches alongside.
     ///
-    /// Real dispatch (key events -> `Action` -> `editor.dispatch`)
-    /// + paint (read `editor.document` snapshot + cursor) wire in
+    /// Real dispatch (key events -> `Action` -> `editor.dispatch`) +
+    /// paint (read `editor.document` snapshot + cursor) wire in
     /// 5.7.B.3 / 5.7.B.4. The renderer-side post-boot helpers
     /// the TUI peer runs after `Editor::boot`
     /// (`activate_major_for_buffer_kind`,
@@ -983,7 +983,7 @@ impl GpuiApp {
             self.theme.font_family = (**family).to_owned();
         }
         if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
-            self.theme.font_size_pt = (*size).max(4).min(96) as u32;
+            self.theme.font_size_pt = (*size).clamp(4, 96) as u32;
         }
         if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>()
         {
@@ -1034,9 +1034,11 @@ impl GpuiApp {
             }
             Action::PickerDismiss => {
                 let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
-                let mut outcome = DispatchOutcome::default();
-                outcome.consumed = true;
-                outcome.renderer_signals = signals.clone();
+                let outcome = DispatchOutcome {
+                    consumed: true,
+                    renderer_signals: signals.clone(),
+                    ..Default::default()
+                };
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }
@@ -1789,7 +1791,7 @@ mod tests {
         // Long enough document that zz centering would be
         // observable (we don't assert viewport position, just
         // that the action dispatched and partial_chord clears).
-        let doc = Document::from_text(&"line\n".repeat(20));
+        let doc = Document::from_text("line\n".repeat(20));
         let mut app = GpuiApp::new(doc);
 
         let outcome1 = app.dispatch_keystroke("z", false, false, false, false);

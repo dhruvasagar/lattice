@@ -59,7 +59,7 @@ struct BenchActivator {
 
 impl BenchActivator {
     fn new(bus: Arc<EventBus>) -> Self {
-        let stub_store: Arc<dyn BufferStore> = Arc::new(StubBufferStore::default());
+        let stub_store: Arc<dyn BufferStore> = Arc::new(StubBufferStore);
         let mb_registry: MultibufferRegistryHandle = Arc::new(InMemoryMultibufferRegistry::new());
         let search_svc: ProjectSearchServiceHandle = Arc::new(InMemoryProjectSearchService::new());
         let mut services = ServiceRegistry::new();

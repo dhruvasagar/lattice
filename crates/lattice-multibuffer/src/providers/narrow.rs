@@ -140,18 +140,18 @@ pub fn create_narrow_view(
 
     // Set the sticky headerline. Narrow is instantaneous — no
     // InProgress phase, straight to Complete.
-    if let Some(mb_reg) = activator.services().get::<MultibufferRegistryHandle>() {
-        if let Some(view) = mb_reg.handle(view_id) {
-            let summary = if label.is_empty() {
-                format!("[narrow] L{}–{}", start_line + 1, end_line + 1)
-            } else {
-                format!("[narrow] {label} L{}–{}", start_line + 1, end_line + 1)
-            };
-            view.set_headerline(HeaderlineStatus::Complete {
-                summary,
-                emphasis: None,
-            });
-        }
+    if let Some(mb_reg) = activator.services().get::<MultibufferRegistryHandle>()
+        && let Some(view) = mb_reg.handle(view_id)
+    {
+        let summary = if label.is_empty() {
+            format!("[narrow] L{}–{}", start_line + 1, end_line + 1)
+        } else {
+            format!("[narrow] {label} L{}–{}", start_line + 1, end_line + 1)
+        };
+        view.set_headerline(HeaderlineStatus::Complete {
+            summary,
+            emphasis: None,
+        });
     }
 
     activator.activate_minor_by_id(view_id, NarrowMode::mode_id());

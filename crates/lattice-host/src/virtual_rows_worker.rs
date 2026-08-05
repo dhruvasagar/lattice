@@ -537,8 +537,10 @@ mod tests {
     /// Shorthand: build a fresh `DocumentSnapshot` carrying
     /// the supplied text. Used by the line-count-driven tests.
     fn snapshot_with_text(text: &str) -> Arc<DocumentSnapshot> {
-        let mut snap = DocumentSnapshot::default();
-        snap.buffer = Buffer::from_text(text);
+        let snap = DocumentSnapshot {
+            buffer: Buffer::from_text(text),
+            ..Default::default()
+        };
         Arc::new(snap)
     }
 
@@ -663,7 +665,7 @@ mod tests {
     #[test]
     fn fingerprint_changes_when_source_line_count_changes() {
         let p: Arc<dyn VirtualRowProvider> = Arc::new(MockProvider::new(1, vec![]));
-        let fp_a = compute_fingerprint(&[p.clone()], 10);
+        let fp_a = compute_fingerprint(std::slice::from_ref(&p), 10);
         let fp_b = compute_fingerprint(&[p], 11);
         assert_ne!(fp_a, fp_b);
     }
@@ -672,7 +674,7 @@ mod tests {
     fn fingerprint_changes_when_provider_version_changes() {
         let mock = Arc::new(MockProvider::new(1, vec![]));
         let dyn_provider: Arc<dyn VirtualRowProvider> = mock.clone();
-        let fp_a = compute_fingerprint(&[dyn_provider.clone()], 10);
+        let fp_a = compute_fingerprint(std::slice::from_ref(&dyn_provider), 10);
         mock.bump_version();
         let fp_b = compute_fingerprint(&[dyn_provider], 10);
         assert_ne!(fp_a, fp_b);

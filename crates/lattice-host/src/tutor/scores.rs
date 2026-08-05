@@ -70,16 +70,16 @@ impl TutorScores {
     /// Persist to the XDG data dir.  Logs and swallows any I/O errors.
     pub fn save(&self) {
         let Some(path) = scores_path() else { return };
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::debug!(
-                    target: "lattice_host::tutor_scores",
-                    path = %parent.display(),
-                    error = %e,
-                    "tutor-scores: could not create data dir"
-                );
-                return;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::debug!(
+                target: "lattice_host::tutor_scores",
+                path = %parent.display(),
+                error = %e,
+                "tutor-scores: could not create data dir"
+            );
+            return;
         }
         match toml::to_string_pretty(self) {
             Ok(text) => {

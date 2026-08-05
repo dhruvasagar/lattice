@@ -821,10 +821,10 @@ impl FoldProvider for SyntaxPrimary {
         ProviderKind::Primary
     }
     fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
-        if let Some(syntax) = ctx.syntax {
-            if let Some(folds) = compute_syntax_folds(syntax) {
-                return folds;
-            }
+        if let Some(syntax) = ctx.syntax
+            && let Some(folds) = compute_syntax_folds(syntax)
+        {
+            return folds;
         }
         // Cascade: markdown for `.md`, else indent — matches
         // pre-refactor `Editor::recompute_syntax_folds`.
@@ -852,10 +852,10 @@ impl FoldProvider for LspPrimary {
         ProviderKind::Primary
     }
     fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
-        if let Some(folds) = ctx.lsp_folds {
-            if !folds.is_empty() {
-                return folds.to_vec();
-            }
+        if let Some(folds) = ctx.lsp_folds
+            && !folds.is_empty()
+        {
+            return folds.to_vec();
         }
         // Cascade to syntax provider's behaviour — matches
         // pre-refactor `Editor::recompute_lsp_folds`.

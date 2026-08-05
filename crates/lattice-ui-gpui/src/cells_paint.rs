@@ -146,8 +146,8 @@ pub fn cell_row_to_text_runs(
 /// [`cell_row_to_text_runs`] — the GPU's converter once it consumes the
 /// canonical `DisplayMatrix` directly instead of the projected cell grid.
 ///
-/// A `DisplayLine` carries style-*tagged* runs (a `lattice_syntax::Style`
-/// + non-style flag bits), not resolved colours. This resolves each run to
+/// A `DisplayLine` carries style-*tagged* runs (a `lattice_syntax::Style` +
+/// non-style flag bits), not resolved colours. This resolves each run to
 /// the exact `(fg, bg, flags)` the worker's `display_line_to_cell_row`
 /// projection produced (style → `theme.syntax_style(..).fg`; a
 /// `WS_TRAILING` marker run → `whitespace_trailing_style` fg; an `INLAY`

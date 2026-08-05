@@ -631,7 +631,7 @@ mod tests {
     fn columns_width_is_max_across_visible() {
         // Two candidates, same category, different widths — the
         // column width is the max so every row's cell lines up.
-        let cands = vec![
+        let cands = [
             candidate_with(vec![Annotation::Kind("→".into())]),
             candidate_with(vec![Annotation::Kind(":".into())]),
         ];
@@ -681,7 +681,7 @@ mod tests {
     fn annotation_columns_width_counts_styled_cell() {
         // A styled cell occupies the width of its concatenated text, so
         // it aligns alongside single-variant cells in the same column.
-        let cands = vec![
+        let cands = [
             candidate_with(vec![Annotation::Styled {
                 category: "perm".into(),
                 segments: vec![seg("drwxr-xr-x", "completion.annotation.perm.type")],
@@ -701,7 +701,7 @@ mod tests {
         // Display order: keybinding -> source -> kind -> doc ->
         // custom. Source sits right after keybinding so the user
         // sees the contributing mode at a glance.
-        let cands = vec![candidate_with(vec![
+        let cands = [candidate_with(vec![
             Annotation::DocSnippet("docs".into()),
             Annotation::Source("builtin".into()),
             Annotation::Kind("ex".into()),
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn columns_empty_when_no_annotations() {
-        let cands = vec![candidate_with(vec![]), candidate_with(vec![])];
+        let cands = [candidate_with(vec![]), candidate_with(vec![])];
         let cols = AnnotationColumns::from_visible(cands.iter());
         assert!(cols.is_empty());
         assert_eq!(cols.iter().count(), 0);
@@ -727,7 +727,7 @@ mod tests {
         // still exists (width from the row that has it) so the
         // row without one renders a blank cell of that width and
         // the kind column stays aligned across both rows.
-        let cands = vec![
+        let cands = [
             candidate_with(vec![
                 Annotation::Keybinding(vec![]),
                 Annotation::Kind("ex".into()),
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn columns_custom_slots_sort_after_builtins() {
-        let cands = vec![candidate_with(vec![
+        let cands = [candidate_with(vec![
             Annotation::Custom {
                 text: "plug".into(),
                 slot: "annotation_plugin".into(),

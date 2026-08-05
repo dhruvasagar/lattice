@@ -288,25 +288,25 @@ impl CompilationService for DefaultCompilationService {
     }
 
     fn kill(&self) {
-        if let Ok(mut st) = self.state.lock() {
-            if let Some(mut child) = st.child.take() {
-                // Unix: kill the entire process group, not just the
-                // shell PID. The shell was put in its own process
-                // group via pre_exec(setpgid(0,0)), so killpg()
-                // terminates the shell AND every pipeline grandchild.
-                // Without this, pipe grandchildren (seq, while, ...)
-                // survive the shell kill and keep stdout/stderr open.
-                #[cfg(unix)]
-                {
-                    let pgid = child.id();
-                    unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = child.kill();
-                }
-                let _ = child.wait();
+        if let Ok(mut st) = self.state.lock()
+            && let Some(mut child) = st.child.take()
+        {
+            // Unix: kill the entire process group, not just the
+            // shell PID. The shell was put in its own process
+            // group via pre_exec(setpgid(0,0)), so killpg()
+            // terminates the shell AND every pipeline grandchild.
+            // Without this, pipe grandchildren (seq, while, ...)
+            // survive the shell kill and keep stdout/stderr open.
+            #[cfg(unix)]
+            {
+                let pgid = child.id();
+                unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
             }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
         }
     }
 }

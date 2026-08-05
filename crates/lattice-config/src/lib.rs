@@ -75,9 +75,9 @@ mod expand_height;
 pub mod group;
 pub mod loader;
 mod modeline_zone;
+mod pane_options;
 mod plugin_options;
 mod signcolumn;
-mod pane_options;
 mod window_options;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
@@ -134,8 +134,7 @@ pub use core_options::{
     ModelinePadding, ModelineRight, ModelineSeparator, NoFile, Number, PickerResultDisplay,
     ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff, SignColumnOption,
     SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines,
-    TransientMaxRows,
-    Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab,
+    TransientMaxRows, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab,
     WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;

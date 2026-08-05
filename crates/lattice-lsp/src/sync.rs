@@ -278,8 +278,8 @@ impl DocSync {
     }
 
     /// Drain every open doc's pending changes into per-URI
-    /// `didChange` payloads. Used by the actor's debounce timer
-    /// + by editor shutdown so the server sees a coherent final
+    /// `didChange` payloads. Used by the actor's debounce timer +
+    /// by editor shutdown so the server sees a coherent final
     /// state before `didClose`.
     pub fn take_flush_all_payloads(
         &mut self,

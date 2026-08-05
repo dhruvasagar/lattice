@@ -2425,9 +2425,7 @@ fn parse_history_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
         // PBH.5: the accepted set lives here AND in the `apply` mapping
         // above; both must list a kind for it to be reachable. Adding it
         // to only one is the failure this arm's test catches.
-        "commands" | "searches" | "pane-buffers" => {
-            Ok(Args::List(vec![ArgValue::String(lower)]))
-        }
+        "commands" | "searches" | "pane-buffers" => Ok(Args::List(vec![ArgValue::String(lower)])),
         other => Err(CommandError::BadArgs(format!(
             "unknown history kind `{other}`; expected `commands`, `searches`, or `pane-buffers`"
         ))),

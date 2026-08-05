@@ -969,7 +969,7 @@ mod tests {
         let err = r
             .set_typed::<PickerDisplay>(String::from("sidebar"))
             .unwrap_err();
-        let msg = format!("{err}");
+        let msg = err.to_string();
         assert!(
             msg.contains("picker.display must be one of"),
             "unexpected error message: {msg}"

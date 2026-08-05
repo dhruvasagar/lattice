@@ -190,8 +190,8 @@ struct RegistryInner {
     elements: Vec<ThemeElement>,
     by_name: HashMap<ElementName, ElementId>,
     palette: Palette,
-    /// T.9: theme-global element overrides (the active theme's overrides
-    /// + `:set ui.*` + user TOML). Keyed by name so an override may
+    /// T.9: theme-global element overrides (the active theme's overrides +
+    /// `:set ui.*` + user TOML). Keyed by name so an override may
     /// target an element registered later (a mode element). Resolution
     /// overlays the override's set fields on top of the element's
     /// resolved default (design §5.1, override scope 1).
@@ -473,15 +473,15 @@ fn resolve_spec(inner: &RegistryInner, spec: &StyleSpec, depth: u8) -> Style {
 /// for theme-global overrides (in [`resolve_element`]). `inherit` is
 /// NOT re-applied here — the caller handles the base.
 fn apply_overlay(inner: &RegistryInner, style: &mut Style, spec: &StyleSpec) {
-    if let Some(cref) = &spec.fg {
-        if let Some(c) = resolve_color(inner, cref) {
-            style.fg = Some(c);
-        }
+    if let Some(cref) = &spec.fg
+        && let Some(c) = resolve_color(inner, cref)
+    {
+        style.fg = Some(c);
     }
-    if let Some(cref) = &spec.bg {
-        if let Some(c) = resolve_color(inner, cref) {
-            style.bg = Some(c);
-        }
+    if let Some(cref) = &spec.bg
+        && let Some(c) = resolve_color(inner, cref)
+    {
+        style.bg = Some(c);
     }
 
     let m = &spec.modifiers;

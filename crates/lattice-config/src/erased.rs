@@ -95,7 +95,7 @@ pub trait ErasedOption: Send + Sync {
     ) -> std::option::Option<String>;
 
     /// Project back to the concrete type for typed-handle reads.
-
+    ///
     /// Implementors return `self`. Crate-private trait methods
     /// can't be expressed cleanly across the boundary, so we keep
     /// this in the public surface but document it as

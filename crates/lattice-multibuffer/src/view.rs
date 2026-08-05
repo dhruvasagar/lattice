@@ -5,8 +5,8 @@
 //! Composes the five steps so providers can't forget any:
 //!
 //! 1. Allocate a `BufferId`.
-//! 2. Build the typed `MultibufferDocumentHandle` from `sources`
-//!    + `excerpts` (empty inputs are valid — async providers
+//! 2. Build the typed `MultibufferDocumentHandle` from `sources` +
+//!    `excerpts` (empty inputs are valid — async providers
 //!    open empty views and stream content via
 //!    [`MultibufferDocumentHandle::append_excerpts`]).
 //! 3. Register the typed handle in `MultibufferRegistry` (pulled

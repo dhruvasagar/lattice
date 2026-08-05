@@ -10,7 +10,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use lattice_core::{BufferFlags, BufferId, BufferKind};
@@ -129,9 +129,9 @@ impl Drop for TempFiles {
     }
 }
 
-fn entry(path: &PathBuf, line: u32, severity: ErrorSeverity, msg: &str) -> ErrorEntry {
+fn entry(path: &Path, line: u32, severity: ErrorSeverity, msg: &str) -> ErrorEntry {
     ErrorEntry {
-        path: path.clone(),
+        path: path.to_path_buf(),
         line,
         col: 0,
         severity,

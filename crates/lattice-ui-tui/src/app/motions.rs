@@ -30,10 +30,10 @@ use lattice_protocol::position::Position;
 
 use super::{App, BufferId, BufferKind, PositionSource};
 
-/// Cap on entries in the position-history ring. The write side
-/// (`push_position_history`) drops the oldest entry when this
-/// is exceeded; the walkers (`do_walk_history` etc.) clamp
-/// against the live length.
+// Cap on entries in the position-history ring. The write side
+// (`push_position_history`) drops the oldest entry when this
+// is exceeded; the walkers (`do_walk_history` etc.) clamp
+// against the live length.
 // 5.5.F.4.2: `POSITION_HISTORY_CAP` relocated to
 // `lattice_host::dispatch::POSITION_HISTORY_CAP` alongside
 // `Editor::push_position_history`. No App-side consumer remains.
@@ -49,10 +49,10 @@ impl App {
     // [`lattice_host::dispatch::Editor::do_jump_history`] (zero
     // App callers; deleted).
 
-    /// 5.5.G.6: body migrated to
-    /// [`lattice_host::dispatch::Editor::do_mark_history`]. App
-    /// callers (none today; `Action::WalkMark*` arms now route
-    /// host-side) eliminated.
+    // 5.5.G.6: body migrated to
+    // [`lattice_host::dispatch::Editor::do_mark_history`]. App
+    // callers (none today; `Action::WalkMark*` arms now route
+    // host-side) eliminated.
 
     // 5.5.H: `do_walk_history` App-side delegate retired (zero
     // callers; `pop_popup_back` + `do_jump_history` migrated
@@ -186,9 +186,9 @@ impl App {
         Some(u32::from(height).saturating_sub(2).max(1))
     }
 
-    /// Jump the cursor to a viewport-relative line. `H` -> top of view,
-    /// `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
-    /// destination line's length).
+    // Jump the cursor to a viewport-relative line. `H` -> top of view,
+    // `M` -> middle, `L` -> bottom. Column is preserved (clamped to the
+    // destination line's length).
     // 5.5.G.4: `do_jump_viewport`, `do_scroll_cursor_to`, `do_page`,
     // `do_scroll_line` migrated to [`lattice_host::dispatch::Editor`].
 

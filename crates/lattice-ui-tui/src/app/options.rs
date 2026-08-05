@@ -8,8 +8,8 @@
 //!   render hot path uses).
 //! - `rebuild_option_cache` (refreshes the renderer-visible
 //!   projection from the canonical config).
-//! - `do_set` (`:set foo=bar` body), `drain_option_changes`
-//!   + `apply_option_cascade` (the per-option cascade
+//! - `do_set` (`:set foo=bar` body), `drain_option_changes` +
+//!   `apply_option_cascade` (the per-option cascade
 //!   driven from the OptionChanged event bus).
 //! - `do_describe_option` (`:describe-option <name>`),
 //!   `do_list_options` (`:options` listing).

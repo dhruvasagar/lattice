@@ -104,7 +104,7 @@ impl Mode for LspServerLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -161,7 +161,7 @@ impl Mode for LspServerLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snap.buffer.line_count().saturating_sub(1);
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -237,7 +237,7 @@ impl Mode for LspLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -279,7 +279,7 @@ impl Mode for LspLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snap.buffer.line_count().saturating_sub(1);
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -359,7 +359,7 @@ impl Mode for LspTraceLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -416,7 +416,7 @@ impl Mode for LspTraceLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1) as u32;
+                    let last_line = snap.buffer.line_count().saturating_sub(1);
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -589,36 +589,36 @@ impl Mode for LspMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    /// M-async.5: drive the LSP `initialize` round-trip from the
-    /// mode's lifecycle directly. The mode's "active" state then
-    /// genuinely means "LSP is ready to serve this buffer" --
-    /// hover / completion / format requests issued immediately
-    /// after activation are serviceable, not silently no-op.
-    ///
-    /// Flow:
-    /// 1. Resolve the buffer's filesystem path + current text via
-    ///    the `BufferStoreHandle` service. Path-less buffers
-    ///    (scratch / unsaved) skip the initialize and succeed
-    ///    with a no-op Guard -- they're still in `lsp-mode` for
-    ///    the cascade's sake, but no server is attached.
-    /// 2. Call `supervisor.open_buffer(path, text).await`. The
-    ///    supervisor task spawns matching server actors (one
-    ///    `initialize` handshake per fresh server) and registers
-    ///    the buffer with each.
-    /// 3. On success: publish `LspBufferAttached` AFTER initialize
-    ///    completes (subscribers can now rely on it to mean
-    ///    "operational"). Return the Guard.
-    /// 4. On error: return `LifecycleFailed`. The dispatcher
-    ///    publishes `ModeActivationFailed`; the App's
-    ///    `drain_mode_lifecycle_events` subscriber calls
-    ///    `deactivate_mode_by_id` to roll back `active_modes`.
-    ///
-    /// M-async.4 epoch counter protects against the rapid
-    /// `:lsp-mode` toggle race: if the user deactivates while
-    /// initialize is in flight, the spawn task's `try_insert`
-    /// fails the epoch match, the Guard drops on the spawn
-    /// side (publishing `LspBufferDetached`), and the App stays
-    /// consistent.
+    // M-async.5: drive the LSP `initialize` round-trip from the
+    // mode's lifecycle directly. The mode's "active" state then
+    // genuinely means "LSP is ready to serve this buffer" --
+    // hover / completion / format requests issued immediately
+    // after activation are serviceable, not silently no-op.
+    //
+    // Flow:
+    // 1. Resolve the buffer's filesystem path + current text via
+    //    the `BufferStoreHandle` service. Path-less buffers
+    //    (scratch / unsaved) skip the initialize and succeed
+    //    with a no-op Guard -- they're still in `lsp-mode` for
+    //    the cascade's sake, but no server is attached.
+    // 2. Call `supervisor.open_buffer(path, text).await`. The
+    //    supervisor task spawns matching server actors (one
+    //    `initialize` handshake per fresh server) and registers
+    //    the buffer with each.
+    // 3. On success: publish `LspBufferAttached` AFTER initialize
+    //    completes (subscribers can now rely on it to mean
+    //    "operational"). Return the Guard.
+    // 4. On error: return `LifecycleFailed`. The dispatcher
+    //    publishes `ModeActivationFailed`; the App's
+    //    `drain_mode_lifecycle_events` subscriber calls
+    //    `deactivate_mode_by_id` to roll back `active_modes`.
+    //
+    // M-async.4 epoch counter protects against the rapid
+    // `:lsp-mode` toggle race: if the user deactivates while
+    // initialize is in flight, the spawn task's `try_insert`
+    // fails the epoch match, the Guard drops on the spawn
+    // side (publishing `LspBufferDetached`), and the App stays
+    // consistent.
     // ML.3c: the `lsp` readiness badge moved off `status_line_items` to a
     // registered modeline element produced by `crate::modeline`
     // (`lsp_content` + the forwarder that accumulates `$/progress` /
@@ -683,13 +683,13 @@ impl Mode for LspMode {
                 // `initialize` handshake cost for any newly-
                 // spawned actor). Skip when no supervisor is
                 // wired (test paths that don't register one).
-                if let Some(sup) = ctx.service::<LspSupervisorHandle>() {
-                    if let Err(e) = sup.open_buffer(path.clone(), text).await {
-                        return Err(ModeActivationError::LifecycleFailed {
-                            mode: LspMode::mode_id(),
-                            reason: format!("open_buffer({}) failed: {e}", path.display()),
-                        });
-                    }
+                if let Some(sup) = ctx.service::<LspSupervisorHandle>()
+                    && let Err(e) = sup.open_buffer(path.clone(), text).await
+                {
+                    return Err(ModeActivationError::LifecycleFailed {
+                        mode: LspMode::mode_id(),
+                        reason: format!("open_buffer({}) failed: {e}", path.display()),
+                    });
                 }
             }
             // Publish AFTER initialize completes (or after the

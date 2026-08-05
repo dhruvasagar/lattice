@@ -218,7 +218,7 @@ impl Conversation {
             }
             SessionUpdate::ToolCallUpdate(u) => {
                 self.merge_tool_update(
-                    &u.tool_call_id.0.to_string(),
+                    u.tool_call_id.0.as_ref(),
                     u.fields.status.map(ToolStatus::from_acp),
                     u.fields.kind,
                     u.fields.raw_input.as_ref().map(pretty_json),

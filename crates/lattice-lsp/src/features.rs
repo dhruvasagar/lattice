@@ -327,8 +327,8 @@ impl ServerHandle {
         self.request_with_cancel("textDocument/documentColor", params, token)
     }
 
-    /// 4.5.e: `textDocument/colorPresentation`. Given a color
-    /// + the range it covers, the server returns alternative
+    /// 4.5.e: `textDocument/colorPresentation`. Given a color +
+    /// the range it covers, the server returns alternative
     /// presentations the user can replace the literal with
     /// (e.g. `"#ff0000"` -> `"rgb(255, 0, 0)"`, `"red"`).
     /// `:lsp-color-presentation` opens these as a picker;
@@ -532,8 +532,8 @@ impl ServerHandle {
     /// Pre-create hook -- server MAY return a `WorkspaceEdit`
     /// the client applies BEFORE the actual file is created on
     /// disk (e.g. add an import to a sibling module). Callers
-    /// must gate on `Capabilities::supports_will_create_files`
-    /// + filter the URIs against the registration's
+    /// must gate on `Capabilities::supports_will_create_files` +
+    /// filter the URIs against the registration's
     /// `FileOperationFilter`s before issuing. The host pump
     /// (when wired) blocks the create path on the response;
     /// timeouts skip the edits and proceed.

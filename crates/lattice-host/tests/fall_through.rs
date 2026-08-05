@@ -99,11 +99,9 @@ async fn a_declining_plugin_action_falls_through_to_the_builtin() {
     let mode = ModeId::new("multiseam-mode");
     assert!(
         matches!(
-            editor.keymap.lookup_with_context(
-                lattice_keymap::BindingMode::Normal,
-                &x,
-                &[mode.clone()]
-            ),
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Normal, &x, &[mode]),
             lattice_keymap::LookupResult::Bound { .. }
         ),
         "`x` binds to the plugin action when the mode is active"
@@ -112,7 +110,7 @@ async fn a_declining_plugin_action_falls_through_to_the_builtin() {
     // Enable + activate the mode (available-but-off, CI.3).
     {
         let mut next = (**editor.mode_registry.load()).clone();
-        next.set_minor_enabled(mode.clone(), true);
+        next.set_minor_enabled(mode, true);
         editor.mode_registry.store(std::sync::Arc::new(next));
     }
     activate_modes(&mut editor);

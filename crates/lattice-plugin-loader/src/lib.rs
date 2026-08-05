@@ -312,7 +312,7 @@ impl Mode for PluginCompletionMode {
     type Guard = ();
 
     fn id(&self) -> ModeId {
-        self.id.clone()
+        self.id
     }
 
     fn kind(&self) -> ModeKind {
@@ -946,8 +946,8 @@ impl PluginLoader {
                 pickers: &mut pickers,
                 modes: &mut modes,
                 keymap,
-                config: &**config,
-                bus: &**bus,
+                config,
+                bus,
                 decorations: &mut decorations,
             };
             teardown.unload(&mut reg)

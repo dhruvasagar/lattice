@@ -857,12 +857,12 @@ fn snapshot_for_pane(descriptor: &DiffDescriptor, pane: usize) -> Option<Rope> {
 /// resolves them); when `false`, they're skipped
 /// defensively (the `do` / `dp` chord path without an
 /// explicit target — preserves D.5.b/c semantics).
-fn find_covering_hunk<'a>(
-    index: &'a HunkIndex,
+fn find_covering_hunk(
+    index: &HunkIndex,
     active_pane: usize,
     cursor_row: u32,
     allow_conflict: bool,
-) -> Option<&'a crate::Hunk> {
+) -> Option<&crate::Hunk> {
     index.hunks.iter().find(|h| {
         if !allow_conflict && matches!(h.kind, HunkKind::Conflict) {
             return false;
@@ -5478,7 +5478,7 @@ mod tests {
         let (tx2, _rx2) = oneshot::channel::<DiffOutcome>();
         session.bind_completion(tx2);
         // rx1 must observe Closed since tx1 was overwritten.
-        assert!(matches!(rx1.await, Err(_)));
+        assert!(rx1.await.is_err());
     }
 
     /// Programmatic API: a consumer binds a sender,

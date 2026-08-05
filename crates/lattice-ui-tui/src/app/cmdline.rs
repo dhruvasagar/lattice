@@ -1083,8 +1083,8 @@ mod tests {
 
     /// Regression scaffold for the user-reported "completion is
     /// broken" bug: simulates the full keystroke pipeline (`:`,
-    /// then each char, then `<Tab>`) instead of pre-staging modal
-    /// + command_line. If `tab_in_command_mode_opens_completion_popup`
+    /// then each char, then `<Tab>`) instead of pre-staging modal +
+    /// command_line. If `tab_in_command_mode_opens_completion_popup`
     /// passes but this fails, the bug lives in the
     /// keystroke/translate/dispatch path, not in
     /// `do_command_line_complete_or_advance` itself.
@@ -1470,8 +1470,8 @@ mod tests {
 // nothing could reach them.
 #[cfg(test)]
 mod prompt_line {
-    use crate::app::{Action, App};
     use crate::app::test_helpers::{app_with, press};
+    use crate::app::{Action, App};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use lattice_grammar::ModalState;
 
@@ -1513,7 +1513,10 @@ mod prompt_line {
     #[test]
     fn ctrl_c_cancels_an_open_prompt() {
         let mut a = app_with_prompt();
-        press(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
         assert!(
             !matches!(a.editor.modal, ModalState::Prompt),
             "`<C-c>` must cancel the prompt too"
@@ -1648,7 +1651,9 @@ mod prompt_line {
         );
 
         let mut b = app_with("hello\n", 10);
-        b.apply(Action::EnterSearch(lattice_grammar::SearchDirection::Forward));
+        b.apply(Action::EnterSearch(
+            lattice_grammar::SearchDirection::Forward,
+        ));
         b.editor.publish_render_state();
         b.editor.do_paste_text("A\nB");
         assert_eq!(
@@ -1790,8 +1795,14 @@ mod prompt_line {
             None,
         );
         a.editor.publish_render_state();
-        press(&mut a, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        press(&mut a, KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        );
         assert_eq!(
             a.editor.document.text().lines().next().unwrap_or_default(),
             "/tmp/rep2",

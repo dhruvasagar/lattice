@@ -567,10 +567,10 @@ impl KeymapHandle {
             composite.merge_over(base);
         }
         for mode_id in active_modes {
-            if let Some(per_mode) = gated.get(mode_id) {
-                if let Some(trie) = per_mode.get(&mode) {
-                    composite.merge_over(trie);
-                }
+            if let Some(per_mode) = gated.get(mode_id)
+                && let Some(trie) = per_mode.get(&mode)
+            {
+                composite.merge_over(trie);
             }
         }
         composite.lookup(chords)
@@ -639,8 +639,8 @@ impl KeymapHandle {
 
     /// Lower-level binder: register a pre-built
     /// `Arc<BoundCommand>` directly. Used by the per-mode
-    /// migration helpers (`keymap_replace::register_replace_bindings`
-    /// + sibling slices) to register `BoundCommand`s carrying
+    /// migration helpers (`keymap_replace::register_replace_bindings` +
+    /// sibling slices) to register `BoundCommand`s carrying
     /// `legacy_action`. Production code should prefer [`Self::bind`]
     /// once the legacy bridge retires (slice 8.i).
     pub fn bind_bound(
@@ -865,10 +865,10 @@ impl KeymapHandle {
         let inner = self.registry.inner.lock().expect("registry mutex");
         let mut hits = Vec::new();
         for layer in &inner.layers {
-            if let Some(trie) = layer.modes.get(&mode) {
-                if let LookupResult::Bound { command, .. } = trie.lookup(chords) {
-                    hits.push((layer.layer, command));
-                }
+            if let Some(trie) = layer.modes.get(&mode)
+                && let LookupResult::Bound { command, .. } = trie.lookup(chords)
+            {
+                hits.push((layer.layer, command));
             }
         }
         hits

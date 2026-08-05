@@ -111,7 +111,7 @@ impl Mode for PluginMode {
     type Guard = ();
 
     fn id(&self) -> ModeId {
-        self.id.clone()
+        self.id
     }
 
     fn kind(&self) -> ModeKind {
@@ -181,10 +181,8 @@ pub(crate) fn bind_mode_keymap(
     mode_id: &ModeId,
     bindings: &[PluginKeymapBinding],
 ) -> usize {
-    let capability = KeymapCapability::OwnedLayer {
-        mode_id: mode_id.clone(),
-    };
-    let layer = KeymapLayer::MinorMode(mode_id.clone());
+    let capability = KeymapCapability::OwnedLayer { mode_id: *mode_id };
+    let layer = KeymapLayer::MinorMode(*mode_id);
     let mut bound = 0;
     for binding in bindings {
         let Some(command_id) = commands.id_by_name(&binding.command) else {
@@ -197,7 +195,7 @@ pub(crate) fn bind_mode_keymap(
         };
         match keymap.try_bind_chord_string(
             capability,
-            layer.clone(),
+            layer,
             binding.mode,
             &binding.chord,
             CommandInvocation::of(command_id),
@@ -227,8 +225,8 @@ impl PluginHost {
     ///
     /// Registration is drained AFTER `register-modes` returns because
     /// `ModeRegistry::register` needs `&mut ModeRegistry` — unlike config's live
-    /// `Arc<ConfigRegistry>` handle. A declaration the registry rejects is logged
-    /// + skipped (not in the returned ids); the teardown seam (PH7.12) will
+    /// `Arc<ConfigRegistry>` handle. A declaration the registry rejects is logged +
+    /// skipped (not in the returned ids); the teardown seam (PH7.12) will
     /// remove a plugin's modes.
     pub async fn spawn_mode_plugin(
         &self,
@@ -396,7 +394,7 @@ mod tests {
         // The binding resolves ONLY when the mode is active (gated layer).
         assert!(
             matches!(
-                keymap.lookup_with_context(BindingMode::Normal, &chord, &[mode_id.clone()]),
+                keymap.lookup_with_context(BindingMode::Normal, &chord, &[mode_id]),
                 LookupResult::Bound { .. }
             ),
             "the chord resolves in the mode's owned layer when active"

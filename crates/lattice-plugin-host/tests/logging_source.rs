@@ -74,7 +74,7 @@ async fn guest_log_lines_land_in_the_tracer_as_logging_records() {
         "the guest's message rides in `detail`"
     );
     // The error line has no context (empty `call`) and maps to Error level.
-    let err = recs.iter().find(|r| r.call == "").unwrap();
+    let err = recs.iter().find(|r| r.call.is_empty()).unwrap();
     assert_eq!(err.level, TraceLevel::Error);
     assert_eq!(err.detail.as_deref(), Some("a context-less error line"));
     // `critical` folds into Error (map_log_level) and is kept at the Info gate.

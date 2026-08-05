@@ -41,8 +41,8 @@ pub enum YankKind {
 ///
 /// **msg-mode.1 (tracing bridge):** the five variants mirror
 /// `tracing::Level` exactly so `App::set_message` can route through
-/// a single `tracing::event!` call without lossy conversion. `Trace`
-/// + `Debug` are below the default `Info` filter so they don't show
+/// a single `tracing::event!` call without lossy conversion. `Trace` +
+/// `Debug` are below the default `Info` filter so they don't show
 /// in the echo area today — they exist for subsystems that want
 /// verbose records in `*messages*` (e.g. `editor=trace`, `lsp=debug`)
 /// to surface without inventing a parallel severity scale.

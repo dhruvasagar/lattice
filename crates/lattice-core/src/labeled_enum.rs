@@ -4,13 +4,13 @@
 //! Generates the enum together with four colocated accessors:
 //!
 //!   - `label()`     — canonical string form, used by
-//!                     `:set foo=...` parsing + the `:set foo?` echo.
+//!     `:set foo=...` parsing + the `:set foo?` echo.
 //!   - `parse_label` — string → variant (accepts the canonical
-//!                     form + any registered aliases per variant).
+//!     form + any registered aliases per variant).
 //!   - `doc()`       — short marginalia doc shown in the
-//!                     completion popup's right-aligned column.
+//!     completion popup's right-aligned column.
 //!   - `all()`       — variants in declaration order (drives
-//!                     `:set foo=<Tab>` enumeration).
+//!     `:set foo=<Tab>` enumeration).
 //!
 //! Single source of truth: each variant's label and doc are
 //! declared together. Adding a new variant requires one new line;

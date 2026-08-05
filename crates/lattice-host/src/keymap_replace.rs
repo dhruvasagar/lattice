@@ -132,8 +132,8 @@ const fn wildcard_line() -> u32 {
     line!()
 }
 
-/// Convenience extension on [`KeymapHandle`] used by the
-/// per-mode registration helpers in this slice family.
+// Convenience extension on [`KeymapHandle`] used by the
+// per-mode registration helpers in this slice family.
 // Slice 8.i.4.e: the `KeymapHandleLegacyExt` trait + `bind_legacy`
 // method retired. Every per-mode keymap module now binds typed
 // `CommandInvocation`s through `KeymapHandle::bind`; the

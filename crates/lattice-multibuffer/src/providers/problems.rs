@@ -21,7 +21,7 @@
 //! than in a forwarder task.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lattice_config::OptionOverrideSet;
@@ -117,13 +117,13 @@ fn severity_label(severity: ErrorSeverity) -> &'static str {
 /// <message>"` as the title, with the source path attached so the rich
 /// header renderer shows the leading file-type icon + basename/dir
 /// split (the same shape the search provider's header uses).
-fn problems_excerpt_header(path: &PathBuf, entry: &ErrorEntry) -> ExcerptHeader {
+fn problems_excerpt_header(path: &Path, entry: &ErrorEntry) -> ExcerptHeader {
     let mut header = ExcerptHeader::new(format!(
         "{}: {}",
         severity_label(entry.severity),
         entry.message
     ));
-    header.path = Some(path.clone());
+    header.path = Some(path.to_path_buf());
     header
 }
 
@@ -231,13 +231,13 @@ pub fn create_problems_view(
 
     // Sticky headerline — the entry/file count. Problems composition is
     // synchronous (no scan), so straight to Complete.
-    if let Some(mb_reg) = activator.services().get::<MultibufferRegistryHandle>() {
-        if let Some(view) = mb_reg.handle(view_id) {
-            view.set_headerline(HeaderlineStatus::Complete {
-                summary: format!("[problems] {n_entries} in {n_files} files"),
-                emphasis: None,
-            });
-        }
+    if let Some(mb_reg) = activator.services().get::<MultibufferRegistryHandle>()
+        && let Some(view) = mb_reg.handle(view_id)
+    {
+        view.set_headerline(HeaderlineStatus::Complete {
+            summary: format!("[problems] {n_entries} in {n_files} files"),
+            emphasis: None,
+        });
     }
 
     activator.activate_minor_by_id(view_id, ProblemsMinorMode::mode_id());

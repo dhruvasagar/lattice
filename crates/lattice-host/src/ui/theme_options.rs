@@ -41,6 +41,10 @@ fn validate_separator(s: &String) -> Result<(), String> {
     }
 }
 
+// `&String`, not `&str`: `#[validate(...)]` takes a `ValidateFn<T>`,
+// which is `fn(&T)` — and `T` here is the option's declared type,
+// `String`. A `&str` signature does not coerce to that fn pointer.
+#[allow(clippy::ptr_arg)]
 fn validate_color(s: &String) -> Result<(), String> {
     parse_color(s).map(|_| ())
 }

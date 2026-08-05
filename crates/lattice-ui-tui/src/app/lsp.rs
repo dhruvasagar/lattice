@@ -71,14 +71,14 @@ use super::{
 use crate::buffers::BufferId;
 use lattice_protocol::edit::Edit;
 
-/// CSM.8b.3: host-side [`lattice_completion::CandidateSink`]
-/// impl that buffers each `produce_async` push into a single
-/// batch. The aggregator spawns the source's future, awaits
-/// it, then drains the sink onto the existing
-/// `InsertCompletionLspOutcome::Items` channel -- the drain
-/// path keeps its "replace prior LSP slice" semantics
-/// untouched. `is_incomplete` rides on
-/// [`lattice_completion::CandidateSink::mark_incomplete`].
+// CSM.8b.3: host-side [`lattice_completion::CandidateSink`]
+// impl that buffers each `produce_async` push into a single
+// batch. The aggregator spawns the source's future, awaits
+// it, then drains the sink onto the existing
+// `InsertCompletionLspOutcome::Items` channel -- the drain
+// path keeps its "replace prior LSP slice" semantics
+// untouched. `is_incomplete` rides on
+// [`lattice_completion::CandidateSink::mark_incomplete`].
 // Phase 5.8.AD.4: `BatchingSink` migrated to host as
 // `InsertCompletionBatchingSink` (private to `lattice_host::dispatch`).
 
@@ -510,14 +510,14 @@ impl App {
     // into the lattice-lsp `LspProgressStore` by that crate's forwarder,
     // not host-accumulated.
 
-    /// Drain server-initiated `workspace/configuration` requests.
-    /// Each request lands as a `lattice_lsp::InboundConfigurationRequest`
-    /// carrying section paths + a oneshot for the response.
-    /// Server-side keys come in their own namespaces (e.g.
-    /// `"rust-analyzer.cargo.features"`); the editor's TOML places
-    /// these under an `[lsp.<server>]` umbrella so multiple
-    /// servers' keys don't collide. The drain prepends `lsp.` to
-    /// the requested section before walking the tree.
+    // Drain server-initiated `workspace/configuration` requests.
+    // Each request lands as a `lattice_lsp::InboundConfigurationRequest`
+    // carrying section paths + a oneshot for the response.
+    // Server-side keys come in their own namespaces (e.g.
+    // `"rust-analyzer.cargo.features"`); the editor's TOML places
+    // these under an `[lsp.<server>]` umbrella so multiple
+    // servers' keys don't collide. The drain prepends `lsp.` to
+    // the requested section before walking the tree.
     // BC.8b: `drain_inbound_configuration_requests` wrapper removed — the
     // `workspace/configuration` bus drains via the generic inbound tick-callback
     // (mode-owned handler), run inside `run_tick_pending`; no host/TUI method.
@@ -937,10 +937,10 @@ impl App {
             .find(|h| h.capabilities().supports_code_action())
     }
 
-    /// `:complete` (Phase 4.2.g). Fires
-    /// `textDocument/completion` at the cursor; the merged item
-    /// list opens as a vertico picker. Multi-server union;
-    /// dedup by `(label, kind)`.
+    // `:complete` (Phase 4.2.g). Fires
+    // `textDocument/completion` at the cursor; the merged item
+    // list opens as a vertico picker. Multi-server union;
+    // dedup by `(label, kind)`.
     // 5.5.LSP.4: `do_lsp_completion_request` relocated to
     // [`lattice_host::dispatch::Editor::lsp_completion_request`].
     // Body identical (gate, URI / cursor resolve, prefix backwalk
@@ -980,10 +980,10 @@ impl App {
         self.mutate_editor(|e| e.drain_pending_format());
     }
 
-    /// `:lsp-symbols` (Phase 4.2.e). Send
-    /// `textDocument/documentSymbol` to every attached server;
-    /// flatten the hierarchy + merge across servers; drain on
-    /// the next frame opens a picker.
+    // `:lsp-symbols` (Phase 4.2.e). Send
+    // `textDocument/documentSymbol` to every attached server;
+    // flatten the hierarchy + merge across servers; drain on
+    // the next frame opens a picker.
     // 5.5.LSP.5: `do_lsp_document_symbol_request` and
     // `do_lsp_workspace_symbol_request` relocated to
     // [`lattice_host::dispatch::Editor::lsp_document_symbol_request`]
@@ -1060,11 +1060,11 @@ impl App {
         self.mutate_editor(|e| e.drain_pending_moniker());
     }
 
-    /// `:lsp-signature-help` (Phase 4.3). Fan-out across attached
-    /// servers; first non-empty `SignatureHelp` response wins
-    /// (per docs/dev/architecture/lsp-architecture.md §7b "First non-empty wins.
-    /// Signatures are usually language-specific; merging rarely
-    /// useful.").
+    // `:lsp-signature-help` (Phase 4.3). Fan-out across attached
+    // servers; first non-empty `SignatureHelp` response wins
+    // (per docs/dev/architecture/lsp-architecture.md §7b "First non-empty wins.
+    // Signatures are usually language-specific; merging rarely
+    // useful.").
     // 5.5.LSP.4: `do_lsp_signature_help_request` relocated to
     // [`lattice_host::dispatch::Editor::lsp_signature_help_request`].
     // Body identical (silent gate, URI / cursor resolve, per-server
@@ -1115,12 +1115,12 @@ impl App {
         }
     }
 
-    /// `gr` (Phase 4.2.d). Send `textDocument/references` to
-    /// every attached LSP server with `include_declaration: true`
-    /// (vim convention -- `gr` includes the symbol's own
-    /// declaration in the list). Spawn the per-server walk on
-    /// the LSP runtime; drain on the next frame opens a buffer-
-    /// backed `*lsp:references*` view in the active pane.
+    // `gr` (Phase 4.2.d). Send `textDocument/references` to
+    // every attached LSP server with `include_declaration: true`
+    // (vim convention -- `gr` includes the symbol's own
+    // declaration in the list). Spawn the per-server walk on
+    // the LSP runtime; drain on the next frame opens a buffer-
+    // backed `*lsp:references*` view in the active pane.
     // 5.5.LSP.3: `do_lsp_references_request` relocated to
     // [`lattice_host::dispatch::Editor::lsp_references_request`].
     // Identical body shape to the nav helper (same gate, same
@@ -1557,8 +1557,8 @@ impl App {
     /// are running, this opens the first match; the broader
     /// picker (`:lsp-server-log`) lets the user disambiguate.
     /// B'.7: thin wrapper over the generic
-    /// `ensure_named_synthetic_document` helper -- canonical name
-    /// + mode id come from `lattice-lsp`. Idempotent: the buffer
+    /// `ensure_named_synthetic_document` helper -- canonical name +
+    /// mode id come from `lattice-lsp`. Idempotent: the buffer
     /// is created lazily on first call.
     pub(super) fn open_lsp_log_in_pane(&mut self, server_id: &str) {
         // Slice 3c.final.E.5: clone owned + route via mutate_editor.
@@ -3991,9 +3991,11 @@ mod tests {
         a.editor.pending_completion_resolve_rx = Some(rx);
         a.editor.pending_completion_resolve_token =
             Some(lattice_protocol::CancellationToken::new());
-        let mut resolved = lattice_lsp::lsp_types::CompletionItem::default();
-        resolved.label = "foo".into();
-        resolved.detail = Some("fn foo() -> i32".into());
+        let mut resolved = lattice_lsp::lsp_types::CompletionItem {
+            label: "foo".into(),
+            detail: Some("fn foo() -> i32".into()),
+            ..Default::default()
+        };
         resolved.documentation = Some(lattice_lsp::lsp_types::Documentation::String(
             "Returns 42.".into(),
         ));
@@ -4052,8 +4054,10 @@ mod tests {
             replace_range: None,
             server_id: "test-server".to_string(),
             original_item: {
-                let mut ci = lattice_lsp::lsp_types::CompletionItem::default();
-                ci.label = label.into();
+                let ci = lattice_lsp::lsp_types::CompletionItem {
+                    label: label.into(),
+                    ..Default::default()
+                };
                 ci
             },
             resolved: false,
@@ -4090,8 +4094,10 @@ mod tests {
         a.editor.pending_completion_resolve_rx = Some(rx);
         a.editor.pending_completion_resolve_token =
             Some(lattice_protocol::CancellationToken::new());
-        let mut resolved = lattice_lsp::lsp_types::CompletionItem::default();
-        resolved.label = "c0".into();
+        let mut resolved = lattice_lsp::lsp_types::CompletionItem {
+            label: "c0".into(),
+            ..Default::default()
+        };
         resolved.documentation = Some(lattice_lsp::lsp_types::Documentation::String(
             "stale".into(),
         ));

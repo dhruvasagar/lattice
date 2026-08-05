@@ -529,7 +529,7 @@ fn run_diff(
     extra: &[String],
     context: i64,
 ) -> String {
-    let args = run_diff_argv(&scope, path, extra, context);
+    let args = run_diff_argv(scope, path, extra, context);
     let output = std::process::Command::new("git")
         .args(&args)
         .current_dir(workdir)

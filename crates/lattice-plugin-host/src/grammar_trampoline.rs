@@ -328,7 +328,7 @@ fn build_action_spec(
             // snapshot was acquired the same instant as `buffer` above, so the
             // tree + text handles agree on version (§7).
             let tree_snapshot: Option<Arc<SyntaxSnapshot>> = tree_sitter_granted
-                .then(|| ctx.syntax.as_ref())
+                .then_some(ctx.syntax.as_ref())
                 .flatten()
                 .and_then(|any| any.clone().downcast::<SyntaxSnapshot>().ok())
                 .filter(|snap| snap.tree().is_some());

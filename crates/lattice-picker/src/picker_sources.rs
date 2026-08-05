@@ -769,7 +769,7 @@ impl PickerSourceGenerator for LinesSource {
             // Slice 7b.4: typed accept payload.
             cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
-                line: line,
+                line,
                 col: 0,
             }));
             pairs.push((
@@ -2400,8 +2400,11 @@ mod tests {
             default: ArgDefault::None,
             ..required.clone()
         };
-        assert_eq!(format_args_hint(&[required.clone()]), "<path>");
-        assert_eq!(format_args_hint(&[optional.clone()]), "[<path>]");
+        assert_eq!(format_args_hint(std::slice::from_ref(&required)), "<path>");
+        assert_eq!(
+            format_args_hint(std::slice::from_ref(&optional)),
+            "[<path>]"
+        );
         assert_eq!(format_args_hint(&[required, optional]), "<path> [<path>]");
         assert_eq!(format_args_hint(&[]), "");
     }

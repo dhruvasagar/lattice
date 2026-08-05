@@ -121,10 +121,10 @@ impl App {
         self.mutate_editor_with(|e| e.redo_blocking())
     }
 
-    /// Vim's `J` / `gJ`: join the current line with the next. With
-    /// `with_space = true` (J), the joining newline becomes one space
-    /// (and any leading whitespace on the next line is trimmed). With
-    /// `with_space = false` (gJ), no replacement -- pure concat.
+    // Vim's `J` / `gJ`: join the current line with the next. With
+    // `with_space = true` (J), the joining newline becomes one space
+    // (and any leading whitespace on the next line is trimmed). With
+    // `with_space = false` (gJ), no replacement -- pure concat.
     // 5.5.G.3: `do_join_lines` + `do_toggle_case_at_cursor`
     // migrated to [`lattice_host::dispatch::Editor`].
 
@@ -184,11 +184,11 @@ impl App {
         }
     }
 
-    /// Overstrike one char at the cursor: if the cursor is mid-line,
-    /// replace `[cursor, cursor+1)` with `c`; if past EOL, just insert
-    /// (vim's R extends the line). Either way the cursor advances by
-    /// one byte. The original byte (or `None` if past EOL) is pushed
-    /// onto `replace_history` so backspace can restore it.
+    // Overstrike one char at the cursor: if the cursor is mid-line,
+    // replace `[cursor, cursor+1)` with `c`; if past EOL, just insert
+    // (vim's R extends the line). Either way the cursor advances by
+    // one byte. The original byte (or `None` if past EOL) is pushed
+    // onto `replace_history` so backspace can restore it.
     // 5.5.G.3: `do_overwrite_char` + `do_replace_undo_last`
     // migrated to [`lattice_host::dispatch::Editor`].
 

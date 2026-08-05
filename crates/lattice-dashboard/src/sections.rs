@@ -14,7 +14,7 @@ use crate::section::{DashboardCtx, DashboardSection};
 
 /// The canonical GitHub repository.
 const REPO_URL: &str = "https://github.com/dhruvasagar/lattice";
-/// The one-line tagline (matches the brand assets).
+// The one-line tagline (matches the brand assets).
 
 /// Build a registry pre-loaded with every built-in section.
 ///

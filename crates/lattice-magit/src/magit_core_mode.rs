@@ -202,6 +202,35 @@ fn rebase_verb_op(
     }
 }
 
+/// MG.43d: the first half of a cherry-move row.
+///
+/// Resolves the commit the way every other commit row does — the
+/// cursor, or a picker when there is nothing under it — carries it
+/// across the prompt, then opens the branch prompt. The finish half
+/// lives with the other `spawn_*` bodies in `magit_global_mode`.
+fn cherry_move_entry(
+    action_name: &'static str,
+    ex_command: &'static str,
+    prompt: &'static str,
+    finish: &'static str,
+) -> lattice_mode::ActionHandlerContribution {
+    lattice_mode::ActionHandlerContribution {
+        action_name,
+        handler: Arc::new(move |ctx: &ActionContext<'_>| {
+            let resolved = crate::buffer_state::view_for(ctx)
+                .and_then(|view| view.commit_at_cursor(ctx.cursor));
+            let Some(commit) = resolved else {
+                return Some(Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec![ex_command.to_string()],
+                });
+            };
+            crate::magit_global_mode::stash_pending_commit(commit);
+            Some(crate::magit_global_mode::prompt_for_pub(prompt, finish))
+        }),
+    }
+}
+
 /// MG.42-E2: a [`commit_op`] whose work is a SEQUENCE.
 ///
 /// Same cursor-then-picker resolution as `commit_op` — the row can be
@@ -1059,6 +1088,33 @@ impl Mode for MagitCoreMode {
             commit_op(
                 "action:magit-revert",
                 crate::magit_global_mode::CommitOp::REVERT,
+            ),
+            // MG.43d: the cherry-move rows. Resolve the commit (cursor
+            // or picker), stash it, then prompt for the branch — the
+            // second half runs in `magit_global_mode`.
+            cherry_move_entry(
+                "action:magit-cherry-harvest",
+                "magit-cherry-harvest",
+                "Harvest cherry from branch: ",
+                "action:magit-cherry-harvest-finish",
+            ),
+            cherry_move_entry(
+                "action:magit-cherry-donate",
+                "magit-cherry-donate",
+                "Donate cherry to branch: ",
+                "action:magit-cherry-donate-finish",
+            ),
+            cherry_move_entry(
+                "action:magit-cherry-spinout",
+                "magit-cherry-spinout",
+                "Spin out cherry to new branch: ",
+                "action:magit-cherry-spinout-finish",
+            ),
+            cherry_move_entry(
+                "action:magit-cherry-spinoff",
+                "magit-cherry-spinoff",
+                "Spin off cherry to new branch: ",
+                "action:magit-cherry-spinoff-finish",
             ),
             // MG.43c: rebase's todo-rewriting rows. One builder, three
             // verbs — the verb IS the operation.

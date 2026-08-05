@@ -1,6 +1,6 @@
 # MG.43 — closing MG.41 / MG.42
 
-**Status:** 🚧 in progress (2026-08-05). Closes the open items in
+**Status:** ✅ complete (2026-08-05), except the v1 exclusions below. Closes the open items in
 [`magit-transient-completeness.md`](magit-transient-completeness.md)
 (MG.41d / MG.41e / MG.41f) and the deferred list in
 [`magit-transient-enablers.md`](magit-transient-enablers.md) (MG.42).
@@ -18,7 +18,6 @@ already drifted (several rows it names as missing landed in MG.42).
 |---|---|
 | Commit `c` | `e` extend |
 | Reset `O` | `w` worktree |
-| Stash `z` | `w` worktree-only |
 | Branch `b` | `x` reset, `s` spin-off, `S` spin-out |
 | Merge `m` | `p` preview, `i` dissolve |
 | Tag `t` | `r` release, `p` prune |
@@ -60,9 +59,9 @@ was right to reject the first attempt. It was wrong about the cause.
 | MG.43a | ✅ | Single-argv rows: commit `e`, revert `v`, cherry-pick `a`, branch `x` |
 | MG.43b | ✅ | Rebase's onto-a-target rows (`p`/`u`/`e`/`s`/`f`) |
 | MG.43c | ✅ | Rebase todo rows (`m`/`w`/`k`) |
-| MG.43d | 📝 | Cherry-pick + branch commit-moving rows |
+| MG.43d | ✅ | Cherry-pick `h`/`d`/`n`/`s`, branch `s`/`S` |
 | MG.43e | ✅ | Merge `p`/`i`, tag `r`/`p` |
-| MG.43f | 🚧 | Reset `w`, fetch `m` (stash `w` deferred — see below) |
+| MG.43f | ✅ | Reset `w`, fetch `m` (stash `w` dropped from v1) |
 | MG.43h | ✅ | MG.41f — diff / log argument transients |
 | MG.43g | ✅ | `C` configure — variable rows with async prefetch |
 
@@ -249,21 +248,60 @@ declare those names — and
 `the_view_open_actions_declare_the_union_their_menus_project_onto`
 pins the premise so the whitelist cannot go stale into vacuity.
 
+### MG.43d — ported from magit's source, not its docstrings
+
+Read out of `lisp/magit-sequence.el` (`magit--cherry-move`) and
+`lisp/magit-branch.el` (`magit--branch-spinoff`). These move and delete
+commits, and each pair differs only in where you end up — exactly what
+a paraphrase loses.
+
+| Row | src | dst | ends on |
+|---|---|---|---|
+| `h` harvest | other branch | current | current |
+| `d` donate | current | existing branch | current |
+| `n` spinout | current | new branch | current |
+| `s` spinoff | current | new branch | the new branch |
+
+**Reading the source caught an error the docstrings would not have.**
+The spin rows' start point is the UPSTREAM, not the current branch
+(`magit--cherry-spinoff-read-args` passes
+`magit-get-upstream-branch`). I wrote `current` first; the new branch
+then already contained the commit, so the cherry-pick onto it was
+empty and git stopped. With no upstream it falls back to the commit's
+own parent — the nearest point guaranteed not to contain it.
+
+Other details that are load-bearing:
+
+- **Removing the commit from `src` takes one of two paths.** At the
+  tip, `update-ref` moves the branch back one — in its THREE-argument
+  compare-and-swap form, naming the value `src` must still hold, so a
+  concurrent change fails the write instead of being silently
+  discarded. Below the tip it is rebased out instead; `update-ref`
+  there would drop every later commit with it.
+- **Spin-OUT promotes itself to spin-off when the tree is dirty**,
+  which is magit's own behaviour: staying on a branch about to be
+  `reset --hard` would destroy the uncommitted work.
+- **No upstream means the old branch is left alone.** Rewinding it
+  would discard commits that exist nowhere else.
+- These run through `spawn_computed`, not `spawn_git_sequence`: later
+  steps depend on state discoverable only part-way through (does the
+  branch exist, is the commit at the tip), and computing that up front
+  would be git I/O on a keystroke.
+
+Nine real-repo tests, asserting the commit is on the destination AND
+gone from the source — a "move" that forgot to remove is just the
+copy `A` already does.
+
 ---
 
 ## Deferred, and why
 
-**Stash `w` worktree-only.** Git has no flag for it. Magit implements
-it with `git stash create` plus tree plumbing, and every composable
-approximation is wrong in a different way — `--keep-index` stashes the
-staged changes too, so popping re-applies them. Shipping one of those
-would give a row that matches magit's label and stashes different
-content.
-
-**Cherry-pick `h`/`d`/`n`/`s` and branch `s`/`S`.** These move or
-delete commits, and magit's spinoff-vs-spinout semantics need to be
-read from its source rather than recalled. A wrong guess here destroys
-work.
+**Stash `w` worktree-only — not in v1.** Git has no flag for it; magit
+implements it with `git stash create` plus tree plumbing, and every
+composable approximation is wrong in a different way (`--keep-index`
+stashes the staged changes too, so popping re-applies them). Rather
+than ship a row that matches magit's label and stashes different
+content, the row is dropped from scope. Decided 2026-08-05.
 
 ---
 

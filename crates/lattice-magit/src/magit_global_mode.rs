@@ -819,6 +819,116 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         merge_squash_argv,
         "merge --squash"
     );
+    // MG.43d: magit's branch `s` spin-off and `S` spin-out.
+    //
+    // Both create a branch from the current branch's unpushed commits
+    // and rewind the current branch to its upstream. `checkout` is the
+    // only difference: spin-off leaves you on the new branch, spin-out
+    // leaves you where you were.
+    macro_rules! spinoff_op {
+        ($entry:expr, $finish:expr, $prompt:expr, $checkout:expr, $label:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let branch = ctx.prompt_value?.trim().to_string();
+                    if branch.is_empty() {
+                        return None;
+                    }
+                    let shown = format!("{} {branch}", $label);
+                    Some(spawn_computed($label, shown, move |wd| {
+                        crate::cherry_move::branch_spinoff(wd, &branch, $checkout)
+                    }))
+                }),
+            });
+        };
+    }
+    spinoff_op!(
+        "action:magit-global-branch-spinoff",
+        "action:magit-global-branch-spinoff-finish",
+        "Spin off branch: ",
+        true,
+        "branch spin-off"
+    );
+    spinoff_op!(
+        "action:magit-global-branch-spinout",
+        "action:magit-global-branch-spinout-finish",
+        "Spin out branch: ",
+        false,
+        "branch spin-out"
+    );
+
+    // MG.43d: the cherry-move rows. Each resolves a commit first (the
+    // cursor, or a picker), stashes it, then prompts for the branch —
+    // the same carry `two_input_op!` uses, and consumed the same way.
+    macro_rules! cherry_move_finish {
+        ($finish:expr, $label:expr, $body:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let branch = ctx.prompt_value?.trim().to_string();
+                    let commit = take_first_input()?;
+                    if branch.is_empty() {
+                        return None;
+                    }
+                    let shown = format!("{} {commit} -> {branch}", $label);
+                    Some(spawn_computed($label, shown, move |wd| {
+                        let f: fn(&std::path::Path, &str, &str) -> Result<(), String> = $body;
+                        f(wd, &commit, &branch)
+                    }))
+                }),
+            });
+        };
+    }
+    cherry_move_finish!(
+        "action:magit-cherry-harvest-finish",
+        "cherry harvest",
+        |wd, commit, branch| {
+            // Move it FROM `branch` onto the current one, and stay put.
+            let current = crate::cherry_move::current_branch_of(wd)
+                .ok_or_else(|| "not on a branch".to_string())?;
+            crate::cherry_move::cherry_move(wd, commit, Some(branch), &current, None, true)
+        }
+    );
+    cherry_move_finish!(
+        "action:magit-cherry-donate-finish",
+        "cherry donate",
+        |wd, commit, branch| {
+            // Move it from the current branch onto `branch`, and stay
+            // on the current one.
+            let current = crate::cherry_move::current_branch_of(wd)
+                .ok_or_else(|| "not on a branch".to_string())?;
+            crate::cherry_move::cherry_move(wd, commit, Some(&current), branch, None, false)
+        }
+    );
+    cherry_move_finish!(
+        "action:magit-cherry-spinout-finish",
+        "cherry spin-out",
+        |wd, commit, branch| {
+            let current = crate::cherry_move::current_branch_of(wd)
+                .ok_or_else(|| "not on a branch".to_string())?;
+            // The new branch starts at the UPSTREAM, not here — see
+            // `spin_start_point`. Starting at the current branch would
+            // make the cherry-pick empty, because the commit is
+            // already there.
+            let start = crate::cherry_move::spin_start_point(wd, commit);
+            crate::cherry_move::cherry_move(wd, commit, Some(&current), branch, Some(&start), false)
+        }
+    );
+    cherry_move_finish!(
+        "action:magit-cherry-spinoff-finish",
+        "cherry spin-off",
+        |wd, commit, branch| {
+            let current = crate::cherry_move::current_branch_of(wd)
+                .ok_or_else(|| "not on a branch".to_string())?;
+            let start = crate::cherry_move::spin_start_point(wd, commit);
+            crate::cherry_move::cherry_move(wd, commit, Some(&current), branch, Some(&start), true)
+        }
+    );
+
     // MG.43f: magit's fetch `m` — fetch submodules too.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-fetch-submodules",
@@ -2784,6 +2894,18 @@ impl RemoteOp {
 /// before anything reads it.
 static PENDING_FIRST_INPUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// MG.43d: the cherry-move rows carry their resolved commit across
+/// the branch prompt through the same slot `two_input_op!` uses.
+pub(crate) fn stash_pending_commit(value: String) {
+    stash_first_input(value);
+}
+
+/// `prompt_for`, for the half of a cherry-move row that lives in
+/// `magit_core_mode`.
+pub(crate) fn prompt_for_pub(prompt: &str, finish_action: &str) -> Effect {
+    prompt_for(prompt, finish_action)
+}
+
 fn stash_first_input(value: String) {
     if let Ok(mut slot) = PENDING_FIRST_INPUT.lock() {
         *slot = Some(value);
@@ -2954,6 +3076,32 @@ pub fn spawn_rebase_verb_with(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
+        finish_task(label, result);
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {shown}"),
+    }
+}
+
+/// MG.43d: run a multi-step operation whose LATER steps depend on
+/// state only discoverable part-way through.
+///
+/// `spawn_git_sequence` takes its steps up front, which cannot express
+/// "create the branch only if it is missing" or "compare-and-swap the
+/// ref only if the commit was at the tip". Computing those on the
+/// actor thread would be git I/O on a keystroke, so the whole
+/// operation runs inside one `spawn_blocking` and reports once,
+/// exactly like a sequence does.
+pub fn spawn_computed<F>(label: &'static str, shown: String, f: F) -> Effect
+where
+    F: FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
+{
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || f(&workdir).map(|()| String::new()))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
         finish_task(label, result);
     });
     Effect::Echo {

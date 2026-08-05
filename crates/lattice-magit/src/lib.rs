@@ -12,6 +12,7 @@ pub mod actions;
 pub mod blame;
 pub mod buffer_io;
 pub mod buffer_state;
+mod cherry_move;
 mod confirm;
 mod git_config;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
@@ -2465,6 +2466,47 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
     );
+    // MG.43d: the commit-moving rows.
+    for (name, doc) in [
+        (
+            "action:magit-cherry-harvest",
+            "Move a commit here from another branch, removing it there",
+        ),
+        (
+            "action:magit-cherry-donate",
+            "Move a commit to another branch, staying on this one",
+        ),
+        (
+            "action:magit-cherry-spinout",
+            "Move a commit to a new branch, staying on this one",
+        ),
+        (
+            "action:magit-cherry-spinoff",
+            "Move a commit to a new branch and check it out",
+        ),
+    ] {
+        reg(name, doc);
+        reg(
+            Box::leak(format!("{name}-finish").into_boxed_str()),
+            "Run the cherry move once the branch is named",
+        );
+    }
+    for (name, doc) in [
+        (
+            "action:magit-global-branch-spinoff",
+            "Branch the unpushed commits and check it out",
+        ),
+        (
+            "action:magit-global-branch-spinout",
+            "Branch the unpushed commits, staying on this branch",
+        ),
+    ] {
+        reg(name, doc);
+        reg(
+            Box::leak(format!("{name}-finish").into_boxed_str()),
+            "Create the branch once it is named",
+        );
+    }
     // MG.43f: reset the worktree, fetch submodules.
     reg(
         "action:magit-reset-worktree",
@@ -3900,20 +3942,31 @@ mod tests {
             .flat_map(|i| i.key.iter().cloned())
             .collect();
 
-        // s spin-off, S spin-out — still deferred, keys still free.
-        //
-        // `C` left this list in MG.43g and `X` in MG.43a: each landed
-        // in the slot that was being held for it, which is what the
-        // reservation was for. Reserving a key and then landing
-        // something else there is the failure this guards.
-        for key in ["s", "S"] {
-            assert!(
-                !taken.iter().any(|k| k == key),
-                "`{key}` is magit's key for a deferred branch row — leaving it \
-                 free is what lets that row land in the slot muscle memory \
-                 expects. Taken: {taken:?}"
-            );
-        }
+        // MG.43d: nothing is deferred here any more. `s` / `S`
+        // landed in the slots that were being held for them, as `C`
+        // and `X` did before — so this asserts what OCCUPIES the keys
+        // rather than that they are free. A reservation that is never
+        // converted is how a placeholder test quietly stops testing.
+        let key_of = |action: &str| {
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| {
+                    matches!(&i.kind, TransientItemKind::Action(id)
+                        if Some(*id) == registry.id_by_name(action))
+                })
+                .and_then(|i| i.key.first().cloned())
+        };
+        assert_eq!(
+            key_of("action:magit-global-branch-spinoff").as_deref(),
+            Some("s"),
+            "spin-off must be on magit's `s`: {taken:?}"
+        );
+        assert_eq!(
+            key_of("action:magit-global-branch-spinout").as_deref(),
+            Some("S"),
+            "spin-out must be on magit's `S`: {taken:?}"
+        );
 
         // MG.43g: `C` is now the configure row, and it must be a
         // `Variable` — an ordinary action there would be a `C` that
@@ -5228,7 +5281,12 @@ mod tests {
             // MG.43c: +3 todo-rewriting rows; MG.43g: +6 `C` rows;
             // MG.43e: +merge `p`/`i`, +tag `r`/`p`;
             // MG.43f: +reset `w`, +fetch `m`.
-            107,
+            //
+            // MG.43h adds none: `d` / `l` became submenus whose show
+            // row replaces the old direct row 1:1, and their argument
+            // toggles are declared (so not inert).
+            // MG.43d: +4 cherry-move rows, +2 branch spin rows.
+            113,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -5255,8 +5313,8 @@ mod tests {
             // MG.41c: +13 destination rows; MG.41d: +4 more;
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
             // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4;
-            // MG.43f: +2.
-            110,
+            // MG.43f: +2; MG.43h: none; MG.43d: +6.
+            116,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

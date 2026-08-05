@@ -136,8 +136,7 @@ impl Mode for MagitLogMode {
                 let s = buffer_name
                     .strip_prefix("*magit:log:")
                     .and_then(|s| s.strip_suffix('*'));
-                s.filter(|s| !s.is_empty())
-                    .map(std::path::PathBuf::from)
+                s.filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
             };
 
             // MG.43h: arguments the `l` dispatch row collected before

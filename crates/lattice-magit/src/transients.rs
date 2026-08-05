@@ -304,6 +304,22 @@ const BRANCH_CREATE_ROWS: &[TransientRow] = &[
 ];
 
 const BRANCH_DO_ROWS: &[TransientRow] = &[
+    // MG.43d: magit's `s` / `S` — a branch from the unpushed commits.
+    // The pair differs only in where you end up.
+    TransientRow {
+        key: "s",
+        label: "spin-off",
+        doc: "Branch the unpushed commits and check it out",
+        action: "action:magit-global-branch-spinoff",
+        placeholder: "branch_spinoff_op",
+    },
+    TransientRow {
+        key: "S",
+        label: "spin-out",
+        doc: "Branch the unpushed commits, staying on this branch",
+        action: "action:magit-global-branch-spinout",
+        placeholder: "branch_spinout_op",
+    },
     // MG.43a: magit's `x` — reset this branch to another ref.
     TransientRow {
         key: "x",
@@ -684,6 +700,36 @@ const CHERRY_PICK_ROWS: &[TransientRow] = &[
         doc: "Apply a commit's changes without committing",
         action: "action:magit-cherry-pick-apply",
         placeholder: "cherry_pick_apply_op",
+    },
+    // MG.43d: the commit-MOVING rows. `A` / `a` copy; these four
+    // remove the commit from where it came from.
+    TransientRow {
+        key: "h",
+        label: "harvest",
+        doc: "Move a commit here from another branch, removing it there",
+        action: "action:magit-cherry-harvest",
+        placeholder: "cherry_harvest_op",
+    },
+    TransientRow {
+        key: "d",
+        label: "donate",
+        doc: "Move a commit to another branch, staying on this one",
+        action: "action:magit-cherry-donate",
+        placeholder: "cherry_donate_op",
+    },
+    TransientRow {
+        key: "n",
+        label: "spinout",
+        doc: "Move a commit to a new branch, staying on this one",
+        action: "action:magit-cherry-spinout",
+        placeholder: "cherry_spinout_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "spinoff",
+        doc: "Move a commit to a new branch and check it out",
+        action: "action:magit-cherry-spinoff",
+        placeholder: "cherry_spinoff_op",
     },
 ];
 
@@ -3497,7 +3543,11 @@ mod sequencer_gate_tests {
         let ids = MagitActionIds::default();
         // MG.43a added the `--no-commit` halves; both are ways IN, so
         // both belong to the idle set.
-        assert_eq!(keys(&cherry_pick_transient(&ids, false)), vec!["A", "a"]);
+        // MG.43d added the commit-MOVING rows; every one is a way IN.
+        assert_eq!(
+            keys(&cherry_pick_transient(&ids, false)),
+            vec!["A", "a", "h", "d", "n", "s"]
+        );
         assert_eq!(keys(&revert_transient(&ids, false)), vec!["V", "v"]);
     }
 

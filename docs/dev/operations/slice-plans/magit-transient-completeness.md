@@ -1,6 +1,6 @@
 # MG.41 — magit transient completeness
 
-**Status:** 📝 planned. Parent plan:
+**Status:** 🚧 six of seven slices landed (2026-08-05). Parent plan:
 [`magit.md`](magit.md) (MG.1–MG.40). Design fragment:
 [`../../architecture/magit.md`](../../architecture/magit.md).
 
@@ -10,6 +10,20 @@ audit behind this plan is §"Audit" below; the short version is that
 2–3 of magit's 7–14 rows, and push / pull / fetch — the ones a user
 reaches for daily — expose a single unlabelled action where magit
 offers three destinations.
+
+| Slice | Status | What |
+|---|---|---|
+| MG.41a | ✅ | Rows become data — name-keyed resolver + static tables |
+| MG.41b | ✅ | `ui.transient.max-rows`, honoured by both renderers |
+| MG.41g | ✅ | Completion notifications via the event bus |
+| MG.41c | ✅ | push 1→7 rows, pull 1→3 (+ promoted to a submenu), fetch 1→6 |
+| MG.41d | 🚧 | reset +2, commit +2, stash 2→8; editor-dependent rows still out |
+| MG.41e | 🚧 | rebase (gated), merge, tag submenus; cherry-pick / revert still out |
+| MG.41f | ⛔ | Blocked — needs the diff/log actions to accept arguments |
+
+Net effect on the menus a user sees: **the dispatch went from 46
+resolvable leaves to 72**, and the three remote menus from one
+unlabelled row each to seven, three and six.
 
 ---
 

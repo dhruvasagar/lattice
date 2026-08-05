@@ -21,6 +21,11 @@ offers three destinations.
 | MG.41e | 🚧 | rebase (gated), merge, tag submenus; cherry-pick / revert still out |
 | MG.41f | ⛔ | Blocked — needs the diff/log actions to accept arguments |
 
+MG.41d and MG.41e stop where rows stop being rows. Their remaining
+entries each need a capability that does not exist yet, and those
+capabilities are shared — so they are carved out as
+[MG.42](magit-transient-enablers.md) rather than reinvented per row.
+
 Net effect on the menus a user sees: **the dispatch went from 46
 resolvable leaves to 72**, and the three remote menus from one
 unlabelled row each to seven, three and six.

@@ -314,6 +314,10 @@ mod tests {
                 // the command-history source; this expectation listed
                 // only the latter and went stale when it landed.
                 "search-history",
+                // PBH.6: `:history pane-buffers`. Same lapse one slice
+                // later — this list is the single piece of bookkeeping
+                // a new source costs, and it went stale again.
+                "pane-buffer-history",
                 "registers",
                 "marks",
                 "grep",

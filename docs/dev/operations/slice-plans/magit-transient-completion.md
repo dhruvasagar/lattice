@@ -64,7 +64,7 @@ was right to reject the first attempt. It was wrong about the cause.
 | MG.43e | 📝 | Merge `p`/`i`, tag `r`/`p` |
 | MG.43f | 📝 | Reset `w`, stash `w`, fetch `m` |
 | MG.43h | 📝 | MG.41f — diff / log argument transients |
-| MG.43g | 📝 | `C` configure — variable rows with async prefetch |
+| MG.43g | ✅ | `C` configure — variable rows with async prefetch |
 
 Each lands green on its own; the row-heavy slices are table edits plus
 one op each, because MG.41a and MG.42 already paid for the machinery.
@@ -181,6 +181,43 @@ value has not arrived yet renders as pending rather than as unset —
 showing `pull.rebase = false` for "we have not looked" would be a
 confident lie about the user's config, and the row exists precisely to
 report the current value.
+
+**Landed.** `TransientItemKind::Variable { key, value, action }` in
+`lattice-picker`, rendered by both peers; `git_config.rs` in
+`lattice-magit`; `C` rows on branch, push, pull, fetch, tag and notes.
+
+Details worth keeping, each a way the row could look right and be
+wrong:
+
+- **The prefetch fires where the dispatch source is built, not inside
+  a row.** Every submenu is constructed eagerly when `C-c g` opens, so
+  that is the single point running before all of them. It is
+  fire-and-forget; a refresh landing later shows up next open, which
+  is exactly why `…` exists as a state.
+- **One `git config --list -z`, not one `--get` per row.** Per-key
+  reads would be a process per row. `-z` rather than the default
+  line-oriented output because a value may contain a newline (any
+  multi-line alias), which the default format cannot represent
+  unambiguously.
+- **Three display states, not two.** `…` unread, `unset` read-and-absent,
+  and the value. Collapsing the first two makes the menu assert
+  something about the user's config it never checked.
+- **An empty prompt UNSETS.** `git config key ""` leaves the key
+  present-and-empty, which reads back as set — so clearing a row would
+  silently fail to clear it.
+- **The prompt is seeded with the current value.** A configure row
+  edits an existing setting; starting blank would mean retyping it to
+  change one character, and would make a stray `<CR>` clear it.
+- **`Variable` shares the host's `Action` dispatch arm** via an
+  or-pattern rather than getting a copy, so argument projection,
+  region carrying and effect application cannot drift between them.
+- **Notes' `C` is gated off during a merge**, like every other row
+  there: changing the notes ref mid-merge is precisely what the gate
+  exists to prevent.
+
+`C` and `X` both left the branch menu's "deliberately free" list this
+arc — each landed in the slot that was being held for it, and the
+tests that asserted absence now assert what occupies them.
 
 ---
 

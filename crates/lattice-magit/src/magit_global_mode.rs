@@ -853,6 +853,72 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "stash branch"
     );
 
+    // MG.43g: magit's `C` configure rows. One prompt-then-write pair
+    // per key, generated from the SAME table the menus render from, so
+    // a row and its handler cannot drift apart.
+    //
+    // The prompt is seeded with the current value, so editing an
+    // existing setting starts from what it is rather than blank.
+    macro_rules! config_op {
+        ($action_name:expr, $finish:expr, $config_key:expr, $label:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    // Seeded with the current value: a configure row
+                    // edits an EXISTING setting, so starting blank
+                    // would mean retyping it to change one character,
+                    // and an accidental `<CR>` would clear it.
+                    let current = crate::git_config::value_of($config_key).unwrap_or_default();
+                    Some(prompt_seeded(
+                        concat!($label, " (", $config_key, "): "),
+                        $finish,
+                        current,
+                    ))
+                }),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    // An empty value UNSETS rather than declining: a
+                    // configure row must be able to clear a setting,
+                    // and blanking the prompt is how magit does it.
+                    let value = ctx.prompt_value?.trim().to_string();
+                    Some(crate::git_config::set($config_key, &value))
+                }),
+            });
+        };
+    }
+    config_op!(
+        "action:magit-config-pull-rebase",
+        "action:magit-config-pull-rebase-finish",
+        "pull.rebase",
+        "Rebase on pull"
+    );
+    config_op!(
+        "action:magit-config-push-default",
+        "action:magit-config-push-default-finish",
+        "remote.pushDefault",
+        "Default push target"
+    );
+    config_op!(
+        "action:magit-config-fetch-prune",
+        "action:magit-config-fetch-prune-finish",
+        "fetch.prune",
+        "Prune on fetch"
+    );
+    config_op!(
+        "action:magit-config-tag-sign",
+        "action:magit-config-tag-sign-finish",
+        "tag.gpgSign",
+        "Sign tags"
+    );
+    config_op!(
+        "action:magit-config-notes-ref",
+        "action:magit-config-notes-ref-finish",
+        "core.notesRef",
+        "Notes ref"
+    );
+
     // MG.43b: magit's rebase `p` / `u` — onto the configured push
     // target or the upstream. Both are plain revisions to git, so
     // neither needs the `RemoteTarget` resolution push/pull use.

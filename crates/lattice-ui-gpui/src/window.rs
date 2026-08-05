@@ -5228,9 +5228,20 @@ fn transient_rows_gpui(
                             _ => None,
                         })
                         .unwrap_or(false);
-                    if v { "[x]" } else { "[ ]" }
+                    if v { "[x]".to_string() } else { "[ ]".to_string() }
                 }
-                _ => "",
+                // MG.43g: the TUI peer's variable rendering, in
+                // lockstep. Three states — `…` (not read yet) is not
+                // the same claim as `unset`.
+                lattice_picker::TransientItemKind::Variable { key, value, .. } => {
+                    let shown = match value.as_deref() {
+                        None => "…".to_string(),
+                        Some("") => "unset".to_string(),
+                        Some(v) => v.to_string(),
+                    };
+                    format!("{key} = {shown}")
+                }
+                _ => String::new(),
             };
             // The same caret + bold-label marker the TUI peer paints —
             // a transient stays key-driven, so the marker says where

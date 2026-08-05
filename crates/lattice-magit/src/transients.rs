@@ -903,6 +903,7 @@ fn remote_op_transient(
     op: RemoteOp,
     ids: &MagitActionIds,
     rows: &'static [TransientRow],
+    config_rows: &'static [ConfigRow],
 ) -> TransientSpec {
     let mut groups = Vec::new();
     let flags = flag_items(op);
@@ -915,6 +916,8 @@ fn remote_op_transient(
     // MG.41c: several destinations, not one unlabelled run. Magit's
     // push menu offers seven; lattice offered `P`.
     groups.push(row_group("Destination", ids, rows));
+    // MG.43g: magit's `C`, reporting the key's current value inline.
+    groups.extend(config_group(ids, config_rows));
     TransientSpec {
         title: title.into(),
         groups,
@@ -1053,6 +1056,149 @@ fn action_or_placeholder(
     }
 }
 
+/// MG.43g: a configure row — magit's `C`.
+///
+/// Renders the key's CURRENT value inline and fires an action that
+/// prompts for a new one. The value comes from the prefetched cache,
+/// never from a read here: this runs while a menu is being built,
+/// which is a keystroke path.
+///
+/// Falls back to the same inert placeholder every other row uses when
+/// its action does not resolve, so an unregistered configure action
+/// renders disabled rather than panicking.
+fn variable_item(
+    ids: &MagitActionIds,
+    key_chord: &str,
+    label: &str,
+    description: &str,
+    config_key: &str,
+    action: &str,
+    placeholder_name: &str,
+) -> TransientItem {
+    let Some(cid) = ids.get(action) else {
+        return action_or_placeholder(None, key_chord, label, description, placeholder_name);
+    };
+    TransientItem {
+        key: vec![key_chord.to_string()],
+        label: label.to_string(),
+        description: description.to_string(),
+        kind: TransientItemKind::Variable {
+            key: config_key.to_string(),
+            value: crate::git_config::value_of(config_key),
+            action: cid,
+        },
+    }
+}
+
+/// MG.43g: the config keys each menu's `C` row reports.
+///
+/// Magit's own keys, per menu. Kept as data for the same reason rows
+/// are: a menu gaining a key is a table entry, and the drift test can
+/// walk them.
+pub(crate) struct ConfigRow {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub config_key: &'static str,
+    /// The action that changes it. Named per row for the same reason
+    /// `TransientRow::action` is: a `Variable` fires an action and
+    /// carries no key, so the row must name a handler that knows which
+    /// key it edits.
+    pub action: &'static str,
+}
+
+pub(crate) const BRANCH_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "rebase on pull",
+        config_key: "pull.rebase",
+        action: "action:magit-config-pull-rebase",
+    },
+];
+
+pub(crate) const PUSH_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "default push target",
+        config_key: "remote.pushDefault",
+        action: "action:magit-config-push-default",
+    },
+];
+
+pub(crate) const PULL_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "rebase on pull",
+        config_key: "pull.rebase",
+        action: "action:magit-config-pull-rebase",
+    },
+];
+
+pub(crate) const FETCH_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "prune on fetch",
+        config_key: "fetch.prune",
+        action: "action:magit-config-fetch-prune",
+    },
+];
+
+pub(crate) const TAG_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "sign tags",
+        config_key: "tag.gpgSign",
+        action: "action:magit-config-tag-sign",
+    },
+];
+
+pub(crate) const NOTES_CONFIG_ROWS: &[ConfigRow] = &[
+    ConfigRow {
+        key: "C",
+        label: "notes ref",
+        config_key: "core.notesRef",
+        action: "action:magit-config-notes-ref",
+    },
+];
+
+/// Every configure table, for the drift test — the same bookkeeping
+/// `all_row_tables` keeps for action rows.
+#[cfg(test)]
+pub(crate) fn all_config_tables() -> &'static [(&'static str, &'static [ConfigRow])] {
+    &[
+        ("branch", BRANCH_CONFIG_ROWS),
+        ("push", PUSH_CONFIG_ROWS),
+        ("pull", PULL_CONFIG_ROWS),
+        ("fetch", FETCH_CONFIG_ROWS),
+        ("tag", TAG_CONFIG_ROWS),
+        ("notes", NOTES_CONFIG_ROWS),
+    ]
+}
+
+/// The `Configure` group a menu appends, or nothing when the table is
+/// empty.
+fn config_group(ids: &MagitActionIds, rows: &'static [ConfigRow]) -> Option<TransientGroup> {
+    if rows.is_empty() {
+        return None;
+    }
+    Some(TransientGroup {
+        label: "Configure".into(),
+        items: rows
+            .iter()
+            .map(|r| {
+                variable_item(
+                    ids,
+                    r.key,
+                    r.label,
+                    "Change this setting for the repository",
+                    r.config_key,
+                    r.action,
+                    "config_op",
+                )
+            })
+            .collect(),
+    })
+}
+
 /// MG.23h: the "Applying changes" rows, gated per magit's own
 /// `:if-derived magit-mode` — see the call site for the reasoning and
 /// for why `s` / `u` are not among them.
@@ -1160,7 +1306,10 @@ fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
             row_group("Checkout", ids, BRANCH_CHECKOUT_ROWS),
             row_group("Create", ids, BRANCH_CREATE_ROWS),
             row_group("Do", ids, BRANCH_DO_ROWS),
-        ],
+        ]
+        .into_iter()
+        .chain(config_group(ids, BRANCH_CONFIG_ROWS))
+        .collect(),
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -1178,13 +1327,11 @@ fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
 /// prune are what you must not be doing, so the menu shows only the two
 /// ways out.
 ///
-/// **Deferred, and magit's keys left free for them:** the four
-/// configure rows (`c` / `d` / `C` / `D`, setting `core.notesRef` and
-/// `notes.displayRef`). Those are transient *variable rows* — they
-/// render a config value inside the menu and edit it in place — which
-/// lattice's transients do not have. It is the same gap MG.21d named
-/// for remote URLs, and `:customize` is the likelier long-term home for
-/// per-repo git config than a hand-rolled menu.
+/// **MG.43g added `C`** (`core.notesRef`), the first of magit's four
+/// configure rows here. `TransientItemKind::Variable` exists now, so
+/// the remaining three (`c` / `d` / `D`, chiefly `notes.displayRef`)
+/// are table entries rather than a missing capability. Only outside a
+/// merge: a stopped notes merge shows the ways out and nothing else.
 fn notes_transient(ids: &MagitActionIds, merge_in_progress: bool) -> TransientSpec {
     let groups = if merge_in_progress {
         vec![TransientGroup {
@@ -1240,6 +1387,18 @@ fn notes_transient(ids: &MagitActionIds, merge_in_progress: bool) -> TransientSp
                 ),
             ],
         }]
+    };
+    // MG.43g: `C` only outside a merge — a stopped notes merge shows
+    // the ways out and nothing else, which is the whole point of the
+    // gate. Changing the notes ref mid-merge is exactly what the user
+    // must not be doing.
+    let groups: Vec<TransientGroup> = if merge_in_progress {
+        groups
+    } else {
+        groups
+            .into_iter()
+            .chain(config_group(ids, NOTES_CONFIG_ROWS))
+            .collect()
     };
     TransientSpec {
         title: "Notes".into(),
@@ -1631,7 +1790,10 @@ fn merge_transient(ids: &MagitActionIds) -> TransientSpec {
 fn tag_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Tag".into(),
-        groups: vec![row_group("Tag", ids, TAG_ROWS)],
+        groups: vec![row_group("Tag", ids, TAG_ROWS)]
+            .into_iter()
+            .chain(config_group(ids, TAG_CONFIG_ROWS))
+            .collect(),
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -1871,6 +2033,7 @@ pub fn dispatch_transient_with(
                             RemoteOp::FETCH,
                             ids,
                             FETCH_ROWS,
+                            FETCH_CONFIG_ROWS,
                         ))),
                     },
                     // MG.41c: pull IS a submenu now. It was a plain row
@@ -1886,6 +2049,7 @@ pub fn dispatch_transient_with(
                             RemoteOp::PULL,
                             ids,
                             PULL_ROWS,
+                            PULL_CONFIG_ROWS,
                         ))),
                     },
                     TransientItem {
@@ -1897,6 +2061,7 @@ pub fn dispatch_transient_with(
                             RemoteOp::PUSH,
                             ids,
                             PUSH_ROWS,
+                            PUSH_CONFIG_ROWS,
                         ))),
                     },
                     // MG.21d: magit's `M`. Not a submenu — the row
@@ -2673,6 +2838,93 @@ mod remote_flag_tests {
         for expected in ["tags", "prune", "all"] {
             assert!(names.contains(&expected), "fetch missing `{expected}`: {names:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod config_row_tests {
+    use super::*;
+    use lattice_grammar::CommandRegistry;
+
+    /// MG.43g: every configure row's action resolves.
+    ///
+    /// The same drift guard `every_row_action_is_registered` gives the
+    /// action tables. A `Variable` whose action does not resolve falls
+    /// back to an inert placeholder, so the row would render and do
+    /// nothing when pressed.
+    #[test]
+    fn every_config_row_action_is_registered() {
+        let mut registry = CommandRegistry::new();
+        crate::register_action_commands(&mut registry);
+        for (table, rows) in all_config_tables() {
+            for row in *rows {
+                assert!(
+                    registry.id_by_name(row.action).is_some(),
+                    "{table} row `{}` ({}) references unregistered `{}`",
+                    row.key,
+                    row.label,
+                    row.action,
+                );
+            }
+        }
+    }
+
+    /// Every configure row names a non-empty git-config key.
+    ///
+    /// An empty key would render `" = …"` forever: the cache can never
+    /// answer for it, so the row would report nothing while looking
+    /// like it was still loading.
+    #[test]
+    fn every_config_row_names_a_key() {
+        for (table, rows) in all_config_tables() {
+            for row in *rows {
+                assert!(
+                    !row.config_key.is_empty(),
+                    "{table} row `{}` names no config key",
+                    row.key,
+                );
+                assert!(
+                    row.config_key.contains('.'),
+                    "{table} row `{}` names `{}`, which is not a git-config key",
+                    row.key,
+                    row.config_key,
+                );
+            }
+        }
+    }
+
+    /// MG.43g: **building a menu reads the cache, never the disk.**
+    ///
+    /// This is the paramount-#1 constraint the whole slice is shaped
+    /// around: a menu is built on a keystroke. With nothing prefetched
+    /// every row must still build, reporting "not read yet" rather
+    /// than blocking to find out.
+    #[test]
+    fn rows_build_without_a_prefetched_value() {
+        let mut registry = CommandRegistry::new();
+        crate::register_action_commands(&mut registry);
+        let ids = MagitActionIds::resolve(&registry);
+
+        let group = config_group(&ids, BRANCH_CONFIG_ROWS).expect("branch has a configure row");
+        let item = &group.items[0];
+        match &item.kind {
+            TransientItemKind::Variable { key, value, .. } => {
+                assert_eq!(key, "pull.rebase");
+                // `None`, not `Some("")`: nothing has been read, and
+                // claiming `unset` would state a fact about the user's
+                // config that was never checked.
+                assert_eq!(*value, None, "an unread key must not report a value");
+            }
+            other => panic!("configure rows must be Variable, got {other:?}"),
+        }
+    }
+
+    /// The three display states stay distinct.
+    #[test]
+    fn unread_and_unset_render_differently() {
+        assert_eq!(TransientItemKind::variable_display(None), "…");
+        assert_eq!(TransientItemKind::variable_display(Some("")), "unset");
+        assert_eq!(TransientItemKind::variable_display(Some("true")), "");
     }
 }
 

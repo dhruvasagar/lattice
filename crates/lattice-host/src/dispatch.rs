@@ -28315,7 +28315,13 @@ impl Editor {
         };
 
         match item.kind {
-            lattice_picker::TransientItemKind::Action(cmd_id) => {
+            // MG.43g: a variable row IS an action leaf that also
+            // displays a value. Sharing the arm rather than copying it
+            // is what guarantees it stays one — argument projection,
+            // region carrying and effect application all apply
+            // identically, and none of them can drift out of sync.
+            lattice_picker::TransientItemKind::Action(cmd_id)
+            | lattice_picker::TransientItemKind::Variable { action: cmd_id, .. } => {
                 tracing::debug!(
                     target: "lattice_host::transient",
                     "transient action triggered: {cmd_id:?}",

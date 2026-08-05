@@ -12,6 +12,7 @@ pub mod actions;
 pub mod blame;
 pub mod buffer_io;
 pub mod buffer_state;
+mod git_config;
 mod confirm;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
 // trait) names `HunkRestore` in its signature.
@@ -225,6 +226,16 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // rows all act on the visited file, which is the same question
     // wherever you press `C-c f`.
     transient_registry.register("magit-dispatch", move |ctx| {
+        // MG.43g: kick the git-config prefetch off HERE, not inside
+        // the builder's row construction.
+        //
+        // Every submenu is built eagerly when the dispatch opens, so
+        // this is the one point that runs before all of them, and it
+        // is fire-and-forget: the builder must not wait for I/O. A
+        // refresh that lands after this menu was built shows up the
+        // next time it opens, which is why an unread value renders
+        // `…` rather than blocking.
+        git_config::refresh();
         transients::dispatch_transient(&dispatch_ids, ctx)
     });
     transient_registry.register("magit-file-dispatch", move |_| {
@@ -2409,6 +2420,25 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
     );
+    // MG.43g: the `C` configure rows' actions, one pair per key.
+    for (name, doc) in [
+        ("action:magit-config-pull-rebase", "Set pull.rebase for this repository"),
+        (
+            "action:magit-config-push-default",
+            "Set remote.pushDefault for this repository",
+        ),
+        ("action:magit-config-fetch-prune", "Set fetch.prune for this repository"),
+        ("action:magit-config-tag-sign", "Set tag.gpgSign for this repository"),
+        ("action:magit-config-notes-ref", "Set core.notesRef for this repository"),
+    ] {
+        reg(name, doc);
+        // The finish half is what the prompt submits to; unregistered,
+        // the prompt would accept a value and route nowhere.
+        reg(
+            Box::leak(format!("{name}-finish").into_boxed_str()),
+            "Write the configure row's new value",
+        );
+    }
     // MG.43c: rebase's todo-rewriting rows.
     reg(
         "action:magit-rebase-edit-commit",
@@ -2832,6 +2862,20 @@ mod tests {
                             found.push(format!(
                                 "'{where_}' is an Argument named '{name}' that no \
                                  RemoteOp declares — nothing will consume its value"
+                            ));
+                        }
+                    }
+                    // MG.43g: a `Variable` carries a resolved
+                    // `CommandId`, so it is a real leaf — the inert
+                    // case is the `Flag` placeholder `variable_item`
+                    // falls back to, which the arm above already
+                    // catches. What IS worth catching here is a row
+                    // naming no config key: it would render `" = …"`
+                    // and report nothing.
+                    lattice_picker::TransientItemKind::Variable { key, .. } => {
+                        if key.is_empty() {
+                            found.push(format!(
+                                "'{where_}' is a Variable with no config key —                                  it would render a value it cannot read"
                             ));
                         }
                     }
@@ -3613,9 +3657,13 @@ mod tests {
             .flat_map(|i| i.key.iter().cloned())
             .collect();
 
-        // s spin-off, S spin-out, C configure, X reset (magit's `x`,
-        // moved by evil-collection-magit).
-        for key in ["s", "S", "C", "X"] {
+        // s spin-off, S spin-out — still deferred, keys still free.
+        //
+        // `C` left this list in MG.43g and `X` in MG.43a: each landed
+        // in the slot that was being held for it, which is what the
+        // reservation was for. Reserving a key and then landing
+        // something else there is the failure this guards.
+        for key in ["s", "S"] {
             assert!(
                 !taken.iter().any(|k| k == key),
                 "`{key}` is magit's key for a deferred branch row — leaving it \
@@ -3623,6 +3671,25 @@ mod tests {
                  expects. Taken: {taken:?}"
             );
         }
+
+        // MG.43g: `C` is now the configure row, and it must be a
+        // `Variable` — an ordinary action there would be a `C` that
+        // does not report the current value, which is the whole reason
+        // magit puts a variable row in that slot.
+        let configure = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.key.iter().any(|k| k == "C"))
+            .expect("`C` must be the configure row");
+        assert!(
+            matches!(
+                configure.kind,
+                TransientItemKind::Variable { .. }
+            ),
+            "`C` must report its value inline, got {:?}",
+            configure.kind
+        );
     }
 
     /// Every submenu tells the user `Esc` goes back, now that it does.
@@ -4912,8 +4979,8 @@ mod tests {
             // MG.42-E1: +commit `A` augment, +merge `e` edit.
             // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
             // +branch `x` reset. MG.43b: +5 rebase onto-target rows;
-            // MG.43c: +3 todo-rewriting rows.
-            95,
+            // MG.43c: +3 todo-rewriting rows; MG.43g: +6 `C` rows.
+            101,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4939,8 +5006,8 @@ mod tests {
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
-            // MG.43b: +5; MG.43c: +3.
-            98,
+            // MG.43b: +5; MG.43c: +3; MG.43g: +6.
+            104,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

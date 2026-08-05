@@ -239,6 +239,42 @@ pub enum TransientItemKind {
     /// Dismisses the transient picker without firing any action.
     /// Used for 'n' / 'q' keys in confirmation dialogs.
     Dismiss,
+    /// MG.43g: a value owned by something OUTSIDE the transient — a
+    /// git-config key, an editor option — shown inline and changed by
+    /// firing `action`.
+    ///
+    /// Distinct from [`Self::Flag`] and [`Self::Argument`], which hold
+    /// their value in `TransientState` for the duration of one menu.
+    /// A variable's value lives in the world and persists; the menu
+    /// only reports and edits it.
+    ///
+    /// `value` is `None` when the current value has **not been read
+    /// yet**, which renders differently from a value that is read and
+    /// unset. Collapsing the two would make the menu state a fact
+    /// about the user's configuration it has not actually checked —
+    /// and reporting the current value is the row's entire purpose.
+    Variable {
+        /// Display name of the underlying key, e.g. `pull.rebase`.
+        key: String,
+        /// Prefetched current value; `None` = not read yet.
+        value: Option<String>,
+        /// Fired to change it. Prompts for the new value itself.
+        action: CommandId,
+    },
+}
+
+impl TransientItemKind {
+    /// How a [`Self::Variable`]'s current value reads in the menu.
+    ///
+    /// Three distinct states, deliberately: unread, read-and-unset,
+    /// and set. `…` is not `unset` — see the variant's doc.
+    pub fn variable_display(value: Option<&str>) -> &'static str {
+        match value {
+            None => "…",
+            Some("") => "unset",
+            Some(_) => "",
+        }
+    }
 }
 
 /// Registry of named transient builders, populated at boot by each

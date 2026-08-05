@@ -1826,9 +1826,21 @@ fn transient_group_item_lines(
                                 _ => None,
                             })
                             .unwrap_or(false);
-                        if v { "[x]" } else { "[ ]" }
+                        if v { "[x]".to_string() } else { "[ ]".to_string() }
                     }
-                    _ => "",
+                    // MG.43g: a variable reports the CURRENT value
+                    // inline — that is the whole point of the row.
+                    // Three states, not two: `…` means "not read yet",
+                    // which is not the same claim as `unset`.
+                    lattice_picker::TransientItemKind::Variable { key, value, .. } => {
+                        let shown = match value.as_deref() {
+                            None => "…".to_string(),
+                            Some("") => "unset".to_string(),
+                            Some(v) => v.to_string(),
+                        };
+                        format!("{key} = {shown}")
+                    }
+                    _ => String::new(),
                 };
                 // The selection is marked with a leading caret and a
                 // bold label rather than a reversed row: a transient is

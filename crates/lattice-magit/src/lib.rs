@@ -12,8 +12,8 @@ pub mod actions;
 pub mod blame;
 pub mod buffer_io;
 pub mod buffer_state;
-mod git_config;
 mod confirm;
+mod git_config;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
 // trait) names `HunkRestore` in its signature.
 pub mod cursor_restore;
@@ -379,7 +379,6 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     ));
 }
 
-
 /// IX.2: the execute half of each destructive pair, and the slots its
 /// confirmation carries.
 ///
@@ -613,7 +612,6 @@ fn reverse_blame_usage() -> Effect {
     }
 }
 
-
 /// Register all magit ex-commands in the command registry.
 /// MG.26b: `blame_requests` is threaded in rather than looked up,
 /// because an ex-command's `apply` receives `lattice_grammar`'s
@@ -780,12 +778,7 @@ fn register_ex_commands(
                     Ok(parse_remote_flags(op, line))
                 }),
                 apply: {
-                    Arc::new(move |ctx| {
-                        Ok(magit_global_mode::spawn_remote_op(
-                            op,
-                            &ctx.args
-                        ))
-                    })
+                    Arc::new(move |ctx| Ok(magit_global_mode::spawn_remote_op(op, &ctx.args)))
                 },
                 args_schema: op.arg_specs(),
                 surface_form: SurfaceForm::Keyword,
@@ -942,10 +935,7 @@ fn register_ex_commands(
             "Delete tag",
             "action:magit-global-tag-delete-finish",
             |name| {
-                magit_global_mode::spawn_git(
-                    magit_global_mode::tag_delete_argv(&name),
-                    "tag -d",
-                )
+                magit_global_mode::spawn_git(magit_global_mode::tag_delete_argv(&name), "tag -d")
             },
         );
         mk_prompted(
@@ -1325,10 +1315,7 @@ fn register_ex_commands(
                                 Args::String(ref l) => l.clone(),
                                 _ => String::new(),
                             };
-                            Ok(magit_global_mode::spawn_subtree_op(
-                                op,
-                                &line
-                            ))
+                            Ok(magit_global_mode::spawn_subtree_op(op, &line))
                         }),
                         args_schema: vec![ArgSpec::required(
                             "spec",
@@ -1540,9 +1527,7 @@ fn register_ex_commands(
                         if spec.trim().is_empty() {
                             return Ok(note_merge_usage());
                         }
-                        Ok(magit_global_mode::spawn_note_merge(
-                            spec
-                        ))
+                        Ok(magit_global_mode::spawn_note_merge(spec))
                     })
                 },
                 args_schema: vec![ArgSpec::required(
@@ -1589,10 +1574,7 @@ fn register_ex_commands(
                             // the same reason — say so here instead.
                             return Ok(clone_usage());
                         }
-                        Ok(magit_global_mode::spawn_clone(
-                            url.to_string(),
-                            dest
-                        ))
+                        Ok(magit_global_mode::spawn_clone(url.to_string(), dest))
                     })
                 },
                 args_schema: vec![ArgSpec::required(
@@ -2211,25 +2193,70 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Show the commit at cursor in the cherry list",
     );
     reg("action:magit-note-confirm", "Save this note");
-    reg("action:magit-note-abort", "Close the note buffer without saving");
+    reg(
+        "action:magit-note-abort",
+        "Close the note buffer without saving",
+    );
 
     // MG.38 / MG.39 / MG.40.
     for (name, doc) in [
-        ("action:magit-global-subtree-add", "Add a repository as a subtree"),
-        ("action:magit-global-subtree-merge", "Merge a ref into a subtree"),
-        ("action:magit-global-subtree-pull", "Fetch and merge a subtree's upstream"),
-        ("action:magit-global-subtree-push", "Push a subtree's history to its repository"),
-        ("action:magit-global-subtree-split", "Extract a subtree's history"),
-        ("action:magit-global-subtree-finish", "Run the subtree operation once its arguments are known"),
+        (
+            "action:magit-global-subtree-add",
+            "Add a repository as a subtree",
+        ),
+        (
+            "action:magit-global-subtree-merge",
+            "Merge a ref into a subtree",
+        ),
+        (
+            "action:magit-global-subtree-pull",
+            "Fetch and merge a subtree's upstream",
+        ),
+        (
+            "action:magit-global-subtree-push",
+            "Push a subtree's history to its repository",
+        ),
+        (
+            "action:magit-global-subtree-split",
+            "Extract a subtree's history",
+        ),
+        (
+            "action:magit-global-subtree-finish",
+            "Run the subtree operation once its arguments are known",
+        ),
         ("action:magit-global-am-apply", "Apply a mailbox of patches"),
-        ("action:magit-global-am-apply-finish", "Run the patch apply once the files are known"),
-        ("action:magit-global-am-continue", "Resume a stopped patch apply"),
-        ("action:magit-global-am-skip", "Skip the patch that would not apply"),
-        ("action:magit-global-am-abort", "Abandon a stopped patch apply"),
-        ("action:magit-global-format-patch", "Write a commit range out as .patch files"),
-        ("action:magit-global-format-patch-finish", "Run format-patch once the range is known"),
-        ("action:magit-global-cherries", "Show which commits are not upstream yet"),
-        ("action:magit-global-cherries-finish", "Open the cherry list once the upstream is known"),
+        (
+            "action:magit-global-am-apply-finish",
+            "Run the patch apply once the files are known",
+        ),
+        (
+            "action:magit-global-am-continue",
+            "Resume a stopped patch apply",
+        ),
+        (
+            "action:magit-global-am-skip",
+            "Skip the patch that would not apply",
+        ),
+        (
+            "action:magit-global-am-abort",
+            "Abandon a stopped patch apply",
+        ),
+        (
+            "action:magit-global-format-patch",
+            "Write a commit range out as .patch files",
+        ),
+        (
+            "action:magit-global-format-patch-finish",
+            "Run format-patch once the range is known",
+        ),
+        (
+            "action:magit-global-cherries",
+            "Show which commits are not upstream yet",
+        ),
+        (
+            "action:magit-global-cherries-finish",
+            "Open the cherry list once the upstream is known",
+        ),
     ] {
         reg(name, doc);
     }
@@ -2269,7 +2296,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
 
     // MG.36: the clone wizard's three steps.
-    reg("action:magit-global-clone", "Clone a repository — asks for the URL");
+    reg(
+        "action:magit-global-clone",
+        "Clone a repository — asks for the URL",
+    );
     reg(
         "action:magit-global-clone-dest",
         "Second step of the clone wizard — asks where to put it",
@@ -2402,7 +2432,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-stash-keep-index",
         "Stash everything but leave the index staged",
     );
-    reg("action:magit-global-stash-staged", "Stash only the staged changes");
+    reg(
+        "action:magit-global-stash-staged",
+        "Stash only the staged changes",
+    );
     // MG.42-E2: composite operations.
     reg(
         "action:magit-global-stash-snapshot",
@@ -2422,14 +2455,26 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
     // MG.43g: the `C` configure rows' actions, one pair per key.
     for (name, doc) in [
-        ("action:magit-config-pull-rebase", "Set pull.rebase for this repository"),
+        (
+            "action:magit-config-pull-rebase",
+            "Set pull.rebase for this repository",
+        ),
         (
             "action:magit-config-push-default",
             "Set remote.pushDefault for this repository",
         ),
-        ("action:magit-config-fetch-prune", "Set fetch.prune for this repository"),
-        ("action:magit-config-tag-sign", "Set tag.gpgSign for this repository"),
-        ("action:magit-config-notes-ref", "Set core.notesRef for this repository"),
+        (
+            "action:magit-config-fetch-prune",
+            "Set fetch.prune for this repository",
+        ),
+        (
+            "action:magit-config-tag-sign",
+            "Set tag.gpgSign for this repository",
+        ),
+        (
+            "action:magit-config-notes-ref",
+            "Set core.notesRef for this repository",
+        ),
     ] {
         reg(name, doc);
         // The finish half is what the prompt submits to; unregistered,
@@ -2526,9 +2571,18 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-push-upstream",
         "Push to this branch's @{upstream} — differs from the push-remote in a triangular workflow",
     );
-    reg("action:magit-global-push-elsewhere", "Push to a remote you name");
-    reg("action:magit-global-push-other-branch", "Push a branch other than HEAD");
-    reg("action:magit-global-push-refspecs", "Push explicit refspecs");
+    reg(
+        "action:magit-global-push-elsewhere",
+        "Push to a remote you name",
+    );
+    reg(
+        "action:magit-global-push-other-branch",
+        "Push a branch other than HEAD",
+    );
+    reg(
+        "action:magit-global-push-refspecs",
+        "Push explicit refspecs",
+    );
     reg("action:magit-global-push-tag", "Push a single tag");
     reg("action:magit-global-push-all-tags", "Push every tag");
 
@@ -2536,18 +2590,39 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-pull-configured",
         "Pull from the configured remote",
     );
-    reg("action:magit-global-pull-upstream", "Pull from this branch's @{upstream}");
-    reg("action:magit-global-pull-elsewhere", "Pull from a remote you name");
+    reg(
+        "action:magit-global-pull-upstream",
+        "Pull from this branch's @{upstream}",
+    );
+    reg(
+        "action:magit-global-pull-elsewhere",
+        "Pull from a remote you name",
+    );
 
     reg(
         "action:magit-global-fetch-configured",
         "Fetch from the configured remote",
     );
-    reg("action:magit-global-fetch-upstream", "Fetch this branch's @{upstream}");
-    reg("action:magit-global-fetch-elsewhere", "Fetch from a remote you name");
-    reg("action:magit-global-fetch-other-branch", "Fetch a branch you name");
-    reg("action:magit-global-fetch-refspecs", "Fetch explicit refspecs");
-    reg("action:magit-global-fetch-all-remotes", "Fetch from every configured remote");
+    reg(
+        "action:magit-global-fetch-upstream",
+        "Fetch this branch's @{upstream}",
+    );
+    reg(
+        "action:magit-global-fetch-elsewhere",
+        "Fetch from a remote you name",
+    );
+    reg(
+        "action:magit-global-fetch-other-branch",
+        "Fetch a branch you name",
+    );
+    reg(
+        "action:magit-global-fetch-refspecs",
+        "Fetch explicit refspecs",
+    );
+    reg(
+        "action:magit-global-fetch-all-remotes",
+        "Fetch from every configured remote",
+    );
 
     // MG.23a: the six file-dispatch actions declare an optional
     // `file` argument. `C-c f` leaves it unset and they act on the
@@ -2622,7 +2697,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-merge-squash",
         "Squash a branch's changes into the index without a merge commit (asks which)",
     );
-    reg("action:magit-global-tag-delete", "Delete a local tag (asks which)");
+    reg(
+        "action:magit-global-tag-delete",
+        "Delete a local tag (asks which)",
+    );
     reg(
         "action:magit-global-merge-finish",
         "Merge the typed branch into the current one",
@@ -3448,8 +3526,10 @@ mod tests {
             );
         }
         assert_ne!(
-            transients::MagitActionIds::resolve(&actions).get("action:magit-global-file-at-revision"),
-            transients::MagitActionIds::resolve(&actions).get("action:magit-global-file-visit-live"),
+            transients::MagitActionIds::resolve(&actions)
+                .get("action:magit-global-file-at-revision"),
+            transients::MagitActionIds::resolve(&actions)
+                .get("action:magit-global-file-visit-live"),
             "in and out are different actions, not one key guessing"
         );
     }
@@ -3683,10 +3763,7 @@ mod tests {
             .find(|i| i.key.iter().any(|k| k == "C"))
             .expect("`C` must be the configure row");
         assert!(
-            matches!(
-                configure.kind,
-                TransientItemKind::Variable { .. }
-            ),
+            matches!(configure.kind, TransientItemKind::Variable { .. }),
             "`C` must report its value inline, got {:?}",
             configure.kind
         );
@@ -4714,7 +4791,10 @@ mod tests {
             RemoteOp::REBASE_CONTINUE.flags.is_empty(),
             "this test needs a genuinely flagless op",
         );
-        assert_eq!(parse_remote_flags(RemoteOp::REBASE_CONTINUE, "--force"), Args::None);
+        assert_eq!(
+            parse_remote_flags(RemoteOp::REBASE_CONTINUE, "--force"),
+            Args::None
+        );
     }
 
     /// MG.16 — the remote/stash operations exist on both surfaces.
@@ -4914,7 +4994,10 @@ mod tests {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
         check(
-            &transients::dispatch_transient(&transients::MagitActionIds::resolve(&registry), &in_magit_status()),
+            &transients::dispatch_transient(
+                &transients::MagitActionIds::resolve(&registry),
+                &in_magit_status(),
+            ),
             "dispatch",
         );
         check(

@@ -161,7 +161,10 @@ mod tests {
     fn a_multi_line_value_survives_parsing() {
         let text = "alias.lg\nlog --graph\n--oneline\0user.name\nDhruva\0";
         let map = parse_config_z(text);
-        assert_eq!(map.get("alias.lg").map(String::as_str), Some("log --graph\n--oneline"));
+        assert_eq!(
+            map.get("alias.lg").map(String::as_str),
+            Some("log --graph\n--oneline")
+        );
         assert_eq!(map.get("user.name").map(String::as_str), Some("Dhruva"));
     }
 

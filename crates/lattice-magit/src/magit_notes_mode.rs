@@ -213,8 +213,8 @@ impl Mode for MagitNotesMode {
                     sha: sha.clone(),
                 },
             );
-            let guard =
-                BufferStateGuard::new((*states).clone(), buffer_id).with_headerline(hl_registration);
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
 
             let wd = workdir.clone();
             let sha_for_task = sha.clone();

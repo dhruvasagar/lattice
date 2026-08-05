@@ -55,8 +55,7 @@ pub(crate) fn cherry_buffer_name(upstream: &str, head: &str) -> String {
 fn parse_name(name: &str) -> Option<(String, String)> {
     let body = name.strip_prefix("*magit:cherry:")?.strip_suffix('*')?;
     let (upstream, head) = body.split_once("..")?;
-    (!upstream.is_empty() && !head.is_empty())
-        .then(|| (upstream.to_string(), head.to_string()))
+    (!upstream.is_empty() && !head.is_empty()).then(|| (upstream.to_string(), head.to_string()))
 }
 
 fn magit_cherry_keymap_entries() -> &'static [KeymapEntry] {
@@ -267,11 +266,7 @@ pub(crate) struct CherryBuffer {
     pub(crate) spans: Vec<Vec<StyledSpan>>,
 }
 
-fn build_cherry_buffer(
-    workdir: &std::path::Path,
-    upstream: &str,
-    head: &str,
-) -> CherryBuffer {
+fn build_cherry_buffer(workdir: &std::path::Path, upstream: &str, head: &str) -> CherryBuffer {
     if upstream.is_empty() {
         return CherryBuffer {
             text: "magit: cherries needs an upstream to compare against.\n".to_string(),

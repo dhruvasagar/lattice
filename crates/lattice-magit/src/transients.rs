@@ -132,33 +132,127 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
     ]
 }
 
-
-
 // MG.41c: magit's destination rows. Keys are magit's own.
 
 const PUSH_ROWS: &[TransientRow] = &[
-    TransientRow { key: "p", label: "pushRemote", doc: "Push to the configured push-remote", action: "action:magit-global-push-configured", placeholder: "push_configured_op" },
-    TransientRow { key: "u", label: "@{upstream}", doc: "Push to this branch's upstream — differs from pushRemote in a triangular workflow", action: "action:magit-global-push-upstream", placeholder: "push_upstream_op" },
-    TransientRow { key: "e", label: "elsewhere", doc: "Push to a remote you name", action: "action:magit-global-push-elsewhere", placeholder: "push_elsewhere_op" },
-    TransientRow { key: "o", label: "another branch", doc: "Push a branch other than HEAD", action: "action:magit-global-push-other-branch", placeholder: "push_other_op" },
-    TransientRow { key: "r", label: "refspecs", doc: "Push explicit refspecs", action: "action:magit-global-push-refspecs", placeholder: "push_refspecs_op" },
-    TransientRow { key: "T", label: "a tag", doc: "Push a single tag", action: "action:magit-global-push-tag", placeholder: "push_tag_op" },
-    TransientRow { key: "t", label: "all tags", doc: "Push every tag", action: "action:magit-global-push-all-tags", placeholder: "push_all_tags_op" },
+    TransientRow {
+        key: "p",
+        label: "pushRemote",
+        doc: "Push to the configured push-remote",
+        action: "action:magit-global-push-configured",
+        placeholder: "push_configured_op",
+    },
+    TransientRow {
+        key: "u",
+        label: "@{upstream}",
+        doc: "Push to this branch's upstream — differs from pushRemote in a triangular workflow",
+        action: "action:magit-global-push-upstream",
+        placeholder: "push_upstream_op",
+    },
+    TransientRow {
+        key: "e",
+        label: "elsewhere",
+        doc: "Push to a remote you name",
+        action: "action:magit-global-push-elsewhere",
+        placeholder: "push_elsewhere_op",
+    },
+    TransientRow {
+        key: "o",
+        label: "another branch",
+        doc: "Push a branch other than HEAD",
+        action: "action:magit-global-push-other-branch",
+        placeholder: "push_other_op",
+    },
+    TransientRow {
+        key: "r",
+        label: "refspecs",
+        doc: "Push explicit refspecs",
+        action: "action:magit-global-push-refspecs",
+        placeholder: "push_refspecs_op",
+    },
+    TransientRow {
+        key: "T",
+        label: "a tag",
+        doc: "Push a single tag",
+        action: "action:magit-global-push-tag",
+        placeholder: "push_tag_op",
+    },
+    TransientRow {
+        key: "t",
+        label: "all tags",
+        doc: "Push every tag",
+        action: "action:magit-global-push-all-tags",
+        placeholder: "push_all_tags_op",
+    },
 ];
 
 const PULL_ROWS: &[TransientRow] = &[
-    TransientRow { key: "p", label: "pushRemote", doc: "Pull from the configured remote", action: "action:magit-global-pull-configured", placeholder: "pull_configured_op" },
-    TransientRow { key: "u", label: "@{upstream}", doc: "Pull from this branch's upstream", action: "action:magit-global-pull-upstream", placeholder: "pull_upstream_op" },
-    TransientRow { key: "e", label: "elsewhere", doc: "Pull from a remote you name", action: "action:magit-global-pull-elsewhere", placeholder: "pull_elsewhere_op" },
+    TransientRow {
+        key: "p",
+        label: "pushRemote",
+        doc: "Pull from the configured remote",
+        action: "action:magit-global-pull-configured",
+        placeholder: "pull_configured_op",
+    },
+    TransientRow {
+        key: "u",
+        label: "@{upstream}",
+        doc: "Pull from this branch's upstream",
+        action: "action:magit-global-pull-upstream",
+        placeholder: "pull_upstream_op",
+    },
+    TransientRow {
+        key: "e",
+        label: "elsewhere",
+        doc: "Pull from a remote you name",
+        action: "action:magit-global-pull-elsewhere",
+        placeholder: "pull_elsewhere_op",
+    },
 ];
 
 const FETCH_ROWS: &[TransientRow] = &[
-    TransientRow { key: "p", label: "pushRemote", doc: "Fetch from the configured remote", action: "action:magit-global-fetch-configured", placeholder: "fetch_configured_op" },
-    TransientRow { key: "u", label: "@{upstream}", doc: "Fetch this branch's upstream", action: "action:magit-global-fetch-upstream", placeholder: "fetch_upstream_op" },
-    TransientRow { key: "e", label: "elsewhere", doc: "Fetch from a remote you name", action: "action:magit-global-fetch-elsewhere", placeholder: "fetch_elsewhere_op" },
-    TransientRow { key: "o", label: "another branch", doc: "Fetch a branch you name", action: "action:magit-global-fetch-other-branch", placeholder: "fetch_other_op" },
-    TransientRow { key: "r", label: "refspecs", doc: "Fetch explicit refspecs", action: "action:magit-global-fetch-refspecs", placeholder: "fetch_refspecs_op" },
-    TransientRow { key: "a", label: "all remotes", doc: "Fetch from every configured remote", action: "action:magit-global-fetch-all-remotes", placeholder: "fetch_all_op" },
+    TransientRow {
+        key: "p",
+        label: "pushRemote",
+        doc: "Fetch from the configured remote",
+        action: "action:magit-global-fetch-configured",
+        placeholder: "fetch_configured_op",
+    },
+    TransientRow {
+        key: "u",
+        label: "@{upstream}",
+        doc: "Fetch this branch's upstream",
+        action: "action:magit-global-fetch-upstream",
+        placeholder: "fetch_upstream_op",
+    },
+    TransientRow {
+        key: "e",
+        label: "elsewhere",
+        doc: "Fetch from a remote you name",
+        action: "action:magit-global-fetch-elsewhere",
+        placeholder: "fetch_elsewhere_op",
+    },
+    TransientRow {
+        key: "o",
+        label: "another branch",
+        doc: "Fetch a branch you name",
+        action: "action:magit-global-fetch-other-branch",
+        placeholder: "fetch_other_op",
+    },
+    TransientRow {
+        key: "r",
+        label: "refspecs",
+        doc: "Fetch explicit refspecs",
+        action: "action:magit-global-fetch-refspecs",
+        placeholder: "fetch_refspecs_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "all remotes",
+        doc: "Fetch from every configured remote",
+        action: "action:magit-global-fetch-all-remotes",
+        placeholder: "fetch_all_op",
+    },
 ];
 
 // ---- MG.41a: static row tables ----
@@ -1106,59 +1200,47 @@ pub(crate) struct ConfigRow {
     pub action: &'static str,
 }
 
-pub(crate) const BRANCH_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "rebase on pull",
-        config_key: "pull.rebase",
-        action: "action:magit-config-pull-rebase",
-    },
-];
+pub(crate) const BRANCH_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "rebase on pull",
+    config_key: "pull.rebase",
+    action: "action:magit-config-pull-rebase",
+}];
 
-pub(crate) const PUSH_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "default push target",
-        config_key: "remote.pushDefault",
-        action: "action:magit-config-push-default",
-    },
-];
+pub(crate) const PUSH_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "default push target",
+    config_key: "remote.pushDefault",
+    action: "action:magit-config-push-default",
+}];
 
-pub(crate) const PULL_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "rebase on pull",
-        config_key: "pull.rebase",
-        action: "action:magit-config-pull-rebase",
-    },
-];
+pub(crate) const PULL_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "rebase on pull",
+    config_key: "pull.rebase",
+    action: "action:magit-config-pull-rebase",
+}];
 
-pub(crate) const FETCH_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "prune on fetch",
-        config_key: "fetch.prune",
-        action: "action:magit-config-fetch-prune",
-    },
-];
+pub(crate) const FETCH_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "prune on fetch",
+    config_key: "fetch.prune",
+    action: "action:magit-config-fetch-prune",
+}];
 
-pub(crate) const TAG_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "sign tags",
-        config_key: "tag.gpgSign",
-        action: "action:magit-config-tag-sign",
-    },
-];
+pub(crate) const TAG_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "sign tags",
+    config_key: "tag.gpgSign",
+    action: "action:magit-config-tag-sign",
+}];
 
-pub(crate) const NOTES_CONFIG_ROWS: &[ConfigRow] = &[
-    ConfigRow {
-        key: "C",
-        label: "notes ref",
-        config_key: "core.notesRef",
-        action: "action:magit-config-notes-ref",
-    },
-];
+pub(crate) const NOTES_CONFIG_ROWS: &[ConfigRow] = &[ConfigRow {
+    key: "C",
+    label: "notes ref",
+    config_key: "core.notesRef",
+    action: "action:magit-config-notes-ref",
+}];
 
 /// Every configure table, for the drift test — the same bookkeeping
 /// `all_row_tables` keeps for action rows.
@@ -1751,7 +1833,11 @@ fn status_row(ids: &MagitActionIds, ctx: &TransientContext) -> TransientItem {
 /// MG.42-E4: `A`, gated on whether a cherry-pick is stopped.
 fn cherry_pick_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     let groups = if in_progress {
-        vec![row_group("Cherry-pick in progress", ids, CHERRY_PICK_SEQUENCE_ROWS)]
+        vec![row_group(
+            "Cherry-pick in progress",
+            ids,
+            CHERRY_PICK_SEQUENCE_ROWS,
+        )]
     } else {
         vec![row_group("Cherry-pick", ids, CHERRY_PICK_ROWS)]
     };
@@ -1937,7 +2023,13 @@ pub fn dispatch_transient_with(
             TransientGroup {
                 label: "History".into(),
                 items: vec![
-                    action_or_placeholder(ids.get("action:magit-global-log"), "l", "log", "Show commit history", "show_log"),
+                    action_or_placeholder(
+                        ids.get("action:magit-global-log"),
+                        "l",
+                        "log",
+                        "Show commit history",
+                        "show_log",
+                    ),
                     // MG.23j: magit's own keys, in magit's own ungated
                     // group. They need a commit and this menu has no
                     // cursor on one — so the action they fire asks,
@@ -2135,9 +2227,7 @@ pub fn dispatch_transient_with(
                         key: vec!["w".into()],
                         label: "patches".into(),
                         description: "Apply or create email patches".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(patch_transient(
-                            ids, gates.am,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(patch_transient(ids, gates.am))),
                     },
                     // MG.41e: a submenu now, gated like bisect / am.
                     // A stopped rebase needs continue / skip / abort,
@@ -2403,7 +2493,13 @@ pub fn file_dispatch_transient(ids: &MagitActionIds) -> TransientSpec {
             TransientGroup {
                 label: "Stage".into(),
                 items: vec![
-                    action_or_placeholder(ids.get("action:magit-global-file-stage"), "s", "stage", "Stage this file", "stage_file"),
+                    action_or_placeholder(
+                        ids.get("action:magit-global-file-stage"),
+                        "s",
+                        "stage",
+                        "Stage this file",
+                        "stage_file",
+                    ),
                     action_or_placeholder(
                         ids.get("action:magit-global-file-unstage"),
                         "u",
@@ -2476,7 +2572,13 @@ pub fn file_dispatch_transient(ids: &MagitActionIds) -> TransientSpec {
                         "Show commit history for this file",
                         "log_file",
                     ),
-                    action_or_placeholder(ids.get("action:magit-global-file-blame"), "b", "blame", "Blame this file", "blame_file"),
+                    action_or_placeholder(
+                        ids.get("action:magit-global-file-blame"),
+                        "b",
+                        "blame",
+                        "Blame this file",
+                        "blame_file",
+                    ),
                     // MG.23f2, on magit's own key for it (`f`
                     // "...reverse" in magit-file-dispatch's Blame
                     // group). Only meaningful from a blob buffer; the
@@ -2687,7 +2789,10 @@ mod background_task_tests {
             }
             checked += 1;
         }
-        assert!(checked >= 8, "expected to inspect every spawner, saw {checked}");
+        assert!(
+            checked >= 8,
+            "expected to inspect every spawner, saw {checked}"
+        );
     }
 }
 
@@ -2702,7 +2807,11 @@ mod remote_target_tests {
     fn configured_adds_nothing() {
         assert!(RemoteTarget::Configured.argv(None).is_empty());
         // A stray resolved value cannot leak in.
-        assert!(RemoteTarget::Configured.argv(Some("origin main")).is_empty());
+        assert!(
+            RemoteTarget::Configured
+                .argv(Some("origin main"))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2824,7 +2933,10 @@ mod remote_flag_tests {
     fn push_offers_magits_flag_set_minus_the_footgun() {
         let names: Vec<&str> = RemoteOp::PUSH.flags.iter().map(|f| f.name).collect();
         for expected in ["force-with-lease", "set-upstream", "no-verify", "dry-run"] {
-            assert!(names.contains(&expected), "push missing `{expected}`: {names:?}");
+            assert!(
+                names.contains(&expected),
+                "push missing `{expected}`: {names:?}"
+            );
         }
         assert!(
             !names.contains(&"force"),
@@ -2836,7 +2948,10 @@ mod remote_flag_tests {
     fn fetch_offers_tags_and_prune() {
         let names: Vec<&str> = RemoteOp::FETCH.flags.iter().map(|f| f.name).collect();
         for expected in ["tags", "prune", "all"] {
-            assert!(names.contains(&expected), "fetch missing `{expected}`: {names:?}");
+            assert!(
+                names.contains(&expected),
+                "fetch missing `{expected}`: {names:?}"
+            );
         }
     }
 }
@@ -2946,7 +3061,10 @@ mod rebase_argv_tests {
     /// So the rows pass git's own revision syntax straight through.
     #[test]
     fn rebase_targets_are_a_single_revision() {
-        assert_eq!(rebase_onto_argv("@{upstream}"), vec!["rebase", "@{upstream}"]);
+        assert_eq!(
+            rebase_onto_argv("@{upstream}"),
+            vec!["rebase", "@{upstream}"]
+        );
         assert_eq!(rebase_onto_argv("@{push}"), vec!["rebase", "@{push}"]);
         for target in ["@{upstream}", "@{push}", "origin/main"] {
             assert_eq!(
@@ -3016,7 +3134,10 @@ mod commit_op_argv_tests {
     /// carries no confirm step.
     #[test]
     fn reset_keep_needs_no_confirmation() {
-        assert_eq!(CommitOp::RESET_KEEP.argv("abc123"), vec!["reset", "--keep", "abc123"]);
+        assert_eq!(
+            CommitOp::RESET_KEEP.argv("abc123"),
+            vec!["reset", "--keep", "abc123"]
+        );
         assert!(CommitOp::RESET_KEEP.confirm_action.is_none());
         // The destructive sibling still does.
         assert!(CommitOp::RESET_HARD.confirm_action.is_some());
@@ -3095,7 +3216,10 @@ mod commit_op_argv_tests {
     /// the shape every pre-MG.41d op relies on.
     #[test]
     fn ops_without_trailing_tokens_are_unaffected() {
-        assert_eq!(CommitOp::RESET_SOFT.argv("abc"), vec!["reset", "--soft", "abc"]);
+        assert_eq!(
+            CommitOp::RESET_SOFT.argv("abc"),
+            vec!["reset", "--soft", "abc"]
+        );
         assert!(CommitOp::RESET_SOFT.trailing.is_empty());
     }
 }
@@ -3120,7 +3244,10 @@ mod rebase_gate_tests {
         let spec = rebase_transient(&MagitActionIds::default(), false);
         // MG.43b added magit's onto-a-target rows; every one is a way
         // IN, so all belong to the idle set.
-        assert_eq!(keys(&spec), vec!["p", "u", "e", "s", "m", "w", "k", "f", "i"]);
+        assert_eq!(
+            keys(&spec),
+            vec!["p", "u", "e", "s", "m", "w", "k", "f", "i"]
+        );
     }
 
     /// Inside one the menu offers only the ways OUT — starting another
@@ -3270,7 +3397,9 @@ mod sequencer_gate_tests {
 
 #[cfg(test)]
 mod sequence_step_tests {
-    use crate::magit_global_mode::{instant_squash_steps, merge_absorb_steps, stash_snapshot_steps};
+    use crate::magit_global_mode::{
+        instant_squash_steps, merge_absorb_steps, stash_snapshot_steps,
+    };
 
     /// MG.42-E2: a snapshot APPLIES, never pops. A pop would remove the
     /// very stack entry the snapshot exists to create, leaving the user
@@ -3293,7 +3422,11 @@ mod sequence_step_tests {
         for extra in [vec!["--staged"], vec!["--keep-index"]] {
             let steps = stash_snapshot_steps(&extra);
             assert!(steps[0].argv.contains(&extra[0].to_string()));
-            assert_eq!(steps[1].argv, vec!["stash", "apply"], "restore is unflagged");
+            assert_eq!(
+                steps[1].argv,
+                vec!["stash", "apply"],
+                "restore is unflagged"
+            );
         }
     }
 
@@ -3323,8 +3456,16 @@ mod sequence_step_tests {
 
     #[test]
     fn instant_squash_kind_selects_the_marker() {
-        assert!(instant_squash_steps("squash", "x")[0].argv.contains(&"--squash".to_string()));
-        assert!(instant_squash_steps("fixup", "x")[0].argv.contains(&"--fixup".to_string()));
+        assert!(
+            instant_squash_steps("squash", "x")[0]
+                .argv
+                .contains(&"--squash".to_string())
+        );
+        assert!(
+            instant_squash_steps("fixup", "x")[0]
+                .argv
+                .contains(&"--fixup".to_string())
+        );
     }
 
     /// Absorb deletes with `-d`, never `-D`.
@@ -3533,13 +3674,17 @@ mod commit_intent_tests {
     /// has to delete.
     #[test]
     fn targeted_intents_do_not_seed_a_prior_message() {
-        assert!(!CommitIntent::Augment {
-            target: "abc123".to_string()
-        }
-        .seeds_prior_message());
-        assert!(!CommitIntent::MergeEdit {
-            branch: "main".to_string()
-        }
-        .seeds_prior_message());
+        assert!(
+            !CommitIntent::Augment {
+                target: "abc123".to_string()
+            }
+            .seeds_prior_message()
+        );
+        assert!(
+            !CommitIntent::MergeEdit {
+                branch: "main".to_string()
+            }
+            .seeds_prior_message()
+        );
     }
 }

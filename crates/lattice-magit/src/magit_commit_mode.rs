@@ -457,7 +457,10 @@ impl Mode for MagitCommitMode {
             })
             .await
             .unwrap_or_default();
-            headerline::publish(&hl, headerline::commit_fields(&branch, &staged, intent != CommitIntent::Create));
+            headerline::publish(
+                &hl,
+                headerline::commit_fields(&branch, &staged, intent != CommitIntent::Create),
+            );
             // Message first (line 0 for a fresh commit, so the cursor
             // opens where you type), then the marker, then the diff.
             let initial = format!(

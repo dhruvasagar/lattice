@@ -733,7 +733,12 @@ pub(crate) fn cherry_fields(
 /// `C-c C-c` will create or overwrite.
 pub(crate) fn note_fields(meta: &RevisionMeta, has_existing: bool) -> Vec<Field> {
     let mut fields = vec![Field::label(
-        if has_existing { "editing note" } else { "new note" }.to_string(),
+        if has_existing {
+            "editing note"
+        } else {
+            "new note"
+        }
+        .to_string(),
     )];
     fields.extend(revision_fields(meta));
     fields

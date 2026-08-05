@@ -586,9 +586,7 @@ fn blame_line_commit(repo: &Repository, line: u32, path: &str) -> Result<String,
     let spec = format!("{line},{line}");
     let out = repo
         .run_git_str(["blame", "-L", &spec, "--porcelain", "--", path])
-        .map_err(|_| {
-            format!("magit: could not blame line {line} of {path} — is it tracked?\n")
-        })?;
+        .map_err(|_| format!("magit: could not blame line {line} of {path} — is it tracked?\n"))?;
     // Porcelain's first line is `<sha> <orig-line> <final-line> [<n>]`.
     let sha = out
         .split_whitespace()
@@ -831,7 +829,11 @@ mod tests {
         git(p, &["config", "user.email", "t@lattice.dev"]);
         git(p, &["config", "user.name", "lattice-test"]);
         let mut shas = Vec::new();
-        for (n, body) in [("one", "first\n"), ("two", "second\n"), ("three", "third\n")] {
+        for (n, body) in [
+            ("one", "first\n"),
+            ("two", "second\n"),
+            ("three", "third\n"),
+        ] {
             let mut text = std::fs::read_to_string(p.join("a.txt")).unwrap_or_default();
             text.push_str(body);
             std::fs::write(p.join("a.txt"), text).expect("write");
@@ -850,7 +852,11 @@ mod tests {
     /// `-edit:12:src/a.rs`.
     #[test]
     fn the_three_buffer_name_forms_stay_distinct() {
-        assert_eq!(parse_target("*magit:rebase*"), None, "bare name is not ours");
+        assert_eq!(
+            parse_target("*magit:rebase*"),
+            None,
+            "bare name is not ours"
+        );
         assert_eq!(
             parse_target("*magit:rebase:origin/main*"),
             Some(RebaseTarget::Onto(Some("origin/main".into())))
@@ -989,7 +995,10 @@ mod tests {
         let middle = git(p, &["rev-parse", "HEAD~1"]);
         rebase_one_commit(p, &middle, "drop", None).expect("rebase runs");
         let subjects = git(p, &["log", "--format=%s"]);
-        assert!(!subjects.contains("two"), "`two` must be gone: {subjects:?}");
+        assert!(
+            !subjects.contains("two"),
+            "`two` must be gone: {subjects:?}"
+        );
         assert!(subjects.contains("one"), "`one` must survive: {subjects:?}");
         assert!(
             subjects.contains("three"),
@@ -1024,7 +1033,10 @@ mod tests {
         );
         // The other commits keep theirs — a reword rewrites one
         // message, not the branch's.
-        assert!(subjects.contains("one") && subjects.contains("three"), "{subjects:?}");
+        assert!(
+            subjects.contains("one") && subjects.contains("three"),
+            "{subjects:?}"
+        );
     }
 
     /// Blame resolves the commit that wrote *that* line, not HEAD.

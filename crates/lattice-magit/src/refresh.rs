@@ -381,8 +381,7 @@ mod expansion_survives_refresh {
         // Nothing expanded: the source has no ranges to offer at all,
         // which is what leaves `<Tab>` on such a row with nothing to
         // close.
-        let (collapsed_text, _, _, collapsed_expanded) =
-            build_and_format(&wd, &HashSet::new(), 3);
+        let (collapsed_text, _, _, collapsed_expanded) = build_and_format(&wd, &HashSet::new(), 3);
         assert!(collapsed_expanded.is_empty(), "nothing is expanded");
 
         // Expanded: exactly one entry gains a range, and it must stop at
@@ -413,8 +412,9 @@ mod expansion_survives_refresh {
             "the folded body is the diff:\n{body:#?}"
         );
         assert!(
-            !body.iter().any(|l| l.trim_start().starts_with("Untracked")
-                || l.contains("Recent commits")),
+            !body
+                .iter()
+                .any(|l| l.trim_start().starts_with("Untracked") || l.contains("Recent commits")),
             "and it stops before the next section:\n{body:#?}"
         );
     }

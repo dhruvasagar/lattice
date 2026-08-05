@@ -260,14 +260,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     // A `Prompted` target's value rides in as the
                     // `dest` arg the transient filled in; the others
                     // ignore it.
-                    let prompted = ctx
-                        .args
-                        .as_list()
-                        .and_then(|l| l.last())
-                        .and_then(|v| match v {
-                            lattice_grammar::ArgValue::String(s) => Some(s.clone()),
-                            _ => None,
-                        });
+                    let prompted =
+                        ctx.args
+                            .as_list()
+                            .and_then(|l| l.last())
+                            .and_then(|v| match v {
+                                lattice_grammar::ArgValue::String(s) => Some(s.clone()),
+                                _ => None,
+                            });
                     Some(spawn_remote_op_to($op, &ctx.args, $target, prompted))
                 }),
             });
@@ -390,7 +390,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-cherry-pick-abort",
         RemoteOp::CHERRY_PICK_ABORT
     );
-    remote_op!("action:magit-global-revert-continue", RemoteOp::REVERT_CONTINUE);
+    remote_op!(
+        "action:magit-global-revert-continue",
+        RemoteOp::REVERT_CONTINUE
+    );
     remote_op!("action:magit-global-revert-skip", RemoteOp::REVERT_SKIP);
     remote_op!("action:magit-global-revert-abort", RemoteOp::REVERT_ABORT);
     // MG.41d: magit's `x` / `i` stash variants — same spawner, different
@@ -998,11 +1001,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let target = crate::confirm::carried_target(ctx)?;
             Some(spawn_git(
-                vec![
-                    "reset".to_string(),
-                    "--hard".to_string(),
-                    target.clone(),
-                ],
+                vec!["reset".to_string(), "--hard".to_string(), target.clone()],
                 "branch reset",
             ))
         }),
@@ -1442,10 +1441,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if line.is_empty() {
                 return None;
             }
-            Some(spawn_subtree_op(
-                op,
-                &line
-            ))
+            Some(spawn_subtree_op(op, &line))
         }),
     });
 
@@ -1491,8 +1487,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let root = crate::workdir::magit_workdir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let Some(argv) =
-                format_patch_argv(&range, (!root.is_empty()).then_some(root.as_str()))
+            let Some(argv) = format_patch_argv(&range, (!root.is_empty()).then_some(root.as_str()))
             else {
                 return Some(Effect::Echo {
                     level: lattice_grammar::EchoLevel::Error,
@@ -1508,10 +1503,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_remote_op(
-                        $op,
-                        &lattice_grammar::Args::None
-                    ))
+                    Some(spawn_remote_op($op, &lattice_grammar::Args::None))
                 }),
             });
         };
@@ -1601,10 +1593,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-note-prune-execute",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(spawn_note_prune(
-            ))
-        }),
+        handler: Arc::new(|_ctx: &ActionContext<'_>| Some(spawn_note_prune())),
     });
 
     macro_rules! notes_merge_op {
@@ -1612,10 +1601,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_remote_op(
-                        $op,
-                        &lattice_grammar::Args::None
-                    ))
+                    Some(spawn_remote_op($op, &lattice_grammar::Args::None))
                 }),
             });
         };
@@ -1647,9 +1633,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if spec.is_empty() {
                 return None;
             }
-            Some(spawn_note_merge(
-                &spec
-            ))
+            Some(spawn_note_merge(&spec))
         }),
     });
 
@@ -1710,10 +1694,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if dest.is_empty() {
                 return None;
             }
-            Some(spawn_clone(
-                url,
-                dest
-            ))
+            Some(spawn_clone(url, dest))
         }),
     });
 
@@ -2831,13 +2812,8 @@ pub fn spawn_rebase_verb_with(
     let shown = format!("git rebase ({verb} {commit})");
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            crate::magit_rebase_mode::rebase_one_commit(
-                &workdir,
-                &commit,
-                verb,
-                message.as_deref(),
-            )
-            .map(|()| String::new())
+            crate::magit_rebase_mode::rebase_one_commit(&workdir, &commit, verb, message.as_deref())
+                .map(|()| String::new())
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
@@ -2917,8 +2893,7 @@ pub(crate) fn am_argv(files: &str, three_way: bool) -> Option<Vec<String>> {
 /// Does the line ask for a three-way apply? Accepts magit's short flag
 /// and git's long one, anywhere in the line.
 pub(crate) fn am_wants_three_way(line: &str) -> bool {
-    line.split_whitespace()
-        .any(|w| w == "--3way" || w == "-3")
+    line.split_whitespace().any(|w| w == "--3way" || w == "-3")
 }
 
 // ── MG.38: `git subtree` ────────────────────────────────────────────
@@ -3029,10 +3004,7 @@ pub(crate) fn subtree_argv(op: SubtreeOp, line: &str) -> Option<Vec<String>> {
 /// subtree operation rewrites history or touches a remote, so "did it
 /// work" is the question, and an echo written before it starts cannot
 /// answer it.
-pub fn spawn_subtree_op(
-    op: SubtreeOp,
-    line: &str,
-) -> Effect {
+pub fn spawn_subtree_op(op: SubtreeOp, line: &str) -> Effect {
     let Some(argv) = subtree_argv(op, line) else {
         return Effect::Echo {
             level: lattice_grammar::EchoLevel::Error,
@@ -3102,20 +3074,16 @@ pub(crate) fn spawn_note_remove(commit: String) -> Effect {
 /// A notification rather than `spawn_git`'s echo: prune's whole result
 /// is *what it removed*, and an echo written at fire time cannot carry
 /// it.
-pub(crate) fn spawn_note_prune(
-) -> Effect {
+pub(crate) fn spawn_note_prune() -> Effect {
     spawn_remote_op(RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None)
 }
 
 /// Merge a notes ref into the current one.
-pub(crate) fn spawn_note_merge(
-    spec: &str,
-) -> Effect {
+pub(crate) fn spawn_note_merge(spec: &str) -> Effect {
     let Some(argv) = note_merge_argv(spec) else {
         return Effect::Echo {
             level: lattice_grammar::EchoLevel::Error,
-            text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]"
-                .to_string(),
+            text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]".to_string(),
         };
     };
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
@@ -3163,11 +3131,7 @@ pub(crate) fn clone_argv(url: &str, dest: &str) -> Vec<String> {
 /// pre-filling a prompt with a name it invented.
 pub(crate) fn default_clone_dest(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
-    let last = trimmed
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or_default().trim();
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
@@ -3186,10 +3150,7 @@ pub(crate) fn default_clone_dest(url: &str) -> String {
 /// magit buffers keep pointing at the repository the editor was launched
 /// in. Saying so once, at the moment it matters, is the difference
 /// between a documented limit and a user concluding the clone failed.
-pub fn spawn_clone(
-    url: String,
-    dest: String,
-) -> Effect {
+pub fn spawn_clone(url: String, dest: String) -> Effect {
     let argv = clone_argv(&url, &dest);
     let _shown = dest.clone();
     tokio::task::spawn(async move {
@@ -3670,10 +3631,7 @@ pub fn spawn_remote_op_to(
     }
 }
 
-pub fn spawn_remote_op(
-    op: RemoteOp,
-    args: &lattice_grammar::Args,
-) -> Effect {
+pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let argv = op.argv(args);
     let shown = argv.join(" ");
@@ -4114,7 +4072,10 @@ mod tests {
     /// not ask for instead of erroring.
     #[test]
     fn the_wrong_argument_count_is_refused() {
-        assert_eq!(subtree_argv(SubtreeOp::ADD, "vendor/lib https://host/lib.git"), None);
+        assert_eq!(
+            subtree_argv(SubtreeOp::ADD, "vendor/lib https://host/lib.git"),
+            None
+        );
         assert_eq!(subtree_argv(SubtreeOp::ADD, "vendor/lib"), None);
         assert_eq!(subtree_argv(SubtreeOp::SPLIT, "vendor/lib extra"), None);
         assert_eq!(subtree_argv(SubtreeOp::MERGE, ""), None);
@@ -4125,13 +4086,19 @@ mod tests {
     /// would build an argv git rejects.
     #[test]
     fn squash_is_accepted_only_where_it_means_something() {
-        let added = subtree_argv(SubtreeOp::ADD, "vendor/lib https://host/lib.git main --squash")
-            .expect("valid");
+        let added = subtree_argv(
+            SubtreeOp::ADD,
+            "vendor/lib https://host/lib.git main --squash",
+        )
+        .expect("valid");
         assert!(added.contains(&"--squash".to_string()), "{added:?}");
         // On push the trailing word is not a flag, so the count check
         // rejects the line rather than silently dropping the word.
         assert_eq!(
-            subtree_argv(SubtreeOp::PUSH, "vendor/lib https://host/lib.git main --squash"),
+            subtree_argv(
+                SubtreeOp::PUSH,
+                "vendor/lib https://host/lib.git main --squash"
+            ),
             None,
             "push has no --squash; the line must not be silently truncated"
         );
@@ -4182,12 +4149,19 @@ mod tests {
     #[test]
     fn format_patch_names_its_output_directory() {
         let argv = format_patch_argv("@{upstream}..HEAD", Some("/repo")).expect("valid");
-        assert_eq!(argv, vec!["format-patch", "-o", "/repo", "@{upstream}..HEAD"]);
+        assert_eq!(
+            argv,
+            vec!["format-patch", "-o", "/repo", "@{upstream}..HEAD"]
+        );
         assert_eq!(
             format_patch_argv("HEAD~3..HEAD", None).expect("valid"),
             vec!["format-patch", "HEAD~3..HEAD"]
         );
-        assert_eq!(format_patch_argv("  ", Some("/repo")), None, "a range is required");
+        assert_eq!(
+            format_patch_argv("  ", Some("/repo")),
+            None,
+            "a range is required"
+        );
     }
 
     // ── MG.37: notes ────────────────────────────────────────────────

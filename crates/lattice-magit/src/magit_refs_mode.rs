@@ -18,6 +18,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use lattice_cells::{Style, StyledSpan};
 use lattice_config;
 use lattice_grammar::{EchoLevel, Effect};
 use lattice_mode::{
@@ -25,7 +26,6 @@ use lattice_mode::{
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
-use lattice_cells::{Style, StyledSpan};
 use lattice_protocol::position::Position;
 use lattice_vcs::{RefEntry, RefKind, Reference, Repository};
 
@@ -541,11 +541,7 @@ mod tests {
         let mut head = entry(RefKind::Branch, "main");
         head.head = true;
         let built = render_refs(&[head, entry(RefKind::Branch, "other")]);
-        let marked: Vec<&str> = built
-            .text
-            .lines()
-            .filter(|l| l.starts_with("* "))
-            .collect();
+        let marked: Vec<&str> = built.text.lines().filter(|l| l.starts_with("* ")).collect();
         assert_eq!(marked.len(), 1, "got: {}", built.text);
         assert!(marked[0].contains("main"));
     }
@@ -641,7 +637,10 @@ mod tests {
             built.spans[1]
         );
         let row = built.text.lines().nth(1).expect("the row");
-        assert!(row.ends_with("subject"), "the subject is still there: {row:?}");
+        assert!(
+            row.ends_with("subject"),
+            "the subject is still there: {row:?}"
+        );
     }
 
     /// An empty repository says so, and still indexes its one line as

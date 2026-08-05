@@ -363,6 +363,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // fail-fast + log-the-outcome shape fits any one-shot git
     // invocation whose result can't come back synchronously.
     remote_op!("action:magit-global-stash-create", RemoteOp::STASH);
+    // MG.41e: the rebase sequencer rows.
+    remote_op!(
+        "action:magit-global-rebase-continue",
+        RemoteOp::REBASE_CONTINUE
+    );
+    remote_op!("action:magit-global-rebase-skip", RemoteOp::REBASE_SKIP);
+    remote_op!("action:magit-global-rebase-abort", RemoteOp::REBASE_ABORT);
     // MG.41d: magit's `x` / `i` stash variants — same spawner, different
     // argv, so they cost a line each rather than a handler each.
     remote_op!(

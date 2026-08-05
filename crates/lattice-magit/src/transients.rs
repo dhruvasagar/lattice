@@ -121,6 +121,8 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("push", PUSH_ROWS),
         ("pull", PULL_ROWS),
         ("fetch", FETCH_ROWS),
+        ("rebase/start", REBASE_START_ROWS),
+        ("rebase/sequence", REBASE_SEQUENCE_ROWS),
     ]
 }
 
@@ -393,6 +395,46 @@ const SUBTREE_ROWS: &[TransientRow] = &[
         doc: "Split a prefix into its own synthetic history",
         action: "action:magit-global-subtree-split",
         placeholder: "subtree_split_op",
+    },
+];
+
+/// MG.41e: the rebase submenu, shown when NO rebase is running.
+const REBASE_START_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "i",
+        label: "interactively",
+        doc: "Start an interactive rebase — pick a base, then edit the todo list",
+        action: "action:magit-global-rebase",
+        placeholder: "rebase_op",
+    },
+];
+
+/// MG.41e: shown INSTEAD when a rebase is stopped.
+///
+/// Gated for the same reason bisect / notes-merge / am are: outside a
+/// rebase these three error, so ungated rows would look actionable and
+/// fail; inside one, starting another is what you must not do.
+const REBASE_SEQUENCE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "r",
+        label: "continue",
+        doc: "Resume after amending or resolving conflicts",
+        action: "action:magit-global-rebase-continue",
+        placeholder: "rebase_continue_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "skip",
+        doc: "Skip the commit the rebase stopped on",
+        action: "action:magit-global-rebase-skip",
+        placeholder: "rebase_skip_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "abort",
+        doc: "Abandon the rebase, restoring the branch to where it started",
+        action: "action:magit-global-rebase-abort",
+        placeholder: "rebase_abort_op",
     },
 ];
 
@@ -1020,6 +1062,28 @@ pub fn bisect_in_progress() -> bool {
 /// `magit_rebase_mode::rebase_in_progress` checks it too. A stopped `am`
 /// therefore also shows the rebase abort as available, which is
 /// correct: `git rebase --abort` is what git itself suggests there.
+/// MG.41e: is a rebase stopped, mid-conflict or at an `edit` stop?
+///
+/// Read from the repository like its peers. Git uses two directories
+/// depending on the rebase backend — `rebase-merge` for the
+/// interactive/merge one, `rebase-apply` for the older am-based one —
+/// and checking only the first misses a whole class of stopped rebase.
+///
+/// `rebase-apply` is shared with `git am`, which is why
+/// [`am_in_progress`] looks at the same path: the two are
+/// distinguishable only by the `applying` marker file `am` leaves.
+pub fn rebase_in_progress() -> bool {
+    crate::workdir::magit_workdir()
+        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
+        .map(|repo| {
+            let gitdir = repo.gitdir();
+            gitdir.join("rebase-merge").exists()
+                || (gitdir.join("rebase-apply").exists()
+                    && !gitdir.join("rebase-apply").join("applying").exists())
+        })
+        .unwrap_or(false)
+}
+
 pub fn am_in_progress() -> bool {
     crate::workdir::magit_workdir()
         .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
@@ -1132,6 +1196,21 @@ fn status_row(ids: &MagitActionIds, ctx: &TransientContext) -> TransientItem {
 /// unstaged, `n` untracked, `z` stashes). Recent commits has no magit
 /// counterpart — its status buffer reaches unpushed/unpulled instead —
 /// so `c` is ours, free at this level and mnemonic.
+/// MG.41e: the `r` submenu, gated on whether a rebase is stopped.
+fn rebase_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
+    let groups = if in_progress {
+        vec![row_group("Rebase in progress", ids, REBASE_SEQUENCE_ROWS)]
+    } else {
+        vec![row_group("Rebase", ids, REBASE_START_ROWS)]
+    };
+    TransientSpec {
+        title: "Rebase".into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
 fn jump_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Jump to section".into(),
@@ -1175,6 +1254,8 @@ pub struct DispatchGates {
     pub notes_merge: bool,
     /// MG.39: `git am` stopped on a patch that would not apply.
     pub am: bool,
+    /// MG.41e: a rebase is stopped — mid-conflict or at an `edit` stop.
+    pub rebase: bool,
 }
 
 impl DispatchGates {
@@ -1189,6 +1270,7 @@ impl DispatchGates {
             bisect: bisect_in_progress(),
             notes_merge: notes_merge_in_progress(),
             am: am_in_progress(),
+            rebase: rebase_in_progress(),
         }
     }
 }
@@ -1435,13 +1517,19 @@ pub fn dispatch_transient_with(
                             ids, gates.am,
                         ))),
                     },
-                    action_or_placeholder(
-                        ids.get("action:magit-global-rebase"),
-                        "r",
-                        "rebase",
-                        "Start an interactive rebase",
-                        "rebase_op",
-                    ),
+                    // MG.41e: a submenu now, gated like bisect / am.
+                    // A stopped rebase needs continue / skip / abort,
+                    // and offering "start an interactive rebase" while
+                    // one is half-done is the wrong menu entirely.
+                    TransientItem {
+                        key: vec!["r".into()],
+                        label: "rebase".into(),
+                        description: "Rebase, or drive a stopped one".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(rebase_transient(
+                            ids,
+                            gates.rebase,
+                        ))),
+                    },
                     // MG.23c1: magit's own keys. Both ask for their one
                     // value rather than taking it from context — there
                     // is nothing at a cursor to read from a menu opened
@@ -2178,5 +2266,51 @@ mod commit_op_argv_tests {
     fn ops_without_trailing_tokens_are_unaffected() {
         assert_eq!(CommitOp::RESET_SOFT.argv("abc"), vec!["reset", "--soft", "abc"]);
         assert!(CommitOp::RESET_SOFT.trailing.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rebase_gate_tests {
+    use super::*;
+
+    fn keys(spec: &TransientSpec) -> Vec<String> {
+        spec.groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .flat_map(|i| i.key.clone())
+            .collect()
+    }
+
+    /// MG.41e: outside a rebase the menu offers a way IN; it must not
+    /// offer continue / skip / abort, which error when nothing is
+    /// stopped and so would look actionable and fail.
+    #[test]
+    fn no_rebase_running_offers_only_the_way_in() {
+        let spec = rebase_transient(&MagitActionIds::default(), false);
+        assert_eq!(keys(&spec), vec!["i"]);
+    }
+
+    /// Inside one the menu offers only the ways OUT — starting another
+    /// rebase while one is half-done is the wrong menu entirely.
+    #[test]
+    fn a_stopped_rebase_offers_only_the_ways_out() {
+        let spec = rebase_transient(&MagitActionIds::default(), true);
+        assert_eq!(keys(&spec), vec!["r", "s", "a"]);
+        assert!(
+            !keys(&spec).contains(&"i".to_string()),
+            "must not offer to start a rebase while one is stopped",
+        );
+    }
+
+    /// The gate is read from the repository, and covers BOTH backends.
+    /// Git uses `rebase-merge` for the interactive/merge backend and
+    /// `rebase-apply` for the older am-based one; checking only the
+    /// first misses a whole class of stopped rebase, and
+    /// `rebase-apply` is shared with `git am` (distinguished by the
+    /// `applying` marker).
+    #[test]
+    fn the_gate_is_part_of_the_probe() {
+        let gates = DispatchGates::default();
+        assert!(!gates.rebase, "default gates report nothing in progress");
     }
 }

@@ -2153,6 +2153,21 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Stash the working tree (git stash push)",
     );
     reg("action:magit-global-rebase", "Start an interactive rebase");
+    // MG.41e: the rebase submenu's sequence rows. The ex-commands
+    // already existed (`:magit-rebase-continue` etc.); these are the
+    // action names the menu rows fire.
+    reg(
+        "action:magit-global-rebase-continue",
+        "Resume a rebase that stopped, after amending or resolving conflicts",
+    );
+    reg(
+        "action:magit-global-rebase-skip",
+        "Skip the commit a stopped rebase is sitting on",
+    );
+    reg(
+        "action:magit-global-rebase-abort",
+        "Abandon a rebase in progress, restoring the branch to where it started",
+    );
     reg(
         "action:magit-global-fetch",
         "Fetch from the remote without merging",
@@ -3342,6 +3357,7 @@ mod tests {
                     bisect: in_progress,
                     notes_merge: false,
                     am: false,
+                    rebase: false,
                 },
             );
             let item = root
@@ -3396,6 +3412,7 @@ mod tests {
                     bisect: in_progress,
                     notes_merge: false,
                     am: false,
+                    rebase: false,
                 },
             );
             let item = root
@@ -4523,6 +4540,7 @@ mod tests {
                     bisect: true,
                     notes_merge: false,
                     am: false,
+                    rebase: false,
                 },
             ),
             "",

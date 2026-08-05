@@ -280,7 +280,7 @@ it is pinned by a test.
 - **Branch `s` / `S` spin-off / spin-out** — multi-step operations
   (create, move commits, reset the original), not single git calls.
 
-### MG.41e — dispatch rows that should be submenus
+### MG.41e — dispatch rows that should be submenus 🚧
 
 Each is a direct action today where magit has a full transient:
 
@@ -300,6 +300,24 @@ bools (the MG.38–MG.40 retro already recorded that).
 
 Suggested order: `r` rebase and `m` merge first (most used, and they
 exercise the gating), then `A`, `t`, `_`.
+
+**`r` rebase landed (🚧 for the slice).** It is now a gated submenu:
+`i` interactively when nothing is running, `r`/`s`/`a`
+continue/skip/abort when a rebase is stopped — never both, because
+each set errors in the other state.
+
+`rebase_in_progress` checks **both** git backends. Git uses
+`rebase-merge` for the interactive/merge backend and `rebase-apply`
+for the older am-based one; checking only the first misses a whole
+class of stopped rebase. `rebase-apply` is also shared with `git am`,
+so the two are told apart by the `applying` marker file — which is why
+`am_in_progress` looks at the same path and would otherwise report a
+stopped rebase as a stopped `am`.
+
+Still to do here: `m` merge, `A` cherry-pick, `t` tag, `_` revert, and
+rebase's own non-sequence rows (`p`/`u`/`e` onto a target, `s` subset,
+`m` edit a commit, `w` reword, `k` remove, `f` autosquash) — those need
+new operations rather than menu structure.
 
 ### MG.41f — diff / log argument menus
 

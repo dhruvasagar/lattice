@@ -15,6 +15,7 @@ pub mod buffer_state;
 mod cherry_move;
 mod confirm;
 mod git_config;
+mod hunk_fold_source;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
 // trait) names `HunkRestore` in its signature.
 pub mod cursor_restore;

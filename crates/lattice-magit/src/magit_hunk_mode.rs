@@ -36,10 +36,13 @@
 
 use std::sync::OnceLock;
 
+use lattice_core::FoldOverlayServiceHandle;
 use lattice_mode::{
-    ActivationPolicy, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
-    ModeId, ModeKind, OptionOverrideSet, keymap_entry,
+    ActivationPolicy, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
+    ModeContext, ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
+
+use crate::hunk_fold_source::MagitHunkFoldSource;
 
 use crate::magit_commit_mode::MagitCommitMode;
 use crate::magit_diff_mode::MagitDiffMode;
@@ -271,14 +274,32 @@ pub(crate) fn side_by_side_effects(
     ])
 }
 
+/// MG.45: deregisters this buffer's diff-fold source.
+///
+/// Drop-based, the same lifecycle `MagitStatusGuard` and
+/// `DiffModeGuard` use — a source left registered on a buffer whose
+/// mode has gone would keep computing folds over text it no longer
+/// describes.
+#[derive(Default)]
+pub struct MagitHunkGuard {
+    fold_registration: Option<(FoldOverlayServiceHandle, lattice_core::ProviderId)>,
+}
+
+impl Drop for MagitHunkGuard {
+    fn drop(&mut self) {
+        if let Some((svc, id)) = self.fold_registration.take() {
+            svc.remove_source(id);
+        }
+    }
+}
+
 impl Mode for MagitHunkMode {
-    /// Nothing per activation. Every action this mode binds is
-    /// registered once at boot by the mode that owns its body
-    /// (`magit-core-mode` for the shared hunk machinery,
+    /// MG.45: carries the diff-fold registration. Every ACTION this
+    /// mode binds is still registered once at boot by the mode that
+    /// owns its body (`magit-core-mode` for the shared hunk machinery,
     /// `magit-status-mode`'s `actions.rs` for discard's ask/execute
-    /// pair) — this mode contributes bindings, not handlers, so there
-    /// is nothing to unwind.
-    type Guard = ();
+    /// pair) — this mode contributes bindings, not handlers.
+    type Guard = MagitHunkGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -330,8 +351,30 @@ impl Mode for MagitHunkMode {
         ]
     }
 
-    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
-        Box::pin(async move { Ok(()) })
+    /// MG.45: register the file ▸ hunk fold source.
+    ///
+    /// Registered HERE rather than per major because this mode already
+    /// activates on exactly the buffers that render a diff — which is
+    /// what makes one source serve five majors instead of five
+    /// near-copies. magit-status keeps its own source for the ENTRY
+    /// level; the two compose by range containment.
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let Some(store) = ctx.service::<BufferStoreHandle>() else {
+                return Ok(MagitHunkGuard::default());
+            };
+            let fold_registration = ctx
+                .service::<FoldOverlayServiceHandle>()
+                .map(|outer| (*outer).clone())
+                .map(|svc| {
+                    let source =
+                        std::sync::Arc::new(MagitHunkFoldSource::new(store.clone(), buffer_id));
+                    let id = svc.add_source(source, buffer_id);
+                    (svc, id)
+                });
+            Ok(MagitHunkGuard { fold_registration })
+        })
     }
 }
 

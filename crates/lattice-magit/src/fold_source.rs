@@ -1,17 +1,29 @@
-//! Fold audit fix: nested fold ranges for magit-status inline
-//! expansions.
+//! Fold ranges for magit-status inline expansions — the ENTRY level.
 //!
-//! Mirrors [`lattice_diff::HunkFoldSource`]'s shape — an overlay
-//! [`FoldSource`] that reads live state on every `compute_folds()`
-//! call rather than caching stale line numbers, so it never
-//! desyncs from concurrent edits. Emits two nested levels per
-//! expanded entry (file/stash/commit): an outer fold spanning the
-//! entry's header line through the end of its inserted patch (so
-//! folding "the file" hides the whole diff, per-entry), and one
-//! inner fold per `@@ ...@@` hunk within it (so folding a hunk
-//! hides just its lines, and folding the outer range folds every
-//! hunk with it — nesting is expressed the same way the generic
-//! fold engine everywhere else expresses it: range containment).
+//! An overlay [`FoldSource`] that reads live state on every
+//! `compute_folds()` call rather than caching stale line numbers, so
+//! it never desyncs from concurrent edits. It emits one fold per
+//! expanded entry (file / stash / commit), spanning the entry's header
+//! row through the end of its inserted patch — so folding "this entry"
+//! hides the whole thing.
+//!
+//! **MG.45 moved the levels BELOW that out.** File and hunk folds now
+//! come from [`crate::hunk_fold_source::MagitHunkFoldSource`], which
+//! `magit-hunk-mode` registers on every buffer that renders a diff.
+//! Two reasons, and the second is the one that mattered:
+//!
+//! 1. Only magit-status had a fold source, so the commit, diff,
+//!    revision and stash-show buffers had no diff-aware folds at all.
+//! 2. This source can only see ONE expansion's rows. A commit or
+//!    stash entry expands to a MULTI-file patch (`git show`,
+//!    `stash show -p`), which needs a file level between entry and
+//!    hunk — and every file's hunks were landing as siblings directly
+//!    under the entry instead.
+//!
+//! The two sources compose by range containment, the way the fold
+//! engine expresses nesting everywhere else, so an expanded commit
+//! folds as entry ▸ file ▸ hunk with neither source knowing about the
+//! other.
 //!
 //! Registered by `MagitStatusMode::on_activate` via
 //! `FoldOverlayServiceHandle`; `MagitStatusGuard::drop` removes it
@@ -106,7 +118,6 @@ impl FoldSource for MagitStatusFoldSource {
                 if let Some(&count) = g.expanded.get(&key) {
                     if count > 0 {
                         let count = count as u32;
-                        let body_start = line + 1;
                         let body_end = (line + count).min(total.saturating_sub(1));
                         folds.push(Fold {
                             start_line: line,
@@ -114,7 +125,16 @@ impl FoldSource for MagitStatusFoldSource {
                             closed: false,
                             identity: Some(fold_identity("magit:entry", &key, 0)),
                         });
-                        folds.extend(hunk_folds(&snap, &key, body_start, body_end));
+                        // MG.45: the hunk level moved to
+                        // `MagitHunkFoldSource`, which magit-hunk-mode
+                        // registers on every buffer that renders a
+                        // diff. Emitting it here too would put two
+                        // folds over the same rows from two providers
+                        // — and it could only ever describe a
+                        // SINGLE-file expansion, because a multi-file
+                        // one (`git show`, `stash show -p`) needs a
+                        // file level between entry and hunk that this
+                        // source has no way to see.
                         line += 1 + count;
                         continue;
                     }
@@ -124,61 +144,6 @@ impl FoldSource for MagitStatusFoldSource {
         }
         folds
     }
-}
-
-/// One fold per `@@ ...@@` hunk within `[body_start, body_end]`
-/// (inclusive), each spanning its header line through the line
-/// before the next hunk header (or `body_end` for the last hunk).
-/// Nested inside the caller's outer entry fold by construction —
-/// `body_start`/`body_end` are that fold's interior.
-/// Hunks are identified by their ORDINAL within the entry, not by
-/// their `@@` header: that header carries line numbers, which change
-/// whenever the file changes — so keying on it would reopen a folded
-/// hunk on exactly the refresh that had something to report.
-fn hunk_folds(
-    snap: &lattice_runtime::DocumentSnapshot,
-    key: &str,
-    body_start: u32,
-    body_end: u32,
-) -> Vec<Fold> {
-    let mut folds = Vec::new();
-    let mut ordinal = 0usize;
-    let mut hunk_start: Option<u32> = None;
-    for l in body_start..=body_end {
-        let Some(text) = snap.buffer.line(l) else {
-            break;
-        };
-        if text.starts_with("@@") {
-            if let Some(start) = hunk_start {
-                if l > start + 1 {
-                    folds.push(Fold {
-                        start_line: start,
-                        end_line: l - 1,
-                        closed: false,
-                        identity: Some(fold_identity("magit:hunk", key, ordinal)),
-                    });
-                }
-                // The fold just pushed belongs to the hunk that was
-                // open; only now does the NEXT hunk begin. Bumping on
-                // every `@@` instead would give the first hunk ordinal
-                // 1 and leave 0 unused, so every hunk's closed state
-                // would land on its neighbour after a refresh.
-                ordinal += 1;
-            }
-            hunk_start = Some(l);
-        }
-    }
-    if let Some(start) = hunk_start {
-        if body_end > start {
-            folds.push(Fold {
-                start_line: start,
-                end_line: body_end,
-                closed: false,
-                identity: Some(fold_identity("magit:hunk", key, ordinal)),
-            });
-        }
-    }
-    folds
 }
 
 #[cfg(test)]
@@ -223,19 +188,23 @@ mod fold_identity_tests {
         );
     }
 
-    /// An entry's own fold and its hunks' folds are nested, so they
-    /// must not share an identity — the outer one would inherit an
-    /// inner one's closed state.
+    /// MG.45: an entry fold must not collide with the file/hunk folds
+    /// that now come from `MagitHunkFoldSource`.
+    ///
+    /// They are nested and come from two DIFFERENT providers, so a
+    /// shared identity would make the outer one inherit an inner
+    /// one's closed state across a recompute.
     #[test]
-    fn an_entry_and_its_hunks_do_not_share_an_identity() {
+    fn an_entry_fold_does_not_share_an_identity_with_the_diff_folds() {
         let key = "Staged:src/a.rs";
+        let entry = fold_identity("magit:entry", key, 0);
         assert_ne!(
-            fold_identity("magit:entry", key, 0),
-            fold_identity("magit:hunk", key, 0),
+            entry,
+            crate::hunk_fold_source::identity_for_test("magit:diff-file", key, 0)
         );
         assert_ne!(
-            fold_identity("magit:hunk", key, 0),
-            fold_identity("magit:hunk", key, 1),
+            entry,
+            crate::hunk_fold_source::identity_for_test("magit:diff-hunk", key, 0)
         );
     }
 }

@@ -123,6 +123,19 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             // read-only list buffer whose actions are all row-based,
             // left-motion is the cheapest key on the board.
             keymap_entry! { mode: Normal, chord: "h", doc: "Open the magit dispatch menu", cmd: "magit-dispatch" },
+            // MG.49c: the repo-level rows that are worth a chord.
+            //
+            // All four are vim EDITING operators — inert where nothing is
+            // editable — which is the rule MG.49 settled on, and no magit
+            // major claims any of them. `yr` rides vim's yank operator the
+            // same way `dv` rides delete: `y` short-circuits into
+            // operator-pending rather than terminating, and `r` is not a
+            // motion, so the two-chord sequence is free.
+            keymap_entry! { mode: Normal, chord: "S", doc: "Stage every tracked modification", cmd: "action:magit-global-stage-all" },
+            keymap_entry! { mode: Normal, chord: "U", doc: "Unstage everything, keeping the working tree", cmd: "action:magit-global-unstage-all" },
+            keymap_entry! { mode: Normal, chord: "C", doc: "Clone a repository", cmd: "action:magit-global-clone" },
+            keymap_entry! { mode: Normal, chord: "i", doc: "Add a path to .gitignore", cmd: "action:magit-global-gitignore" },
+            keymap_entry! { mode: Normal, chord: "yr", doc: "Show refs", cmd: "action:magit-global-refs" },
             // MG.49: `A` / `_` / `O` are the ROOT MENUS now — see the
             // block below. The direct actions they used to fire did not
             // go anywhere: `A` is `A A`, `_` is `_ V`, and the three

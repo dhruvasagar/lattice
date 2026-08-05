@@ -40,7 +40,20 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
             keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
-            keymap_entry! { mode: Normal, chord: "d", doc: "Open file diff in a dedicated buffer", cmd: "action:magit-diff-file" },
+            // MG.49c: `dd`, not bare `d`.
+            //
+            // Bare `d` here was a PLAIN action, so the trie terminated at
+            // it — and a node's own binding is checked before its
+            // children, which made `magit-hunk-mode`'s `dv` unreachable
+            // in this buffer and only this buffer. (In magit-diff and its
+            // peers no major binds `d`, so the node keeps vim's `d`
+            // OPERATOR binding, which short-circuits into operator-pending
+            // instead of terminating — which is why `dv` worked there.)
+            //
+            // `dd` restores that shape: `d` stays the operator, and both
+            // `dd` and `dv` resolve as two-chord sequences under it.
+            // Vim's own `dd` is delete-line, inert in a read-only buffer.
+            keymap_entry! { mode: Normal, chord: "dd", doc: "Open file diff in a dedicated buffer", cmd: "action:magit-diff-file" },
             keymap_entry! { mode: Normal, chord: "p", doc: "Stage hunk interactively", cmd: "action:magit-stage-patch" },
             // MG.49b: these are back. The first cut of MG.49 removed them
             // because `magit-core-mode` had taken `c` / `d` / `p` for root

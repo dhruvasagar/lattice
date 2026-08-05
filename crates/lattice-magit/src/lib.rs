@@ -5366,3 +5366,153 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod same_buffer_chord_tests {
+    use lattice_mode::Mode;
+
+    /// The five majors `magit-hunk-mode` activates on.
+    const HUNK_MAJORS: &[&str] = &[
+        "magit-status-mode",
+        "magit-diff-mode",
+        "magit-commit-mode",
+        "magit-revision-mode",
+        "magit-stash-show-mode",
+    ];
+
+    fn chords(m: &dyn Fn() -> Vec<&'static str>) -> Vec<&'static str> {
+        m()
+    }
+
+    /// MG.49c: **no chord may be eaten on a buffer where both binders
+    /// are live.**
+    ///
+    /// Two ways that happens, and the second is the one that bit us:
+    ///
+    /// 1. Two live modes bind the same chord — resolution is layer
+    ///    order, which the reader of either mode cannot see.
+    /// 2. One live mode binds a chord that is a strict PREFIX of
+    ///    another live mode's chord. `KeymapTrie::lookup` checks a
+    ///    node's own binding before descending, so the short one wins
+    ///    and the long one is unreachable — not shadowed, *dead*.
+    ///
+    /// (2) is why magit-status's plain `d` silently killed
+    /// `magit-hunk-mode`'s `dv`, in that buffer and no other: elsewhere
+    /// the node keeps vim's `d` OPERATOR, which does not terminate.
+    /// `dv_is_bound_...` could not catch it — it reads the entry list,
+    /// not what the merged trie resolves.
+    #[test]
+    fn no_magit_chord_is_unreachable_on_a_buffer_that_binds_both() {
+        fn tokens(c: &str) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut it = c.chars().peekable();
+            while let Some(ch) = it.next() {
+                if ch == '<' {
+                    let mut t = String::from('<');
+                    for c2 in it.by_ref() {
+                        t.push(c2);
+                        if c2 == '>' {
+                            break;
+                        }
+                    }
+                    out.push(t);
+                } else {
+                    out.push(ch.to_string());
+                }
+            }
+            out
+        }
+
+        // Deduped per mode: one chord bound in Normal AND Visual by the
+        // same mode is one binding, not a collision with itself.
+        fn uniq<'a>(
+            entries: impl IntoIterator<Item = &'a lattice_keymap::KeymapEntry>,
+        ) -> Vec<&'static str> {
+            let mut v: Vec<&'static str> = Vec::new();
+            for e in entries {
+                if !v.contains(&e.chord) {
+                    v.push(e.chord);
+                }
+            }
+            v
+        }
+        let core = uniq(crate::MagitCoreMode.keymap().entries);
+        let hunk = uniq(crate::magit_hunk_mode::MagitHunkMode.keymap().entries);
+
+        // Majors, paired with the minors live alongside them.
+        let majors: Vec<(&str, Vec<&str>)> = vec![
+            (
+                "magit-status-mode",
+                uniq(crate::MagitStatusMode.keymap().entries),
+            ),
+            (
+                "magit-branch-mode",
+                uniq(crate::MagitBranchMode.keymap().entries),
+            ),
+            (
+                "magit-remote-mode",
+                uniq(crate::MagitRemoteMode.keymap().entries),
+            ),
+            (
+                "magit-stash-mode",
+                uniq(crate::MagitStashMode.keymap().entries),
+            ),
+            (
+                "magit-submodule-mode",
+                uniq(crate::MagitSubmoduleMode.keymap().entries),
+            ),
+            (
+                "magit-refs-mode",
+                uniq(crate::MagitRefsMode.keymap().entries),
+            ),
+        ];
+
+        for (major, major_chords) in &majors {
+            let mut live: Vec<(&str, &str)> = Vec::new();
+            for c in major_chords {
+                live.push((c, major));
+            }
+            for c in &core {
+                live.push((c, "magit-core-mode"));
+            }
+            if HUNK_MAJORS.contains(major) {
+                for c in &hunk {
+                    live.push((c, "magit-hunk-mode"));
+                }
+            }
+
+            for (i, (a, owner_a)) in live.iter().enumerate() {
+                for (b, owner_b) in live.iter().skip(i + 1) {
+                    assert_ne!(
+                        a, b,
+                        "on a {major} buffer, `{a}` is bound by BOTH \
+                         {owner_a} and {owner_b} — which wins is layer \
+                         order, not something either mode's reader sees",
+                    );
+                }
+            }
+            for (a, owner_a) in &live {
+                // No OPERATORS exemption here. `d` / `y` / `c` short-
+                // circuit only as VIM's operators; the moment a magit
+                // mode binds one as a plain action it terminates like any
+                // other, which is precisely how magit-status's `d` killed
+                // `dv`. Every chord in `live` is a magit binding.
+                let ta = tokens(a);
+                for (b, owner_b) in &live {
+                    if a == b {
+                        continue;
+                    }
+                    let tb = tokens(b);
+                    assert!(
+                        !(tb.len() > ta.len() && tb[..ta.len()] == ta[..]),
+                        "on a {major} buffer, `{a}` ({owner_a}) terminates \
+                         and is a prefix of `{b}` ({owner_b}) — the trie \
+                         checks a node's binding before its children, so \
+                         `{b}` is unreachable there",
+                    );
+                }
+            }
+        }
+        let _ = chords;
+    }
+}

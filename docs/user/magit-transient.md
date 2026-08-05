@@ -63,7 +63,7 @@ adds inside one):
 │                                                │
 │  ▸ Working tree                                │
 │    [s]  status          Open the status buffer │
-│    [d]  diff            Diff the working tree  │
+│    [d]  diff          ▸ Diff the working tree  │
 │                          against HEAD          │
 │    [c]  commit        ▸ Commit changes         │
 │                                                │
@@ -74,10 +74,10 @@ adds inside one):
 │                          keeping your tree     │
 │                                                │
 │  ▸ History                                     │
-│    [l]  log             Show commit history    │
-│    [A]  cherry-pick     Cherry-pick a commit   │
+│    [l]  log           ▸ Show commit history    │
+│    [A]  cherry-pick   ▸ Copy or move commits   │
 │                          onto this branch      │
-│    [_]  revert          Revert a commit        │
+│    [_]  revert        ▸ Revert a commit        │
 │    [O]  reset         ▸ Reset this branch to   │
 │                          a commit              │
 │    [B]  bisect        ▸ Find the commit that   │
@@ -95,11 +95,11 @@ adds inside one):
 │    [z]  stash         ▸ Stash operations       │
 │                                                │
 │  ▸ Remotes                                     │
-│    [f]  fetch           Fetch from the remote  │
+│    [f]  fetch         ▸ Fetch from the remote   │
 │                          without merging       │
-│    [F]  pull            Fetch + fast-forward   │
-│                          merge from the remote │
-│    [P]  push            Push to the remote     │
+│    [F]  pull          ▸ Fetch + integrate from │
+│                          the remote            │
+│    [P]  push          ▸ Push to the remote     │
 │    [o]  submodule       Manage submodules      │
 │    [M]  remote          Manage remotes — add,  │
 │                          rename, remove, set   │
@@ -114,14 +114,14 @@ adds inside one):
 │                          or split a subtree    │
 │    [w]  patches       ▸ Apply or create email  │
 │                          patches               │
-│    [r]  rebase          Start an interactive   │
-│                          rebase                │
-│    [t]  tag             Tag HEAD with a name   │
-│                          you type              │
+│    [r]  rebase        ▸ Rebase onto a target,   │
+│                          or edit history       │
+│    [t]  tag           ▸ Create, release,       │
+│                          delete or prune tags  │
 │    [i]  gitignore       Add a pattern to       │
 │                          .gitignore            │
-│    [m]  merge           Merge a branch you     │
-│                          name                  │
+│    [m]  merge         ▸ Merge, preview, squash, │
+│                          absorb or dissolve    │
 │    [I]  init            Initialize a git       │
 │                          repository            │
 │                                                │
@@ -129,11 +129,15 @@ adds inside one):
 └────────────────────────────────────────────────┘
 ```
 
-`s`/`d`/`l`/`b`/`M`/`r` open the corresponding buffer directly — the
-same thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
-`:magit-remote`/`:magit-rebase` do. Once you're in that buffer, use its own direct
-chords (`s`/`u`/`x`/`<CR>`/… — see
+`s`/`b`/`M` open the corresponding buffer directly — the same thing
+`:magit-status`/`:magit-branch`/`:magit-remote` do. Once you're in that
+buffer, use its own direct chords (`s`/`u`/`x`/`<CR>`/… — see
 [`magit`](help:magit)) for the actual operations.
+
+`d` and `l` open **argument menus** rather than the view itself: toggle
+`-w`, `--stat`, `-n`, `--author` and so on, then press `d` / `l` again
+to open the view with them applied. The same toggles are reachable with
+`D` once a view is already open, which re-runs it in place.
 
 `A` / `_` / `O` need a commit and this menu has no cursor on one, so
 they **ask** — a picker of recent commits, then the operation runs on
@@ -296,9 +300,11 @@ a buffer there too. Its `p` populate and `r` register are folded into
 
 **Here, but as a buffer rather than a menu.** `M` (remote management)
 is one deliberate divergence. Magit makes it a transient that renders
-`remote.<name>.url` as *variable rows* inside the menu; Lattice's
-transients have no variable rows, so a straight port would hide the
-URLs — the thing you open remote management to look at. `M` therefore
+`remote.<name>.url` as *variable rows* inside the menu. Lattice has
+variable rows now (that is what `C` configure uses), but a menu still
+shows one value per row, and remote management is a list of remotes
+each with a URL — so a straight port would hide the very thing you
+opened it to look at. `M` therefore
 opens [`magit-remote-mode`](help:magit-remote-mode), a buffer listing
 every remote with its URL, where `a` / `r` / `d` / `u` / `p` act on the
 row under the cursor. `M` — like `B` — is a transient key only: both stay unbound as chords
@@ -397,9 +403,16 @@ them for a modal editor; `magit-core-mode` explains why.)
 │    [n]  new branch       …without checking out │
 │                                                │
 │  ▸ Do                                          │
+│    [s]  spin-off         Branch the unpushed   │
+│                           commits, check it out│
+│    [S]  spin-out         …staying where you are│
+│    [x]  reset            Asks first            │
 │    [m]  rename                                 │
-│    [x]  delete           Asks first            │
+│    [k]  delete           Asks first            │
 │    [L]  list             Open the branch buffer│
+│                                                │
+│  ▸ Configure                                   │
+│    [C]  rebase on pull   pull.rebase = true    │
 └────────────────────────────────────────────────┘
 ```
 
@@ -423,11 +436,72 @@ rather than overwrites if the new name is already taken.
 **`L` opens the branch buffer**, which is where per-branch chords live —
 including `m` for merge, which needs a branch selected.
 
+**`s` and `S` differ only in where you end up.** Both create a branch
+from the commits you have not pushed yet and rewind the current branch
+back to its upstream; `s` checks the new branch out, `S` leaves you
+where you were. If you have uncommitted changes, `S` behaves like `s`
+— staying on a branch that is about to be rewound would destroy them.
+With no upstream, or nothing unpushed, the new branch is created and
+the old one is left alone.
+
+**`C` shows the current value.** Configure rows render the git-config
+setting inline (`pull.rebase = true`), so you can see what it is before
+changing it. `…` means the value has not been read yet; press it once
+more. Clearing the prompt unsets the key rather than setting it empty.
+
 The keys are magit's own, with **evil-collection-magit**'s remaps
-applied (that is what moves delete from `k` to `x`). Magit's `s` / `S`
-spin-off and spin-out, `C` configure, and `X` branch-reset are not here
-yet; their keys are deliberately left free so those rows land where you
-already expect them when they arrive.
+applied where they concern buffer chords. Inside a transient the menu
+owns every keystroke, so `x` is magit's reset and `k` is delete —
+which is why they moved.
+
+### What each submenu holds
+
+Every key here is magit's own.
+
+**Commit (`c`)** — `c` commit, `a` amend, `e` extend (add staged
+changes, keep the message), `w` reword, `A` augment, `f` fixup,
+`s` squash, `F` instant fixup, `S` instant squash.
+
+**Reset (`O`)** — `s` soft, `m` mixed, `h` hard (asks), `k` keep,
+`i` index, `w` worktree (asks), `f` a file.
+
+**Stash (`z`)** — `z` stash, `i` index, `x` keeping index,
+`Z`/`I`/`W` snapshots, `a` apply, `p` pop, `k` drop, `b` branch,
+`l`/`v` list and show. Magit's `w` (stash the working tree only,
+keeping the index) is **not** here: git has no flag for it, and every
+way of approximating it stashes different content than the name
+promises.
+
+**Cherry-pick (`A`)** — `A` pick and `a` apply *copy* a commit;
+`h` harvest, `d` donate, `n` spinout and `s` spinoff *move* it, removing
+it from where it came from. While a cherry-pick is stopped the menu
+shows only `A` continue, `s` skip, `a` abort.
+
+**Revert (`_`)** — `V` revert commit, `v` revert changes (staged, not
+committed). Gated the same way while a revert is stopped.
+
+**Merge (`m`)** — `m` merge, `e` merge and edit the message, `n` merge
+without committing, `s` squash, `a` absorb (merge another branch in and
+delete it), `i` merge into (merge *this* branch into another and delete
+this one), `p` preview.
+
+**Rebase (`r`)** — `p`/`u`/`e` onto the push target, the upstream, or a
+ref you name; `s` a subset; `m` edit a commit, `w` reword a commit,
+`k` remove a commit, `f` autosquash, `i` interactively. While a rebase
+is stopped: `r` continue, `s` skip, `a` abort.
+
+**Tag (`t`)** — `t` tag, `r` release (annotated), `k` delete,
+`p` prune, `C` configure.
+
+**Push (`P`) / pull (`F`) / fetch (`f`)** — `p` the configured target,
+`u` the upstream, `e` elsewhere, plus `o`/`r`/`T`/`t`/`a`/`m` where the
+operation supports them, and `C` configure.
+
+A menu whose operation is mid-flight (a stopped rebase, cherry-pick,
+revert, bisect, `git am`, or notes merge) shows **only the ways out**.
+That is deliberate: `--continue` / `--skip` / `--abort` error when
+nothing is running, and starting a second operation is exactly what you
+must not do while one is stopped.
 
 ### How submenus work (mechanism)
 

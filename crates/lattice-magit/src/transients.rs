@@ -265,6 +265,14 @@ const RESET_ROWS: &[TransientRow] = &[
         action: "action:magit-reset-index",
         placeholder: "reset_index_op",
     },
+    // MG.42-E3: two inputs — the commit, then the path.
+    TransientRow {
+        key: "f",
+        label: "a file",
+        doc: "Restore one file from a commit, leaving everything else alone",
+        action: "action:magit-global-reset-file",
+        placeholder: "reset_file_op",
+    },
 ];
 
 const COMMIT_ROWS: &[TransientRow] = &[
@@ -401,6 +409,14 @@ const STASH_ROWS: &[TransientRow] = &[
         doc: "Show a stash's diff",
         action: "action:magit-stash-show",
         placeholder: "stash_show_op",
+    },
+    // MG.42-E3: two inputs — the branch name, then the stash.
+    TransientRow {
+        key: "b",
+        label: "branch",
+        doc: "Start a branch from a stash — for when it no longer applies to HEAD",
+        action: "action:magit-global-stash-branch",
+        placeholder: "stash_branch_op",
     },
 ];
 
@@ -2764,6 +2780,47 @@ mod sequence_step_tests {
         assert!(
             !steps[1].argv.contains(&"-D".to_string()),
             "a forced delete would destroy the branch when the merge failed",
+        );
+    }
+}
+
+#[cfg(test)]
+mod two_input_argv_tests {
+    use crate::magit_global_mode::{reset_file_argv, stash_branch_argv};
+
+    /// MG.42-E3: "reset a file" is `checkout <commit> -- <path>`, NOT
+    /// `reset`.
+    ///
+    /// `checkout` replaces the file in both index and working tree,
+    /// which is what the row promises. `reset <commit> -- <path>` moves
+    /// index entries only and leaves the file on disk untouched — the
+    /// same words, a different outcome, and the failure would look like
+    /// the command silently doing nothing.
+    #[test]
+    fn resetting_a_file_checks_it_out() {
+        let argv = reset_file_argv("abc123", "src/main.rs");
+        assert_eq!(argv, vec!["checkout", "abc123", "--", "src/main.rs"]);
+        assert_ne!(argv[0], "reset", "reset would not touch the working tree");
+    }
+
+    /// The `--` separator is what stops a path that looks like a ref
+    /// from being read as one.
+    #[test]
+    fn the_path_is_separated_from_the_revision() {
+        // A file literally named like a branch is the case this guards.
+        let argv = reset_file_argv("HEAD", "main");
+        let dashes = argv.iter().position(|a| a == "--").expect("has --");
+        assert!(
+            dashes < argv.iter().rposition(|a| a == "main").unwrap(),
+            "the path must come after `--`: {argv:?}",
+        );
+    }
+
+    #[test]
+    fn stash_branch_takes_the_name_then_the_stash() {
+        assert_eq!(
+            stash_branch_argv("recover", "stash@{0}"),
+            vec!["stash", "branch", "recover", "stash@{0}"],
         );
     }
 }

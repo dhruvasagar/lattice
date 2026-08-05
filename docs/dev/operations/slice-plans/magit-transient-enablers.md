@@ -150,7 +150,7 @@ the generated todo list, and accepting it unchanged IS autosquash —
 git has already ordered the lines. Without it an instant fixup hangs
 the same way `--continue` would without `GIT_EDITOR`.
 
-## E3 — a second input
+## E3 — a second input ✅
 
 `mk_prompted` carries one value. These need two:
 
@@ -173,6 +173,32 @@ half-applied operation); both values reach the argv in the right
 order.
 
 **Unblocks:** reset `f`, stash `b`, rebase `p`/`u`/`e`/`s`.
+
+**Landed.** A `two_input_op!` macro chaining prompt → prompt → run,
+plus reset `f` a file and stash `b` branch.
+
+**The carried value is a single static slot, and that cannot
+mis-pair.** The second prompt is only ever opened BY the first's finish
+handler, so a read is always preceded by its matching write; the second
+finish `take()`s, so a value is consumed once; and a cancelled second
+prompt leaves a stale value that the next chain's first step overwrites
+before anything reads it.
+
+An empty value at EITHER step runs nothing — the alternative is a
+half-applied operation with an empty argument, and `git checkout <c> --
+""` is not a no-op.
+
+**Reset-a-file is `checkout <commit> -- <path>`, not `reset`.**
+`checkout` replaces the file in index and working tree, which is what
+the row promises; `reset <commit> -- <path>` moves index entries only
+and leaves the file on disk untouched. Same words, different outcome,
+and the failure would look like the command silently doing nothing.
+The `--` placement is separately pinned, because a file named like a
+branch would otherwise be read as a revision.
+
+Rebase `p`/`u`/`e` remain: they need `RemoteTarget` resolution wired to
+the rebase op rather than a second prompt, so they belong with a
+rebase-onto slice rather than here.
 
 ## E1 — message-composing operations
 

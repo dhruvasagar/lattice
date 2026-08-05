@@ -763,6 +763,63 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         merge_absorb_steps,
         "merge --absorb"
     );
+    // MG.42-E3: two-input operations. The first prompt's finish opens
+    // the second; the second builds the argv from both.
+    macro_rules! two_input_op {
+        ($entry:expr, $p1:expr, $mid:expr, $p2:expr, $finish:expr, $argv:expr, $what:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($p1, $mid))),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $mid,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let first = ctx.prompt_value?.trim();
+                    // Cancelling or clearing the FIRST prompt must run
+                    // nothing — not a half-applied operation with an
+                    // empty argument.
+                    if first.is_empty() {
+                        return None;
+                    }
+                    stash_first_input(first.to_string());
+                    Some(prompt_for($p2, $finish))
+                }),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let second = ctx.prompt_value?.trim();
+                    // Same at the second step, and the pending value is
+                    // consumed either way so it cannot leak into a later
+                    // chain.
+                    let first = take_first_input()?;
+                    if second.is_empty() {
+                        return None;
+                    }
+                    Some(spawn_git($argv(&first, second), $what))
+                }),
+            });
+        };
+    }
+    two_input_op!(
+        "action:magit-global-reset-file",
+        "Reset file from commit: ",
+        "action:magit-global-reset-file-path",
+        "File path: ",
+        "action:magit-global-reset-file-finish",
+        reset_file_argv,
+        "reset a file"
+    );
+    two_input_op!(
+        "action:magit-global-stash-branch",
+        "New branch name: ",
+        "action:magit-global-stash-branch-stash",
+        "Stash (e.g. stash@{0}): ",
+        "action:magit-global-stash-branch-finish",
+        stash_branch_argv,
+        "stash branch"
+    );
+
     prompted_op!(
         "action:magit-global-tag-delete",
         "Delete tag: ",
@@ -2383,6 +2440,27 @@ impl RemoteOp {
 /// Two actions per operation, no transient state, and the ex-command
 /// form skips the prompt entirely by taking the value as an argument —
 /// which is what makes these scriptable rather than menu-only.
+/// MG.42-E3: the first value of a two-input operation, waiting for the
+/// second prompt to be answered.
+///
+/// A single slot is sufficient and cannot mis-pair. The second prompt
+/// is only ever opened BY the first's finish handler, so a read is
+/// always preceded by the matching write; and the second finish
+/// `take()`s, so a value is consumed once. A cancelled second prompt
+/// leaves a stale value, which the next chain's first step overwrites
+/// before anything reads it.
+static PENDING_FIRST_INPUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn stash_first_input(value: String) {
+    if let Ok(mut slot) = PENDING_FIRST_INPUT.lock() {
+        *slot = Some(value);
+    }
+}
+
+fn take_first_input() -> Option<String> {
+    PENDING_FIRST_INPUT.lock().ok().and_then(|mut s| s.take())
+}
+
 fn prompt_for(prompt: &str, finish_action: &str) -> Effect {
     prompt_seeded(prompt, finish_action, String::new())
 }
@@ -3067,6 +3145,36 @@ pub(crate) fn merge_no_commit_argv(branch: &str) -> Vec<String> {
 /// change with no merge commit and no second parent.
 pub(crate) fn merge_squash_argv(branch: &str) -> Vec<String> {
     vec!["merge".into(), "--squash".into(), branch.to_string()]
+}
+
+/// MG.42-E3: magit's reset `f` — restore ONE path from a commit.
+///
+/// `checkout <commit> -- <path>`, not `reset`: this replaces the file's
+/// content in both index and working tree, which is what "reset a file
+/// to that commit" means. A `reset` would move index entries only and
+/// leave the file on disk untouched — the same words, a different
+/// outcome.
+pub(crate) fn reset_file_argv(commit: &str, path: &str) -> Vec<String> {
+    vec![
+        "checkout".into(),
+        commit.to_string(),
+        "--".into(),
+        path.to_string(),
+    ]
+}
+
+/// MG.42-E3: magit's stash `b` — start a branch from a stash.
+///
+/// `git stash branch` checks out a new branch at the commit the stash
+/// was made from, applies the stash, and drops it on success. Useful
+/// exactly when a stash no longer applies to the current HEAD.
+pub(crate) fn stash_branch_argv(branch: &str, stash: &str) -> Vec<String> {
+    vec![
+        "stash".into(),
+        "branch".into(),
+        branch.to_string(),
+        stash.to_string(),
+    ]
 }
 
 /// MG.42-E2: magit's `Z` / `I` / `W` snapshots — stash, then put it

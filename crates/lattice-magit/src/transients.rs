@@ -400,6 +400,68 @@ const SUBTREE_ROWS: &[TransientRow] = &[
     },
 ];
 
+/// MG.41f: **not wired, deliberately.** Kept with the reason.
+///
+/// Magit gives `d` and `l` a transient of arguments rather than a bare
+/// "open it" row, and the flag tables already exist (`DIFF_ARGS` /
+/// `LOG_ARGS`, backing MG.23k's `D` re-run menu). Wiring them to the
+/// dispatch looked like pure menu structure.
+///
+/// It is not. `D` works because it re-runs an **open** buffer, whose
+/// mode reads the toggles. `action:magit-global-diff` takes no
+/// arguments, so from the dispatch the toggles would render, accept
+/// keystrokes, and be silently discarded — a menu that lies about what
+/// it does.
+///
+/// `every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`
+/// caught exactly that: "is an Argument named 'unified' that no
+/// RemoteOp declares — nothing will consume its value". Finishing this
+/// means teaching the diff/log open actions to accept arguments, which
+/// is an operation change, not a menu change.
+#[allow(dead_code)]
+fn view_open_transient(
+    title: &str,
+    ids: &MagitActionIds,
+    flags: &'static [crate::magit_global_mode::RemoteFlag],
+    row: &'static TransientRow,
+) -> TransientSpec {
+    let mut groups = Vec::new();
+    if !flags.is_empty() {
+        groups.push(TransientGroup {
+            label: "Arguments".into(),
+            items: flag_items_from(flags),
+        });
+    }
+    groups.push(TransientGroup {
+        label: "Show".into(),
+        items: vec![row_item(ids, row)],
+    });
+    TransientSpec {
+        title: title.into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
+#[allow(dead_code)]
+const DIFF_SHOW_ROW: TransientRow = TransientRow {
+    key: "d",
+    label: "diff",
+    doc: "Diff the working tree against HEAD",
+    action: "action:magit-global-diff",
+    placeholder: "diff_op",
+};
+
+#[allow(dead_code)]
+const LOG_SHOW_ROW: TransientRow = TransientRow {
+    key: "l",
+    label: "log",
+    doc: "Show commit history",
+    action: "action:magit-global-log",
+    placeholder: "show_log",
+};
+
 /// MG.41e: magit's `m` merge submenu.
 const MERGE_ROWS: &[TransientRow] = &[
     TransientRow {
@@ -1353,6 +1415,9 @@ pub fn dispatch_transient_with(
                 label: "Working tree".into(),
                 items: vec![
                     status_row(ids, ctx),
+                    // MG.41f: NOT a submenu. See `view_open_transient`
+                    // for why offering the argument toggles here would
+                    // be a lie.
                     action_or_placeholder(
                         ids.get("action:magit-global-diff"),
                         "d",

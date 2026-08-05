@@ -330,13 +330,28 @@ rebase's own non-sequence rows (`p`/`u`/`e` onto a target, `s` subset,
 `m` edit a commit, `w` reword, `k` remove, `f` autosquash) — those need
 new operations rather than menu structure.
 
-### MG.41f — diff / log argument menus
+### MG.41f — diff / log argument menus ⛔ blocked
 
 `d` and `l` are direct actions; magit gives each a transient of
-arguments (`-D` decorate, `-g` graph, `-n` limit, `--stat`, `-p` patch,
-…) plus target rows. `view_arguments_transient` (MG.23k) already does
-exactly this for a *rendered* view, so this is largely wiring existing
-machinery to the dispatch rather than new mechanism.
+arguments. `view_arguments_transient` (MG.23k) already does this for a
+*rendered* view, so this looked like wiring existing machinery to the
+dispatch.
+
+**It is not, and the attempt proved it.** `D` works because it re-runs
+an **open** buffer, whose mode reads the toggles.
+`action:magit-global-diff` and `-log` take no arguments, so from the
+dispatch the toggles would render, accept keystrokes, and be silently
+discarded.
+
+`every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`
+caught it immediately — *"is an Argument named 'unified' that no
+RemoteOp declares — nothing will consume its value"*. The submenus were
+reverted rather than shipped; `view_open_transient` stays in the tree,
+unwired and `#[allow(dead_code)]`, carrying the reason.
+
+**Unblocking it** means teaching the diff/log open actions to accept
+arguments — an operation change, not a menu change. That is the whole
+slice, and it should be scoped as one.
 
 ### MG.41g — completion notifications, via the event bus ✅
 

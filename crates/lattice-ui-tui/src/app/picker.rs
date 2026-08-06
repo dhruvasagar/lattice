@@ -1860,6 +1860,30 @@ mod tests {
             "C-c g must open the magit dispatch transient"
         );
 
+        // MG.49 made the dispatch's `l` a SUBMENU (`magit-menu-log`)
+        // rather than the direct "show log" action it used to be, and
+        // left this test pressing `l` once. A submenu row opens a menu,
+        // so the buffer assertion below could not pass — the test went
+        // red at db050441 and stayed red.
+        //
+        // The path is now two keys: `l` opens the log menu, and that
+        // menu's own `l` (`LOG_SHOW_ROWS`) opens the buffer. Asserting
+        // the submenu opened in between is what keeps this test honest
+        // if the nesting changes again: without it, a future `l` that
+        // did nothing at all would leave the second `l` to be
+        // interpreted by whatever had focus.
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.editor
+                .picker
+                .as_ref()
+                .and_then(|p| p.transient.as_ref())
+                .is_some(),
+            "`l` opens the log SUBMENU — the transient must still be up"
+        );
         press(
             &mut app,
             KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),

@@ -392,9 +392,17 @@ fn refresh_with(
     None
 }
 
+/// Run a repository mutation off-thread, report it, then refresh.
+///
+/// MG.54: `mutate` returns a `Result` so the outcome can be published.
+/// It used to be `impl FnOnce()`, which meant every caller discarded
+/// its git result — the operation finished in silence, and a FAILED
+/// one finished in the same silence with the buffer refreshing as
+/// though it had worked.
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<DiffState>>,
-    mutate: impl FnOnce() + Send + 'static,
+    label: String,
+    mutate: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Option<Effect> {
     let (handle, wd, scope, path, pending, buffer_id, extra, context) = {
         let g = s.lock().ok()?;
@@ -410,7 +418,10 @@ fn spawn_mutation_and_refresh(
         )
     };
     tokio::task::spawn(async move {
-        let _ = tokio::task::spawn_blocking(mutate).await;
+        let result = tokio::task::spawn_blocking(mutate)
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        crate::magit_global_mode::finish_task(&label, result);
         let text = tokio::task::spawn_blocking(move || {
             run_diff(&wd, &scope, path.as_deref(), &extra, context)
         })
@@ -662,10 +673,12 @@ impl MagitView for DiffView {
             let g = s.lock().ok()?;
             (file_at_cursor(&g, cursor.line)?, g.workdir.clone())
         };
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                let _ = Index::stage_path(&repo, &path);
-            }
+        spawn_mutation_and_refresh(s, format!("stage {}", path.display()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            Index::stage_path(&repo, &path)
+                .map(|_| String::new())
+                .map_err(|e| e.to_string())
         })
     }
 
@@ -675,10 +688,12 @@ impl MagitView for DiffView {
             let g = s.lock().ok()?;
             (file_at_cursor(&g, cursor.line)?, g.workdir.clone())
         };
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                let _ = Index::unstage_path(&repo, &path);
-            }
+        spawn_mutation_and_refresh(s, format!("unstage {}", path.display()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            Index::unstage_path(&repo, &path)
+                .map(|_| String::new())
+                .map_err(|e| e.to_string())
         })
     }
 }

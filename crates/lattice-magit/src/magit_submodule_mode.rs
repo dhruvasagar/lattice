@@ -379,11 +379,18 @@ fn spawn_submodule_mutation(
             ))),
         })
         .await;
-        match outcome {
-            Ok(Ok(())) => tracing::info!("magit-submodule: {what}"),
-            Ok(Err(e)) => tracing::error!("magit-submodule: {what} failed: {e}"),
-            Err(e) => tracing::error!("magit-submodule: {what} panicked: {e}"),
-        }
+        // MG.54: publish, don't just log — same migration onto
+        // `finish_task` the remote list needed, and for the same reason:
+        // `a` / `u` / `s` / `d` here finish where only a log reader
+        // would see them.
+        crate::magit_global_mode::finish_task(
+            &what,
+            match outcome {
+                Ok(Ok(())) => Ok(String::new()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("panicked: {e}")),
+            },
+        );
         for target in targets {
             refresh(target);
         }

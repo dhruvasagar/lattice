@@ -409,14 +409,23 @@ fn spawn_remote_mutation(
             ))),
         })
         .await;
-        // There is no synchronous path back to the echo area from a
-        // detached task (§4.6) — the log is the report, and the
-        // refresh below is what the user actually sees.
-        match outcome {
-            Ok(Ok(())) => tracing::info!("magit-remote: {what}"),
-            Ok(Err(e)) => tracing::error!("magit-remote: {what} failed: {e}"),
-            Err(e) => tracing::error!("magit-remote: {what} panicked: {e}"),
-        }
+        // MG.54: publish, don't just log. The comment that used to sit
+        // here read "there is no synchronous path back to the echo area
+        // from a detached task (§4.6) — the log is the report", and
+        // that was true when it was written. MG.41g built exactly that
+        // path: `finish_task` logs AND publishes
+        // `BackgroundTaskFinished`, which the notification layer
+        // subscribes to. This helper was simply never migrated onto it,
+        // so `a` / `r` / `d` / `u` / `p` in the remote list finished
+        // where only a log reader would see it.
+        crate::magit_global_mode::finish_task(
+            &what,
+            match outcome {
+                Ok(Ok(())) => Ok(String::new()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("panicked: {e}")),
+            },
+        );
         for target in targets {
             refresh(target);
         }

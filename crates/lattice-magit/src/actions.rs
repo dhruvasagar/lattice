@@ -582,11 +582,17 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                 {
                     let s = status_state(ctx)?;
                     let workdir = s.lock().ok()?.workdir.clone();
-                    return spawn_mutation_and_refresh(s.clone(), move || {
-                        if let Ok(repo) = Repository::discover(&workdir) {
-                            let _ = repo.run_git(["checkout", "--", &path]);
-                        }
-                    });
+                    return spawn_mutation_and_refresh(
+                        s.clone(),
+                        format!("discard {path}"),
+                        move || {
+                            let repo = Repository::discover(&workdir)
+                                .map_err(|e| format!("not a git repository: {e}"))?;
+                            repo.run_git(["checkout", "--", &path])
+                                .map(|out| String::from_utf8_lossy(&out).into_owned())
+                                .map_err(|e| e.to_string())
+                        },
+                    );
                 }
                 match crate::magit_core_mode::resolve_hunk(
                     ctx,
@@ -617,11 +623,17 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                             };
                             (path, g.workdir.clone())
                         };
-                        spawn_mutation_and_refresh(s.clone(), move || {
-                            if let Ok(repo) = Repository::discover(&workdir) {
-                                let _ = repo.run_git(["checkout", "--", &path.to_string_lossy()]);
-                            }
-                        })
+                        spawn_mutation_and_refresh(
+                            s.clone(),
+                            format!("discard {}", path.display()),
+                            move || {
+                                let repo = Repository::discover(&workdir)
+                                    .map_err(|e| format!("not a git repository: {e}"))?;
+                                repo.run_git(["checkout", "--", &path.to_string_lossy()])
+                                    .map(|out| String::from_utf8_lossy(&out).into_owned())
+                                    .map_err(|e| e.to_string())
+                            },
+                        )
                     }
                 }
             }
@@ -906,13 +918,65 @@ pub(crate) fn distinct_files(lines: impl Iterator<Item = Option<StatusLine>>) ->
 /// MG.13: lifted to module scope (was nested in
 /// `register_action_handlers`) so [`StatusView`]'s `stage`/`unstage`
 /// can reach it from the boot-registered path.
+/// Run `op` over every item and fold the outcomes into one report.
+///
+/// A batch keeps going after a failure — stopping halfway would leave
+/// the user to work out which half ran — but "keeps going" is not the
+/// same as "says nothing". The previous code logged each error and
+/// returned `()`, so a selection where four of five files staged looked
+/// identical to one where all five did.
+///
+/// Success is `Ok("")` when everything worked, because
+/// [`finish_task`](crate::magit_global_mode::finish_task) renders an
+/// empty summary as a plain "<label> finished" — there is nothing to
+/// add. A partial batch is an `Err` naming the count and the first
+/// failure: it is the case worth interrupting for, and the count is
+/// what tells the user to go and look.
+fn batch_result<T>(
+    items: impl Iterator<Item = T>,
+    mut op: impl FnMut(T) -> lattice_vcs::Result<()>,
+) -> Result<String, String> {
+    let mut failed = 0usize;
+    let mut total = 0usize;
+    let mut first: Option<String> = None;
+    for item in items {
+        total += 1;
+        if let Err(e) = op(item) {
+            failed += 1;
+            first.get_or_insert_with(|| e.to_string());
+        }
+    }
+    match first {
+        None => Ok(String::new()),
+        Some(err) => Err(format!("{failed} of {total} failed — first: {err}")),
+    }
+}
+
+/// Run a repository mutation off-thread, report it, then refresh.
+///
+/// **`mutate` returns a `Result` and that is not incidental.** It used
+/// to be `impl FnOnce()`, so every caller wrote
+/// `let _ = repo.run_git(...)` and threw the outcome away. Staging,
+/// unstaging and discarding therefore finished in total silence — and
+/// worse, a *failed* one did too: the buffer refreshed as though it had
+/// worked, so the only symptom was a file that stayed where it was.
+///
+/// Making the closure return `Result<String, String>` moves that from a
+/// discipline nobody kept to something the compiler asks for, and
+/// [`finish_task`] then logs and publishes in one call. `label` names
+/// the operation in the notification, so it is what the user reads —
+/// "stage src/main.rs", not an argv.
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<StatusBufferState>>,
-    mutate: impl FnOnce() + Send + 'static,
+    label: String,
+    mutate: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Option<Effect> {
     let ctx = refresh_context(&s)?;
     tokio::task::spawn(async move {
-        let _ = tokio::task::spawn_blocking(mutate).await;
+        let result = tokio::task::spawn_blocking(mutate)
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        crate::magit_global_mode::finish_task(&label, result);
         run_refresh(ctx).await;
     });
     None
@@ -1197,10 +1261,12 @@ impl crate::buffer_state::MagitView for StatusView {
             };
             (path, g.workdir.clone())
         };
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                let _ = Index::stage_path(&repo, &path);
-            }
+        spawn_mutation_and_refresh(s, format!("stage {}", path.display()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            Index::stage_path(&repo, &path)
+                .map(|()| String::new())
+                .map_err(|e| e.to_string())
         })
     }
 
@@ -1214,31 +1280,25 @@ impl crate::buffer_state::MagitView for StatusView {
     fn stage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<Effect> {
         let s = self.0.clone();
         let (paths, workdir) = files_in_rows(&s, rows)?;
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                for path in &paths {
-                    // One failure does not abandon the rest: a batch
-                    // that stopped halfway would leave the user to work
-                    // out which half.
-                    if let Err(e) = Index::stage_path(&repo, path) {
-                        tracing::error!(target: "lattice_magit", "stage {path:?}: {e}");
-                    }
-                }
-            }
+        spawn_mutation_and_refresh(s, format!("stage {} files", paths.len()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            // One failure does not abandon the rest: a batch that
+            // stopped halfway would leave the user to work out which
+            // half. It is still REPORTED though — the batch's result is
+            // "3 of 5 staged", not silence, because a partial batch is
+            // exactly the outcome a user needs to know about.
+            batch_result(paths.iter(), |path| Index::stage_path(&repo, path))
         })
     }
 
     fn unstage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<Effect> {
         let s = self.0.clone();
         let (paths, workdir) = files_in_rows(&s, rows)?;
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                for path in &paths {
-                    if let Err(e) = Index::unstage_path(&repo, path) {
-                        tracing::error!(target: "lattice_magit", "unstage {path:?}: {e}");
-                    }
-                }
-            }
+        spawn_mutation_and_refresh(s, format!("unstage {} files", paths.len()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            batch_result(paths.iter(), |path| Index::unstage_path(&repo, path))
         })
     }
 
@@ -1251,10 +1311,12 @@ impl crate::buffer_state::MagitView for StatusView {
             };
             (path, g.workdir.clone())
         };
-        spawn_mutation_and_refresh(s, move || {
-            if let Ok(repo) = Repository::discover(&workdir) {
-                let _ = Index::unstage_path(&repo, &path);
-            }
+        spawn_mutation_and_refresh(s, format!("unstage {}", path.display()), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            Index::unstage_path(&repo, &path)
+                .map(|()| String::new())
+                .map_err(|e| e.to_string())
         })
     }
 }

@@ -3160,6 +3160,72 @@ mod background_task_tests {
             "expected to inspect every spawner, saw {checked}"
         );
     }
+
+    /// **The same rule, for the spawners that are not in
+    /// `magit_global_mode.rs`.**
+    ///
+    /// `every_spawner_reports_completion` above reads ONE file. That
+    /// was the whole gap: each major mode grew its own
+    /// `spawn_mutation_and_refresh` / `spawn_*_mutation`, none of them
+    /// in that file, so none were ever checked — and those helpers are
+    /// what the chords a user presses most (`s`, `u`, `x`, branch `d`,
+    /// stash `p`, remote `a`) actually call. A guard scoped to a file
+    /// rather than to the rule is a guard with a blind spot the size of
+    /// the rest of the crate.
+    ///
+    /// Refreshers are exempt from reporting SUCCESS — a repopulated
+    /// buffer is its own report, and a notification per `gr` is noise —
+    /// but not from reporting failure, which is why they are named
+    /// individually here rather than matched by a `refresh` substring.
+    #[test]
+    fn every_mutation_helper_in_the_crate_reports_completion() {
+        // (file, helper) pairs that mutate the repository.
+        const MUTATORS: &[(&str, &str)] = &[
+            ("actions.rs", "spawn_mutation_and_refresh"),
+            ("magit_branch_mode.rs", "spawn_mutation_and_refresh"),
+            ("magit_diff_mode.rs", "spawn_mutation_and_refresh"),
+            ("magit_stash_mode.rs", "spawn_mutation_and_refresh"),
+            ("magit_remote_mode.rs", "spawn_remote_mutation"),
+            ("magit_submodule_mode.rs", "spawn_submodule_mutation"),
+            ("magit_core_mode.rs", "spawn_patch_discard"),
+            ("magit_core_mode.rs", "spawn_hunk_apply"),
+        ];
+        let sources: &[(&str, &str)] = &[
+            ("actions.rs", include_str!("actions.rs")),
+            ("magit_branch_mode.rs", include_str!("magit_branch_mode.rs")),
+            ("magit_diff_mode.rs", include_str!("magit_diff_mode.rs")),
+            ("magit_stash_mode.rs", include_str!("magit_stash_mode.rs")),
+            ("magit_remote_mode.rs", include_str!("magit_remote_mode.rs")),
+            (
+                "magit_submodule_mode.rs",
+                include_str!("magit_submodule_mode.rs"),
+            ),
+            ("magit_core_mode.rs", include_str!("magit_core_mode.rs")),
+        ];
+
+        for (file, helper) in MUTATORS {
+            let src = sources
+                .iter()
+                .find(|(f, _)| f == file)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(|| panic!("{file} is in the source table"));
+            let idx = src
+                .find(&format!("fn {helper}"))
+                .unwrap_or_else(|| panic!("{file}: `{helper}` not found — renamed?"));
+            let body_end = src[idx..]
+                .find("\nfn ")
+                .map(|e| idx + e)
+                .unwrap_or(src.len());
+            let body = &src[idx..body_end];
+            assert!(
+                body.contains("finish_task"),
+                "{file}: `{helper}` mutates the repository and does not \
+                 report completion. The user presses a key, git runs, and \
+                 nothing says whether it worked — on failure the buffer \
+                 just refreshes as though it had.",
+            );
+        }
+    }
 }
 
 #[cfg(test)]

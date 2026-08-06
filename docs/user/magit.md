@@ -74,7 +74,9 @@ The last four run a git operation rather than opening a buffer. They are
 the same operations the `C-c g` transient offers, reaching the same
 implementation — the transient is the discoverable surface, the
 ex-command the scriptable one. Each returns immediately with a
-`magit: pushing…`-style echo; the outcome is reported through the log
+`magit: pushing…`-style echo; the outcome arrives as a
+[notification](help:notifications) when it lands, and the full text
+through the log
 (and `*messages*`), because the operation outlives the keystroke that
 started it. A missing or expired credential fails fast rather than
 hanging, since git is run with `GIT_TERMINAL_PROMPT=0`.
@@ -111,6 +113,31 @@ wrapping `gix` and the `git` CLI. `lattice-host::vcs` auto-registers
 a `DiffSession` against HEAD whenever you open a file in a git repository,
 producing immediate gutter signs. `lattice-magit` consumes both layers
 to provide the full porcelain.
+
+### Every mutation reports
+
+Any magit operation that **changes the repository** tells you how it
+went — staging, unstaging, discarding, applying and reversing hunks,
+branch checkout / create / delete / merge, stash apply / pop / drop /
+create, remote and submodule operations, and everything the
+[transient menus](help:magit-transient) run. Success and failure both,
+as a [notification](help:notifications).
+
+This matters most when it *fails*. A magit buffer refreshes after every
+mutation, so a failed stage used to look exactly like a successful one:
+the buffer redrew, the file stayed where it was, and nothing said why.
+Now the failure is the notification, with git's first line of output;
+the full text is in the log and `*messages*`.
+
+Operations that only **read** stay quiet — a refresh (`gr`), opening a
+log, a diff or a blame. The buffer appearing *is* the report, and a
+notification per refresh would bury the ones that matter.
+
+Notifications are how magit reports, but magit does not know that: it
+publishes a "background task finished" event and the notification
+layer subscribes. See [`notifications`](help:notifications) for where
+they appear, how long they linger, and `:notifications` for the log of
+them.
 
 ### Lazy by default
 

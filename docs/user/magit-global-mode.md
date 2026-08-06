@@ -42,8 +42,10 @@ looking at.
 
 `C-c g`'s fetch / pull / push / stash items run git rather than opening
 a view. They return immediately with a `magit: pushing…` echo; the
-outcome arrives in the log and in `*messages*`, because the operation
-outlives the keystroke that started it. Git runs with
+outcome arrives as a [notification](help:notifications) when it
+finishes — success and failure both — because the operation outlives
+the keystroke that started it. The full output is in the log and in
+`*messages*`; the notification carries the first line. Git runs with
 `GIT_TERMINAL_PROMPT=0`, so a missing or expired credential fails fast
 instead of hanging on a prompt that can never be answered.
 

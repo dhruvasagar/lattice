@@ -116,10 +116,12 @@ impl Mode for MagitBranchMode {
                         let g = s.lock().ok()?;
                         (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
                     };
-                    spawn_mutation_and_refresh(s, move || {
-                        if let Ok(repo) = Repository::discover(&workdir) {
-                            let _ = Branch::checkout(&repo, &name);
-                        }
+                    spawn_mutation_and_refresh(s, format!("checkout {name}"), move || {
+                        let repo = Repository::discover(&workdir)
+                            .map_err(|e| format!("not a git repository: {e}"))?;
+                        Branch::checkout(&repo, &name)
+                            .map(|_| String::new())
+                            .map_err(|e| e.to_string())
                     })
                 }),
             },
@@ -160,10 +162,12 @@ impl Mode for MagitBranchMode {
                         };
                         (name, g.workdir.clone())
                     };
-                    spawn_mutation_and_refresh(s, move || {
-                        if let Ok(repo) = Repository::discover(&workdir) {
-                            let _ = Branch::delete(&repo, &name);
-                        }
+                    spawn_mutation_and_refresh(s, format!("delete branch {name}"), move || {
+                        let repo = Repository::discover(&workdir)
+                            .map_err(|e| format!("not a git repository: {e}"))?;
+                        Branch::delete(&repo, &name)
+                            .map(|_| String::new())
+                            .map_err(|e| e.to_string())
                     })
                 }),
             },
@@ -176,10 +180,12 @@ impl Mode for MagitBranchMode {
                         let g = s.lock().ok()?;
                         (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
                     };
-                    spawn_mutation_and_refresh(s, move || {
-                        if let Ok(repo) = Repository::discover(&workdir) {
-                            let _ = repo.run_git(["merge", &name]);
-                        }
+                    spawn_mutation_and_refresh(s, format!("merge {name}"), move || {
+                        let repo = Repository::discover(&workdir)
+                            .map_err(|e| format!("not a git repository: {e}"))?;
+                        repo.run_git(["merge", &name])
+                            .map(|_| String::new())
+                            .map_err(|e| e.to_string())
                     })
                 }),
             },
@@ -311,9 +317,17 @@ fn refresh(s: Arc<Mutex<BranchState>>) -> Option<Effect> {
 /// Run `mutate` (a blocking git call) on `spawn_blocking`, off the
 /// actor thread, then re-list branches — the shape every mutating
 /// handler above uses instead of calling git synchronously inline.
+/// Run a repository mutation off-thread, report it, then refresh.
+///
+/// MG.54: `mutate` returns a `Result` so the outcome can be published.
+/// It used to be `impl FnOnce()`, which meant every caller discarded
+/// its git result — the operation finished in silence, and a FAILED
+/// one finished in the same silence with the buffer refreshing as
+/// though it had worked.
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<BranchState>>,
-    mutate: impl FnOnce() + Send + 'static,
+    label: String,
+    mutate: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Option<Effect> {
     let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
@@ -331,7 +345,10 @@ fn spawn_mutation_and_refresh(
     let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
         let _busy = busy;
-        let _ = tokio::task::spawn_blocking(mutate).await;
+        let result = tokio::task::spawn_blocking(mutate)
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        crate::magit_global_mode::finish_task(&label, result);
         let (text, header) = tokio::task::spawn_blocking(move || build_branch_list(&wd))
             .await
             .unwrap_or_default();

@@ -837,12 +837,11 @@ pub(crate) fn spawn_patch_discard(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        if let Err(err) = result {
-            tracing::error!(
-                target: "lattice_magit",
-                "magit: could not discard the confirmed hunk: {err}"
-            );
-        }
+        // MG.54: publish. The `Effect::Echo` below fires when the task
+        // is SPAWNED, so it said "magit: discarded" whether or not the
+        // discard succeeded — an optimistic report with no correction
+        // path. `finish_task` is that correction path.
+        crate::magit_global_mode::finish_task("discard hunk", result.map(|()| String::new()));
         if let Some(view) = view {
             let _ = view.refresh();
         }
@@ -874,15 +873,19 @@ pub(crate) fn spawn_hunk_apply(
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        if let Err(err) = result {
-            // `git apply` refuses a patch whose context does not match
-            // the target exactly — which is the safeguard, not a
-            // malfunction: the buffer had drifted from the tree.
-            tracing::error!(
-                target: "lattice_magit",
-                "magit: could not {} hunk at {logged}: {err}", op.present()
-            );
-        }
+        // MG.54: publish, not just log.
+        //
+        // `announce` below already echoed optimistically the moment the
+        // task was spawned, so a REFUSED apply left the user told it
+        // had worked. `git apply` refuses a patch whose context does
+        // not match the target exactly — the safeguard, not a
+        // malfunction: the buffer had drifted from the tree. That is
+        // precisely the outcome worth surfacing, and it was the one
+        // outcome nothing surfaced.
+        crate::magit_global_mode::finish_task(
+            &format!("{} hunk at {logged}", op.present()),
+            result.map(|()| String::new()),
+        );
         // Both views drive their own async rebuild and return `None`;
         // there is no effect to propagate from inside a spawned task.
         //

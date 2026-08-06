@@ -8,6 +8,9 @@ license.workspace = true
 [dependencies]
 internment = { workspace = true }
 bitflags = { workspace = true }
+# HP.1: `modes::table::layout` measures cells by the columns a terminal
+# will advance, not by `char` count — see that module for why.
+unicode-width = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 lattice-protocol = { path = "../lattice-protocol" }

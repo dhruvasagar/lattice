@@ -59,7 +59,7 @@ arc-swap = { workspace = true }
 # attribute macro but the path lookup still resolves through
 # the caller's manifest).
 linkme = { workspace = true }
-unicode-width = "0.2"
+unicode-width = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

@@ -51,6 +51,13 @@ license = "MIT"
 repository = "https://github.com/dhruvasagar/lattice"
 
 [workspace.dependencies]
+# Terminal display width (East Asian Wide, combining marks, emoji).
+# Already a direct dep of `lattice-ui-tui`; promoted to the workspace
+# because `lattice-help` aligns table columns at content-build time and
+# has to measure the SAME width the terminal will advance by. Counting
+# `char`s there would misalign every table containing a ✓, ─, ↑ or CJK
+# — which is exactly the bug the alignment pass exists to fix.
+unicode-width = "0.2"
 # Pure-Rust deflate. Already in the tree transitively (flate2, zstd);
 # a direct edge adds no new distinct dependency. Used to compress the
 # embedded user docs — see docs/dev/operations/embedded-docs-budget.md.

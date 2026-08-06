@@ -5321,6 +5321,7 @@ dependencies = [
  "criterion",
  "lattice-completion",
  "lattice-core",
+ "lattice-mode",
  "lattice-protocol",
  "lattice-syntax",
  "miniz_oxide",
@@ -5468,6 +5469,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

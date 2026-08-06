@@ -207,7 +207,11 @@ pub fn parse_help_lines_and_anchors(
     lines: Vec<String>,
     anchors: Vec<HelpAnchor>,
 ) -> HelpContent {
-    let raw = lines.join("\n");
+    // HP.1: align table columns FIRST. Link ranges below are recorded
+    // against the cleaned text, so padding inserted afterwards would
+    // slide every link on a padded row and `<CR>` would follow the
+    // wrong one. Running first means extraction sees the final bytes.
+    let raw = lattice_mode::modes::table::layout::format_tables(lines).join("\n");
     let (text, links) = extract_links_and_clean(&raw);
     let mut buffer = Buffer::empty();
     if !text.is_empty() {
@@ -787,6 +791,74 @@ fn byte_offset_to_position(text: &str, byte_offset: usize) -> Position {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// HP.1: **a link inside a padded table cell still points at itself.**
+    ///
+    /// Table alignment and link extraction both rewrite the text, and
+    /// the order is load-bearing rather than incidental: link ranges are
+    /// byte offsets into the *cleaned* text, so padding inserted after
+    /// extraction would slide every link on a padded row rightwards and
+    /// `<CR>` on it would resolve against whatever now occupies those
+    /// bytes. The failure is silent — the link still highlights, still
+    /// looks live, and opens the wrong page.
+    ///
+    /// **The fixture has to force a shift, and that is fiddly enough to
+    /// be worth spelling out.** Padding is appended *after* a cell's
+    /// text, so a link only moves if a cell BEFORE it on the same line
+    /// grows. Here the link's row has the narrowest first cell and
+    /// another row has a very wide one, so column 1 pads out and the
+    /// link is pushed right by that many bytes.
+    ///
+    /// A fixture where the link's row happens to be the widest passes
+    /// against the mis-ordered version too — checked by actually
+    /// reordering the pass, which is how this fixture got rewritten.
+    #[test]
+    fn a_link_in_a_table_survives_column_padding() {
+        let h = HelpContent::from_lines(
+            "t",
+            vec![
+                "| Key | Where |".into(),
+                "|---|---|".into(),
+                "| a | [core](help:magit-core-mode) |".into(),
+                "| a-much-much-longer-key | z |".into(),
+            ],
+        );
+        let text = h.buffer.content.as_string();
+        let link = h
+            .metadata
+            .links
+            .iter()
+            .find(|l| matches!(&l.target, HelpLinkTarget::Topic(t) if t == "magit-core-mode"))
+            .expect("the cross-link is extracted");
+
+        // Slice the buffer at the recorded range and require the LABEL
+        // back. Asserting the range's numbers would just restate the
+        // implementation; asserting what is at those bytes is the thing
+        // that breaks when the order is wrong.
+        let line = text
+            .lines()
+            .nth(link.range.start.line as usize)
+            .expect("the link's line exists");
+        let start = link.range.start.byte as usize;
+        let end = link.range.end.byte as usize;
+        assert_eq!(
+            &line[start..end],
+            "core",
+            "the recorded range must still cover the label; line was {line:?}"
+        );
+
+        // And confirm the fixture actually exercised padding — otherwise
+        // it would pass against a build that formats tables not at all.
+        assert!(
+            line.contains("core"),
+            "sanity: the label survives into the buffer: {line:?}"
+        );
+        let widths: Vec<usize> = text.lines().map(|l| l.chars().count()).collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "the table was laid out, so this row WAS padded: {widths:?}"
+        );
+    }
 
     #[test]
     fn from_lines_and_anchors_stores_provided_anchors() {

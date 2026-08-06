@@ -11,6 +11,9 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-completion = { path = "../lattice-completion" }
 miniz_oxide = { workspace = true }
+# HP.1: help buffers align their tables at content-build time via
+# `lattice_mode::modes::table::layout`, which table-mode will share.
+lattice-mode = { path = "../lattice-mode" }
 
 [build-dependencies]
 miniz_oxide = { workspace = true }

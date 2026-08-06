@@ -115,7 +115,7 @@ slice of four identical ones is how an odd case gets a half-version.
 express "and also decline on detached HEAD". `PICKED_BRANCH_OPS` now
 covers all ten branch rows.
 
-### MG.53.c — the four revision selections 🚧 one landed, three open
+### MG.53.c — the four revision selections 🚧 two landed, two open
 
 `Bisect … known GOOD revision`, `Checkout {path} from revision`,
 `Show {path} at revision`, reverse-blame revision.
@@ -128,7 +128,14 @@ already settles the policy: *"anything older is reachable by typing the
 sha into the ex-command directly."* Picker for the recent window,
 ex-command for the rest.
 
-**Landed:** `Show {path} at revision` → `CommitPickSource`. It needed
+**Landed:** `Show {path} at revision` and `Checkout {path} from
+revision` → `CommitPickSource`. The second reuses the SAME
+confirm/execute pair the chord path used rather than spawning git
+directly — checking out a file discards its uncommitted changes, and
+skipping that guard because the caller happened to be a picker would
+make safety depend on how the operation was reached.
+
+`Show {path} at revision` needed no new ex-command at all. It needed
 no new ex-command: `picked_line` now honours a `{}` placeholder, so the
 pick lands in `magit-find-file {} <path>` rather than on the end. The
 alternative was an order-adapter ex-command duplicating an operation
@@ -139,9 +146,6 @@ The picker's first row is HEAD (it is `git log`), so the prompt's
 
 **Still open, with reasons:**
 
-- `Checkout {path} from revision` — same shape as the landed one; needs
-  an ex-command for `git checkout <rev> -- <path>`, which does not
-  exist yet. Cheap; simply not done.
 - reverse-blame revision — reached through the generic `op.what /
   op.usage()` prompt macro shared with non-revision operations.
   Converting it means splitting that macro, which is a bigger edit than

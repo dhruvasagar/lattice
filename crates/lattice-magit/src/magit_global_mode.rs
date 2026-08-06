@@ -657,17 +657,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
             let path = rel.to_string_lossy().into_owned();
-            Some(Effect::OpenPrompt {
-                prompt: format!("Checkout {path} from revision: "),
-                // `HEAD` is the overwhelmingly common intent — "put
-                // back what I committed" — and it is also the one
-                // revision you can name without looking anything up.
-                initial: "HEAD".to_string(),
-                on_submit_action: "action:magit-global-file-checkout-finish".to_string(),
-                // Same carrier as rename: by submit time the prompt
-                // buffer is the active one, so nothing else still knows
-                // which file this was.
-                buffer_name: Some(format!("*magit:checkout:{path}*")),
+            // MG.53.c: pick the revision. `magit-file-checkout` is
+            // `<rev> <path>`, so the pick fills the `{}` — and that
+            // ex-command still runs the same confirm, so reaching this
+            // by picker does not skip the "discards local changes"
+            // guard.
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                args: vec![format!("magit-file-checkout {{}} {path}")],
             })
         }),
     });

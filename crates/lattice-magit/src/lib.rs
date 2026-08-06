@@ -1535,6 +1535,57 @@ fn register_ex_commands(
             );
         }
 
+        // MG.53.c: `git checkout <rev> -- <path>`, which the revision
+        // picker invokes and which is also the scriptable form.
+        //
+        // Confirms, and reuses the SAME confirm/execute pair the chord
+        // path uses rather than spawning directly: checking out a file
+        // discards its uncommitted changes, and doing that without
+        // asking because the caller happened to be a picker would make
+        // the guard depend on how the operation was reached.
+        registry.register_ex_command(
+            "magit-file-checkout",
+            "Check out a file from a revision: `<rev> <path>` (discards local changes).",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let usage = || Effect::Echo {
+                        level: lattice_grammar::EchoLevel::Error,
+                        text: "magit: usage — :magit-file-checkout <rev> <path>".to_string(),
+                    };
+                    let Args::String(ref line) = ctx.args else {
+                        return Ok(usage());
+                    };
+                    let mut it = line.trim().splitn(2, char::is_whitespace);
+                    let (Some(rev), Some(path)) = (it.next(), it.next()) else {
+                        return Ok(usage());
+                    };
+                    let (rev, path) = (rev.trim(), path.trim());
+                    if rev.is_empty() || path.is_empty() {
+                        return Ok(usage());
+                    }
+                    Ok(crate::confirm::ask_with(
+                        format!("Checkout {path} from {rev}, discarding its uncommitted changes?"),
+                        "action:magit-global-file-checkout-execute",
+                        lattice_grammar::Args::List(vec![
+                            lattice_grammar::ArgValue::String(rev.to_string()),
+                            lattice_grammar::ArgValue::String(path.to_string()),
+                        ]),
+                    ))
+                }),
+                args_schema: vec![
+                    ArgSpec::required("rev", lattice_grammar::ArgKind::String, "the revision"),
+                    ArgSpec::required("path", lattice_grammar::ArgKind::String, "the file"),
+                ],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.53.e: notes-merge takes a REF, so it gets the ref picker
         // (branches, remote-tracking refs and tags — everything
         // `for-each-ref` returns) rather than the branch one. A notes

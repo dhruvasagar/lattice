@@ -24,6 +24,24 @@ fi
 fail=0
 say() { printf '\n=== %s\n' "$1"; }
 
+# Refuse to run beside another cargo job.
+#
+# Parts of this suite settle by POLLING with a timeout (`settle_mode`
+# waits for a mode to activate through a spawned cascade). Under a
+# machine already running a second heavy cargo job those polls time out
+# and the gate reports failures that pass fine in isolation — three
+# separate runs have each blamed a DIFFERENT test that way. A gate whose
+# red is sometimes noise is a gate that gets argued with instead of
+# obeyed, so this would rather not run at all than produce that.
+others=$(pgrep -f '[c]argo (test|build|clippy|check)' 2>/dev/null | grep -vc "^$$\$" || true)
+if [ "${others:-0}" -gt 0 ]; then
+    echo "REFUSING: $others other cargo job(s) are running."
+    echo "  This suite polls with timeouts; under load it reports failures"
+    echo "  that pass in isolation. Wait for them to finish, then re-run."
+    echo "  (Override with PRECOMMIT_ALLOW_CONCURRENT=1 if you know better.)"
+    [ "${PRECOMMIT_ALLOW_CONCURRENT:-0}" = "1" ] || exit 2
+fi
+
 say "1/3  fmt (strict — CI gates on this)"
 if cargo fmt --all -- --check >/dev/null 2>&1; then
     echo "  clean"

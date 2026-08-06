@@ -167,7 +167,18 @@ These rules emerged from prior architectural debates and corrections. They are L
 
   **Do NOT try to zero the `unwrap_used` / `panic` / `todo` warnings.** `[workspace.lints]` sets them to `warn` ON PURPOSE and they are overwhelmingly test code (~650 of them). CI deliberately does not pass `-D warnings` — see the comment block at the top of `.github/workflows/ci.yml`, which explains that a toolchain bump adding new stylistic lints must not fail the build. The authoritative blocking gate is `[workspace.lints]`'s **deny** level: `unsafe_code` and `unused_must_use`. Those must always be zero.
 
-  **A pre-existing test failure is proven, not assumed.** If a test fails and you believe it predates your work, verify it: `git stash -u`, re-run on clean HEAD, `git stash pop`. Say so explicitly in the report. See `feedback_verify_preexisting_failures_by_stashing`.
+  **Wait for the gate to finish before committing.** Running a subset
+  (`cargo test -p X --lib some_filter`) and committing while the full
+  gate is still in flight is not verification — it is a race you can
+  lose, and it has been lost. The script now refuses to start beside
+  another cargo job for the same reason: parts of the suite settle by
+  POLLING with a timeout (`settle_mode` waits on a spawned mode
+  cascade), so under a second heavy cargo run they time out and report
+  failures that pass fine in isolation. Three separate runs have each
+  blamed a *different* test that way. Red that is sometimes noise is red
+  that gets argued with instead of obeyed.
+
+  **A pre-existing test failure is proven, not assumed.** If a test fails and you believe it predates your work, verify it: `git stash -u`, re-run on clean HEAD, `git stash pop`. Say so explicitly in the report. See `feedback_verify_preexisting_failures_by_stashing`. **Under load, "prove it" starts with re-running the failure ALONE** — a timeout-based settle failing next to another cargo job is the likeliest explanation, and it is the cheapest to check.
 
   **`cargo build` finishing with no error is not evidence of any of this.** Warnings do not fail a build, and a filtered `grep "^error"` will not show them. Read the warning count.
 

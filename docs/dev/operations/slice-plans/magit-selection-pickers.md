@@ -97,7 +97,7 @@ macro drops the finish half entirely: the ex-command IS the finish
 half, so each operation's git arguments still live in exactly one
 place. Guard verified non-vacuous by mis-naming one ex-command.
 
-### MG.53.b — the branch operations that are not one git call 📝
+### MG.53.b — the branch operations that are not one git call ✅
 
 `merge-absorb`, `merge-edit`, `merge-into`.
 
@@ -110,6 +110,10 @@ finish handler does*, not what it takes:
 
 Each needs an ex-command of a different shape. Folding them into a
 slice of four identical ones is how an odd case gets a half-version.
+
+**Landed.** Three blocks, not three table rows — a column cannot
+express "and also decline on detached HEAD". `PICKED_BRANCH_OPS` now
+covers all ten branch rows.
 
 ### MG.53.c — the four revision selections 📝
 

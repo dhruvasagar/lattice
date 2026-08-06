@@ -971,15 +971,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // MG.43e: merge `i` — merge THIS branch into another and delete
     // this one. The mirror of `a` absorb; the direction is the whole
     // difference, and it deletes a different branch.
-    contributions.push(ActionHandlerContribution {
-        action_name: "action:magit-global-merge-into",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(prompt_for(
-                "Merge this branch into: ",
-                "action:magit-global-merge-into-finish",
-            ))
-        }),
-    });
+    picked_op!("action:magit-global-merge-into", "magit-merge-into");
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-merge-into-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
@@ -1027,13 +1019,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "magit-rebase-autosquash"
     );
     // MG.42-E2: absorb — merge then delete, as one operation.
-    prompted_op_seq!(
-        "action:magit-global-merge-absorb",
-        "Absorb branch: ",
-        "action:magit-global-merge-absorb-finish",
-        merge_absorb_steps,
-        "merge --absorb"
-    );
+    picked_op!("action:magit-global-merge-absorb", "magit-merge-absorb");
     // MG.42-E3: two-input operations. The first prompt's finish opens
     // the second; the second builds the argv from both.
     macro_rules! two_input_op {
@@ -1270,15 +1256,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // merge message in a buffer. Genuinely different from the `n`
     // don't-commit row: this completes the merge in one step with an
     // authored message, rather than leaving a staged merge behind.
-    contributions.push(ActionHandlerContribution {
-        action_name: "action:magit-global-merge-edit",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(prompt_for(
-                "Merge branch (edit message): ",
-                "action:magit-global-merge-edit-finish",
-            ))
-        }),
-    });
+    picked_op!("action:magit-global-merge-edit", "magit-merge-edit");
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-merge-edit-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
@@ -3948,6 +3926,10 @@ pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
         "action:magit-global-rebase-autosquash",
         "magit-rebase-autosquash",
     ),
+    // MG.53.b — the three whose ex-command is not one git call.
+    ("action:magit-global-merge-absorb", "magit-merge-absorb"),
+    ("action:magit-global-merge-edit", "magit-merge-edit"),
+    ("action:magit-global-merge-into", "magit-merge-into"),
 ];
 
 /// The `.gitignore` content after adding `pattern`, or `None` when it

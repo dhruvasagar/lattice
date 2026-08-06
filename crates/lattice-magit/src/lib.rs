@@ -1390,6 +1390,95 @@ fn register_ex_commands(
             );
         }
 
+        // MG.53.b: the branch operations that are NOT one git call, so
+        // they cannot join the table above.
+        //
+        // Each is a different shape, which is why they are three blocks
+        // and not three rows: absorb runs a step sequence, merge-edit
+        // spawns no git at all (it opens a commit buffer), and
+        // merge-into needs the current branch and refuses without one.
+        // A table column cannot express "and also decline on detached
+        // HEAD".
+        for (name, doc) in [
+            (
+                "magit-merge-absorb",
+                "Merge a branch and delete it: `<branch>`.",
+            ),
+            (
+                "magit-merge-edit",
+                "Merge a branch, editing the merge message: `<branch>`.",
+            ),
+            (
+                "magit-merge-into",
+                "Merge the current branch INTO another: `<branch>`.",
+            ),
+        ] {
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let Args::String(ref b) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <branch>"),
+                            });
+                        };
+                        let b = b.trim().to_string();
+                        if b.is_empty() {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <branch>"),
+                            });
+                        }
+                        Ok(match name {
+                            "magit-merge-absorb" => magit_global_mode::spawn_git_sequence(
+                                "merge and delete",
+                                magit_global_mode::merge_absorb_steps(&b),
+                            ),
+                            // No git call: the merge runs when the
+                            // commit buffer is confirmed, which is the
+                            // whole point of the "edit message" variant.
+                            "magit-merge-edit" => Effect::OpenSyntheticBuffer {
+                                name: magit_commit_mode::CommitIntent::merge_edit_buffer_name(&b),
+                                mode_id: "magit-commit-mode".to_string(),
+                            },
+                            // Merging the CURRENT branch into another
+                            // needs to know which one that is, and
+                            // detached HEAD has no answer. Declines
+                            // rather than acting on `HEAD`.
+                            _ => match magit_global_mode::current_branch() {
+                                None => Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: "magit: not on a branch".to_string(),
+                                },
+                                Some(current) if current == b => Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: "magit: cannot merge a branch into itself".to_string(),
+                                },
+                                Some(current) => magit_global_mode::spawn_git_sequence(
+                                    "merge into",
+                                    magit_global_mode::merge_into_steps(&current, &b),
+                                ),
+                            },
+                        })
+                    }),
+                    args_schema: vec![ArgSpec::required(
+                        "branch",
+                        lattice_grammar::ArgKind::String,
+                        "the branch to operate on",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
+
         // MG.28: the explicit form of `C-c f v` — a file you are not
         // visiting. `<rev>` alone shows the file you ARE visiting,
         // which is what the chord does.

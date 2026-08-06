@@ -360,6 +360,25 @@ fn branch_delete_outcome(name: &str) -> PickerAcceptOutcome {
     }
 }
 
+/// MG.53.c: build the ex line a picked value runs.
+///
+/// `{}` in `command` is replaced by the pick; with no `{}` the pick is
+/// appended. Both magit's picker sources go through this.
+///
+/// The placeholder exists because not every operation takes its
+/// selection LAST. `magit-find-file` is `<rev> <path>` — appending a
+/// revision to `magit-find-file src/main.rs` would produce
+/// `<path> <rev>` and open a file named after a sha. The alternative
+/// was registering order-adapter ex-commands that duplicate an existing
+/// operation purely to move an argument, which is a second
+/// implementation of the same thing.
+pub(crate) fn picked_line(command: &str, value: &str) -> String {
+    match command.find("{}") {
+        Some(_) => command.replacen("{}", value, 1),
+        None => format!("{command} {value}"),
+    }
+}
+
 /// Register this crate's picker sources into the supplied registry.
 /// Called from `lattice-host`'s `editor_boot.rs`, mirroring
 /// `lattice_snippet::picker_sources::register` — the picker registry
@@ -473,7 +492,7 @@ impl PickerSourceGenerator for CommitPickSource {
                         // would surface as a picked commit that did
                         // nothing.
                         RoutingPayload::InvokeCommand {
-                            id: format!("{command} {sha}"),
+                            id: picked_line(&command, &sha),
                             args: lattice_grammar::args::Args::None,
                         },
                     )
@@ -662,6 +681,34 @@ mod tests {
             "magit's registered picker sources changed — update this list \
              together with `register`, and check every `Effect::OpenPicker` \
              that names one"
+        );
+    }
+
+    /// MG.53.c: **the pick does not always go last.**
+    ///
+    /// `magit-find-file` is `<rev> <path>`, so appending a revision to
+    /// `magit-find-file src/main.rs` would produce `<path> <rev>` and
+    /// open a file named after a sha. The alternative to a placeholder
+    /// was an order-adapter ex-command duplicating an operation that
+    /// already exists, purely to move an argument.
+    #[test]
+    fn a_placeholder_places_the_pick_and_absence_appends_it() {
+        assert_eq!(
+            super::picked_line("magit-find-file {} src/main.rs", "abc123"),
+            "magit-find-file abc123 src/main.rs",
+            "the pick goes where the placeholder is"
+        );
+        assert_eq!(
+            super::picked_line("magit-checkout", "main"),
+            "magit-checkout main",
+            "no placeholder — appended, which is what every branch row does"
+        );
+        // Only the first is substituted: a command mentioning `{}` twice
+        // wants one value in one slot, not the same value twice.
+        assert_eq!(
+            super::picked_line("cmd {} {}", "x"),
+            "cmd x {}",
+            "one pick fills one slot"
         );
     }
 
@@ -885,7 +932,7 @@ impl PickerSourceGenerator for BranchPickSource {
                     (
                         cand,
                         RoutingPayload::InvokeCommand {
-                            id: format!("{command} {name}"),
+                            id: picked_line(&command, &name),
                             args: lattice_grammar::Args::None,
                         },
                     )
@@ -1014,7 +1061,7 @@ impl PickerSourceGenerator for RefPickSource {
                     (
                         cand,
                         RoutingPayload::InvokeCommand {
-                            id: format!("{command} {name}"),
+                            id: picked_line(&command, &name),
                             args: lattice_grammar::Args::None,
                         },
                     )

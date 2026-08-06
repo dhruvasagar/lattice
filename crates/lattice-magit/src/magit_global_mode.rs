@@ -1462,14 +1462,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
             let path = rel.to_string_lossy().into_owned();
-            Some(Effect::OpenPrompt {
-                prompt: format!("Show {path} at revision: "),
-                // `HEAD` is the one revision you can name without
-                // looking anything up, and "what did this look like
-                // before my edits" is the common ask.
-                initial: "HEAD".to_string(),
-                on_submit_action: "action:magit-global-file-at-revision-finish".to_string(),
-                buffer_name: Some(format!("*magit:show-at:{path}*")),
+            // MG.53.c: a picker over recent commits. `magit-find-file`
+            // is `<rev> <path>`, so the pick goes in the `{}` rather
+            // than on the end — see `picker_sources::picked_line`.
+            //
+            // The picker's first row is HEAD (it is `git log`), which
+            // preserves what the prompt's `HEAD` default gave: "what did
+            // this look like before my edits" is still one keystroke,
+            // and now it shows the subject.
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                args: vec![format!("magit-find-file {{}} {path}")],
             })
         }),
     });

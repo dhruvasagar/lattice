@@ -115,7 +115,7 @@ slice of four identical ones is how an odd case gets a half-version.
 express "and also decline on detached HEAD". `PICKED_BRANCH_OPS` now
 covers all ten branch rows.
 
-### MG.53.c — the four revision selections 📝
+### MG.53.c — the four revision selections 🚧 one landed, three open
 
 `Bisect … known GOOD revision`, `Checkout {path} from revision`,
 `Show {path} at revision`, reverse-blame revision.
@@ -123,12 +123,36 @@ covers all ten branch rows.
 `CommitPickSource` already takes an ex-command argument, so this is the
 same re-point as MG.53.a against a different source.
 
-**Open question, resolve when the slice starts:** bisect's good-revision
-prompt currently accepts any rev. The commit picker lists recent
-commits (bounded — see `COMMIT_PICK_LIMIT`), so a good revision older
-than the window becomes unreachable by chord. Either the picker grows a
-"type a revision" escape or bisect keeps its prompt. **Do not decide
-this from the plan** — check what the bound actually is first.
+**Resolved.** `COMMIT_PICK_LIMIT` is 200, and the source's own doc
+already settles the policy: *"anything older is reachable by typing the
+sha into the ex-command directly."* Picker for the recent window,
+ex-command for the rest.
+
+**Landed:** `Show {path} at revision` → `CommitPickSource`. It needed
+no new ex-command: `picked_line` now honours a `{}` placeholder, so the
+pick lands in `magit-find-file {} <path>` rather than on the end. The
+alternative was an order-adapter ex-command duplicating an operation
+that already exists purely to move an argument.
+
+The picker's first row is HEAD (it is `git log`), so the prompt's
+`HEAD` default survives as "press Enter" — and now shows the subject.
+
+**Still open, with reasons:**
+
+- `Checkout {path} from revision` — same shape as the landed one; needs
+  an ex-command for `git checkout <rev> -- <path>`, which does not
+  exist yet. Cheap; simply not done.
+- reverse-blame revision — reached through the generic `op.what /
+  op.usage()` prompt macro shared with non-revision operations.
+  Converting it means splitting that macro, which is a bigger edit than
+  the rest of this slice put together.
+- bisect known-good — a TWO-step chain (bad, then good) where the first
+  value is carried in the prompt buffer's name. A picker chain needs
+  the bad rev to survive into the second picker's args; `picked_line`'s
+  placeholder makes that expressible (`magit-bisect-start {bad} {}`)
+  but the first step has to become a picker too, and bisect's good rev
+  is characteristically OLDER than the 200-commit window — the case
+  where the ex-command escape is the common path, not the fallback.
 
 ### MG.53.d — tag and remote pickers ✅
 

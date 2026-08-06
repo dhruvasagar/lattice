@@ -77,8 +77,10 @@ number and names none of them.
 ### Merging notes
 
 Notes live on a ref (`refs/notes/commits` by default), and two clones
-can grow different notes for the same commit. `m` asks for a ref to
-merge in, optionally with a strategy:
+can grow different notes for the same commit. `m` opens a
+[picker of refs](help:picker#the-magit-sources) to merge in — every
+branch, remote-tracking ref and tag the repository has — optionally
+with a strategy:
 
 | Strategy | Resolution |
 |---|---|

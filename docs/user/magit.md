@@ -63,6 +63,7 @@ no hidden state.
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
 | `:magit-push` | Push the current branch (`--force-with-lease`, `--set-upstream`) |
 | `:magit-stash` | Stash the working tree (`--include-untracked`, `-m <message>`); `:magit-stash-list` opens the list |
+| `h` | (in any magit buffer) Open the [dispatch menu](help:magit-transient) — every root menu is one key from there |
 | `g?` | (in any magit buffer) Open help for the current mode's keybindings |
 
 Every magit command name is dashed + namespaced (`magit-status`,
@@ -134,10 +135,18 @@ because no diffs are pre-computed.
 
 Every magit buffer inherits a shared [minor mode](help:modes),
 [`magit-core-mode`](help:magit-core-mode), which supplies `gr`
-(refresh), `q` (close), `]]` / `[[` / `]f` / `[f` / `]c` / `[c`
-(navigate at three scales), and `TAB` / `S-TAB` (fold). One movement
-vocabulary across status, log, diff, blame, stash, branch and rebase —
-see that page for the full table and what `gr` means per view.
+(refresh), `q` (close), `]]` / `[[` (move between sections), `TAB` /
+`S-TAB` (fold), `h` (open the dispatch menu), and the repo-level
+`S` / `U` / `C` / `i` / `yr`. One movement vocabulary across status,
+log, diff, blame, stash, branch and rebase — see that page for the
+full table and what `gr` means per view.
+
+The finer two navigation scales — `]f` / `[f` between files and
+`]c` / `[c` between hunks — belong to
+[`magit-hunk-mode`](help:magit-hunk-mode), which is active only where a
+diff is rendered. They used to be on the core mode, and so were bound
+in a branch list and a blame, where there are no files or hunks to step
+between.
 
 ---
 

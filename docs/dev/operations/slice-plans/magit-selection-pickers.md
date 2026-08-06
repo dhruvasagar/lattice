@@ -1,6 +1,6 @@
 # MG.53 — every selection is a picker
 
-**Status:** 🚧 MG.53.a/b/d ✅, c partial, e ref-only, f deferred. Parent:
+**Status:** 🚧 MG.53.a/b/d/g/h ✅, c partial, e ref-only, f deferred. Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md).
 Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
 
@@ -232,6 +232,43 @@ decision rather than a magit one:
 (b) is the better long-term fit and the reason this slice stops here
 rather than taking (a) for expedience. **Deferred pending that call.**
 
+### MG.53.h — the row this sweep deleted ✅
+
+Found by the doc audit, not by a test: **`b` and `l` had become the
+same row.**
+
+The branch submenu has both because `l` lists local branches and `b`
+takes anything `git checkout` accepts — a tag, `origin/main`, a SHA.
+MG.52 converted every free-text branch prompt to a picker and swept
+`b` up with them, pointing it at `magit-branch` (i.e. `git branch`).
+Nothing failed, because `git checkout <local branch>` is a perfectly
+good command. The loss was visible only as *two menu rows that do the
+same thing*, and as "check out `origin/main` from the menu" quietly
+becoming impossible.
+
+MG.53.g had already built the fix without knowing it:
+`RefScope::Revisions` is refs + recent commits, which is "anything git
+can take" minus the typo. `b` re-points at `magit-revision`; `l` stays
+on the local-branch source.
+
+**What the guard has to assert.** No assertion about `b` alone can see
+this: `b` opened a picker, that picker listed real branches, and the
+ex-command it named was registered — every existing check passed.
+`the_branch_revision_row_is_not_the_local_branch_row` asserts the
+**pair**, including `assert_ne!` on the two sources, because the defect
+is a relationship rather than a property of either row.
+
+The same slice fixed four specs that declared `no_args` while their
+`init` required the ex-command (`magit-branch`, `magit-tag`,
+`magit-remote`, `magit-ref` — `magit-commit` was already honest).
+`args_schema` drives `:picker <id> <Tab>`, so the mismatch advertised
+"nothing to type here" and then refused to open. `takes_ex_command`
+gives all five one spec, and
+`a_source_that_needs_an_ex_command_declares_it` asks every registered
+source to `init` with no arguments and requires the refusals to be
+exactly the declarations — a behavioural check, so a new source cannot
+reintroduce it by copying a stale literal.
+
 ### MG.53.f — config enums ⛔ deferred
 
 `pull.rebase`, `fetch.prune`, `tag.gpgSign` are booleans / small enums
@@ -255,6 +292,8 @@ MG.53.a ──► MG.53.b        (absorb reuses a's ex-command shape)
    └──────► MG.53.c        (independent; different source)
 
 MG.53.d ──► MG.53.e        (ref picker may subsume the tag one)
+
+MG.53.g ──► MG.53.h        (h re-points `b` at the source g built)
 
 MG.53.f                    deferred — belongs with :customize
 ```

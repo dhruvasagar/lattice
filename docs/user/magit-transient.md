@@ -513,6 +513,59 @@ That is deliberate: `--continue` / `--skip` / `--abort` error when
 nothing is running, and starting a second operation is exactly what you
 must not do while one is stopped.
 
+### Which rows ask, and how
+
+A row that needs you to name something either opens a **picker** or a
+**prompt**, and which one is not arbitrary:
+
+> Naming a thing that must already exist → **picker**.
+> Naming a thing you are creating → **prompt**.
+
+A prompt for a name that has to exist is a typo waiting to happen: git
+reports it long after the keystroke, and the thing you wanted was on a
+list the editor could have shown. A picker for a *new* name is worse
+than useless — there is nothing to pick. So `Merge branch` lists and
+`New branch name` asks, even though both are about branches. `Rename
+<remote> to:` stays a prompt for the same reason: the remote was
+already picked, and the input is the new name.
+
+Every row that opens a picker, and what each one lists:
+
+| Path | Row | Lists |
+|---|---|---|
+| `m m` | merge | local branches |
+| `m e` | merge and edit message | local branches |
+| `m n` | merge, don't commit | local branches |
+| `m s` | squash | local branches |
+| `m a` | absorb | local branches |
+| `m i` | merge into | local branches |
+| `r e` | rebase onto elsewhere | local branches |
+| `r f` | autosquash | local branches |
+| `b x` | reset branch | local branches |
+| `b b` | branch/revision | **refs and commits** |
+| `b l` | local branch | local branches, checks out directly |
+| `b c` / `b n` | create (with / without checkout) | local branches, as the base — then prompts for the new name |
+| `b m` | rename | local branches — then prompts for the new name |
+| `b k` | delete | local branches — asks before deleting |
+| `t k` | delete tag | tags |
+| `t p` | prune tags | **remotes** — the row's label says tags, the operation takes a remote |
+| `T T` / `T r` | edit / remove a note | recent commits, when the cursor is not on one |
+| `T m` | merge notes ref | every ref |
+| `A` / `_` / `O…` | cherry-pick / revert / reset | recent commits, when the cursor is not on one |
+| `C-c f v` | view this file at a revision | **refs and commits** |
+| `C-c f ,c` | checkout this file from a revision | **refs and commits** |
+| `C-c f M` | merged | recent commits, when the cursor is not on one |
+
+The rows that stay **prompts**, because each names something new: tag
+name, remote name, any URL (remote, submodule, clone), clone
+destination, `Path for <url>`, every rename target, the ignore
+pattern, the new branch name, the stash message, the author, and the
+context-line count.
+
+See [`picker`](help:picker#the-magit-sources) for the sources
+themselves, and for the `:picker <source> <ex-command>` form that
+reaches any of them directly.
+
 ### How submenus work (mechanism)
 
 Pressing a submenu's key pushes the current transient onto a stack and

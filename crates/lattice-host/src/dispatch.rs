@@ -1095,6 +1095,7 @@ impl Editor {
             ),
             modeline: std::sync::Arc::new(crate::render_state::ModelineRenderState {
                 cmdline_text: std::sync::Arc::from(self.command_line()),
+                prompt_text: std::sync::Arc::from(self.prompt_line_text()),
                 auto_submit_hint: self.auto_submit_after_chord,
                 search_pattern: if self.search_line_active() {
                     Some(std::sync::Arc::from(self.search_pattern()))
@@ -7619,6 +7620,26 @@ impl Editor {
     /// Owner-write the focused prompt buffer's text (analogous to
     /// [`Self::set_command_line_text`]/[`Self::set_search_line_text`]).
     /// No-op when no prompt is focused.
+    /// MG.51: the `*prompt-line*` buffer's text, or empty when no prompt
+    /// is open.
+    ///
+    /// Peer of [`Self::command_line`], and gated the same way: the
+    /// prompt buffer is the focused editing document while
+    /// `ModalState::Prompt` is live, so its first line IS what the user
+    /// has typed.
+    pub fn prompt_line_text(&self) -> String {
+        if !matches!(self.modal, ModalState::Prompt) {
+            return String::new();
+        }
+        self.document
+            .snapshot()
+            .text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string()
+    }
+
     fn set_prompt_line_text(&mut self, s: &str) {
         if !matches!(self.modal, ModalState::Prompt) {
             return;

@@ -4150,6 +4150,41 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // MG.51: the prompt line (`Effect::OpenPrompt` — magit's branch
+    // checkout, rename, tag name, …).
+    //
+    // Without this arm the row fell through to the echo below, which
+    // draws the LABEL and nothing else: `open_prompt_line` puts the
+    // label in the echo (`set_message`) and the typed text in the
+    // `*prompt-line*` buffer, and only the label was ever drawn. Keys
+    // reached the buffer — submitting worked — so the prompt read as a
+    // dead input that mysteriously did the right thing.
+    //
+    // The prompt buffer IS the focused editing document (see
+    // `focus_editing_buffer`), so its first line is the typed text and
+    // `ad().cursor` is the caret inside it, exactly as the `:` line
+    // reads its own buffer above.
+    if matches!(app.ad().modal, ModalState::Prompt) {
+        let messages = app.messages();
+        let label: String = messages
+            .last
+            .as_deref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        let typed = app.modeline().prompt_text.to_string();
+        let caret_byte = (app.ad().cursor.byte as usize).min(typed.len());
+        let para = Paragraph::new(Line::from(format!("{label}{typed}")));
+        frame.render_widget(para, area);
+        // Columns, not bytes: the label is user-facing text and may hold
+        // multi-byte characters.
+        let col_of = |s: &str, upto: usize| s[..upto].chars().count();
+        let col = area.x.saturating_add(
+            (label.chars().count() + col_of(&typed, caret_byte)).min(area.width as usize) as u16,
+        );
+        frame.set_cursor_position((col, area.y));
+        return;
+    }
+
     // Slice 3c.final.B.7: last message via published `messages()`
     // sub-state — wait-free Arc clone.
     let messages = app.messages();
@@ -7919,6 +7954,63 @@ mod tests {
             during.contains("MAGITSTATUSCONTENT"),
             "the pane must keep painting the magit buffer's own text while \
              the `:` line is open; got:\n{during}",
+        );
+    }
+
+    /// MG.51: **the prompt line shows what you type.**
+    ///
+    /// `Effect::OpenPrompt` (magit's branch checkout, tag name, …) puts
+    /// the LABEL in the echo and the typed text in the `*prompt-line*`
+    /// buffer. `draw_command_or_echo` had no `ModalState::Prompt` arm,
+    /// so the row fell through to the echo and drew the label alone —
+    /// keys reached the buffer and submitting worked, so the prompt read
+    /// as a dead input that mysteriously did the right thing.
+    ///
+    /// Seeded through `initial` rather than keypresses: the defect is in
+    /// what gets DRAWN, and `initial` puts text in the same buffer the
+    /// dispatcher writes to.
+    #[test]
+    fn the_prompt_line_renders_the_text_being_typed() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with("x\n", 10);
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+
+        app.mutate_editor(|e| {
+            e.open_prompt_line(
+                "Checkout branch/revision: ".to_string(),
+                "feature/x".to_string(),
+                "action:magit-global-branch-checkout".to_string(),
+                None,
+            );
+            e.publish_render_state();
+        });
+
+        let snap = app.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &app, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let out: String = (0..12u16)
+            .map(|y| {
+                (0..60u16)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            out.contains("Checkout branch/revision:"),
+            "the label must still show; got:\n{out}"
+        );
+        assert!(
+            out.contains("feature/x"),
+            "the TYPED TEXT must show — this is the bug: the label \
+             rendered and the input did not; got:\n{out}"
         );
     }
 

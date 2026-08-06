@@ -357,6 +357,20 @@ fn bottom_row_content(
     }
     match modal {
         ModalState::Command => (format!(":{}", modeline.cmdline_text), None),
+        // MG.51: `Effect::OpenPrompt` splits the prompt in two — the
+        // LABEL goes to the echo, the typed text to the `*prompt-line*`
+        // buffer. Falling through to the echo arm below drew the label
+        // alone, so the prompt looked like a dead input that
+        // nonetheless submitted. Both halves, in the order the user
+        // reads them.
+        ModalState::Prompt => {
+            let label = messages
+                .last
+                .as_deref()
+                .map(|m| m.text.as_str())
+                .unwrap_or("");
+            (format!("{label}{}", modeline.prompt_text), None)
+        }
         ModalState::Search(dir) => {
             let prefix = match dir {
                 lattice_grammar::SearchDirection::Forward => '/',
@@ -5882,6 +5896,28 @@ mod modeline_tests {
         let (row, level) = super::bottom_row_content(ModalState::Normal, &modeline, &echo);
         assert_eq!(row, "wrap=false");
         assert!(matches!(level, Some(EchoLevel::Info)));
+
+        // MG.51: Prompt mode → the LABEL (echo) *and* the typed text.
+        //
+        // Falling through to the echo arm drew the label alone, so a
+        // magit branch-checkout prompt looked like a dead input that
+        // nonetheless submitted. Both peers read the same published
+        // `prompt_text`, so TUI and GPUI cannot disagree about it.
+        let prompt = ModelineRenderState {
+            prompt_text: Arc::from("feature/x"),
+            ..Default::default()
+        };
+        let label = MessagesRenderState {
+            last: Some(Arc::new(EchoMessage {
+                text: "Checkout branch/revision: ".to_string(),
+                level: EchoLevel::Info,
+            })),
+        };
+        let (row, _) = super::bottom_row_content(ModalState::Prompt, &prompt, &label);
+        assert_eq!(
+            row, "Checkout branch/revision: feature/x",
+            "the prompt row is the label followed by what has been typed"
+        );
 
         // Command mode → the `:` minibuffer wins over any pending echo.
         let cmd = ModelineRenderState {

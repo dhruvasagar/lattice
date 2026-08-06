@@ -2105,6 +2105,17 @@ pub struct ModelineRenderState {
     /// Renderer-side cmdline text. `Arc<str>` so per-publish clone
     /// is one Arc bump regardless of length.
     pub cmdline_text: std::sync::Arc<str>,
+    /// MG.51: the `*prompt-line*` buffer's text while `ModalState::Prompt`
+    /// is live (`Effect::OpenPrompt` — magit's branch checkout, tag name,
+    /// …), empty otherwise.
+    ///
+    /// Published rather than read off the active document by each peer,
+    /// because `open_prompt_line` splits the prompt across two places —
+    /// the LABEL goes to the echo, the typed text to this buffer — and a
+    /// renderer that knows only about the echo draws the label with no
+    /// input under it, which is exactly the bug this field fixes. One
+    /// field, both peers, and GPUI's `bottom_row_content` stays pure.
+    pub prompt_text: std::sync::Arc<str>,
     /// `:describe-key<CR>` armed the chord-capture prompt; the
     /// renderer paints a "press a chord" hint after the cursor.
     pub auto_submit_hint: bool,
@@ -2143,6 +2154,7 @@ impl Default for ModelineRenderState {
             search_direction: None,
             cmdline_expanded: false,
             cmdline_full_text: std::sync::Arc::from(""),
+            prompt_text: std::sync::Arc::from(""),
             cmdline_expand_height: lattice_config::ExpandHeight::default(),
             cmdline_decorations: None,
         }

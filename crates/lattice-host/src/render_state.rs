@@ -1300,6 +1300,31 @@ impl CellsRenderState {
             .map(|p| p.version.whitespace)
             .unwrap_or(self.version.whitespace)
     }
+
+    /// The **current** fold-axis stamp for `pane_id` — the peer of
+    /// [`Self::whitespace_version_for_pane`], and needed for the same
+    /// reason.
+    ///
+    /// A closed fold changes *which physical lines occupy which visible
+    /// rows*, so a matrix built under a different fold state does not
+    /// merely look wrong — it disagrees with the cursor model about
+    /// what row the cursor is on. The symptom is a viewport painted for
+    /// one fold state while `j` walks the other: the caret leaves the
+    /// painted region and the rows below it never appear, until some
+    /// large motion happens to force a rebuild whose version lines up.
+    ///
+    /// The worker already treats folds as an invalidation axis (it
+    /// refuses the incremental path when `version.folds` differs and
+    /// full-rebuilds instead). This is the matching **renderer refusal
+    /// to paint** — without it the worker's invalidation is invisible to
+    /// the peer, which happily paints the superseded matrix.
+    pub fn fold_version_for_pane(&self, pane_id: lattice_core::ui::pane::PaneId) -> u64 {
+        self.panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .map(|p| p.version.folds)
+            .unwrap_or(self.version.folds)
+    }
 }
 
 /// D.4.d.1.a (2026-05-29): per-visible-Document-pane build

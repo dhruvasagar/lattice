@@ -2569,11 +2569,18 @@ impl EditorView {
             cell_matrix: {
                 let cells = rs_guard.cells.load();
                 let ws = cells.whitespace_version_for_pane(pane.id);
+                // Folds belong in this guard for the same reason they
+                // belong in `display_matrix`'s below — see there. Both
+                // sites had the identical hole, which is what a copied
+                // guard does when an axis is added to only one axis list.
+                let folds = cells.fold_version_for_pane(pane.id);
                 cells
                     .matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
                     .filter(|m| {
-                        m.version.text == snapshot.text_version && m.version.whitespace == ws
+                        m.version.text == snapshot.text_version
+                            && m.version.whitespace == ws
+                            && m.version.folds == folds
                     })
             },
             // B3 (2026-06-04): the canonical DisplayMatrix is the GPU's
@@ -2593,11 +2600,29 @@ impl EditorView {
             display_matrix: {
                 let cells = rs_guard.cells.load();
                 let ws = cells.whitespace_version_for_pane(pane.id);
+                // The FOLD axis belongs in this guard too, and its
+                // absence was a real bug: fold a hunk in a commit view
+                // and half the viewport stopped painting, `j` walked the
+                // caret off into rows that were never drawn, and a big
+                // motion like `G` "fixed" it only because the rebuild it
+                // forced happened to line up — scrolling back to the fold
+                // brought it straight back.
+                //
+                // A closed fold changes which physical lines occupy which
+                // visible rows, so a matrix built under a different fold
+                // state disagrees with the cursor model about what row the
+                // cursor is on. The worker already refuses its incremental
+                // path when `version.folds` differs; without the matching
+                // refusal here that invalidation was invisible to this
+                // peer, which painted the superseded matrix anyway.
+                let folds = cells.fold_version_for_pane(pane.id);
                 cells
                     .display_matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
                     .filter(|m| {
-                        m.version.text == snapshot.text_version && m.version.whitespace == ws
+                        m.version.text == snapshot.text_version
+                            && m.version.whitespace == ws
+                            && m.version.folds == folds
                     })
             },
             // T.5.b: the resolved table + builtin ids the display-line
@@ -6028,5 +6053,63 @@ mod modeline_tests {
 
         // Regular files carry no override — the devicon hue shows through.
         assert!(resolved.get(ids.file_tree_file).fg.is_none());
+    }
+}
+
+#[cfg(test)]
+mod matrix_staleness_guard_tests {
+    /// **Every invalidation axis the worker honours must also appear in
+    /// the renderer's refusal-to-paint.**
+    ///
+    /// The worker treating an axis as invalidating only forces it to
+    /// rebuild; it does not stop this peer painting the matrix the
+    /// rebuild superseded. The two halves have to be added together, and
+    /// the fold axis is the case that proves they were not: the worker
+    /// refused its incremental path on `version.folds`, both guards here
+    /// compared only `text` and `whitespace`, and folding a hunk in a
+    /// commit view left half the viewport unpainted with the caret free
+    /// to walk into it. `G` appeared to fix it because the rebuild it
+    /// forced happened to line up; scrolling back reproduced it.
+    ///
+    /// Asserted against the SOURCE because the paint path needs a live
+    /// GPUI window to exercise, and the defect is a missing conjunct in
+    /// a filter — visible in the text, invisible to any test that can
+    /// run headless. Both guards are checked: they are copies of each
+    /// other, so an axis added to one and not the other is exactly how
+    /// this recurs.
+    #[test]
+    fn both_matrix_guards_compare_every_axis() {
+        let src = include_str!("window.rs");
+        // The axes a matrix can go stale on. `syntax`, `inlay_hints`
+        // and `theme` are deliberately absent: a matrix carrying older
+        // syntax or hint decoration is *visually* behind for a frame,
+        // which the incremental path is designed to tolerate. `text`,
+        // `whitespace` and `folds` change row GEOMETRY — what occupies
+        // which visible row — so painting a mismatched one puts the
+        // caret and the rows out of agreement.
+        const GEOMETRY_AXES: &[&str] = &["text", "whitespace", "folds"];
+
+        for guard in ["cell_matrix: {", "display_matrix: {"] {
+            let idx = src
+                .find(guard)
+                .unwrap_or_else(|| panic!("`{guard}` not found — renamed?"));
+            // The guard body ends at its `.filter(...)` close; take a
+            // generous window and require every axis inside it.
+            let body = &src[idx..(idx + 1600).min(src.len())];
+            let filter = body
+                .find(".filter(")
+                .map(|f| &body[f..])
+                .unwrap_or_else(|| panic!("`{guard}` has no `.filter(` staleness guard"));
+            for axis in GEOMETRY_AXES {
+                assert!(
+                    filter.contains(&format!("m.version.{axis}")),
+                    "`{guard}` does not compare `m.version.{axis}`. The worker \
+                     invalidates on it, so this peer will paint a matrix that \
+                     rebuild superseded — and for a geometry axis that means \
+                     the painted rows and the cursor disagree about which row \
+                     is which.",
+                );
+            }
+        }
     }
 }

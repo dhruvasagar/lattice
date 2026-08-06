@@ -401,6 +401,7 @@ pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Tags)));
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Remotes)));
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::AllRefs)));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Revisions)));
 }
 
 /// MG.23j: `:picker magit-commit <ex-command>` — pick a commit, then
@@ -676,12 +677,51 @@ mod tests {
                 COMMIT_PICK_SOURCE,               // MG.23j: `A` / `_` / `O`
                 REF_PICK_SOURCE,                  // MG.53.e: any ref
                 REMOTE_PICK_SOURCE,               // MG.53.d: tag prune
+                REVISION_PICK_SOURCE,             // MG.53.g: refs + commits
                 TAG_PICK_SOURCE,                  // MG.53.d: tag delete
             ],
             "magit's registered picker sources changed — update this list \
              together with `register`, and check every `Effect::OpenPicker` \
              that names one"
         );
+    }
+
+    /// MG.53.g: **a revision is not only a commit.**
+    ///
+    /// `git log` answers "which commit on the branch I am on", which is
+    /// the wrong question for *view this file as it is on
+    /// `origin/main`*: a file that lives on another branch is not in
+    /// this branch's history at all, so no number of commits would
+    /// surface it. The scopes are what keep those two questions apart.
+    #[test]
+    fn the_revision_scope_spans_refs_and_commits_and_the_others_do_not() {
+        use super::{RefPickSource, RefScope};
+        // Distinct ids, so a row naming one cannot silently get another.
+        let ids: Vec<String> = [
+            RefScope::Tags,
+            RefScope::Remotes,
+            RefScope::AllRefs,
+            RefScope::Revisions,
+        ]
+        .into_iter()
+        .map(|sc| RefPickSource::new(sc).spec().id.to_string())
+        .collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            ids.len(),
+            "each scope registers under its own id: {ids:?}"
+        );
+        assert_eq!(
+            RefPickSource::new(RefScope::Revisions).spec().id,
+            super::REVISION_PICK_SOURCE
+        );
+        // The commit-only picker is a DIFFERENT source and stays so —
+        // cherry-pick / revert / reset genuinely want a commit, and
+        // offering them a branch would be offering the wrong noun.
+        assert_ne!(super::REVISION_PICK_SOURCE, super::COMMIT_PICK_SOURCE);
     }
 
     /// MG.53.c: **the pick does not always go last.**
@@ -985,11 +1025,24 @@ pub enum RefScope {
     /// Everything `for-each-ref` returns — branches, remote-tracking
     /// refs and tags. What a "ref" prompt means.
     AllRefs,
+    /// MG.53.g: refs **and** recent commits — what "revision" means.
+    ///
+    /// `git log` alone answers "which commit on the branch I am on",
+    /// which is the wrong question for *view this file as it is on
+    /// `origin/main`*: a file on another branch is not in the current
+    /// branch's history at all, so no number of commits would surface
+    /// it. Emacs's `magit-find-file` completes over branches, tags and
+    /// commits together for the same reason.
+    ///
+    /// Refs come first: reaching for another branch is the common ask,
+    /// and a branch name is the thing a user can recognise.
+    Revisions,
 }
 
 pub const TAG_PICK_SOURCE: &str = "magit-tag";
 pub const REMOTE_PICK_SOURCE: &str = "magit-remote";
 pub const REF_PICK_SOURCE: &str = "magit-ref";
+pub const REVISION_PICK_SOURCE: &str = "magit-revision";
 
 impl RefPickSource {
     pub fn new(which: RefScope) -> Self {
@@ -1000,6 +1053,10 @@ impl RefPickSource {
                 "Pick a remote and run an operation on it.",
             ),
             RefScope::AllRefs => (REF_PICK_SOURCE, "Pick a ref and run an operation on it."),
+            RefScope::Revisions => (
+                REVISION_PICK_SOURCE,
+                "Pick a revision — a branch, tag or recent commit.",
+            ),
         };
         Self {
             spec: PickerSourceSpec::no_args(id, doc),
@@ -1012,6 +1069,7 @@ impl RefPickSource {
             RefScope::Tags => TAG_PICK_SOURCE,
             RefScope::Remotes => REMOTE_PICK_SOURCE,
             RefScope::AllRefs => REF_PICK_SOURCE,
+            RefScope::Revisions => REVISION_PICK_SOURCE,
         }
     }
 }
@@ -1030,38 +1088,58 @@ impl PickerSourceGenerator for RefPickSource {
             .ok_or_else(|| format!("{id}: needs the ex-command to run on the pick"))?
             .clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
+            // (display, value): they differ for commits, where the row
+            // must read as `abbrev subject` while what git receives is
+            // the full sha — an abbreviation is ambiguous in principle
+            // and git resolves the ambiguity by refusing.
             let names = tokio::task::spawn_blocking(move || {
                 let repo = Repository::discover(".")
                     .map_err(|e| format!("{id}: repo discover failed: {e}"))?;
-                Ok::<Vec<String>, String>(match which {
+                Ok::<Vec<(String, String)>, String>(match which {
                     RefScope::Remotes => Remote::list(&repo)
                         .map_err(|e| format!("{id}: {e}"))?
                         .into_iter()
-                        .map(|r| r.name)
+                        .map(|r| (r.name.clone(), r.name))
                         .collect(),
                     RefScope::Tags => Reference::list(&repo)
                         .map_err(|e| format!("{id}: {e}"))?
                         .into_iter()
                         .filter(|r| r.kind == RefKind::Tag)
-                        .map(|r| r.name)
+                        .map(|r| (r.name.clone(), r.name))
                         .collect(),
                     RefScope::AllRefs => Reference::list(&repo)
                         .map_err(|e| format!("{id}: {e}"))?
                         .into_iter()
-                        .map(|r| r.name)
+                        .map(|r| (r.name.clone(), r.name))
                         .collect(),
+                    // Refs first, then commits: `origin/main` is what
+                    // someone reaching for another branch recognises,
+                    // and a sha they would have to read to identify.
+                    RefScope::Revisions => {
+                        let mut out: Vec<(String, String)> = Reference::list(&repo)
+                            .map_err(|e| format!("{id}: {e}"))?
+                            .into_iter()
+                            .map(|r| (r.name.clone(), r.name))
+                            .collect();
+                        out.extend(
+                            recent_commits()?
+                                .into_iter()
+                                .map(|(sha, display)| (display, sha)),
+                        );
+                        out
+                    }
                 })
             })
             .await
             .map_err(|e| format!("{id}: join error: {e}"))??;
             Ok(names
                 .into_iter()
-                .map(|name| {
-                    let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                .map(|(display, value)| {
+                    let cand = RawCandidate::plain(display, CandidateKind::Plain);
                     (
                         cand,
                         RoutingPayload::InvokeCommand {
-                            id: picked_line(&command, &name),
+                            id: picked_line(&command, &value),
                             args: lattice_grammar::Args::None,
                         },
                     )

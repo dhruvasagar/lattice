@@ -144,6 +144,29 @@ that already exists purely to move an argument.
 The picker's first row is HEAD (it is `git log`), so the prompt's
 `HEAD` default survives as "press Enter" — and now shows the subject.
 
+### MG.53.g — a revision is not only a commit ✅
+
+`Show / checkout {path} at revision` first shipped against
+`CommitPickSource`, which is `git log -n200` — the current branch's
+history. That cannot reach *view this file as it is on `origin/main`*:
+a file living on another branch is not in this branch's history at all,
+so no number of commits would surface it. Emacs's `magit-find-file`
+completes over branches, tags and commits together.
+
+`RefScope::Revisions` lists refs then recent commits, registered as
+`magit-revision`. Refs first — `origin/main` is what someone reaching
+for another branch recognises, where a sha is something they would have
+to read to identify.
+
+Display and value split here for the first time: a commit row reads
+`abbrev subject` while git receives the full sha, because an
+abbreviation is ambiguous in principle and git resolves the ambiguity
+by refusing.
+
+`CommitPickSource` stays a separate source. Cherry-pick, revert and
+reset genuinely want a commit; offering them a branch would be offering
+the wrong noun.
+
 **Still open, with reasons:**
 
 - reverse-blame revision — reached through the generic `op.what /

@@ -657,13 +657,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
             let path = rel.to_string_lossy().into_owned();
-            // MG.53.c: pick the revision. `magit-file-checkout` is
+            // MG.53.c/g: pick the revision — branch, tag or commit.
+            // `magit-file-checkout` is
             // `<rev> <path>`, so the pick fills the `{}` — and that
             // ex-command still runs the same confirm, so reaching this
             // by picker does not skip the "discards local changes"
             // guard.
             Some(Effect::OpenPicker {
-                source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-file-checkout {{}} {path}")],
             })
         }),
@@ -1459,7 +1460,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
             let path = rel.to_string_lossy().into_owned();
-            // MG.53.c: a picker over recent commits. `magit-find-file`
+            // MG.53.c/g: a picker over REVISIONS — branches, tags and
+            // recent commits. `magit-find-file`
             // is `<rev> <path>`, so the pick goes in the `{}` rather
             // than on the end — see `picker_sources::picked_line`.
             //
@@ -1468,7 +1470,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // this look like before my edits" is still one keystroke,
             // and now it shows the subject.
             Some(Effect::OpenPicker {
-                source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec![format!("magit-find-file {{}} {path}")],
             })
         }),
@@ -4982,8 +4984,11 @@ mod tests {
                 Some(Effect::OpenPicker { source, args }) => {
                     assert_eq!(
                         source,
-                        crate::picker_sources::COMMIT_PICK_SOURCE,
-                        "`{action}` picks a REVISION"
+                        crate::picker_sources::REVISION_PICK_SOURCE,
+                        "`{action}` picks a REVISION — a branch or tag as much \
+                         as a commit. The commit-only picker cannot reach a \
+                         file that lives on another branch, because it is not \
+                         in this branch's history at all."
                     );
                     let line = args.first().map(String::as_str).unwrap_or("");
                     assert!(

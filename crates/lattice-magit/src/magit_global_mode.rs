@@ -738,10 +738,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-merge",
         handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(prompt_for(
-                "Merge branch: ",
-                "action:magit-global-merge-finish",
-            ))
+            // MG.52: a picker. A branch that does not exist is not a
+            // merge target or a reset destination — it is a typo, and
+            // git reports it long after the keystroke that caused it.
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
+                args: vec!["magit-merge".to_string()],
+            })
         }),
     });
     // MG.41e: merge / tag variants. Each is the same prompt-then-finish
@@ -1223,10 +1226,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-branch-reset",
         handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(prompt_for(
-                "Reset current branch to: ",
-                "action:magit-global-branch-reset-finish",
-            ))
+            // MG.52: a picker. A branch that does not exist is not a
+            // merge target or a reset destination — it is a typo, and
+            // git reports it long after the keystroke that caused it.
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
+                args: vec!["magit-branch-reset".to_string()],
+            })
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -2047,18 +2053,25 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // the slot muscle memory already expects — MG.23's policy #1.
     //
     // `b` — checkout a branch **or revision**, magit's own wording.
-    // Distinct from `l` below, which lists local branches: this one
-    // accepts anything `git checkout` does — a tag, a remote ref, a raw
-    // SHA — so it asks for text rather than offering a list. Checking
-    // out a SHA detaches HEAD, which is git's behaviour and magit's.
+    // MG.52: a PICKER, not a prompt.
+    //
+    // This asked for free text because it accepts anything `git
+    // checkout` does — a tag, a remote ref, a raw SHA. But nobody types
+    // a branch name they are not sure exists: a typo here is reported
+    // by git long after the keystroke that caused it, and the branch
+    // the user wanted was on a list the editor could have shown.
+    //
+    // The `-finish` handler below is kept and still reachable through
+    // `:magit-checkout <rev>`, which is the scriptable path and the one
+    // that still takes an arbitrary SHA — so detaching HEAD onto a
+    // revision did not become impossible, it stopped being what this
+    // key does.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-branch-checkout-rev",
         handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(Effect::OpenPrompt {
-                prompt: "Checkout branch/revision: ".to_string(),
-                initial: String::new(),
-                on_submit_action: "action:magit-global-branch-checkout-rev-finish".to_string(),
-                buffer_name: Some("*magit:branch-checkout-rev*".to_string()),
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
+                args: vec!["magit-checkout".to_string()],
             })
         }),
     });
@@ -3901,10 +3914,20 @@ pub(crate) const PROMPTED_OPS: &[(&str, &str)] = &[
         "action:magit-global-init",
         "action:magit-global-init-finish",
     ),
-    (
-        "action:magit-global-merge",
-        "action:magit-global-merge-finish",
-    ),
+];
+
+/// MG.52: rows that open a BRANCH PICKER, paired with the ex-command the
+/// picked branch is handed to.
+///
+/// The peer of [`PROMPTED_OPS`], and the reason it exists: these used to
+/// be prompts and moving them left `each_prompt_row_targets_a_finish_action_that_exists`
+/// with nothing to say about them. A row that silently stopped opening
+/// its picker — or opened one naming a command nobody registered — would
+/// otherwise be invisible to the suite.
+pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
+    ("action:magit-global-merge", "magit-merge"),
+    ("action:magit-global-branch-reset", "magit-branch-reset"),
+    ("action:magit-global-branch-checkout-rev", "magit-checkout"),
 ];
 
 /// The `.gitignore` content after adding `pattern`, or `None` when it
@@ -4762,6 +4785,66 @@ mod tests {
                     );
                 }
                 other => panic!("`{action}` should open a prompt, got {other:?}"),
+            }
+        }
+    }
+
+    /// MG.52: **a branch row opens the branch picker, naming a real
+    /// ex-command.**
+    ///
+    /// Two ways these rot, and the suite could see neither before: the
+    /// row quietly goes back to a prompt (which is the thing being
+    /// removed — a branch that does not exist is a typo, and git reports
+    /// it long after the keystroke), or it opens a picker naming a
+    /// command nobody registered, in which case picking does nothing.
+    #[test]
+    fn each_branch_row_opens_the_picker_with_a_registered_command() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+
+        // The ex-commands the picker can hand a branch to.
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        crate::register_action_commands_for_test(&mut registry);
+        crate::register_ex_commands_for_test(&mut registry);
+
+        for (action, ex_command) in PICKED_BRANCH_OPS {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == *action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: lattice_grammar::Args::None,
+            };
+            match handler(&ctx) {
+                Some(Effect::OpenPicker { source, args }) => {
+                    assert_eq!(
+                        source,
+                        crate::picker_sources::BRANCH_PICK_SOURCE,
+                        "`{action}` must open the branch picker"
+                    );
+                    assert_eq!(
+                        args.first().map(String::as_str),
+                        Some(*ex_command),
+                        "`{action}` must hand the picked branch to `{ex_command}`"
+                    );
+                    assert!(
+                        registry.id_by_name(ex_command).is_some(),
+                        "`{action}` picks a branch and runs `{ex_command}`, which is \
+                         not a registered ex-command — picking would do nothing"
+                    );
+                }
+                other => panic!("`{action}` should open the branch picker, got {other:?}"),
             }
         }
     }

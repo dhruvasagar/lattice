@@ -1287,6 +1287,73 @@ fn register_ex_commands(
             },
         );
 
+        // MG.52: what the branch picker invokes for merge, and the
+        // scriptable form. Registered for the same reason
+        // `magit-checkout` is: a picked candidate reaches an operation
+        // only as an ex line, so every picker-backed branch operation
+        // needs one.
+        for (name, doc, argv0, what) in [
+            (
+                "magit-merge",
+                "Merge a branch into the current one: `<branch>`.",
+                "merge",
+                "merge",
+            ),
+            (
+                "magit-branch-reset",
+                "Reset the current branch to another: `<branch>` (hard).",
+                "reset",
+                "reset",
+            ),
+        ] {
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let Args::String(ref b) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <branch>"),
+                            });
+                        };
+                        let b = b.trim().to_string();
+                        if b.is_empty() {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <branch>"),
+                            });
+                        }
+                        // Reset discards uncommitted work, so it asks —
+                        // the same confirm the chord path uses. Merge
+                        // does not: it stops on conflict rather than
+                        // destroying anything.
+                        Ok(if argv0 == "reset" {
+                            crate::confirm::ask_target(
+                                format!("git reset --hard {b} — discard uncommitted changes?"),
+                                "action:magit-global-branch-reset-execute",
+                                b,
+                            )
+                        } else {
+                            magit_global_mode::spawn_git(magit_global_mode::merge_argv(&b), what)
+                        })
+                    }),
+                    args_schema: vec![ArgSpec::required(
+                        "branch",
+                        lattice_grammar::ArgKind::String,
+                        "the branch to operate on",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
+
         // MG.28: the explicit form of `C-c f v` — a file you are not
         // visiting. `<rev>` alone shows the file you ARE visiting,
         // which is what the chord does.
@@ -1870,6 +1937,15 @@ fn register_ex_commands(
 #[cfg(test)]
 pub(crate) fn register_action_commands_for_test(registry: &mut CommandRegistry) {
     register_action_commands(registry);
+}
+
+/// MG.52: test door onto [`register_ex_commands`], so a guard can ask
+/// whether the ex-command a picker hands its pick to actually exists.
+/// Without it a row could open a picker naming a command nobody
+/// registered, and picking would silently do nothing.
+#[cfg(test)]
+pub(crate) fn register_ex_commands_for_test(registry: &mut CommandRegistry) {
+    register_ex_commands(registry, Default::default());
 }
 
 fn register_action_commands(registry: &mut CommandRegistry) {

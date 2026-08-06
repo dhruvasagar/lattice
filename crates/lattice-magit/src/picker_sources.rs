@@ -374,6 +374,10 @@ pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(BranchRenameSource::new()));
     picker_registry.register_generator(Arc::new(BranchDeleteSource::new()));
     picker_registry.register_generator(Arc::new(CommitPickSource::new()));
+    // MG.52: the branch peer of `CommitPickSource` — one source for
+    // every "which branch?" question, parameterised by what to do with
+    // the answer.
+    picker_registry.register_generator(Arc::new(BranchPickSource::new()));
 }
 
 /// MG.23j: `:picker magit-commit <ex-command>` — pick a commit, then
@@ -639,6 +643,8 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                BRANCH_PICK_SOURCE, // MG.52: `b b`, and every
+                //                                   other "which branch?"
                 BRANCH_CHECKOUT_SOURCE,           // MG.29: `b l`
                 BRANCH_CREATE_NO_CHECKOUT_SOURCE, // MG.32: `b n`
                 BRANCH_DELETE_SOURCE,             // MG.32: `b x`
@@ -796,6 +802,104 @@ mod tests {
                 );
             }
             other => panic!("expected OpenPrompt, got {other:?}"),
+        }
+    }
+}
+
+/// MG.52: the **branch picker**, parameterised by the ex-command it
+/// hands the picked branch to.
+///
+/// One source, not one per operation. Checkout, merge, merge-into,
+/// reset and rebase-onto all ask the same question — *which branch* —
+/// and differ only in what they do with the answer, which is exactly
+/// what an argument is for. [`CommitPickSource`] already established
+/// this shape for commits; this is its peer for branches, down to the
+/// same constraint on the argument.
+///
+/// **Branch selection does not accept free text.** A branch that does
+/// not exist is not a merge target, a base to branch from, or a reset
+/// destination — it is a typo, and git's error arrives long after the
+/// keystroke that caused it. The prompt these replace accepted anything
+/// and reported the mistake as a failed git call.
+///
+/// **The argument is an ex-command name, not an action name**, for the
+/// reason [`CommitPickSource`] documents: a picked candidate reaches an
+/// operation only through `RoutingPayload::InvokeCommand`, whose host
+/// arm runs `id` as an ex line, so the branch has to travel inside that
+/// line.
+pub struct BranchPickSource {
+    spec: PickerSourceSpec,
+}
+
+pub const BRANCH_PICK_SOURCE: &str = "magit-branch";
+
+impl BranchPickSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                BRANCH_PICK_SOURCE,
+                "Pick a branch and run an operation on it.",
+            ),
+        }
+    }
+}
+
+impl Default for BranchPickSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for BranchPickSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let command = args
+            .first()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| {
+                format!("{BRANCH_PICK_SOURCE}: needs the ex-command to run on the picked branch")
+            })?
+            .clone();
+        Ok(PickerInitResult::Future(Box::pin(async move {
+            let branches = tokio::task::spawn_blocking(|| {
+                let repo = Repository::discover(".")
+                    .map_err(|e| format!("{BRANCH_PICK_SOURCE}: repo discover failed: {e}"))?;
+                Branch::list(&repo).map_err(|e| format!("{BRANCH_PICK_SOURCE}: {e}"))
+            })
+            .await
+            .map_err(|e| format!("{BRANCH_PICK_SOURCE}: join error: {e}"))??;
+            Ok(branches
+                .into_iter()
+                .map(|name| {
+                    let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                    (
+                        cand,
+                        RoutingPayload::InvokeCommand {
+                            id: format!("{command} {name}"),
+                            args: lattice_grammar::Args::None,
+                        },
+                    )
+                })
+                .collect())
+        })))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::InvokeCommand { id, args } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: id.clone(),
+                args: args.clone(),
+            }),
+            other => Err(format!(
+                "{BRANCH_PICK_SOURCE}: unexpected routing payload {other:?}"
+            )),
         }
     }
 }

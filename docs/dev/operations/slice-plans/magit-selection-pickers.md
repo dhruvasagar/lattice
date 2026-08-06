@@ -130,14 +130,21 @@ than the window becomes unreachable by chord. Either the picker grows a
 "type a revision" escape or bisect keeps its prompt. **Do not decide
 this from the plan** — check what the bound actually is first.
 
-### MG.53.d — tag and remote pickers 📝
+### MG.53.d — tag and remote pickers ✅
 
-Two new sources on the `BranchPickSource` shape (list, hand the pick to
-an ex-command named in args):
+**Landed as ONE source, not two.** `Reference::list` already returns
+branches, remote-tracking refs and tags in a single `for-each-ref`
+walk tagged with `RefKind`, so a tag picker is that walk filtered.
+`RefPickSource` takes a `RefScope` (`Tags` / `Remotes` / `AllRefs`) and
+registers under three ids — writing a separate `git tag` call beside
+`for-each-ref` would be a second way to ask the same question.
 
-- `TagPickSource` → `Delete tag`
-- `RemotePickSource` → `Prune tags gone from remote`, and the
-  `remote.pushDefault` config row
+`Remotes` reads `git remote`, deliberately NOT `refs/remotes/*`: the
+operations that take a remote want `origin`, not `origin/main`.
+
+- tags → `Delete tag`
+- remotes → `Prune tags gone from remote`
+- (`remote.pushDefault` config row stays with MG.53.f)
 
 Note `tag_prune_argv` takes a **remote**, not a tag — the row's label
 (`Prune tags gone from remote:`) reads like a tag operation and is not
@@ -146,11 +153,12 @@ one. Verified against the argv builder, not the label.
 Extend `magit_registers_exactly_the_sources_its_rows_open` in the same
 edit; that test exists precisely to force this.
 
-### MG.53.e — ref and file selections 📝
+### MG.53.e — ref and file selections 🚧 ref done, file open
 
-`Merge notes ref` + `core.notesRef` want a ref picker (branches, tags
-and notes refs — a superset of `TagPickSource`, so land MG.53.d first
-and consider whether one ref source subsumes both).
+**Ref: landed.** `Merge notes ref` uses `RefPickSource::AllRefs` — and
+the "does one source subsume both" question answered itself, since
+MG.53.d built exactly that. `core.notesRef` is a config row and moves
+to MG.53.f with its peers.
 
 `File (repo-relative):` wants a file picker. **Check first whether the
 host's existing `:files` picker is reusable** — a magit-local copy of

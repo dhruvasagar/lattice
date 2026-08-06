@@ -816,6 +816,20 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // an operation only as an ex line. The `*_argv` builder moved with
     // it, so there is still exactly one place that knows each
     // operation's git arguments.
+    // MG.53.d: the same shape against a source other than branches.
+    macro_rules! picked_from {
+        ($entry:expr, $source:expr, $ex_command:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    Some(Effect::OpenPicker {
+                        source: $source.to_string(),
+                        args: vec![$ex_command.to_string()],
+                    })
+                }),
+            });
+        };
+    }
     macro_rules! picked_op {
         ($entry:expr, $ex_command:expr) => {
             contributions.push(ActionHandlerContribution {
@@ -1001,12 +1015,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
 
     // MG.43e: tag `p` prune.
-    prompted_op!(
+    picked_from!(
         "action:magit-global-tag-prune",
-        "Prune tags gone from remote: ",
-        "action:magit-global-tag-prune-finish",
-        tag_prune_argv,
-        "fetch --prune-tags"
+        crate::picker_sources::REMOTE_PICK_SOURCE,
+        "magit-tag-prune"
     );
 
     // MG.43b: rebase `e` elsewhere, and `f` autosquash.
@@ -1271,12 +1283,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
-    prompted_op!(
+    picked_from!(
         "action:magit-global-tag-delete",
-        "Delete tag: ",
-        "action:magit-global-tag-delete-finish",
-        tag_delete_argv,
-        "tag -d"
+        crate::picker_sources::TAG_PICK_SOURCE,
+        "magit-tag-delete"
     );
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-merge-finish",
@@ -1852,17 +1862,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         RemoteOp::NOTES_MERGE_ABORT
     );
 
-    contributions.push(ActionHandlerContribution {
-        action_name: "action:magit-global-note-merge",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
-            Some(Effect::OpenPrompt {
-                prompt: "Merge notes ref: ".to_string(),
-                initial: String::new(),
-                on_submit_action: "action:magit-global-note-merge-finish".to_string(),
-                buffer_name: Some("*magit:note-merge*".to_string()),
-            })
-        }),
-    });
+    picked_from!(
+        "action:magit-global-note-merge",
+        crate::picker_sources::REF_PICK_SOURCE,
+        "magit-note-merge"
+    );
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-note-merge-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
@@ -3932,6 +3936,33 @@ pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
     ("action:magit-global-merge-into", "magit-merge-into"),
 ];
 
+/// MG.53.d: rows backed by a picker that is NOT the branch one, as
+/// `(action, picker source, ex-command)`.
+///
+/// Kept apart from [`PICKED_BRANCH_OPS`] because the source is the
+/// thing worth asserting here — `t p` prunes tags but takes a REMOTE,
+/// and pointing it at the tag picker would list the wrong nouns while
+/// still running a real command. Only checking "opens some picker"
+/// would miss that.
+pub(crate) const PICKED_OTHER_OPS: &[(&str, &str, &str)] = &[
+    (
+        "action:magit-global-tag-delete",
+        crate::picker_sources::TAG_PICK_SOURCE,
+        "magit-tag-delete",
+    ),
+    (
+        "action:magit-global-tag-prune",
+        crate::picker_sources::REMOTE_PICK_SOURCE,
+        "magit-tag-prune",
+    ),
+    // MG.53.e
+    (
+        "action:magit-global-note-merge",
+        crate::picker_sources::REF_PICK_SOURCE,
+        "magit-note-merge",
+    ),
+];
+
 /// The `.gitignore` content after adding `pattern`, or `None` when it
 /// is already ignored.
 ///
@@ -4847,6 +4878,57 @@ mod tests {
                     );
                 }
                 other => panic!("`{action}` should open the branch picker, got {other:?}"),
+            }
+        }
+    }
+
+    /// MG.53.d: **a non-branch picker row names the right SOURCE.**
+    ///
+    /// `t p` ("Prune tags gone from remote") takes a remote, not a tag —
+    /// its label reads like a tag operation and its argv builder says
+    /// otherwise. Pointed at the tag picker it would list tags, hand one
+    /// to `fetch --prune-tags`, and fail against a remote that does not
+    /// exist. Asserting only "opens a picker" would not catch it.
+    #[test]
+    fn each_non_branch_row_opens_the_right_picker() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        crate::register_action_commands_for_test(&mut registry);
+        crate::register_ex_commands_for_test(&mut registry);
+
+        for (action, expected_source, ex_command) in PICKED_OTHER_OPS {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == *action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: lattice_grammar::Args::None,
+            };
+            match handler(&ctx) {
+                Some(Effect::OpenPicker { source, args }) => {
+                    assert_eq!(
+                        source, *expected_source,
+                        "`{action}` must list the nouns it operates on"
+                    );
+                    assert_eq!(args.first().map(String::as_str), Some(*ex_command));
+                    assert!(
+                        registry.id_by_name(ex_command).is_some(),
+                        "`{action}` runs `{ex_command}`, which is not registered"
+                    );
+                }
+                other => panic!("`{action}` should open a picker, got {other:?}"),
             }
         }
     }

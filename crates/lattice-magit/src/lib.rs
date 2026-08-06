@@ -1479,6 +1479,103 @@ fn register_ex_commands(
             );
         }
 
+        // MG.53.d/e: what the tag / remote / ref pickers invoke, and the
+        // scriptable forms. Same table shape as the branch ones —
+        // single argument, one git call.
+        type RefArgv = fn(&str) -> Vec<String>;
+        const REF_EX_COMMANDS: &[(&str, &str, RefArgv, &str)] = &[
+            (
+                "magit-tag-delete",
+                "Delete a tag: `<tag>`.",
+                magit_global_mode::tag_delete_argv,
+                "tag -d",
+            ),
+            (
+                "magit-tag-prune",
+                "Prune tags gone from a remote: `<remote>`.",
+                magit_global_mode::tag_prune_argv,
+                "fetch --prune-tags",
+            ),
+        ];
+        for (name, doc, argv, what) in REF_EX_COMMANDS {
+            let (name, argv, what) = (*name, *argv, *what);
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let Args::String(ref v) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <name>"),
+                            });
+                        };
+                        let v = v.trim().to_string();
+                        if v.is_empty() {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: format!("magit: usage — :{name} <name>"),
+                            });
+                        }
+                        Ok(magit_global_mode::spawn_git(argv(&v), what))
+                    }),
+                    args_schema: vec![ArgSpec::required(
+                        "name",
+                        lattice_grammar::ArgKind::String,
+                        "the tag or remote to operate on",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
+
+        // MG.53.e: notes-merge takes a REF, so it gets the ref picker
+        // (branches, remote-tracking refs and tags — everything
+        // `for-each-ref` returns) rather than the branch one. A notes
+        // ref is commonly `refs/notes/*`, which is neither a branch nor
+        // a tag; the picker offers what git can resolve and
+        // `:magit-note-merge <ref>` still takes anything else.
+        registry.register_ex_command(
+            "magit-note-merge",
+            "Merge a notes ref into the current notes: `<ref>`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref r) = ctx.args else {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit: usage — :magit-note-merge <ref>".to_string(),
+                        });
+                    };
+                    let r = r.trim().to_string();
+                    if r.is_empty() {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit: usage — :magit-note-merge <ref>".to_string(),
+                        });
+                    }
+                    Ok(magit_global_mode::spawn_note_merge(&r))
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "ref",
+                    lattice_grammar::ArgKind::String,
+                    "the notes ref to merge",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.28: the explicit form of `C-c f v` — a file you are not
         // visiting. `<rev>` alone shows the file you ARE visiting,
         // which is what the chord does.

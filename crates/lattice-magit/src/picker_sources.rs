@@ -16,7 +16,7 @@ use lattice_picker::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
     RoutingPayload, SourceResult,
 };
-use lattice_vcs::{Branch, Repository};
+use lattice_vcs::{Branch, RefKind, Reference, Remote, Repository};
 
 pub struct BranchPickBaseSource {
     spec: PickerSourceSpec,
@@ -378,6 +378,10 @@ pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     // every "which branch?" question, parameterised by what to do with
     // the answer.
     picker_registry.register_generator(Arc::new(BranchPickSource::new()));
+    // MG.53.d/e: tag / remote / ref — one implementation, three scopes.
+    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Tags)));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Remotes)));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::AllRefs)));
 }
 
 /// MG.23j: `:picker magit-commit <ex-command>` — pick a commit, then
@@ -651,6 +655,9 @@ mod tests {
                 "magit-branch-pick-base",         // `b c`, and `c` in the branch buffer
                 BRANCH_RENAME_SOURCE,             // MG.32: `b m`
                 COMMIT_PICK_SOURCE,               // MG.23j: `A` / `_` / `O`
+                REF_PICK_SOURCE,                  // MG.53.e: any ref
+                REMOTE_PICK_SOURCE,               // MG.53.d: tag prune
+                TAG_PICK_SOURCE,                  // MG.53.d: tag delete
             ],
             "magit's registered picker sources changed — update this list \
              together with `register`, and check every `Effect::OpenPicker` \
@@ -899,6 +906,136 @@ impl PickerSourceGenerator for BranchPickSource {
             }),
             other => Err(format!(
                 "{BRANCH_PICK_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+/// MG.53.d/e: the **tag**, **remote** and **ref** pickers.
+///
+/// Three ids, one implementation, because they differ only in what they
+/// list. `Reference::list` already returns branches, remotes and tags
+/// in one `for-each-ref` walk tagged with a [`RefKind`], so a tag
+/// picker is that walk filtered — building a separate `git tag` call
+/// beside it would be a second way to ask the same question.
+///
+/// Parameterised by the ex-command that receives the pick, exactly as
+/// [`BranchPickSource`] and [`CommitPickSource`] are, and for the same
+/// reason: a picked candidate reaches an operation only as an ex line.
+pub struct RefPickSource {
+    spec: PickerSourceSpec,
+    which: RefScope,
+}
+
+/// What a [`RefPickSource`] lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefScope {
+    /// `refs/tags/*` — `Delete tag`.
+    Tags,
+    /// Configured remotes (`git remote`), not `refs/remotes/*`: the
+    /// operations that take one want `origin`, not `origin/main`.
+    Remotes,
+    /// Everything `for-each-ref` returns — branches, remote-tracking
+    /// refs and tags. What a "ref" prompt means.
+    AllRefs,
+}
+
+pub const TAG_PICK_SOURCE: &str = "magit-tag";
+pub const REMOTE_PICK_SOURCE: &str = "magit-remote";
+pub const REF_PICK_SOURCE: &str = "magit-ref";
+
+impl RefPickSource {
+    pub fn new(which: RefScope) -> Self {
+        let (id, doc) = match which {
+            RefScope::Tags => (TAG_PICK_SOURCE, "Pick a tag and run an operation on it."),
+            RefScope::Remotes => (
+                REMOTE_PICK_SOURCE,
+                "Pick a remote and run an operation on it.",
+            ),
+            RefScope::AllRefs => (REF_PICK_SOURCE, "Pick a ref and run an operation on it."),
+        };
+        Self {
+            spec: PickerSourceSpec::no_args(id, doc),
+            which,
+        }
+    }
+
+    fn id(&self) -> &'static str {
+        match self.which {
+            RefScope::Tags => TAG_PICK_SOURCE,
+            RefScope::Remotes => REMOTE_PICK_SOURCE,
+            RefScope::AllRefs => REF_PICK_SOURCE,
+        }
+    }
+}
+
+impl PickerSourceGenerator for RefPickSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let id = self.id();
+        let which = self.which;
+        let command = args
+            .first()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| format!("{id}: needs the ex-command to run on the pick"))?
+            .clone();
+        Ok(PickerInitResult::Future(Box::pin(async move {
+            let names = tokio::task::spawn_blocking(move || {
+                let repo = Repository::discover(".")
+                    .map_err(|e| format!("{id}: repo discover failed: {e}"))?;
+                Ok::<Vec<String>, String>(match which {
+                    RefScope::Remotes => Remote::list(&repo)
+                        .map_err(|e| format!("{id}: {e}"))?
+                        .into_iter()
+                        .map(|r| r.name)
+                        .collect(),
+                    RefScope::Tags => Reference::list(&repo)
+                        .map_err(|e| format!("{id}: {e}"))?
+                        .into_iter()
+                        .filter(|r| r.kind == RefKind::Tag)
+                        .map(|r| r.name)
+                        .collect(),
+                    RefScope::AllRefs => Reference::list(&repo)
+                        .map_err(|e| format!("{id}: {e}"))?
+                        .into_iter()
+                        .map(|r| r.name)
+                        .collect(),
+                })
+            })
+            .await
+            .map_err(|e| format!("{id}: join error: {e}"))??;
+            Ok(names
+                .into_iter()
+                .map(|name| {
+                    let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                    (
+                        cand,
+                        RoutingPayload::InvokeCommand {
+                            id: format!("{command} {name}"),
+                            args: lattice_grammar::Args::None,
+                        },
+                    )
+                })
+                .collect())
+        })))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::InvokeCommand { id, args } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: id.clone(),
+                args: args.clone(),
+            }),
+            other => Err(format!(
+                "{}: unexpected routing payload {other:?}",
+                self.id()
             )),
         }
     }

@@ -745,26 +745,6 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             })
         }),
     });
-    // MG.41e: merge / tag variants. Each is the same prompt-then-finish
-    // pair as its sibling; only the argv the finish half builds differs.
-    macro_rules! prompted_op_seq {
-        ($entry:expr, $prompt:expr, $finish:expr, $steps:expr, $label:expr) => {
-            contributions.push(ActionHandlerContribution {
-                action_name: $entry,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
-            });
-            contributions.push(ActionHandlerContribution {
-                action_name: $finish,
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let value = ctx.prompt_value?.trim();
-                    if value.is_empty() {
-                        return None;
-                    }
-                    Some(spawn_git_sequence($label, $steps(value)))
-                }),
-            });
-        };
-    }
     // MG.43e: a prompt whose answer names a BUFFER rather than an
     // argv — for rows that show something instead of changing it.
     macro_rules! prompted_op_open {
@@ -784,24 +764,6 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         name: ($name)(value),
                         mode_id: $mode_id.to_string(),
                     })
-                }),
-            });
-        };
-    }
-    macro_rules! prompted_op {
-        ($entry:expr, $prompt:expr, $finish:expr, $argv:expr, $what:expr) => {
-            contributions.push(ActionHandlerContribution {
-                action_name: $entry,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
-            });
-            contributions.push(ActionHandlerContribution {
-                action_name: $finish,
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let value = ctx.prompt_value?.trim();
-                    if value.is_empty() {
-                        return None;
-                    }
-                    Some(spawn_git($argv(value), $what))
                 }),
             });
         };
@@ -3914,6 +3876,7 @@ pub(crate) const PROMPTED_OPS: &[(&str, &str)] = &[
 /// with nothing to say about them. A row that silently stopped opening
 /// its picker — or opened one naming a command nobody registered — would
 /// otherwise be invisible to the suite.
+#[cfg(test)]
 pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
     ("action:magit-global-merge", "magit-merge"),
     ("action:magit-global-branch-reset", "magit-branch-reset"),
@@ -3946,6 +3909,7 @@ pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
 /// and pointing it at the tag picker would list the wrong nouns while
 /// still running a real command. Only checking "opens some picker"
 /// would miss that.
+#[cfg(test)]
 pub(crate) const PICKED_OTHER_OPS: &[(&str, &str, &str)] = &[
     (
         "action:magit-global-tag-delete",

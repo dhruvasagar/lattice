@@ -147,7 +147,7 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
     let snap = handle.snapshot();
     let read = |i: usize| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l));
-    let path = crate::hunk::path_at_cursor(&read, ctx.cursor.line as usize)?;
+    let path = crate::hunk::path_at_cursor(read, ctx.cursor.line as usize)?;
     let target = view.diff_target(&path, ctx.cursor)?;
 
     // MG.50: land on the line the code under the cursor lives on.
@@ -155,7 +155,7 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     // `None` here is the ordinary case, not a failure — a file entry row
     // is not inside a hunk, and emacs opens those at the top too. The
     // target opens unpositioned.
-    match crate::hunk::source_line_at(&read, ctx.cursor.line as usize) {
+    match crate::hunk::source_line_at(read, ctx.cursor.line as usize) {
         Some(line) => Some(at_line(target, line)),
         None => Some(target),
     }

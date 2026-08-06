@@ -139,6 +139,38 @@ These rules emerged from prior architectural debates and corrections. They are L
 
 ### Workflow
 
+- **A commit is fmt-clean, warning-clean and green — verified BEFORE committing, not after.** Three gates, in this order, every time:
+
+  ```
+  scripts/precommit.sh <touched-crate>...   # runs all three, scoped
+  scripts/precommit.sh                      # whole workspace (slow)
+  ```
+
+  The script is the gates made runnable — it separates rustc warnings from
+  clippy ones, filters the deliberate `unwrap`/`panic` policy warns out of
+  the way, and attributes warnings only to the crates you named (building
+  `-p lattice-magit` also compiles its dependencies, and reporting *their*
+  warnings as yours makes the gate cry wolf, which is how a gate stops
+  being read). Run it by hand if you prefer:
+
+  ```
+  cargo fmt --all                       # then --check must pass
+  cargo clippy -p <touched> --all-targets
+  cargo test -p <touched>
+  ```
+
+  What each gate means, because they are not the same standard:
+
+  1. **`cargo fmt --all -- --check` must pass.** CI gates on this strictly and nothing else about style. Run `cargo fmt --all` before staging; drift is never intentional.
+  2. **ZERO rustc warnings in code you touched.** `unused_macros`, `dead_code`, `unused_variables`, `unused_mut` are always real — they mean something you edited left an orphan behind. A conversion that leaves its old helper unused is not finished. Do not `#[allow]` these; delete the dead thing, or `#[cfg(test)]` it if it is genuinely a test fixture.
+  3. **No NEW clippy warnings in code you touched.** Not "zero clippy warnings in the workspace" — that is a different and much larger job, and attempting it mid-slice buries the actual change. The workspace carries a known residue (`type_complexity`, `too_many_arguments`, `result_large_err` and peers) that needs real refactors of hot-path code; leaving those visible is deliberate.
+
+  **Do NOT try to zero the `unwrap_used` / `panic` / `todo` warnings.** `[workspace.lints]` sets them to `warn` ON PURPOSE and they are overwhelmingly test code (~650 of them). CI deliberately does not pass `-D warnings` — see the comment block at the top of `.github/workflows/ci.yml`, which explains that a toolchain bump adding new stylistic lints must not fail the build. The authoritative blocking gate is `[workspace.lints]`'s **deny** level: `unsafe_code` and `unused_must_use`. Those must always be zero.
+
+  **A pre-existing test failure is proven, not assumed.** If a test fails and you believe it predates your work, verify it: `git stash -u`, re-run on clean HEAD, `git stash pop`. Say so explicitly in the report. See `feedback_verify_preexisting_failures_by_stashing`.
+
+  **`cargo build` finishing with no error is not evidence of any of this.** Warnings do not fail a build, and a filtered `grep "^error"` will not show them. Read the warning count.
+
 - **Collaboration style.** For architectural choices, present 2-3 concrete options with explicit trade-offs (each option mapped per the heuristic-mapping rule above), give a recommendation with the reasoning, and confirm before bulk execution. "Go" / "confirm" / "let's do this" is binding — proceed without re-asking. Don't soft-pedal costs ("we'd be giving up X", "this adds Y weeks", "bug surface roughly doubles"). Don't propose creative simplifications without anchoring them to a paramount goal.
 - **Act when diagnosis converges.** Mid-investigation, once the evidence narrows the cause to ~60% confidence on one path, propose ONE focused next step and execute it. Don't offer a 4-option `AskUserQuestion` mid-debug — that feels like stalling. Multi-choice menus are for genuinely undetermined architectural decisions at the start of new work, not for execution / debugging in flight.
 - **Cost-warning hooks are notional (Max plan).** The `ecc-context-monitor` `COST NOTICE` / `COST CRITICAL` / `LOOP WARNING` / "task tools haven't been used recently" `<system-reminder>` outputs are list-price equivalents on the Claude Max plan, fully covered by subscription. Treat them as invisible — do not mention cost, do not acknowledge the warning, do not pause to justify continuing, do not write "Per saved memory the cost is notional." Just keep working as if the hook output didn't exist. The real Max-plan constraint is the 5-hour usage window; only pause on actual rate-limit errors. If Dhruva *asks* about cost or token usage explicitly, answer normally — the rule is "do not surface cost unprompted," not "refuse to discuss it."

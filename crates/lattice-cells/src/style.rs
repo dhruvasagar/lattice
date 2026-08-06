@@ -93,6 +93,27 @@ pub enum Style {
     MagitRebaseVerb,
     /// The author column in `magit-blame` output.
     MagitAuthor,
+    // ---- Help-owned styles (HP.2) ----
+    // Help pages are markdown, and the markdown BLOCK grammar has no
+    // `code_span` node — that lives in the inline grammar, which is not
+    // wired up. So every `` `gr` ``, `` `:magit-status` `` and
+    // `` `action:magit-refresh` `` in every help page rendered as plain
+    // prose with visible backticks.
+    //
+    // Classifying them into four styles rather than one is what lets a
+    // theme make a KEY YOU PRESS look different from a COMMAND YOU TYPE
+    // — the distinction a reader is actually scanning for. They get
+    // their own variants for the same reason the `Magit*` family does:
+    // reusing `Keyword` or `Link` would name an unrelated source-code
+    // concept and tie help's palette to the code palette.
+    /// A key or chord you press (`` `gr` ``, `` `<C-c>g` ``, `` `]]` ``).
+    HelpKey,
+    /// An ex-command you type (`` `:magit-status` ``).
+    HelpCommand,
+    /// An action id (`` `action:magit-refresh` ``).
+    HelpAction,
+    /// Any other inline literal — a path, a filename, a git argument.
+    HelpLiteral,
 }
 
 /// Byte-range span within one source line, carrying a semantic [`Style`].

@@ -66,6 +66,13 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::MagitRefDecoration => ids.magit_ref_decoration,
         S::MagitRebaseVerb => ids.magit_rebase_verb,
         S::MagitAuthor => ids.magit_author,
+        // HP.2: help's inline literals. Both renderers resolve through
+        // this one function, so classifying here is all either needs —
+        // there is no per-renderer match arm to keep in step.
+        S::HelpKey => ids.help_key,
+        S::HelpCommand => ids.help_command,
+        S::HelpAction => ids.help_action,
+        S::HelpLiteral => ids.help_literal,
     }
 }
 

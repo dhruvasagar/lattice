@@ -1,8 +1,10 @@
 # Help docs — mode-aligned naming and full coverage
 
-**Status:** in progress. Design fragment: none — this is a naming +
-coverage convention, recorded here and enforced by tests in
-`crates/lattice-help/src/topics.rs`.
+**Status:** in progress — HD.1–HD.5 ✅, HD.6 📝, HP.1/HP.2 ✅. Design
+fragment: none — this is a naming + coverage convention, recorded here
+and enforced by tests in `crates/lattice-help/src/topics.rs`. The HP
+slices at the end cover how a page *renders* rather than which pages
+exist.
 
 ## Why
 
@@ -285,3 +287,86 @@ dir fails quietly) are all recorded in
 
 Scoped docs-only but named for growth, so `runtime/themes/` and
 `runtime/queries/` can move later without a second migration.
+
+---
+
+## HP — how a help page *renders*
+
+HD.1–HD.6 are about which pages exist and what they are called. HP is
+about what a page looks like once opened, and both slices started from
+the same finding: **a help buffer was showing markdown source.**
+
+### HP.1 — tables line up ✅ (2026-08-06)
+
+Nothing between a `.md` file and a help buffer touched tables, so
+`|---|---|` rendered literally and cells had unrelated widths. Where a
+doc *had* been hand-padded it was padded by `char` count — a different
+number from the columns a terminal advances — so `✓`, `─`, `↑` and CJK
+made a table that looked aligned in the source render ragged on screen.
+
+`unicode_width` measures what the terminal will do. The guard uses a
+fixture where char-count and display-width **disagree** and asserts
+that too: a fixture where they happen to match cannot detect the bug it
+exists for.
+
+**Ordering is the load-bearing part.** Alignment runs BEFORE
+`extract_links_and_clean`, never after — link ranges are byte offsets
+into the cleaned text, so padding applied afterwards slides every link
+on a padded row and `<CR>` opens the wrong page, silently, with the
+link still highlighting and still looking live.
+
+That guard took two attempts, and the first one is the lesson: padding
+lands *after* a cell's text, so a link only moves if a cell **before**
+it grows. The first fixture put the link on the widest row, where
+nothing shifts, and **passed against the deliberately mis-ordered
+build**. The rewritten fixture fails with `"    "` where the label
+should be. Mutation-testing the guard is what caught it — the test was
+written, looked reasonable, and proved nothing.
+
+**Placement:** `lattice-mode/src/modes/table/layout.rs`, not
+`lattice-help`, because the next consumer is an org-table-style
+`table-mode` in that directory. Both need the same parse-measure-pad
+core and differ only in *when* they run it — help once at content-build,
+table-mode on every edit. A mode reaching into the help crate for it,
+or growing a second copy, is the duplication this placement avoids.
+`lattice-help -> lattice-mode` is cycle-free.
+
+### HP.2 — inline literals say what they are ✅ (2026-08-06)
+
+The markdown **block** grammar has no `code_span` node — that lives in
+the inline grammar, which is not wired up — so `` `gr` ``,
+`` `:magit-status` `` and `` `action:magit-refresh` `` had **no style at
+all** and rendered as prose with visible backticks. That is most of
+what "help pages aren't formatted nicely" was.
+
+Four `Style` variants rather than one, on the `Magit*` precedent:
+reusing `Keyword` or `Link` would name an unrelated source-code concept
+and tie help's palette to the code palette. A reader scanning a help
+page is hunting one thing — *which key do I press* — and a single
+literal colour cannot separate that from *which command do I type*.
+
+**The chord test is the keymap, not a shape heuristic.**
+`parse_chord_sequence` is useless alone as a discriminator: it accepts
+`.gitignore` as ten char-chords. A literal is a key when the live
+keymap **binds** it, which also gets mode-contributed chords right.
+Angle-bracket notation short-circuits the lookup, because a page
+routinely documents chords for a mode that is not active while you read
+about it.
+
+**Split across two crates on purpose.** `lattice-help` finds the spans
+(pure text); `lattice-host` classifies them (needs the live keymap).
+Same division as `link_highlights`, and it avoided touching ~123
+`from_lines` call sites.
+
+**Renderer parity:** none needed, verified rather than assumed. No new
+`Effect` / `DiffSignKind` / `host_theme.*` surface; zero exhaustive
+`Style` matches in either renderer; both resolve through the shared
+`resolve_syntax_style`, so TUI and GPUI pick the colours up together.
+
+**Known residual.** A *bare alphabetic* mode-contributed chord
+(magit's `gr`) is recognised only while that mode's keymap layer is
+pushed — `:help magit-core-mode` styles it from inside a magit buffer
+and not from an ordinary file. Angle-bracket chords are unaffected.
+Closing it means classifying against the full contribution registry
+rather than the pushed-layer set; documented in `help.md` rather than
+left for a user to discover.

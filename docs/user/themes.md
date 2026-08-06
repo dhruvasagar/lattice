@@ -100,6 +100,37 @@ size — h1 down to h6 each pick up their own style, with the leading
 
 ---
 
+## Domain elements, not just syntax
+
+Most styled things resolve through the `syntax.*` elements — keyword,
+string, comment, and so on. Some do not, and deliberately: a commit SHA
+is not a "link", the checked-out branch is not a "keyword", and a
+keybinding in a help page is not a "type". Those get their own elements
+so a theme can retune them without dragging a source-code colour along
+with them.
+
+| Element | Where it shows |
+|---|---|
+| `magit.sha` | commit SHAs in [magit](help:magit) log, blame and rebase views |
+| `magit.branch.current` | the checked-out branch in a branch list |
+| `magit.ref.decoration` | the `(HEAD -> main, …)` list after a log SHA |
+| `magit.rebase.verb` | `pick` / `reword` / `squash` / … in a rebase todo |
+| `magit.author` | the author column in a blame |
+| `help.key` | a key you press, in a [help](help:help) page (`gr`, `<C-c>g`) |
+| `help.command` | a command you type (`:magit-status`) |
+| `help.action` | an action id (`action:magit-refresh`) |
+| `help.literal` | any other inline literal — a path, a flag, a filename |
+
+The four `help.*` elements are what make a help page scannable: keys
+are bold so the thing you are hunting for stands out, commands take the
+same colour as the `:` line you will type them on, actions are dimmer
+because an action id is machinery you meet rarely, and plain literals
+stay quiet so they don't compete with the three that carry meaning.
+Every one is retunable — if you want keys in green, that is one element
+override.
+
+---
+
 ## Customizing options
 
 Themes set colours; many other surfaces (icons, separators, gutter

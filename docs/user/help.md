@@ -308,6 +308,44 @@ Three link kinds exist in help buffers:
   source in a split
 - **Chord links** (chord notation) — run `:describe-key` for that chord
 
+### How a help page is formatted
+
+Two things happen to a topic's markdown on the way to the screen.
+
+**Tables are laid out.** Columns are padded to line up, measured by the
+*display width* of each cell rather than its character count — so a
+`✓`, a `─`, an arrow or any CJK text sits in a column that still lines
+up. A markdown table's `|---|---|` row becomes a rule spanning the
+columns, and `:---` / `:---:` / `---:` alignment markers are honoured.
+
+**Inline literals are colour-coded by what they are**, so you can pick
+out the thing you are looking for without reading the sentence around
+it:
+
+| Looks like | Is | Theme element |
+|---|---|---|
+| `gr`, `<C-c>g`, `]]` | a key you press | `help.key` |
+| `:magit-status` | a command you type | `help.command` |
+| `action:magit-refresh` | an action id | `help.action` |
+| `.gitignore`, `--force-with-lease` | any other literal | `help.literal` |
+
+A literal counts as a **key** when the keymap actually binds it, not
+because it looks short and cryptic — so `rg` in a sentence about
+ripgrep stays a plain literal while `gr` is recognised as the chord it
+is. Angle-bracket notation (`<C-x>g`, `<CR>`, `<Tab>`) is always
+treated as a key, since a help page routinely documents chords for a
+mode that isn't active while you're reading about it.
+
+> **One rough edge.** A *bare alphabetic* chord contributed by a mode —
+> magit's `gr`, for instance — is recognised only while that mode's
+> keymap layer is actually loaded. Reading `:help magit-core-mode` from
+> inside a magit buffer colours it as a key; reading the same page from
+> an ordinary file leaves it a plain literal. Chords written in
+> angle-bracket notation are unaffected.
+
+Retune any of the four in your theme like any other element — see
+[`themes`](help:themes).
+
 ---
 
 ## Inline help at the command line

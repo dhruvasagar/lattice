@@ -851,6 +851,42 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "The author column in magit-blame output.",
     );
 
+    // ---- Help-owned inline styles (HP.2) ----
+    // A help page is dense with inline literals, and until now none of
+    // them were styled at all: the markdown BLOCK grammar has no
+    // `code_span` node, so `` `gr` `` rendered as prose with visible
+    // backticks.
+    //
+    // Four roles rather than one, because a reader scanning a help page
+    // is looking for a specific thing — "which key do I press" — and a
+    // single literal colour cannot separate that from "which command do
+    // I type". Keys get the strongest treatment (bold) since they are
+    // the most-scanned; commands take the same `blue` the `:` line
+    // itself uses, so the colour matches where you will type them;
+    // actions are dimmer because an action id is machinery a reader
+    // meets rarely; plain literals stay quiet so they don't compete
+    // with the three that carry meaning.
+    reg_one(
+        "help.key",
+        spec().fg("yellow").bold(),
+        "A key or chord you press, in a help page (`gr`, `<C-c>g`).",
+    );
+    reg_one(
+        "help.command",
+        spec().fg("blue"),
+        "An ex-command you type, in a help page (`:magit-status`).",
+    );
+    reg_one(
+        "help.action",
+        spec().fg("purple"),
+        "An action id, in a help page (`action:magit-refresh`).",
+    );
+    reg_one(
+        "help.literal",
+        spec().fg("subtext"),
+        "Any other inline literal in a help page — a path, a flag, a filename.",
+    );
+
     // ---- Fold markers ----
     // Gutter glyphs on a foldable head row: `▾` when the fold is open,
     // `▸` when collapsed. Muted by cross-editor convention — VS Code
@@ -1207,6 +1243,16 @@ pub struct BuiltinElementIds {
     pub magit_ref_decoration: ElementId,
     pub magit_rebase_verb: ElementId,
     pub magit_author: ElementId,
+    // Help-owned inline styles (HP.2). Help pages are markdown and the
+    // block grammar emits no `code_span`, so inline literals had no
+    // style at all. Split four ways rather than one because a reader
+    // scanning a help page is looking for "which key do I press" —
+    // making that visually distinct from "which command do I type" is
+    // the whole point, and one shared colour cannot express it.
+    pub help_key: ElementId,
+    pub help_command: ElementId,
+    pub help_action: ElementId,
+    pub help_literal: ElementId,
     // Fold-marker gutter glyphs (`▾` open head, `▸` collapsed head).
     // Muted by cross-editor convention (VS Code / Zed / JetBrains /
     // Sublime / Neovim all render fold controls in a low-emphasis gray,
@@ -1354,6 +1400,10 @@ impl Default for BuiltinElementIds {
             magit_ref_decoration: ElementId::INVALID,
             magit_rebase_verb: ElementId::INVALID,
             magit_author: ElementId::INVALID,
+            help_key: ElementId::INVALID,
+            help_command: ElementId::INVALID,
+            help_action: ElementId::INVALID,
+            help_literal: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
@@ -1539,6 +1589,10 @@ impl BuiltinElementIds {
             magit_ref_decoration: id("magit.ref.decoration"),
             magit_rebase_verb: id("magit.rebase.verb"),
             magit_author: id("magit.author"),
+            help_key: id("help.key"),
+            help_command: id("help.command"),
+            help_action: id("help.action"),
+            help_literal: id("help.literal"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
             pane_status_active: id("pane.status.active"),

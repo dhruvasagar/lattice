@@ -22497,6 +22497,25 @@ impl Editor {
     }
 }
 
+/// HP.2: fold `extra`'s per-line spans into `base`, growing `base` when
+/// `extra` reaches past its last line.
+///
+/// Both overlays are per-line vectors indexed by line, so a plain
+/// `extend` would concatenate the wrong lines together — line 3 of
+/// `extra` has to land on line 3 of `base`, not after `base`'s last
+/// entry.
+fn merge_spans(
+    base: &mut Vec<Vec<lattice_syntax::StyledSpan>>,
+    extra: Vec<Vec<lattice_syntax::StyledSpan>>,
+) {
+    if extra.len() > base.len() {
+        base.resize(extra.len(), Vec::new());
+    }
+    for (line, spans) in extra.into_iter().enumerate() {
+        base[line].extend(spans);
+    }
+}
+
 /// 5.5.G.7: pure-editor tag-stack / mark-jump / popup-back-stack /
 /// jump-history cluster. With `seed_help_metadata_locals` and
 /// `pop_popup_back` migrated, the entire jump-history walk runs
@@ -22516,7 +22535,19 @@ impl Editor {
         // help `DisplayMatrix` (the grammar can't derive them — the link
         // markup is stripped before it parses). Computed before `links`
         // moves into the `HelpLinks` local.
-        let link_spans = lattice_help::link_highlights(&links);
+        let mut link_spans = lattice_help::link_highlights(&links);
+        // HP.2: classify the inline `code` literals and merge them into
+        // the same overlay. Done HERE rather than in `lattice-help`
+        // because deciding whether `gr` is a key you press needs the
+        // live keymap, which is the host's. Help finds the literals;
+        // the host says what they are.
+        let help_text = self
+            .buffers
+            .document_handle(buffer_id)
+            .map(|h| h.snapshot().buffer.as_string());
+        if let Some(text) = help_text.as_deref() {
+            merge_spans(&mut link_spans, self.inline_code_highlights(text));
+        }
         let locals = self.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::HelpLinks(links));
         locals.insert(crate::modes::HelpAnchors(anchors));
@@ -22531,13 +22562,99 @@ impl Editor {
         // Re-parses synchronously at the current version; help content is
         // a screenful, so the cost is negligible and off the keystroke
         // path.
-        if let Some(text) = self
-            .buffers
-            .document_handle(buffer_id)
-            .map(|h| h.snapshot().buffer.as_string())
-        {
+        if let Some(text) = help_text {
             self.install_inmemory_syntax(buffer_id, &text, std::path::Path::new("help.md"));
         }
+    }
+
+    /// HP.2: style each inline `` `code` `` literal by what it *is*.
+    ///
+    /// A help page is dense with literals and, until this, none of them
+    /// were styled at all — the markdown BLOCK grammar has no
+    /// `code_span` node, so `` `gr` `` rendered as prose with visible
+    /// backticks.
+    ///
+    /// Four roles, because a reader scanning a help page is looking for
+    /// one specific thing — *which key do I press* — and a single
+    /// literal colour cannot separate that from *which command do I
+    /// type*.
+    ///
+    /// **The chord test is the keymap itself, not a guess at what a
+    /// chord looks like.** `parse_chord_sequence` alone is no use as a
+    /// discriminator: it accepts `.gitignore` quite happily, as ten
+    /// char-chords. So a literal is a key when the live keymap actually
+    /// binds it — which also means mode-contributed chords (magit's
+    /// `gr`, `]]`) classify correctly, where a shape heuristic would
+    /// have to guess and would disagree with the dispatcher at the
+    /// edges.
+    ///
+    /// Angle-bracket notation short-circuits that lookup: `<C-c>g` is
+    /// unambiguously a chord whether or not anything is bound to it
+    /// right now, and help pages document chords for modes that are not
+    /// active while you are reading about them.
+    fn inline_code_highlights(&self, text: &str) -> Vec<Vec<lattice_syntax::StyledSpan>> {
+        let mut out: Vec<Vec<lattice_syntax::StyledSpan>> = Vec::new();
+        for span in lattice_help::inline_code_spans(text) {
+            let style = self.classify_help_literal(&span.text);
+            if span.line >= out.len() {
+                out.resize(span.line + 1, Vec::new());
+            }
+            out[span.line].push(lattice_syntax::StyledSpan {
+                start: span.start,
+                end: span.end,
+                style,
+            });
+        }
+        out
+    }
+
+    fn classify_help_literal(&self, literal: &str) -> lattice_syntax::Style {
+        use lattice_syntax::Style;
+        if literal.is_empty() {
+            return Style::HelpLiteral;
+        }
+        // `action:` before `:` — an action id starts with a word, not a
+        // colon, but checking the bare-colon rule first would be a
+        // reordering hazard the moment someone writes `:action:…`.
+        if literal.starts_with("action:") {
+            return Style::HelpAction;
+        }
+        if let Some(rest) = literal.strip_prefix(':')
+            && !rest.is_empty()
+        {
+            return Style::HelpCommand;
+        }
+        if self.is_bound_chord(literal) {
+            return Style::HelpKey;
+        }
+        Style::HelpLiteral
+    }
+
+    /// Is `s` a chord the keymap would actually dispatch?
+    fn is_bound_chord(&self, s: &str) -> bool {
+        let Ok(chords) = lattice_protocol::chord::parse_chord_sequence(s) else {
+            return false;
+        };
+        if chords.is_empty() {
+            return false;
+        }
+        // `<…>` notation is self-identifying. A path or a flag never
+        // contains a parsed angle token, and a help page routinely
+        // documents `<C-x>g` for a mode that is not active while you
+        // read about it — so requiring a live binding here would style
+        // the most obviously-a-chord literals as prose.
+        if s.contains('<') && s.contains('>') {
+            return true;
+        }
+        // Otherwise ask the keymap. Any layer counts: a chord documented
+        // on a mode's page is a chord whether or not that mode's layer
+        // happens to be pushed right now — but when it IS pushed (you
+        // are reading `:help magit-core-mode` from a magit buffer) this
+        // is exactly right.
+        !self
+            .keymap
+            .enumerate_chord_bindings(lattice_keymap::BindingMode::Normal, &chords)
+            .is_empty()
     }
 
     /// Restore the most recent snapshot from `popup_back_stack`
@@ -36074,6 +36191,130 @@ fn project_transient_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── HP.2: inline help literals classify by what they are ──
+
+    /// The four roles must actually come out DIFFERENT.
+    ///
+    /// A classifier that returned one style for everything would still
+    /// "style inline code", and would still look like an improvement on
+    /// unstyled backticks — while failing at the only thing it was
+    /// built for, which is letting a reader tell *press this* from
+    /// *type this* at a glance. So the assertion is on the distinctness
+    /// of the set, not just on each arm.
+    #[test]
+    fn a_key_a_command_and_an_action_are_styled_differently() {
+        use lattice_syntax::Style;
+        let ed = Editor::default();
+
+        assert_eq!(ed.classify_help_literal("<C-c>g"), Style::HelpKey);
+        assert_eq!(
+            ed.classify_help_literal(":magit-status"),
+            Style::HelpCommand
+        );
+        assert_eq!(
+            ed.classify_help_literal("action:magit-refresh"),
+            Style::HelpAction
+        );
+        assert_eq!(ed.classify_help_literal(".gitignore"), Style::HelpLiteral);
+
+        let styles = [
+            ed.classify_help_literal("<C-c>g"),
+            ed.classify_help_literal(":magit-status"),
+            ed.classify_help_literal("action:magit-refresh"),
+            ed.classify_help_literal(".gitignore"),
+        ];
+        let mut uniq = styles.to_vec();
+        uniq.sort_by_key(|s| format!("{s:?}"));
+        uniq.dedup();
+        assert_eq!(uniq.len(), 4, "all four roles must be distinguishable");
+    }
+
+    /// **`action:` must win over the bare-colon rule.**
+    ///
+    /// `action:magit-refresh` contains a colon, and an ordering that
+    /// tested `starts_with(':')` first would still not catch it — but
+    /// one that tested "contains a colon" would, and this pins the
+    /// intent so a future rewrite of the chain cannot quietly demote an
+    /// action id to a command.
+    #[test]
+    fn an_action_id_is_not_a_command() {
+        use lattice_syntax::Style;
+        let ed = Editor::default();
+        assert_eq!(
+            ed.classify_help_literal("action:magit-global-refs"),
+            Style::HelpAction,
+            "an action id is machinery, not something you type on the `:` line"
+        );
+    }
+
+    /// **`.gitignore` parses as a chord sequence and must still not be
+    /// a key.**
+    ///
+    /// This is the case that makes `parse_chord_sequence` useless on
+    /// its own as a discriminator: it accepts any string as a run of
+    /// char-chords, so `.gitignore` "parses" perfectly. Only asking the
+    /// keymap whether anything is BOUND separates the two.
+    #[test]
+    fn a_path_parses_as_chords_and_is_still_not_a_key() {
+        use lattice_syntax::Style;
+        let ed = Editor::default();
+        assert!(
+            lattice_protocol::chord::parse_chord_sequence(".gitignore").is_ok(),
+            "precondition: this test is pointless unless the parser DOES \
+             accept it — that is exactly why parsing cannot be the test"
+        );
+        assert_eq!(ed.classify_help_literal(".gitignore"), Style::HelpLiteral);
+        assert_eq!(
+            ed.classify_help_literal("--force-with-lease"),
+            Style::HelpLiteral,
+            "a git flag is a literal, not a chord"
+        );
+    }
+
+    /// Spans land on the line they came from. Two overlays are merged
+    /// into one per-line vector, and getting that wrong misplaces every
+    /// span after the first line rather than failing loudly.
+    #[test]
+    fn spans_land_on_their_own_line() {
+        use lattice_syntax::Style;
+        let ed = Editor::default();
+        let text = "intro prose\npress `<C-c>g` to dispatch\nmore prose\nrun `:magit-status`";
+        let spans = ed.inline_code_highlights(text);
+        assert!(spans[0].is_empty(), "line 0 has no literal");
+        assert_eq!(spans[1].len(), 1, "line 1 has one");
+        assert_eq!(spans[1][0].style, Style::HelpKey);
+        assert_eq!(
+            &text.lines().nth(1).unwrap()[spans[1][0].start..spans[1][0].end],
+            "`<C-c>g`",
+            "the span covers the literal on ITS line, not an offset into the whole text"
+        );
+        assert_eq!(spans[3][0].style, Style::HelpCommand);
+    }
+
+    /// `merge_spans` must align by line, not concatenate.
+    #[test]
+    fn merging_two_overlays_keeps_lines_aligned() {
+        use lattice_syntax::Style;
+        let span = |style| lattice_syntax::StyledSpan {
+            start: 0,
+            end: 1,
+            style,
+        };
+        let mut base = vec![vec![span(Style::Link)], Vec::new()];
+        merge_spans(
+            &mut base,
+            vec![Vec::new(), Vec::new(), vec![span(Style::HelpKey)]],
+        );
+        assert_eq!(base.len(), 3, "base grew to cover the longer overlay");
+        assert_eq!(base[0].len(), 1, "line 0 kept its link span");
+        assert!(base[1].is_empty());
+        assert_eq!(
+            base[2][0].style,
+            Style::HelpKey,
+            "line 2's span landed on line 2, not appended after line 1"
+        );
+    }
 
     // ── MG.17a: transient state -> Args, by the action's schema ──
 

@@ -282,6 +282,98 @@ fn overlay_link_styles(highlights: &mut Vec<Vec<lattice_syntax::StyledSpan>>, li
 /// carries link styling (the grammar can't: the `[label](url)` markup is
 /// stripped before it parses, so it never emits a Link capture). Same
 /// per-line logic as [`overlay_link_styles`], just onto an empty base.
+/// One inline `` `code` `` span found in a help buffer's text.
+///
+/// `line` / `start` / `end` are a byte range on that line, covering the
+/// backticks as well as the text between them, so a renderer styles the
+/// whole literal rather than leaving its delimiters in prose colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineCode {
+    pub line: usize,
+    pub start: usize,
+    pub end: usize,
+    /// The text BETWEEN the backticks — what a classifier reads.
+    pub text: String,
+}
+
+/// HP.2: find every inline `` `code` `` span in `text`.
+///
+/// **Why this exists at all.** Help pages are markdown, but the
+/// markdown *block* grammar has no `code_span` node — that lives in the
+/// inline grammar, which is not wired up. So the grammar emits nothing
+/// for `` `gr` ``, and every keybinding, command and action in every
+/// help page rendered as plain prose with visible backticks.
+///
+/// **Why it returns spans rather than styles.** Deciding whether
+/// `` `gr` `` is a key you press needs the live keymap, which lives in
+/// the host, not here. This function does the part that is pure text —
+/// where the literals are — and the host classifies each one. Same
+/// division as [`link_highlights`]: help finds the thing, the host
+/// colours it.
+///
+/// Fenced code blocks are skipped: their contents are already styled as
+/// a block, and a stray backtick inside a shell example is not a
+/// literal.
+pub fn inline_code_spans(text: &str) -> Vec<InlineCode> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'`' {
+                i += 1;
+                continue;
+            }
+            // A doubled backtick opens a span whose content may itself
+            // contain one (`` `x` `` in markdown). Match the same run
+            // length to close, exactly as markdown does — otherwise the
+            // span ends at the inner tick and the rest of the line is
+            // swallowed into prose.
+            let run = bytes[i..].iter().take_while(|&&b| b == b'`').count();
+            let content_start = i + run;
+            let Some(close) = find_tick_run(&bytes[content_start..], run) else {
+                i = content_start;
+                continue;
+            };
+            let content_end = content_start + close;
+            out.push(InlineCode {
+                line: line_idx,
+                start: i,
+                end: content_end + run,
+                text: line[content_start..content_end].trim().to_string(),
+            });
+            i = content_end + run;
+        }
+    }
+    out
+}
+
+/// Offset of the next run of exactly `run` backticks in `hay`.
+fn find_tick_run(hay: &[u8], run: usize) -> Option<usize> {
+    let mut i = 0;
+    while i < hay.len() {
+        if hay[i] == b'`' {
+            let here = hay[i..].iter().take_while(|&&b| b == b'`').count();
+            if here == run {
+                return Some(i);
+            }
+            i += here;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
 pub fn link_highlights(links: &[HelpLink]) -> Vec<Vec<lattice_syntax::StyledSpan>> {
     let mut highlights = Vec::new();
     overlay_link_styles(&mut highlights, links);
@@ -858,6 +950,57 @@ mod tests {
             widths.windows(2).all(|w| w[0] == w[1]),
             "the table was laid out, so this row WAS padded: {widths:?}"
         );
+    }
+
+    /// HP.2: the spans cover the backticks, not just the text between
+    /// them — a literal whose delimiters stayed prose-coloured would
+    /// look like a typo rather than a boundary.
+    #[test]
+    fn inline_code_spans_cover_the_whole_literal() {
+        let spans = inline_code_spans("press `gr` to refresh");
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].text, "gr");
+        assert_eq!(
+            &"press `gr` to refresh"[spans[0].start..spans[0].end],
+            "`gr`",
+            "the range includes both backticks"
+        );
+    }
+
+    /// A fenced block's contents are already styled as a block, and a
+    /// backtick inside a shell example is not a literal.
+    #[test]
+    fn a_fence_hides_its_backticks() {
+        let text = "before `a`\n```sh\necho `date`\n```\nafter `b`";
+        let spans = inline_code_spans(text);
+        let found: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(found, vec!["a", "b"], "the fenced `date` is skipped");
+    }
+
+    /// Markdown's doubled-backtick form exists so a literal can contain
+    /// a backtick. Closing at the inner tick would end the span early
+    /// and swallow the rest of the line into prose.
+    #[test]
+    fn a_doubled_tick_span_closes_on_a_doubled_tick() {
+        let spans = inline_code_spans("write `` `code` `` for a literal");
+        assert_eq!(spans.len(), 1, "one span, not three: {spans:?}");
+        assert_eq!(spans[0].text, "`code`");
+    }
+
+    /// Two literals on one line are two spans, and neither swallows the
+    /// prose between them.
+    #[test]
+    fn two_literals_on_a_line_stay_separate() {
+        let spans = inline_code_spans("`s` stages, `u` unstages");
+        let found: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(found, vec!["s", "u"]);
+    }
+
+    /// An unclosed backtick is prose, not an unterminated span running
+    /// to end of line.
+    #[test]
+    fn a_lone_backtick_is_not_a_span() {
+        assert!(inline_code_spans("a lone ` tick").is_empty());
     }
 
     #[test]

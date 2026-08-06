@@ -4933,6 +4933,79 @@ mod tests {
         }
     }
 
+    /// MG.53.c: **the two file/revision rows open the commit picker,
+    /// with the path in the right slot.**
+    ///
+    /// Not covered by `PICKED_OTHER_OPS`, because these take their
+    /// target from `ctx.args` rather than being context-free — which is
+    /// exactly why they needed their own guard rather than being left
+    /// out. A gap here was invisible: `C-c f v` reverting to a prompt
+    /// would look like nothing had changed.
+    ///
+    /// The placeholder is the part worth asserting. `magit-find-file`
+    /// is `<rev> <path>`, so a command built without `{}` would append
+    /// the revision and open a file named after a sha — a plausible
+    /// command that does the wrong thing.
+    #[test]
+    fn the_file_revision_rows_open_the_commit_picker_with_a_placeholder() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+
+        for (action, ex_command) in [
+            ("action:magit-global-file-at-revision", "magit-find-file"),
+            ("action:magit-global-file-checkout", "magit-file-checkout"),
+        ] {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            // The target comes from the args slot, the same way the
+            // file dispatch supplies it.
+            let args = lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                "src/main.rs".to_string(),
+            )]);
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args,
+            };
+            match handler(&ctx) {
+                Some(Effect::OpenPicker { source, args }) => {
+                    assert_eq!(
+                        source,
+                        crate::picker_sources::COMMIT_PICK_SOURCE,
+                        "`{action}` picks a REVISION"
+                    );
+                    let line = args.first().map(String::as_str).unwrap_or("");
+                    assert!(
+                        line.starts_with(ex_command),
+                        "`{action}` must run `{ex_command}`, got {line:?}"
+                    );
+                    assert!(
+                        line.contains("{}"),
+                        "`{action}` builds `{line}` — without a `{{}}` the \
+                         revision is appended after the path, which opens a \
+                         file named after a sha"
+                    );
+                    assert!(
+                        line.contains("src/main.rs"),
+                        "`{action}` must carry the target path: {line:?}"
+                    );
+                }
+                other => panic!("`{action}` should open the commit picker, got {other:?}"),
+            }
+        }
+    }
+
     /// MG.23b — `S` stages tracked modifications ONLY.
     ///
     /// `add --update` and not `add --all`: "stage everything" quietly

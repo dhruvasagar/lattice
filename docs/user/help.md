@@ -318,6 +318,17 @@ Two things happen to a topic's markdown on the way to the screen.
 up. A markdown table's `|---|---|` row becomes a rule spanning the
 columns, and `:---` / `:---:` / `---:` alignment markers are honoured.
 
+**Help does not wrap.** A long prose line runs off the right edge and
+you scroll to it (`zl` / `zh`) rather than having it reflowed. Wrapping
+is a per-line transform that knows nothing about what the line belongs
+to, so a table row wider than the pane breaks in the middle of a cell
+and every column below it stops lining up — undoing the alignment above
+on exactly the wide tables that needed it, and mangling the box-drawing
+menu diagrams the same way. Prose that needs scrolling is still
+readable; a broken table misreports which value belongs to which
+column. `man`, `info` and Emacs `*Help*` all lay out to a fixed measure
+for the same reason. If you want it back for one buffer, `:set wrap`.
+
 **Inline literals are colour-coded by what they are**, so you can pick
 out the thing you are looking for without reading the sentence around
 it:

@@ -39,10 +39,31 @@ impl Mode for HelpMode {
         ModeKind::Minor
     }
     fn options(&self) -> OptionOverrideSet {
-        // Bug 4: long help bodies (markdown paragraphs, doc
-        // comments rendered into popups) should wrap at the
-        // pane / popup width rather than overflow horizontally.
+        // `Wrap = false` (HP.3). It was `true` — "Bug 4: long help
+        // bodies should wrap at the pane width rather than overflow
+        // horizontally" — and that reasoning held while a help page was
+        // prose. It stopped holding once pages carried structure.
         //
+        // Wrapping is a per-LINE transform with no idea what the line
+        // is part of, so a table row wider than the pane breaks in the
+        // middle of a cell and the column below it no longer lines up
+        // with anything. HP.1 aligns those columns by display width;
+        // wrapping then takes the alignment apart again on exactly the
+        // tables that most needed it — the wide ones. The same applies
+        // to the box-drawing menu mock-ups in the magit pages and to
+        // indented code samples, where a wrapped continuation reads as
+        // a new line at the wrong depth.
+        //
+        // The trade is real and worth stating: a long prose paragraph
+        // now runs off the right edge and needs horizontal scrolling
+        // (`zl` / `zh`, or `:set wrap` for that buffer). That is the
+        // lesser harm — prose that runs off the edge is still readable
+        // once scrolled, where a broken table is misinformation about
+        // which value belongs to which column. It is also the
+        // convention: `man`, `info` and Emacs `*Help*` all lay out to a
+        // fixed measure rather than reflow.
+        //
+
         // `NoFile = true`: help buffers carry generated content
         // (apropos lists, describe-* renders), not on-disk
         // files; `:q` must not warn about unsaved changes.
@@ -55,7 +76,7 @@ impl Mode for HelpMode {
         // `:set nonu signcolumn=no` renders identically).
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
-            lattice_config::Wrap = true,
+            lattice_config::Wrap = false,
             lattice_config::NoFile = true,
             lattice_config::Number = false,
             lattice_config::SignColumnOption = lattice_config::SignColumn::No,
@@ -88,20 +109,55 @@ mod tests {
         assert_eq!(HelpMode.kind(), ModeKind::Minor);
     }
 
+    /// Read one override's value back out of the set.
+    ///
+    /// The set is type-erased (`TypeId` + `Arc<dyn Any>`), so a test
+    /// that wants to assert a VALUE has to downcast. Worth the few
+    /// lines: the previous test only counted the overrides, which meant
+    /// it passed identically whether `Wrap` was `true` or `false` —
+    /// it could not have caught HP.3 flipping it in either direction.
+    fn value_of<D: lattice_config::OptionDecl>(opts: &OptionOverrideSet) -> Option<D::Value>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        opts.iter()
+            .find(|o| o.option_type_id == std::any::TypeId::of::<D>())
+            .and_then(|o| o.value.clone().downcast::<D::Value>().ok())
+            .map(|v| (*v).clone())
+    }
+
     #[test]
     fn contributes_read_only_wrap_and_no_file() {
-        // Bug 4: help-mode contributes Wrap = true so long
-        // help bodies (markdown paragraphs, doc comments)
-        // wrap at the pane / popup width rather than
-        // overflowing horizontally. NoFile keeps `:q` quiet
-        // when a help pane is the last buffer open. PU.1b-1a
-        // adds Number = false + signcolumn = no so help renders
-        // gutterless via the option-driven path.
+        // NoFile keeps `:q` quiet when a help pane is the last buffer
+        // open. PU.1b-1a adds Number = false + signcolumn = no so help
+        // renders gutterless via the option-driven path.
         let opts = HelpMode.options();
         assert_eq!(
             opts.iter().count(),
             5,
             "expected ReadOnly + Wrap + NoFile + Number + SignColumn",
+        );
+        assert_eq!(value_of::<lattice_config::ReadOnly>(&opts), Some(true));
+        assert_eq!(value_of::<lattice_config::NoFile>(&opts), Some(true));
+        assert_eq!(value_of::<lattice_config::Number>(&opts), Some(false));
+    }
+
+    /// HP.3: **help does not wrap**, and the value is asserted rather
+    /// than counted.
+    ///
+    /// Wrapping is a per-line transform that knows nothing about what
+    /// the line belongs to, so a table row wider than the pane breaks
+    /// mid-cell and the columns below stop lining up — undoing HP.1 on
+    /// exactly the wide tables that needed aligning, and mangling the
+    /// box-drawing menu mock-ups in the magit pages the same way.
+    #[test]
+    fn help_does_not_wrap() {
+        assert_eq!(
+            value_of::<lattice_config::Wrap>(&HelpMode.options()),
+            Some(false),
+            "help-mode must contribute `Wrap = false`: a wrapped table \
+             row misreports which value belongs to which column, which \
+             is worse than prose needing horizontal scroll",
         );
     }
 

@@ -120,6 +120,22 @@ with them.
 | `help.command` | a command you type (`:magit-status`) |
 | `help.action` | an action id (`action:magit-refresh`) |
 | `help.literal` | any other inline literal — a path, a flag, a filename |
+| `transient.title` | the [transient menu](help:magit-transient)'s title |
+| `transient.group` | a group heading inside it (`▸ Arguments`) |
+| `transient.key` | the key that fires a row — the most-scanned column |
+| `transient.key.inactive` | a row ruled out by the multi-key prefix typed so far |
+| `transient.description` | a row's description column |
+| `transient.value` | a flag's `[x]` state, or a variable's current value |
+| `transient.border` | the menu's border |
+
+The `transient.*` set exists because a menu row is three columns that
+mean different things — the key you press, what it does, and whether
+it is on. Until these were named, each renderer invented its own
+answer: the TUI hard-coded ANSI colours, so `:colorscheme` never
+reached the menu at all, and GPUI borrowed its popup border and cursor
+colours for five roles, which left **keys and flags the same colour**
+and descriptions painted in the border tone. One named palette now
+drives both.
 
 The four `help.*` elements are what make a help page scannable: keys
 are bold so the thing you are hunting for stands out, commands take the

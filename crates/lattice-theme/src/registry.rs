@@ -887,6 +887,52 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Any other inline literal in a help page — a path, a flag, a filename.",
     );
 
+    // ---- Transient menu (magit's dispatch and its submenus) ----
+    // A transient row is three columns that mean different things —
+    // the key you press, what it does, and (for a flag or variable)
+    // its current value. Both peers used to hard-code that palette,
+    // and differently: the TUI picked fixed ANSI colours, so
+    // `:colorscheme` never reached the menu at all; GPUI borrowed
+    // `popup.border` and `cursor.background` for five roles, which
+    // left keys and flags the SAME colour and descriptions painted in
+    // the border tone. Naming the roles is what lets one palette drive
+    // both peers and lets a theme retune it.
+    reg_one(
+        "transient.title",
+        spec().fg("text").bold(),
+        "The transient menu's title.",
+    );
+    reg_one(
+        "transient.group",
+        spec().fg("text").bold(),
+        "A group heading inside a transient menu (`▸ Arguments`).",
+    );
+    reg_one(
+        "transient.key",
+        spec().fg("yellow"),
+        "The key that fires a transient row — the most-scanned column.",
+    );
+    reg_one(
+        "transient.key.inactive",
+        spec().fg("overlay"),
+        "A transient row ruled out by the multi-key prefix typed so far.",
+    );
+    reg_one(
+        "transient.description",
+        spec().fg("subtext"),
+        "A transient row's description column.",
+    );
+    reg_one(
+        "transient.value",
+        spec().fg("green"),
+        "A transient flag's `[x]` state or a variable's current value.",
+    );
+    reg_one(
+        "transient.border",
+        spec().fg("blue"),
+        "The transient menu's border.",
+    );
+
     // ---- Fold markers ----
     // Gutter glyphs on a foldable head row: `▾` when the fold is open,
     // `▸` when collapsed. Muted by cross-editor convention — VS Code
@@ -1253,6 +1299,16 @@ pub struct BuiltinElementIds {
     pub help_command: ElementId,
     pub help_action: ElementId,
     pub help_literal: ElementId,
+    // Transient-menu roles. Named rather than borrowed from
+    // `popup.*` so a theme can retune the menu without moving every
+    // other popup with it, and so both peers read ONE palette.
+    pub transient_title: ElementId,
+    pub transient_group: ElementId,
+    pub transient_key: ElementId,
+    pub transient_key_inactive: ElementId,
+    pub transient_description: ElementId,
+    pub transient_value: ElementId,
+    pub transient_border: ElementId,
     // Fold-marker gutter glyphs (`▾` open head, `▸` collapsed head).
     // Muted by cross-editor convention (VS Code / Zed / JetBrains /
     // Sublime / Neovim all render fold controls in a low-emphasis gray,
@@ -1404,6 +1460,13 @@ impl Default for BuiltinElementIds {
             help_command: ElementId::INVALID,
             help_action: ElementId::INVALID,
             help_literal: ElementId::INVALID,
+            transient_title: ElementId::INVALID,
+            transient_group: ElementId::INVALID,
+            transient_key: ElementId::INVALID,
+            transient_key_inactive: ElementId::INVALID,
+            transient_description: ElementId::INVALID,
+            transient_value: ElementId::INVALID,
+            transient_border: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
@@ -1593,6 +1656,13 @@ impl BuiltinElementIds {
             help_command: id("help.command"),
             help_action: id("help.action"),
             help_literal: id("help.literal"),
+            transient_title: id("transient.title"),
+            transient_group: id("transient.group"),
+            transient_key: id("transient.key"),
+            transient_key_inactive: id("transient.key.inactive"),
+            transient_description: id("transient.description"),
+            transient_value: id("transient.value"),
+            transient_border: id("transient.border"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
             pane_status_active: id("pane.status.active"),

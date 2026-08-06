@@ -4047,6 +4047,7 @@ impl Render for EditorView {
                     spec,
                     picker_substate.state.as_deref().unwrap(),
                     &theme,
+                    &TransientPalette::resolve(&docs_resolved, &docs_ids, theme.foreground),
                     transient_max_rows,
                 )
             });
@@ -4283,7 +4284,15 @@ impl Render for EditorView {
             .then(|| picker_substate.state.as_deref())
             .flatten()
             .and_then(|p| p.transient.as_deref().map(|spec| (p, spec)))
-            .map(|(p, spec)| build_transient_minibuffer_gpui(spec, p, &theme, transient_max_rows));
+            .map(|(p, spec)| {
+                build_transient_minibuffer_gpui(
+                    spec,
+                    p,
+                    &theme,
+                    &TransientPalette::resolve(&docs_resolved, &docs_ids, theme.foreground),
+                    transient_max_rows,
+                )
+            });
 
         // Slice 3c.gpui-cmdline-completion: cmdline-completion
         // minibuffer strip. Mirrors the picker minibuffer's shape
@@ -5220,10 +5229,60 @@ fn transient_max_rows_gpui(app: &GpuiApp) -> usize {
 /// exactly the kind of duplication that let the minibuffer copy go
 /// unwritten (and the scroll-respecting behavior go unimplemented in
 /// GPUI entirely) in the first place.
+/// The transient menu's colours, resolved from the theme.
+///
+/// The peer of the TUI's `TransientPalette`, and it exists for the same
+/// reason. This used to borrow `popup_border` and `cursor_background`
+/// for five different roles, which left **keys and flags the same
+/// colour** and painted descriptions in the border tone — so a row read
+/// as undifferentiated text where the TUI showed three columns. Naming
+/// the roles lets one palette drive both peers and lets a theme retune
+/// it.
+#[derive(Clone, Copy)]
+pub(crate) struct TransientPalette {
+    title: u32,
+    title_bold: bool,
+    group: u32,
+    group_bold: bool,
+    key: u32,
+    key_inactive: u32,
+    description: u32,
+    value: u32,
+    border: u32,
+}
+
+impl TransientPalette {
+    fn resolve(
+        resolved: &lattice_host::ui::theme::ResolvedTheme,
+        ids: &lattice_host::ui::theme::BuiltinElementIds,
+        fallback_fg: u32,
+    ) -> Self {
+        let c = |id| {
+            resolved
+                .get(id)
+                .fg
+                .map(|c| c.to_rgb_u32(fallback_fg))
+                .unwrap_or(fallback_fg)
+        };
+        let bold = |id| resolved.get(id).modifiers.bold;
+        Self {
+            title: c(ids.transient_title),
+            title_bold: bold(ids.transient_title),
+            group: c(ids.transient_group),
+            group_bold: bold(ids.transient_group),
+            key: c(ids.transient_key),
+            key_inactive: c(ids.transient_key_inactive),
+            description: c(ids.transient_description),
+            value: c(ids.transient_value),
+            border: c(ids.transient_border),
+        }
+    }
+}
+
 fn transient_rows_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
-    theme: &GpuiTheme,
+    palette: &TransientPalette,
     max_rows: usize,
 ) -> Vec<gpui::Div> {
     // Derived from the selection every frame rather than from a stored
@@ -5239,11 +5298,17 @@ fn transient_rows_gpui(
 
     for group in &spec.groups {
         if ln >= scroll && rendered < max_rows {
-            rows.push(
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(format!("▸ {}", group.label)),
-            );
+            // `  ▸ ` — the TUI peer's indent. GPUI had no indent here
+            // while its ITEMS carried `pl_4`, so the header sat left of
+            // its own group instead of above it.
+            let header = div()
+                .text_color(rgb(palette.group))
+                .child(format!("  ▸ {}", group.label));
+            rows.push(if palette.group_bold {
+                header.font_weight(gpui::FontWeight::BOLD)
+            } else {
+                header
+            });
             rendered += 1;
         }
         ln += 1;
@@ -5296,11 +5361,14 @@ fn transient_rows_gpui(
             let reachable =
                 lattice_picker::TransientSpec::item_matches_prefix(item, &picker.transient_prefix);
             let key_color = if reachable {
-                theme.cursor_background
+                palette.key
             } else {
-                theme.popup_border
+                palette.key_inactive
             };
-            let label = div().child(format!("{:<16}", item.label));
+            // `{:<20}` — the TUI peer's label column. It was `{:<16}`
+            // here, so the description column started at a different
+            // place in each renderer.
+            let label = div().child(format!("{:<20}", item.label));
             let label = if is_selected {
                 label.font_weight(gpui::FontWeight::BOLD)
             } else {
@@ -5309,7 +5377,10 @@ fn transient_rows_gpui(
             let label = if reachable {
                 label
             } else {
-                label.text_color(rgb(theme.popup_border))
+                // One tone for a ruled-out row, matching the TUI: it
+                // should read as "not this one", not as a row whose key
+                // merely changed colour.
+                label.text_color(rgb(palette.key_inactive))
             };
             rows.push(
                 div()
@@ -5324,12 +5395,16 @@ fn transient_rows_gpui(
                     .child(label)
                     .child(
                         div()
-                            .text_color(rgb(theme.popup_border))
+                            .text_color(rgb(if reachable {
+                                palette.description
+                            } else {
+                                palette.key_inactive
+                            }))
                             .child(item.description.clone()),
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme.cursor_background))
+                            .text_color(rgb(palette.value))
                             .child(format!("  {}", flag)),
                     ),
             );
@@ -5350,6 +5425,7 @@ fn build_transient_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
+    palette: &TransientPalette,
     max_rows: usize,
 ) -> gpui::Div {
     let mut container = div()
@@ -5368,30 +5444,37 @@ fn build_transient_gpui(
         .bg(rgb(theme.popup_background))
         .text_color(rgb(theme.foreground))
         .border_2()
-        .border_color(rgb(theme.popup_border));
+        .border_color(rgb(palette.border));
 
-    // Title
-    container = container.child(
-        div()
-            .text_color(rgb(theme.popup_border))
-            .pb_1()
-            .child(format!(" {} ", spec.title)),
-    );
+    // Title. Was `popup_border` — the BORDER colour as heading text,
+    // and not bold, so the title read as chrome rather than as the
+    // name of the menu you just opened.
+    let title = div()
+        .text_color(rgb(palette.title))
+        .pb_1()
+        .child(format!(" {} ", spec.title));
+    container = container.child(if palette.title_bold {
+        title.font_weight(gpui::FontWeight::BOLD)
+    } else {
+        title
+    });
 
-    container = container.children(transient_rows_gpui(spec, picker, theme, max_rows));
+    container = container.children(transient_rows_gpui(spec, picker, palette, max_rows));
 
     // Preview
     if let Some(ref preview_fn) = spec.preview {
-        container = container.child(
-            div()
-                .pt_2()
-                .text_color(rgb(theme.popup_border))
-                .child("─".repeat(60)),
-        );
+        // A real 1px rule that spans the box, not `"─".repeat(60)`.
+        // The container is flexibly sized (min 480px, max 960px), so a
+        // fixed character count was either short of the edge or past
+        // it, and never right at two different widths. The TUI peer
+        // repeats to its OWN inner width, which it knows; here the
+        // layout can do it.
+        container = container.child(div().mt_2().h(px(1.0)).w_full().bg(rgb(palette.border)));
         let text = (preview_fn)(&picker.transient_state);
         container = container.child(
             div()
-                .text_color(rgb(theme.popup_border))
+                .pt_1()
+                .text_color(rgb(palette.description))
                 .child(format!("  {}", text)),
         );
     }
@@ -5401,7 +5484,7 @@ fn build_transient_gpui(
         container = container.child(
             div()
                 .pt_1()
-                .text_color(rgb(theme.popup_border))
+                .text_color(rgb(palette.description))
                 .child(format!("  {}", footer)),
         );
     }
@@ -5421,12 +5504,13 @@ fn build_transient_minibuffer_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
+    palette: &TransientPalette,
     max_rows: usize,
 ) -> gpui::Div {
     let title_row = div()
         .px_2()
         .bg(rgb(theme.background))
-        .text_color(rgb(theme.cursor_background))
+        .text_color(rgb(palette.title))
         .child(format!("{} ", spec.title));
 
     div().flex().flex_col().child(title_row).child(
@@ -5435,7 +5519,7 @@ fn build_transient_minibuffer_gpui(
             .flex()
             .flex_col()
             .bg(rgb(theme.background))
-            .children(transient_rows_gpui(spec, picker, theme, max_rows)),
+            .children(transient_rows_gpui(spec, picker, palette, max_rows)),
     )
 }
 

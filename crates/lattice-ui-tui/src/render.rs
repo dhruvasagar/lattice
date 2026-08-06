@@ -1788,6 +1788,43 @@ fn transient_row_count(spec: &lattice_picker::TransientSpec) -> usize {
 /// the lines plus the running line-index they ended at, so a caller
 /// that keeps counting past the group/item section (the popup's
 /// preview/footer rows) continues from the right number.
+/// The transient menu's colours, resolved once per frame.
+///
+/// A transient row is three columns that mean different things — the
+/// key you press, what it does, and (for a flag or variable) its
+/// current value — and each needs its own colour or the row reads as
+/// undifferentiated text. This used to be four hard-coded ANSI
+/// constants here, which looked deliberate and meant `:colorscheme`
+/// could not reach the menu at all.
+#[derive(Clone, Copy)]
+struct TransientPalette {
+    title: TuiStyle,
+    group: TuiStyle,
+    key: TuiStyle,
+    key_inactive: TuiStyle,
+    description: TuiStyle,
+    value: TuiStyle,
+    border: TuiStyle,
+}
+
+impl TransientPalette {
+    fn resolve(app: &App) -> Self {
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+        let st = |id| crate::theme::host_style_to_ratatui(resolved.get(id));
+        Self {
+            title: st(ids.transient_title),
+            group: st(ids.transient_group),
+            key: st(ids.transient_key),
+            key_inactive: st(ids.transient_key_inactive),
+            description: st(ids.transient_description),
+            value: st(ids.transient_value),
+            border: st(ids.transient_border),
+        }
+    }
+}
+
 fn transient_group_item_lines(
     spec: &lattice_picker::TransientSpec,
     transient_state: &lattice_picker::TransientState,
@@ -1795,6 +1832,7 @@ fn transient_group_item_lines(
     visible: usize,
     selected: usize,
     prefix: &str,
+    palette: &TransientPalette,
 ) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut ln: usize = 0;
@@ -1808,7 +1846,7 @@ fn transient_group_item_lines(
         if ln >= scroll && lines.len() < visible {
             lines.push(Line::from(Span::styled(
                 format!("  ▸ {}", group.label),
-                TuiStyle::default().add_modifier(Modifier::BOLD),
+                palette.group,
             )));
         }
         ln += 1;
@@ -1856,26 +1894,29 @@ fn transient_group_item_lines(
                 } else {
                     ("    ", TuiStyle::default())
                 };
+                let _ = &palette;
                 // With a multi-key row part-way typed, rows that can no
                 // longer match go dull — magit's own behaviour, and the
                 // only thing that says "`,` was received, keep going"
                 // rather than leaving the menu looking inert.
                 let reachable = lattice_picker::TransientSpec::item_matches_prefix(item, prefix);
                 let (key_style, label_style, desc_style) = if reachable {
-                    (
-                        TuiStyle::default().fg(Color::Yellow),
-                        label_style,
-                        TuiStyle::default().fg(Color::DarkGray),
-                    )
+                    (palette.key, label_style, palette.description)
                 } else {
-                    let dull = TuiStyle::default().fg(Color::DarkGray);
-                    (dull, dull, dull)
+                    // One tone for the whole row: a row the typed prefix
+                    // has ruled out should read as "not this one", not as
+                    // a row whose key is merely a different colour.
+                    (
+                        palette.key_inactive,
+                        palette.key_inactive,
+                        palette.key_inactive,
+                    )
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{marker}{:<6}", key), key_style),
                     Span::styled(format!("{:<20}", item.label), label_style),
                     Span::styled(item.description.clone(), desc_style),
-                    Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
+                    Span::styled(format!("  {}", flag), palette.value),
                 ]));
             }
             ln += 1;
@@ -1996,13 +2037,14 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         height,
     };
 
+    let palette = TransientPalette::resolve(app);
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(TuiStyle::default().fg(Color::Cyan));
+        .border_style(palette.border);
     let title_line = Line::from(vec![Span::styled(
         format!(" {} ", spec.title),
-        TuiStyle::default().add_modifier(Modifier::BOLD),
+        palette.title,
     )]);
     let block = block.title(title_line);
     let inner = block.inner(area);
@@ -2021,24 +2063,20 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         visible,
         p.transient_selected,
         &p.transient_prefix,
+        &palette,
     );
 
     if let Some(ref preview_fn) = spec.preview {
         if ln >= scroll && lines.len() < visible {
             let sep = "─".repeat(inner.width as usize);
-            lines.push(Line::from(Span::styled(
-                sep,
-                TuiStyle::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled(sep, palette.border)));
         }
         ln += 1;
         if ln >= scroll && lines.len() < visible {
             let text = (preview_fn)(&p.transient_state);
             lines.push(Line::from(Span::styled(
                 format!("  {}", text),
-                TuiStyle::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
+                palette.description.add_modifier(Modifier::ITALIC),
             )));
         }
         ln += 1;
@@ -2050,7 +2088,7 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     {
         lines.push(Line::from(Span::styled(
             format!("  {}", footer),
-            TuiStyle::default().fg(Color::DarkGray),
+            palette.description,
         )));
     }
 
@@ -2068,11 +2106,14 @@ fn draw_transient_minibuffer_prompt(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let Some(ref spec) = p.transient else { return };
+    // The same `transient.title` element the popup's title uses. It was
+    // `Color::Cyan` + bold here, which meant the two display modes of
+    // the SAME menu disagreed about its colour and neither followed the
+    // theme.
+    let palette = TransientPalette::resolve(app);
     let para = Paragraph::new(Line::from(vec![Span::styled(
         format!(" {} ", spec.title),
-        TuiStyle::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        palette.title,
     )]));
     frame.render_widget(para, area);
 }
@@ -2101,6 +2142,7 @@ fn draw_transient_minibuffer_candidates(frame: &mut Frame, area: Rect, app: &App
     }
     let scroll = spec.scroll_for(p.transient_selected, visible);
 
+    let palette = TransientPalette::resolve(app);
     let (lines, _) = transient_group_item_lines(
         spec,
         &p.transient_state,
@@ -2108,6 +2150,7 @@ fn draw_transient_minibuffer_candidates(frame: &mut Frame, area: Rect, app: &App
         visible,
         p.transient_selected,
         &p.transient_prefix,
+        &palette,
     );
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -7082,6 +7125,25 @@ mod tests {
     /// Pinned as an identity rather than an arithmetic expectation:
     /// whatever the walker emits, the budget must say so, including
     /// when either side gains a row.
+    /// A palette for the row-walking tests.
+    ///
+    /// These assert row COUNTS and which row carries the selection
+    /// marker, not colours, so any palette works — but the walker takes
+    /// one now, and a shared fixture keeps that from being restated at
+    /// each call site.
+    fn test_palette() -> TransientPalette {
+        let plain = TuiStyle::default();
+        TransientPalette {
+            title: plain,
+            group: plain,
+            key: plain,
+            key_inactive: plain,
+            description: plain,
+            value: plain,
+            border: plain,
+        }
+    }
+
     #[test]
     fn a_transients_row_budget_matches_the_rows_it_emits() {
         use lattice_picker::{TransientGroup, TransientItem, TransientItemKind, TransientSpec};
@@ -7117,7 +7179,7 @@ mod tests {
         let state = lattice_picker::TransientState::default();
         // A visible budget far past the end, so the walker emits
         // everything it has.
-        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000, 0, "");
+        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000, 0, "", &test_palette());
         assert_eq!(
             transient_row_count(&spec),
             lines.len(),
@@ -7130,7 +7192,8 @@ mod tests {
         // row.
         let visible = 5;
         let max_scroll = transient_row_count(&spec).saturating_sub(visible);
-        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible, 0, "");
+        let (tail, _) =
+            transient_group_item_lines(&spec, &state, max_scroll, visible, 0, "", &test_palette());
         assert_eq!(
             tail.len(),
             visible,
@@ -7183,8 +7246,15 @@ mod tests {
         for visible in [3usize, 5, 8, 40] {
             for (selected, key) in labels.iter().enumerate() {
                 let scroll = spec.scroll_for(selected, visible);
-                let (lines, _) =
-                    transient_group_item_lines(&spec, &state, scroll, visible, selected, "");
+                let (lines, _) = transient_group_item_lines(
+                    &spec,
+                    &state,
+                    scroll,
+                    visible,
+                    selected,
+                    "",
+                    &test_palette(),
+                );
                 let rendered: Vec<String> = lines
                     .iter()
                     .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -11392,5 +11462,100 @@ mod tests {
             ),
         ];
         assert!(separator_cells(&rects).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod transient_palette_tests {
+    /// **Neither renderer may hard-code a transient colour.**
+    ///
+    /// The TUI used fixed ANSI constants (`Cyan` border, `Yellow` keys,
+    /// `DarkGray` descriptions, `Green` flags) and GPUI borrowed
+    /// `popup_border` / `cursor_background` for five roles — which left
+    /// GPUI painting **keys and flags in the same colour** and
+    /// descriptions in the border tone, so a row read as
+    /// undifferentiated text where the TUI showed three columns.
+    ///
+    /// The two symptoms had one cause: no role was NAMED, so each peer
+    /// invented its own answer and they drifted. Asserted against the
+    /// source of both files because the defect is a literal in a paint
+    /// call — visible in the text, and not reachable by any test that
+    /// can run without a terminal or a GPU window.
+    #[test]
+    fn neither_renderer_hard_codes_a_transient_colour() {
+        // (file, source, the span that holds its transient painting)
+        let tui = include_str!("render.rs");
+        let gpui_src = include_str!("../../lattice-ui-gpui/src/window.rs");
+
+        // Each transient function's OWN body, not one span covering
+        // all of them: `draw_notifications` sits between them in this
+        // file and legitimately maps severities to fixed colours, so a
+        // span-based check reports it and teaches the reader to ignore
+        // the guard.
+        //
+        // Comments are stripped first. A comment recording what a
+        // colour USED to be is exactly the context worth keeping —
+        // "it was `Color::Cyan` here" explains the fix to the next
+        // reader — and a guard that reads prose as code punishes
+        // writing it down, which is the wrong incentive for a rule
+        // whose whole purpose is that the reasoning survives.
+        fn body(src: &str, name: &str) -> String {
+            let start = src
+                .find(&format!("fn {name}"))
+                .unwrap_or_else(|| panic!("`{name}` not found — renamed?"));
+            let end = src[start + 4..]
+                .find("\nfn ")
+                .map(|o| start + 4 + o)
+                .unwrap_or(src.len());
+            src[start..end]
+                .lines()
+                .map(|l| match l.find("//") {
+                    Some(i) => &l[..i],
+                    None => l,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        for name in [
+            "transient_group_item_lines",
+            "draw_transient_overlay",
+            "draw_transient_minibuffer_prompt",
+            "draw_transient_minibuffer_candidates",
+        ] {
+            let span = body(tui, name);
+            let span = span.as_str();
+            for banned in [
+                "Color::Yellow",
+                "Color::Green",
+                "Color::Cyan",
+                "Color::DarkGray",
+            ] {
+                assert!(
+                    !span.contains(banned),
+                    "`{name}` still hard-codes `{banned}` — `:colorscheme` \
+                     cannot reach a fixed ANSI constant, so the transient \
+                     menu stays the one surface a theme does not govern",
+                );
+            }
+        }
+
+        let gpui_span = {
+            let a = gpui_src
+                .find("fn transient_rows_gpui")
+                .expect("GPUI row builder");
+            let b = gpui_src[a..]
+                .find("fn build_transient_minibuffer_gpui")
+                .map(|o| a + o)
+                .expect("end of the transient builders");
+            &gpui_src[a..b]
+        };
+        for borrowed in ["theme.popup_border", "theme.cursor_background"] {
+            assert!(
+                !gpui_span.contains(borrowed),
+                "the GPUI transient painter still borrows `{borrowed}`. That \
+                 is what made keys and flags the same colour: one field \
+                 standing in for several roles cannot distinguish them.",
+            );
+        }
     }
 }

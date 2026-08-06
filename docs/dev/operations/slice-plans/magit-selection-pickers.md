@@ -1,6 +1,6 @@
 # MG.53 — every selection is a picker
 
-**Status:** 🚧 in progress — MG.53.a ✅ landed. Parent:
+**Status:** 🚧 MG.53.a/b/d ✅, c partial, e ref-only, f deferred. Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md).
 Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
 
@@ -181,18 +181,33 @@ one. Verified against the argv builder, not the label.
 Extend `magit_registers_exactly_the_sources_its_rows_open` in the same
 edit; that test exists precisely to force this.
 
-### MG.53.e — ref and file selections 🚧 ref done, file open
+### MG.53.e — ref and file selections 🚧 ref ✅, file ⛔ deferred (host decision)
 
 **Ref: landed.** `Merge notes ref` uses `RefPickSource::AllRefs` — and
 the "does one source subsume both" question answered itself, since
 MG.53.d built exactly that. `core.notesRef` is a config row and moves
 to MG.53.f with its peers.
 
-`File (repo-relative):` wants a file picker. **Check first whether the
-host's existing `:files` picker is reusable** — a magit-local copy of
-"list the repo's files" would be a second implementation of something
-the editor already does, and the fuzzy-finder is shared
-infrastructure.
+`File (repo-relative):` wants a file picker. **Checked: the host's
+`:files` picker is half-reusable, and the half that is missing is the
+half that matters.** `PickerSource::Files` (the listing) is independent
+and could be reused as-is; `PickerAction::OpenFile` (the accept) is
+not — it hands the path to `do_edit`, i.e. it OPENS the file, where
+magit needs the path to become the transient's `file` argument.
+
+So this is not a magit-local edit. Two routes, and the choice is a host
+decision rather than a magit one:
+
+- **(a)** a magit source pairing `PickerSource::Files` with an
+  `InvokeCommand` accept — smallest, but a second place that knows how
+  to list a repo's files if the listing is copied rather than reused.
+- **(b)** a generic "pick a file, run a command" accept in the host,
+  which is what `CommitPickSource` / `BranchPickSource` /
+  `RefPickSource` all are, one layer down. Every future provider
+  wanting "choose a file, then act" gets it.
+
+(b) is the better long-term fit and the reason this slice stops here
+rather than taking (a) for expedience. **Deferred pending that call.**
 
 ### MG.53.f — config enums ⛔ deferred
 

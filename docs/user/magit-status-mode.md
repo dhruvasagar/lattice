@@ -1,5 +1,5 @@
 ---
-summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), line-, hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
+summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (dd), line-, hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, which opens the commit buffer for a commit entry and, inside a diff, the right version of the file at the right line)."
 related: [magit, magit-transient, ex:magit-status]
 ---
 
@@ -15,7 +15,7 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 
 > **Status:** status buffer rendering, all five sections, lazy inline
 > diffs via `=` (files) and `<CR>` (stashes), a dedicated per-file diff
-> buffer via `d` (opens against the file's own section baseline —
+> buffer via `dd` (opens against the file's own section baseline —
 > `--cached` for Staged, working-tree-vs-index for Unstaged — useful
 > for diffs too large to read comfortably inline), staging
 > (`s`/`u`/`x` — on the lines you select, else the hunk under the
@@ -47,11 +47,11 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `u` | Unstage the hunk or file at cursor |
 | `x` | Discard the hunk or file at cursor (asks for confirmation first) |
 | `=` | Toggle inline diff for the file at cursor |
-| `d` | Open the file at cursor's diff in a dedicated buffer (against the section's baseline) |
+| `dd` | Open the file at cursor's diff in a dedicated buffer (against the section's baseline) |
 | `cc` | Open the [commit buffer](help:magit-commit-mode) |
 | `ca` | Amend the previous commit |
 | `p` | Disabled — shows an error (see [Staging and unstaging](#staging-and-unstaging)) |
-| `<CR>` | Context-aware open/visit at cursor (open file, toggle a stash's inline patch, open the commit buffer for a commit entry) |
+| `<CR>` | Context-aware open/visit at cursor — open the file, toggle a stash's inline patch, open the commit buffer for a commit entry, or (inside a diff) open **that version** of the file on **that line** |
 | `gr` | Manual refresh (re-runs git status) |
 | `q` | Close the buffer (bury, return to previous) |
 | `]]` / `[[` | Next / previous top-level section |
@@ -78,7 +78,7 @@ bottom):
 Files with changes in the index — what will go into the next commit.
 Listed with their status labels (`modified`, `new file`, `deleted`).
 Diffs are **not** pre-computed — press **`=`** on a file entry to load
-its staged diff inline, or **`d`** to open it in a dedicated buffer
+its staged diff inline, or **`dd`** to open it in a dedicated buffer
 (`git diff --cached`) instead — better for a diff too large to read
 comfortably inline, since it doesn't inflate the status buffer's line
 count or its inline-highlight bookkeeping.
@@ -113,7 +113,7 @@ to collapse the diff.
 
 Files with working-tree modifications not yet staged. Same format and
 behaviour as staged — file list with status labels, diffs loaded on
-demand via `=` or `d`. `d` here opens `git diff` (working tree vs
+demand via `=` or `dd`. `dd` here opens `git diff` (working tree vs
 index) — the Unstaged section's own baseline, distinct from Staged's
 `--cached`.
 
@@ -316,10 +316,38 @@ on what's under the cursor:
 | Untracked file | Open the file for editing |
 | Commit line | Open the dedicated [commit buffer](help:magit-commit-mode) for that commit |
 | Stash entry | Toggle the stash's patch inline (same mechanism as `=`) |
-| A diff content line (inside an expanded entry) | Nothing — `<CR>` only acts on a classified file/stash/commit line, not on the diff text itself |
+| A diff content line (inside an expanded entry) | Open **that version** of the file, on **that line** — see below |
 
 There are no branch entries in the status buffer, so there's no
 "check out a branch" case here — that's `magit-branch`'s `<CR>`.
+
+### Inside a diff: the right version, the right line
+
+Put the cursor on a line of code inside an expanded diff and `<CR>`
+opens the file you are looking at — but which *version* depends on
+which section the diff is in, because that is what the diff is against:
+
+| Section | `<CR>` opens |
+|---|---|
+| Staged changes | the **index** copy — `*magit:file:staged:<path>*`, what the diff's `+` side actually is |
+| Unstaged changes | the **working-tree** file, editable |
+| Recent commits (an expanded commit's patch) | the file **at that commit** — `*magit:file:<sha>:<path>*` |
+
+It lands on the line the code under the cursor lives on, not the top
+of the file. The `@@` header declares where the new side starts, and
+counting the added and context rows above the cursor gives the rest;
+`-` rows are skipped, since a removed line has no position in the file
+you are opening.
+
+The two halves compose the way you would want them to: `<CR>` on a
+deleted function inside a commit's patch opens that commit's copy of
+the file, scrolled to the function. In Emacs magit this is the same
+`<CR>` and the same answer.
+
+On a **file entry row** — the `modified src/main.rs` line rather than
+the diff below it — there is no line to compute, so the file opens at
+the top. That is not a fallback firing; a file entry is not inside a
+hunk, and magit opens those at the top too.
 
 ---
 

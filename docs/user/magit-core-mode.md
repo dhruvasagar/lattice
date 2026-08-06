@@ -1,5 +1,5 @@
 ---
-summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ to move between sections, TAB to fold, and A/_/O to act on the commit under the cursor. Diff-content chords, including ]f/[f, live on magit-hunk-mode."
+summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ to move between sections, TAB to fold, h for the dispatch menu, S/U/C/i/yr for repo-level operations, and A/_/O to act on the commit under the cursor. Diff-content chords, including ]f/[f, live on magit-hunk-mode."
 related: [magit, magit-core]
 ---
 
@@ -22,12 +22,70 @@ no `:magit-core-mode` you need to turn on.
 | `]]` / `[[` | Next / previous top-level section |
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
+| `h` | Open the [dispatch menu](help:magit-transient) — every menu, one key |
 | `A` | Cherry-pick the commit under the cursor |
 | `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
 | `D` | Re-run this view with different git arguments |
+| `S` | Stage every tracked modification (`git add --update`) |
+| `U` | Unstage everything, keeping the working tree (`git reset`) |
+| `C` | Clone a repository |
+| `i` | Add a path to `.gitignore` |
+| `yr` | Show refs — open [`magit-refs-mode`](help:magit-refs-mode) |
 
 These work in **every** magit buffer, which is what this mode is for.
+
+## `h` — one key for every menu
+
+Magit has seventeen root menus: diff, commit, log, branch, stash,
+fetch, pull, push, rebase, tag, merge, notes, bisect, patches,
+cherry-pick, revert, reset. `h` opens the
+[dispatch](help:magit-transient), and each is one key from there — `b`
+for branch, `z` for stash, `F` for pull, and so on. Emacs magit binds
+`h` (and `?`) on `magit-mode-map` for exactly this, and
+evil-collection-magit keeps it.
+
+Three menus also have a direct chord, because the key was already
+taken by the single action the menu replaced:
+
+| Chord | Menu | Was |
+|---|---|---|
+| `A` | Cherry-pick | `A` cherry-picked directly; now `A A` does |
+| `_` | Revert | `_` reverted directly; now `_ V` does |
+| `O` | Reset | `Os` / `Om` / `Oh`, which still work — they are the menu's own keys |
+
+**The other fourteen deliberately have no chord.** An earlier revision
+gave each root menu its own key, which put `c` / `d` / `p` / `r` on
+this mode — and this is a *minor* mode, which outranks a major. That
+silently ate `magit-branch`'s `c` (create) and `d` (delete),
+`magit-remote`'s `d` / `p` / `r`, `magit-stash`'s `d` / `p`, and
+`magit-submodule`'s `d`: nine bindings, every one a core operation,
+and nothing announced the loss. One key cannot collide with nine
+majors' vocabularies, because it does not reach into them. The menus
+are all still there, one keystroke deeper.
+
+## The four repo-level chords
+
+`S`, `U`, `C` and `i` answer questions about the *repository*, not
+about the row under the cursor, so they work in any magit buffer
+regardless of what it shows.
+
+All four are vim **editing operators** — `S` substitute-line, `U` undo-
+line, `C` change-to-EOL, `i` insert — which are inert in a read-only
+magit buffer and therefore free to take. That is the rule the chord set
+follows: a magit chord may claim a vim key only where the vim meaning
+could never fire. `yr` rides the same rule one level down: `y` short-
+circuits into operator-pending rather than terminating, and `r` is not
+a motion, so the two-key sequence is free without costing you `y` as an
+operator.
+
+| Chord | Runs | Note |
+|---|---|---|
+| `S` | `git add --update` | Tracked files only — a new untracked file is not staged |
+| `U` | `git reset --quiet` | Index only; your edits are untouched |
+| `C` | `git clone` | Asks for the URL, then the destination path |
+| `i` | appends to `.gitignore` | Asks for the pattern; skips it if already present |
+| `yr` | opens [`magit-refs-mode`](help:magit-refs-mode) | Branches, remotes and tags in one list |
 
 ## `D` — arguments for the view you are in
 
@@ -219,6 +277,15 @@ rows that buffer does have rather than erroring.
 `TAB` and `S-TAB` route through the ordinary fold engine, not a
 magit-specific one, so `za` / `zM` / `zR` and every other fold chord
 work here too. See [`folding`](help:folding).
+
+What is *foldable* is declared by the mode that owns the content:
+[`magit-hunk-mode`](help:magit-hunk-mode#folding-inside-a-diff) declares
+one fold per file and one per `@@` hunk inside a diff, and
+[`magit-status-mode`](help:magit-status-mode) declares its own sections.
+`foldmethod` is `manual` in a magit buffer, so there are no indent- or
+syntax-driven folds on top of those — a diff is fragments of a file, and
+folding fragments by code structure produces folds that run off the end
+of what the diff actually contains.
 
 One exception: in [`magit-stash-mode`](help:magit-stash-mode) `z`
 creates a stash, so it is not available as the fold prefix there — use

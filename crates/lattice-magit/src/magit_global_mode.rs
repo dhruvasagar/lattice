@@ -2014,15 +2014,27 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // the user wanted was on a list the editor could have shown.
     //
     // The `-finish` handler below is kept and still reachable through
-    // `:magit-checkout <rev>`, which is the scriptable path and the one
-    // that still takes an arbitrary SHA — so detaching HEAD onto a
-    // revision did not become impossible, it stopped being what this
-    // key does.
+    // `:magit-checkout <rev>`, which is the scriptable path.
+    //
+    // **The REVISION picker, not the branch one.** MG.52 first pointed
+    // this at `magit-branch` along with every other branch prompt, and
+    // that quietly deleted the row: this is magit's `b`
+    // (branch/revision) and the submenu also has `l` (local branch),
+    // whose whole difference is that `b` reaches a tag, `origin/main`
+    // or a SHA and `l` does not. Listing local branches in both made
+    // them the same row and made checking out anything else from the
+    // menu unreachable. Nothing errored, because
+    // `git checkout <local branch>` is a fine command — which is why
+    // `the_branch_revision_row_is_not_the_local_branch_row` asserts the
+    // two sources differ rather than checking either row alone.
+    //
+    // `magit-revision` (MG.53.g) is refs + recent commits, which is
+    // exactly "anything git can take" minus the typo.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-branch-checkout-rev",
         handler: Arc::new(|_ctx: &ActionContext<'_>| {
             Some(Effect::OpenPicker {
-                source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
+                source: crate::picker_sources::REVISION_PICK_SOURCE.to_string(),
                 args: vec!["magit-checkout".to_string()],
             })
         }),
@@ -3880,7 +3892,10 @@ pub(crate) const PROMPTED_OPS: &[(&str, &str)] = &[
 pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
     ("action:magit-global-merge", "magit-merge"),
     ("action:magit-global-branch-reset", "magit-branch-reset"),
-    ("action:magit-global-branch-checkout-rev", "magit-checkout"),
+    // NOT `branch-checkout-rev` — that row is magit's `b`
+    // (branch/revision) and takes the REVISION picker, which is the
+    // only thing that keeps it distinct from `l`. See
+    // `the_branch_revision_row_is_not_the_local_branch_row`.
     // MG.53.a
     (
         "action:magit-global-merge-no-commit",
@@ -4846,6 +4861,78 @@ mod tests {
                 other => panic!("`{action}` should open the branch picker, got {other:?}"),
             }
         }
+    }
+
+    /// The branch submenu's `b` and `l` must not list the same thing.
+    ///
+    /// Magit has both because they answer different questions, and the
+    /// difference is the *listing*, not the operation — both end in
+    /// `git checkout`:
+    ///
+    /// - `l` **local branch** — your local branches, nothing else.
+    /// - `b` **branch/revision** — anything `git checkout` accepts: a
+    ///   branch, a tag, `origin/main`, a raw SHA.
+    ///
+    /// MG.52 converted every free-text branch prompt to a picker and
+    /// swept `b` up with the rest, pointing it at the local-branch
+    /// picker. Nothing failed — `git checkout <local branch>` is a
+    /// perfectly good command — so the loss was silent: `b` and `l`
+    /// became the same row, and checking out `origin/main` or a tag
+    /// from the menu stopped being reachable at all. The regression is
+    /// only visible as *two menu rows that do the same thing*, which no
+    /// assertion about either row alone can see. Hence a test about the
+    /// pair.
+    ///
+    /// MG.53.g built the source that resolves it: `magit-revision`
+    /// lists refs **and** recent commits, so `b` covers everything it
+    /// used to accept as free text without accepting a typo.
+    #[test]
+    fn the_branch_revision_row_is_not_the_local_branch_row() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+        let source_of = |action: &str| -> String {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: lattice_grammar::Args::None,
+            };
+            match handler(&ctx) {
+                Some(Effect::OpenPicker { source, .. }) => source,
+                other => panic!("`{action}` should open a picker, got {other:?}"),
+            }
+        };
+
+        let rev = source_of("action:magit-global-branch-checkout-rev");
+        let local = source_of("action:magit-global-branch-checkout");
+        assert_eq!(
+            rev,
+            crate::picker_sources::REVISION_PICK_SOURCE,
+            "`b` is magit's branch/revision row — it must offer tags, \
+             remote-tracking refs and commits, not just local branches, \
+             or it is `l` with a different key"
+        );
+        assert_eq!(
+            local,
+            crate::picker_sources::BRANCH_CHECKOUT_SOURCE,
+            "`l` is the local-branch row and stays local"
+        );
+        assert_ne!(
+            rev, local,
+            "`b` and `l` listing the same set makes one of the two rows dead"
+        );
     }
 
     /// MG.53.d: **a non-branch picker row names the right SOURCE.**

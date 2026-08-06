@@ -426,22 +426,43 @@ pub struct CommitPickSource {
     spec: PickerSourceSpec,
 }
 
+/// Spec for a source that **takes the ex-command to run on the pick**.
+///
+/// Every "pick a thing, then act on it" source here shares one shape,
+/// because a picked candidate reaches an operation only through
+/// `RoutingPayload::InvokeCommand` — the host runs its `id` as an ex
+/// line — so the operation has to arrive as an argument.
+///
+/// Declaring that argument is not paperwork. `args_schema` is what
+/// `:picker <id> <Tab>` completes against and `args_hint` is what the
+/// command line shows while you type one; a source that omits them
+/// while its `init` rejects an empty `args` advertises "nothing to
+/// type here" and then refuses to open. `a_source_that_needs_an_ex_command_declares_it`
+/// holds the two together by asking every registered source to `init`
+/// with no arguments and requiring the refusals to be exactly the
+/// declarations.
+fn takes_ex_command(id: &'static str, doc: &'static str, noun: &'static str) -> PickerSourceSpec {
+    PickerSourceSpec {
+        id: std::borrow::Cow::Borrowed(id),
+        doc: std::borrow::Cow::Borrowed(doc),
+        args_schema: vec![lattice_grammar::ArgSpec::required(
+            "command",
+            lattice_grammar::ArgKind::String,
+            noun,
+        )],
+        args_hint: std::borrow::Cow::Borrowed("<magit ex-command>"),
+        live: false,
+    }
+}
+
 impl CommitPickSource {
     pub fn new() -> Self {
         Self {
-            spec: PickerSourceSpec {
-                id: std::borrow::Cow::Borrowed(COMMIT_PICK_SOURCE),
-                doc: std::borrow::Cow::Borrowed(
-                    "Pick a commit, then run the named magit ex-command on it.",
-                ),
-                args_schema: vec![lattice_grammar::ArgSpec::required(
-                    "command",
-                    lattice_grammar::ArgKind::String,
-                    "magit ex-command to run on the picked commit",
-                )],
-                args_hint: std::borrow::Cow::Borrowed("<magit ex-command>"),
-                live: false,
-            },
+            spec: takes_ex_command(
+                COMMIT_PICK_SOURCE,
+                "Pick a commit, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked commit",
+            ),
         }
     }
 }
@@ -684,6 +705,82 @@ mod tests {
              together with `register`, and check every `Effect::OpenPicker` \
              that names one"
         );
+    }
+
+    /// A `PickerContext` with nothing in it.
+    ///
+    /// Every magit source takes `_ctx` — each asks git, not the editor —
+    /// so an empty snapshot exercises them exactly as the real one does.
+    fn empty_picker_ctx(buffer: &lattice_core::Buffer) -> lattice_picker::PickerContext<'_> {
+        lattice_picker::PickerContext {
+            active_buffer: lattice_picker::ActiveBufferSnapshot {
+                buffer_id: 0,
+                path: None,
+                language: None,
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                buffer,
+                syntax_symbols: Vec::new(),
+                syntax_highlights: Vec::new(),
+            },
+            workspace_root: std::path::PathBuf::from("."),
+            recent_files: &[],
+            position_history: Vec::new(),
+            buffers: Vec::new(),
+            marks: Vec::new(),
+            registers: Vec::new(),
+            active_modes: Vec::new(),
+            command_history: Vec::new(),
+            search_history: Vec::new(),
+            pane_buffer_history: Vec::new(),
+        }
+    }
+
+    /// A source that **requires** an ex-command must say so in its spec.
+    ///
+    /// `spec.args_schema` is not decoration: `:picker <id> <Tab>` reads
+    /// it to offer the argument, and `args_hint` is what the command
+    /// line shows while you are typing one. A source whose `init`
+    /// rejects an empty `args` while its spec claims `no_args` tells the
+    /// user there is nothing to type and then refuses the pick — the
+    /// failure is only visible at the moment the picker declines to
+    /// open, which is the worst moment to learn about an argument.
+    ///
+    /// Asserted by *behaviour*, not by reading the schema back: each
+    /// source is asked to `init` with no arguments, and the ones that
+    /// refuse must be exactly the ones declaring a required arg.
+    #[test]
+    fn a_source_that_needs_an_ex_command_declares_it() {
+        let mut registry = lattice_picker::PickerRegistry::new();
+        register(&mut registry);
+        let buffer = lattice_core::Buffer::empty();
+        let ctx = empty_picker_ctx(&buffer);
+        let ids: Vec<String> = registry.ids().map(str::to_string).collect();
+        for id in ids {
+            let id = id.as_str();
+            let source = registry.generator(id).expect("just enumerated");
+            let declares = source
+                .spec()
+                .args_schema
+                .first()
+                .is_some_and(|a| matches!(a.default, lattice_grammar::ArgDefault::Required));
+            let refuses = source.init(&ctx, &[]).is_err();
+            assert_eq!(
+                declares, refuses,
+                "`{id}`: spec declares a required arg = {declares}, but \
+                 init with no args refuses = {refuses}. These must agree — \
+                 a source that needs an ex-command has to advertise it so \
+                 `:picker {id} <Tab>` can complete one."
+            );
+            if declares {
+                assert!(
+                    !source.spec().args_hint.is_empty(),
+                    "`{id}` declares a required arg but shows no args_hint, \
+                     so the command line has nothing to display while the \
+                     user types it"
+                );
+            }
+        }
     }
 
     /// MG.53.g: **a revision is not only a commit.**
@@ -930,9 +1027,10 @@ pub const BRANCH_PICK_SOURCE: &str = "magit-branch";
 impl BranchPickSource {
     pub fn new() -> Self {
         Self {
-            spec: PickerSourceSpec::no_args(
+            spec: takes_ex_command(
                 BRANCH_PICK_SOURCE,
-                "Pick a branch and run an operation on it.",
+                "Pick a branch, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked branch",
             ),
         }
     }
@@ -1046,20 +1144,31 @@ pub const REVISION_PICK_SOURCE: &str = "magit-revision";
 
 impl RefPickSource {
     pub fn new(which: RefScope) -> Self {
-        let (id, doc) = match which {
-            RefScope::Tags => (TAG_PICK_SOURCE, "Pick a tag and run an operation on it."),
+        let (id, doc, noun) = match which {
+            RefScope::Tags => (
+                TAG_PICK_SOURCE,
+                "Pick a tag, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked tag",
+            ),
             RefScope::Remotes => (
                 REMOTE_PICK_SOURCE,
-                "Pick a remote and run an operation on it.",
+                "Pick a remote, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked remote",
             ),
-            RefScope::AllRefs => (REF_PICK_SOURCE, "Pick a ref and run an operation on it."),
+            RefScope::AllRefs => (
+                REF_PICK_SOURCE,
+                "Pick a ref, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked ref",
+            ),
             RefScope::Revisions => (
                 REVISION_PICK_SOURCE,
-                "Pick a revision — a branch, tag or recent commit.",
+                "Pick a revision — a branch, tag or recent commit — then run \
+                 the named magit ex-command on it.",
+                "magit ex-command to run on the picked revision",
             ),
         };
         Self {
-            spec: PickerSourceSpec::no_args(id, doc),
+            spec: takes_ex_command(id, doc, noun),
             which,
         }
     }

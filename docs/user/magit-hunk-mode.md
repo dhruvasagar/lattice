@@ -1,5 +1,5 @@
 ---
-summary: "magit-hunk-mode: the shared minor mode active in every magit buffer that renders a diff — s/u/x to stage, unstage and discard the hunk at cursor, a/- to move one hunk of a commit, ]c/[c to navigate."
+summary: "magit-hunk-mode: the shared minor mode active in every magit buffer that renders a diff — s/u/x to stage, unstage and discard the hunk at cursor, a/- to move one hunk of a commit, ]c/[c to navigate, <CR> to visit the right version at the right line. It also owns the folds inside a diff: per file and per @@ hunk, nothing finer."
 related: [magit, magit-core-mode, magit-status-mode, magit-diff-mode, diff-mode]
 ---
 
@@ -43,7 +43,7 @@ do nothing.
 | `]c` / `[c` | Next / previous hunk |
 | `]f` / `[f` | Next / previous file |
 | `dv` | Open the file at cursor side-by-side against its baseline |
-| `<CR>` | Visit the file at cursor — in the version this buffer describes |
+| `<CR>` | Visit the file at cursor — the version this buffer describes, on the line under the cursor |
 
 `]c` then `s` stages exactly the hunk you landed on. In Visual mode,
 select lines inside a hunk and only those move — see
@@ -100,6 +100,50 @@ Opening the working-tree copy when you asked about a historical one is
 the mistake [`magit-file-revision-mode`](help:magit-file-revision-mode)
 exists to prevent, so a buffer with no sensible answer declines rather
 than guessing.
+
+### And on the line you were reading
+
+`<CR>` inside a hunk lands on the line the code under the cursor lives
+on, not at the top of the file. The `@@` header declares where the new
+side starts; counting the added and context rows between it and the
+cursor gives the rest. `-` rows are skipped — a removed line has no
+position in the file being opened, so the cursor lands on the row that
+replaced it.
+
+On a row that is not inside a hunk — a file entry in magit-status, a
+`diff --git` header — the file opens at the top. Nothing failed; there
+is simply no line to compute, and Emacs magit opens those at the top
+too.
+
+## Folding inside a diff
+
+**This mode owns the folds in diff content**, and what it declares is
+deliberately coarse:
+
+- each **file** in the diff folds, and
+- each **`@@` hunk** folds independently inside it.
+
+Nothing finer. In a magit buffer `foldmethod` is `manual`, which turns
+off the indent- and syntax-driven folds you get in an ordinary source
+buffer, so the only folds present are the ones above (plus
+[magit-status's own sections](help:magit-status-mode), which that major
+declares).
+
+That is not a limitation working around a bug — a diff is *fragments*
+of a file. Folding it by code structure means folding a function whose
+opening brace is in the hunk and whose closing brace is in a part of
+the file the diff never showed, which produces a fold that swallows
+everything after it, including the next file's diff and every section
+below. Hunk-scale is the largest unit a diff actually contains.
+
+A file's fold ends where its **last hunk** ends, and a hunk's fold ends
+where the `@@` header says it does — the counts in `@@ -a,b +c,d @@`
+are how many lines the hunk is, so the fold stops there rather than
+running to the next marker or the end of the buffer.
+
+`TAB` and `S-TAB` toggle these, and so does every ordinary fold chord —
+`za`, `zR`, `zM` and the rest work here because these are ordinary
+folds. See [`folding`](help:folding).
 
 ## `dv` — side by side
 

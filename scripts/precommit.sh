@@ -93,8 +93,10 @@ sys.exit(bad)
 
 say "3/3  tests in $SCOPE"
 if cargo test "${PKGS[@]}" >/tmp/lattice-precommit-tests.log 2>&1; then
-    grep -E '^test result: ok' /tmp/lattice-precommit-tests.log | tail -1 | sed 's/^/  /'
-    echo "  green"
+    # Sum across every suite. `tail -1` alone lands on the doc-test line,
+    # which is usually "0 passed" and reads like nothing ran.
+    awk '/^test result: ok/ { n += $4 } END { printf "  %d tests passed — green\n", n }' \
+        /tmp/lattice-precommit-tests.log
 else
     echo "  FAILURES (full log: /tmp/lattice-precommit-tests.log):"
     grep -A5 '^failures:$' /tmp/lattice-precommit-tests.log | grep '^    ' | sort -u | sed 's/^/  /' | head

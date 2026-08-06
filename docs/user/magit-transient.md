@@ -416,12 +416,22 @@ them for a modal editor; `magit-core-mode` explains why.)
 └────────────────────────────────────────────────┘
 ```
 
-**`b` and `l` are not the same operation.** `l` lists your local
-branches and checks the one you pick out. `b` asks you to *type* a
-revision, and takes anything `git checkout` does — a tag, `origin/main`,
-a raw SHA. A list of local branches cannot express any of those, which
-is why magit has both and so do we. Checking out a SHA detaches HEAD,
-exactly as it would on the command line.
+**`b` and `l` are not the same operation**, and the difference is
+what each one *lists* — both end in `git checkout`:
+
+- **`l`** offers your local branches, and nothing else.
+- **`b`** offers everything `git checkout` accepts: local branches,
+  remote-tracking refs like `origin/main`, tags, and the recent
+  commits. This is the [revision picker](help:picker#the-magit-sources),
+  with refs listed before commits.
+
+So `b` is what you reach for to check out `origin/main` or `v1.2.0`;
+`l` is the shorter list when you know it is one of yours. Checking out
+a commit detaches HEAD, exactly as it would on the command line.
+
+Neither accepts free text. For a revision older than the last 200
+commits — or one you want to script — `:magit-checkout <rev>` takes
+any revision string git does.
 
 **`c` and `n` differ only in where you end up.** Both pick a base and
 then ask for a name; `c` checks the new branch out, `n` leaves you where
@@ -591,7 +601,7 @@ path to resolve and the key does nothing.
 | `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
 | `,r` | `git mv` — asks for the new name, pre-filled with the current one |
 | `,k` | `git rm` — **destructive**, asks `Delete <path>?` first |
-| `,c` | `git checkout <rev> -- <file>` — asks which revision, then **confirms**: this overwrites the file |
+| `,c` | `git checkout <rev> -- <file>` — opens the [revision picker](help:picker#the-magit-sources), then **confirms**: this overwrites the file |
 
 `x`, `,k` and `,c` are the destructive items, and the ones that confirm
 first — the same `y`/`n` dialog magit-status's own `x` uses. `s`/`u`
@@ -600,9 +610,22 @@ outcome; they don't block on git.
 
 #### `v` — this file at a revision
 
-Asks for a revision (pre-filled `HEAD`) and opens the file as it was
-then, in a [blob buffer](help:magit-file-revision-mode). `gj` / `gk`
-walk from there to the next and previous revisions that touched it.
+Opens a **picker of revisions** and shows the file as it was at the one
+you choose, in a [blob buffer](help:magit-file-revision-mode). `gj` /
+`gk` walk from there to the next and previous revisions that touched
+it.
+
+The list is branches, remote-tracking refs and tags **first**, then the
+last 200 commits. That ordering is the point: reaching for another
+branch is the common ask, and `origin/main` is something you recognise
+where a sha is something you would have to read to identify. It also
+makes *view this file as it is on another branch* reachable at all — a
+file living on `origin/main` is not in your current branch's history,
+so a list of commits could never surface it however long it was.
+
+Commit rows show `abbrev subject` and pass the full sha. Anything older
+than the last 200 commits is reachable by naming it directly:
+`:magit-find-file <rev> <path>`.
 
 Magit prompts for a revision *and* a file. Here only the revision is
 asked, because `C-c f` already means "the file I am visiting" — asking

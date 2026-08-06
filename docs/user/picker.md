@@ -78,6 +78,9 @@ buffer" read the buffer you were in when you opened the picker.
 | `marks` | Vim marks | Jump to the mark (same as `` ` ``) | — |
 | `registers` | Vim registers (unnamed, numbered, named) | Paste the register at the cursor | — |
 | `commands` | The ex-command palette | Invoke the command | — |
+| `history` | Command-line history (newest first) | Load it into the `:` line — **does not run it** | — |
+| `search-history` | Search-line history (newest first) | Load it into the `/` line — **does not run it** | — |
+| `pane-buffer-history` | This pane's buffer trail | Walk to that entry | — |
 | `snippets` | Snippets for the active buffer's language | Expand the snippet at the cursor | — |
 | `colorscheme` | Registered themes (live preview) | Commit the theme | — (usually reached via bare `:colorscheme`) |
 
@@ -86,6 +89,94 @@ as you type and streams hits in. It jumps to a single chosen hit —
 for a persistent, editable multibuffer of *all* matches, use
 [`:search`](help:project-search-mode) instead.
 
+### The four history sources
+
+Four different rings, four different questions, all pickers:
+
+| Source | Chord | The ring | `<CR>` |
+|---|---|---|---|
+| `history` | `q:` | Every `:` line you have run | Loads it into the `:` line, **unexecuted** |
+| `search-history` | `q/`, `q?` | Every `/` pattern you have searched | Loads it into the `/` line, **unexecuted** |
+| `jumps` | `:picker jumps` | The position ring — jump list and mark ring unified | Jumps there |
+| `pane-buffer-history` | `:picker pane-buffer-history` | Which buffers **this pane** has shown | Walks there |
+
+`q:` and `q/` are vim's command-window keys, and they behave the way
+vim's window does in the one respect that matters: the chosen entry
+lands on the line for you to **edit before running**, rather than
+executing on `<CR>`. Recalling a near-miss and fixing it is the
+common case; re-running something verbatim is what `<Up>` on the `:`
+line is already for.
+
+Both **seed the filter** when the line is already open. Type `:magit-`,
+realise you want something you ran before, press `q:` — the picker
+opens already narrowed to your history entries matching `magit-`.
+From an ordinary buffer, with no line open, the filter starts empty.
+
+`jumps` and `pane-buffer-history` answer questions that sound alike
+and are not. `jumps` is *where the cursor has been*, across buffers,
+which `<C-o>` / `<C-i>` walk one step at a time. `pane-buffer-history`
+is *what this pane has displayed* — a buffer trail, not a cursor trail,
+so a file you scrolled through appears once rather than at every
+position you stopped at. See [`buffers`](help:buffers) for the pane
+trail and [`modal-editing`](help:modal-editing) for the jump list.
+
+### The magit sources
+
+[magit](help:magit) registers eleven more. You rarely type these —
+they are what a magit menu row opens when it needs you to name
+something — but they are ordinary sources and `:picker` reaches them
+like any other.
+
+Six list git objects and take **the ex-command to run on your pick**
+as an argument:
+
+| Source | Lists | Example |
+|---|---|---|
+| `magit-branch` | Local branches | `:picker magit-branch magit-merge` |
+| `magit-commit` | The last 200 commits (`git log`) | `:picker magit-commit magit-revert` |
+| `magit-revision` | Branches, remote-tracking refs, tags, **then** recent commits | `:picker magit-revision magit-find-file` |
+| `magit-ref` | Everything `git for-each-ref` returns | `:picker magit-ref magit-note-merge` |
+| `magit-tag` | `refs/tags/*` | `:picker magit-tag magit-tag-delete` |
+| `magit-remote` | Configured remotes (`origin`, not `origin/main`) | `:picker magit-remote magit-tag-prune` |
+
+The pick is appended to the command, or substituted for a `{}`
+placeholder if there is one — which is how `magit-find-file {} <path>`
+puts the revision *before* the path it belongs in front of.
+
+Five more are self-contained branch wizards, taking no argument
+because the operation is already decided:
+`magit-branch-checkout-pick`, `magit-branch-pick-base`,
+`magit-branch-create-no-checkout-pick`, `magit-branch-rename-pick`
+and `magit-branch-delete-pick`.
+
+**`magit-revision` is not `magit-commit`.** A commit list is *this
+branch's history*, which cannot answer "show me this file as it is on
+`origin/main`" — a file living on another branch is not in the current
+branch's history at all, so no number of commits would surface it.
+`magit-revision` lists refs first for that reason, and because a branch
+name is something you recognise where a sha is something you have to
+look up. Cherry-pick, revert and reset use `magit-commit` deliberately:
+they genuinely want a commit, and offering them a branch would be
+offering the wrong noun.
+
+Commit rows **display** an abbreviated sha and the subject but **pass**
+the full sha, since an abbreviation is ambiguous in principle and git
+resolves that ambiguity by refusing.
+
+### Why a picker and not a prompt
+
+Magit's rule, and a good one to borrow:
+
+> Naming a thing that must already exist → **picker**.
+> Naming a thing you are creating → **prompt**.
+
+A prompt for an existing name is a typo waiting to happen — git
+reports it long after the keystroke that caused it, and the thing you
+wanted was on a list the editor could have shown. A picker for a *new*
+name is worse than useless: there is nothing to pick. So `Merge
+branch` offers a list and `New branch name` does not, even though both
+are about branches.
+
 ### Tab completion inside `:picker`
 
 - `:picker <Tab>` lists every source id, each with its one-line
@@ -93,6 +184,10 @@ for a persistent, editable multibuffer of *all* matches, use
 - `:picker files <Tab>` (and other sources that take an arg)
   completes the argument through the same machinery `:e <Tab>`
   uses — e.g. path completion for `files`.
+
+A source whose argument is **required** says so, and opening it
+without one declines with a message naming what it wanted rather than
+opening an empty list.
 
 ---
 

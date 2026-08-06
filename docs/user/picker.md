@@ -93,12 +93,16 @@ for a persistent, editable multibuffer of *all* matches, use
 
 Four different rings, four different questions, all pickers:
 
-| Source | Chord | The ring | `<CR>` |
+| Source | Reached by | The ring | `<CR>` |
 |---|---|---|---|
-| `history` | `q:` | Every `:` line you have run | Loads it into the `:` line, **unexecuted** |
-| `search-history` | `q/`, `q?` | Every `/` pattern you have searched | Loads it into the `/` line, **unexecuted** |
-| `jumps` | `:picker jumps` | The position ring — jump list and mark ring unified | Jumps there |
-| `pane-buffer-history` | `:picker pane-buffer-history` | Which buffers **this pane** has shown | Walks there |
+| `history` | `q:`, `:history` | Every `:` line you have run | Loads it into the `:` line, **unexecuted** |
+| `search-history` | `q/`, `q?`, `:history searches` | Every `/` pattern you have searched | Loads it into the `/` line, **unexecuted** |
+| `jumps` | `<C-o>` / `<C-i>` walk it; `:picker jumps` lists it | The position ring — jump list and mark ring unified | Jumps there |
+| `pane-buffer-history` | `<C-6>` / `<C-7>` walk it; `:history pane-buffers` lists it | Which buffers **this pane** has shown | Walks there |
+
+`:history` takes `commands` (the default), `searches` or `pane-buffers`
+— the same three rings under friendlier names, and `:history <Tab>`
+completes them.
 
 `q:` and `q/` are vim's command-window keys, and they behave the way
 vim's window does in the one respect that matters: the chosen entry

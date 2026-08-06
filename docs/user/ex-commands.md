@@ -158,7 +158,7 @@ See [`lsp`](help:lsp) for the full inventory. Most-used:
 |-------------------|-------------------------------------------------|
 | `:reg`/`:registers` | List populated registers                      |
 | `:marks`          | List set marks                                  |
-| `:jumps`          | (When implemented) show position-history ring   |
+| `:jumps`          | Not a command — the ring is `:picker jumps`, and `<C-o>` / `<C-i>` walk it |
 | `:reload-snippets`| Re-read every snippet file                      |
 
 ### Completion

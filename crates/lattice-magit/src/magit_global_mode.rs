@@ -808,20 +808,32 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             });
         };
     }
-    prompted_op!(
+    // MG.53.a: the picker peer of `prompted_op!`.
+    //
+    // Same two contributions, but the entry opens the branch picker
+    // instead of a prompt and the finish half is gone — the ex-command
+    // named here IS the finish half, because a picked candidate reaches
+    // an operation only as an ex line. The `*_argv` builder moved with
+    // it, so there is still exactly one place that knows each
+    // operation's git arguments.
+    macro_rules! picked_op {
+        ($entry:expr, $ex_command:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    Some(Effect::OpenPicker {
+                        source: crate::picker_sources::BRANCH_PICK_SOURCE.to_string(),
+                        args: vec![$ex_command.to_string()],
+                    })
+                }),
+            });
+        };
+    }
+    picked_op!(
         "action:magit-global-merge-no-commit",
-        "Merge branch (no commit): ",
-        "action:magit-global-merge-no-commit-finish",
-        merge_no_commit_argv,
-        "merge --no-commit"
+        "magit-merge-no-commit"
     );
-    prompted_op!(
-        "action:magit-global-merge-squash",
-        "Squash branch: ",
-        "action:magit-global-merge-squash-finish",
-        merge_squash_argv,
-        "merge --squash"
-    );
+    picked_op!("action:magit-global-merge-squash", "magit-merge-squash");
     // MG.43d: magit's branch `s` spin-off and `S` spin-out.
     //
     // Both create a branch from the current branch's unpushed commits
@@ -1006,19 +1018,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     );
 
     // MG.43b: rebase `e` elsewhere, and `f` autosquash.
-    prompted_op!(
+    picked_op!(
         "action:magit-global-rebase-onto-elsewhere",
-        "Rebase onto: ",
-        "action:magit-global-rebase-onto-elsewhere-finish",
-        rebase_onto_argv,
-        "rebase"
+        "magit-rebase-onto"
     );
-    prompted_op!(
+    picked_op!(
         "action:magit-global-rebase-autosquash",
-        "Autosquash onto: ",
-        "action:magit-global-rebase-autosquash-finish",
-        rebase_autosquash_argv,
-        "rebase --autosquash"
+        "magit-rebase-autosquash"
     );
     // MG.42-E2: absorb — merge then delete, as one operation.
     prompted_op_seq!(
@@ -3928,6 +3934,20 @@ pub(crate) const PICKED_BRANCH_OPS: &[(&str, &str)] = &[
     ("action:magit-global-merge", "magit-merge"),
     ("action:magit-global-branch-reset", "magit-branch-reset"),
     ("action:magit-global-branch-checkout-rev", "magit-checkout"),
+    // MG.53.a
+    (
+        "action:magit-global-merge-no-commit",
+        "magit-merge-no-commit",
+    ),
+    ("action:magit-global-merge-squash", "magit-merge-squash"),
+    (
+        "action:magit-global-rebase-onto-elsewhere",
+        "magit-rebase-onto",
+    ),
+    (
+        "action:magit-global-rebase-autosquash",
+        "magit-rebase-autosquash",
+    ),
 ];
 
 /// The `.gitignore` content after adding `pattern`, or `None` when it

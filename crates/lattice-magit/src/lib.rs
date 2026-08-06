@@ -1287,25 +1287,65 @@ fn register_ex_commands(
             },
         );
 
-        // MG.52: what the branch picker invokes for merge, and the
-        // scriptable form. Registered for the same reason
-        // `magit-checkout` is: a picked candidate reaches an operation
-        // only as an ex line, so every picker-backed branch operation
-        // needs one.
-        for (name, doc, argv0, what) in [
+        // MG.52 / MG.53.a: what the branch picker invokes, and the
+        // scriptable forms besides.
+        //
+        // Registered for the reason `magit-checkout` is: a picked
+        // candidate reaches an operation only as an ex line, so every
+        // picker-backed branch row needs an ex-command to name. A table
+        // rather than one block each — they differ only in the argv
+        // they build, which is what a table column is for.
+        //
+        // Reset is the one that asks first: it discards uncommitted
+        // work. The rest either stop on conflict (merge) or rewrite
+        // only committed history (rebase).
+        type BranchArgv = fn(&str) -> Vec<String>;
+        const BRANCH_EX_COMMANDS: &[(&str, &str, BranchArgv, &str, bool)] = &[
             (
                 "magit-merge",
                 "Merge a branch into the current one: `<branch>`.",
+                magit_global_mode::merge_argv,
                 "merge",
-                "merge",
+                false,
+            ),
+            (
+                "magit-merge-no-commit",
+                "Merge a branch but stop before committing: `<branch>`.",
+                magit_global_mode::merge_no_commit_argv,
+                "merge --no-commit",
+                false,
+            ),
+            (
+                "magit-merge-squash",
+                "Squash a branch's changes into the working tree: `<branch>`.",
+                magit_global_mode::merge_squash_argv,
+                "merge --squash",
+                false,
+            ),
+            (
+                "magit-rebase-onto",
+                "Rebase the current branch onto another: `<branch>`.",
+                magit_global_mode::rebase_onto_argv,
+                "rebase",
+                false,
+            ),
+            (
+                "magit-rebase-autosquash",
+                "Rebase interactively with --autosquash onto: `<branch>`.",
+                magit_global_mode::rebase_autosquash_argv,
+                "rebase --autosquash",
+                false,
             ),
             (
                 "magit-branch-reset",
                 "Reset the current branch to another: `<branch>` (hard).",
+                magit_global_mode::merge_argv, // unused — `confirms` diverts
                 "reset",
-                "reset",
+                true,
             ),
-        ] {
+        ];
+        for (name, doc, argv, what, confirms) in BRANCH_EX_COMMANDS {
+            let (name, argv, what, confirms) = (*name, *argv, *what, *confirms);
             registry.register_ex_command(
                 name,
                 doc,
@@ -1330,18 +1370,14 @@ fn register_ex_commands(
                                 text: format!("magit: usage — :{name} <branch>"),
                             });
                         }
-                        // Reset discards uncommitted work, so it asks —
-                        // the same confirm the chord path uses. Merge
-                        // does not: it stops on conflict rather than
-                        // destroying anything.
-                        Ok(if argv0 == "reset" {
+                        Ok(if confirms {
                             crate::confirm::ask_target(
                                 format!("git reset --hard {b} — discard uncommitted changes?"),
                                 "action:magit-global-branch-reset-execute",
                                 b,
                             )
                         } else {
-                            magit_global_mode::spawn_git(magit_global_mode::merge_argv(&b), what)
+                            magit_global_mode::spawn_git(argv(&b), what)
                         })
                     }),
                     args_schema: vec![ArgSpec::required(

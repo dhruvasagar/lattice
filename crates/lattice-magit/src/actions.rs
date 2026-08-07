@@ -312,7 +312,7 @@ fn toggle_expand(
     cursor_line: u32,
 ) -> Option<Effect> {
     let key = entry_key(&sl);
-    let (handle, wd, rt, existing_count, pending, bid, context) = {
+    let (handle, wd, rt, existing_count, pending, bid, context, hl) = {
         let g = s.lock().ok()?;
         let h = g.store.handle_for(g.buffer_id)?;
         let context = context_lines(&g.config);
@@ -324,6 +324,7 @@ fn toggle_expand(
             g.pending_highlights.clone(),
             g.buffer_id,
             context,
+            g.headerline.clone(),
         )
     };
 
@@ -358,12 +359,35 @@ fn toggle_expand(
             let pos = Position::new(cursor_line + 1, 0);
             let start_line = cursor_line + 1;
             let s = s.clone();
+            let path = match &sl {
+                StatusLine::File { path, .. } => path.display().to_string(),
+                _ => String::new(),
+            };
             rt.spawn(async move {
                 // MG.31: the git call happens HERE, inside the spawned
                 // task, not above on the actor thread. See
                 // [`expand_payload`].
-                let Some((text, line_count, spans)) = expand_payload(wd, sl, context).await else {
-                    return;
+                let (text, line_count, spans) = match expand_payload(wd, sl, context).await {
+                    Ok(payload) => payload,
+                    // MG.56: say something. Returning quietly here is
+                    // what made `=` look like an unbound key on a row
+                    // whose changes had been committed elsewhere — the
+                    // press did fire, git did answer, and the answer
+                    // was an empty patch.
+                    Err(miss) => {
+                        crate::headerline::publish_notice(
+                            &hl,
+                            Some(match miss {
+                                ExpandMiss::NoChanges => {
+                                    format!("no changes in {path} — press gr to refresh")
+                                }
+                                ExpandMiss::Failed(e) => {
+                                    format!("could not diff {path}: {e}")
+                                }
+                            }),
+                        );
+                        return;
+                    }
                 };
                 let _ = handle
                     .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
@@ -405,15 +429,34 @@ fn toggle_expand(
 ///
 /// `None` when the entry has no diff to show (git failed, or the output
 /// was blank) — the caller then inserts nothing, exactly as before.
+/// Why an expansion produced nothing.
+///
+/// The two used to collapse into one `None`, and the caller returned
+/// silently on either — so pressing `=` on a file whose changes had
+/// since been committed elsewhere did *nothing*, repeatedly, and looked
+/// exactly like an unbound key. They are different problems with
+/// different fixes and have to be told apart to say anything useful.
+#[derive(Debug)]
+pub(crate) enum ExpandMiss {
+    /// git answered, and the answer was an empty patch. Almost always
+    /// a stale buffer: the row is still listed because the status scan
+    /// that produced it has been overtaken by a commit, a stage, or an
+    /// edit made outside this view.
+    NoChanges,
+    /// The git call itself failed.
+    Failed(String),
+}
+
 async fn expand_payload(
     workdir: PathBuf,
     sl: StatusLine,
     context: i64,
-) -> Option<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>)> {
+) -> Result<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>), ExpandMiss> {
     tokio::task::spawn_blocking(move || {
-        let raw = run_show(&workdir, &sl, context)?;
+        let raw = run_show(&workdir, &sl, context)
+            .ok_or_else(|| ExpandMiss::Failed("git could not read the diff".to_string()))?;
         if raw.trim().is_empty() {
-            return None;
+            return Err(ExpandMiss::NoChanges);
         }
         // MG.46: only the trailing newline goes. A patch is not free
         // text — each hunk's `@@` header declares how many body lines
@@ -425,11 +468,10 @@ async fn expand_payload(
         let text = raw.trim_end_matches('\n').to_string();
         let line_count = text.lines().count();
         let spans = crate::highlight::diff_styled_spans(&text);
-        Some((text, line_count, spans))
+        Ok((text, line_count, spans))
     })
     .await
-    .ok()
-    .flatten()
+    .unwrap_or_else(|e| Err(ExpandMiss::Failed(e.to_string())))
 }
 
 // ── registration ────────────────────────────────────────
@@ -1752,7 +1794,18 @@ mod expand_payload_tests {
             unstaged("b.txt"),
             3,
         ));
-        assert!(out.is_none(), "an entry with no diff inserts nothing");
+        // MG.56: not merely "nothing was inserted" — WHY. This used to
+        // assert only the silence, which is exactly the behaviour that
+        // made `=` look like an unbound key: a file whose changes had
+        // been committed elsewhere produced an empty patch and no word
+        // about it. The distinction between "git had nothing to show"
+        // and "git failed" is what lets the caller say something
+        // useful, so the test pins it rather than the emptiness.
+        assert!(
+            matches!(out, Err(ExpandMiss::NoChanges)),
+            "an empty diff must report NoChanges, not a bare failure — \
+             the row is stale, and `gr` is the fix worth naming"
+        );
     }
 
     /// **The MG.31 regression guard.** Mirrors
@@ -1793,7 +1846,7 @@ mod expand_payload_tests {
                 ticks += 1;
                 last = now;
             }
-            let produced = task.await.expect("join").is_some();
+            let produced = task.await.expect("join").is_ok();
             (max_gap, ticks, produced)
         });
 

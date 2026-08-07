@@ -77,6 +77,15 @@ bottom):
 
 Files with changes in the index — what will go into the next commit.
 Listed with their status labels (`modified`, `new file`, `deleted`).
+> **If `=` seems to do nothing**, read the headerline. A status buffer
+> is a snapshot: if the file's changes were committed, staged or
+> reverted somewhere else since the scan, the row is still listed but
+> `git diff` for it now comes back empty — so there is nothing to
+> expand. The headerline says `no changes in <path> — press gr to
+> refresh`, and `gr` both fixes the view and clears the notice. Before
+> this the press was silent, which reads as a dead key rather than a
+> stale buffer.
+
 Diffs are **not** pre-computed — press **`=`** on a file entry to load
 its staged diff inline, or **`dd`** to open it in a dedicated buffer
 (`git diff --cached`) instead — better for a diff too large to read

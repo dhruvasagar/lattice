@@ -173,6 +173,24 @@ pub struct MagitHeaderline {
     /// MG.27: a refresh is running. Orthogonal to `fields` — see
     /// [`Self::set_busy`].
     busy: std::sync::atomic::AtomicBool,
+    /// MG.56: a one-line notice about the LAST action, cleared by the
+
+    /// next refresh.
+
+    ///
+
+    /// Outside `fields` for the reason [`Self::set_busy`] spells out —
+
+    /// every refresh ends by calling [`Self::set`], which would wipe a
+
+    /// marker living in that vector. Here that wipe is exactly what is
+
+    /// wanted, so [`Self::set`] clears this deliberately: the notice
+
+    /// says "this view may be stale", and a refresh is both the fix and
+
+    /// the thing that makes the notice untrue.
+    notice: RwLock<Option<String>>,
     /// `None` in a harness without a theme registry.
     elements: Option<FieldElements>,
 }
@@ -196,6 +214,7 @@ impl MagitHeaderline {
             fields: RwLock::new(Vec::new()),
             version: AtomicU64::new(0),
             busy: std::sync::atomic::AtomicBool::new(false),
+            notice: RwLock::new(None),
             elements: theme.map(|t| resolve_elements(t, mode_id)),
         })
     }
@@ -204,11 +223,18 @@ impl MagitHeaderline {
     /// (and the version was bumped); `false` is the no-work path a
     /// refresh that found identical data takes.
     pub fn set(&self, fields: Vec<Field>) -> bool {
+        // Clear any notice FIRST, and unconditionally — before the
+        // identical-fields early return below. A refresh that happens
+        // to produce the same fields is still a refresh, and it is
+        // precisely the case where a stale-data warning has just been
+        // disproved; leaving the warning up there would be the one
+        // outcome the user cannot distinguish from the problem.
+        let cleared = self.set_notice(None);
         let Ok(mut slot) = self.fields.write() else {
-            return false;
+            return cleared;
         };
         if *slot == fields {
-            return false;
+            return cleared;
         }
         *slot = fields;
         self.version.fetch_add(1, Ordering::Release);
@@ -241,6 +267,34 @@ impl MagitHeaderline {
         self.busy.load(Ordering::Acquire)
     }
 
+    /// MG.56: set (or clear) the one-line notice about the last action.
+    ///
+    /// For the outcome that is neither success nor error: the operation
+    /// ran, git answered, and the answer was *nothing*. Toggling a
+    /// file's diff when the file no longer has the changes the buffer
+    /// still lists produces an empty patch, and an empty patch inserted
+    /// is indistinguishable from a key that did not fire — so the user
+    /// presses it again, and again.
+    ///
+    /// Returns `true` when the state actually changed, matching
+    /// [`Self::set`] and [`Self::set_busy`]: the version is only bumped
+    /// then, so re-notifying the same thing costs no repaint.
+    pub fn set_notice(&self, text: Option<String>) -> bool {
+        let Ok(mut slot) = self.notice.write() else {
+            return false;
+        };
+        if *slot == text {
+            return false;
+        }
+        *slot = text;
+        self.version.fetch_add(1, Ordering::Release);
+        true
+    }
+
+    pub fn notice(&self) -> Option<String> {
+        self.notice.read().ok().and_then(|n| n.clone())
+    }
+
     /// The row's own content version, ignoring the theme. Test seam —
     /// [`Headerline::version`] folds the theme's version in, which
     /// would make "did the content change?" unobservable on its own.
@@ -255,9 +309,11 @@ impl MagitHeaderline {
         self.fields
             .read()
             .map(|f| {
+                let notice = self.notice();
                 f.iter()
-                    .map(|f| f.text.as_str())
-                    .chain(self.is_busy().then_some(BUSY_TEXT))
+                    .map(|f| f.text.to_string())
+                    .chain(self.is_busy().then(|| BUSY_TEXT.to_string()))
+                    .chain(notice)
                     .collect::<Vec<_>>()
                     .join(SEP)
             })
@@ -311,7 +367,17 @@ impl Headerline for MagitHeaderline {
         // MG.27: appended, not woven in, so it never displaces a field
         // and a view that gains fields later needs no change here.
         let busy = self.is_busy().then_some(Field::label(BUSY_TEXT));
-        for (i, field) in fields.iter().chain(busy.iter()).enumerate() {
+        // MG.56: the notice renders LAST and as an alert — it is about
+        // the thing you just did, so it belongs at the end of the row
+        // where the eye lands after reading the repo state, and it is
+        // the one field that is asking to be noticed.
+        let notice = self.notice().map(Field::alert);
+        for (i, field) in fields
+            .iter()
+            .chain(busy.iter())
+            .chain(notice.iter())
+            .enumerate()
+        {
             if i > 0 {
                 cells.extend(SEP.chars().map(|c| Cell::new(c as u32, label_fg, 0, 0)));
             }
@@ -454,6 +520,22 @@ pub(crate) fn blame_heading_fallback() -> (u32, u32) {
 pub(crate) fn publish(handle: &Option<MagitHeaderlineHandle>, fields: Vec<Field>) {
     if let Some(h) = handle {
         h.set(fields);
+    }
+}
+
+/// MG.56: put a one-line notice on the row, or clear it.
+///
+/// Same optional-handle shape as [`publish`], for the same reason:
+/// `install` yields `None` in a stripped harness and no caller should
+/// have to care.
+///
+/// The notice survives until the next refresh — which is the point.
+/// It is raised when an action produced nothing because the view has
+/// been overtaken by events, so `gr` is both what clears it and what
+/// makes it untrue.
+pub(crate) fn publish_notice(handle: &Option<MagitHeaderlineHandle>, text: Option<String>) {
+    if let Some(h) = handle {
+        h.set_notice(text);
     }
 }
 
@@ -1252,6 +1334,60 @@ mod tests {
         assert_eq!(hl.text(), "main  clean  refreshing");
         assert!(hl.set_busy(false));
         assert_eq!(hl.text(), "main  clean");
+    }
+
+    // ── MG.56: the "that did nothing" notice ─────────────────────
+
+    /// A notice reads after the fields, like the busy marker.
+    #[test]
+    fn a_notice_says_so_after_its_fields() {
+        let hl = bare(vec![Field::branch("main"), Field::label("clean")]);
+        assert!(hl.set_notice(Some("no changes in a.rs — press gr to refresh".into())));
+        assert_eq!(
+            hl.text(),
+            "main  clean  no changes in a.rs — press gr to refresh"
+        );
+    }
+
+    /// **A refresh clears the notice — even one that changes nothing.**
+    ///
+    /// This is the opposite of the busy marker's rule and deliberately
+    /// so. The notice means "this view has been overtaken by events",
+    /// and a refresh is what makes that untrue, so `set` clears it.
+    ///
+    /// The identical-fields case is the one that matters and the one a
+    /// naive implementation gets wrong: `set` returns early when the
+    /// new fields equal the old, so a clear placed after that check
+    /// would leave a stale-data warning up precisely when the refresh
+    /// had just DISPROVED it — and the user cannot tell that state from
+    /// the problem it was warning about.
+    #[test]
+    fn a_refresh_clears_the_notice_even_when_nothing_changed() {
+        let fields = vec![Field::label("clean")];
+        let hl = bare(fields.clone());
+        assert!(hl.set_notice(Some("no changes in a.rs".into())));
+        assert!(hl.notice().is_some());
+
+        // Same fields as it already holds — the no-work path.
+        hl.set(fields);
+        assert_eq!(
+            hl.notice(),
+            None,
+            "a refresh that found identical data is still a refresh, and \
+             it has just disproved the warning"
+        );
+        assert_eq!(hl.text(), "clean");
+    }
+
+    /// A notice and the busy marker coexist; neither eats the other.
+    #[test]
+    fn a_notice_and_the_busy_marker_are_independent() {
+        let hl = bare(vec![Field::label("clean")]);
+        hl.set_notice(Some("no changes".into()));
+        hl.set_busy(true);
+        assert_eq!(hl.text(), "clean  refreshing  no changes");
+        hl.set_busy(false);
+        assert_eq!(hl.text(), "clean  no changes");
     }
 
     /// The whole reason the flag is not a `Field`: every refresh ends

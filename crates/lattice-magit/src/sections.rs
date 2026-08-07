@@ -201,7 +201,15 @@ impl SectionIndex {
                     }
                     SectionEntry::Stash { index, message } => {
                         let idx_str = format!("{}", index);
-                        let line_text = format!("  stash@{{{}}} {}", index, message);
+                        // ONE writer for the stash row, shared with the
+                        // stash-list buffer. It was duplicated here, and
+                        // that is the same writer/reader split that made
+                        // every chord in the stash buffer dead in MG.15
+                        // — now both views also *read* it back through
+                        // `parse_index` to resolve the stash under the
+                        // cursor, so a drift would break the chords in
+                        // whichever buffer lost the coin toss.
+                        let line_text = crate::magit_stash_mode::list_row(*index, message);
                         out.push_str(&line_text);
                         out.push('\n');
                         spans[line_idx] = vec![

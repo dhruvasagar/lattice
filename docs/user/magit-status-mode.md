@@ -137,6 +137,14 @@ The stash list (most recent first). Shown by default; hide with
 `:set magit.status.show-stashes=false`. `<CR>` toggles the stash's
 patch inline, at the cursor — the same mechanism `=` uses for files.
 
+To act on one, use the dispatch menu's stash submenu with the cursor
+on the row: `h z p` pops it, `h z a` applies it, `h z k` drops it
+(asking first), `h z v` shows its patch. These read the stash under
+the cursor exactly as the [stash list](help:magit-stash-mode)'s own
+`a`/`p`/`d` do — the rows here are the same format — and fall back to
+a picker when the cursor is not on one. Full menu:
+[magit-transient](help:magit-transient).
+
 ### Recent commits
 
 Last N commits (default 20) with abbreviated SHAs and subjects.

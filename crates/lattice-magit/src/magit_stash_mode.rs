@@ -59,12 +59,83 @@ fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<StashState>>> {
     crate::buffer_state::state_for::<StashState>(ctx)
 }
 
+/// The stash a chord acts on, or the picker to ask with.
+///
+/// Resolution order is the whole fix. Every magit buffer that shows
+/// stashes answers `stash_at_cursor` for its own rows, so the cursor
+/// wins wherever it lands one — the stash list AND magit-status's
+/// Stashes section. With nothing under the cursor the row *asks*
+/// rather than dying silently, which is where MG.23j landed `A` / `_`
+/// / `O` for exactly the same reason: the dispatch menu can be opened
+/// from a buffer with no stash in it at all.
+enum StashTarget {
+    At(usize),
+    Ask(Effect),
+}
+
+fn stash_target(ctx: &ActionContext<'_>, ex_command: &str) -> StashTarget {
+    match crate::buffer_state::view_for(ctx).and_then(|v| v.stash_at_cursor(ctx.cursor)) {
+        Some(idx) => StashTarget::At(idx),
+        None => StashTarget::Ask(Effect::OpenPicker {
+            source: crate::picker_sources::STASH_PICK_SOURCE.to_string(),
+            args: vec![ex_command.to_string()],
+        }),
+    }
+}
+
+/// A `lattice_vcs::Stash` mutation, as data — so the three that share
+/// [`run_on_stash`]'s body differ by one function pointer rather than
+/// by a copy of it.
+type StashOp = fn(&Repository, usize) -> lattice_vcs::Result<()>;
+
+/// Run `op` on `stash@{idx}`, refreshing in place when we own the
+/// buffer.
+///
+/// Two paths, deliberately: inside the stash list there is a
+/// `StashState` to rebuild, so the list updates itself. From anywhere
+/// else — magit-status, or a dispatch menu over an ordinary file —
+/// there is nothing of ours to rebuild, so the operation reports by
+/// notification and `gr` refreshes, which is exactly what
+/// `spawn_commit_op` does for the commit ops fired from any buffer.
+fn run_on_stash(
+    ctx: &ActionContext<'_>,
+    idx: usize,
+    verb: &'static str,
+    op: StashOp,
+) -> Option<Effect> {
+    if let Some(s) = state(ctx) {
+        let workdir = { s.lock().ok()?.workdir.clone() };
+        return spawn_mutation_and_refresh(s, format!("{verb} stash@{{{idx}}}"), move || {
+            let repo =
+                Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+            op(&repo, idx)
+                .map(|_| String::new())
+                .map_err(|e| e.to_string())
+        });
+    }
+    Some(crate::magit_global_mode::spawn_git(
+        vec![
+            "stash".to_string(),
+            verb.to_string(),
+            format!("stash@{{{idx}}}"),
+        ],
+        verb,
+    ))
+}
+
 /// `gr` for a stash buffer — see [`MagitView`].
 struct StashView(Arc<Mutex<StashState>>);
 
 impl MagitView for StashView {
     fn refresh(&self) -> Option<Effect> {
         refresh(self.0.clone())
+    }
+
+    /// Every row in this buffer is a stash, so the cursor line is the
+    /// whole answer.
+    fn stash_at_cursor(&self, cursor: Position) -> Option<usize> {
+        let g = self.0.lock().ok()?;
+        stash_index_at_cursor(&g, cursor)
     }
 }
 
@@ -103,36 +174,20 @@ impl Mode for MagitStashMode {
             ActionHandlerContribution {
                 action_name: "action:magit-stash-apply",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let (idx, workdir) = {
-                        let g = s.lock().ok()?;
-                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
-                    };
-                    spawn_mutation_and_refresh(s, format!("apply stash@{{{idx}}}"), move || {
-                        let repo = Repository::discover(&workdir)
-                            .map_err(|e| format!("not a git repository: {e}"))?;
-                        Stash::apply(&repo, idx)
-                            .map(|_| String::new())
-                            .map_err(|e| e.to_string())
-                    })
+                    match stash_target(ctx, "magit-stash-apply") {
+                        StashTarget::At(idx) => run_on_stash(ctx, idx, "apply", Stash::apply),
+                        StashTarget::Ask(effect) => Some(effect),
+                    }
                 }),
             },
             // pop (p)
             ActionHandlerContribution {
                 action_name: "action:magit-stash-pop",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let (idx, workdir) = {
-                        let g = s.lock().ok()?;
-                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
-                    };
-                    spawn_mutation_and_refresh(s, format!("pop stash@{{{idx}}}"), move || {
-                        let repo = Repository::discover(&workdir)
-                            .map_err(|e| format!("not a git repository: {e}"))?;
-                        Stash::pop(&repo, idx)
-                            .map(|_| String::new())
-                            .map_err(|e| e.to_string())
-                    })
+                    match stash_target(ctx, "magit-stash-pop") {
+                        StashTarget::At(idx) => run_on_stash(ctx, idx, "pop", Stash::pop),
+                        StashTarget::Ask(effect) => Some(effect),
+                    }
                 }),
             },
             // drop (d) — MG.12: a dropped stash is gone; `apply` and
@@ -142,12 +197,10 @@ impl Mode for MagitStashMode {
             ActionHandlerContribution {
                 action_name: "action:magit-stash-drop",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let idx = {
-                        let g = s.lock().ok()?;
-                        stash_index_at_cursor(&g, ctx.cursor)?
-                    };
-                    Some(drop_stash_confirm(idx))
+                    match stash_target(ctx, "magit-stash-drop") {
+                        StashTarget::At(idx) => Some(drop_stash_confirm(idx)),
+                        StashTarget::Ask(effect) => Some(effect),
+                    }
                 }),
             },
             // drop, after confirmation — re-reads the stash at the
@@ -156,28 +209,27 @@ impl Mode for MagitStashMode {
             ActionHandlerContribution {
                 action_name: "action:magit-stash-drop-execute",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
                     // IX.2: drop the stash the prompt named. Stash
                     // indices RENUMBER — dropping or creating one
                     // shifts every later index — so re-reading the row
                     // after a refresh is how you drop the wrong stash.
-                    let (idx, workdir) = {
-                        let g = s.lock().ok()?;
-                        let idx = match crate::confirm::carried_target(ctx)
-                            .and_then(|t| t.parse::<usize>().ok())
-                        {
-                            Some(carried) => carried,
-                            None => stash_index_at_cursor(&g, ctx.cursor)?,
-                        };
-                        (idx, g.workdir.clone())
+                    //
+                    // The carried target is read BEFORE any view
+                    // lookup, and that ordering is load-bearing here in
+                    // a way it was not before: the picker path fires
+                    // this half from a buffer with no stash under the
+                    // cursor at all, so a cursor re-read would find
+                    // nothing and silently drop none.
+                    let idx = match crate::confirm::carried_target(ctx)
+                        .and_then(|t| t.parse::<usize>().ok())
+                    {
+                        Some(carried) => carried,
+                        None => match stash_target(ctx, "magit-stash-drop") {
+                            StashTarget::At(idx) => idx,
+                            StashTarget::Ask(effect) => return Some(effect),
+                        },
                     };
-                    spawn_mutation_and_refresh(s, format!("drop stash@{{{idx}}}"), move || {
-                        let repo = Repository::discover(&workdir)
-                            .map_err(|e| format!("not a git repository: {e}"))?;
-                        Stash::drop(&repo, idx)
-                            .map(|_| String::new())
-                            .map_err(|e| e.to_string())
-                    })
+                    run_on_stash(ctx, idx, "drop", Stash::drop)
                 }),
             },
             // MG.15: <CR> — open this stash's patch in its own buffer.
@@ -187,10 +239,9 @@ impl Mode for MagitStashMode {
             ActionHandlerContribution {
                 action_name: "action:magit-stash-show",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let idx = {
-                        let g = s.lock().ok()?;
-                        stash_index_at_cursor(&g, ctx.cursor)?
+                    let idx = match stash_target(ctx, "magit-stash-show") {
+                        StashTarget::At(idx) => idx,
+                        StashTarget::Ask(effect) => return Some(effect),
                     };
                     Some(Effect::OpenSyntheticBuffer {
                         name: crate::magit_stash_show_mode::buffer_name(idx),
@@ -462,6 +513,54 @@ mod tests {
     #[test]
     fn the_old_unlabelled_row_format_is_unparseable() {
         assert_eq!(parse_index("  WIP on main: 1234abc a message"), None);
+    }
+
+    /// magit-status renders stash rows too, and now *resolves* them —
+    /// so the round-trip above has to hold for the status buffer's
+    /// writer as well.
+    ///
+    /// It nearly did not: `sections.rs` had its own inline copy of the
+    /// format rather than calling [`list_row`]. That is the identical
+    /// writer/reader split MG.15 was, one buffer over, and it would
+    /// have surfaced the identical way — `p` on a Stashes row doing
+    /// nothing, indistinguishable from an unbound key. This asserts
+    /// they are the same string rather than trusting that they are.
+    #[test]
+    fn the_status_buffer_writes_the_same_stash_row_the_list_does() {
+        use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
+
+        let entries: Vec<SectionEntry> = [(0usize, "WIP on main: abc123 x"), (3, "On main: y")]
+            .into_iter()
+            .map(|(index, message)| SectionEntry::Stash {
+                index,
+                message: message.to_string(),
+            })
+            .collect();
+        let index = SectionIndex {
+            sections: vec![Section {
+                kind: SectionKind::Stashes,
+                header_line: 0,
+                body_start: 1,
+                body_end: 1 + entries.len(),
+                entries,
+            }],
+            branch: "main".to_string(),
+            ahead: 0,
+            behind: 0,
+            bisect: None,
+        };
+
+        // Render the real status buffer and read its stash rows back
+        // through the parser the chords use.
+        let rendered = index.format_buffer();
+        let found: Vec<usize> = rendered.lines().filter_map(parse_index).collect();
+        assert_eq!(
+            found,
+            vec![0, 3],
+            "magit-status's stash rows must parse back to their indices — \
+             the chords resolve the stash under the cursor this way, and \
+             a row the parser cannot read is a dead key.\n{rendered}"
+        );
     }
 
     /// The list header and blank separator are not stash rows — a

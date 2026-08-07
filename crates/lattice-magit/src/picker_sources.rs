@@ -393,6 +393,9 @@ pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(BranchRenameSource::new()));
     picker_registry.register_generator(Arc::new(BranchDeleteSource::new()));
     picker_registry.register_generator(Arc::new(CommitPickSource::new()));
+    // The stash peer: the dispatch menu's apply / pop / drop / show
+    // rows have no cursor to resolve a stash from.
+    picker_registry.register_generator(Arc::new(StashPickSource::new()));
     // MG.52: the branch peer of `CommitPickSource` — one source for
     // every "which branch?" question, parameterised by what to do with
     // the answer.
@@ -535,6 +538,101 @@ impl PickerSourceGenerator for CommitPickSource {
             }),
             other => Err(format!(
                 "{COMMIT_PICK_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+/// Pick a stash, then run the named magit ex-command on it.
+///
+/// The stash peer of [`CommitPickSource`], and it exists for the same
+/// reason: the stash chords resolve the stash under the cursor, and a
+/// dispatch menu opened from an ordinary file has no cursor to read.
+/// Before this the menu's apply / pop / drop / show rows rendered,
+/// fired, resolved nothing and returned — a visible row that did
+/// nothing, silently, which is the failure `BranchCheckoutSource`'s
+/// note calls out for `<CR>` in the branch buffer.
+///
+/// The pick is the stash's **index**, not its message: `git stash`
+/// addresses entries as `stash@{N}` and messages are neither unique
+/// nor stable. The display carries the message because that is what a
+/// person remembers, exactly as the commit picker shows the subject.
+pub struct StashPickSource {
+    spec: PickerSourceSpec,
+}
+
+impl StashPickSource {
+    pub fn new() -> Self {
+        Self {
+            spec: takes_ex_command(
+                STASH_PICK_SOURCE,
+                "Pick a stash, then run the named magit ex-command on it.",
+                "magit ex-command to run on the picked stash",
+            ),
+        }
+    }
+}
+
+impl Default for StashPickSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub const STASH_PICK_SOURCE: &str = "magit-stash-pick";
+
+impl PickerSourceGenerator for StashPickSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let command = args
+            .first()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| {
+                format!("{STASH_PICK_SOURCE}: needs the ex-command to run on the picked stash")
+            })?
+            .clone();
+        Ok(PickerInitResult::Future(Box::pin(async move {
+            let entries = tokio::task::spawn_blocking(|| {
+                let repo = Repository::discover(".")
+                    .map_err(|e| format!("{STASH_PICK_SOURCE}: repo discover failed: {e}"))?;
+                lattice_vcs::Stash::list(&repo).map_err(|e| format!("{STASH_PICK_SOURCE}: {e}"))
+            })
+            .await
+            .map_err(|e| format!("{STASH_PICK_SOURCE}: join error: {e}"))??;
+            Ok(entries
+                .into_iter()
+                .map(|entry| {
+                    let cand = RawCandidate::plain(
+                        format!("stash@{{{}}} {}", entry.index, entry.message),
+                        CandidateKind::Plain,
+                    );
+                    (
+                        cand,
+                        RoutingPayload::InvokeCommand {
+                            id: picked_line(&command, &entry.index.to_string()),
+                            args: lattice_grammar::args::Args::None,
+                        },
+                    )
+                })
+                .collect())
+        })))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::InvokeCommand { id, args } => Ok(PickerAcceptOutcome::InvokeCommand {
+                id: id.clone(),
+                args: args.clone(),
+            }),
+            other => Err(format!(
+                "{STASH_PICK_SOURCE}: unexpected routing payload {other:?}"
             )),
         }
     }
@@ -699,6 +797,7 @@ mod tests {
                 REF_PICK_SOURCE,                  // MG.53.e: any ref
                 REMOTE_PICK_SOURCE,               // MG.53.d: tag prune
                 REVISION_PICK_SOURCE,             // MG.53.g: refs + commits
+                STASH_PICK_SOURCE,                // `z a`/`z p`/`z k`/`z v`
                 TAG_PICK_SOURCE,                  // MG.53.d: tag delete
             ],
             "magit's registered picker sources changed — update this list \

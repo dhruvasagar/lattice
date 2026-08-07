@@ -211,13 +211,23 @@ Two submenus drill down:
 | `c a` | Amend the previous commit |
 | `z z` | Stash the working tree (`git stash push`) |
 | `z l` | Open the stash list |
+| `z a` / `z p` / `z k` / `z v` | Apply / pop / drop / show a stash |
 
 `c c`/`c a` are the same two keystrokes as magit-status's own `cc`/`ca`
 chords, so committing and amending feel identical whether you're in
 the status buffer or reaching for the dispatch menu from an ordinary
-file. Stash apply/pop/drop are **not** in the `z` submenu — they need
-a stash selected, which only the stash-list buffer provides; `z l`
-then `a`/`p`/`d` there.
+file.
+
+`z a`/`z p`/`z k`/`z v` resolve their stash the way `A`/`_`/`O` resolve
+their commit: **the stash under the cursor when there is one, a picker
+when there is not.** So they work on the row you are looking at in the
+stash list *and* in magit-status's Stashes section, and from an
+ordinary file — where there is no stash to point at — they ask.
+
+These rows previously did nothing at all, silently, outside the
+stash-list buffer: they resolved through the stash buffer's own state,
+found none, and returned. That is why an earlier revision of this page
+said they were not in the `z` submenu.
 
 `S` and `U` act on the whole index. `S` runs `git add --update`:
 every **tracked** modification, staged. Untracked files are

@@ -1201,6 +1201,22 @@ impl crate::buffer_state::MagitView for StatusView {
         (tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit())).then(|| tok.to_string())
     }
 
+    /// The stash on the Stashes row under the cursor.
+    ///
+    /// magit-status renders these with the SAME `"  stash@{N} msg"`
+    /// row `magit-stash-mode`'s list uses (`sections.rs` and
+    /// `magit_stash_mode::list_row`), so both views share one parser
+    /// rather than growing a second idea of the format. File and
+    /// commit rows fail the `stash@{` prefix and correctly yield
+    /// `None`, so `p` on a staged file pops nothing.
+    fn stash_at_cursor(&self, cursor: lattice_protocol::position::Position) -> Option<usize> {
+        let g = self.0.lock().ok()?;
+        let handle = g.store.handle_for(g.buffer_id)?;
+        let snap = handle.snapshot();
+        let line = snap.buffer.line(cursor.line)?;
+        crate::magit_stash_mode::parse_index(&line)
+    }
+
     fn workdir(&self) -> Option<std::path::PathBuf> {
         Some(self.0.lock().ok()?.workdir.clone())
     }

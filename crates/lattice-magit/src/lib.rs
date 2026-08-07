@@ -1114,6 +1114,141 @@ fn register_ex_commands(
         }
     }
     {
+        // The stash operations' scriptable halves, and the targets of
+        // the stash picker's accept (`<ex-command> <index>`).
+        //
+        // Same two-ways-in shape MG.23c1 established for the commit
+        // ops: `:magit-stash-pop 2` acts immediately, bare
+        // `:magit-stash-pop` opens the stash picker, which fires this
+        // same command with the picked index appended. That round trip
+        // is why `StashPickSource` takes an ex-command name rather than
+        // an action name.
+        //
+        // The argument is the INDEX, not `stash@{N}`: `git stash`
+        // addresses entries by index and the picker routes one, so
+        // accepting anything else would mean two spellings of the same
+        // argument. `parse_index` handles the `stash@{N}` form for
+        // buffer rows, which is a different reader.
+        for (name, verb, doc) in [
+            (
+                "magit-stash-apply",
+                "apply",
+                "Apply the named stash, keeping it on the stack. With no argument: pick one.",
+            ),
+            (
+                "magit-stash-pop",
+                "pop",
+                "Apply the named stash and drop it. With no argument: pick one.",
+            ),
+            (
+                "magit-stash-drop",
+                "drop",
+                "Delete the named stash without applying it — asks first. With no argument: pick one.",
+            ),
+        ] {
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let idx = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => {
+                                match s.trim().parse::<usize>() {
+                                    Ok(i) => i,
+                                    Err(_) => {
+                                        return Err(lattice_grammar::CommandError::BadArgs(
+                                            format!("{name}: expected a stash index, got {s:?}"),
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::STASH_PICK_SOURCE.to_string(),
+                                    args: vec![name.to_string()],
+                                });
+                            }
+                        };
+                        // MG.12: dropping is the one that cannot be
+                        // undone, so it asks — and the ask carries the
+                        // index, because a refresh between question and
+                        // answer renumbers every later stash.
+                        if verb == "drop" {
+                            return Ok(confirm::ask_target(
+                                format!("Drop stash@{{{idx}}}?"),
+                                "action:magit-stash-drop-execute",
+                                idx.to_string(),
+                            ));
+                        }
+                        Ok(magit_global_mode::spawn_git(
+                            vec![
+                                "stash".to_string(),
+                                verb.to_string(),
+                                format!("stash@{{{idx}}}"),
+                            ],
+                            verb,
+                        ))
+                    }),
+                    args_schema: vec![ArgSpec::optional(
+                        "stash",
+                        lattice_grammar::ArgKind::String,
+                        "stash index to act on; omit to pick one",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
+        // `show` opens a buffer rather than mutating, so it is not part
+        // of the loop above — but it takes the same argument and the
+        // same picker fallback, which is what keeps `hzv` working from
+        // anywhere.
+        registry.register_ex_command(
+            "magit-stash-show",
+            "Show the named stash's patch. With no argument: pick one.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let idx = match ctx.args {
+                        Args::String(ref s) if !s.trim().is_empty() => {
+                            s.trim().parse::<usize>().map_err(|_| {
+                                lattice_grammar::CommandError::BadArgs(format!(
+                                    "magit-stash-show: expected a stash index, got {s:?}"
+                                ))
+                            })?
+                        }
+                        _ => {
+                            return Ok(Effect::OpenPicker {
+                                source: picker_sources::STASH_PICK_SOURCE.to_string(),
+                                args: vec!["magit-stash-show".to_string()],
+                            });
+                        }
+                    };
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_stash_show_mode::buffer_name(idx),
+                        mode_id: "magit-stash-show-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::optional(
+                    "stash",
+                    lattice_grammar::ArgKind::String,
+                    "stash index to show; omit to pick one",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+    {
         // MG.43c: the rebase todo rows' scriptable halves, and the
         // targets of their picker fallbacks (`<ex-command> <sha>`).
         for (name, verb, label, doc) in [

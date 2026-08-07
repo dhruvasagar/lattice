@@ -293,6 +293,25 @@ pub trait MagitView: Send + Sync + 'static {
         None
     }
 
+    /// The stash index this view describes at `cursor`, if any.
+    ///
+    /// The peer of [`Self::commit_at_cursor`], and it exists for the
+    /// same reason: apply / pop / drop / show all mean "act on the
+    /// stash under the cursor", and more than one view shows stashes.
+    /// The stash-LIST buffer is the obvious one, but magit-status has a
+    /// Stashes section rendering byte-identical rows, and before this
+    /// the handlers resolved through `StashState` — so every stash
+    /// chord was dead in the status buffer, and the dispatch menu's
+    /// stash rows silently did nothing anywhere.
+    ///
+    /// Views with no stashes decline, which is what the default does.
+    /// A view that has them parses its own row format, exactly as it
+    /// does for commits.
+    fn stash_at_cursor(&self, cursor: lattice_protocol::position::Position) -> Option<usize> {
+        let _ = cursor;
+        None
+    }
+
     /// MG.22: **which version** of `path` `<CR>` should open, for a
     /// cursor sitting in this view's diff content.
     ///

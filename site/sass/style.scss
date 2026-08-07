@@ -716,6 +716,393 @@ img { max-width: 100%; height: auto; }
   &:hover { background: rgba(white, 0.1); border-color: white; color: white; }
 }
 
+// ---------------------------------------------------------------------------
+// Docs navigation (user docs). The dev-doc tree still uses `.sidebar` above.
+// ---------------------------------------------------------------------------
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.docs-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: $sidebar-bg;
+  border-right: 1px solid $border;
+  padding: 20px 0 40px;
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+
+.docs-search {
+  position: relative;
+  padding: 0 16px 16px;
+
+  input {
+    width: 100%;
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 0.875rem;
+    color: $text;
+    background: $bg;
+    border: 1px solid $border;
+    border-radius: 6px;
+
+    &:focus {
+      outline: none;
+      border-color: $brand-blue;
+      box-shadow: 0 0 0 3px rgba($brand-blue, 0.15);
+    }
+  }
+}
+
+.docs-search-results {
+  position: absolute;
+  z-index: 20;
+  left: 16px;
+  right: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.docs-search-hit {
+  display: block;
+  padding: 8px 12px;
+  border-bottom: 1px solid $border;
+  color: $text;
+
+  &:last-child { border-bottom: none; }
+
+  &:hover,
+  &.active {
+    background: rgba($brand-blue, 0.08);
+    text-decoration: none;
+  }
+
+  .hit-name {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: $brand-blue;
+  }
+
+  .hit-where {
+    display: block;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: $text-muted;
+  }
+
+  .hit-desc {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: $text-muted;
+    // Two lines is enough to disambiguate; more turns the popup into a wall.
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+.docs-search-empty {
+  padding: 0 16px;
+  font-size: 0.8125rem;
+  color: $text-muted;
+}
+
+.docs-nav {
+  font-size: 0.875rem;
+
+  ul { list-style: none; }
+
+  .docs-nav-home {
+    display: block;
+    padding: 6px 20px;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: $text;
+
+    &:hover { color: $brand-blue; text-decoration: none; }
+    &.active { color: $brand-blue; }
+  }
+
+  li a {
+    display: block;
+    padding: 5px 20px 5px 28px;
+    color: $text;
+    border-left: 3px solid transparent;
+
+    &:hover {
+      background: $bg-hover;
+      color: $brand-blue;
+      text-decoration: none;
+    }
+
+    &.active {
+      color: $brand-blue;
+      font-weight: 600;
+      border-left-color: $brand-blue;
+      background: rgba($brand-blue, 0.06);
+    }
+  }
+}
+
+.docs-nav-section {
+  > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 20px;
+    cursor: pointer;
+    font-weight: 600;
+    color: $text;
+    list-style: none;
+    user-select: none;
+
+    &::-webkit-details-marker { display: none; }
+
+    // Disclosure triangle, rotated by the open state.
+    &::before {
+      content: '';
+      width: 0; height: 0;
+      border-left: 4px solid currentColor;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      opacity: 0.5;
+      transition: transform 0.12s ease;
+    }
+
+    &:hover { background: $bg-hover; }
+  }
+
+  &[open] > summary::before { transform: rotate(90deg); }
+
+  .docs-nav-title { flex: 1; }
+}
+
+.docs-nav-count {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: $text-muted;
+  background: rgba($text-muted, 0.12);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.docs-nav-groups {
+  > .docs-nav-group > a {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+
+    .docs-nav-count { margin-left: auto; }
+  }
+
+  .docs-nav-group.open > a { color: $brand-blue; }
+
+  // Pages of the group you are currently inside.
+  .docs-nav-group ul a {
+    padding-left: 40px;
+    font-size: 0.8125rem;
+    color: $text-muted;
+
+    &:hover { color: $brand-blue; }
+    &.active { color: $brand-blue; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Docs content chrome
+// ---------------------------------------------------------------------------
+
+.breadcrumb {
+  font-size: 0.8125rem;
+  color: $text-muted;
+  margin-bottom: 12px;
+
+  a { color: $text-muted; }
+  a:hover { color: $brand-blue; }
+  span { margin: 0 6px; opacity: 0.6; }
+}
+
+.docs-lede {
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  color: $text-muted;
+  margin: -12px 0 28px;
+}
+
+.docs-toc {
+  margin: 0 0 32px;
+  padding: 12px 16px;
+  background: $bg-alt;
+  border: 1px solid $border;
+  border-radius: 8px;
+  font-size: 0.875rem;
+
+  > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: $text;
+    user-select: none;
+  }
+
+  ul {
+    list-style: none;
+    margin-top: 10px;
+
+    ul { margin: 4px 0 4px 16px; }
+  }
+
+  li { margin: 3px 0; }
+
+  a { color: $text-muted; }
+  a:hover { color: $brand-blue; }
+}
+
+.docs-path {
+  counter-reset: step;
+  list-style: none;
+  margin: 0 0 12px;
+
+  li {
+    position: relative;
+    padding: 10px 0 10px 40px;
+    border-bottom: 1px solid $border;
+
+    &::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: 0; top: 12px;
+      width: 24px; height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: $brand-blue;
+      background: rgba($brand-blue, 0.1);
+      border-radius: 50%;
+    }
+
+    a { font-weight: 600; }
+
+    span {
+      display: block;
+      font-size: 0.875rem;
+      color: $text-muted;
+    }
+  }
+}
+
+.docs-path-note {
+  font-size: 0.875rem;
+  color: $text-muted;
+  margin-bottom: 32px;
+}
+
+.docs-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 20px 0 40px;
+}
+
+.docs-card {
+  display: block;
+  padding: 18px 20px;
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: 10px;
+  color: $text;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+
+  &:hover {
+    text-decoration: none;
+    border-color: $brand-blue;
+    transform: translateY(-2px);
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: $brand-blue;
+  }
+
+  p {
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: $text-muted;
+    margin-bottom: 10px;
+  }
+
+  .docs-card-meta {
+    display: block;
+    font-size: 0.75rem;
+    color: $text-muted;
+    opacity: 0.85;
+  }
+
+  // The reference wing is a different kind of destination — mark it as such.
+  &.docs-card-reference {
+    background: $bg-alt;
+    border-style: dashed;
+  }
+}
+
+.docs-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid $border;
+
+  a {
+    flex: 1;
+    padding: 12px 16px;
+    border: 1px solid $border;
+    border-radius: 8px;
+    font-weight: 600;
+    color: $text;
+
+    &:hover { border-color: $brand-blue; color: $brand-blue; text-decoration: none; }
+
+    span {
+      display: block;
+      font-size: 0.6875rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: $text-muted;
+      margin-bottom: 2px;
+    }
+  }
+
+  .docs-pager-next { text-align: right; }
+  .docs-pager-prev:only-child { max-width: 50%; }
+  .docs-pager-next:only-child { margin-left: auto; max-width: 50%; }
+}
+
 // Dark mode
 @media (prefers-color-scheme: dark) {
   body {
@@ -870,11 +1257,126 @@ img { max-width: 100%; height: auto; }
   .btn-outline {
     &:hover { background: rgba(white, 0.08); }
   }
+
+  // Docs navigation
+  .docs-sidebar {
+    background: $dark-sidebar-bg;
+    border-right-color: $dark-border;
+  }
+
+  .docs-search input {
+    color: $dark-text;
+    background: $dark-bg;
+    border-color: $dark-border;
+  }
+
+  .docs-search-results {
+    background: $dark-bg-alt;
+    border-color: $dark-border;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+
+  .docs-search-hit {
+    border-bottom-color: $dark-border;
+    color: $dark-text;
+
+    .hit-name { color: lighten($brand-blue, 18%); }
+    .hit-where, .hit-desc { color: $dark-text-muted; }
+  }
+
+  .docs-search-empty { color: $dark-text-muted; }
+
+  .docs-nav {
+    .docs-nav-home { color: $dark-text; }
+
+    li a {
+      color: $dark-text;
+
+      &:hover { background: $dark-bg-hover; color: lighten($brand-blue, 18%); }
+      &.active {
+        color: lighten($brand-blue, 18%);
+        border-left-color: lighten($brand-blue, 18%);
+        background: rgba($brand-blue, 0.16);
+      }
+    }
+  }
+
+  .docs-nav-section > summary {
+    color: $dark-text;
+    &:hover { background: $dark-bg-hover; }
+  }
+
+  .docs-nav-count {
+    color: $dark-text-muted;
+    background: rgba($dark-text-muted, 0.16);
+  }
+
+  .docs-nav-groups {
+    .docs-nav-group.open > a { color: lighten($brand-blue, 18%); }
+    .docs-nav-group ul a { color: $dark-text-muted; }
+  }
+
+  .breadcrumb {
+    color: $dark-text-muted;
+    a { color: $dark-text-muted; }
+  }
+
+  .docs-lede { color: $dark-text-muted; }
+
+  .docs-toc {
+    background: $dark-bg-alt;
+    border-color: $dark-border;
+
+    > summary { color: $dark-text; }
+    a { color: $dark-text-muted; }
+  }
+
+  .docs-path li {
+    border-bottom-color: $dark-border;
+    span { color: $dark-text-muted; }
+  }
+
+  .docs-path-note { color: $dark-text-muted; }
+
+  .docs-card {
+    background: $dark-bg-alt;
+    border-color: $dark-border;
+    color: $dark-text;
+
+    h3 { color: lighten($brand-blue, 18%); }
+    p, .docs-card-meta { color: $dark-text-muted; }
+
+    &.docs-card-reference { background: $dark-bg; }
+  }
+
+  .docs-pager {
+    border-top-color: $dark-border;
+
+    a {
+      border-color: $dark-border;
+      color: $dark-text;
+      &:hover { border-color: lighten($brand-blue, 18%); color: lighten($brand-blue, 18%); }
+      span { color: $dark-text-muted; }
+    }
+  }
 }
 
 // Responsive
 @media (max-width: 768px) {
-  .site-header .container { padding: 0 16px; }
+  // The header container is a fixed-height flex row; on narrow viewports the
+  // five nav links overflowed it and pushed every page into horizontal scroll.
+  .site-header .container {
+    padding: 8px 16px;
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .site-header .nav-links {
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    font-size: 0.875rem;
+  }
 
   .hero {
     padding: 48px 0;
@@ -937,6 +1439,27 @@ img { max-width: 100%; height: auto; }
 
   .status-grid {
     grid-template-columns: 1fr;
+  }
+
+  // Docs nav collapses to a normal-flow block above the content, and every
+  // section closes so the reader lands on the article, not on 48 links.
+  .docs-sidebar {
+    width: 100%;
+    position: static;
+    height: auto;
+    max-height: 60vh;
+    border-right: none;
+    border-bottom: 1px solid $border;
+  }
+
+  .docs-card-grid { grid-template-columns: 1fr; }
+
+  .docs-pager {
+    flex-direction: column;
+
+    .docs-pager-next { text-align: left; }
+    .docs-pager-prev:only-child,
+    .docs-pager-next:only-child { max-width: none; margin-left: 0; }
   }
 
   .cta-actions {

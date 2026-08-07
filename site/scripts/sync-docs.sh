@@ -1,191 +1,442 @@
 #!/usr/bin/env python3
-"""Sync docs from docs/{user,dev}/ to site/content/ for Zola.
+"""Sync docs from docs/{user,dev}/ into site/content/ for Zola.
 
-Strips YAML frontmatter, converts markdown links (.md extension → clean
-URLs for Zola), and converts help:topic links (user docs only).
+docs/user/ is a FLAT corpus on purpose — it is the offline `:help` text
+embedded in the binary, where `:help <topic>` resolves a bare topic name.
+The website needs the opposite: a reading order, a guide/reference split,
+and URLs that say where you are.
+
+site/data/nav.toml is that navigation layer. This script reads it and:
+
+  * routes each user doc to content/docs/<section>/<topic>.md
+  * generates a landing page per section, tabulating its topics with the
+    summary line each doc already carries in its frontmatter
+  * resolves every `help:<topic>` cross-link (856 of them) to a Zola
+    internal link, so a broken cross-reference fails the BUILD instead of
+    shipping a dead link
+  * hard-fails if docs/user/ and nav.toml disagree in either direction
+
+Dev docs are synced flat into content/dev/<subdir>/ as before; only their
+link rewriting shares code with the user path.
 """
-import os, re, glob
+
+import glob
+import json
+import os
+import re
+import shutil
+import sys
+import tomllib
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 site_dir = os.path.dirname(script_dir)
-repo_root = os.path.join(site_dir, '..')
+repo_root = os.path.normpath(os.path.join(site_dir, '..'))
+
+USER_SRC = os.path.join(repo_root, 'docs', 'user')
+DEV_SRC = os.path.join(repo_root, 'docs', 'dev')
+DOCS_DST = os.path.join(site_dir, 'content', 'docs')
+DEV_DST = os.path.join(site_dir, 'content', 'dev')
+DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes']
+
+GH_BLOB = 'https://github.com/dhruvasagar/lattice/blob/main'
+GH_TREE = 'https://github.com/dhruvasagar/lattice/tree/main'
 
 RE_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+RE_SUMMARY = re.compile(r'^summary:\s*(.*?)\s*$', re.MULTILINE)
 
-def read_version():
-    """Read version from workspace Cargo.toml."""
-    cargo_path = os.path.join(repo_root, 'Cargo.toml')
-    with open(cargo_path, encoding='utf-8') as fh:
-        m = RE_VERSION.search(fh.read())
-    return m.group(1) if m else '0.0.0'
+
+def die(msg):
+    sys.exit(f'sync-docs: ERROR: {msg}')
+
+
+# --------------------------------------------------------------------------
+# Version data for the header/footer badge
+# --------------------------------------------------------------------------
 
 def write_version_data():
-    """Write version data for Zola's load_data."""
-    version = read_version()
+    with open(os.path.join(repo_root, 'Cargo.toml'), encoding='utf-8') as fh:
+        m = RE_VERSION.search(fh.read())
+    version = m.group(1) if m else '0.0.0'
     dst = os.path.join(site_dir, 'data', 'version.toml')
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, 'w', encoding='utf-8') as fh:
         fh.write(f'latest = "{version}"\n')
-    print(f'  Version: {version}')
+    print(f'  version: {version}')
+
+
+# --------------------------------------------------------------------------
+# Navigation manifest
+# --------------------------------------------------------------------------
+
+def load_nav():
+    """Return (sections, topic_section, labels).
+
+    topic_section maps a bare topic name -> (section slug, group title).
+    The slug is what every link resolver needs to turn `help:folding` into a
+    real path; the group title is what the reference sidebar nests under.
+    """
+    path = os.path.join(site_dir, 'data', 'nav.toml')
+    with open(path, 'rb') as fh:
+        nav = tomllib.load(fh)
+
+    sections = nav.get('section', [])
+    labels = nav.get('labels', {})
+    topic_section = {}
+
+    for sec in sections:
+        slug = sec['slug']
+        for group in sec.get('group', []):
+            for topic in group['docs']:
+                if topic in topic_section:
+                    die(f'{topic!r} listed twice in nav.toml')
+                topic_section[topic] = (slug, group.get('title', ''))
+
+    return sections, topic_section, labels
+
+
+def validate_nav(topic_section, labels):
+    """nav.toml and docs/user/ must agree exactly, in both directions."""
+    on_disk = {
+        os.path.basename(f)[:-3]
+        for f in glob.glob(os.path.join(USER_SRC, '*.md'))
+    } - {'README'}
+
+    listed = set(topic_section)
+    missing = sorted(on_disk - listed)
+    phantom = sorted(listed - on_disk)
+    bad_labels = sorted(set(labels) - on_disk)
+
+    problems = []
+    if missing:
+        problems.append(
+            'docs/user/ topics absent from site/data/nav.toml — add them to a '
+            'section so they get a place in the nav:\n    '
+            + '\n    '.join(missing)
+        )
+    if phantom:
+        problems.append(
+            'site/data/nav.toml lists topics with no docs/user/ file — the doc '
+            'was renamed or deleted:\n    ' + '\n    '.join(phantom)
+        )
+    if bad_labels:
+        problems.append(
+            'site/data/nav.toml [labels] name unknown topics:\n    '
+            + '\n    '.join(bad_labels)
+        )
+    if problems:
+        die('\n\n  '.join(problems))
+
+
+# --------------------------------------------------------------------------
+# Frontmatter / body helpers
+# --------------------------------------------------------------------------
 
 def strip_frontmatter(content):
     return re.sub(r'^---\n.*?\n---\n', '', content, count=1, flags=re.DOTALL)
 
-def make_title(content, filename):
+
+def read_summary(content):
+    m = RE_SUMMARY.search(content.split('\n---', 1)[0]) if content.startswith('---') else None
+    if not m:
+        return ''
+    return m.group(1).strip().strip('"').replace('--', '—')
+
+
+def make_title(content, topic):
     m = re.search(r'^# (.+)$', content, re.MULTILINE)
     if m:
         return m.group(1).strip()
-    bname = os.path.splitext(filename)[0]
-    return bname.replace('-', ' ').title()
+    return topic.replace('-', ' ').capitalize()
 
-def strip_md_from_links(content):
-    """Convert markdown file links (.md) to clean Zola URLs.
-    Handles: file.md, ./file.md, ../file.md, file.md#anchor, ../file.md#anchor
-    Skips absolute URLs (http://, https://, mailto:).
+
+def toml_escape(value):
+    return value.replace('\\', '\\\\').replace('"', '\\"')
+
+
+# --------------------------------------------------------------------------
+# Link rewriting
+# --------------------------------------------------------------------------
+
+def split_anchor(path):
+    if '#' in path:
+        head, anchor = path.split('#', 1)
+        return head, f'#{anchor}'
+    return path, ''
+
+
+def resolve_help_links(body, topic_section):
+    """`help:folding` -> `@/docs/code/folding.md`.
+
+    Zola validates internal links at build time, so a cross-reference to a
+    topic that has been renamed or dropped breaks the deploy loudly instead
+    of shipping as a 404.
     """
-    return re.sub(
-        r'\]\((?!https?://|mailto:|#)([^)]*?)\.md(#[^)]*)?\)',
-        lambda m: '](' + m.group(1) + (m.group(2) or '') + ')',
-        content
-    )
+    def _sub(m):
+        topic, anchor = m.group(1), m.group(2) or ''
+        placement = topic_section.get(topic)
+        if placement is None:
+            # Not a real topic (a `_planned_` placeholder, or a typo). Leave
+            # the link text as plain code rather than emitting a dead link.
+            return f'`{topic}`'
+        return f'](@/docs/{placement[0]}/{topic}.md{anchor})'
 
-def rewrite_root_links(content):
-    """Rewrite ../../<path> and ../../../<path> links that leave the Zola
-    content tree (i.e., resolve to files outside content/{docs,dev}/).
-    Must run BEFORE strip_md_from_links so .md extensions are visible.
+    body = re.sub(r'\]\(help:([a-zA-Z0-9_-]+)(#[^)]*)?\)', _sub, body)
+    # `mode:` / `event:` targets have no page of their own — render as code.
+    return re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
 
-    Any link whose target doesn't start with docs/ or dev/ after removing
-    the ../ prefix is out-of-tree — rewrite to an absolute GitHub URL.
-    Also rewrites ../../user/ -> ../../../docs/ for dev docs (user docs synced to content/docs/).
+
+def make_relative_resolver(topic_section, dev_pages):
+    """Resolve `../dev/...`, `../../user/...` and friends.
+
+    Anything that lands inside the Zola content tree becomes an `@/` internal
+    link; anything outside it (slice plans, wit/, source files) becomes an
+    absolute GitHub URL so it still goes somewhere useful.
     """
-
     def _resolve(m):
-        prefix = m.group(1)
-        path = m.group(2)
-        has_anchor = ''
-        if '#' in path:
-            path, anchor = path.split('#', 1)
-            has_anchor = f'#{anchor}'
+        raw = m.group(1)
+        path, anchor = split_anchor(raw)
 
-        # ../../user/ -> ../../../docs/ (user docs synced to content/docs/)
-        if prefix == '../../' and path.startswith('user/'):
-            return f'](../../../docs/{path[5:]}{has_anchor})'
-        if prefix == '../../../' and path.startswith('user/'):
-            return f'](../../../docs/{path[5:]}{has_anchor})'
+        # Normalise away the leading ../ hops — every doc tree we sync from is
+        # addressed by its repo-relative path below docs/.
+        stripped = re.sub(r'^(?:\.\./)+', '', path)
 
-        # Links staying within the Zola content tree (docs/ or dev/)
-        if path.startswith('docs/') or path.startswith('dev/'):
-            return m.group(0)
+        if stripped.startswith('user/'):
+            topic = os.path.basename(stripped)[:-3] if stripped.endswith('.md') else os.path.basename(stripped)
+            placement = topic_section.get(topic)
+            if placement:
+                return f'](@/docs/{placement[0]}/{topic}.md{anchor})'
 
-        # Out-of-tree link -> rewrite to GitHub absolute URL
-        if path.endswith('/') or not re.search(r'\.\w{1,10}$', path):
-            base = 'https://github.com/dhruvasagar/lattice/tree/main'
-        else:
-            base = 'https://github.com/dhruvasagar/lattice/blob/main'
-        return f']({base}/{path}{has_anchor})'
+        if stripped.startswith('dev/'):
+            rel = stripped[4:]
+            if rel.endswith('.md') and rel[:-3] in dev_pages:
+                return f'](@/dev/{rel}{anchor})'
 
-    return re.sub(
-        r'\]\((\.\./\.\./(?:\.\./)?)([^)]+)\)',
-        _resolve,
-        content,
-    )
+        # Out of the content tree -> GitHub.
+        base = GH_TREE if (path.endswith('/') or not re.search(r'\.\w{1,10}$', path)) else GH_BLOB
+        return f']({base}/{stripped}{anchor})'
 
-def prefix_sibling_links(content):
-    """Prefix bare and ./ sibling links with ../ for Zola directory-style URLs.
+    return _resolve
 
-    Zola serves pages as directories: content/docs/foo.md -> /docs/foo/.
-    A bare link [text](bar) from /docs/foo/ resolves to /docs/foo/bar,
-    but should resolve to /docs/bar/.  Using ../bar/ fixes this.
 
-    Must run AFTER strip_md_from_links (names have already lost .md).
+RE_RELATIVE = re.compile(r'\]\(((?:\.\./)+[^)]+)\)')
+
+
+def rewrite_links(body, topic_section, dev_pages, is_user_doc):
+    if is_user_doc:
+        body = resolve_help_links(body, topic_section)
+    return RE_RELATIVE.sub(make_relative_resolver(topic_section, dev_pages), body)
+
+
+# --------------------------------------------------------------------------
+# Writers
+# --------------------------------------------------------------------------
+
+def reset_generated_dirs(sections):
+    """Remove previously generated trees so renamed/moved docs cannot linger.
+
+    This matters more than it looks: without it, a topic that changes section
+    keeps a stale page at its old URL and Zola happily builds both.
     """
-    def _prefix(m):
-        name = m.group(1)
-        anchor = m.group(2) or ''
-        return f'](../{name}/{anchor})'
+    for sec in sections:
+        shutil.rmtree(os.path.join(DOCS_DST, sec['slug']), ignore_errors=True)
+    # Flat pages from the pre-restructure layout.
+    for stale in glob.glob(os.path.join(DOCS_DST, '*.md')):
+        if os.path.basename(stale) != '_index.md':
+            os.remove(stale)
+    for sub in DEV_SUBDIRS:
+        for stale in glob.glob(os.path.join(DEV_DST, sub, '*.md')):
+            if os.path.basename(stale) != '_index.md':
+                os.remove(stale)
 
-    # Match ](name) or ](./name) or ](name#anchor) — no slashes, no http
-    return re.sub(
-        r'\]\((?:\.\/)?([a-zA-Z0-9_-]+)(#[^)]*)?\)',
-        _prefix,
-        content,
-    )
 
-def write_doc(dst_path, title, body):
-    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-    with open(dst_path, 'w', encoding='utf-8') as fh:
-        fh.write(f'+++\ntitle = "{title}"\n+++\n\n{body}')
+# --------------------------------------------------------------------------
+# Sync
+# --------------------------------------------------------------------------
 
-def sync_dir(src_dir, dst_dir, link_mods=None):
-    if not os.path.isdir(src_dir):
-        print(f'  SKIP: {src_dir} not found')
-        return
-    os.makedirs(dst_dir, exist_ok=True)
+def sync_user_docs(topic_section, labels, dev_pages):
+    meta = {}      # topic -> (title, summary)
+    headings = {}  # topic -> [h2/h3 text], fed to the search index
+    # Sidebar/landing order is manifest order; Zola sorts on `weight`.
+    weights = {topic: i for i, topic in enumerate(topic_section)}
 
-    for f in sorted(glob.glob(os.path.join(src_dir, '*.md'))):
-        b = os.path.basename(f)
-        with open(f, encoding='utf-8') as fh:
-            content = fh.read()
+    for topic, (slug, group_title) in topic_section.items():
+        src = os.path.join(USER_SRC, f'{topic}.md')
+        with open(src, encoding='utf-8') as fh:
+            raw = fh.read()
 
-        title = make_title(content, b)
-        body = strip_frontmatter(content)
-
-        # Strip the first H1 heading matching the title, since the template
-        # already renders <h1>{{ page.title }}</h1>.
+        title = make_title(raw, topic)
+        summary = read_summary(raw)
+        body = strip_frontmatter(raw)
+        # The template renders <h1>{{ page.title }}</h1>; drop the duplicate.
         body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
+        body = rewrite_links(body, topic_section, dev_pages, is_user_doc=True)
 
-        # Apply link modifications
-        if link_mods and 'rewrite_root' in link_mods:
-            body = rewrite_root_links(body)
-        if link_mods and 'strip_md' in link_mods:
-            body = strip_md_from_links(body)
-        if link_mods and 'prefix_sibling' in link_mods:
-            body = prefix_sibling_links(body)
-        if link_mods and 'help_topic' in link_mods:
-            # Zola pages are emitted as directories:
-            #   content/docs/themes.md -> /docs/themes/
-            # Inside a page like /docs/modal-editing/, `./themes/` would incorrectly
-            # resolve to /docs/modal-editing/themes/. Use `../` to anchor at /docs/.
-            body = re.sub(
-                r'\(help:([a-zA-Z0-9_-]+)(#[^)]*)?\)',
-                lambda m: f'(../{m.group(1)}/{m.group(2) or ""})',
-                body,
-            )
-            body = re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
+        meta[topic] = (title, summary)
+        headings[topic] = [
+            h.strip().strip('`') for h in re.findall(r'^#{2,3} +(.+)$', body, re.MULTILINE)
+        ]
 
-        dst_file = os.path.join(dst_dir, b)
-        write_doc(dst_file, title, body)
-        print(f'  {os.path.relpath(dst_file, site_dir)}')
+        lines = ['+++', f'title = "{toml_escape(title)}"']
+        if summary:
+            lines.append(f'description = "{toml_escape(summary)}"')
+        lines.extend([
+            f'weight = {weights[topic]}',
+            '[extra]',
+            f'nav_label = "{toml_escape(labels.get(topic, title))}"',
+            f'section_slug = "{slug}"',
+            f'nav_group = "{toml_escape(group_title)}"',
+            '+++',
+            '',
+        ])
 
-# --- Version data ---
-print('Updating version data...')
-write_version_data()
+        page = os.path.join(DOCS_DST, slug, f'{topic}.md')
+        os.makedirs(os.path.dirname(page), exist_ok=True)
+        with open(page, 'w', encoding='utf-8') as fh:
+            fh.write('\n'.join(lines) + '\n' + body)
 
-# --- User docs ---
-print('Syncing user docs...')
-sync_dir(
-    os.path.join(repo_root, 'docs', 'user'),
-    os.path.join(site_dir, 'content', 'docs'),
-    link_mods={'rewrite_root', 'prefix_sibling', 'help_topic', 'strip_md'}
-)
+    return meta, headings
 
-# Fix specific anchor: Zola slugifies "3. Non-tree-sitter" as "3-non-tree-sitter-languages"
-ldst = os.path.join(site_dir, 'content', 'docs', 'languages.md')
-if os.path.exists(ldst):
-    with open(ldst, encoding='utf-8') as fh:
-        c = fh.read()
-    c = c.replace('(#3-non-tree-sitter)', '(#3-non-tree-sitter-languages)')
-    with open(ldst, 'w', encoding='utf-8') as fh:
-        fh.write(c)
-    print('  [fixed anchor in languages.md]')
 
-# --- Dev docs ---
-print('\nSyncing dev docs...')
-for subdir in ['guides', 'architecture', 'operations', 'audit', 'notes']:
-    sync_dir(
-        os.path.join(repo_root, 'docs', 'dev', subdir),
-        os.path.join(site_dir, 'content', 'dev', subdir),
-        link_mods={'rewrite_root', 'prefix_sibling', 'strip_md'}
+def section_landing_body(sec, meta, labels):
+    """Table(s) of the section's topics, using each doc's own summary line."""
+    out = []
+    groups = sec.get('group', [])
+    multi = len(groups) > 1
+
+    for group in groups:
+        if multi:
+            out.append(f"## {group['title']}")
+            out.append('')
+            if group.get('description'):
+                out.append(group['description'])
+                out.append('')
+        out.append('| Topic | What it covers |')
+        out.append('|---|---|')
+        for topic in group['docs']:
+            title, summary = meta[topic]
+            label = labels.get(topic, title)
+            cell = summary or ''
+            # Table cells cannot contain raw pipes.
+            cell = cell.replace('|', '\\|')
+            out.append(f'| [{label}](@/docs/{sec["slug"]}/{topic}.md) | {cell} |')
+        out.append('')
+
+    return '\n'.join(out)
+
+
+def write_section_landings(sections, meta, labels):
+    for i, sec in enumerate(sections):
+        path = os.path.join(DOCS_DST, sec['slug'], '_index.md')
+        body = section_landing_body(sec, meta, labels)
+        lines = [
+            '+++',
+            f'title = "{toml_escape(sec["title"])}"',
+            f'description = "{toml_escape(sec["description"])}"',
+            f'weight = {i + 1}',
+            'sort_by = "weight"',
+            'template = "docs-section.html"',
+            'page_template = "docs-page.html"',
+            '[extra]',
+            f'section_slug = "{sec["slug"]}"',
+            '+++',
+            '',
+        ]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write('\n'.join(lines) + '\n' + sec['description'] + '\n\n' + body)
+        print(f'  docs/{sec["slug"]}/ ({sum(len(g["docs"]) for g in sec.get("group", []))} topics)')
+
+
+def write_search_index(sections, meta, labels, headings):
+    """A tiny title/summary/heading index for the docs search box.
+
+    Deliberately not Zola's `build_search_index`: that emits an elasticlunr
+    index which needs the elasticlunr runtime vendored into static/, and a
+    strict CSP-friendly site should not pull a library to filter 113 rows.
+    Matching titles, summaries and section headings covers the question the
+    search box actually answers — "which page do I want?" — in ~40 lines of
+    dependency-free JS. Full-text body search is the deliberate omission.
+    """
+    entries = []
+    for sec in sections:
+        for group in sec.get('group', []):
+            for topic in group['docs']:
+                title, summary = meta[topic]
+                entries.append({
+                    'l': labels.get(topic, title),
+                    't': title,
+                    'u': f'docs/{sec["slug"]}/{topic}/',
+                    's': sec['title'],
+                    'g': group.get('title', ''),
+                    'd': summary,
+                    'h': ' '.join(headings.get(topic, [])),
+                })
+
+    dst = os.path.join(site_dir, 'static', 'docs-search.json')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, 'w', encoding='utf-8') as fh:
+        json.dump(entries, fh, separators=(',', ':'), ensure_ascii=False)
+    print(f'  static/docs-search.json ({len(entries)} entries)')
+
+
+def collect_dev_pages():
+    pages = set()
+    for sub in DEV_SUBDIRS:
+        for f in glob.glob(os.path.join(DEV_SRC, sub, '*.md')):
+            pages.add(f'{sub}/{os.path.basename(f)[:-3]}')
+    return pages
+
+
+def sync_dev_docs(topic_section, dev_pages):
+    for sub in DEV_SUBDIRS:
+        src_dir = os.path.join(DEV_SRC, sub)
+        if not os.path.isdir(src_dir):
+            print(f'  SKIP: {src_dir} not found')
+            continue
+        count = 0
+        for f in sorted(glob.glob(os.path.join(src_dir, '*.md'))):
+            name = os.path.basename(f)
+            with open(f, encoding='utf-8') as fh:
+                raw = fh.read()
+            title = make_title(raw, name[:-3])
+            body = strip_frontmatter(raw)
+            body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
+            body = rewrite_links(body, topic_section, dev_pages, is_user_doc=False)
+            dst = os.path.join(DEV_DST, sub, name)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'w', encoding='utf-8') as fh:
+                fh.write(f'+++\ntitle = "{toml_escape(title)}"\n+++\n\n{body}')
+            count += 1
+        print(f'  dev/{sub}/ ({count} pages)')
+
+
+def main():
+    print('Reading navigation manifest...')
+    sections, topic_section, labels = load_nav()
+    validate_nav(topic_section, labels)
+    guides = sum(
+        len(g['docs']) for s in sections if s['slug'] != 'reference'
+        for g in s.get('group', [])
     )
+    print(f'  {len(topic_section)} topics across {len(sections)} sections '
+          f'({guides} guides, {len(topic_section) - guides} reference)')
 
-print('\nDone.')
+    print('Updating version data...')
+    write_version_data()
+
+    dev_pages = collect_dev_pages()
+    reset_generated_dirs(sections)
+
+    print('Syncing user docs...')
+    meta, headings = sync_user_docs(topic_section, labels, dev_pages)
+    write_section_landings(sections, meta, labels)
+    write_search_index(sections, meta, labels, headings)
+
+    print('Syncing dev docs...')
+    sync_dev_docs(topic_section, dev_pages)
+
+    print('\nDone.')
+
+
+if __name__ == '__main__':
+    main()

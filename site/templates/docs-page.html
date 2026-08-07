@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — Lattice{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+{% set current_slug = page.extra.section_slug | default(value="") %}
+{% set current_group = page.extra.nav_group | default(value="") %}
+{% set current_url = page.permalink %}
+<div class="docs-layout">
+  {% include "docs-nav.html" %}
+
+  <article class="docs-content">
+    {% set parent = get_section(path=page.ancestors | last) %}
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="{{ get_url(path='/docs/') }}">Docs</a>
+      <span aria-hidden="true">/</span>
+      <a href="{{ parent.permalink }}">{{ parent.title }}</a>
+    </nav>
+
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}<p class="docs-lede">{{ page.description }}</p>{% endif %}
+
+    {% if page.toc | length > 2 %}
+    <details class="docs-toc">
+      <summary>On this page</summary>
+      <ul>
+        {% for h in page.toc %}
+        <li>
+          <a href="{{ h.permalink | safe }}">{{ h.title }}</a>
+          {% if h.children %}
+          <ul>
+            {% for c in h.children %}
+            <li><a href="{{ c.permalink | safe }}">{{ c.title }}</a></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+
+    {{ page.content | safe }}
+
+    <nav class="docs-pager" aria-label="Topic">
+      {% if page.lower %}
+      <a class="docs-pager-prev" href="{{ page.lower.permalink }}">
+        <span>Previous</span>{{ page.lower.extra.nav_label | default(value=page.lower.title) }}
+      </a>
+      {% endif %}
+      {% if page.higher %}
+      <a class="docs-pager-next" href="{{ page.higher.permalink }}">
+        <span>Next</span>{{ page.higher.extra.nav_label | default(value=page.higher.title) }}
+      </a>
+      {% endif %}
+    </nav>
+  </article>
+</div>
+{% endblock content %}

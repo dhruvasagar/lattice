@@ -1,0 +1,66 @@
+{# Docs sidebar.
+   Expects `current_slug` and (optionally) `current_group` in context.
+   Order comes from site/data/nav.toml; labels come from each page's
+   extra.nav_label, so the manifest stays the single source of order. #}
+{% set nav = load_data(path="data/nav.toml") %}
+
+<aside class="docs-sidebar">
+  <div class="docs-search" data-base="{{ get_url(path='/') }}">
+    <label class="visually-hidden" for="docs-search-input">Search documentation</label>
+    <input type="search" id="docs-search-input" placeholder="Search docs…"
+           autocomplete="off" spellcheck="false">
+    <div id="docs-search-results" class="docs-search-results" hidden></div>
+    <p id="docs-search-empty" class="docs-search-empty" hidden>No topic matches.</p>
+  </div>
+
+  <nav class="docs-nav" aria-label="Documentation">
+    <a class="docs-nav-home{% if current_slug == '' %} active{% endif %}"
+       href="{{ get_url(path='/docs/') }}">All documentation</a>
+
+    {% for sec in nav.section %}
+      {% set sec_section = get_section(path="docs/" ~ sec.slug ~ "/_index.md") %}
+      {% set is_current = sec.slug == current_slug %}
+      <details class="docs-nav-section"{% if is_current %} open{% endif %}>
+        <summary>
+          <span class="docs-nav-title">{{ sec.title }}</span>
+          <span class="docs-nav-count">{{ sec_section.pages | length }}</span>
+        </summary>
+
+        {% if sec.slug == "reference" %}
+          {# 74 pages — nest by family and only expand the one you are in. #}
+          <ul class="docs-nav-groups">
+            {% for group in sec.group %}
+              {% set in_group = is_current and group.title == current_group %}
+              <li class="docs-nav-group{% if in_group %} open{% endif %}">
+                <a href="{{ sec_section.permalink }}#{{ group.title | slugify }}">
+                  {{ group.title }}
+                  <span class="docs-nav-count">{{ group.docs | length }}</span>
+                </a>
+                {% if in_group %}
+                  <ul>
+                    {% for p in sec_section.pages %}
+                      {% if p.extra.nav_group == group.title %}
+                        <li>
+                          <a href="{{ p.permalink }}"{% if p.permalink == current_url %} class="active" aria-current="page"{% endif %}>{{ p.extra.nav_label }}</a>
+                        </li>
+                      {% endif %}
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <ul>
+            {% for p in sec_section.pages %}
+              <li>
+                <a href="{{ p.permalink }}"{% if p.permalink == current_url %} class="active" aria-current="page"{% endif %}>{{ p.extra.nav_label }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </details>
+    {% endfor %}
+  </nav>
+</aside>
+<script src="{{ get_url(path='docs-search.js') }}" defer></script>

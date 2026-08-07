@@ -1,0 +1,311 @@
+# Website navigation manifest for the user docs.
+#
+# `docs/user/*.md` is deliberately FLAT — it is the offline `:help` corpus
+# embedded in the binary, where `:help <topic>` resolves a bare topic name.
+# That shape is right for `:help` and wrong for a website, which needs a
+# reading order and progressive disclosure.
+#
+# This file is the site's navigation layer over that flat corpus. It decides
+# three things and nothing else:
+#
+#   * which section a topic lands in  (-> its URL, /docs/<slug>/<topic>/)
+#   * what order topics appear in     (-> sidebar + section landing order)
+#   * what the sidebar calls it       (-> [labels], only where the doc's own
+#                                         H1 reads badly out of context)
+#
+# `site/scripts/sync-docs.sh` reads this file, routes each doc to its section,
+# and resolves every `help:<topic>` cross-link to the topic's new path. The
+# sync FAILS if a doc in docs/user/ is missing here, or if an entry here names
+# a doc that does not exist — so this file cannot silently rot the way the
+# hand-maintained topic table in content/docs/_index.md did.
+#
+# Two tiers, and the distinction is load-bearing:
+#
+#   GUIDE sections (start..config) hold topics you read to learn a capability.
+#   They carry the main sidebar.
+#
+#   REFERENCE holds per-surface keymap tables — one buffer kind, one minor
+#   mode, one language grammar. You arrive by search or cross-link, not by
+#   browsing. 74 of the 113 topics live here; keeping them out of the main
+#   sidebar is the single biggest readability win in this layout.
+
+# ---------------------------------------------------------------------------
+# Guides
+# ---------------------------------------------------------------------------
+
+[[section]]
+slug = "start"
+title = "Getting started"
+description = "Your first hour: the modal loop, the interactive tutor, and how to look anything up."
+[[section.group]]
+docs = [
+  "getting-started",
+  "tutor-mode",
+  "dashboard-mode",
+  "help",
+]
+
+[[section]]
+slug = "editing"
+title = "Editing"
+description = "The vim grammar, the mode system, and the `:` line — the vocabulary everything else composes from."
+[[section.group]]
+docs = [
+  "modal-editing",
+  "modes",
+  "command-line-mode",
+  "ex-commands",
+  "surround-mode",
+]
+
+[[section]]
+slug = "navigation"
+title = "Navigating your project"
+description = "Buffers, panes and splits, the fuzzy picker, filesystem views, and project-wide search."
+[[section.group]]
+docs = [
+  "buffers",
+  "picker",
+  "file-tree-mode",
+  "oil-mode",
+  "project-search-mode",
+  "multibuffer-mode",
+  "narrow-mode",
+]
+
+[[section]]
+slug = "code"
+title = "Code intelligence"
+description = "Language support, language servers, completion, folding, and the build/error loop."
+[[section.group]]
+docs = [
+  "languages",
+  "lsp",
+  "lsp-mode",
+  "completion",
+  "folding",
+  "compilation-mode",
+  "error-list",
+]
+
+[[section]]
+slug = "git"
+title = "Git & diffs"
+description = "Magit — a full git porcelain inside the editor — plus general two- and three-way diffing."
+[[section.group]]
+docs = [
+  "magit",
+  "magit-status-mode",
+  "magit-transient",
+  "diff-mode",
+]
+
+[[section]]
+slug = "terminal"
+title = "Terminal & AI agents"
+description = "Shells as buffers, coding agents wired to the editor, and background-work notifications."
+[[section.group]]
+docs = [
+  "terminal-mode",
+  "claude-code-mode",
+  "opencode-mode",
+  "notifications",
+]
+
+[[section]]
+slug = "appearance"
+title = "Appearance"
+description = "Soft-wrap and layout, the 21 builtin themes, and the per-pane status row."
+[[section.group]]
+docs = [
+  "display",
+  "themes",
+  "modeline",
+]
+
+[[section]]
+slug = "config"
+title = "Configuration & extension"
+description = "Typed options, the Rust/WASM `init.rs`, and the plugin host."
+[[section.group]]
+docs = [
+  "options",
+  "init",
+  "emacs-keys-mode",
+  "plugins",
+  "core-plugins",
+]
+
+# ---------------------------------------------------------------------------
+# Reference — per-surface keymap tables, grouped by family.
+# ---------------------------------------------------------------------------
+
+[[section]]
+slug = "reference"
+title = "Reference"
+description = "Per-surface keymap tables: one buffer kind, one minor mode, or one language grammar each. Reach for search."
+
+[[section.group]]
+title = "Language modes"
+description = "One per bundled tree-sitter grammar: highlighting, folds, symbols, text objects."
+docs = [
+  "text-mode",
+  "rust-mode",
+  "python-mode",
+  "javascript-mode",
+  "typescript-mode",
+  "tsx-mode",
+  "go-mode",
+  "c-mode",
+  "cpp-mode",
+  "java-mode",
+  "ruby-mode",
+  "lua-mode",
+  "bash-mode",
+  "html-mode",
+  "css-mode",
+  "json-mode",
+  "toml-mode",
+  "yaml-mode",
+  "sql-mode",
+  "markdown-mode",
+]
+
+[[section.group]]
+title = "Magit buffers & chords"
+description = "Every magit buffer kind, plus the shared minor modes that carry chords across all of them."
+docs = [
+  "magit-core-mode",
+  "magit-hunk-mode",
+  "magit-global-mode",
+  "magit-diff-mode",
+  "magit-commit-mode",
+  "magit-revision-mode",
+  "magit-file-revision-mode",
+  "magit-log-mode",
+  "magit-blame-mode",
+  "magit-refs-mode",
+  "magit-branch-mode",
+  "magit-remote-mode",
+  "magit-submodule-mode",
+  "magit-stash-mode",
+  "magit-stash-show-mode",
+  "magit-rebase-mode",
+  "magit-notes-mode",
+  "magit-cherry-mode",
+]
+
+[[section.group]]
+title = "Completion & snippets"
+description = "The completion gate, the popup keymap, and each source that feeds candidates into it."
+docs = [
+  "completion-mode",
+  "completion-popup-mode",
+  "buffer-words-mode",
+  "path-completion-mode",
+  "tree-sitter-completion-mode",
+  "lsp-completion-mode",
+  "snippet-mode",
+  "snippet-completion-mode",
+  "active-snippet-mode",
+]
+
+[[section.group]]
+title = "LSP surfaces"
+description = "Hover popups and the three log buffers you open when a server misbehaves."
+docs = [
+  "hover-mode",
+  "lsp-log-mode",
+  "lsp-server-log-mode",
+  "lsp-trace-log-mode",
+]
+
+[[section.group]]
+title = "Display toggles"
+description = "One minor mode per `:set` display option — each is the same state as its vim counterpart."
+docs = [
+  "line-numbers-mode",
+  "relative-line-numbers-mode",
+  "wrap-mode",
+  "whitespace-show-mode",
+  "current-line-highlight-mode",
+  "read-only-mode",
+]
+
+[[section.group]]
+title = "Prompts & the minibuffer"
+description = "Every one-line input surface: the `:` line expanded, the search line, generic prompts, picker previews."
+docs = [
+  "command-line-expand-mode",
+  "search-line-mode",
+  "prompt-line-mode",
+  "preview-mode",
+]
+
+[[section.group]]
+title = "Terminal & REPL"
+description = "The two modal states a terminal buffer sits in, and the REPL input convention."
+docs = [
+  "terminal-normal-mode",
+  "terminal-insert-mode",
+  "repl-mode",
+]
+
+[[section.group]]
+title = "AI agent surfaces"
+description = "The conversation transcript, permission popups, and agent process logs."
+docs = [
+  "ai-conversation-mode",
+  "ai-permission-mode",
+  "ai-log-mode",
+  "pi-mode",
+]
+
+[[section.group]]
+title = "Synthetic buffers"
+description = "Read-only buffers the editor produces for you: help, messages, notifications, plugins, problems."
+docs = [
+  "help-mode",
+  "messages-mode",
+  "notifications-mode",
+  "plugins-mode",
+  "problems-minor-mode",
+  "diff-conflict-mode",
+]
+
+# ---------------------------------------------------------------------------
+# Sidebar label overrides.
+#
+# Only for docs whose own H1 reads badly stripped of page context — a
+# parenthetical, a bare mode name where the feature name is clearer, or a
+# title that duplicates its section. Everything else uses the doc's H1.
+# ---------------------------------------------------------------------------
+
+[labels]
+"getting-started"      = "First steps"
+"tutor-mode"           = "Interactive tutor"
+"dashboard-mode"       = "The launch dashboard"
+"help"                 = "Looking things up"
+"command-line-mode"    = "The command line"
+"surround-mode"        = "Surround"
+"file-tree-mode"       = "File tree"
+"oil-mode"             = "Oil — editable directories"
+"project-search-mode"  = "Project search"
+"multibuffer-mode"     = "Multibuffer views"
+"narrow-mode"          = "Narrow"
+"lsp-mode"             = "The lsp-mode gate"
+"compilation-mode"     = "Compilation"
+"error-list"           = "The error list"
+"magit-status-mode"    = "The status buffer"
+"magit-transient"      = "Transient menus"
+"diff-mode"            = "Diff & merge"
+"terminal-mode"        = "Terminal buffers"
+"claude-code-mode"     = "Claude Code"
+"opencode-mode"        = "opencode"
+"emacs-keys-mode"      = "The <C-x> leader"
+"init"                 = "init.rs"
+"buffers"              = "Buffers & panes"
+"picker"               = "Picker & marginalia"
+"modeline"             = "Modeline"
+"display"              = "Display & layout"
+"themes"               = "Themes & colorschemes"

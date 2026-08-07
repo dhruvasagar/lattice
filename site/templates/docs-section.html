@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} — Lattice{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+{% set current_slug = section.extra.section_slug | default(value="") %}
+{% set current_group = "" %}
+{% set current_url = "" %}
+<div class="docs-layout">
+  {% include "docs-nav.html" %}
+
+  <article class="docs-content">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="{{ get_url(path='/docs/') }}">Docs</a>
+    </nav>
+
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+  </article>
+</div>
+{% endblock content %}

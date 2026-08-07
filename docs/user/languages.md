@@ -18,7 +18,7 @@ how to add support for a new language -- both the common case
 |---------------------------------------------|------------------------------------|
 | Add a tree-sitter language to **core**      | [Section 1](#1-tree-sitter-core)   |
 | Add a language as a **plugin**              | [Section 2](#2-tree-sitter-plugin) |
-| Add a language **without tree-sitter**      | [Section 3](#3-non-tree-sitter)    |
+| Add a language **without tree-sitter**      | [Section 3](#3-non-tree-sitter-languages)    |
 | Update queries when a grammar version bumps | [Section 4](#4-grammar-bumps)      |
 
 ## Currently bundled

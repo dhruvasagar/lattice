@@ -1,35 +1,42 @@
-# Deploy the Lattice website (docs + landing page) to GitHub Pages.
+# Build and deploy the Lattice website (docs + landing page) to GitHub Pages.
 #
-# Builds the Zola site from site/, syncs docs from docs/user/, and
-# deploys the output to the gh-pages branch. Triggered on:
-#   - pushes to main touching site/ or docs/user/
-#   - manual workflow_dispatch
+# The build is a real gate, not just a publish step. `sync-docs.sh` fails if
+# docs/user/ and site/data/nav.toml disagree about which topics exist, and
+# `zola build` fails on any broken internal link or anchor between docs — so a
+# renamed topic or a dead `help:` cross-reference breaks CI instead of shipping.
+# That is why pull requests build too, without deploying.
 name: deploy-docs
 
+# NOTE: the two `paths:` lists are duplicated on purpose — GitHub Actions'
+# workflow parser does not support YAML anchors/aliases. Keep them in sync.
 on:
   push:
     branches: [main]
     paths:
       - 'site/**'
       - 'docs/user/**'
+      - 'docs/dev/**'
+      - '.github/workflows/deploy-docs.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'docs/user/**'
+      - 'docs/dev/**'
       - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# Per-ref so concurrent pull requests do not cancel each other's builds; the
+# deploy job narrows this to the single `pages` group below.
 concurrency:
-  group: pages
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,18 +45,36 @@ jobs:
         with:
           tool: zola
 
+      # Fails if docs/user/ and site/data/nav.toml disagree about which
+      # topics exist, so a new doc cannot land without a place in the nav.
       - name: Sync docs
         run: python3 site/scripts/sync-docs.sh
 
+      # Fails on broken internal links and anchors between docs.
       - name: Build Zola site
         run: zola build
         working-directory: site
 
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/public
 
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

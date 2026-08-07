@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Documentation — Lattice{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+{% set current_slug = "" %}
+{% set current_group = "" %}
+{% set current_url = "" %}
+{% set nav = load_data(path="data/nav.toml") %}
+<div class="docs-layout">
+  {% include "docs-nav.html" %}
+
+  <article class="docs-content">
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+
+    <h2 id="start-here">New here? Read these four, in order</h2>
+    <ol class="docs-path">
+      {% set path_topics = ["start/getting-started", "editing/modal-editing", "editing/modes", "navigation/buffers"] %}
+      {% for ref in path_topics %}
+        {% set p = get_page(path="docs/" ~ ref ~ ".md") %}
+        <li>
+          <a href="{{ p.permalink }}">{{ p.extra.nav_label }}</a>
+          <span>{{ p.description }}</span>
+        </li>
+      {% endfor %}
+    </ol>
+    <p class="docs-path-note">
+      Prefer to learn by doing? <a href="{{ get_url(path='/docs/start/tutor-mode/') }}">The interactive tutor</a>
+      teaches the same ground from inside the editor.
+    </p>
+
+    <h2 id="browse">Browse by area</h2>
+    <div class="docs-card-grid">
+      {% for sec in nav.section %}
+        {% set s = get_section(path="docs/" ~ sec.slug ~ "/_index.md") %}
+        <a class="docs-card{% if sec.slug == 'reference' %} docs-card-reference{% endif %}"
+           href="{{ s.permalink }}">
+          <h3>{{ sec.title }}</h3>
+          <p>{{ sec.description }}</p>
+          <span class="docs-card-meta">
+            {{ s.pages | length }} topic{{ s.pages | length | pluralize }}
+            {%- if sec.slug != "reference" %} ·
+              {%- for p in s.pages | slice(end=3) %} {{ p.extra.nav_label }}{% if not loop.last %},{% endif %}{% endfor %}
+              {%- if s.pages | length > 3 %}, …{% endif %}
+            {%- endif %}
+          </span>
+        </a>
+      {% endfor %}
+    </div>
+  </article>
+</div>
+{% endblock content %}

@@ -91,9 +91,10 @@ fn entry_as_status_line(
 ) -> Option<crate::actions::StatusLine> {
     use crate::actions::StatusLine;
     Some(match entry {
-        SectionEntry::File { path, .. } => StatusLine::File {
+        SectionEntry::File { path, status } => StatusLine::File {
             path: path.clone(),
             staged: kind == SectionKind::Staged,
+            untracked: *status == lattice_vcs::PathStatus::Untracked,
         },
         // An untracked file has no diff to show, but it classifies as a
         // `File` row (`untracked` is one of the entry labels), so it
@@ -101,6 +102,7 @@ fn entry_as_status_line(
         SectionEntry::UntrackedFile { path } => StatusLine::File {
             path: path.clone(),
             staged: false,
+            untracked: true,
         },
         SectionEntry::Stash { index, .. } => StatusLine::Stash { index: *index },
         SectionEntry::Commit { sha, .. } => StatusLine::Commit { sha: sha.clone() },
@@ -315,6 +317,7 @@ mod expansion_survives_refresh {
         crate::actions::entry_key(&crate::actions::StatusLine::File {
             path: PathBuf::from("a.txt"),
             staged: false,
+            untracked: false,
         })
     }
 

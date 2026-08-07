@@ -176,6 +176,15 @@ When the cursor is on a **file header** (the `  modified   path` line):
 | `s` | Stage the entire file |
 | `u` | Unstage the entire file |
 | `x` | Discard all working-tree changes to the file — asks for confirmation first (`Discard changes to <path>?`, `y`/`n`) before running `git checkout --` |
+| `x` on an **untracked** entry | **Deletes the file.** Asks `Delete untracked file <path>? git has no copy to restore.` before running `git clean -f -d --` |
+
+`x` on an untracked entry is a genuinely different act, and the prompt
+says so. There is no committed version to go back to, so "discard the
+changes" would mean nothing — the only thing available is removing the
+file, and unlike every other `x` in this buffer, git holds no copy to
+recover it from. (Until this was fixed, `x` there ran `git checkout --`
+and failed with `pathspec '<path>' did not match any file(s) known to
+git`.)
 
 ### Hunk-level
 

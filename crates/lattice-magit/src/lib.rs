@@ -430,6 +430,14 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "action:magit-discard-untracked-execute",
+        "Delete the untracked file after confirmation",
+        // Only a path: an untracked file has no hunks to synthesize a
+        // patch from, which is the same reason it cannot be restored
+        // with `git checkout`.
+        &[("path", "Repo-relative path of the untracked file to delete")],
+    ),
+    (
         "action:magit-global-file-delete-execute",
         "Delete the file after confirmation",
         &[("file", "Repo-relative path the prompt named")],
@@ -2382,6 +2390,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-discard-execute",
         "Execute the discard after confirmation",
+    );
+    reg(
+        "action:magit-discard-untracked-execute",
+        "Delete the untracked file after confirmation",
     );
     reg("action:magit-commit", "Open the commit buffer");
     reg("action:magit-commit-amend", "Amend the previous commit");

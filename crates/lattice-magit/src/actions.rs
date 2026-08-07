@@ -64,9 +64,25 @@ pub struct StatusBufferState {
 /// (two-word label) entry apart from every other one-word label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StatusLine {
-    File { path: PathBuf, staged: bool },
-    Stash { index: usize },
-    Commit { sha: String },
+    File {
+        path: PathBuf,
+        staged: bool,
+        /// Git has no record of this path.
+        ///
+        /// Load-bearing for discard and nothing else so far: `git
+        /// checkout -- <path>` restores a tracked file from the index,
+        /// and on an untracked one it fails with "pathspec … did not
+        /// match any file(s) known to git". Discarding an untracked
+        /// file means *deleting* it, which is a different command and
+        /// a different question to ask the user.
+        untracked: bool,
+    },
+    Stash {
+        index: usize,
+    },
+    Commit {
+        sha: String,
+    },
 }
 
 /// Status labels `SectionIndex::format_buffer_styled` renders via
@@ -128,7 +144,15 @@ pub(crate) fn classify_line_text(
             let staged = header_above()
                 .map(|h| h.starts_with("Staged"))
                 .unwrap_or(false);
-            return Some(StatusLine::File { path, staged });
+            // The label is the fact, and it is already parsed: the
+            // Untracked section renders `PathStatus::Untracked` as
+            // `"untracked"` (`sections::status_label`, held to
+            // `FILE_LABELS` by `status_label_is_a_subset_of_actions_file_labels`).
+            return Some(StatusLine::File {
+                path,
+                staged,
+                untracked: label == "untracked",
+            });
         }
     }
     // Only "Recent commits" entries fall through to here: "<sha> <subject>".
@@ -154,7 +178,7 @@ pub(crate) fn classify_line_text(
 /// range.
 pub(crate) fn entry_key(sl: &StatusLine) -> String {
     match sl {
-        StatusLine::File { path, staged } => format!("f:{staged}:{}", path.display()),
+        StatusLine::File { path, staged, .. } => format!("f:{staged}:{}", path.display()),
         StatusLine::Stash { index } => format!("s:{index}"),
         StatusLine::Commit { sha } => format!("c:{sha}"),
     }
@@ -206,7 +230,7 @@ pub(crate) fn run_show(workdir: &Path, sl: &StatusLine, context: i64) -> Option<
     // the more confusing half of a half-migration.
     let unified = format!("--unified={context}");
     match sl {
-        StatusLine::File { path, staged } => {
+        StatusLine::File { path, staged, .. } => {
             cmd.arg("diff");
             if *staged {
                 cmd.arg("--cached");
@@ -579,15 +603,14 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                 crate::magit_core_mode::HunkResolution::FileLevel => {
                     let s = status_state(ctx)?;
                     let g = s.lock().ok()?;
-                    let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
+                    let StatusLine::File {
+                        path, untracked, ..
+                    } = classify_line(&g, ctx.cursor.line)?
+                    else {
                         return None;
                     };
                     drop(g);
-                    Some(crate::confirm::ask_target(
-                        format!("Discard changes to {}?", path.display()),
-                        "action:magit-discard-execute",
-                        path.to_string_lossy().into_owned(),
-                    ))
+                    Some(file_discard_confirm(&path, untracked))
                 }
             }
         });
@@ -657,14 +680,21 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                     crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
                     crate::magit_core_mode::HunkResolution::FileLevel => {
                         let s = status_state(ctx)?;
-                        let (path, workdir) = {
+                        let (path, untracked, workdir) = {
                             let g = s.lock().ok()?;
-                            let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)?
+                            let StatusLine::File {
+                                path, untracked, ..
+                            } = classify_line(&g, ctx.cursor.line)?
                             else {
                                 return None;
                             };
-                            (path, g.workdir.clone())
+                            (path, untracked, g.workdir.clone())
                         };
+                        // Same split as the ask half: `git checkout`
+                        // cannot restore a path git has no record of.
+                        if untracked {
+                            return spawn_untracked_delete(s.clone(), workdir, path);
+                        }
                         spawn_mutation_and_refresh(
                             s.clone(),
                             format!("discard {}", path.display()),
@@ -678,6 +708,37 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         )
                     }
                 }
+            }
+        );
+    }
+
+    // Discarding an UNTRACKED file, after confirmation.
+    //
+    // A separate execute half rather than a branch inside the one
+    // above, for the reason `magit-global-file-discard` / `-delete` /
+    // `-checkout` are already three pairs: one action, one act. The
+    // ask half chooses which to name, so the question the user
+    // answered and the command that runs cannot drift apart.
+    {
+        handler!(
+            "action:magit-discard-untracked-execute",
+            move |ctx: &ActionContext<'_>| {
+                let s = status_state(ctx)?;
+                let workdir = s.lock().ok()?.workdir.clone();
+                // IX.2: act on what the prompt named. Re-derivation is
+                // the fallback for a path that carried nothing.
+                let path = match crate::confirm::carried_target(ctx) {
+                    Some(carried) if !carried.is_empty() => PathBuf::from(carried),
+                    _ => {
+                        let g = s.lock().ok()?;
+                        let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)?
+                        else {
+                            return None;
+                        };
+                        path
+                    }
+                };
+                spawn_untracked_delete(s.clone(), workdir, path)
             }
         );
     }
@@ -716,13 +777,16 @@ fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Eff
         classify_line(&g, line)?
     };
     match sl {
-        StatusLine::File { path, staged: true } => Some(Effect::OpenSyntheticBuffer {
+        StatusLine::File {
+            path, staged: true, ..
+        } => Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name("staged", &path),
             mode_id: "magit-file-revision-mode".to_string(),
         }),
         StatusLine::File {
             path,
             staged: false,
+            ..
         } => {
             let g = s.lock().ok()?;
             let full = g.workdir.join(&path);
@@ -830,7 +894,7 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
         handler!("action:magit-diff-file", move |ctx: &ActionContext<'_>| {
             let s = status_state(ctx)?;
             let g = s.lock().ok()?;
-            let StatusLine::File { path, staged } = classify_line(&g, ctx.cursor.line)? else {
+            let StatusLine::File { path, staged, .. } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
             };
             let scope = if staged { "staged" } else { "unstaged" };
@@ -1008,6 +1072,65 @@ fn batch_result<T>(
 /// [`finish_task`] then logs and publishes in one call. `label` names
 /// the operation in the notification, so it is what the user reads —
 /// "stage src/main.rs", not an argv.
+/// The confirm `x` raises on a file entry.
+///
+/// **An untracked file is a different act behind the same key**, and
+/// the prompt has to say so. "Discard changes to X?" presumes a
+/// committed version to go back to; for an untracked file there is
+/// none, so the only thing `x` can mean is *delete it*, and git keeps
+/// no copy to recover it from. Answering that question wrongly costs
+/// the file.
+///
+/// Pure and separate from the handler for the same reason
+/// `picker_sources::branch_checkout_outcome` is: the choice is worth
+/// testing directly, and the handler's context fixture is not part of
+/// the decision.
+fn file_discard_confirm(path: &std::path::Path, untracked: bool) -> Effect {
+    let target = path.to_string_lossy().into_owned();
+    if untracked {
+        return crate::confirm::ask_target(
+            format!(
+                "Delete untracked file {}? git has no copy to restore.",
+                path.display()
+            ),
+            "action:magit-discard-untracked-execute",
+            target,
+        );
+    }
+    crate::confirm::ask_target(
+        format!("Discard changes to {}?", path.display()),
+        "action:magit-discard-execute",
+        target,
+    )
+}
+
+/// Delete an untracked path, then refresh.
+///
+/// `git clean -f -d -- <path>` rather than `checkout` or `rm`: those
+/// two both address paths git already knows, and this one by
+/// definition is not. `-d` is what makes an untracked *directory* row
+/// work — `git status` reports one as a single entry when it contains
+/// nothing tracked, so the Untracked section shows a directory exactly
+/// where it shows a file, and `clean` without `-d` would silently skip
+/// it and report success.
+///
+/// The pathspec is `--`-separated for the usual reason: a path that
+/// looks like an option or a ref must not be read as one.
+fn spawn_untracked_delete(
+    s: Arc<Mutex<StatusBufferState>>,
+    workdir: std::path::PathBuf,
+    path: PathBuf,
+) -> Option<Effect> {
+    let shown = path.display().to_string();
+    spawn_mutation_and_refresh(s, format!("delete untracked {shown}"), move || {
+        let repo =
+            Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
+        repo.run_git(["clean", "-f", "-d", "--", &path.to_string_lossy()])
+            .map(|out| String::from_utf8_lossy(&out).into_owned())
+            .map_err(|e| e.to_string())
+    })
+}
+
 fn spawn_mutation_and_refresh(
     s: Arc<Mutex<StatusBufferState>>,
     label: String,
@@ -1423,6 +1546,7 @@ mod tests {
         Some(StatusLine::File {
             path: PathBuf::from(path),
             staged,
+            untracked: false,
         })
     }
 
@@ -1539,6 +1663,7 @@ mod tests {
             Some(StatusLine::File {
                 path: PathBuf::from("src/lib.rs"),
                 staged: true,
+                untracked: false,
             })
         );
     }
@@ -1552,12 +1677,60 @@ mod tests {
             Some(StatusLine::File {
                 path: PathBuf::from("src/main.rs"),
                 staged: false,
+                untracked: false,
             })
         );
     }
 
+    /// `x` on an untracked entry must ask a different question and
+    /// route to a different command.
+    ///
+    /// The bug: both paths ran `git checkout -- <path>`, which fails on
+    /// a path git has no record of — "pathspec 'test' did not match any
+    /// file(s) known to git" — so `x` on an untracked file reported a
+    /// git error and deleted nothing. The prompt was wrong too: it
+    /// offered to discard *changes* to a file that has no committed
+    /// version, when the only available act is deleting it outright.
     #[test]
-    fn untracked_file_entry_classifies_as_not_staged() {
+    fn discarding_an_untracked_file_asks_to_delete_it_not_to_revert_it() {
+        let tracked = file_discard_confirm(&PathBuf::from("src/main.rs"), false);
+        let untracked = file_discard_confirm(&PathBuf::from("test"), true);
+
+        let (t_prompt, t_yes) = match tracked {
+            Effect::Confirm {
+                prompt, yes_action, ..
+            } => (prompt, yes_action),
+            other => panic!("expected Confirm, got {other:?}"),
+        };
+        let (u_prompt, u_yes) = match untracked {
+            Effect::Confirm {
+                prompt, yes_action, ..
+            } => (prompt, yes_action),
+            other => panic!("expected Confirm, got {other:?}"),
+        };
+
+        assert_eq!(t_prompt, "Discard changes to src/main.rs?");
+        assert_eq!(t_yes, "action:magit-discard-execute");
+
+        assert!(
+            u_prompt.starts_with("Delete untracked file test?"),
+            "the prompt must name deletion — there are no changes to \
+             discard on a file git has never seen: {u_prompt:?}"
+        );
+        assert!(
+            u_prompt.contains("no copy"),
+            "and must say the deletion is unrecoverable: {u_prompt:?}"
+        );
+        assert_ne!(
+            u_yes, t_yes,
+            "the untracked path must not reach `git checkout --`, which \
+             fails outright on a path git has no record of"
+        );
+        assert_eq!(u_yes, "action:magit-discard-untracked-execute");
+    }
+
+    #[test]
+    fn untracked_file_entry_classifies_as_untracked_and_not_staged() {
         let line = format!("  {:<12} {}", "untracked", "notes.txt");
         let sl = classify_line_text(&line, header("Untracked files (1)"));
         assert_eq!(
@@ -1565,6 +1738,7 @@ mod tests {
             Some(StatusLine::File {
                 path: PathBuf::from("notes.txt"),
                 staged: false,
+                untracked: true,
             })
         );
     }
@@ -1578,6 +1752,7 @@ mod tests {
             Some(StatusLine::File {
                 path: PathBuf::from("old.rs"),
                 staged: false,
+                untracked: false,
             })
         );
     }
@@ -1640,10 +1815,12 @@ mod tests {
         let staged = StatusLine::File {
             path: PathBuf::from("conflict.rs"),
             staged: true,
+            untracked: false,
         };
         let unstaged = StatusLine::File {
             path: PathBuf::from("conflict.rs"),
             staged: false,
+            untracked: false,
         };
         assert_ne!(entry_key(&staged), entry_key(&unstaged));
     }
@@ -1697,6 +1874,7 @@ mod expand_payload_tests {
         StatusLine::File {
             path: PathBuf::from(path),
             staged: false,
+            untracked: false,
         }
     }
 

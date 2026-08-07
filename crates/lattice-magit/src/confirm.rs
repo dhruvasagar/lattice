@@ -33,6 +33,17 @@ use lattice_grammar::Effect;
 /// action without wiring its confirm is visible in one place.
 pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
     ("action:magit-discard", "action:magit-discard-execute"),
+    // `x` on an UNTRACKED entry. A second execute half for the same
+    // ask, because it is a different act: `git checkout` restores a
+    // tracked file from the index and fails outright on a path git has
+    // no record of ("pathspec … did not match any file(s) known to
+    // git"), so this one deletes. It is also strictly more
+    // destructive — there is no committed copy to recover — which is
+    // why it asks a differently-worded question.
+    (
+        "action:magit-discard",
+        "action:magit-discard-untracked-execute",
+    ),
     (
         "action:magit-global-file-discard",
         "action:magit-global-file-discard-execute",

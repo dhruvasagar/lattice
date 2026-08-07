@@ -1,7 +1,7 @@
 # Plugin tree-sitter seam — slice plan
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../architecture/plugin-treesitter-seam.md`](../../architecture/plugin-treesitter-seam.md).
+> Design contract: [`../../../architecture/plugin-treesitter-seam.md`](../../../architecture/plugin-treesitter-seam.md).
 > A **v1 foundational** seam (plugins query the parse tree). First consumer:
 > [`plugin-auto-pair.md`](plugin-auto-pair.md)'s manual scope query (AP.0.3).
 

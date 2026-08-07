@@ -4,7 +4,7 @@
 > search line are **buffer-backed, readline-grade editing surfaces** with
 > two independent history rings, `<C-x><C-e>` expand, live decorations, and
 > fuzzy pickers. See the
-> [slice plan](../operations/slice-plans/rich-minibuffer.md) for the
+> [slice plan](../operations/slice-plans/archive/rich-minibuffer.md) for the
 > delivered slice catalogue.
 >
 > **✅ Also shipped: a generic third family member.** Rather than
@@ -38,7 +38,7 @@ buffer** — but applied with progressive disclosure:
 Companion to `design.md` (§5.2 modal engine, §5.9.10 minibuffer, §5.12
 options), `mode-architecture.md` (mode-owned surfaces), `picker.md` (the
 history picker), and `config` (the expand-layout option). Sequencing:
-`../operations/slice-plans/rich-minibuffer.md`.
+`../operations/slice-plans/archive/rich-minibuffer.md`.
 
 ## 1. The problem with the status quo
 

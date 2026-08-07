@@ -15,7 +15,7 @@ entry below follows the same template.
 **Narrow mode (N.1)** is handled separately — it's a first-class primitive, not
 a `MultibufferProvider`, and has its own design fragment and slice plan:
 - Design: [`docs/dev/architecture/narrow-mode.md`](../../architecture/narrow-mode.md)
-- Slice plan: [`narrow-mode.md`](narrow-mode.md)
+- Slice plan: [`narrow-mode.md`](archive/narrow-mode.md)
 
 ---
 

@@ -6010,7 +6010,7 @@ from `document_buffer_id`, wrong for every non-document buffer.
 
 Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)
 §12.5–§12.6. Slice plan:
-[`slice-plans/describe-active-modes.md`](slice-plans/describe-active-modes.md).
+[`slice-plans/archive/describe-active-modes.md`](slice-plans/archive/describe-active-modes.md).
 
 ---
 
@@ -6065,7 +6065,7 @@ the count-prefix path swallowed **every** `<C-digit>` chord in Normal
 mode.
 
 Design: [`../architecture/pane-buffer-history.md`](../architecture/pane-buffer-history.md).
-Slice plan: [`slice-plans/pane-buffer-history.md`](slice-plans/pane-buffer-history.md)
+Slice plan: [`slice-plans/archive/pane-buffer-history.md`](slice-plans/archive/pane-buffer-history.md)
 (PBH.1–PBH.6).
 
 ---

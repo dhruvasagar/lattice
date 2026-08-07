@@ -2143,7 +2143,7 @@ derived projection. Numbers above reflect the post-fix state.
 **Architectural change, 2026-05-03.** `lattice-syntax` previously ran
 `tree_sitter_highlight::Highlighter` (which parses internally) AND a
 separate `tree_sitter::Parser` for the folds query — two parses per
-edit on every recognised buffer. The Option B migration ([Steps 1–4](../docs/implementation.md))
+edit on every recognised buffer. The Option B migration ([Steps 1–4](implementation.md))
 collapsed both onto a single `Parser` + `Tree` owned by `Syntax`:
 
 - One parse per edit. Highlight, folds, and any future query consumer

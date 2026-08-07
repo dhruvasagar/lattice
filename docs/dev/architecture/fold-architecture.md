@@ -392,7 +392,7 @@ side.
 ## 9. Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/fold-architecture.md`](../operations/slice-plans/fold-architecture.md);
+[`docs/dev/operations/slice-plans/fold-architecture.md`](../archive/fold-architecture.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

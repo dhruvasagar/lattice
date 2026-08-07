@@ -546,7 +546,7 @@ workspace `cargo test --workspace` clean.
 
 - Design: [multibuffer-is-a-regular-buffer.md](../../../architecture/multibuffer-is-a-regular-buffer.md).
 - Triggered by: M.6.X retro
-  ([multibuffer-views.md M.6.X row](./multibuffer-views.md)) +
+  ([multibuffer-views.md M.6.X row](../../../architecture/multibuffer-views.md)) +
   user reports during M.6 testing
   (vim grammar broken, no file labels visible).
 - Convention this slice canonicalises:

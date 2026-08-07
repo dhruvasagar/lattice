@@ -1,10 +1,10 @@
 # MG.41 — magit transient completeness
 
 **Status:** ✅ complete (2026-08-05). MG.41f was closed by
-[MG.43h](magit-transient-completion.md); the rows MG.41d / MG.41e left
-open were closed by [MG.43](magit-transient-completion.md). Parent plan:
-[`magit.md`](magit.md) (MG.1–MG.40). Design fragment:
-[`../../architecture/magit.md`](../../architecture/magit.md).
+[MG.43h](../magit-transient-completion.md); the rows MG.41d / MG.41e left
+open were closed by [MG.43](../magit-transient-completion.md). Parent plan:
+[`magit.md`](../magit.md) (MG.1–MG.40). Design fragment:
+[`../../../architecture/magit.md`](../../../architecture/magit.md).
 
 Close the gap between lattice's magit transients and magit's own. The
 audit behind this plan is §"Audit" below; the short version is that
@@ -21,7 +21,7 @@ offers three destinations.
 | MG.41c | ✅ | push 1→7 rows, pull 1→3 (+ promoted to a submenu), fetch 1→6 |
 | MG.41d | ✅ | reset 3→6, commit 2→7, stash 2→12, via MG.42's enablers |
 | MG.41e | ✅ | rebase, cherry-pick, revert (gated), merge, tag — every row magit gives a transient |
-| MG.41f | ✅ | Closed by [MG.43h](magit-transient-completion.md) — the diagnosis below was wrong |
+| MG.41f | ✅ | Closed by [MG.43h](../magit-transient-completion.md) — the diagnosis below was wrong |
 
 MG.41d and MG.41e stop where rows stop being rows. Their remaining
 entries each need a capability that does not exist yet, and those
@@ -279,7 +279,7 @@ it is pinned by a test.
 
 **Open at the time, and why each was not just another row.**
 All of these landed in [MG.42](magit-transient-enablers.md) and
-[MG.43](magit-transient-completion.md) except stash `w`, which was
+[MG.43](../magit-transient-completion.md) except stash `w`, which was
 dropped from v1 (git has no flag for it):
 
 - **Commit `e` extend** — `git commit --amend --no-edit` takes no
@@ -352,7 +352,7 @@ Open at the time: `A` cherry-pick, `_` revert, merge's `e`/`a`/`p`/`i`,
 tag's `r`/`p`, and rebase's non-sequence rows. Those needed new
 operations rather than menu structure, which is what
 [MG.42](magit-transient-enablers.md) built and
-[MG.43](magit-transient-completion.md) spent. **All of them have
+[MG.43](../magit-transient-completion.md) spent. **All of them have
 landed.**
 
 ### MG.41f — diff / log argument menus ✅ (closed by MG.43h)
@@ -380,7 +380,7 @@ projection was already generic, and only the empty `args_schema` was
 missing. What it actually needed was that schema (the *union*, since
 `view_argv` indexes by position in it) plus somewhere to leave the
 values for a buffer that does not exist yet. See
-[MG.43h](magit-transient-completion.md).
+[MG.43h](../magit-transient-completion.md).
 
 ### MG.41g — completion notifications, via the event bus ✅
 
@@ -490,7 +490,7 @@ Named rather than silently omitted, because it is why these stayed
 incomplete after MG.41: push, pull, fetch, branch, tag and notes all
 kept their `C` row missing.
 
-**[MG.43g](magit-transient-completion.md) built it.**
+**[MG.43g](../magit-transient-completion.md) built it.**
 `TransientItemKind::Variable` exists now, values are prefetched
 off-thread so the menu still builds without I/O, and all six `C` rows
 have landed.

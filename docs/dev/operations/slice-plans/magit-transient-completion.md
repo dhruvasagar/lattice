@@ -1,9 +1,9 @@
 # MG.43 — closing MG.41 / MG.42
 
 **Status:** ✅ complete (2026-08-05), except the v1 exclusions below. Closes the open items in
-[`magit-transient-completeness.md`](magit-transient-completeness.md)
+[`magit-transient-completeness.md`](archive/magit-transient-completeness.md)
 (MG.41d / MG.41e / MG.41f) and the deferred list in
-[`magit-transient-enablers.md`](magit-transient-enablers.md) (MG.42).
+[`magit-transient-enablers.md`](archive/magit-transient-enablers.md) (MG.42).
 Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
 
 MG.41 built the menu structure and MG.42 built the shared enablers.

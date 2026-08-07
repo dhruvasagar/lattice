@@ -376,7 +376,7 @@ No special headerline plumbing. It's just another virtual-row producer.
 ## 10. Slice plan
 
 Sequencing lives inline in
-[`docs/dev/operations/slice-plans/multibuffer-views.md`](../operations/slice-plans/multibuffer-views.md)
+[`docs/dev/operations/slice-plans/multibuffer-views.md`](multibuffer-views.md)
 (M.6.5 section); authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns *when* and

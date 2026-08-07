@@ -117,5 +117,5 @@ remain the province of `:search` and are out of scope for the operator.
   command dispatch the operator plugs into.
 - [`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator.md)
   — slice plan (SO-series sequencing + status).
-- [`../../user/project-search.md`](../../user/project-search.md) — user-facing
+- [`../../user/project-search.md`](../../user/project-search-mode.md) — user-facing
   docs (extended with the `g/` use-case table).

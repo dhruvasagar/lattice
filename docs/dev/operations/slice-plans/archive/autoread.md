@@ -1,6 +1,6 @@
 # Autoread — slice plan (AR)
 
-Sequencing for [`../../architecture/autoread.md`](../../architecture/autoread.md).
+Sequencing for [`../../../architecture/autoread.md`](../../../architecture/autoread.md).
 Goal: a file-backed Document buffer refreshes when its on-disk content changes —
 silent when clean, diff-resolved when conflicting — via a live `notify` watcher
 that scales with open buffers, not project size, and does zero UI-thread work.

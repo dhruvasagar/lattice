@@ -1,7 +1,7 @@
 # MG.53 — every selection is a picker
 
 **Status:** 🚧 MG.53.a/b/d/g/h ✅, c partial, e ref-only, f deferred. Parent:
-[`magit-transient-completeness.md`](magit-transient-completeness.md).
+[`magit-transient-completeness.md`](archive/magit-transient-completeness.md).
 Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
 
 MG.52 turned branch checkout, merge and reset from free-text prompts
@@ -312,7 +312,7 @@ guard already exists.
 
 ## Cross-references
 
-- [`magit-transient-completeness.md`](magit-transient-completeness.md) — parent (MG.41)
-- [`magit-transient-enablers.md`](magit-transient-enablers.md) — MG.42, the same "build the shared capability once" shape
+- [`magit-transient-completeness.md`](archive/magit-transient-completeness.md) — parent (MG.41)
+- [`magit-transient-enablers.md`](archive/magit-transient-enablers.md) — MG.42, the same "build the shared capability once" shape
 - [`../../architecture/magit.md`](../../architecture/magit.md) — design fragment
 - [`../implementation.md`](../implementation.md) — per-slice status ledger

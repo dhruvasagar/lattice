@@ -1,6 +1,6 @@
 # Help docs — mode-aligned naming and full coverage
 
-**Status:** in progress — HD.1–HD.5 ✅, HD.6 📝, HP.1/HP.2 ✅. Design
+**Status:** in progress — HD.1–HD.5 ✅, HD.6/HD.7 📝, HP.1–HP.3 ✅. Design
 fragment: none — this is a naming + coverage convention, recorded here
 and enforced by tests in `crates/lattice-help/src/topics.rs`. The HP
 slices at the end cover how a page *renders* rather than which pages
@@ -52,7 +52,7 @@ topic name, its `H1`, and the mode id are the same string.
 
 **Second finding, unrelated to naming:** 210 of the 269 cross-doc links
 in `docs/user/` were dead inside `:help`. Links written
-`](compilation.md)` fall through `classify_link_url` to
+`](compilation-mode.md)` fall through `classify_link_url` to
 `HelpLinkTarget::Unresolved`, so `<CR>` echoed ``no handler for
 `compilation.md` ``. They render fine on GitHub, which is why it went
 unnoticed. Only the 59 `](help:topic)` links worked.
@@ -370,3 +370,35 @@ and not from an ordinary file. Angle-bracket chords are unaffected.
 Closing it means classifying against the full contribution registry
 rather than the pushed-layer set; documented in `help.md` rather than
 left for a user to discover.
+
+### HD.7 — the coverage test only checks one direction 📝
+
+Found by the 2026-08-07 documentation audit.
+
+`every_user_doc_in_docs_user_is_registered_as_a_topic` guards
+**doc → topic**: every file on disk resolves as `:help <name>`. Nothing
+guards **mode → doc**. A registered mode with no page is therefore
+invisible to the whole suite — which is the direction HD.1's rule
+actually cares about, since the rule is "a mode answers to its id on
+every surface", and `:help <mode-id>` is one of those surfaces.
+
+Three real modes are in that gap today:
+
+| Mode | Declared | `:help <id>` |
+|---|---|---|
+| `lsp-diagnostics-mode` | `lattice-lsp/src/modes.rs:895` | fails |
+| `lsp-progress-mode` | `lattice-lsp/src/modes.rs:965` | fails |
+| `lsp-folding-mode` | `lattice-lsp/src/modes.rs:1020` | fails |
+
+All three are *described* inside [`lsp.md`](../../../user/lsp.md)
+and `lsp-mode.md`, so the content exists — what is missing is the page
+that answers to the id, exactly the split HD.1 set out to remove.
+
+**Why this is not just "write three files".** The guard has to come
+with them or the next mode reopens the gap silently, and the guard
+needs a way to say "this id is internal and deliberately has no page"
+— a scan of `ModeId::new` also catches ~47 test fixtures (`stub-mode`,
+`test-minor-3`, `plugin-a`), so the enumeration has to come from the
+mode REGISTRY at boot rather than from grepping the source. That is the
+slice: registry-driven enumeration, an explicit internal-modes
+allowlist, the guard, and then the three pages.

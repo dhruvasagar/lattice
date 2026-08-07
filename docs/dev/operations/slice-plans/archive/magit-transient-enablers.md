@@ -3,7 +3,7 @@
 **Status:** ✅ all four enablers landed (2026-08-05). Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md)
 (MG.41). Design fragment:
-[`../../architecture/magit.md`](../../architecture/magit.md).
+[`../../../architecture/magit.md`](../../../architecture/magit.md).
 
 MG.41 filled in every transient row that was **only** a row. What
 remains in MG.41d and MG.41e is not menu structure — each outstanding
@@ -197,7 +197,7 @@ The `--` placement is separately pinned, because a file named like a
 branch would otherwise be read as a revision.
 
 Rebase `p`/`u`/`e` were left for a rebase-onto slice.
-[MG.43b](magit-transient-completion.md) landed them, and found they
+[MG.43b](../magit-transient-completion.md) landed them, and found they
 need no `RemoteTarget` resolution at all: `@{push}` and `@{upstream}`
 are revisions git resolves natively, and rebase takes ONE of them where
 push wants a two-token pair.
@@ -292,7 +292,7 @@ Then MG.41d / MG.41e close with their remaining rows as **rows**.
 ## Deliberately not doing
 
 Every one of these was picked up by
-[MG.43](magit-transient-completion.md):
+[MG.43](../magit-transient-completion.md):
 
 - **cherry-pick `h` / `d` / `n` / `s`** — MG.43d, ported from magit's
   `magit--cherry-move` rather than from its docstrings.

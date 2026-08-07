@@ -3,7 +3,7 @@
 This document is the implementer-side companion to the
 forthcoming `design.md` §5.B (canonical text lands once T1
 ships). User-facing help lives in
-[`../../user/terminal.md`](../../user/terminal.md). The
+[`../../user/terminal.md`](../../user/terminal-mode.md). The
 planning document with slice-level breakdown lives in
 [`../operations/slice-plans/terminal-mode.md`](../operations/slice-plans/terminal-mode.md).
 

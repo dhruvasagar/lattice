@@ -25,7 +25,7 @@ in-editor — the `<topic>.md` filename is the topic name.
 | Ex-commands                | [user/ex-commands.md](user/ex-commands.md) |
 | Folding                    | [user/folding.md](user/folding.md)         |
 | Buffers + panes            | [user/buffers.md](user/buffers.md)         |
-| File tree & Oil            | [user/filetree-oil.md](user/filetree-oil.md) |
+| File tree & Oil            | [user/filetree-oil.md](user/oil-mode.md) |
 | Languages                  | [user/languages.md](user/languages.md)     |
 | Insert completion          | [user/completion.md](user/completion.md)   |
 | Modes (major + minor)      | [user/modes.md](user/modes.md)             |

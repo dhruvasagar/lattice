@@ -1478,7 +1478,7 @@ adequate.
 ## 9. Slice plan
 
 Sequencing lives in
-[`docs/dev/operations/slice-plans/multibuffer-views.md`](../operations/slice-plans/multibuffer-views.md);
+[`docs/dev/operations/slice-plans/multibuffer-views.md`](../archive/multibuffer-views.md);
 authoritative status per slice lives in
 [`docs/dev/operations/implementation.md`](../operations/implementation.md).
 This fragment owns *what* and *why*; the slice plan owns

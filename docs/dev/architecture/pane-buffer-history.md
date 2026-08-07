@@ -1,7 +1,7 @@
 # Pane buffer history
 
 **Status:** ✅ implemented (PBH.1–PBH.6). Slice plan:
-[`slice-plans/pane-buffer-history.md`](../operations/slice-plans/pane-buffer-history.md).
+[`slice-plans/archive/pane-buffer-history.md`](../operations/slice-plans/archive/pane-buffer-history.md).
 
 Per-pane back/forward navigation over the buffers a pane has shown.
 `<C-6>` steps back, `<C-7>` steps forward, `:history pane-buffers`

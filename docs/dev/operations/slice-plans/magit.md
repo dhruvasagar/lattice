@@ -2975,7 +2975,7 @@ commit has 2 of ~9 rows and stash 2 of ~14. Carved separately because
 it starts with a mechanism change — rows become data, retiring the
 four-place enumeration (`reg` / struct field / `id_by_name` / builder)
 that would otherwise cost ~240 synchronised edits. See
-[`magit-transient-completeness.md`](magit-transient-completeness.md).
+[`magit-transient-completeness.md`](archive/magit-transient-completeness.md).
 
 `Z` worktree stays **blocked**, and not on work: magit's workdir is
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to

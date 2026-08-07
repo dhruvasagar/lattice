@@ -2,11 +2,11 @@
 
 Slice-level breakdown for the terminal-mode feature. The
 authoritative design + architecture is in
-[`../architecture/terminal-mode.md`](../architecture/terminal-mode.md);
+[`../architecture/terminal-mode.md`](../../architecture/terminal-mode.md);
 this doc is the implementation roadmap with concrete sub-tasks,
 acceptance gates, and tracker entries per slice.
 
-User-facing help: [`../../user/terminal.md`](../../user/terminal.md).
+User-facing help: [`../../user/terminal.md`](../../../user/terminal-mode.md).
 
 ---
 

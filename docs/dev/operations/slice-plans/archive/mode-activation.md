@@ -1,7 +1,7 @@
 # Slice plan — event-driven mode activation
 
 Sequencing for the activation-trigger mechanism. Design contract:
-[`../../architecture/mode-architecture.md`](../../../architecture/mode-architecture.md)
+[`../../../architecture/mode-architecture.md`](../../../architecture/mode-architecture.md)
 **§7.4** (activation triggers) — read it first; this file is *when* and *in
 what order*, not *what* or *why*.
 
@@ -488,7 +488,7 @@ of the expand/leave migration and carries its own risk surface.
   entirely. Snippets become one *consumer*: a non-empty placeholder emits
   `Effect::Many([SelectionChange(span), EnterMode(Select(Charwise))])`; empty
   placeholders (`$1`) keep the bare Insert cursor. Design fragment:
-  [`../../architecture/select-mode.md`](../../../architecture/select-mode.md)
+  [`../../../architecture/select-mode.md`](../../../architecture/select-mode.md)
   (contract, state machine, keymap/dispatch, render, rejected alternatives,
   paramount-goal alignment). **Doc debt fixed by this slice:**
   `docs/user/completion.md` + the `active-snippet-mode` doc-comment already

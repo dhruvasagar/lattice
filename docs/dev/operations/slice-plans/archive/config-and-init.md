@@ -1,7 +1,7 @@
 # Config & init lifecycle — slice plan
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../architecture/config-and-init.md`](../../architecture/config-and-init.md).
+> Design contract: [`../../../architecture/config-and-init.md`](../../../architecture/config-and-init.md).
 > Reworks the init.rs lifecycle to init-first + event-deferred plugin config, adds
 > the plugin-lifecycle event, and the available-vs-enabled minor-mode model. First
 > consumer: auto-pair (off-by-default, enabled via an `on-plugin-loaded` handler) —

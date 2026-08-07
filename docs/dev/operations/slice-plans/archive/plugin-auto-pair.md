@@ -1,7 +1,7 @@
 # auto-pair — slice plan
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../architecture/plugin-auto-pair.md`](../../architecture/plugin-auto-pair.md).
+> Design contract: [`../../../architecture/plugin-auto-pair.md`](../../../architecture/plugin-auto-pair.md).
 > The first bundled 8b plugin. Its prerequisites (AP.0.x) are **general** host
 > capabilities; AP.0.3 is the tree-sitter seam, which has its own slice plan
 > ([`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)).
@@ -18,7 +18,7 @@ the plugin-manager PM track — NOT compiled-in).**
 > **available-but-off**, not self-activating — the user enables it via `init.rs`.
 > That model (available-vs-enabled, `enable-mode`, the `plugin-loaded` event,
 > init-first ordering) lives in its own fragment:
-> [`../../architecture/config-and-init.md`](../../architecture/config-and-init.md)
+> [`../../../architecture/config-and-init.md`](../../../architecture/config-and-init.md)
 > + [`config-and-init.md`](config-and-init.md) (slices CI.1–CI.6). auto-pair is
 > CI.5's consumer; AP.4 (bundle) ships the mode off by default. The earlier
 > `enable-mode`-at-top-level / re-activation-event / pending-value-store sketches
@@ -197,7 +197,7 @@ first end-to-end consumer of the tree-sitter seam (TS.3).
 ### AP.4 — bundling as the first core plugin  ✅
 **Reframed (2026-07-20):** auto-pair is NOT compiled into the binary and NOT
 enabled by a shipped init.rs. It is the **first core plugin** of the plugin-manager
-redesign ([`plugin-manager.md`](../../architecture/plugin-manager.md)) — shipped as
+redesign ([`plugin-manager.md`](../../../architecture/plugin-manager.md)) — shipped as
 a prebuilt `.wasm` in the runtime root, discovered at boot, and enabled by a config
 gate. The original sketch (compiled-in / `core-plugins/` dir / shipped init.rs) is
 **superseded**: `include_bytes!` was rejected (plugins ship separately), and the
@@ -205,7 +205,7 @@ init.rs-enable model gave way to decision (i) — discovery + a `<plugin>.enable
 gate.
 
 **Delivered via the PM core track** (slice plan:
-[`plugin-loader.md`](plugin-loader.md) PM.1–PM.4):
+[`plugin-loader.md`](../plugin-loader.md) PM.1–PM.4):
 - **PM.1** — the runtime-root search path + boot discovery (`Bundled` tier).
 - **PM.2** — `cargo xtask build-core-plugins` builds + stages `auto-pair.wasm` +
   `plugin.toml` into `runtime/plugins/auto-pair/` (prebuilt, not embedded).

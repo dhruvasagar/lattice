@@ -1700,7 +1700,7 @@ mode-scope tests + docs.
 ### 12.5 `:describe-active-modes` — the buffer's own mode stack
 
 > Sequencing, slice IDs and status live in
-> [slice plan: describe-active-modes](../operations/slice-plans/describe-active-modes.md).
+> [slice plan: describe-active-modes](../operations/slice-plans/archive/describe-active-modes.md).
 
 **The question it answers.** "What is this buffer, and what
 can I press in it?" Distinct from the three neighbours that
@@ -2193,10 +2193,10 @@ for sequencing and the landed commit.
 
 ## See also
 
-- [slice plan: lattice-keymap crate + layer-trace](../operations/slice-plans/keymap-impl-plan.md) -- T1-T13 sequencing.
+- [slice plan: lattice-keymap crate + layer-trace](../archive/keymap-impl-plan.md) -- T1-T13 sequencing.
 - [slice plan: keymap-substrate](../archive/keymap-substrate.md) -- K.2 sequencing.
 - [slice plan: help-prefix](../archive/help-prefix.md) -- K.3 sequencing.
-- [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.
+- [slice plan: mode-ownership-cleanup](../archive/mode-ownership-cleanup.md) -- MO.1--MO.4, gated on K.2 landing.
 - [design.md §5.2.3](design.md) -- canonical spec.
 - [design.md §5.2.4](design.md) -- extensibility (matches §5.5
   here).

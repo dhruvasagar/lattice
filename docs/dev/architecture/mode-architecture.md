@@ -3567,7 +3567,7 @@ pattern.
 
 Sequencing + per-phase scope + status for the migration
 (LSP / Oil / Snippet / broader mode-ownership pass) lives in
-[`docs/dev/operations/slice-plans/mode-ownership-cleanup.md`](../operations/slice-plans/mode-ownership-cleanup.md).
+[`docs/dev/operations/slice-plans/mode-ownership-cleanup.md`](../archive/mode-ownership-cleanup.md).
 That file owns *when + in what order + status*; this section
 stays scoped to the *what + why* (the principle + the going-
 forward convention).
@@ -3597,7 +3597,7 @@ the same per-area code.
   `crate::diff::mode::diff_mode_layer_bindings` helper at
   `MinorMode(diff-mode)` layer (host-side, not yet
   migrated). Migration is tracked under
-  [`../operations/slice-plans/mode-ownership-cleanup.md`](../operations/slice-plans/mode-ownership-cleanup.md)
+  [`../operations/slice-plans/mode-ownership-cleanup.md`](../archive/mode-ownership-cleanup.md)
   as the MO.x diff-mode-keymap-migration slice.
 
 ### Convention for new mode work (going forward)

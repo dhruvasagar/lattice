@@ -176,6 +176,14 @@ struct ExpiryChannel {
 pub enum NotifyInbound {
     /// This notification's timeout elapsed.
     Expire(NotificationId),
+    /// The store changed and the corner needs redrawing.
+    ///
+    /// Carries no payload and its handler does nothing: the **send** is
+    /// the entire point, because `InboundBus::send` wakes the editor and
+    /// the actor's `async_landed` arm republishes render state off that
+    /// wake. Without it a store mutated from an off-thread producer sat
+    /// invisible until the user next pressed a key.
+    Changed,
 }
 
 pub type NotificationStoreHandle = Arc<NotificationStore>;
@@ -249,7 +257,7 @@ impl NotificationStore {
         if let Ok(mut v) = self.inner.lock() {
             v.push(notification);
         }
-        self.version.fetch_add(1, Ordering::Release);
+        self.bump_and_wake();
         // NOTIF.1e: tee to `*messages*`. Three surfaces, three
         // questions — a notification is the signal and `*messages*` is
         // the record, so one you missed (or that `max-visible = 0`
@@ -264,6 +272,38 @@ impl NotificationStore {
         }
         self.arm_visible();
         id
+    }
+
+    /// Bump the render version **and wake the editor**, in one call.
+    ///
+    /// Deliberately not separable, for the same reason `finish_task`
+    /// fuses its log and its publish: every producer here runs off the
+    /// actor thread, so a mutation that bumped the version but woke
+    /// nobody is invisible until the user happens to press a key. That
+    /// was the shipped behaviour — `post` bumped and armed a timeout,
+    /// and the ONLY thing that ever reached the inbound bus was the
+    /// expiry. A `magit push` finishing while you sat idle drew
+    /// nothing, its 4-second clock ran down unseen, and the wake that
+    /// finally arrived was the one that removed it.
+    ///
+    /// Fusing them here rather than at each call site means the failure
+    /// mode requires actively bypassing this method rather than merely
+    /// forgetting a line.
+    ///
+    /// Re-entrancy is bounded: `dismiss` is itself called from the
+    /// inbound handler, so it sends `Changed` back onto the bus — but
+    /// the handler for `Changed` does nothing and a second `dismiss` of
+    /// an absent id does not bump, so this settles after one extra
+    /// no-op drain rather than looping.
+    fn bump_and_wake(&self) {
+        self.version.fetch_add(1, Ordering::Release);
+        let Ok(guard) = self.expiry.lock() else {
+            return;
+        };
+        // No channel is a test or headless harness: bump, wake nobody.
+        if let Some(channel) = guard.as_ref() {
+            let _ = channel.bus.send(NotifyInbound::Changed);
+        }
     }
 
     /// Start the clock on every **visible** notification that has a
@@ -342,7 +382,7 @@ impl NotificationStore {
         {
             slot.actions.push(action);
         }
-        self.version.fetch_add(1, Ordering::Release);
+        self.bump_and_wake();
         id
     }
 
@@ -376,7 +416,7 @@ impl NotificationStore {
         slot.text = text.into();
         slot.timeout = timeout;
         drop(v);
-        self.version.fetch_add(1, Ordering::Release);
+        self.bump_and_wake();
         // Re-arm: a notification posted with no timeout ("fetching…")
         // and replaced by one that has a timeout ("fetched") must
         // actually expire. Without this it would stay up forever, which
@@ -424,7 +464,7 @@ impl NotificationStore {
         let removed = v.len() != before;
         drop(v);
         if removed {
-            self.version.fetch_add(1, Ordering::Release);
+            self.bump_and_wake();
             // A removal frees a slot — promote whatever was queued and
             // start its clock in the same step.
             self.arm_visible();
@@ -441,7 +481,7 @@ impl NotificationStore {
         v.clear();
         drop(v);
         if n > 0 {
-            self.version.fetch_add(1, Ordering::Release);
+            self.bump_and_wake();
             // Nothing left to promote, but `armed` must be cleared or
             // it would hold ids that no longer exist.
             self.arm_visible();
@@ -597,8 +637,17 @@ fn install_background_task_subscriber(
             let Event::BackgroundTaskFinished { label, outcome, .. } = event else {
                 continue;
             };
-            // `post` wakes the editor itself, so the notification
-            // reaches the screen without a keypress.
+            // `post` wakes the editor via `bump_and_wake`, so the
+            // notification reaches the screen without a keypress.
+            //
+            // This comment previously asserted that as though it were
+            // already true; it was not, and being written down is a
+            // large part of why nobody checked. `post` bumped the
+            // version and woke nobody, so every completion reported
+            // through here — magit's pushes among them — was drawn only
+            // if the user happened to press a key inside its timeout.
+            // Pinned now by
+            // `a_posted_notification_wakes_the_editor_with_no_keystroke`.
             match outcome {
                 TaskOutcome::Succeeded { summary } => {
                     let text = if summary.is_empty() {
@@ -663,6 +712,11 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
             NotifyInbound::Expire(id) => {
                 for_handler.dismiss(id);
             }
+            // Nothing to do, and that is correct: the store was already
+            // mutated synchronously by whoever sent this. The value was
+            // delivered by `InboundBus::send` waking the editor, which
+            // is what gets the corner repainted off-keystroke.
+            NotifyInbound::Changed => {}
         }
         Vec::new()
     });
@@ -822,6 +876,35 @@ mod tests {
         assert_eq!(s.version(), v3, "clearing an empty store changed nothing");
     }
 
+    /// The next **expiry** on the bus, stepping over the `Changed`
+    /// wakes every store mutation sends.
+    ///
+    /// Those wakes are not noise to be filtered away in production —
+    /// they are how a posted notification reaches the screen at all —
+    /// but the tests below are about the expiry *clock*, so they step
+    /// past them rather than asserting on bus position.
+    async fn next_expire(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<NotifyInbound>,
+    ) -> Option<NotifyInbound> {
+        loop {
+            match rx.recv().await {
+                Some(NotifyInbound::Changed) => continue,
+                other => return other,
+            }
+        }
+    }
+
+    /// Whether any expiry is sitting on the bus right now. Drains the
+    /// `Changed` wakes, which are always present after a post.
+    fn expiry_pending(rx: &mut tokio::sync::mpsc::UnboundedReceiver<NotifyInbound>) -> bool {
+        while let Ok(item) = rx.try_recv() {
+            if !matches!(item, NotifyInbound::Changed) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The expiry path, driven on a paused clock so it is
     /// deterministic rather than a sleep in the test suite.
     ///
@@ -854,7 +937,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(5)).await;
         // Bounded: a broken scheduler sends nothing, and an unbounded
         // `recv().await` would hang the suite instead of failing it.
-        let item = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        let item = tokio::time::timeout(Duration::from_secs(1), next_expire(&mut rx))
             .await
             .expect("the expiry must arrive — nothing was scheduled")
             .expect("the bus is open");
@@ -865,6 +948,40 @@ mod tests {
             store.is_empty(),
             "the notification goes away on its own, not on the next keypress"
         );
+    }
+
+    /// The other half of the same guarantee, and the one that was
+    /// missing: a notification must **appear** without a keystroke,
+    /// not merely disappear without one.
+    ///
+    /// The asymmetry was invisible because the expiry test above reads
+    /// like it covers this. It does not: expiry is the only thing that
+    /// ever reached the inbound bus, so `post` mutated the store, armed
+    /// a timeout, and woke nobody. A `magit push` finishing while you
+    /// sat idle was never drawn — and its 4-second clock was already
+    /// running, so by the time the expiry wake DID arrive the
+    /// notification had been dismissed unseen. Pressing any key inside
+    /// those 4 seconds showed it, which is why this reads as "sometimes
+    /// works" rather than "never works".
+    #[tokio::test(start_paused = true)]
+    async fn a_posted_notification_wakes_the_editor_with_no_keystroke() {
+        let store: NotificationStoreHandle = Arc::new(NotificationStore::new());
+        let wake = Arc::new(tokio::sync::Notify::new());
+        // `_rx` is bound, not dropped: `InboundBus::send` fails on a
+        // closed receiver and would skip the wake, which would pass
+        // this test for the wrong reason.
+        let (bus, _rx) = lattice_mode::inbound::make_inbound_raw::<NotifyInbound>(wake.clone());
+        store.set_expiry_channel(bus, tokio::runtime::Handle::current());
+
+        store.post(NotificationLevel::Info, "push: everything up-to-date");
+
+        tokio::time::timeout(Duration::from_secs(1), wake.notified())
+            .await
+            .expect(
+                "posting must wake the editor — otherwise the notification \
+                 sits invisible until the next keypress while its timeout \
+                 runs down",
+            );
     }
 
     /// A notification with no timeout is the "still running" state —
@@ -882,7 +999,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(3600)).await;
 
         assert!(
-            rx.try_recv().is_err(),
+            !expiry_pending(&mut rx),
             "nothing should have been scheduled for a timeout-less notification"
         );
         assert_eq!(store.visible().len(), 1);
@@ -910,7 +1027,7 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(5)).await;
         assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            tokio::time::timeout(Duration::from_secs(1), next_expire(&mut rx))
                 .await
                 .expect("the re-armed expiry must fire")
                 .expect("the bus is open"),
@@ -943,9 +1060,14 @@ mod tests {
 
         // Exactly the three that were VISIBLE expire. The queued one's
         // clock never started.
+        // Collect expiries, skipping the `Changed` wakes — a `while let
+        // Ok(Expire(..))` would stop dead at the first one and report
+        // an empty set.
         let mut expired = Vec::new();
-        while let Ok(NotifyInbound::Expire(id)) = rx.try_recv() {
-            expired.push(id);
+        while let Ok(item) = rx.try_recv() {
+            if let NotifyInbound::Expire(id) = item {
+                expired.push(id);
+            }
         }
         expired.sort();
         assert_eq!(
@@ -979,9 +1101,14 @@ mod tests {
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
 
+        // Collect expiries, skipping the `Changed` wakes — a `while let
+        // Ok(Expire(..))` would stop dead at the first one and report
+        // an empty set.
         let mut expired = Vec::new();
-        while let Ok(NotifyInbound::Expire(id)) = rx.try_recv() {
-            expired.push(id);
+        while let Ok(item) = rx.try_recv() {
+            if let NotifyInbound::Expire(id) = item {
+                expired.push(id);
+            }
         }
         assert!(
             expired.contains(&ids[3]),

@@ -1593,6 +1593,20 @@ impl Editor {
             .generation
             .load(std::sync::atomic::Ordering::Relaxed)
             .hash(&mut h);
+        // NOTIF: the corner is a non-cell surface fed by a store the
+        // actor does not own, so nothing else here moves when it
+        // changes. Without this the paint gate reports "nothing moved"
+        // for a notification that just arrived, `paint_request` never
+        // fires, and the popup waits for the next keystroke — the same
+        // shape as the `wasm_decorations` generation above, and the
+        // second half of the invisible-completion bug (the first was
+        // the missing wake in `NotificationStore::bump_and_wake`).
+        // Version, not content: the store bumps it on every mutation
+        // and reading it is one atomic load.
+        self.services
+            .get::<lattice_notify::NotificationStoreHandle>()
+            .map(|s| s.version())
+            .hash(&mut h);
         h.finish()
     }
 
@@ -37617,6 +37631,57 @@ mod tests {
         assert!(
             !editor.publish_render_state(),
             "a settled publish must not request a paint"
+        );
+    }
+
+    /// NOTIF: a notification arriving with no keystroke in flight must
+    /// flip the paint gate.
+    ///
+    /// The corner is fed by a store the actor does not own, so nothing
+    /// else in `compute_paint_revision` moves when one is posted. That
+    /// was the second half of the invisible-completion bug: even once
+    /// the store learned to wake the editor, the wake reached a publish
+    /// that reported "nothing moved", so `paint_request` never fired
+    /// and a `magit push` completion still waited for a keypress.
+    #[test]
+    fn publish_render_state_paint_gate_tracks_notifications() {
+        // `services` is an `Arc`, so the store goes in before the
+        // Editor is built — same shape as
+        // `editor_with_highlights_service`.
+        let store: lattice_notify::NotificationStoreHandle =
+            std::sync::Arc::new(lattice_notify::NotificationStore::new());
+        let mut registry = lattice_mode::ServiceRegistry::new();
+        registry.register(store.clone());
+        let mut editor = Editor {
+            services: std::sync::Arc::new(registry),
+            ..Default::default()
+        };
+
+        let _ = editor.publish_render_state();
+        assert!(
+            !editor.publish_render_state(),
+            "a no-op publish must not request a paint"
+        );
+
+        store.post(
+            lattice_notify::NotificationLevel::Info,
+            "push: everything up-to-date",
+        );
+        assert!(
+            editor.publish_render_state(),
+            "a posted notification must request a paint without a keystroke"
+        );
+        assert!(
+            !editor.publish_render_state(),
+            "a settled publish must not request a paint"
+        );
+
+        // Removal is the same surface in the other direction: an
+        // expired notification has to stop being painted on its own.
+        store.dismiss_all();
+        assert!(
+            editor.publish_render_state(),
+            "a dismissed notification must request a paint without a keystroke"
         );
     }
 

@@ -39,11 +39,20 @@
            href="{{ s.permalink }}">
           <h3>{{ sec.title }}</h3>
           <p>{{ sec.description }}</p>
+          {# Only core Tera filters here: `slice` and `pluralize` exist in
+             newer Tera but not in every Zola build, and an unknown filter is
+             a hard build failure, not a fallback. Index arithmetic works
+             everywhere. #}
           <span class="docs-card-meta">
-            {{ s.pages | length }} topic{{ s.pages | length | pluralize }}
+            {% set n = s.pages | length %}
+            {{ n }} topic{% if n != 1 %}s{% endif %}
             {%- if sec.slug != "reference" %} ·
-              {%- for p in s.pages | slice(end=3) %} {{ p.extra.nav_label }}{% if not loop.last %},{% endif %}{% endfor %}
-              {%- if s.pages | length > 3 %}, …{% endif %}
+              {%- for p in s.pages %}
+                {%- if loop.index0 < 3 %}
+                  {%- if loop.index0 > 0 %},{% endif %} {{ p.extra.nav_label }}
+                {%- endif %}
+              {%- endfor %}
+              {%- if n > 3 %}, …{% endif %}
             {%- endif %}
           </span>
         </a>

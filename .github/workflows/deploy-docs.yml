@@ -40,10 +40,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # PINNED deliberately. Unpinned, CI resolved a Zola whose Tera lacked
+      # the `slice` filter while the local build had it, so a template that
+      # built clean locally failed the deploy — an unknown filter is a hard
+      # error, not a fallback. Pinning is what makes a local `zola build` a
+      # real predictor of CI. Bump this and the local toolchain together.
       - name: Install Zola
         uses: taiki-e/install-action@v2
         with:
-          tool: zola
+          tool: zola@0.22.1
 
       # Fails if docs/user/ and site/data/nav.toml disagree about which
       # topics exist, so a new doc cannot land without a place in the nav.

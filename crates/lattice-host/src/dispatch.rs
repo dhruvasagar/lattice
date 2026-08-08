@@ -1915,6 +1915,26 @@ impl Editor {
         self.publish_render_state();
     }
 
+    /// [`Self::set_cursor`], then clamp both axes into the now-active
+    /// buffer.
+    ///
+    /// For the `Open*At` effects, whose position is computed **before
+    /// the target buffer exists** and therefore cannot be validated at
+    /// the point it is produced. MG.50's magit `<CR>` is the case that
+    /// needs it: on a deletion row the byte offset is measured against
+    /// the *deleted* text, while the line it resolves to holds whatever
+    /// is there now — which may be shorter. Without the clamp the caret
+    /// lands past end-of-line and the next motion behaves oddly.
+    ///
+    /// A separate method rather than folding the clamp into
+    /// `set_cursor`: callers that position within a buffer they already
+    /// hold have nothing to clamp against and should not pay for it.
+    pub fn set_cursor_clamped(&mut self, cursor: lattice_protocol::position::Position) {
+        self.cursor = cursor;
+        self.clamp_cursor_to_active_buffer();
+        self.publish_render_state();
+    }
+
     /// Write `self.cursor.line` and publish.
     pub fn set_cursor_line(&mut self, line: u32) {
         self.cursor.line = line;

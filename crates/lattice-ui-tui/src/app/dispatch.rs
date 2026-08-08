@@ -1051,7 +1051,7 @@ impl App {
             Effect::OpenBufferAt { path, position, force } => {
                 self.do_edit(path, force);
                 self.mutate_editor_with(move |e| {
-                    e.set_cursor(position);
+                    e.set_cursor_clamped(position);
                 });
             }
             // 5.5.E.7.5: `Substitute` migrated to
@@ -1133,7 +1133,7 @@ impl App {
             } => {
                 self.open_synthetic_buffer(&name, &mode_id);
                 self.mutate_editor_with(move |e| {
-                    e.set_cursor(position);
+                    e.set_cursor_clamped(position);
                 });
             }
             // PI.2b: dump the plugin-API catalog into a savable buffer.
@@ -1601,6 +1601,42 @@ mod tests {
         app_in_command_mode, app_with, attach_test_syntax, invoke_motion, press, press_chars,
         subscribe_all_events, write_temp_file,
     };
+
+    /// MG.50: the `Open*At` effects carry a position computed **before
+    /// the target buffer exists**, so it can name an offset the
+    /// destination line does not have. magit `<CR>` on a deletion row is
+    /// the real case: the byte offset is measured against the deleted
+    /// text, while the line it resolves to holds whatever is there now,
+    /// which may be shorter.
+    ///
+    /// Both `OpenBufferAt` and `OpenSyntheticBufferAt` therefore
+    /// position through `set_cursor_clamped`, not `set_cursor`.
+    #[test]
+    fn an_open_at_position_past_end_of_line_is_clamped() {
+        let mut a = app_with("short\nlonger line here\n", 10);
+
+        a.editor
+            .set_cursor_clamped(lattice_protocol::position::Position::new(0, 40));
+
+        assert_eq!(a.editor.cursor.line, 0);
+        assert_eq!(
+            a.editor.cursor.byte, 5,
+            "the caret must land at end-of-line, not past it — a caret \
+             beyond the line makes the next motion behave oddly"
+        );
+    }
+
+    /// The clamp must not quietly move a caret that was already valid.
+    #[test]
+    fn an_open_at_position_within_the_line_is_untouched() {
+        let mut a = app_with("short\nlonger line here\n", 10);
+
+        a.editor
+            .set_cursor_clamped(lattice_protocol::position::Position::new(1, 7));
+
+        assert_eq!(a.editor.cursor.line, 1);
+        assert_eq!(a.editor.cursor.byte, 7);
+    }
     use crate::app::test_helpers::{fresh_workspace, write_workspace_config};
     use crate::app::word_under_cursor;
     use crate::app::*;

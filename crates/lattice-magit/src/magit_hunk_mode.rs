@@ -150,18 +150,20 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     let path = crate::hunk::path_at_cursor(read, ctx.cursor.line as usize)?;
     let target = view.diff_target(&path, ctx.cursor)?;
 
-    // MG.50: land on the line the code under the cursor lives on.
+    // MG.50: land on the code under the cursor — the right line AND the
+    // right offset within it, so `<CR>` on a hunk row puts the caret on
+    // the same token it was on in the diff rather than at line start.
     //
     // `None` here is the ordinary case, not a failure — a file entry row
     // is not inside a hunk, and emacs opens those at the top too. The
     // target opens unpositioned.
-    match crate::hunk::source_line_at(read, ctx.cursor.line as usize) {
-        Some(line) => Some(at_line(target, line)),
+    match crate::hunk::source_position_at(read, ctx.cursor.line as usize, ctx.cursor.byte) {
+        Some(pos) => Some(at_position(target, pos)),
         None => Some(target),
     }
 }
 
-/// MG.50: re-express an "open this" effect as "open this AT `line`".
+/// MG.50: re-express an "open this" effect as "open this AT `pos`".
 ///
 /// Positioning has to be part of the SAME effect rather than a
 /// following `CursorMove`: the opens are peer-applied (the TUI/GPUI
@@ -172,9 +174,12 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
 /// which records the same bug for search `<CR>`.
 ///
 /// Effects with nothing to position (an echo, a refusal) pass through.
-fn at_line(effect: lattice_grammar::Effect, line: u32) -> lattice_grammar::Effect {
+fn at_position(
+    effect: lattice_grammar::Effect,
+    pos: crate::hunk::SourcePos,
+) -> lattice_grammar::Effect {
     use lattice_grammar::Effect;
-    let position = lattice_protocol::position::Position::new(line, 0);
+    let position = lattice_protocol::position::Position::new(pos.line, pos.byte);
     match effect {
         Effect::OpenBuffer { path, force } => Effect::OpenBufferAt {
             path,
@@ -707,40 +712,51 @@ mod tests {
 }
 
 #[cfg(test)]
-mod at_line_tests {
-    use super::at_line;
+mod at_position_tests {
+    use super::at_position;
+    use crate::hunk::SourcePos;
     use lattice_grammar::Effect;
 
-    /// MG.50: an open becomes an open-AT.
+    const POS: SourcePos = SourcePos { line: 41, byte: 12 };
+
+    /// MG.50: an open becomes an open-AT, carrying BOTH axes.
     ///
-    /// Both shapes matter: a working-tree file (`OpenBuffer`) and a blob
-    /// (`OpenSyntheticBuffer`) are the two things `diff_target` returns,
-    /// and magit-status produces one of each depending on which section
-    /// the cursor sits under.
+    /// Both effect shapes matter: a working-tree file (`OpenBuffer`) and
+    /// a blob (`OpenSyntheticBuffer`) are the two things `diff_target`
+    /// returns, and magit-status produces one of each depending on which
+    /// section the cursor sits under.
+    ///
+    /// The byte assertions are the point of this revision: the effect
+    /// used to be built with a hardcoded `Position::new(line, 0)`, so
+    /// every visit landed at the start of the line however far along the
+    /// row the cursor had been.
     #[test]
-    fn both_open_shapes_carry_the_line() {
-        let line = 41;
-        match at_line(
+    fn both_open_shapes_carry_the_line_and_the_offset() {
+        match at_position(
             Effect::OpenBuffer {
                 path: Some("/repo/src/main.rs".into()),
                 force: false,
             },
-            line,
+            POS,
         ) {
-            Effect::OpenBufferAt { position, .. } => assert_eq!(position.line, line),
+            Effect::OpenBufferAt { position, .. } => {
+                assert_eq!(position.line, POS.line);
+                assert_eq!(position.byte, POS.byte);
+            }
             other => panic!("a working-tree open must position: {other:?}"),
         }
-        match at_line(
+        match at_position(
             Effect::OpenSyntheticBuffer {
                 name: "*magit:file:staged:src/main.rs*".into(),
                 mode_id: "magit-file-revision-mode".into(),
             },
-            line,
+            POS,
         ) {
             Effect::OpenSyntheticBufferAt {
                 position, mode_id, ..
             } => {
-                assert_eq!(position.line, line);
+                assert_eq!(position.line, POS.line);
+                assert_eq!(position.byte, POS.byte);
                 assert_eq!(mode_id, "magit-file-revision-mode");
             }
             other => panic!("a blob open must position: {other:?}"),
@@ -755,6 +771,6 @@ mod at_line_tests {
             level: lattice_grammar::EchoLevel::Warn,
             text: "no working-tree copy".into(),
         };
-        assert!(matches!(at_line(echo, 7), Effect::Echo { .. }));
+        assert!(matches!(at_position(echo, POS), Effect::Echo { .. }));
     }
 }

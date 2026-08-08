@@ -1535,13 +1535,26 @@ mod git_round_trip {
     }
 }
 
-/// MG.50: the SOURCE line the cursor is looking at, inside a diff.
+/// A position in the SOURCE FILE, resolved from a cursor sitting on a
+/// diff row. 0-based row plus a 0-based BYTE offset within it, matching
+/// `lattice_protocol::position::Position`'s own `{ line, byte }` shape.
 ///
-/// `<CR>` in emacs magit opens the file *at the line the code under the
-/// cursor lives on*, not at the top. The diff already carries the
-/// answer: a hunk's `@@` header names where its body starts in the new
-/// file, so the target is that start plus however many new-side rows
-/// precede the cursor within the hunk.
+/// A plain value type rather than `Position` itself so this module keeps
+/// the "pure functions over diff text, no buffer / store / `Editor`"
+/// contract its header claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcePos {
+    pub line: u32,
+    pub byte: u32,
+}
+
+/// MG.50: the SOURCE position the cursor is looking at, inside a diff.
+///
+/// `<CR>` in emacs magit opens the file *at the code under the cursor*,
+/// not at the top. The diff already carries the answer: a hunk's `@@`
+/// header names where its body starts in the new file, so the target is
+/// that start plus however many new-side rows precede the cursor within
+/// the hunk.
 ///
 /// **Which rows count.** Only those that exist on the NEW side — context
 /// (` `) and additions (`+`). A deletion (`-`) is not in the file being
@@ -1550,21 +1563,47 @@ mod git_round_trip {
 /// looking at it wants to land. `\ No newline at end of file` belongs to
 /// neither side.
 ///
-/// Returns a 0-based buffer row, ready for
-/// [`lattice_protocol::position::Position`]. `None` when the cursor is
-/// not inside a hunk (a file entry, a section header, a `diff --git`
-/// line) — the caller then opens at the top, which is what emacs does
-/// for a file entry too.
-pub fn source_line_at(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<u32> {
+/// **The byte offset.** Every hunk body row carries the one-character
+/// diff marker (` ` / `+` / `-`) at byte 0, so source byte = cursor byte
+/// − 1. Subtracting a BYTE rather than a column is what makes this
+/// correct on rows containing multibyte text: the marker is always
+/// exactly one byte, whatever follows it. `saturating_sub` handles a
+/// cursor parked ON the marker, which resolves to the start of the
+/// source line rather than wrapping. On the `@@` row there is no code
+/// under the cursor to align to, so the offset is 0.
+///
+/// Line and offset are answered **together, by one walk**, rather than
+/// by a `source_line_at` plus a separate offset helper. The bug this
+/// replaced was precisely a caller that had the line and defaulted the
+/// offset to 0; a shape where you cannot obtain one without the other
+/// cannot regress that way again.
+///
+/// `None` when the cursor is not inside a hunk (a file entry, a section
+/// header, a `diff --git` line) — the caller then opens at the top,
+/// which is what emacs does for a file entry too.
+pub fn source_position_at(
+    read: impl Fn(usize) -> Option<String>,
+    cursor: usize,
+    cursor_byte: u32,
+) -> Option<SourcePos> {
+    // The marker occupies byte 0 of every body row; strip it. A cursor
+    // on the marker itself lands at the start of the source line.
+    let byte = cursor_byte.saturating_sub(1);
+    let at = |line: u32| Some(SourcePos { line, byte });
+
     let header_line = enclosing_hunk_header(&read, cursor)?;
     let header_text = read(header_line)?;
     let header = header_text.trim_end();
     let start = parse_hunk_starts(header)?.new;
     let counts = parse_hunk_counts(header)?;
 
-    // On the `@@` row itself: the hunk's first new-side line.
+    // On the `@@` row itself: the hunk's first new-side line. The
+    // header's own columns describe the hunk, not the code, so there is
+    // nothing to align to — open at the start of the line.
     if cursor == header_line {
-        return u32::try_from(start.saturating_sub(1)).ok();
+        return u32::try_from(start.saturating_sub(1))
+            .ok()
+            .map(|line| SourcePos { line, byte: 0 });
     }
 
     // Walk the body under the header's DECLARED counts rather than
@@ -1583,7 +1622,9 @@ pub fn source_line_at(read: impl Fn(usize) -> Option<String>, cursor: usize) -> 
         // magit-status is the next file's entry row, and would hand back
         // a line number inside a file the cursor is not in.
         if row == cursor {
-            return u32::try_from(start.saturating_sub(1) + advanced).ok();
+            return u32::try_from(start.saturating_sub(1) + advanced)
+                .ok()
+                .and_then(at);
         }
         let text = read(row)?;
         match text.chars().next() {
@@ -1613,8 +1654,15 @@ pub fn source_line_at(read: impl Fn(usize) -> Option<String>, cursor: usize) -> 
 }
 
 #[cfg(test)]
-mod source_line_tests {
-    use super::source_line_at;
+mod source_position_tests {
+    use super::{SourcePos, source_position_at};
+
+    /// The cases below are about the LINE. Wrapping keeps each one
+    /// asserting its own subject; the byte offset has its own tests at
+    /// the end of the module.
+    fn line_at(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<u32> {
+        source_position_at(read, cursor, 0).map(|p| p.line)
+    }
 
     const DIFF: &[&str] = &[
         "diff --git a/src/main.rs b/src/main.rs", // 0
@@ -1636,7 +1684,7 @@ mod source_line_tests {
     #[test]
     fn the_first_body_row_is_the_hunks_start() {
         // `@@ +20` is 1-based; row 5 is buffer line 19.
-        assert_eq!(source_line_at(read, 5), Some(19));
+        assert_eq!(line_at(read, 5), Some(19));
     }
 
     /// A deletion advances nothing — it is not in the file being opened.
@@ -1646,30 +1694,30 @@ mod source_line_tests {
         // being opened, so it resolves to the position it occupied —
         // just after `context one`, which is new line 21 (0-based 20).
         // That is where a reader looking at the deletion wants to land.
-        assert_eq!(source_line_at(read, 6), Some(20));
+        assert_eq!(line_at(read, 6), Some(20));
         // Row 7 (`+added`) follows one context row and one deletion, so
         // only the context advanced: line 21 (0-based 20).
-        assert_eq!(source_line_at(read, 7), Some(20));
+        assert_eq!(line_at(read, 7), Some(20));
     }
 
     /// Context after an addition keeps counting.
     #[test]
     fn context_after_an_addition_keeps_counting() {
-        assert_eq!(source_line_at(read, 8), Some(21));
+        assert_eq!(line_at(read, 8), Some(21));
     }
 
     /// On the `@@` row, the hunk's start.
     #[test]
     fn the_header_row_resolves_to_the_hunk_start() {
-        assert_eq!(source_line_at(read, 4), Some(19));
+        assert_eq!(line_at(read, 4), Some(19));
     }
 
     /// Outside a hunk there is no line to name — the caller opens at the
     /// top, which is what emacs does for a file entry.
     #[test]
     fn a_row_outside_any_hunk_has_no_source_line() {
-        assert_eq!(source_line_at(read, 0), None);
-        assert_eq!(source_line_at(read, 3), None);
+        assert_eq!(line_at(read, 0), None);
+        assert_eq!(line_at(read, 3), None);
     }
 
     /// The magit-status shape: a hunk with an ENTRY ROW under it.
@@ -1693,16 +1741,16 @@ mod source_line_tests {
             "  modified src/third.rs",  // 7
         ];
         let r = |i: usize| STATUS.get(i).map(|s| s.to_string());
-        assert_eq!(source_line_at(r, 4), Some(4), "` ctx` is new line 5");
-        assert_eq!(source_line_at(r, 5), Some(5), "`+added` is new line 6");
+        assert_eq!(line_at(r, 4), Some(4), "` ctx` is new line 5");
+        assert_eq!(line_at(r, 5), Some(5), "`+added` is new line 6");
         // Past the hunk's declared end: not inside it, so no line.
         assert_eq!(
-            source_line_at(r, 6),
+            line_at(r, 6),
             None,
             "an entry row below the hunk must not resolve to a line \
              inside the hunk's file",
         );
-        assert_eq!(source_line_at(r, 7), None);
+        assert_eq!(line_at(r, 7), None);
     }
 
     /// A header with no comma (`@@ -1 +7 @@`) is a one-line range and
@@ -1711,6 +1759,86 @@ mod source_line_tests {
     fn a_single_line_range_parses() {
         const ONE: &[&str] = &["@@ -1 +7 @@", " ctx"];
         let r = |i: usize| ONE.get(i).map(|s| s.to_string());
-        assert_eq!(source_line_at(r, 1), Some(6));
+        assert_eq!(line_at(r, 1), Some(6));
+    }
+
+    // ── the byte offset ───────────────────────────────────────────
+    //
+    // `<CR>` used to land at the start of the line no matter where the
+    // cursor sat, because the caller had the line and passed 0 for the
+    // offset. These pin the other axis.
+
+    /// The marker occupies byte 0, so the cursor's offset shifts left
+    /// by exactly one to land on the same character in the file.
+    #[test]
+    fn the_diff_marker_is_stripped_from_the_offset() {
+        // Row 5 is `" context one"`. Byte 4 is the `n` of `context`
+        // (` c o n` → 0 1 2 3, so byte 3 is `n`… count on the source:
+        // stripping the marker, `context one` starts at byte 0, so a
+        // cursor at buffer byte 4 is source byte 3).
+        let pos = source_position_at(read, 5, 4).expect("inside the hunk");
+        assert_eq!(pos, SourcePos { line: 19, byte: 3 });
+    }
+
+    /// A cursor parked ON the marker has no character in the source to
+    /// point at, so it resolves to the start of the line rather than
+    /// wrapping to `u32::MAX`.
+    #[test]
+    fn a_cursor_on_the_marker_lands_at_line_start() {
+        let pos = source_position_at(read, 5, 0).expect("inside the hunk");
+        assert_eq!(pos, SourcePos { line: 19, byte: 0 });
+    }
+
+    /// Additions and deletions carry a marker exactly like context, so
+    /// the same shift applies — including on a `-` row, whose line
+    /// resolves to the position the deleted text occupied.
+    #[test]
+    fn additions_and_deletions_shift_the_same_way() {
+        // Row 7 is `"+added"`; byte 3 is the `d` in `added`'s source
+        // form (`added` at byte 0 → `a d d` → byte 2 is the second `d`).
+        assert_eq!(
+            source_position_at(read, 7, 3),
+            Some(SourcePos { line: 20, byte: 2 })
+        );
+        // Row 6 is `"-deleted"`.
+        assert_eq!(
+            source_position_at(read, 6, 3),
+            Some(SourcePos { line: 20, byte: 2 })
+        );
+    }
+
+    /// The `@@` row's own columns describe the hunk, not code, so there
+    /// is nothing to align to — offset 0 regardless of where the cursor
+    /// sits along it.
+    #[test]
+    fn the_header_row_ignores_the_cursor_offset() {
+        assert_eq!(
+            source_position_at(read, 4, 17),
+            Some(SourcePos { line: 19, byte: 0 })
+        );
+    }
+
+    /// Subtracting a BYTE rather than a column is what keeps this
+    /// correct on multibyte content: the marker is one byte whatever
+    /// follows it, so the arithmetic never lands mid-character.
+    #[test]
+    fn a_multibyte_row_shifts_by_one_byte_not_one_char() {
+        const MB: &[&str] = &["@@ -1,1 +1,1 @@", " héllo wörld"];
+        let r = |i: usize| MB.get(i).map(|s| s.to_string());
+        // `é` is two bytes, so in the buffer row `" héllo"` the `l`
+        // after it sits at byte 4; in the source `"héllo"` it is byte 3.
+        let pos = source_position_at(r, 1, 4).expect("inside the hunk");
+        assert_eq!(pos, SourcePos { line: 0, byte: 3 });
+        assert!(
+            "héllo wörld".is_char_boundary(pos.byte as usize),
+            "the resolved offset must be a char boundary"
+        );
+    }
+
+    /// Outside a hunk there is no position at all, offset or otherwise —
+    /// the caller opens the file at the top.
+    #[test]
+    fn a_row_outside_any_hunk_has_no_position() {
+        assert_eq!(source_position_at(read, 0, 7), None);
     }
 }

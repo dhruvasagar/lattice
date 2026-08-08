@@ -1,5 +1,5 @@
 ---
-summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (dd), line-, hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, which opens the commit buffer for a commit entry and, inside a diff, the right version of the file at the right line)."
+summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (dd), line-, hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, which opens the commit buffer for a commit entry and, inside a diff, the right version of the file at the right line and column)."
 related: [magit, magit-transient, ex:magit-status]
 ---
 
@@ -342,12 +342,12 @@ on what's under the cursor:
 | Untracked file | Open the file for editing |
 | Commit line | Open the dedicated [commit buffer](help:magit-commit-mode) for that commit |
 | Stash entry | Toggle the stash's patch inline (same mechanism as `=`) |
-| A diff content line (inside an expanded entry) | Open **that version** of the file, on **that line** — see below |
+| A diff content line (inside an expanded entry) | Open **that version** of the file, at **that line and column** — see below |
 
 There are no branch entries in the status buffer, so there's no
 "check out a branch" case here — that's `magit-branch`'s `<CR>`.
 
-### Inside a diff: the right version, the right line
+### Inside a diff: the right version, the right position
 
 Put the cursor on a line of code inside an expanded diff and `<CR>`
 opens the file you are looking at — but which *version* depends on
@@ -359,11 +359,23 @@ which section the diff is in, because that is what the diff is against:
 | Unstaged changes | the **working-tree** file, editable |
 | Recent commits (an expanded commit's patch) | the file **at that commit** — `*magit:file:<sha>:<path>*` |
 
-It lands on the line the code under the cursor lives on, not the top
-of the file. The `@@` header declares where the new side starts, and
-counting the added and context rows above the cursor gives the rest;
-`-` rows are skipped, since a removed line has no position in the file
-you are opening.
+It lands on the code under the cursor — the right line *and* the right
+place along it, so the caret comes down on the same token you were
+looking at rather than at the start of the line.
+
+The `@@` header declares where the new side starts, and counting the
+added and context rows above the cursor gives the line; `-` rows are
+skipped, since a removed line has no position in the file you are
+opening. The horizontal half is simpler: every diff row carries a
+one-character marker (` `, `+`, `-`) in front of the code, so the
+caret shifts left by one to account for it. Parking on the marker
+itself lands you at the start of the line.
+
+Two edges worth knowing. On a `-` row the caret lands at the same
+offset on whatever line now occupies that position — the removed text
+is not in the file, so there is nothing exact to aim at. And if that
+line is shorter than where you were, the caret stops at its end rather
+than hanging past it.
 
 The two halves compose the way you would want them to: `<CR>` on a
 deleted function inside a commit's patch opens that commit's copy of

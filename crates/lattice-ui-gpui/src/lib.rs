@@ -1259,7 +1259,7 @@ impl GpuiApp {
             Effect::OpenBufferAt { path, position, force } => {
                 self.apply_open_buffer(path, force);
                 self.mutate_editor(move |e| {
-                    e.set_cursor(position);
+                    e.set_cursor_clamped(position);
                 });
             }
             // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in
@@ -1325,7 +1325,7 @@ impl GpuiApp {
             } => {
                 self.mutate_editor(move |e| {
                     e.open_synthetic_buffer(&name, &mode_id);
-                    e.set_cursor(position);
+                    e.set_cursor_clamped(position);
                 });
             }
             Effect::OpenLspTraceLog { server_id } => {

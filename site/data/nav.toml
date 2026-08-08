@@ -52,6 +52,7 @@ description = "The vim grammar, the mode system, and the `:` line — the vocabu
 [[section.group]]
 docs = [
   "modal-editing",
+  "cancellation",
   "modes",
   "command-line-mode",
   "ex-commands",

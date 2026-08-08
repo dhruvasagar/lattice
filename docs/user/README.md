@@ -40,6 +40,7 @@ same surface).
 | Getting started            | [`getting-started`](help:getting-started) | ✅      |
 | The launch dashboard       | [`dashboard-mode`](help:dashboard-mode) | ✅      |
 | Modal editing              | [`modal-editing`](help:modal-editing)    | ✅      |
+| Cancelling an operation    | [`cancellation`](help:cancellation)      | ✅      |
 | Modes                      | [`modes`](help:modes)                    | ✅      |
 | The command line           | [`command-line-mode`](help:command-line-mode) | ✅      |
 |   — expanded `:` band      | [`command-line-expand-mode`](help:command-line-expand-mode) | ✅      |

@@ -67,33 +67,19 @@ selection.
 |-----------------------------------------------------------|----------|
 | `<Esc>`                                                   | Normal   |
 
-### Cancelling a running operation — `<C-g>`
+### Cancelling a running operation
 
-Some things take a while: a project-wide search, an LSP rename across a
-big workspace. **`<C-g>`** stops whatever you started and returns you to
-Normal mode. With nothing running it is just a mode reset, so it is safe
-to press speculatively.
+`<Esc>` returns you to Normal but deliberately does **not** cancel
+work in progress — pressing it out of habit should never kill a search
+you have been waiting on. `<C-g>` is the key that stops a running
+operation and returns to Normal.
 
-It works in Normal, Insert and Replace, and on the `:` line, the `/`
-line and any prompt. It never discards unsaved edits (that is `:q!`) and
-never clears your registers or yank ring.
+See [`cancellation`](help:cancellation) for what it stops, what it
+leaves alone, and why `<C-c>` is not the cancel key.
 
-`<C-g>` is emacs's `keyboard-quit`. It is a builtin binding, so it keeps
-working even with `:set noemacs-keys`.
-
-> **`<Esc>` deliberately does *not* cancel.** Most vim users press
-> `<Esc>` constantly out of habit, and a reflexive double-tap should
-> never kill a search you have been waiting thirty seconds for. Cancel
-> is a key you press on purpose.
-
-> **`<C-c>` is not the cancel key either.** It is reserved as a prefix —
-> `<C-c>g` opens magit's dispatch menu, `<C-c><C-c>` confirms a commit,
-> and so on. Binding it to cancel would make every one of those chords
-> unreachable.
-
-In **Visual and Select** `<C-g>` keeps its vim meaning (toggle between
-the two, preserving the selection), so there is no cancel chord there —
-press `<Esc>` first, then `<C-g>`.
+> In **Visual and Select** `<C-g>` keeps its vim meaning (toggle between
+> the two, preserving the selection), so there is no cancel chord there
+> — press `<Esc>` first, then `<C-g>`.
 
 | From Visual | To                                                                              |
 |-------------|---------------------------------------------------------------------------------|

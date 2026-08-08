@@ -1763,20 +1763,23 @@ pub struct Editor {
     pub lsp_pending_show_message_requests: HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
     pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
     pub lsp_next_show_message_request_id: u32,
-    /// CG.1: the cancellation token of the most recently armed
-    /// **foreground** operation — work the user explicitly triggered
-    /// that may hold up the next interaction (project search, an LSP
-    /// command, a WASM plugin call). `None` when the editor is idle.
+    /// CG.1/CG.2: the **foreground** cancellation slot — work the user
+    /// explicitly triggered that may hold up the next interaction
+    /// (project search, an LSP command, a WASM plugin call).
+    /// Background work (indexing, file watchers, the LSP boot
+    /// handshake) owns its own long-lived tokens and is deliberately
+    /// out of scope — see `docs/dev/architecture/cancellation.md` §3.
     ///
-    /// Written only through [`Editor::arm_cancel`]; flipped and cleared
-    /// only through [`Editor::cancel_foreground`]. Background work
-    /// (indexing, file watchers, the LSP boot handshake) owns its own
-    /// long-lived tokens and is deliberately out of scope — see
-    /// `docs/dev/architecture/cancellation.md` §3.
+    /// CG.2 moved this from an owned `Option<CancellationToken>` to a
+    /// shared handle, and registered the same `Arc` as a service. The
+    /// `Editor` is only one of its users: providers arm through
+    /// `services.get::<ForegroundCancelHandle>()`, because the places
+    /// that spawn cancellable work — action-handler closures, event
+    /// subscriptions — hold `&self` services and never `&mut Editor`.
     ///
-    /// `Option` is `Default` (None), so `#[derive(Default)]` on
+    /// `Arc<T: Default>` is `Default`, so `#[derive(Default)]` on
     /// `Editor` still holds.
-    pub active_cancel: Option<CancellationToken>,
+    pub foreground_cancel: lattice_mode::ForegroundCancelHandle,
     // ---- LSP per-feature request channels (rx + token pairs) ----
     pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
     pub pending_hover_token: Option<CancellationToken>,

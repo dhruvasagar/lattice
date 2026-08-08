@@ -70,44 +70,58 @@ is foreground.
 
 ## 4. Data model
 
-### 4.1 `Editor.active_cancel`
+### 4.1 `ForegroundCancel` — the shared slot
 
 ```rust
-// in lattice-host/src/editor.rs  (Editor struct)
-pub active_cancel: Option<lattice_protocol::CancellationToken>,
-```
+// lattice-mode/src/foreground_cancel.rs
+pub struct ForegroundCancel { armed: Mutex<Option<CancellationToken>> }
+pub type ForegroundCancelHandle = Arc<ForegroundCancel>;
 
-Holds the token for the most recently armed foreground operation.
-`None` when the editor is idle.
-
-### 4.2 `Editor::arm_cancel()`
-
-```rust
-pub fn arm_cancel(&mut self) -> lattice_protocol::CancellationToken {
-    if let Some(old) = self.active_cancel.take() {
-        old.cancel();    // kill any prior op immediately
-    }
-    let token = lattice_protocol::CancellationToken::new();
-    self.active_cancel = Some(token.clone());
-    token
+impl ForegroundCancel {
+    pub fn arm(&self) -> CancellationToken;  // cancels the predecessor
+    pub fn cancel(&self);
+    pub fn is_armed(&self) -> bool;
 }
 ```
 
-Called by every user-initiated async entry-point before spawning.
-Returns a child-token the spawned task holds. Cancelling the parent
-token (stored in `active_cancel`) propagates to every child.
+One token armed at a time. The `Editor` holds the handle
+(`Editor::foreground_cancel`) and boot registers **the same `Arc`** in
+the `ServiceRegistry` under `ForegroundCancelHandle`.
 
-Crucially, `arm_cancel()` cancels the predecessor first. This means
-a second `:search` before the first completes safely abandons the
-first scan — no zombie tasks.
+That identity is load-bearing and its failure is silent: register a
+different `ForegroundCancel` than the `Editor` holds and everything
+still compiles, providers still arm, `<C-g>` still runs, and nothing is
+ever cancelled. Pinned by
+`lattice_ui_tui::app::cancel::a_token_armed_through_the_service_is_cancelled_by_the_key`,
+which arms the way a provider does and cancels the way the user does.
+
+### 4.2 Arming: `&self`, not `&mut Editor`
+
+CG.1 put `arm_cancel()` on `Editor`, which needs `&mut`. CG.2 moved the
+real surface onto the service because **most spawn sites never see
+`&mut Editor`**: project search's `gr` refresh is an
+`ActionHandlerRegistration` closure holding only `&self` services, and
+LSP requests (CG.3) and plugin calls (CG.4) sit behind the same wall.
+
+Enrolling only where `&mut` happens to be available is the
+half-migration this project keeps re-discovering — `<C-g>` would cancel
+a *fresh* search and silently do nothing to a refreshed one, with
+nothing in the code to say so.
+
+`Editor::arm_cancel()` survives as a convenience for the paths that do
+hold `&mut`; it delegates to the same slot.
+
+`arm()` cancels the predecessor first, which means **supersede is the
+same mechanism as cancel**. A second `:search` abandons the first, and
+`gr` refreshing a view no longer needs a private flag — the one project
+search used to carry (`Arc<AtomicBool>`) is gone, and with it the
+possibility of a scan that supersede could stop but `<C-g>` could not.
 
 ### 4.3 `Editor::cancel_foreground()`
 
 ```rust
 pub fn cancel_foreground(&mut self) {
-    if let Some(token) = self.active_cancel.take() {
-        token.cancel();
-    }
+    self.foreground_cancel.cancel();
     // Hover still owns a separate token until CG.3 folds it in.
     if let Some(token) = self.pending_hover_token.take() {
         token.cancel();
@@ -267,19 +281,33 @@ cancellation. In CG.3 this gets folded into the unified
 Every user-initiated long-running spawn follows this pattern:
 
 ```rust
-// In the host dispatch / mode handler that kicks off the work:
-let token = editor.arm_cancel();
+// In whatever spawns the work — an action handler, an event
+// subscription, a mode's trigger. `&self` services are enough.
+let token = services
+    .get::<lattice_mode::ForegroundCancelHandle>()
+    .map(|fc| fc.arm())
+    .unwrap_or_else(CancellationToken::never);
 tokio::spawn(async move {
     some_service.run(params, token).await;
 });
 ```
 
+A missing service degrades to `never()` — an uncancellable operation —
+rather than refusing to run. That is the test-harness case (a mode
+exercised without boot wiring), and refusing to search because
+cancellation is unavailable would be the worse failure.
+
 The spawned task checks `token.is_cancelled()` at its natural
 yield points:
 
-- **Search:** inside the per-chunk loop in `lattice-core::search`
-  (already has the check; just needs the live token instead of
-  `CancellationToken::never()`).
+- **Search (CG.2, done):** `run_scan`'s per-file loop in
+  `lattice-multibuffer::providers::search` checks `is_cancelled()` at
+  each `ignore::Walk` iteration. The check predates CG.2; what CG.2
+  changed is *which* token it polls — the scan's private
+  `Arc<AtomicBool>` became the armed foreground `CancellationToken`,
+  stored on `ProjectSearchState` and required by
+  `ProjectSearchState::scanning`, so a spawn site cannot register a
+  scan `<C-g>` has no way to reach.
 - **LSP commands:** the `Pending<T>` future in
   `lattice-lsp::features` already selects on the token; it just
   needs the user-facing token plumbed in.

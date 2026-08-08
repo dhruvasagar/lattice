@@ -24,8 +24,8 @@
 //! `ignore::Walk`, matches literal queries against each file,
 //! batches hits, publishes `ProjectSearchBatchReady` events.
 
+use lattice_protocol::CancellationToken;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lattice_config::OptionOverrideSet;
@@ -151,12 +151,19 @@ pub struct ProjectSearchState {
     pub status: SearchStatus,
     pub total_hits: usize,
     pub scan_task: Option<tokio::task::JoinHandle<()>>,
-    /// M.6.6 (2026-06-08): cooperative cancellation flag. Set to `true`
-    /// by the refresh handler before spawning a replacement task; the
-    /// blocking scan loop checks this at each file iteration and exits
-    /// early when it fires. `spawn_blocking` tasks ignore `JoinHandle`
-    /// abort — only this flag reaches the blocking thread.
-    pub cancel_token: Arc<AtomicBool>,
+    /// M.6.6 (2026-06-08): cooperative cancellation token. The blocking
+    /// scan loop checks it at each file iteration and exits early when
+    /// it fires. `spawn_blocking` tasks ignore `JoinHandle` abort —
+    /// only this token reaches the blocking thread.
+    ///
+    /// CG.2 (2026-08-08): was a private `Arc<AtomicBool>` flipped by
+    /// the refresh handler for supersede. It is now the editor's
+    /// **foreground** token, armed through `ForegroundCancelHandle`, so
+    /// `<C-g>` reaches a running scan and supersede stops being a
+    /// second, parallel mechanism that cancellation did not know about.
+    /// `ForegroundCancel::arm` cancels its predecessor, which is
+    /// exactly what the refresh handler used to do by hand.
+    pub cancel_token: CancellationToken,
     /// M.6.1: source `BufferId` → on-disk path. Populated by the
     /// provider-minor's forwarder as it loads files into the
     /// view's source map. The mode's `<CR>` handler (M.10.3,
@@ -167,7 +174,15 @@ pub struct ProjectSearchState {
 }
 
 impl ProjectSearchState {
-    pub fn scanning(query: String, options: ProjectSearchOptions) -> Self {
+    /// CG.2: `cancel` is the **armed foreground token** the scan will
+    /// poll — take it as an argument rather than defaulting to
+    /// `never()`, so a spawn site physically cannot register a scan
+    /// that `<C-g>` has no way to reach.
+    pub fn scanning(
+        query: String,
+        options: ProjectSearchOptions,
+        cancel: CancellationToken,
+    ) -> Self {
         Self {
             query,
             options,
@@ -175,7 +190,7 @@ impl ProjectSearchState {
             total_hits: 0,
             scan_task: None,
             source_paths: std::collections::HashMap::new(),
-            cancel_token: Arc::new(AtomicBool::new(false)),
+            cancel_token: cancel,
         }
     }
 }
@@ -579,12 +594,10 @@ impl Mode for ProjectSearchMode {
                                 options.root = current_dir.clone();
                             }
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
-                            // M.6.6: cancel the prior scan before replacing state.
-                            if let Some(old) = search_svc.state(view_id_for_refresh)
-                                && let Ok(s) = old.read()
-                            {
-                                s.cancel_token.store(true, Ordering::Relaxed);
-                            }
+                            // CG.2: the prior scan is cancelled by
+                            // `arm()` below — superseding and cancelling
+                            // are one mechanism now, so there is no
+                            // separate flag to flip here.
                             // Clear + reset.
                             view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
                             view.set_headerline(HeaderlineStatus::InProgress {
@@ -592,15 +605,25 @@ impl Mode for ProjectSearchMode {
                                 count: Some(0),
                                 emphasis: Some(query.clone()),
                             });
+                            // CG.2: arm through the shared foreground
+                            // slot, which cancels the scan this one
+                            // replaces. A missing service is the test
+                            // harness, not a boot failure — degrade to
+                            // an uncancellable scan rather than refuse
+                            // to refresh.
+                            let cancel = ctx
+                                .services
+                                .get::<lattice_mode::ForegroundCancelHandle>()
+                                .map(|fc| fc.arm())
+                                .unwrap_or_else(CancellationToken::never);
                             search_svc.set_state(
                                 view_id_for_refresh,
-                                ProjectSearchState::scanning(query.clone(), options.clone()),
+                                ProjectSearchState::scanning(
+                                    query.clone(),
+                                    options.clone(),
+                                    cancel.clone(),
+                                ),
                             );
-                            // Spawn fresh scan task with a fresh cancel token.
-                            let cancel = search_svc
-                                .state(view_id_for_refresh)
-                                .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
-                                .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
                             let task = spawn_scan_task(
                                 view_id_for_refresh,
                                 query.clone(),
@@ -899,9 +922,16 @@ pub fn project_search(
         lang_registry,
     );
 
+    // CG.2: arm through the shared foreground slot so `<C-g>` reaches
+    // this scan. Also supersedes whatever was running, which is what
+    // makes a second `:search` abandon the first.
+    let cancel = services
+        .get::<lattice_mode::ForegroundCancelHandle>()
+        .map(|fc| fc.arm())
+        .unwrap_or_else(CancellationToken::never);
     search_svc.set_state(
         view_id,
-        ProjectSearchState::scanning(query.clone(), options.clone()),
+        ProjectSearchState::scanning(query.clone(), options.clone(), cancel.clone()),
     );
 
     if let Some(mb_reg) = services.get::<MultibufferRegistryHandle>()
@@ -916,10 +946,6 @@ pub fn project_search(
 
     activator.activate_minor_by_id(view_id, ProjectSearchMode::mode_id());
 
-    let cancel = search_svc
-        .state(view_id)
-        .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let task = spawn_scan_task(
         view_id,
         query,
@@ -942,7 +968,7 @@ pub fn spawn_scan_task(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         run_scan(view, query, options, service, events, cancel).await;
@@ -955,7 +981,7 @@ async fn run_scan(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancellationToken,
 ) {
     // M.6.3: compile the matcher up-front. Literal mode stores
     // the (possibly lowercased) needle; regex mode compiles a
@@ -1022,7 +1048,7 @@ fn run_scan_blocking(
     options: ProjectSearchOptions,
     service: ProjectSearchServiceHandle,
     events: Arc<EventBus>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancellationToken,
 ) {
     let walker = ignore::Walk::new(&options.root);
     let mut files_scanned: usize = 0;
@@ -1033,7 +1059,7 @@ fn run_scan_blocking(
     let max_files = options.max_files.unwrap_or(usize::MAX);
 
     for entry in walker {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return;
         }
         let Ok(entry) = entry else {
@@ -1270,7 +1296,11 @@ mod tests {
         let view = BufferId(42);
         svc.set_state(
             view,
-            ProjectSearchState::scanning("foo".into(), ProjectSearchOptions::default()),
+            ProjectSearchState::scanning(
+                "foo".into(),
+                ProjectSearchOptions::default(),
+                CancellationToken::never(),
+            ),
         );
         assert_eq!(svc.len(), 1);
         let state = svc.state(view).unwrap();
@@ -1383,7 +1413,11 @@ mod tests {
         let view = BufferId(1);
         svc.set_state(
             view,
-            ProjectSearchState::scanning("q".into(), ProjectSearchOptions::default()),
+            ProjectSearchState::scanning(
+                "q".into(),
+                ProjectSearchOptions::default(),
+                CancellationToken::never(),
+            ),
         );
 
         let path_a = PathBuf::from("/tmp/a.rs");
@@ -1454,18 +1488,19 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProjectSearchCompleted>();
         events.subscribe_typed(tx);
 
+        // Pre-cancel before the task can process any files.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
         let svc = InMemoryProjectSearchService::handle();
         svc.set_state(
             view,
-            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+            ProjectSearchState::scanning(
+                "x".into(),
+                ProjectSearchOptions::default(),
+                cancel.clone(),
+            ),
         );
-        let cancel = svc
-            .state(view)
-            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
-            .unwrap();
-
-        // Pre-cancel before the task can process any files.
-        cancel.store(true, Ordering::Relaxed);
 
         rt.block_on(async move {
             let handle = spawn_scan_task(
@@ -1485,41 +1520,57 @@ mod tests {
         );
     }
 
-    /// Refreshing a running scan: the old token fires, the new
-    /// task gets a fresh (unset) token and runs to completion.
+    /// CG.2: refreshing a running scan supersedes it, and the state
+    /// carries the replacement.
+    ///
+    /// This used to hand-simulate the old mechanism — flip a private
+    /// `AtomicBool`, install a fresh one. It now goes through
+    /// `ForegroundCancel::arm`, which is what the production refresh
+    /// handler calls, so supersede and `<C-g>` are provably the same
+    /// flag rather than two schemes that happen to agree.
     #[tokio::test(flavor = "current_thread")]
-    async fn refresh_cancels_old_token_and_issues_fresh_one() {
+    async fn refresh_supersedes_the_running_scan_and_state_carries_the_replacement() {
         let svc = InMemoryProjectSearchService::handle();
         let view = BufferId(88);
+        let fc = lattice_mode::ForegroundCancel::default();
 
+        let old_cancel = fc.arm();
         svc.set_state(
             view,
-            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+            ProjectSearchState::scanning(
+                "x".into(),
+                ProjectSearchOptions::default(),
+                old_cancel.clone(),
+            ),
         );
-        let old_cancel = svc
-            .state(view)
-            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
-            .unwrap();
 
-        // Simulate the refresh: flip old token, install fresh state.
-        old_cancel.store(true, Ordering::Relaxed);
+        // The refresh: arming the replacement cancels its predecessor.
+        let new_cancel = fc.arm();
         svc.set_state(
             view,
-            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+            ProjectSearchState::scanning(
+                "x".into(),
+                ProjectSearchOptions::default(),
+                new_cancel.clone(),
+            ),
         );
-        let new_cancel = svc
-            .state(view)
-            .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
-            .unwrap();
 
-        assert!(old_cancel.load(Ordering::Relaxed), "old token must be set");
+        assert!(old_cancel.is_cancelled(), "the superseded scan must stop");
+        assert!(!new_cancel.is_cancelled(), "the replacement runs");
+
+        // And `<C-g>` reaches the REPLACEMENT, not just the original —
+        // the half-wiring this slice exists to prevent.
+        fc.cancel();
+        assert!(new_cancel.is_cancelled());
+
+        let held = svc
+            .state(view)
+            .and_then(|s| s.read().ok().map(|s| s.cancel_token.clone()))
+            .expect("state present");
         assert!(
-            !new_cancel.load(Ordering::Relaxed),
-            "fresh token must start unset"
-        );
-        assert!(
-            !Arc::ptr_eq(&old_cancel, &new_cancel),
-            "refresh must allocate a distinct cancel token"
+            held.is_cancelled(),
+            "the token the STATE carries must be the one that was armed, \
+             not a default `never()` the scan could never observe"
         );
     }
 
@@ -1590,7 +1641,11 @@ mod tests {
         let svc = InMemoryProjectSearchService::handle();
         svc.set_state(
             view,
-            ProjectSearchState::scanning("needle".into(), options.clone()),
+            ProjectSearchState::scanning(
+                "needle".into(),
+                options.clone(),
+                CancellationToken::never(),
+            ),
         );
 
         let handle = spawn_scan_task(
@@ -1599,7 +1654,7 @@ mod tests {
             options,
             svc,
             events,
-            Arc::new(AtomicBool::new(false)),
+            CancellationToken::never(),
         );
         handle.await.unwrap();
 

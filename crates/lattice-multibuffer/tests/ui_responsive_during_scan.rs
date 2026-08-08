@@ -93,7 +93,11 @@ fn actor_runtime_stays_responsive_during_scan() {
     };
     service.set_state(
         view,
-        ProjectSearchState::scanning("needle".to_string(), options.clone()),
+        ProjectSearchState::scanning(
+            "needle".to_string(),
+            options.clone(),
+            lattice_protocol::CancellationToken::never(),
+        ),
     );
 
     let (max_gap, ticks) = rt.block_on(async move {
@@ -103,7 +107,7 @@ fn actor_runtime_stays_responsive_during_scan() {
             options,
             service.clone(),
             events.clone(),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lattice_protocol::CancellationToken::never(),
         );
 
         // Probe: sleep in a tight loop, measure realised

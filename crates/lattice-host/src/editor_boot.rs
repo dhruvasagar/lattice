@@ -1147,6 +1147,14 @@ impl Editor {
         // worker's writes into the quads cell are observable through
         // every
         // `render_state.load_full().syntax.static_overlay_quads.load()`.
+        // CG.2: the foreground-cancellation slot. Created before the
+        // Editor literal and assigned explicitly (overriding the
+        // `..Editor::default()` tail) so the Editor and the
+        // ServiceRegistry share the SAME Arc identity — a provider
+        // arming through `services.get::<ForegroundCancelHandle>()`
+        // must land in the very slot `<C-g>` cancels, not a sibling
+        // copy of it. Registered with the other Phase-A handles below.
+        let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
         let overlay_wake = crate::editor::OverlayWake::default();
         // Perf plan B.2 slice B.2.a: cell carrying the worker's
         // per-row pre-bucketed static-overlay quads (doc_highlight /
@@ -1551,6 +1559,11 @@ impl Editor {
         // holds a clone via `BootContext::new`); register the clone for mode
         // lookups via `services().get::<BufferStoreHandle>()`.
         boot.register_service(buffer_store_handle.clone());
+        // CG.2: same Arc the Editor holds — see its construction above.
+        // Registered under `ForegroundCancelHandle` per the
+        // ServiceRegistry Arc/TypeId rule, which is the type every
+        // provider looks it up by.
+        boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
         // CB.0 (clipboard.md): default clipboard backing. `FakeClipboard` is
         // the safe default (no OS resource, no display dependency); the TUI
         // peer (CB.2 — `arboard` + OSC52 fallback) and the GPUI peer (CB.4 —
@@ -1754,6 +1767,7 @@ impl Editor {
             // above.
             registry: registry.clone(),
             event_bus: event_bus.clone(),
+            foreground_cancel: foreground_cancel.clone(),
             builtins,
             action_ids,
             keymap: {

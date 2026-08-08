@@ -72,8 +72,13 @@ pub mod decoration_source;
 // foundation modes. The host keeps only the keymap-layer push (config + the
 // live `KeymapHandle`).
 pub mod emacs_keys_mode;
+// CG.2 (2026-08-08): foreground cancellation as a registered service,
+// so a provider can enrol work from any `&self` context (action
+// handlers, event subscriptions) and not just where `&mut Editor` is
+// reachable. See `docs/dev/architecture/cancellation.md`.
 pub mod error;
 pub mod event;
+pub mod foreground_cancel;
 pub mod guards;
 pub mod repl_mode;
 // Boot-composition BC.1: the generic *inbound* primitive — a channel whose
@@ -167,6 +172,7 @@ pub use lattice_keymap::KeymapEntry;
 pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
 pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_actions};
 // ML.0a: configurable-modeline element model + descriptor registry.
+pub use crate::foreground_cancel::{ForegroundCancel, ForegroundCancelHandle};
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,
     ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,

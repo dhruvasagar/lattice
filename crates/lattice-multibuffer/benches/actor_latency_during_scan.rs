@@ -76,7 +76,11 @@ fn one_iter(root: &PathBuf) -> Duration {
     };
     service.set_state(
         view,
-        ProjectSearchState::scanning("needle".to_string(), options.clone()),
+        ProjectSearchState::scanning(
+            "needle".to_string(),
+            options.clone(),
+            lattice_protocol::CancellationToken::never(),
+        ),
     );
 
     rt.block_on(async move {
@@ -86,7 +90,7 @@ fn one_iter(root: &PathBuf) -> Duration {
             options,
             service.clone(),
             events.clone(),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lattice_protocol::CancellationToken::never(),
         );
 
         let probe_iters = 100;

@@ -42,7 +42,7 @@ fn ctrl_g_cancels_the_armed_foreground_token() {
 
     assert!(token.is_cancelled(), "<C-g> must flip the armed token");
     assert!(
-        a.editor.active_cancel.is_none(),
+        !a.editor.foreground_cancel.is_armed(),
         "a cancelled token must be cleared, not left armed"
     );
 }
@@ -81,7 +81,7 @@ fn ctrl_g_when_idle_is_harmless() {
          pulls back one byte on entering Normal, so `reset_to_normal` \
          has to skip it when already Normal"
     );
-    assert!(a.editor.active_cancel.is_none());
+    assert!(!a.editor.foreground_cancel.is_armed());
 }
 
 /// `<Esc>` deliberately does NOT cancel.
@@ -103,7 +103,10 @@ fn esc_does_not_cancel() {
         !token.is_cancelled(),
         "reflexive <Esc> must never kill in-flight foreground work"
     );
-    assert!(a.editor.active_cancel.is_some(), "and must leave it armed");
+    assert!(
+        a.editor.foreground_cancel.is_armed(),
+        "and must leave it armed"
+    );
 }
 
 /// `<C-g>` returns to Normal from Insert — the `keyboard-quit` contract
@@ -164,6 +167,59 @@ fn ctrl_g_in_operator_pending_aborts_the_operator_first() {
         token.is_cancelled(),
         "the user is never stuck — just slower"
     );
+}
+
+/// CG.2: the Editor's slot and the registered service must be the SAME
+/// `Arc`.
+///
+/// This is the test that matters most in CG.2, because the failure is
+/// silent: if boot registered a different `ForegroundCancel` than the
+/// one the `Editor` holds, every crate still compiles, providers still
+/// arm, `<C-g>` still runs — and nothing is ever cancelled. It is the
+/// `ServiceRegistry` Arc/`TypeId` trap in its most expensive form.
+///
+/// So this arms the way a provider does — through
+/// `services.get::<ForegroundCancelHandle>()`, exactly as project
+/// search's spawn sites do — and then cancels the way the user does, by
+/// pressing the key.
+#[test]
+fn a_token_armed_through_the_service_is_cancelled_by_the_key() {
+    let mut a = app_with("hello world\n", 10);
+
+    let fc = a
+        .editor
+        .services
+        .get::<lattice_mode::ForegroundCancelHandle>()
+        .expect("boot must register ForegroundCancelHandle");
+    let token = fc.arm();
+    assert!(!token.is_cancelled());
+
+    press(&mut a, ctrl_g());
+
+    assert!(
+        token.is_cancelled(),
+        "a provider arming through the service registry must land in the \
+         very slot <C-g> cancels — not a sibling copy of it"
+    );
+}
+
+/// CG.2: arming supersedes, which is how a second `:search` abandons the
+/// first and how `gr` replaces a running scan. Both spawn sites rely on
+/// this instead of flipping a private flag.
+#[test]
+fn arming_through_the_service_supersedes_the_previous_operation() {
+    let a = app_with("hello world\n", 10);
+    let fc = a
+        .editor
+        .services
+        .get::<lattice_mode::ForegroundCancelHandle>()
+        .expect("boot must register ForegroundCancelHandle");
+
+    let first = fc.arm();
+    let second = fc.arm();
+
+    assert!(first.is_cancelled(), "the superseded operation must stop");
+    assert!(!second.is_cancelled(), "the replacement runs");
 }
 
 /// SN.3d owns `<C-g>` in Visual. Binding cancel there would have

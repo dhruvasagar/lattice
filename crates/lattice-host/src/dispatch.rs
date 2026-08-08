@@ -2028,15 +2028,17 @@ impl Editor {
     /// Cancels the predecessor first, so a second `:search` before the
     /// first completes abandons the first scan instead of leaving a
     /// zombie task racing the new one for the same buffer.
+    ///
+    /// CG.2: a convenience over
+    /// [`ForegroundCancel::arm`](lattice_mode::ForegroundCancel::arm)
+    /// for the paths that already hold `&mut Editor`. Providers reach
+    /// the same slot through `services.get::<ForegroundCancelHandle>()`
+    /// — most spawn sites are `&self` closures and cannot come through
+    /// here.
     #[must_use = "the returned token must be handed to the spawned task, \
                   or the operation is unstoppable"]
     pub fn arm_cancel(&mut self) -> lattice_protocol::CancellationToken {
-        if let Some(previous) = self.active_cancel.take() {
-            previous.cancel();
-        }
-        let token = lattice_protocol::CancellationToken::new();
-        self.active_cancel = Some(token.clone());
-        token
+        self.foreground_cancel.arm()
     }
 
     /// CG.1: the `<C-g>` body. Flip the armed foreground token(s), then
@@ -2051,9 +2053,7 @@ impl Editor {
     /// hover still owns a separate token today; CG.3 folds it in and this
     /// second `take()` goes away.
     pub fn cancel_foreground(&mut self) {
-        if let Some(token) = self.active_cancel.take() {
-            token.cancel();
-        }
+        self.foreground_cancel.cancel();
         if let Some(token) = self.pending_hover_token.take() {
             token.cancel();
         }
@@ -36349,7 +36349,7 @@ mod tests {
             "arming a new op must cancel its predecessor"
         );
         assert!(!second.is_cancelled(), "the new token starts live");
-        assert!(ed.active_cancel.is_some());
+        assert!(ed.foreground_cancel.is_armed());
     }
 
     /// Cancel is bound universally, so the overwhelmingly common press
@@ -36358,12 +36358,12 @@ mod tests {
     #[test]
     fn cancel_foreground_is_a_noop_when_idle() {
         let mut ed = Editor::default();
-        assert!(ed.active_cancel.is_none());
+        assert!(!ed.foreground_cancel.is_armed());
 
         ed.cancel_foreground();
         ed.cancel_foreground();
 
-        assert!(ed.active_cancel.is_none());
+        assert!(!ed.foreground_cancel.is_armed());
         assert!(matches!(ed.modal, ModalState::Normal));
     }
 
@@ -36376,7 +36376,7 @@ mod tests {
 
         assert!(token.is_cancelled());
         assert!(
-            ed.active_cancel.is_none(),
+            !ed.foreground_cancel.is_armed(),
             "a cancelled token must not stay armed — the next \
              `arm_cancel` would otherwise 'cancel' it a second time"
         );

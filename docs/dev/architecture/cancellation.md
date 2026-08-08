@@ -2,7 +2,7 @@
 
 Design for user-initiated cancellation of long-running or stuck
 foreground operations — search scans, LSP commands, picker fills,
-WASM plugin calls — via a single universal key binding.
+WASM plugin calls — via a single deliberate key.
 
 Companion documents: `design.md` §5.7 (async runtime), `mode-architecture.md`
 (mode reset path), `lsp-architecture.md` (LSP pending-token pattern).
@@ -21,8 +21,8 @@ The substrate already has `CancellationToken` (`lattice_protocol::
 CancellationToken`) threaded through search loops, LSP requests,
 and the grammar `execute()` call. What is missing is:
 
-1. A way for the user to signal cancellation at a single, memorable
-   key regardless of which operation is in flight.
+1. A way for the user to signal cancellation at a memorable key,
+   regardless of which operation is in flight.
 2. A seam in the Editor that lets every async entry-point enroll in
    that signal.
 3. A mode-reset that returns the editor to a stable Normal state so
@@ -35,11 +35,13 @@ flip (`CancellationToken::cancel()`). The UI thread pays zero polling
 cost; async tasks wake on drop/cancellation via tokio's select macro.
 No renderer work on the hot path.
 
-**Goal #3 (vim semantics):** `<C-c>` is vim's universal cancel. We
-expose the action at `<C-g>` (emacs keyboard-quit) and also `<C-c>`
-in Normal/Op-pending/Visual modes. Insert-mode `<C-c>` already exits
-to Normal without abbreviation trigger — that semantics is preserved;
-Insert cancellation lands via `<Esc>` or a second `<C-g>`.
+**Goal #3 (vim semantics):** the binding is `<C-g>` — emacs
+`keyboard-quit` — because the two vim candidates are both unavailable.
+`<C-c>` is a mode *prefix* here (§4.5.1, structural, not a preference),
+and `<Esc>` is pressed reflexively by vim users, which makes it the
+wrong home for a destructive-ish action (§4.5.2). `<C-g>` is free in
+every mode cancel needs and taken only by SN.3d's Visual↔Select toggle,
+which §4.5 leaves alone.
 
 **Goal #4 (asynchronicity):** Cancellation is non-blocking by
 construction. The token is a cheap clone-able handle; the async task
@@ -48,7 +50,7 @@ and exits cleanly. The UI thread never waits for confirmation.
 
 ## 3. Scope: foreground vs. background
 
-`<C-g>` cancels **foreground operations** — work the user explicitly
+Cancellation covers **foreground operations** — work the user explicitly
 triggered that may hold up the next interaction:
 
 - Project-wide search / picker fill
@@ -71,7 +73,7 @@ is foreground.
 ### 4.1 `Editor.active_cancel`
 
 ```rust
-// in lattice-host/src/lib.rs  (Editor struct)
+// in lattice-host/src/editor.rs  (Editor struct)
 pub active_cancel: Option<lattice_protocol::CancellationToken>,
 ```
 
@@ -106,41 +108,158 @@ pub fn cancel_foreground(&mut self) {
     if let Some(token) = self.active_cancel.take() {
         token.cancel();
     }
-    // Also cancel the LSP hover token (currently separate)
+    // Hover still owns a separate token until CG.3 folds it in.
     if let Some(token) = self.pending_hover_token.take() {
         token.cancel();
     }
-    // Snap to Normal and clear any partial chord
     self.reset_to_normal();
 }
 ```
 
-Called by the `Action::Cancel` dispatch arm. Idempotent — safe to
-call when idle (token is `None`).
+Flip **and** reset — emacs `keyboard-quit` is defined as doing both.
+Idempotent and safe when idle (token is `None`), which is what makes
+the binding harmless to press speculatively.
 
 ### 4.4 `Action::Cancel`
 
-New variant in the `Action` enum. Fires from the `<C-g>` binding
-(and `<C-c>` in non-Insert modes). The dispatch arm calls
-`editor.cancel_foreground()` and emits `RendererSignal::Redraw`.
+One variant in the `Action` enum → `editor.cancel_foreground()`.
+Reached via `action:cancel`, bound to `<C-g>` at `Builtin` (§4.5), and
+carrying an `AppEffect::Cancel` peer so it is a real registered command
+rather than an input-layer special case.
+
+Deliberately NOT in `action_is_document_mutation`: cancel is an escape
+hatch, so it must keep working on a read-only buffer. The redraw comes
+from the teardown publishing render state.
 
 ### 4.5 Binding
 
-`<C-g>` registers at `KeymapLayer::Builtin` — fires in every mode
-and every buffer, matching emacs keyboard-quit universality. This
-is deliberate: a user who is stuck should not need to know what mode
-or buffer they are in.
+**`<C-g>` at `KeymapLayer::Builtin`**, registered in one loop in
+`lattice-host/src/keymap_cancel.rs`. Builtin rather than
+`emacs-keys-mode` so it does not depend on `:set emacs-keys` — a user
+who turns the tribute off must not lose the only way to stop a scan.
 
-`<C-c>` is also registered at Builtin for Normal / Op-pending /
-Visual modes, matching vim convention. Insert-mode `<C-c>` keeps its
-existing semantics (exit Insert without abbreviation trigger) and
-does not route to `Action::Cancel`.
+Mode set: `Normal`, `Insert`, `Replace` — and therefore
+`ModalState::Command` / `Search(_)` / `Prompt`, which dispatch through
+`keymap_insert::dispatch_insert` and so look up `BindingMode::Insert`.
 
-### 4.6 Existing `pending_hover_token`
+**Not `Visual` or `Select`.** SN.3d owns `<C-g>` there as the
+Visual↔Select toggle: vim-canonical, and the only path between the two
+modes that preserves the selection (`select-mode.md` §4). It matters
+more than the chord count suggests, because snippet placeholders land
+the user in Select, so `<C-g>` is how a placeholder selection gets
+promoted to Visual for operators.
+
+The cost is that Visual and Select have no cancel chord — from there it
+is `<Esc>` then `<C-g>`. Accepted deliberately: Visual is a transient
+state a user is rarely parked in while waiting on a scan, and the
+alternative was relocating a vim-canonical chord to buy a case that
+barely arises.
+
+### 4.5.1 Why not `<C-c>`
+
+`<C-c>` is vim's interrupt and was the obvious candidate. It cannot be
+used, and the reason is structural rather than a matter of taste.
+
+**`<C-c>` is a mode prefix in this codebase.** magit binds `<C-c>g`
+(dispatch) and `<C-c>f` (file-dispatch) globally in Normal, and
+`<C-c><C-c>` / `<C-c><C-k>` (confirm / abort) in the commit, rebase and
+notes modes, in Normal *and* Insert. That is the emacs convention
+`<C-c>` carries, and it is shipped behaviour.
+
+`KeymapTrie::lookup` returns `Bound` at a terminal node **regardless of
+its children** (`trie.rs:245`). So a depth-1 `<C-c>` binding resolves
+immediately and every `<C-c>…` chord underneath it becomes unreachable.
+Registering cancel there broke magit's transients outright.
+
+Layer priority does not save it: the collision is not two bindings at
+the same path, it is a terminal node preempting its own subtree, which
+happens before priority is consulted.
+
+This is what CM.3d meant by "`<C-c>` belongs to modes" when it removed
+the hardcoded `<C-c>` → quit hatch — a point worth restating, because
+the surface reading ("quit was too destructive") is only half of it.
+
+A mode owning `<C-c>` terminally is still fine, and several do
+(`compilation-mode` → kill the build, the minibuffer modes → cancel that
+line). Those layers are scoped by K.1.c to buffers where the mode is
+active, so they shadow nothing elsewhere. `Builtin` has no such scope.
+The regression net is
+`lattice_ui_tui::app::cancel::builtin_never_binds_ctrl_c_terminally`.
+
+Making `<C-c>` work would mean teaching the trie vim's `timeoutlen`
+prefix-vs-terminal disambiguation. That is a genuinely better keymap
+engine and would unblock every future collision of this shape, but it
+touches the hot keystroke path, needs its own slice and bench, and would
+still cost a second keystroke wherever a `<C-c>` prefix is active.
+
+### 4.5.2 Why not `<Esc>`
+
+An earlier revision of this slice chained the cancel onto every bare
+`<Esc>` in `input::translate`. Esc is universal, is never a prefix
+(zero multi-key `<Esc>…` chords in tree), and `cancel.rs`'s own
+"Sources of cancellation" note already named it. It was still wrong.
+
+**Vim users press `<Esc>` reflexively and constantly** — to confirm
+they are in Normal, between edits, out of habit. Tying cancellation to
+it means a thirty-second project search dies to a double-tap that
+carried no intent to cancel, and the user cannot tell the difference
+between "it finished" and "I killed it." Cancellation is not
+destructive to the *document*, but it is destructive to work in
+progress, and a key pressed that often is the wrong place for it.
+
+The general rule this leaves behind: **a key the user presses without
+thinking must not do anything they would regret.** Pinned by
+`lattice_ui_tui::app::cancel::esc_does_not_cancel`.
+
+The free-chord census that led to `<C-g>`: of the CTRL chords unbound
+in both Normal and Insert (`a c g j k m x z`), `c` and `x` are prefixes
+(magit, the emacs-keys leader), `j` / `m` are the literal LF / CR that
+terminals send for Enter, `z` is the suspend convention, `a` is vim's
+increment and `k` is Insert's kill-to-end-of-line. `<C-g>` is what
+remains — and it is already emacs's cancel key, so it arrives with
+existing muscle memory rather than needing new.
+
+### 4.6 Mode reset: `Editor::reset_to_normal()`
+
+Authored by CG.1 — an earlier revision of this document assumed it
+already existed (it did not; only `set_modal` and the per-mode exit
+handlers did).
+
+Each modal state exits through **its own** teardown rather than a bare
+`set_modal(Normal)`, because the minibuffer states own real buffers:
+dropping `ModalState::Command` without `do_command_line_dismiss()`
+leaves `*command-line*` focused with no way to reach it. Insert and
+Replace route through `enter_mode(Normal)` so the insert undo-group
+closes and the cursor pulls back one byte (vim's insert-exit contract)
+— which is also why an already-Normal editor must *not* call it, or a
+bare `<C-g>` in Normal would walk the cursor left on every press.
+
+It then clears `partial_chord`, `pending_count`, `op_count` and
+`pending_register`. Per §6 it does NOT discard unsaved edits and does
+NOT clear the register or the yank ring.
+
+### 4.7 Known gap: cancel mid-chord
+
+`<C-g>` after an operator (`d` then `<C-g>`) resolves as an *unbound
+continuation*: the trie aborts the pending operator and stops, without
+also reaching `Action::Cancel`. That is vim's rule for an invalid
+continuation, and it leaves the user in Normal where a second press does
+cancel.
+
+Closing it would require `input::translate` to know **which**
+`CommandId` is cancel — the trie resolves a binding to
+`Action::Invoke(inv)`, and the `Action::Cancel` variant only
+materialises after the grammar runs the `ActionSpec` — which means
+threading that id through every `TranslateContext` construction site.
+Not worth it for a two-press papercut. Pinned by
+`lattice_ui_tui::app::cancel::ctrl_g_in_operator_pending_aborts_the_operator_first`;
+revisit if CG.2 / CG.3 show it biting in practice.
+
+### 4.8 Existing `pending_hover_token`
 
 `Editor.pending_hover_token` already exists for LSP hover
 cancellation. In CG.3 this gets folded into the unified
-`active_cancel` pattern so `<C-g>` subsumes it. Until then,
+`active_cancel` pattern so cancel subsumes it. Until then,
 `cancel_foreground()` explicitly cancels both.
 
 ## 5. Async entry-point contract
@@ -171,17 +290,20 @@ yield points:
 
 ## 6. Mode reset on cancel
 
-`reset_to_normal()` (already exists, used by `<Esc>` path):
+Contract (implementation shape in §4.6):
 
-- Clears `partial_chord`
-- Exits Visual / Op-pending / Command-line / Search mode → Normal
+- Clears `partial_chord`, `pending_count`, `op_count`, `pending_register`
+- Exits Visual / Select / Insert / Replace / Command / Search / Prompt
+  → Normal, each through its own teardown
 - Does NOT discard unsaved buffer edits (cancel is not `:q!`)
 - Does NOT clear the register or yank ring
 
-If the user is in Insert mode and presses `<C-g>`, the mode snaps to
-Normal first, then the cancel fires. Two keystrokes is intentional:
-Insert mode already has a clear exit path (`<Esc>`) and an accidental
-`<C-g>` should not surprise the user.
+One press does both halves — the token flip and the mode reset —
+including from Insert. An earlier revision made Insert a deliberate
+two-keystroke case. One press does both now: `<C-g>` in Insert cancels
+and lands you in Normal, which is what emacs users already expect from
+`keyboard-quit` and costs vim users nothing, since `<C-g>` had no
+Insert-mode meaning to displace.
 
 ## 7. Status indication (deferred to CG.5)
 
@@ -211,8 +333,8 @@ cancel_stack: Vec<(CancellationToken, &'static str)>,
 ```
 
 `<C-g>` pops and cancels the top entry. A second `<C-g>` cancels
-the next. An empty stack `<C-g>` is a no-op (or shows file info,
-matching vim's `<C-g>` convention). The status line can display
+the next. An empty stack press stays a plain mode reset. The status
+line can display
 `[search… ×]` with a count badge.
 
 This is intentionally not sliced yet. The single-token v1 is the
@@ -226,9 +348,16 @@ consumer callsites are established.
   search loop.
 - `lattice-lsp/src/features.rs` — `Pending<T>` futures; token plumbing.
 - `lattice-lsp/src/actor.rs` — LSP actor token parameter.
-- `crates/lattice-host/src/dispatch.rs` — `Editor::cancel_foreground`,
-  `Action::Cancel` arm, `pending_hover_token` fold-in (CG.3).
-- `crates/lattice-host/src/lib.rs` — `active_cancel` field,
-  `arm_cancel()`, `cancel_foreground()`.
+- `crates/lattice-host/src/editor.rs` — the `active_cancel` field.
+- `crates/lattice-host/src/dispatch.rs` — `arm_cancel()`,
+  `cancel_foreground()`, `reset_to_normal()`,
+  `do_command_line_dismiss()`, the `Action::Cancel` dispatch arm, and
+  the `pending_hover_token` fold-in (CG.3).
+- `crates/lattice-host/src/keymap_cancel.rs` — the `<C-g>` Builtin
+  registration and its mode set.
+- `crates/lattice-plugin-host/src/boundary_app_effect.rs` — the typed
+  "no WIT surface" error for `AppEffect::Cancel`.
+- `crates/lattice-ui-tui/src/app/cancel.rs` — key-driven coverage
+  (press → translate → dispatch → handler).
 - `crates/lattice-multibuffer/src/lib.rs` — search provider spawn
   path (CG.2 hook-in point).

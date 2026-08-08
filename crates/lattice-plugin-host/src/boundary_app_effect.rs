@@ -144,6 +144,22 @@ impl WitBoundary for NativeAppEffect {
     fn to_wit(&self) -> Result<WitAppEffect, String> {
         Ok(match self {
             NativeAppEffect::Quit => WitAppEffect::Quit,
+            // CG.1: foreground cancellation is the *user's* escape hatch —
+            // it flips the token of whatever the user triggered and snaps
+            // the editor back to Normal. A plugin emitting it would be
+            // yanking the user out of their mode from a background task,
+            // which is the opposite of the contract. Deliberately no WIT
+            // surface; typed error, never lossy (the `*Line*` precedent
+            // below). CG.4 threads the token INTO plugin calls so the host
+            // can cancel a plugin — the direction that does make sense.
+            NativeAppEffect::Cancel => {
+                return Err(
+                    "AppEffect::Cancel is the user's foreground-cancel hatch (`<C-c>`, \
+                     cancellation.md CG.1); no plugin (WIT) surface — a plugin must not \
+                     reset the user's mode"
+                        .to_string(),
+                );
+            }
             NativeAppEffect::MatchBracket => WitAppEffect::MatchBracket,
             NativeAppEffect::ToggleCaseAtCursor => WitAppEffect::ToggleCaseAtCursor,
             NativeAppEffect::OpenLineBelow => WitAppEffect::OpenLineBelow,

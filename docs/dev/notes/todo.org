@@ -25,7 +25,7 @@
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
   split, vertical split or tab. This will override
 - [X] {count}G, :{count} should jump to that line (preserve <C-o>)
-- [ ] <C-g>, (:abort-all !?) to abort any running tasks
+- [X] <C-g>, (:abort-all !?) to abort any running tasks
 - [X] M-x as a command picker
   - [X] It should resolve to `:<command> |` for the user to enter
     arguments if the command requires arguments or just execute them

@@ -1780,6 +1780,9 @@ impl Editor {
                     &syntax_motion_ids,
                 );
                 crate::keymap_insert::register_insert_bindings(&h, &action_ids);
+                // CG.1: `<C-g>` → `action:cancel`. Builtin, so it does
+                // not depend on `:set emacs-keys`.
+                crate::keymap_cancel::register_cancel_bindings(&h, &action_ids);
                 crate::keymap_normal::register_normal_bindings(
                     &h,
                     &builtins,

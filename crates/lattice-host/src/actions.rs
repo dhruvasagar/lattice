@@ -259,9 +259,15 @@ pub struct ActionIds {
     /// `Action::MoveTab(u32)` payload; the CommandId here just
     /// names the action for keymap binding + plugin lookup.
     pub only_tab: CommandId,
-    /// CM.3d (2026-07-22): `<C-c>` chord in Normal mode.
-    /// Graceful editor shutdown via `AppEffect::Quit`.
+    /// CM.3d (2026-07-22): graceful editor shutdown via
+    /// `AppEffect::Quit`. Reachable via `:q` and user bindings; the
+    /// hardcoded `<C-c>` → quit hatch was removed in CM.3d, and CG.1
+    /// gave that chord to [`Self::cancel`].
     pub quit: CommandId,
+    /// CG.1 (2026-08-07): foreground cancellation. Bound to `<C-c>` at
+    /// the Builtin layer in every mode, and to `<C-g>` by
+    /// `emacs-keys-mode`.
+    pub cancel: CommandId,
     pub move_tab: CommandId,
     /// T4 (2026-05-25): `<C-w>T` — move the active pane to a
     /// fresh tab. Dispatched as `Action::MovePaneToNewTab`
@@ -1427,8 +1433,15 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
         quit: register_simple(
             registry,
             "action:quit",
-            "`<C-c>` in Normal mode: graceful editor shutdown.",
+            "Graceful editor shutdown.",
             AppEffect::Quit,
+        ),
+        cancel: register_simple(
+            registry,
+            "action:cancel",
+            "`<C-c>` (`<C-g>` with emacs-keys): cancel the in-flight \
+             foreground operation and return to Normal mode.",
+            AppEffect::Cancel,
         ),
         // move-tab carries no fixed target; the dispatch path
         // surfaces it via the count-aware `Action::MoveTab(n)`

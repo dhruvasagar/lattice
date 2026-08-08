@@ -62,6 +62,17 @@ pub enum FindKind {
 pub enum Action {
     None,
     Quit,
+    /// CG.1: foreground cancellation — flip the armed token AND snap
+    /// back to Normal. Reached by `action:cancel`, bound to `<C-g>` at
+    /// `KeymapLayer::Builtin` (emacs `keyboard-quit`).
+    /// See [`Editor::cancel_foreground`](crate::Editor::cancel_foreground)
+    /// and `docs/dev/architecture/cancellation.md`.
+    ///
+    /// Deliberately NOT in [`action_is_document_mutation`]: cancel is
+    /// an escape hatch, so it must keep working on a read-only buffer.
+    ///
+    /// [`action_is_document_mutation`]: crate::dispatch::action_is_document_mutation
+    Cancel,
     /// Run a CommandInvocation through `lattice_grammar::execute()`.
     Invoke(CommandInvocation),
     /// Slice 8.i.4.a -- absorb the captured chord into

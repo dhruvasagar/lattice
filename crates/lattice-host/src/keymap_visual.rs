@@ -321,9 +321,22 @@ pub fn dispatch_visual(
     if chord.mods.ctrl() && matches!(chord.key, crate::chord::KeyKind::Char('g')) {
         return Action::ToggleVisualSelect;
     }
-    if chord.mods.ctrl() {
-        return Action::None;
-    }
+    // CG.1 (2026-08-07): the blanket `if chord.mods.ctrl() { return
+    // Action::None }` that used to sit here is GONE. It short-circuited
+    // every CONTROL chord before the trie was consulted, so a binding
+    // registered under `BindingMode::Visual` with a CTRL chord could
+    // never fire — the same defect PBH.3 fixed in Normal, where the
+    // count-digit guard made every `<C-digit>` chord unreachable.
+    //
+    // It was invisible because the Visual catalog registers no CTRL
+    // chords, so nothing in-tree noticed. Plugins can: `keymap_host.rs`
+    // maps WIT `Visual` / `Select` straight through, so a plugin binding
+    // `<C-x>` in Visual got silent nothing — an extensibility hole
+    // (paramount goal #2), not just a missing feature.
+    //
+    // The trie is authoritative now. `<C-g>` above stays a hardcoded
+    // arm because SN.3d's toggle is mode *control* (it changes which
+    // dispatcher runs), not a command lookup.
 
     // Mid-sequence: a text-object prefix was absorbed last keystroke.
     // Resolve the full path; the blockwise `I` / `A` overlay does not

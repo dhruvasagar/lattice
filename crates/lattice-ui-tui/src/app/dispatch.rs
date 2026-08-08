@@ -435,6 +435,11 @@ impl App {
             // `Editor::handle_action` (`apply_edit_effect_inline`); grouped
             // no-op here.
             | Action::ApplyEdit { .. }
+            // CG.1: `<C-g>` foreground cancel. Host-resident body
+            // (`Editor::cancel_foreground`) so the TUI and GPUI peers get
+            // identical behaviour without either renderer owning a copy;
+            // grouped no-op here.
+            | Action::Cancel
             // 5.5.G.9: paste cluster arms.
             | Action::PasteAfter
             | Action::PasteBefore

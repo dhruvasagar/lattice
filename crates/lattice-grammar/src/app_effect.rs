@@ -153,10 +153,22 @@ pub enum AppEffect {
     /// Graceful editor shutdown. The App's `apply_effect` arm
     /// publishes `Event::BeforeQuit` and sets the `should_quit`
     /// flag the runtime polls between frames; matches today's
-    /// `Action::Quit` semantics exactly. (8.i.0 smoke variant;
-    /// the `<C-c>` binding lives in `input.rs` so the legacy
-    /// site doesn't migrate until the input-layer rewrite.)
+    /// `Action::Quit` semantics exactly. (8.i.0 smoke variant.)
+    ///
+    /// CM.3d (2026-07-22) unbound the `<C-c>` → quit hatch that
+    /// used to be hardcoded in `input.rs`; `action:quit` is now
+    /// reachable only through `:q` and user bindings.
     Quit,
+    /// CG.1: **foreground cancellation**. Flips the token of the
+    /// in-flight user-initiated async op (search scan, LSP command,
+    /// plugin call) and snaps the editor back to a stable Normal
+    /// state. Bound to `<C-c>` at the Builtin layer in every mode,
+    /// and to `<C-g>` by `emacs-keys-mode`.
+    ///
+    /// Idempotent: with no op armed it degrades to the mode reset
+    /// alone, which is why it is safe as a universal binding.
+    /// See `docs/dev/architecture/cancellation.md`.
+    Cancel,
     /// Vim's `%`. Jumps to the bracket / brace / paren matching
     /// the one at-or-after the cursor on the current line.
     /// Promoted from `Action::MatchBracket` in slice 8.i.1.a.

@@ -1763,6 +1763,20 @@ pub struct Editor {
     pub lsp_pending_show_message_requests: HashMap<u32, lattice_lsp::InboundShowMessageRequest>,
     pub lsp_show_message_request_queue: std::collections::VecDeque<u32>,
     pub lsp_next_show_message_request_id: u32,
+    /// CG.1: the cancellation token of the most recently armed
+    /// **foreground** operation — work the user explicitly triggered
+    /// that may hold up the next interaction (project search, an LSP
+    /// command, a WASM plugin call). `None` when the editor is idle.
+    ///
+    /// Written only through [`Editor::arm_cancel`]; flipped and cleared
+    /// only through [`Editor::cancel_foreground`]. Background work
+    /// (indexing, file watchers, the LSP boot handshake) owns its own
+    /// long-lived tokens and is deliberately out of scope — see
+    /// `docs/dev/architecture/cancellation.md` §3.
+    ///
+    /// `Option` is `Default` (None), so `#[derive(Default)]` on
+    /// `Editor` still holds.
+    pub active_cancel: Option<CancellationToken>,
     // ---- LSP per-feature request channels (rx + token pairs) ----
     pub pending_hover_rx: Option<tokio::sync::mpsc::UnboundedReceiver<HoverOutcome>>,
     pub pending_hover_token: Option<CancellationToken>,

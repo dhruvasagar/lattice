@@ -120,6 +120,17 @@ leader is just a second doorway to them.
 > pending) still starts a count as usual — `2j` is two-lines-down,
 > untouched.
 
+### `<C-g>` is *not* part of this mode
+
+`<C-g>` (emacs's `keyboard-quit`) cancels a running operation and
+returns you to Normal — see
+[modal-editing](help:modal-editing). It is a **builtin** binding, not
+part of the tribute, so `:set noemacs-keys` does not take it away.
+
+It is called out here because it is the one emacs chord you get
+regardless of this setting, and because it is *not* under the `<C-x>`
+leader.
+
 ---
 
 ## The window/buffer ex-commands

@@ -123,6 +123,10 @@ pub use lattice_grammar::PaneDirection;
 // (or the dedicated R.1 doc) for the full feature -> module
 // mapping.
 mod boot;
+// CG.1: `<C-c>` foreground cancellation, exercised key-first through
+// translate + apply. Test-only — the handlers live in `lattice-host`.
+#[cfg(test)]
+mod cancel;
 mod cmdline;
 mod completion;
 mod dispatch;

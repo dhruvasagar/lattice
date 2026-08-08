@@ -201,6 +201,7 @@ pub fn emacs_keys_layer_bindings(
     }
 
     let mut modes = HashMap::new();
+
     modes.insert(BindingMode::Normal, trie);
     modes
 }

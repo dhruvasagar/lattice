@@ -1958,6 +1958,107 @@ impl Editor {
         self.modal = modal;
         self.publish_render_state();
     }
+
+    /// Tear the `:` line down unconditionally: drop history / preview /
+    /// decoration state and restore the prior editing buffer, cursor and
+    /// modal. No command dispatched, no history push.
+    ///
+    /// Split out of the [`Action::CommandLineCancel`] arm so
+    /// [`Self::reset_to_normal`] can reach the *hard* cancel directly —
+    /// `<C-c>` is an escape hatch, so it must not stop at the two-stage
+    /// "first Esc dismisses the completion popup" behaviour that arm
+    /// layers on top.
+    pub fn do_command_line_dismiss(&mut self) {
+        self.command_history_cursor = None;
+        self.command_history_pending = None;
+        self.auto_submit_after_chord = false;
+        self.substitute_preview = None;
+        self.command_line_decorations = None;
+        self.restore_editing_buffer();
+    }
+
+    /// CG.1: snap back to a stable Normal state, whatever the editor was
+    /// in the middle of. The mode-reset half of [`Self::cancel_foreground`],
+    /// and the reason `<C-c>` is safe to bind universally: with nothing
+    /// armed it still leaves the user somewhere they can keep working.
+    ///
+    /// Each modal state exits through **its own** teardown rather than a
+    /// bare `set_modal(Normal)`, because the minibuffer states own real
+    /// buffers: dropping `ModalState::Command` without
+    /// [`Self::do_command_line_dismiss`] would leave `*command-line*`
+    /// focused with no way to reach it. Insert / Replace route through
+    /// [`Self::enter_mode`] so the insert undo-group closes and the
+    /// cursor pulls back one byte (vim's insert-exit contract) — which is
+    /// also why an already-Normal editor must NOT call it, or a bare
+    /// `<C-c>` in Normal would walk the cursor left on every press.
+    ///
+    /// Per `cancellation.md` §6 this does NOT discard unsaved edits (it is
+    /// not `:q!`) and does NOT clear the register or the yank ring.
+    pub fn reset_to_normal(&mut self) {
+        match self.modal {
+            // Already stable. `partial_chord` / counts still clear below —
+            // that is the whole effect of `<C-c>` on an idle Normal editor.
+            ModalState::Normal => {}
+            ModalState::Visual(_) => self.do_exit_visual(),
+            ModalState::Select(_) => self.do_exit_select(),
+            ModalState::Command => {
+                if self.ensure_command_line_focus() {
+                    self.do_command_line_dismiss();
+                }
+            }
+            ModalState::Search(_) => self.do_search_line_cancel(),
+            ModalState::Prompt => self.do_prompt_line_cancel(),
+            // Insert / Replace / OperatorPending.
+            _ => self.enter_mode(ModalState::Normal),
+        }
+        // A half-typed chord, count, or register prefix is exactly the
+        // kind of stuck state cancel exists to clear. (The generic
+        // dispatch preamble also clears `partial_chord` for any
+        // non-absorbing action, so this is belt-and-braces for
+        // programmatic callers that bypass `handle_action`.)
+        self.partial_chord.clear();
+        self.pending_count = 0;
+        self.op_count = 0;
+        self.pending_register = None;
+    }
+
+    /// CG.1: arm a foreground cancellation token for a user-initiated
+    /// async operation, returning the clone the spawned task holds.
+    ///
+    /// Cancels the predecessor first, so a second `:search` before the
+    /// first completes abandons the first scan instead of leaving a
+    /// zombie task racing the new one for the same buffer.
+    #[must_use = "the returned token must be handed to the spawned task, \
+                  or the operation is unstoppable"]
+    pub fn arm_cancel(&mut self) -> lattice_protocol::CancellationToken {
+        if let Some(previous) = self.active_cancel.take() {
+            previous.cancel();
+        }
+        let token = lattice_protocol::CancellationToken::new();
+        self.active_cancel = Some(token.clone());
+        token
+    }
+
+    /// CG.1: the `<C-g>` body. Flip the armed foreground token(s), then
+    /// [`reset_to_normal`](Self::reset_to_normal) — emacs
+    /// `keyboard-quit`, which is defined as doing both.
+    ///
+    /// Idempotent and safe when idle — nothing armed is the common case,
+    /// and degrading to a plain mode reset is what makes the binding
+    /// harmless to press speculatively.
+    ///
+    /// `pending_hover_token` is flipped alongside `active_cancel` because
+    /// hover still owns a separate token today; CG.3 folds it in and this
+    /// second `take()` goes away.
+    pub fn cancel_foreground(&mut self) {
+        if let Some(token) = self.active_cancel.take() {
+            token.cancel();
+        }
+        if let Some(token) = self.pending_hover_token.take() {
+            token.cancel();
+        }
+        self.reset_to_normal();
+    }
 }
 
 /// Returns `true` for actions that mutate the document and therefore
@@ -2211,6 +2312,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     }
     match action {
         Action::None => {}
+        // CG.1: foreground cancellation. Handled here rather than in a
+        // renderer's match so every peer (TUI, GPUI, headless tests)
+        // gets `<C-c>` for free. The redraw comes from
+        // `cancel_foreground`'s teardown publishing render state.
+        Action::Cancel => editor.cancel_foreground(),
         // SN.3c.2b: a fall-through binding resolves to a sequence
         // (mode action, then native). Apply each in order — sub-actions
         // (e.g. `Invoke(snippet-leave)` then `Invoke(enter-normal)`)
@@ -2293,14 +2399,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                     // handled by the normal dispatcher) closes it.
                     editor.modal = ModalState::Normal;
                 } else {
-                    editor.command_history_cursor = None;
-                    editor.command_history_pending = None;
-                    editor.auto_submit_after_chord = false;
-                    editor.substitute_preview = None;
-                    editor.command_line_decorations = None;
-                    // Restore the prior editing buffer + cursor + modal;
-                    // no command dispatched, no history push.
-                    editor.restore_editing_buffer();
+                    editor.do_command_line_dismiss();
                 }
             }
         }
@@ -8147,6 +8246,7 @@ impl Editor {
         use lattice_grammar::AppEffect;
         match app {
             AppEffect::Quit => out.next_actions.push(Action::Quit),
+            AppEffect::Cancel => out.next_actions.push(Action::Cancel),
             AppEffect::MatchBracket => out.next_actions.push(Action::MatchBracket),
             AppEffect::ToggleCaseAtCursor => out.next_actions.push(Action::ToggleCaseAtCursor),
             AppEffect::OpenLineBelow => out.next_actions.push(Action::OpenLineBelow),
@@ -36225,6 +36325,111 @@ fn project_transient_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── CG.1: foreground cancellation primitives ──
+    //
+    // The keyboard seam (press `<C-c>` → translate → dispatch → here) is
+    // covered in `lattice_ui_tui::app::cancel`. These pin the method
+    // contracts the async slices CG.2–CG.4 will build on.
+
+    /// The predecessor must die when a new op arms. Without this, a
+    /// second `:search` before the first completes leaves two scans
+    /// racing to write the same buffer, and only one of them is the one
+    /// the user asked for.
+    #[test]
+    fn arm_cancel_kills_the_previous_token() {
+        let mut ed = Editor::default();
+        let first = ed.arm_cancel();
+        assert!(!first.is_cancelled());
+
+        let second = ed.arm_cancel();
+
+        assert!(
+            first.is_cancelled(),
+            "arming a new op must cancel its predecessor"
+        );
+        assert!(!second.is_cancelled(), "the new token starts live");
+        assert!(ed.active_cancel.is_some());
+    }
+
+    /// Cancel is bound universally, so the overwhelmingly common press
+    /// is one with nothing armed. It must be a no-op, not a panic and
+    /// not a state change.
+    #[test]
+    fn cancel_foreground_is_a_noop_when_idle() {
+        let mut ed = Editor::default();
+        assert!(ed.active_cancel.is_none());
+
+        ed.cancel_foreground();
+        ed.cancel_foreground();
+
+        assert!(ed.active_cancel.is_none());
+        assert!(matches!(ed.modal, ModalState::Normal));
+    }
+
+    #[test]
+    fn cancel_foreground_flips_and_clears_the_armed_token() {
+        let mut ed = Editor::default();
+        let token = ed.arm_cancel();
+
+        ed.cancel_foreground();
+
+        assert!(token.is_cancelled());
+        assert!(
+            ed.active_cancel.is_none(),
+            "a cancelled token must not stay armed — the next \
+             `arm_cancel` would otherwise 'cancel' it a second time"
+        );
+    }
+
+    /// Hover owns a separate token until CG.3 folds it in. Until then
+    /// `<C-c>` has to flip both, or an in-flight hover survives a cancel.
+    #[test]
+    fn cancel_foreground_also_flips_the_hover_token() {
+        let mut ed = Editor::default();
+        let hover = lattice_protocol::CancellationToken::new();
+        ed.pending_hover_token = Some(hover.clone());
+
+        ed.cancel_foreground();
+
+        assert!(hover.is_cancelled());
+        assert!(ed.pending_hover_token.is_none());
+    }
+
+    /// `enter_mode(Normal)` unconditionally pulls the cursor back one
+    /// byte (vim's insert-exit contract). Routing an already-Normal
+    /// editor through it would walk the cursor left on every `<C-c>` —
+    /// a universal binding that corrupts the cursor is worse than no
+    /// binding at all.
+    #[test]
+    fn reset_to_normal_from_normal_leaves_the_cursor_alone() {
+        let mut ed = Editor::default();
+        ed.cursor.byte = 5;
+
+        ed.reset_to_normal();
+        ed.reset_to_normal();
+
+        assert_eq!(ed.cursor.byte, 5);
+        assert!(matches!(ed.modal, ModalState::Normal));
+    }
+
+    /// Counts, half-typed chords and a pending register are all states a
+    /// user can get stuck in with no other way out.
+    #[test]
+    fn reset_to_normal_clears_the_pending_input_state() {
+        let mut ed = Editor::default();
+        ed.pending_count = 12;
+        ed.op_count = 3;
+        ed.partial_chord.push(crate::chord::KeyChord::char('g'));
+        ed.pending_register = Some(lattice_grammar::Register::Named('a'));
+
+        ed.reset_to_normal();
+
+        assert_eq!(ed.pending_count, 0);
+        assert_eq!(ed.op_count, 0);
+        assert!(ed.partial_chord.is_empty());
+        assert!(ed.pending_register.is_none());
+    }
 
     // ── HP.2: inline help literals classify by what they are ──
 

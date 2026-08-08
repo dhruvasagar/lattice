@@ -220,9 +220,18 @@ fn native_select_action(
             // `<C-o>` one-shot Normal — vim parity, post-MVP
             // (select-mode.md §3). Swallow so it never overtypes.
             KeyKind::Char('o') => return Action::None,
-            // 2. Any other CONTROL-bearing chord is a no-op, exactly
-            //    as `dispatch_visual` short-circuits CONTROL.
-            _ => return Action::None,
+            // CG.1 (2026-08-07): the `_ => return Action::None` catch-all
+            // that used to close this match is GONE, mirroring the same
+            // removal in `dispatch_visual` — see the comment there for
+            // why (it made every CTRL binding in this mode, including
+            // any a plugin registers over WIT, structurally unreachable).
+            //
+            // The two arms above stay hardcoded because both are mode
+            // *control*, not command lookup. Everything else falls
+            // through to the trie. A bare CTRL chord with no binding
+            // still ends at `Action::None` — via the lookup below, which
+            // is the difference that matters.
+            _ => {}
         }
     }
 
@@ -308,6 +317,20 @@ fn minor_select_action(
 /// `Char(c)` to [`Action::SelectOvertype`] (replace-and-insert) instead
 /// of a plain insert. CONTROL was already filtered by the caller.
 fn printable_overtype_fallback(chord: &KeyChord) -> Action {
+    // CG.1: the CONTROL check is HERE, not in the caller. Select's
+    // inverted semantics say a **bare printable** overtypes the
+    // selection — `<C-w>` is a chord, not a printable, and typing it
+    // must never replace the user's selection with a `w`.
+    //
+    // That used to be enforced by a blanket `return Action::None` for
+    // every CTRL chord at the top of `native_select_action`, which also
+    // made the Select trie unreachable for CTRL bindings (see the
+    // comment there). Moving the rule down here keeps the guarantee and
+    // lets a real binding win first — same shape as Replace mode, whose
+    // wildcard only matches bare printable chars.
+    if chord.mods.ctrl() || chord.mods.alt() || chord.mods.super_() {
+        return Action::None;
+    }
     match chord.key {
         KeyKind::Char(c) => Action::SelectOvertype(c),
         _ => Action::None,

@@ -624,6 +624,17 @@ fn compute_normal_action(
         return Action::PushDigit(digit as u8);
     }
 
+    // CG.1 note: `<C-g>` mid-chord (`d` then `<C-g>`) resolves here as an
+    // unbound continuation, so it aborts the pending operator and stops —
+    // it does NOT also reach `Action::Cancel`. That matches vim, where an
+    // invalid continuation cancels the prefix, and it leaves the user in
+    // Normal where a second `<C-g>` does cancel any in-flight async op.
+    // Making one press do both needs translate to know WHICH `CommandId`
+    // is cancel (the trie resolves to `Action::Invoke(inv)`, not
+    // `Action::Cancel` — the variant only materialises after the grammar
+    // runs the `ActionSpec`), which means threading it through every
+    // `TranslateContext` construction site. Not worth it for a two-press
+    // papercut; revisit if CG.2/CG.3 show it biting in practice.
     if let Some(action) = prefix_action {
         return action;
     }

@@ -117,15 +117,53 @@ same mechanism as cancel**. A second `:search` abandons the first, and
 search used to carry (`Arc<AtomicBool>`) is gone, and with it the
 possibility of a scan that supersede could stop but `<C-g>` could not.
 
+### 4.2.1 Two verbs: `arm` vs `enrol` (CG.3)
+
+`arm()` **supersedes** — the slot holds one token, and taking it
+cancels the predecessor. Right for project search, where starting a
+second scan means abandoning the first.
+
+`enrol()` **joins** — the token is added to a set that `cancel()`
+walks, and nothing else is disturbed. Right for work that already has
+its own cancellation discipline and only needs `<C-g>` to reach it.
+
+Every user-triggered LSP command enrols. Each already holds a
+per-feature `pending_*_token` so a second hover supersedes the first,
+which is the correct granularity — a hover has no business cancelling
+a rename. Arming would be actively wrong: `K` is a reflexive inspect
+key, so it would mean glancing at a symbol silently kills the project
+search you are waiting on, leaving a half-populated buffer and nothing
+to explain it. Pinned by
+`ForegroundCancel::enrolling_does_not_supersede_the_armed_operation`.
+
+**What does NOT enrol, and why it matters.** LSP owns 21
+`pending_*_token` fields, and most are automatic:
+`lsp_completion_request`, `lsp_signature_help_request`,
+`do_lsp_insert_completion_request`, `do_completion_resolve_focused`,
+`do_lsp_on_type_formatting_request`, and the entire `maybe_request_*`
+family (document-highlight, inlay-hint, semantic-tokens, code-lens,
+document-link, document-color, folding-range, pull-diagnostics). These
+fire on keystrokes, cursor moves and ticks. By §3 they are not
+user-triggered and therefore not foreground; enrolling them would let
+`<C-g>` cancel work the editor is doing on its own behalf, and — had
+they been *armed* instead — would have made **every keystroke's
+completion request cancel a running search**.
+
+The rule of thumb the classification follows: anything named
+`maybe_request_*` is automatic. The rest were classified individually;
+note `do_lsp_on_type_formatting_request` is automatic despite sharing
+`pending_format_token` with the user-triggered `do_lsp_format_request`.
+
+The twelve enrolled sites are hover, the `gd`/`gD`/`gy`/`gI` nav
+family, references, document symbols, workspace symbols, rename,
+format, code-actions (request + resolve-apply), call hierarchy, type
+hierarchy and selection-range.
+
 ### 4.3 `Editor::cancel_foreground()`
 
 ```rust
 pub fn cancel_foreground(&mut self) {
-    self.foreground_cancel.cancel();
-    // Hover still owns a separate token until CG.3 folds it in.
-    if let Some(token) = self.pending_hover_token.take() {
-        token.cancel();
-    }
+    self.foreground_cancel.cancel();  // armed slot + enrolled set
     self.reset_to_normal();
 }
 ```
@@ -269,12 +307,23 @@ Not worth it for a two-press papercut. Pinned by
 `lattice_ui_tui::app::cancel::ctrl_g_in_operator_pending_aborts_the_operator_first`;
 revisit if CG.2 / CG.3 show it biting in practice.
 
-### 4.8 Existing `pending_hover_token`
+### 4.8 The `pending_*_token` fields (CG.3 outcome)
 
-`Editor.pending_hover_token` already exists for LSP hover
-cancellation. In CG.3 this gets folded into the unified
-`active_cancel` pattern so cancel subsumes it. Until then,
-`cancel_foreground()` explicitly cancels both.
+The slice plan said `pending_hover_token` would be folded into the
+unified slot and removed. It is **kept**, along with its twenty
+siblings, and that is the right answer rather than a deferral.
+
+Those fields are per-feature *supersede* tokens: a second hover
+cancels the first, a second rename cancels the first. That granularity
+is correct and the foreground slot cannot express it — a single slot
+would make a hover cancel an in-flight rename. What was actually
+missing is only that `<C-g>` had no route to any of them, and
+[`enrol`](#421-two-verbs-arm-vs-enrol-cg3) supplies exactly that
+without disturbing the per-feature behaviour.
+
+The CG.1 special case (`cancel_foreground` reaching into
+`pending_hover_token` directly) is gone: it covered hover alone and
+left the other eleven user-triggered commands unreachable.
 
 ## 5. Async entry-point contract
 

@@ -2054,10 +2054,30 @@ impl Editor {
     /// second `take()` goes away.
     pub fn cancel_foreground(&mut self) {
         self.foreground_cancel.cancel();
-        if let Some(token) = self.pending_hover_token.take() {
-            token.cancel();
-        }
         self.reset_to_normal();
+    }
+
+    /// CG.3: join a user-triggered LSP request to the foreground set so
+    /// `<C-g>` reaches it, **without** superseding anything else.
+    ///
+    /// The per-feature `pending_*_token` stays: a second hover should
+    /// supersede the first, and that is the granularity the LSP layer
+    /// already gets right. What was missing is only that `<C-g>` had no
+    /// way to reach any of them.
+    ///
+    /// Enrol rather than [`arm_cancel`](Self::arm_cancel): `K` is a
+    /// reflexive inspect key, and arming would mean glancing at a
+    /// symbol silently kills the project search you are waiting on.
+    ///
+    /// **Only user-triggered requests.** `lsp_completion_request`,
+    /// `lsp_signature_help_request`, `do_lsp_on_type_formatting_request`
+    /// and the whole `maybe_request_*` family fire on keystrokes,
+    /// cursor moves and ticks; they are not foreground (design §3), and
+    /// enrolling them would make `<C-g>` cancel work the editor is
+    /// doing on its own behalf — and, far worse, make every keystroke's
+    /// completion request a foreground event.
+    pub fn enrol_foreground(&self, token: &lattice_protocol::CancellationToken) {
+        self.foreground_cancel.enrol(token.clone());
     }
 }
 
@@ -10269,6 +10289,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -10334,6 +10355,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
+        self.enrol_foreground(&token);
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
         lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
@@ -10448,6 +10470,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_references_rx = Some(rx);
         self.pending_references_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         // AW.1: the result is delivered over `tx` and drained by
         // `run_tick_pending`; fire `async_landed` after each send so the
@@ -10600,6 +10623,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_definition_rx = Some(rx);
         self.pending_definition_token = Some(token.clone());
+        self.enrol_foreground(&token);
         self.pending_nav_kind = Some(kind);
         let lsp = self.lsp.clone();
         // AW.1: fire the renderer-agnostic wake after the nav result lands so
@@ -15691,6 +15715,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
+        self.enrol_foreground(&token);
         self.pending_code_action_handle = Some(handle.clone());
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -15794,6 +15819,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_hover_rx = Some(rx);
         self.pending_hover_token = Some(token.clone());
+        self.enrol_foreground(&token);
         // 2026-05-27 popup-anchor fix: stash the cursor + scroll *as
         // of K-press*. `open_floating_popup` consumes this one-shot
         // override so the popup pins to the symbol the user invoked
@@ -24227,6 +24253,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_code_action_rx = Some(rx);
         self.pending_code_action_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -24321,6 +24348,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_format_rx = Some(rx);
         self.pending_format_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         let lsp_range = range_lines.map(|(s, e)| {
             let end_line_text_len = snapshot.buffer.line_byte_len(e);
@@ -24435,6 +24463,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_rename_rx = Some(rx);
         self.pending_rename_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -24563,6 +24592,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let direction_label = if outgoing { "outgoing" } else { "incoming" };
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -24688,6 +24718,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_symbols_rx = Some(rx);
         self.pending_symbols_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let direction_label = if subtypes { "subtypes" } else { "supertypes" };
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -28297,6 +28328,7 @@ impl Editor {
         let token = lattice_protocol::CancellationToken::new();
         self.pending_selection_range_rx = Some(rx);
         self.pending_selection_range_token = Some(token.clone());
+        self.enrol_foreground(&token);
         let lsp = self.lsp.clone();
         // AW.1: fire the renderer-agnostic wake after the result lands (lsp-architecture §12).
         let async_landed = self.async_landed.clone();
@@ -36382,18 +36414,42 @@ mod tests {
         );
     }
 
-    /// Hover owns a separate token until CG.3 folds it in. Until then
-    /// `<C-c>` has to flip both, or an in-flight hover survives a cancel.
+    /// CG.3: a user-triggered LSP request reaches `<C-g>` by enrolling.
+    ///
+    /// CG.1 special-cased `pending_hover_token` inside
+    /// `cancel_foreground`, which only ever covered hover and left the
+    /// other eleven user-triggered commands unreachable. Enrolment
+    /// replaces that: the per-feature token stays for supersede, and
+    /// the foreground set is what cancel walks.
     #[test]
-    fn cancel_foreground_also_flips_the_hover_token() {
+    fn cancel_foreground_flips_every_enrolled_lsp_token() {
         let mut ed = Editor::default();
         let hover = lattice_protocol::CancellationToken::new();
-        ed.pending_hover_token = Some(hover.clone());
+        let rename = lattice_protocol::CancellationToken::new();
+        ed.enrol_foreground(&hover);
+        ed.enrol_foreground(&rename);
 
         ed.cancel_foreground();
 
         assert!(hover.is_cancelled());
-        assert!(ed.pending_hover_token.is_none());
+        assert!(rename.is_cancelled());
+    }
+
+    /// The reason enrolment exists rather than a second `arm`: `K`
+    /// during a project search must leave the search running.
+    #[test]
+    fn enrolling_an_lsp_request_does_not_cancel_a_running_search() {
+        let mut ed = Editor::default();
+        let search = ed.arm_cancel();
+
+        let hover = lattice_protocol::CancellationToken::new();
+        ed.enrol_foreground(&hover);
+
+        assert!(
+            !search.is_cancelled(),
+            "pressing `K` must not silently kill the scan the user is \
+             waiting on"
+        );
     }
 
     /// `enter_mode(Normal)` unconditionally pulls the cursor back one

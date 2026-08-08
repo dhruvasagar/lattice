@@ -55,6 +55,7 @@ use lattice_protocol::CancellationToken;
 #[derive(Debug, Default)]
 pub struct ForegroundCancel {
     armed: Mutex<Option<CancellationToken>>,
+    enrolled: Mutex<Vec<CancellationToken>>,
 }
 
 /// Register and look up under this alias — see the module docs on the
@@ -99,7 +100,43 @@ impl ForegroundCancel {
         token
     }
 
-    /// Cancel whatever is armed and clear the slot.
+    /// CG.3: join the foreground set **without** superseding anything.
+    ///
+    /// For work that already has its own cancellation discipline and
+    /// only needs `<C-g>` to reach it. Every user-triggered LSP command
+    /// is like this: hover, rename, format and code-actions each hold a
+    /// per-feature token so a second hover supersedes the first, and
+    /// that is the right granularity — a hover has no business
+    /// cancelling a rename.
+    ///
+    /// [`arm`](Self::arm) would be wrong here. `K` is a reflexive
+    /// inspect key; making it supersede would mean glancing at a symbol
+    /// silently kills the project search you are waiting on, with a
+    /// half-populated buffer and nothing to say why.
+    ///
+    /// **Automatic requests must not come through here at all** —
+    /// completion, signature-help and the `maybe_request_*` family fire
+    /// on keystrokes, cursor moves and ticks. They are not
+    /// user-triggered, so by §3 of the design they are not foreground;
+    /// enrolling them would make `<C-g>` cancel whatever the editor
+    /// happened to be doing on its own behalf.
+    ///
+    /// Already-cancelled entries are pruned on each call, which is what
+    /// keeps the set from growing without bound across a session: a
+    /// completed request's token is never cancelled, so pruning cannot
+    /// rely on it — instead the set is small by construction (one live
+    /// request per feature) and every `cancel()` empties it.
+    pub fn enrol(&self, token: CancellationToken) {
+        let mut set = match self.enrolled.lock() {
+            Ok(set) => set,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        set.retain(|t| !t.is_cancelled());
+        set.push(token);
+    }
+
+    /// Cancel everything foreground: the armed slot **and** every
+    /// enrolled token. Clears both.
     ///
     /// Idempotent — cancelling nothing is the common case, since the
     /// binding is pressed far more often than an operation is running.
@@ -110,6 +147,22 @@ impl ForegroundCancel {
         };
         if let Some(token) = taken {
             token.cancel();
+        }
+        let enrolled = match self.enrolled.lock() {
+            Ok(mut set) => std::mem::take(&mut *set),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for token in enrolled {
+            token.cancel();
+        }
+    }
+
+    /// How many tokens are currently enrolled. For tests and for a
+    /// future status indicator (`cancellation.md` §7).
+    pub fn enrolled_len(&self) -> usize {
+        match self.enrolled.lock() {
+            Ok(set) => set.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
         }
     }
 
@@ -181,6 +234,69 @@ mod tests {
         // `<C-g>` then reaches the REPLACEMENT, not just the original.
         fc.cancel();
         assert!(refreshed.is_cancelled());
+    }
+
+    /// CG.3: the distinction the whole slice turns on. `K` during a
+    /// project search must not kill the search.
+    #[test]
+    fn enrolling_does_not_supersede_the_armed_operation() {
+        let fc = ForegroundCancel::default();
+        let search = fc.arm();
+
+        let hover = CancellationToken::new();
+        fc.enrol(hover.clone());
+
+        assert!(
+            !search.is_cancelled(),
+            "a reflexive `K` must not cancel the search the user is \
+             waiting on — that is why LSP commands enrol rather than arm"
+        );
+        assert!(!hover.is_cancelled());
+    }
+
+    /// …and `<C-g>` still reaches both.
+    #[test]
+    fn cancel_reaches_the_armed_slot_and_every_enrolled_token() {
+        let fc = ForegroundCancel::default();
+        let search = fc.arm();
+        let hover = CancellationToken::new();
+        let rename = CancellationToken::new();
+        fc.enrol(hover.clone());
+        fc.enrol(rename.clone());
+
+        fc.cancel();
+
+        assert!(search.is_cancelled());
+        assert!(hover.is_cancelled());
+        assert!(rename.is_cancelled());
+    }
+
+    /// Enrolled tokens are independent of each other — a rename does
+    /// not stop a hover. Per-feature supersede stays the LSP layer's
+    /// job, at the granularity it already gets right.
+    #[test]
+    fn enrolled_tokens_do_not_cancel_each_other() {
+        let fc = ForegroundCancel::default();
+        let hover = CancellationToken::new();
+        fc.enrol(hover.clone());
+        fc.enrol(CancellationToken::new());
+
+        assert!(!hover.is_cancelled());
+    }
+
+    /// The set must not grow without bound across a session. Cancelled
+    /// entries are pruned as new ones arrive.
+    #[test]
+    fn cancelled_entries_are_pruned_on_enrol() {
+        let fc = ForegroundCancel::default();
+        for _ in 0..100 {
+            let t = CancellationToken::new();
+            fc.enrol(t.clone());
+            t.cancel();
+        }
+        let live = CancellationToken::new();
+        fc.enrol(live.clone());
+        assert_eq!(fc.enrolled_len(), 1, "only the live token should remain");
     }
 
     /// Shared through an `Arc` across threads, which is how the host

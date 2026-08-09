@@ -19115,14 +19115,28 @@ impl Editor {
                 .copied();
             if let Some(fold) = in_closed {
                 // When the fold's body extends to the last addressable
-                // line, `fold.end_line + 1` is past-EOF. Clamping with
-                // `.min(last)` would produce `last`, which the next
-                // iteration matches again → infinite loop. Detect this
-                // and break, leaving the cursor at `last` (which
-                // `clamp_cursor_to_buffer` will handle if needed).
+                // line there is no `end_line + 1` to land on. Fall back
+                // to the fold's HEAD in both directions: it is the one
+                // visible row standing for the collapsed range, and it
+                // is where vim leaves the cursor when `j` has nowhere
+                // below to go.
+                //
+                // This used to snap to `last` instead, which is *inside*
+                // the collapsed body — a line no renderer draws. The TUI
+                // masked it (its caret walk projects a hidden cursor onto
+                // the fold head) but GPUI drew no cursor at all, and
+                // either way it was a trap: `k` moved to `last - 1`,
+                // still inside the fold, and this branch snapped it right
+                // back to `last`. The cursor was pinned on a hidden line
+                // until an absolute motion (`gg`) escaped.
+                //
+                // `continue` rather than `break` so a nested closed fold
+                // around the head resolves too; `start_line < snapped`
+                // holds on this path, so the walk strictly decreases and
+                // terminates.
                 if fold.end_line >= last {
-                    snapped = last;
-                    break;
+                    snapped = fold.start_line;
+                    continue;
                 }
                 snapped = if going_down {
                     fold.end_line + 1
@@ -40578,6 +40592,62 @@ mod tests {
         assert_eq!(
             editor.scroll, 95,
             "visible tail overflows ⇒ scroll to show the last 5 rows"
+        );
+    }
+
+    /// Reported 2026-08-09: on the last visible line — a closed fold
+    /// whose body runs to the end of the buffer — `j` made the cursor
+    /// vanish, and no amount of `k` brought it back; only `gg` did.
+    ///
+    /// `snap_cursor_past_closed_folds` special-cases a fold reaching
+    /// the last addressable line (there is no `end_line + 1` to land
+    /// on) and used to park the cursor at `last` — which is *inside*
+    /// the collapsed body, i.e. a line no renderer draws. Worse, it
+    /// was a trap: `k` moves to `last - 1`, also inside the fold, and
+    /// the same branch snapped it straight back to `last`. The cursor
+    /// was pinned on a hidden line until an absolute motion escaped.
+    ///
+    /// There is nowhere below to go, so the cursor belongs on the
+    /// fold's HEAD — the one visible row standing for the whole
+    /// collapsed range, which is also where vim leaves it.
+    #[test]
+    fn cursor_never_parks_inside_a_fold_that_runs_to_eof() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(100));
+        editor.option_cache.foldenable = true;
+        editor.folds.push(lattice_core::Fold {
+            start_line: 50,
+            end_line: 99,
+            closed: true,
+            identity: None,
+        });
+        let head = 50;
+
+        // `j` off the fold head: nowhere below ⇒ stay on the head,
+        // never on a hidden body line.
+        editor.cursor = lattice_protocol::position::Position::new(head + 1, 0);
+        editor.snap_cursor_past_closed_folds(head);
+        assert_eq!(
+            editor.cursor.line, head,
+            "j at a to-EOF fold must leave the cursor on the visible head"
+        );
+
+        // Arriving at EOF from above (the old branch's landing spot)
+        // must also resolve to the head, not rest on a hidden line.
+        editor.cursor = lattice_protocol::position::Position::new(99, 0);
+        editor.snap_cursor_past_closed_folds(head);
+        assert_eq!(
+            editor.cursor.line, head,
+            "cursor must not rest at EOF-in-fold"
+        );
+
+        // And `k` from inside the body must escape upward to the head,
+        // not be snapped back down to `last` — the pin that made
+        // recovery impossible without an absolute motion.
+        editor.cursor = lattice_protocol::position::Position::new(98, 0);
+        editor.snap_cursor_past_closed_folds(99);
+        assert_eq!(
+            editor.cursor.line, head,
+            "k from inside the body must reach the head, not re-pin at last"
         );
     }
 

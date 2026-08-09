@@ -1,5 +1,5 @@
 ---
-summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ to move between sections, TAB to fold, h for the dispatch menu, S/U/C/i/yr for repo-level operations, and A/_/O to act on the commit under the cursor. Diff-content chords, including ]f/[f, live on magit-hunk-mode."
+summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ to move between sections, TAB to fold, S/U/C/i/yr for repo-level operations, and A/_/O to act on the commit under the cursor. Diff-content chords, including ]f/[f, live on magit-hunk-mode."
 related: [magit, magit-core]
 ---
 
@@ -22,7 +22,6 @@ no `:magit-core-mode` you need to turn on.
 | `]]` / `[[` | Next / previous top-level section |
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
-| `h` | Open the [dispatch menu](help:magit-transient) — every menu, one key |
 | `A` | Cherry-pick the commit under the cursor |
 | `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
@@ -35,15 +34,33 @@ no `:magit-core-mode` you need to turn on.
 
 These work in **every** magit buffer, which is what this mode is for.
 
-## `h` — one key for every menu
+## Opening the menus
 
 Magit has seventeen root menus: diff, commit, log, branch, stash,
 fetch, pull, push, rebase, tag, merge, notes, bisect, patches,
-cherry-pick, revert, reset. `h` opens the
+cherry-pick, revert, reset. `C-c g` opens the
 [dispatch](help:magit-transient), and each is one key from there — `b`
-for branch, `z` for stash, `F` for pull, and so on. Emacs magit binds
-`h` (and `?`) on `magit-mode-map` for exactly this, and
-evil-collection-magit keeps it.
+for branch, `z` for stash, `F` for pull, and so on.
+
+`C-c g` is not a magit-buffer chord — it works in **every** buffer, so
+the same key reaches the menus from a file you are editing as from the
+status buffer. That is deliberate, and it is why magit buffers have no
+dispatch key of their own.
+
+**Why not `h`, which is what emacs magit uses?** Because `h` is
+left-motion. `magit-core-mode` is a *minor* mode, so it beats the
+builtin vim grammar wherever it is active — binding the menu to `h`
+made it move the cursor in every buffer in the editor *except* the git
+ones, which is the worst place for a reflex to diverge. Emacs magit
+binds `h` (and `?`) on `magit-mode-map` and evil-collection-magit
+keeps `h`, but it also ships a `want-horizontal-movement` option to
+trade it back — the trade-off is contested there too.
+
+No single key replaces it, because every candidate shadows something:
+`?` is backward search, `C-t` is the [tag-stack pop](help:lsp). In a
+buffer you navigate as much as a git log, a second keystroke is
+cheaper than another key that silently means something else here than
+everywhere else.
 
 Three menus also have a direct chord, because the key was already
 taken by the single action the menu replaced:

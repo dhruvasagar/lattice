@@ -115,13 +115,30 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             // nine majors' vocabularies because it does not reach into
             // them. The menus are all still there, one keystroke deeper.
             //
-            // `h` is what emacs magit binds (`magit-mode-map` has both
-            // `h` and `?`) and what evil-collection-magit KEEPS by
-            // default — its `want-horizontal-movement` defcustom, off by
-            // default, is what would trade `h` back for left-motion. In a
-            // read-only list buffer whose actions are all row-based,
-            // left-motion is the cheapest key on the board.
-            keymap_entry! { mode: Normal, chord: "h", doc: "Open the magit dispatch menu", cmd: "magit-dispatch" },
+            // NO buffer-local dispatch chord — deliberately, per
+            // `docs/dev/architecture/magit.md` §12.0/§12.1: "the dispatch
+            // and file-dispatch transients are accessed through the same
+            // global bindings ... single-key candidates like `?` clash
+            // with reverse-search, `h` clashes with left motion", and
+            // §12.1's rule that bindings clashing with `h`/`j`/`k`/`l`/
+            // `w`/`b`/`e` "are never overridden".
+            //
+            // MG.49 added `h` anyway, against both. This mode is a MINOR,
+            // so it beat the builtin grammar and `h` moved the cursor in
+            // every buffer in the editor EXCEPT the git ones — the worst
+            // possible place for a reflex to diverge. Emacs magit does
+            // bind `h`, and evil-collection-magit keeps it, but it also
+            // ships `want-horizontal-movement` to trade it back; the
+            // trade-off is contested upstream and the vim grammar
+            // (paramount #3) wins here.
+            //
+            // Nothing replaces it, because nothing needs to:
+            // `magit-global-mode` binds `<C-c>g` → `magit-dispatch` with
+            // `ActivationPolicy::Universal`, so the menu already opens
+            // from inside magit buffers — and from everywhere else. Any
+            // single-chord replacement would have to shadow SOMETHING
+            // (`?` reverse-search, `<C-t>` tag-stack pop); a second
+            // keystroke is cheaper than another silent divergence.
             // MG.49c: the repo-level rows that are worth a chord.
             //
             // All four are vim EDITING operators — inert where nothing is
@@ -465,6 +482,45 @@ mod compose_buffers_are_not_browsers {
         assert!(majors.contains(&MagitStatusMode::mode_id()));
         assert!(majors.contains(&MagitDiffMode::mode_id()));
         assert!(majors.contains(&MagitLogMode::mode_id()));
+    }
+
+    /// `h` must stay a MOTION in magit buffers, and no chord here may
+    /// replace it.
+    ///
+    /// The dispatch menu owned `h` (MG.49), and because this mode is a
+    /// minor it beat the builtin grammar — so `h` moved the cursor in
+    /// every buffer in the editor except the git ones, the worst place
+    /// for a reflex to diverge. `docs/dev/architecture/magit.md`
+    /// §12.0/§12.1 had already ruled this out twice: `h` clashes with
+    /// left motion, `?` with reverse-search, and the navigation keys
+    /// "are never overridden".
+    ///
+    /// The menu needs no buffer-local chord at all —
+    /// `magit-global-mode` binds `<C-c>g` → `magit-dispatch` with
+    /// `ActivationPolicy::Universal`, which reaches inside magit
+    /// buffers too. So this asserts BOTH halves: the motion keys stay
+    /// free, and no chord here claims `magit-dispatch`. The second is
+    /// the one that would catch MG.49 happening again — a future
+    /// single-key replacement would have to shadow something, and
+    /// `<C-t>` (tag-stack pop) was the candidate considered and
+    /// rejected.
+    #[test]
+    fn the_core_keymap_leaves_the_motion_keys_alone() {
+        const MOTIONS: &[&str] = &["h", "j", "k", "l", "w", "b", "e", "0", "$", "G", "?"];
+        for m in MOTIONS {
+            assert!(
+                !magit_core_keymap_entries().iter().any(|e| e.chord == *m),
+                "`{m}` is vim grammar — a minor mode claiming it shadows it in magit \
+                 buffers only, which is exactly the divergence `h` caused"
+            );
+        }
+        assert!(
+            !magit_core_keymap_entries()
+                .iter()
+                .any(|e| e.command == Some("magit-dispatch")),
+            "the dispatch menu is reached through the universal `<C-c>g`; a \
+             buffer-local chord for it would have to shadow something (magit.md §12.0)"
+        );
     }
 
     /// The other half of the bug: `i` really is claimed by this mode,

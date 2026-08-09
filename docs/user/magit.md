@@ -63,7 +63,7 @@ no hidden state.
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
 | `:magit-push` | Push the current branch (`--force-with-lease`, `--set-upstream`) |
 | `:magit-stash` | Stash the working tree (`--include-untracked`, `-m <message>`); `:magit-stash-list` opens the list |
-| `h` | (in any magit buffer) Open the [dispatch menu](help:magit-transient) — every root menu is one key from there |
+| `C-c g` | (in **any** buffer, magit or not) Open the [dispatch menu](help:magit-transient) — every root menu is one key from there |
 | `g?` | (in any magit buffer) Open help for the current mode's keybindings |
 
 Every magit command name is dashed + namespaced (`magit-status`,
@@ -163,7 +163,7 @@ because no diffs are pre-computed.
 Every magit buffer inherits a shared [minor mode](help:modes),
 [`magit-core-mode`](help:magit-core-mode), which supplies `gr`
 (refresh), `q` (close), `]]` / `[[` (move between sections), `TAB` /
-`S-TAB` (fold), `h` (open the dispatch menu), and the repo-level
+`S-TAB` (fold), and the repo-level
 `S` / `U` / `C` / `i` / `yr`. One movement vocabulary across status,
 log, diff, blame, stash, branch and rebase — see that page for the
 full table and what `gr` means per view.

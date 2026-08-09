@@ -2550,22 +2550,40 @@ const WRAP_CONT_MARKER: &str = "↪";
 /// source line occupies. The continuation marker lives in the
 /// gutter (see the compose loop), not in the body, so every segment
 /// uses the full content width.
-fn split_body_into_segments(body: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+///
+/// `wrap_cols` is how many leading columns of `body` sit on the
+/// SOURCE axis — the width the `DisplayMatrix` measured, and the
+/// only width the host's `segment_count` knows about. Columns past
+/// it are trailing decoration the compose loop appended (the
+/// closed-fold ` ⋯ N lines` summary, completion ghost text, the
+/// cursorline's right-edge pad). Those ride the final segment and
+/// are clipped at the pane edge; they must never break a new one,
+/// or the row would exist in the painted body but not in the
+/// segment count the scroll model and the caret walk
+/// ([`buffer_line_to_visible_row_with`]) share.
+fn split_body_into_segments(
+    body: Vec<Span<'static>>,
+    width: usize,
+    wrap_cols: usize,
+) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
         return vec![body];
     }
-    let total_cols: usize = body.iter().map(|s| s.content.chars().count()).sum();
-    if total_cols <= width {
+    if wrap_cols <= width {
         return vec![body];
     }
     let mut segments: Vec<Vec<Span<'static>>> = Vec::new();
     let mut current: Vec<Span<'static>> = Vec::new();
     let mut used: usize = 0; // columns filled in the current segment
+    let mut col: usize = 0; // columns consumed from the whole body
     for span in body {
         let style = span.style;
         let mut chunk = String::new();
         for ch in span.content.chars() {
-            if used == width {
+            // Break only while still inside the source-axis run;
+            // once `col` reaches `wrap_cols` the rest is decoration
+            // and stays on the segment it started.
+            if used == width && col < wrap_cols {
                 if !chunk.is_empty() {
                     current.push(Span::styled(std::mem::take(&mut chunk), style));
                 }
@@ -2574,6 +2592,7 @@ fn split_body_into_segments(body: Vec<Span<'static>>, width: usize) -> Vec<Vec<S
             }
             chunk.push(ch);
             used += 1;
+            col += 1;
         }
         if !chunk.is_empty() {
             current.push(Span::styled(chunk, style));
@@ -4427,29 +4446,17 @@ pub(crate) fn compose_pane_lines(
     // Build the visible-buffer-line ordering: starting from `scroll`,
     // skip lines inside closed folds, taking up to `height` entries.
     // Bound the walk by `total_lines` from ropey -- O(1).
-    let mut visible: Vec<u32> = Vec::with_capacity(height as usize);
-    let mut buf_line = ctx.scroll;
-    while visible.len() < height as usize && buf_line < total_lines {
-        // Fold-bleed fix (2026-06-30): closed-fold elision is now
-        // applied to EVERY pane, active or not. `view.fold_index` is
-        // the pane's OWN buffer's fold set (via `folds_for_buffer`), so
-        // an inactive pane folds exactly as it did when focused — only
-        // the dimming differs. Previously this was gated on
-        // `ctx.is_active` because `view.folds` was the active doc's set
-        // (folding the wrong buffer), so inactive panes walked lines 1:1
-        // and visibly un-folded the moment focus moved away. That seam
-        // is closed now that the fold source is per-buffer.
-        if view.line_inside_closed_fold(buf_line) {
-            buf_line += 1;
-            continue;
-        }
-        visible.push(buf_line);
-        if let Some(fold) = view.fold_start_at(buf_line) {
-            buf_line = fold.end_line + 1;
-        } else {
-            buf_line += 1;
-        }
-    }
+    // Shared with the GPUI peer (`lattice_host::folds::
+    // visible_source_lines`) — this walk used to live inline here and
+    // GPUI grew its own source-line-windowed version that under-filled
+    // the pane whenever a fold closed. One implementation, one
+    // behaviour.
+    let visible: Vec<u32> = lattice_host::folds::visible_source_lines(
+        &view.fold_index,
+        ctx.scroll,
+        height,
+        total_lines,
+    );
 
     // D.3.b.1 (2026-05-29): snapshot the virtual-row matrix
     // so we can interleave Above / Below rows around document
@@ -4555,6 +4562,14 @@ pub(crate) fn compose_pane_lines(
             .map(crate::theme::host_color_to_ratatui)
             .unwrap_or(Color::DarkGray),
     };
+    // The ` ⋯ N lines` trailer's tone, from `gutter.fold.summary`. Was a
+    // literal `Color::DarkGray` here — registering it is what lets the
+    // GPUI peer paint the SAME trailer instead of inventing its own.
+    let fold_summary_color = overlay_resolved
+        .get(overlay_ids.gutter_fold_summary)
+        .fg
+        .map(crate::theme::host_color_to_ratatui)
+        .unwrap_or(Color::DarkGray);
     // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
     // pane's buffer once per frame; accumulate GutterDecoration
     // contributions into per-line maps. Replaces per-line RenderState
@@ -5239,15 +5254,23 @@ pub(crate) fn compose_pane_lines(
                 }
             }
         }
+        // W.4.t: the columns of this row that live on the SOURCE axis,
+        // measured before any trailing decoration is appended. This is
+        // what `split_body_into_segments` is allowed to wrap at — see
+        // its `wrap_cols` doc. Everything pushed below (fold summary,
+        // ghost text, cursorline pad) is decoration outside the
+        // source-byte axis; letting it wrap would give the line more
+        // display rows than `wrap_segments(col_count, …)`, the count
+        // the host's scroll model and the caret walk both use.
+        let wrap_cols: usize = body.iter().map(|s| s.content.chars().count()).sum();
         // Heading-preserved fold render (`docs/user/folding.md`):
         // append the ` ⋯ N lines` suffix AFTER all overlays so the
         // heading's syntax / visual / search styling is preserved, with
-        // the dim summary trailing off the right. The GPUI peer paints
-        // the same text as an end-of-row overlay.
+        // the dim summary trailing off the right.
         if let Some(n) = closed_fold_at_start {
             body.push(Span::styled(
-                format!(" ⋯ {n} lines"),
-                TuiStyle::default().fg(Color::DarkGray),
+                lattice_host::folds::fold_summary_text(n),
+                TuiStyle::default().fg(fold_summary_color),
             ));
         }
         // Ghost text (Phase 4.2.g.7 polish). When the cursor
@@ -5377,7 +5400,7 @@ pub(crate) fn compose_pane_lines(
         // push. The height cap stops mid-line if the viewport
         // fills (matches the pre-wrap truncation behaviour).
         let segments = if wrap_on {
-            split_body_into_segments(body, body_col_width as usize)
+            split_body_into_segments(body, body_col_width as usize, wrap_cols)
         } else {
             vec![body]
         };
@@ -6951,7 +6974,17 @@ fn cursor_screen_position_at(
     // broken at. Must match `compose_visible_lines_inner`'s
     // `buffer_w` exactly so the cursor row/col agree with what is
     // painted. `0` when `:set wrap` is off (no wrapping).
-    let wrap_width = if ad.option_cache.wrap_lines {
+    //
+    // Resolve wrap through `view.wrap_lines` — the SAME per-buffer
+    // resolver (`App::wrap_lines_for`) the compose loop reads at
+    // `wrap_on`. Reading the global `option_cache.wrap_lines` here
+    // instead diverges the moment a buffer-local override exists:
+    // help / popup buffers carry `wrap=off` from their mode (HP.3),
+    // so with `:set wrap` on globally the body composed unwrapped
+    // while the caret walk still split every line into segments,
+    // drifting the caret off the cursorline. For the active document
+    // pane the two resolve identically.
+    let wrap_width = if view.wrap_lines {
         (area.width as u32)
             .saturating_sub(gutter_w)
             .saturating_sub(sign_columns_width(view))
@@ -7029,11 +7062,8 @@ fn cursor_screen_position_at(
     // only — under wrap the host pins `leftcol = 0`. `saturating_sub`
     // guards the (transient) case where the cursor sits left of the
     // anchor before the next `ensure_cursor_horizontally_visible`.
-    let leftcol = if ad.option_cache.wrap_lines {
-        0
-    } else {
-        ad.leftcol
-    };
+    // Same per-buffer resolver as the compose loop's `leftcol_off`.
+    let leftcol = if view.wrap_lines { 0 } else { ad.leftcol };
     let col = sign_columns_width(view) + gutter_w + body_col.saturating_sub(leftcol);
     let row = row_in_view
         .saturating_add(own_segment)
@@ -7426,13 +7456,22 @@ mod tests {
             .iter()
             .position(|l| l.spans.iter().any(|s| s.style.bg == Some(cursor_line_bg)))
             .expect("cursorline row present");
-        assert!(
-            cursorline_row > 1,
-            "popup line 0 must wrap into multiple rows so the bug is exercised \
-             (line 1 at row {cursorline_row})"
+        // HP.3 (`bb84a517`) gave help buffers `wrap=off` via their mode,
+        // so the popup body composes line 0 as a SINGLE row even though
+        // `:set wrap` is on globally — hence row 1, not row 6.
+        assert_eq!(
+            cursorline_row, 1,
+            "help popups do not wrap (HP.3), so popup line 1 composes on row 1"
         );
 
-        // Caret from the POPUP matrix (the fix) lands on the cursorline row.
+        // ...and the caret must agree. This is the live bug HP.3 opened:
+        // compose resolves wrap per-buffer (`view.wrap_lines` →
+        // `App::wrap_lines_for`, which help-mode overrides to `off`) while
+        // `cursor_screen_position_at` used to read the GLOBAL
+        // `option_cache.wrap_lines`. With `:set wrap` on, the caret walk
+        // split the 200-column line 0 into ~6 segments the composed body
+        // never painted and placed the caret ~5 rows below the cursorline.
+        // Both sides now read the one per-buffer resolver.
         let (_, caret_y) = cursor_screen_position_at(
             &view,
             &snap,
@@ -7444,28 +7483,18 @@ mod tests {
         .expect("caret placed");
         assert_eq!(
             caret_y as usize, cursorline_row,
-            "focused-popup caret must land on the cursorline row (PIC.1)"
+            "focused-popup caret must land on the cursorline row"
         );
 
-        // Prove the drift source: walking the ACTIVE DOCUMENT pane's
-        // matrix (line 0 = one segment) puts the caret above the
-        // cursorline — the pre-fix behaviour.
-        let active_pane = a.panes().tree.active().id;
-        let (_, doc_y) = cursor_screen_position_at(
-            &view,
-            &snap,
-            inner,
-            lattice_protocol::Position::new(1, 0),
-            0,
-            active_pane,
-        )
-        .expect("caret placed");
-        assert!(
-            (doc_y as usize) < cursorline_row,
-            "the background document's line 0 is a single segment, so the \
-             pre-fix (document-matrix) caret drifts above the cursorline \
-             (doc_y {doc_y} vs cursorline {cursorline_row})"
-        );
+        // NOTE (PIC.1 coverage): this test used to also prove the caret
+        // walks the POPUP pane's matrix rather than the background
+        // document's, by making popup line 0 wrap while the document's
+        // line 0 did not. HP.3 removed wrap from help popups, so that
+        // construction is no longer reachable — with wrap off every line
+        // is one row and the matrix source cannot change the row math.
+        // If popup buffers ever wrap again, restore the wrapping-line
+        // arm here; `buffer_line_to_visible_row_with`'s `pane_id`
+        // argument is the thing under test.
     }
 
     /// A sticky headerline must not cost a document line. The host already
@@ -8171,9 +8200,39 @@ mod tests {
     fn split_body_wrap_off_or_fits_is_single_segment() {
         let body = vec![Span::raw("hello world")];
         // width 0 ⇒ wrap off.
-        assert_eq!(split_body_into_segments(body.clone(), 0).len(), 1);
+        assert_eq!(split_body_into_segments(body.clone(), 0, 11).len(), 1);
         // fits within width ⇒ single segment.
-        assert_eq!(split_body_into_segments(body, 80).len(), 1);
+        assert_eq!(split_body_into_segments(body, 80, 11).len(), 1);
+    }
+
+    #[test]
+    fn split_body_trailing_decoration_never_breaks_a_segment() {
+        // Regression (2026-08-08): the closed-fold ` ⋯ N lines`
+        // summary is appended to the body AFTER the source spans, so
+        // it used to push a heading that fits on one row onto two —
+        // one more row than `wrap_segments(col_count, width)`, which
+        // is what the host's scroll model and the caret walk count.
+        // Trailing decoration rides the final segment instead.
+        let src = Span::raw("0123456789"); // 10 source columns
+        let deco = Span::raw(" ⋯ 4 lines"); // 10 decoration columns
+        let body = vec![src.clone(), deco.clone()];
+        let segs = split_body_into_segments(body, 12, 10);
+        assert_eq!(
+            segs.len(),
+            lattice_cells::wrap_segments(10, 12) as usize,
+            "decoration past `wrap_cols` must not create a display row"
+        );
+
+        // The source axis still wraps normally, and the decoration
+        // lands on the LAST segment.
+        let body = vec![src, deco];
+        let segs = split_body_into_segments(body, 4, 10);
+        assert_eq!(segs.len(), lattice_cells::wrap_segments(10, 4) as usize);
+        let text =
+            |s: &[Span<'static>]| -> String { s.iter().map(|sp| sp.content.as_ref()).collect() };
+        assert_eq!(text(&segs[0]), "0123");
+        assert_eq!(text(&segs[1]), "4567");
+        assert_eq!(text(&segs[2]), "89 ⋯ 4 lines");
     }
 
     #[test]
@@ -8207,7 +8266,7 @@ mod tests {
         let red = TuiStyle::default().fg(Color::Red);
         let blue = TuiStyle::default().fg(Color::Blue);
         let body = vec![Span::styled("abcd", red), Span::styled("efghij", blue)];
-        let segs = split_body_into_segments(body, 4);
+        let segs = split_body_into_segments(body, 4, 10);
         assert_eq!(segs.len(), 3);
         let text =
             |s: &[Span<'static>]| -> String { s.iter().map(|sp| sp.content.as_ref()).collect() };
@@ -9003,6 +9062,80 @@ mod tests {
             area.y + 2,
             "cursor must render on the fold heading row, got row {}",
             pos.1
+        );
+    }
+
+    /// Row index of the first composed line whose text contains
+    /// `needle`, or `None`.
+    fn composed_row_containing(lines: &[Line<'static>], needle: &str) -> Option<usize> {
+        lines.iter().position(|l| {
+            let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
+            s.contains(needle)
+        })
+    }
+
+    #[test]
+    fn closed_fold_summary_does_not_add_a_wrap_row() {
+        // Regression (2026-08-08): under `:set wrap` in a narrow pane
+        // (a vertical split), the ` ⋯ N lines` summary appended to a
+        // closed fold's heading pushed the composed body past the wrap
+        // width, so the heading painted on TWO display rows. The caret
+        // walk (`buffer_line_to_visible_row_with`) sizes every source
+        // line by `wrap_segments(col_count, …)` — the SOURCE width,
+        // which knows nothing about the summary — so it counted ONE
+        // row. Every line below a closed fold then drew its caret one
+        // row ABOVE the cursorline compose painted: cursorline right,
+        // cursor a line behind.
+        //
+        // The summary is decoration, not source text. It must ride the
+        // final segment (clipped at the pane edge, as the GPUI peer's
+        // end-of-row overlay does) and never create a display row —
+        // that is the invariant `split_body_into_segments` documents
+        // and the host's scroll model shares.
+        let heading = "## a markdown heading of 30 ch";
+        assert_eq!(heading.chars().count(), 30);
+        let text = format!("{heading}\nh1\nh2\nh3\nTARGET\ntail\n");
+        let mut app = app_with(&text, 10);
+        app.editor.option_cache.wrap_lines = true;
+        app.editor
+            .set_cursor(lattice_protocol::position::Position::new(4, 0));
+        // Closed fold over lines 0..=3 — summary reads ` ⋯ 4 lines`
+        // (10 columns).
+        app.editor.folds.push(crate::app::Fold {
+            start_line: 0,
+            end_line: 3,
+            closed: true,
+            identity: None,
+        });
+        app.editor.publish_render_state();
+
+        // width 40 → gutter 5 + sign columns 2 → body width 33.
+        // Heading alone (30) fits on one segment; heading + summary
+        // (40) does not.
+        let area = Rect::new(0, 0, 40, 10);
+        let snap = app.ad().snapshot.clone();
+        let composed = compose_visible_lines(&app, &snap, area.height as u32, area.width as u32);
+        let target_row =
+            composed_row_containing(&composed, "TARGET").expect("TARGET line must be composed");
+
+        let pos = cursor_screen_position_at(
+            &FrameView::from_app(&app),
+            &snap,
+            area,
+            app.ad().cursor,
+            app.ad().scroll,
+            app.panes().tree.active().id,
+        )
+        .expect("cursor visible");
+
+        assert_eq!(
+            target_row, 1,
+            "the folded heading must occupy exactly one display row \
+             (the ` ⋯ N lines` summary is decoration, not a wrap row)"
+        );
+        assert_eq!(
+            pos.1 as usize, target_row,
+            "caret row must match the composed row of the cursor line"
         );
     }
 

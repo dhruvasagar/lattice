@@ -129,6 +129,20 @@ pub(crate) struct GutterLineMeta {
     /// the line number (a separator space, the glyph, then a trailing
     /// gap: `… 99 ▸ code`), mirroring the TUI gutter, not at column 0.
     pub(crate) fold_marker: Option<(char, u32)>,
+    /// The ` ⋯ N lines` summary trailing a CLOSED fold's head row:
+    /// `Some((text, colour))` built by the caller from
+    /// `lattice_host::folds::fold_summary_text` +
+    /// `folded_line_span` (the same two helpers the TUI peer uses, so
+    /// the text and the count are identical), coloured from
+    /// `gutter.fold.summary`. `None` on every other row.
+    ///
+    /// This is trailing DECORATION, painted past the row's own advance
+    /// — it deliberately does NOT reach `build_runs` / `body_cols`, so
+    /// it can never change the line's wrap-segment count. Feeding it
+    /// into the column model would give the line a display row the
+    /// host's scroll model doesn't know about; see
+    /// `docs/dev/architecture/fold-architecture.md` §5.
+    pub(crate) fold_summary: Option<(String, u32)>,
     /// Pre-resolved diagnostic severity (glyph, colour). `None`
     /// renders a blank space in the severity column so alignment
     /// stays stable.
@@ -622,6 +636,11 @@ pub(crate) struct EditorElementPrepaintState {
     /// width). Using the cell column count avoids landing mid-line when
     /// the cell + combined column models differ (inlay edge cases).
     inline_diag_overlay: Option<(usize, Option<u32>, ShapedLine)>,
+    /// The ` ⋯ N lines` trailers for collapsed head rows, one per
+    /// visible closed fold: `(row, end_col, shaped)` with the same
+    /// meaning as [`Self::inline_diag_overlay`]. Painted past the
+    /// row's advance so the trailer never joins the column model.
+    fold_summary_overlays: Vec<(usize, u32, ShapedLine)>,
     /// DB.4-gpui: the parsed dashboard branding composition, if the
     /// viewport holds a `BrandingBlock` virtual-row group. `paint` draws
     /// it as a 2-D composition (quad mark + shaped wordmark) over the
@@ -1086,8 +1105,22 @@ impl Element for EditorElement {
             .map(|c| c.to_rgb_u32(0x45475a))
             .unwrap_or(0x45475a);
         let diff_tint_per_row = &self.diff_tint_per_row;
+        // Two DIFFERENT row indices, and conflating them is a bug:
+        //
+        // * `vis_row` — position in the caller's fold-aware visible
+        //   list (`gutter` / `raw_lines` / the tint arrays are all
+        //   built in that one order). Not contiguous in source lines
+        //   once a fold is closed.
+        // * `src_off` — `line_idx - scroll`, the SOURCE offset the
+        //   overlay worker buckets its quads by (the TUI peer indexes
+        //   the same bucket the same way).
+        //
+        // They coincide only when nothing is folded, which is why the
+        // single `rel_row` that used to serve both looked correct
+        // until a fold closed and silently shifted the diff tints.
         let overlay_quads_for_row = |line_idx: u32,
-                                     rel_row: usize,
+                                     vis_row: usize,
+                                     src_off: usize,
                                      line_text: &str,
                                      inlay_offsets: &[(u32, u32)]|
          -> Vec<(u32, u32, u32)> {
@@ -1099,7 +1132,7 @@ impl Element for EditorElement {
             // inlay-virtual-text chars). Zero-width rows
             // (empty lines) get a 1-column tint so the
             // backdrop is still visible.
-            if let Some(&Some(tint_color)) = diff_tint_per_row.get(rel_row) {
+            if let Some(&Some(tint_color)) = diff_tint_per_row.get(vis_row) {
                 let source_cols = line_text.chars().count() as u32;
                 let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
                 let total_cols = source_cols + inlay_cols;
@@ -1109,7 +1142,7 @@ impl Element for EditorElement {
             // CM.3d (2026-07-22): compilation location-line
             // bg tint. Same shape as diff tint above.
             let compilation_tint_per_row = &self.compilation_location_tint_per_row;
-            if let Some(&Some(tint_color)) = compilation_tint_per_row.get(rel_row) {
+            if let Some(&Some(tint_color)) = compilation_tint_per_row.get(vis_row) {
                 let source_cols = line_text.chars().count() as u32;
                 let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
                 let total_cols = source_cols + inlay_cols;
@@ -1124,7 +1157,7 @@ impl Element for EditorElement {
                 // (doc_highlight → all_matches → current_match →
                 // visual → substitute).
                 if let Some(rows) = worker_static_overlay_quads
-                    && let Some(row) = rows.get(rel_row)
+                    && let Some(row) = rows.get(src_off)
                 {
                     for q in row {
                         match q.layer {
@@ -1220,7 +1253,7 @@ impl Element for EditorElement {
                 // precedence. Worker bucket again preferred; legacy
                 // walk fallback if no bucket exists.
                 if let Some(rows) = worker_static_overlay_quads
-                    && let Some(row) = rows.get(rel_row)
+                    && let Some(row) = rows.get(src_off)
                 {
                     for q in row {
                         if matches!(
@@ -1302,7 +1335,9 @@ impl Element for EditorElement {
                 let (combined, runs, inlay_offsets) = build_runs(line, rel, line_idx as u32);
                 let full_diag = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
                 let full_overlay =
-                    overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
+                    // Fallback walk is contiguous from `scroll` (no fold
+                    // filtering), so visible position == source offset.
+                    overlay_quads_for_row(line_idx as u32, rel, rel, line, &inlay_offsets);
                 // W.5: source line → `seg_count` display rows. Take the
                 // larger of the cell-row and combined column counts so
                 // neither the active-pane cells paint nor the
@@ -1411,15 +1446,20 @@ impl Element for EditorElement {
                     &mut branding_rows,
                 );
             }
-            'rows: for meta in &self.gutter {
+            'rows: for (vis_row, meta) in self.gutter.iter().enumerate() {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
                 }
                 let line_idx = meta.line_idx as usize;
-                let rel = line_idx.saturating_sub(self.scroll as usize);
-                // 2026-05-26: raw_lines indexed by visible-row
-                // offset (see fallback branch above).
-                let line = raw_lines.get(rel).copied().unwrap_or("");
+                // `raw_lines` / the tint arrays are built in `gutter`
+                // order by the caller's fold-aware walk, so the visible
+                // POSITION indexes them. `line_idx - scroll` would only
+                // work while the visible set is contiguous — i.e. until
+                // the first fold closes.
+                let line = raw_lines.get(vis_row).copied().unwrap_or("");
+                // The overlay worker buckets by source offset from
+                // scroll; see `overlay_quads_for_row`.
+                let src_off = line_idx.saturating_sub(self.scroll as usize);
                 // D.3.b.1.gpui: emit Above-anchored virtual rows
                 // for this doc line first.
                 for vrow in virtual_rows_at_gpui(
@@ -1469,9 +1509,10 @@ impl Element for EditorElement {
                 // `push_wrapped_doc_row`. The gutter-driven walk already
                 // pre-filters folded lines, so coverage gaps only occur
                 // on boot / buffer-switch (handled inside `build_runs`).
-                let (combined, runs, inlay_offsets) = build_runs(line, rel, meta.line_idx);
+                let (combined, runs, inlay_offsets) = build_runs(line, vis_row, meta.line_idx);
                 let full_diag = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
-                let full_overlay = overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
+                let full_overlay =
+                    overlay_quads_for_row(meta.line_idx, vis_row, src_off, line, &inlay_offsets);
                 let cell_cols = self
                     .cell_matrix
                     .as_ref()
@@ -1735,6 +1776,64 @@ impl Element for EditorElement {
             Some((row, end_col, shaped))
         });
 
+        // The ` ⋯ N lines` fold summary, as an end-of-row overlay —
+        // the same shape as the inline diagnostic summary above, and
+        // the reason this is an overlay at all: painted past the row's
+        // advance, it can never widen `body_cols` and so can never add
+        // a display row the host's scroll model doesn't know about.
+        // (The TUI peer folds the text into the row's spans instead,
+        // which is exactly how it grew a phantom wrap row — see
+        // `docs/dev/architecture/fold-architecture.md` §5.)
+        //
+        // Anchored to the LAST visible row of the head line so the
+        // summary trails the whole heading when it wraps, matching the
+        // diagnostic summary's `rposition`.
+        let fold_summary_overlays: Vec<(usize, u32, ShapedLine)> = self
+            .gutter
+            .iter()
+            .filter_map(|meta| {
+                let (text, color) = meta.fold_summary.as_ref()?;
+                let row = row_meta.iter().rposition(|(l, _)| *l == meta.line_idx)?;
+                // Columns painted on the ANCHOR row — what the trailer
+                // has to clear. Always resolved here (never left to a
+                // paint-time width fallback) because `shaped_text` is
+                // shaped at BASE size even for a scaled heading row, so
+                // its `.width` under-measures a markdown `#` heading and
+                // the trailer would land back on top of the title. Paint
+                // maps this column through `col_x`, which knows about
+                // per-piece scaling.
+                let total_cols = self
+                    .cell_matrix
+                    .as_ref()
+                    .and_then(|m| m.row_at_source_line(meta.line_idx))
+                    .map(|r| r.col_count())
+                    .unwrap_or(0);
+                let end_col = if wrap_width == 0 {
+                    total_cols
+                } else {
+                    // Wrapped: only the final segment's own columns sit
+                    // on the anchor row.
+                    let seg = row_segment.get(row).copied().unwrap_or(0);
+                    total_cols.saturating_sub(seg.saturating_mul(wrap_width))
+                };
+                let runs = vec![TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: rgb(*color).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }];
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(text.clone()),
+                    font_size,
+                    &runs,
+                    None,
+                );
+                Some((row, end_col, shaped))
+            })
+            .collect();
+
         EditorElementPrepaintState {
             shaped_text,
             shaped_gutter,
@@ -1755,6 +1854,7 @@ impl Element for EditorElement {
             row_scale,
             row_split,
             inline_diag_overlay,
+            fold_summary_overlays,
             branding: build_branding_paint(&branding_rows),
         }
     }
@@ -2182,6 +2282,32 @@ impl Element for EditorElement {
                         "inline diagnostic summary ShapedLine::paint failed"
                     );
                 }
+            }
+        }
+
+        // Fold summary (` ⋯ N lines`) trailing each collapsed head row.
+        // Same end-of-row placement as the inline diagnostic summary
+        // above; painted after the body so it sits over the row's
+        // background but under the cursor.
+        for (row, end_col, shaped) in &prepaint.fold_summary_overlays {
+            let line_y = row_top(*row);
+            if line_y >= pane_bottom {
+                continue;
+            }
+            // `col_x` (not `advance * col`) so the trailer clears a
+            // SCALED heading: on a markdown `#` row the title is drawn
+            // at `font_size * title_scale`, so the row's real advance is
+            // wider than the uniform column metric and the summary would
+            // otherwise be painted over the heading text.
+            let eol_x = col_x(*row, *end_col);
+            if let Err(err) = shaped.paint(point(eol_x, line_y), row_h(*row), window, cx) {
+                tracing::warn!(
+                    target: "lattice_gpui::editor_element",
+                    row = *row,
+                    pane = self.pane_idx,
+                    error = ?err,
+                    "fold summary ShapedLine::paint failed"
+                );
             }
         }
 
@@ -3446,6 +3572,7 @@ mod tests {
             line_idx: 41,
             display_line: 41,
             fold_marker: None,
+            fold_summary: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
@@ -3454,6 +3581,7 @@ mod tests {
             line_idx: 41,
             display_line: 41,
             fold_marker: None,
+            fold_summary: None,
             severity: None,
             diff_sign: None,
             is_virtual: true,
@@ -3648,6 +3776,7 @@ mod tests {
             line_idx: 0,
             display_line: 0,
             fold_marker: None,
+            fold_summary: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
@@ -3663,6 +3792,7 @@ mod tests {
             line_idx: 41,
             display_line: 41,
             fold_marker: Some((FOLD_GLYPH_CLOSED, 0x9399b2)),
+            fold_summary: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,
@@ -3673,11 +3803,40 @@ mod tests {
     }
 
     #[test]
+    fn fold_summary_is_a_trailer_not_gutter_text() {
+        // The ` ⋯ N lines` summary is an end-of-row overlay painted past
+        // the body's advance — it must not widen the gutter column, and
+        // (more importantly) it never reaches `build_runs` / `body_cols`,
+        // so it cannot change the line's `wrap_segments` count. That is
+        // the invariant the TUI peer broke by folding the same text into
+        // the row's spans; see fold-architecture.md §5.
+        let bare = GutterLineMeta {
+            line_idx: 41,
+            display_line: 41,
+            fold_marker: Some((FOLD_GLYPH_CLOSED, 0x9399b2)),
+            fold_summary: None,
+            severity: None,
+            diff_sign: None,
+            is_virtual: false,
+        };
+        let with_summary = GutterLineMeta {
+            fold_summary: Some((lattice_host::folds::fold_summary_text(4), 0x6c7086)),
+            ..bare
+        };
+        assert_eq!(
+            format_gutter_text(&with_summary, 3, true, true),
+            format_gutter_text(&bare, 3, true, true),
+            "the summary is a trailer — it must not occupy gutter columns"
+        );
+    }
+
+    #[test]
     fn gutter_text_format_severity_glyph() {
         let meta = GutterLineMeta {
             line_idx: 9,
             display_line: 9,
             fold_marker: None,
+            fold_summary: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: None,
             is_virtual: false,
@@ -3692,6 +3851,7 @@ mod tests {
             line_idx: 9,
             display_line: 9,
             fold_marker: None,
+            fold_summary: None,
             severity: None,
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
@@ -3711,6 +3871,7 @@ mod tests {
             line_idx: 9,
             display_line: 9,
             fold_marker: None,
+            fold_summary: None,
             severity: Some(('E', 0xff0000)),
             diff_sign: Some(('+', 0x33aa33)),
             is_virtual: false,
@@ -3735,6 +3896,7 @@ mod tests {
             line_idx: 41,
             display_line: 41,
             fold_marker: Some((FOLD_GLYPH_CLOSED, 0xabcdef)),
+            fold_summary: None,
             severity: None,
             diff_sign: None,
             is_virtual: false,

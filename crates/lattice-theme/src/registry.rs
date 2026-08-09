@@ -952,6 +952,17 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("subtext"),
         "`▸` fold marker on a closed (collapsed) fold head row.",
     );
+    // The ` ⋯ N lines` summary trailing a collapsed head row. Registered
+    // rather than hardcoded so both peers read ONE tone — the TUI painted
+    // it as a literal `DarkGray` while GPUI had no summary at all, which
+    // is exactly the drift the registry exists to prevent. `overlay` (the
+    // dim tone, same as the open marker) keeps it a low-emphasis trailer:
+    // it is decoration on a row the user is reading, not content.
+    reg_one(
+        "gutter.fold.summary",
+        spec().fg("overlay"),
+        "The ` ⋯ N lines` summary trailing a closed fold's head row.",
+    );
 
     // ---- Search + selection + LSP overlays (T.6) ----
     // These hoist the scattered/drifted hardcoded overlay literals out
@@ -1318,6 +1329,9 @@ pub struct BuiltinElementIds {
     // and GPUI gutters stay in lockstep and themes can retune the tone.
     pub gutter_fold_open: ElementId,
     pub gutter_fold_closed: ElementId,
+    /// The ` ⋯ N lines` summary trailing a collapsed head row. Both
+    /// peers read it, so the trailer cannot drift between them.
+    pub gutter_fold_summary: ElementId,
     // T.4.c — pane chrome + file tree (writer-free elements only;
     // `pane.status.*` / `pane.separator` carry live `:set ui.*`
     // overrides and migrate with the registry-override path in T.9).
@@ -1468,6 +1482,7 @@ impl Default for BuiltinElementIds {
             transient_value: ElementId::INVALID,
             transient_border: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
+            gutter_fold_summary: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
             pane_status_inactive: ElementId::INVALID,
@@ -1665,6 +1680,7 @@ impl BuiltinElementIds {
             transient_border: id("transient.border"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
+            gutter_fold_summary: id("gutter.fold.summary"),
             pane_status_active: id("pane.status.active"),
             pane_status_inactive: id("pane.status.inactive"),
             pane_separator: id("pane.separator"),

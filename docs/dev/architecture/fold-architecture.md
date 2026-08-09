@@ -254,8 +254,128 @@ VS Code, Zed, JetBrains, Sublime, and Neovim all render fold
 controls as a low-emphasis gray, never an accent. A theme that
 leaves the elements unset falls back to the historical dim gutter
 colour, so the marker never vanishes. The `⋯ N lines` collapsed
-summary (TUI today; GPUI parity pending) carries the rest of the
-"hidden content" signal via text rather than a loud glyph colour.
+summary carries the rest of the "hidden content" signal via text
+rather than a loud glyph colour, and resolves through a third
+element — `gutter.fold.summary` (default `overlay`, the dim tone),
+read by both renderers. It is registered rather than hardcoded for
+the usual reason: the TUI painted it as a literal `DarkGray` and
+GPUI had no summary at all, which is precisely the drift the
+registry exists to prevent.
+
+**One text, one count, both peers.** The trailer's wording comes
+from `lattice_host::folds::fold_summary_text` and its count from
+`folded_line_span` — both shared, so neither renderer can invent
+its own spacing or chain sibling folds differently. Pinned by
+`fold_summary_text_is_the_one_shared_trailer`.
+
+**The summary is decoration, not source text — it never costs a
+display row.** A source line occupies exactly
+`wrap_segments(col_count, wrap_width)` display rows under `:set
+wrap`, where `col_count` is the width the `DisplayMatrix` measured.
+That count is shared: the host's scroll model sizes the viewport by
+it, and the renderer's caret walk
+(`buffer_line_to_visible_row_with`) sums it over every line above
+the cursor. Anything the compose loop appends *past* the source
+axis — the fold summary, completion ghost text, the cursorline's
+right-edge pad — rides the final wrap segment and is clipped at the
+pane edge; it must not break a new one. A folded heading that fit
+on one row before the summary still occupies one row after it. The
+TUI enforces this with `split_body_into_segments`'s `wrap_cols`
+argument (the source-axis width, captured before any trailing
+decoration is pushed).
+
+Getting this wrong is silent and only shows up in narrow panes: in
+a vertical split the summary pushes a heading past the wrap width,
+the body gains a row the segment count does not know about, and
+every line below a closed fold paints its caret one row *above* the
+cursorline. Regression coverage:
+`closed_fold_summary_does_not_add_a_wrap_row` and
+`split_body_trailing_decoration_never_breaks_a_segment` in
+`crates/lattice-ui-tui/src/render.rs`.
+
+**Why this is a TUI-shaped hazard specifically.** The exposure is
+not the summary, it is that the TUI derives display rows *twice*:
+`compose_visible_lines_inner` builds them by splitting a composed
+span list, and `buffer_line_to_visible_row_with` re-derives the
+same geometry for the caret from `wrap_segments`. Any decoration
+that reaches one and not the other drifts them apart. GPUI has no
+second derivation — `push_wrapped_doc_row` expands each line into
+`wrap_segments(body_cols, wrap_width)` rows and records the row
+index of segment 0 in `doc_to_shaped_row_local` *as it pushes*; the
+caret reads that recorded index and adds its own segment, and the
+cursorline quad paints at `prepaint.cursor_layout`'s row — the same
+value. Caret and cursorline cannot disagree there by construction.
+
+That is why GPUI's summary is an **end-of-row overlay** rather than
+text: `GutterLineMeta::fold_summary` is shaped in prepaint and
+painted at the row's end-of-content x
+(`EditorElementPrepaintState::fold_summary_overlays`), alongside
+the inline diagnostic summary which uses the same placement. It
+never reaches `build_runs`, so it never reaches `body_cols`, so it
+can never add a display row. Folding it into the column model
+instead would leave the host's scroll model wrong even though the
+caret would still track it — a quieter failure than the TUI's,
+because caret and cursorline would still agree with each other
+while both sat on the wrong row. The TUI's `wrap_cols` seam is the
+equivalent guarantee on that side.
+
+Anchoring: both peers put the trailer after the *last* visible row
+of the head line (`rposition` over `row_meta`), so a heading that
+wraps carries its summary at the end of the whole line, not
+stranded on segment 0. Coverage:
+`fold_summary_is_a_trailer_not_gutter_text` in
+`crates/lattice-ui-gpui/src/editor_element.rs`.
+
+**The visible-line walk is shared, and must stay shared.** Which
+source lines a pane shows is `lattice_host::folds::
+visible_source_lines` — walk from `scroll` until `height` VISIBLE
+lines are collected, skipping collapsed bodies in one jump. The
+bound is display rows, not source lines. Taking `[scroll, scroll +
+height)` and filtering the folded lines out afterwards looks
+equivalent and is not: every collapsed line still spends a window
+slot, so the pane under-fills as soon as a fold closes and nothing
+past the window is even considered — a half-blank screen that stops
+at an arbitrary line, with the cursor able to move somewhere it
+cannot be drawn. GPUI shipped exactly that (2026-08-09) while the
+TUI had the correct walk inline; both now call the one function.
+Coverage: `visible_walk_fills_the_viewport_past_a_closed_fold` and
+peers in `crates/lattice-host/src/folds.rs`.
+
+A second-order consequence worth remembering: with folds closed the
+visible set is **not contiguous**, so `line_idx - scroll` stops
+being a valid index into any per-visible-row array. GPUI conflated
+that source offset with the visible position, which silently shifted
+the diff line-tints onto the wrong rows whenever something was
+folded. The two indices are now named apart (`src_off` for the
+overlay worker's bucket, which really is source-offset keyed in both
+peers; `vis_row` for the caller-built arrays).
+
+**The cursor must never rest on a hidden line — twice over.**
+`snap_cursor_past_closed_folds` keeps it out of collapsed bodies,
+and a fold running to the last addressable line is the awkward case:
+there is no `end_line + 1` to land on. It used to park the cursor at
+`last`, *inside* the fold, which was a trap as much as a glitch —
+`k` moved to `last - 1`, also inside, and the same branch snapped it
+straight back down. The cursor was pinned on an invisible line until
+an absolute motion (`gg`) escaped. It now falls back to the fold's
+**head** in both directions, which is where vim leaves it when `j`
+has nowhere below to go. Pinned by
+`cursor_never_parks_inside_a_fold_that_runs_to_eof`.
+
+Renderers keep a projection as the second layer: a cursor inside a
+closed fold draws on that fold's head row. The TUI has always done
+this in its caret walk; GPUI matched `line_idx` against the visible
+gutter exactly, so a hidden cursor produced *no caret at all* — the
+same host bug looked like a cosmetic offset in one renderer and a
+vanished cursor in the other. Both project now. The projection is
+deliberately defence-in-depth, not the fix: any future code path
+that moves the cursor without snapping lands on it.
+
+**Not yet at parity:** the summary rides GPUI's gutter-driven walk,
+so a pane rendering without gutter metadata (`self.gutter` empty)
+shows no trailer. Fold data isn't plumbed to that path at all
+today; it needs `fold_summary` on the no-gutter walk's row source
+before the trailer can follow.
 
 ## 6. Grammar surface impact
 

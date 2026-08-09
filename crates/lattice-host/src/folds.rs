@@ -655,6 +655,61 @@ pub enum FoldMarker {
 /// that fold has an on-screen heading and is a separate fold with its
 /// own summary. Shared by the TUI and GPUI renderers so the count stays
 /// identical.
+/// The source lines a pane actually shows, in paint order: walk from
+/// `scroll` collecting lines until `height` VISIBLE ones are gathered,
+/// skipping every line hidden inside a closed fold and stepping over a
+/// closed fold's body in one jump (its head row stands for the whole
+/// range).
+///
+/// The bound is **display rows, not source lines**, and that is the
+/// entire point. Taking `[scroll, scroll + height)` and filtering the
+/// folded lines out afterwards looks equivalent and is not: each
+/// collapsed line still spends one of the window's slots, so the pane
+/// under-fills the moment a fold closes and every line past the window
+/// — further headings, the cursor — is never considered at all. GPUI
+/// shipped that bug (2026-08-09); the TUI had this walk inline from the
+/// start. It lives here now so the two peers cannot drift again.
+///
+/// Soft-wrap is deliberately NOT accounted for: a wrapped line's extra
+/// segments are display rows the renderers add downstream, so this can
+/// over-collect when wrapping is on. Both renderers cap their row
+/// budget while emitting (`shaped_text.len() >= viewport_height` /
+/// `out.len() >= height`), which is where wrap is paid for.
+pub fn visible_source_lines(
+    fold_index: &FoldIndex,
+    scroll: u32,
+    height: u32,
+    total_lines: u32,
+) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::with_capacity(height as usize);
+    let mut li = scroll.min(total_lines);
+    while (out.len() as u32) < height && li < total_lines {
+        if fold_index.line_inside_closed_fold(li) {
+            li += 1;
+            continue;
+        }
+        out.push(li);
+        li = match fold_index.closed_fold_at(li) {
+            Some((_, end)) => end.saturating_add(1),
+            None => li + 1,
+        };
+    }
+    out
+}
+
+/// The ` ⋯ N lines` summary text trailing a collapsed head row, where
+/// `n` is [`folded_line_span`]'s count. One function so the TUI and
+/// GPUI peers cannot drift on spacing, glyph, or pluralisation — the
+/// TUI grew this as an inline `format!` and GPUI had no summary at
+/// all, which is exactly how two renderers end up disagreeing.
+///
+/// Callers paint it as trailing DECORATION: it sits outside the source
+/// column axis, so it must never widen the row's wrap-segment count
+/// (see `docs/dev/architecture/fold-architecture.md` §5).
+pub fn fold_summary_text(n: u32) -> String {
+    format!(" ⋯ {n} lines")
+}
+
 pub fn folded_line_span(folds: &[Fold], start_line: u32, end_line: u32, total_lines: u32) -> u32 {
     let mut end = end_line;
     let mut probe = end.saturating_add(1);
@@ -883,6 +938,101 @@ mod tests {
     fn empty_buffer_yields_no_folds() {
         let b = buf("");
         assert!(compute_indent_folds(&b).is_empty());
+    }
+
+    #[test]
+    fn visible_walk_fills_the_viewport_past_a_closed_fold() {
+        // The reported GPUI bug (2026-08-09): a doc whose headings are
+        // folded showed content only up to the source line sitting
+        // `viewport_height` below the scroll, leaving half the screen
+        // blank — because the visible set was `[scroll, scroll+height)`
+        // with the folded lines filtered out afterwards, so collapsed
+        // lines burned viewport slots and everything past the window was
+        // never looked at.
+        //
+        // 100-line buffer, viewport 10, one closed fold swallowing lines
+        // 1..=79. The pane must still show 10 rows: line 0, the fold
+        // head at 1, then 80..=87 — NOT "line 0 + head + nothing".
+        let folds = vec![Fold {
+            start_line: 1,
+            end_line: 79,
+            closed: true,
+            identity: None,
+        }];
+        let idx = FoldIndex::from_folds(&folds, true);
+        let vis = visible_source_lines(&idx, 0, 10, 100);
+        assert_eq!(
+            vis.len(),
+            10,
+            "the viewport must be filled with visible rows, not spent on \
+             collapsed ones: {vis:?}"
+        );
+        assert_eq!(vis, vec![0, 1, 80, 81, 82, 83, 84, 85, 86, 87]);
+    }
+
+    #[test]
+    fn visible_walk_matches_the_unfolded_case_and_respects_eof() {
+        let idx = FoldIndex::from_folds(&[], true);
+        // No folds ⇒ plain contiguous window (the pre-fix behaviour,
+        // which is why this bug hid until something was folded).
+        assert_eq!(visible_source_lines(&idx, 5, 4, 100), vec![5, 6, 7, 8]);
+        // Never walks past EOF, and a scroll at/past EOF yields nothing.
+        assert_eq!(visible_source_lines(&idx, 98, 10, 100), vec![98, 99]);
+        assert!(visible_source_lines(&idx, 100, 10, 100).is_empty());
+        // `foldenable` off ⇒ folds are inert, window stays contiguous.
+        let folds = vec![Fold {
+            start_line: 1,
+            end_line: 50,
+            closed: true,
+            identity: None,
+        }];
+        let off = FoldIndex::from_folds(&folds, false);
+        assert_eq!(visible_source_lines(&off, 0, 4, 100), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn visible_walk_chains_folds_that_hide_the_next_head() {
+        // Two closed folds where the second's head is itself hidden by
+        // the first. The walk must land on the first visible line after
+        // BOTH, never on a head the user cannot see.
+        let folds = vec![
+            Fold {
+                start_line: 2,
+                end_line: 6,
+                closed: true,
+                identity: None,
+            },
+            Fold {
+                start_line: 4,
+                end_line: 9,
+                closed: true,
+                identity: None,
+            },
+        ];
+        let idx = FoldIndex::from_folds(&folds, true);
+        let vis = visible_source_lines(&idx, 0, 5, 20);
+        assert_eq!(vis[0], 0);
+        assert_eq!(vis[1], 1);
+        assert_eq!(vis[2], 2, "the outer fold's head stays visible");
+        assert!(
+            vis[3] > 6,
+            "no row may land inside a collapsed region: {vis:?}"
+        );
+    }
+
+    #[test]
+    fn fold_summary_text_is_the_one_shared_trailer() {
+        // Both renderers call this, so pinning the exact string is what
+        // stops the TUI and GPUI trailers from drifting on spacing or
+        // wording. The leading space separates it from the heading; the
+        // `⋯` is U+22EF (one column, plain BMP — renders in every
+        // terminal font, no nerd-font fallback needed).
+        assert_eq!(fold_summary_text(4), " ⋯ 4 lines");
+        assert_eq!(fold_summary_text(1), " ⋯ 1 lines");
+        assert_eq!(fold_summary_text(120), " ⋯ 120 lines");
+        // 10 columns for the common 1-digit case — the width the TUI's
+        // `wrap_cols` seam must keep OUT of the wrap computation.
+        assert_eq!(fold_summary_text(4).chars().count(), 10);
     }
 
     #[test]

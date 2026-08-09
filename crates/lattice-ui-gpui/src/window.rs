@@ -1761,17 +1761,41 @@ impl EditorView {
         } else {
             pane.viewport_height.max(1)
         };
-        let visible_start = (pane_scroll as usize).min(total_lines);
-        let visible_end = (pane_scroll as usize)
-            .saturating_add(viewport_height as usize)
-            .min(total_lines);
+        // Folds must be resolved BEFORE the visible walk: a closed
+        // fold changes which source lines occupy the viewport, so the
+        // walk has to skip its body rather than spend viewport slots on
+        // it. Shared with the TUI peer.
+        let (pane_folds, pane_foldenable) = rs_guard.folds_for_buffer(pane.buffer_id);
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(&pane_folds, pane_foldenable);
 
-        // Stage A.1: materialise only visible lines into a small Vec<String>.
-        let mut raw_lines: Vec<String> =
-            Vec::with_capacity(visible_end.saturating_sub(visible_start));
-        for li in visible_start..visible_end {
-            raw_lines.push(snapshot.buffer.line(li as u32).unwrap_or_default());
-        }
+        // 5.8.O + fold fix (2026-08-09): the visible set is bounded by
+        // DISPLAY ROWS, not by a source-line window. This used to be
+        // `[scroll, scroll + viewport_height)` with the fold interiors
+        // filtered out afterwards — so every collapsed line still
+        // consumed one of the window's slots and the pane under-filled
+        // the moment a fold closed. With a few headings folded, a
+        // half-empty screen stopped at whatever source line happened to
+        // sit `viewport_height` below the scroll, and everything past it
+        // (further headings, the cursor) was simply never considered.
+        // The TUI has always walked it this way: take source lines from
+        // `scroll` until `viewport_height` VISIBLE ones are collected,
+        // stepping over a closed fold's body in one jump.
+        let visible_lines = lattice_host::folds::visible_source_lines(
+            &fold_index,
+            pane_scroll,
+            viewport_height,
+            total_lines_u32,
+        );
+
+        // Stage A.1: materialise only visible lines into a small
+        // Vec<String>. Indexed by POSITION IN `visible_lines` (not by
+        // `line_idx - scroll`) — with folds the visible set is no longer
+        // contiguous. `gutter_meta` and the per-row tint arrays below
+        // are built in the same order so one index serves all four.
+        let raw_lines: Vec<String> = visible_lines
+            .iter()
+            .map(|li| snapshot.buffer.line(*li).unwrap_or_default())
+            .collect();
         let cursor_shape = if render_active {
             Some(CursorShape::for_mode(ad.modal))
         } else {
@@ -1838,8 +1862,8 @@ impl EditorView {
         // lines in an inactive pane showing buffer B. `folds_for_buffer`
         // resolves the per-buffer list (active → live `self.folds`; other →
         // published `cells.panes` entry). Shared with the TUI peer.
-        let (pane_folds, pane_foldenable) = rs_guard.folds_for_buffer(pane.buffer_id);
-        let fold_index = lattice_host::folds::FoldIndex::from_folds(&pane_folds, pane_foldenable);
+        // (`pane_folds` / `fold_index` are resolved above — the visible
+        // walk needs them before it can size the viewport.)
         // K.4.6 follow-up (2026-06-02): cache the
         // display_line_numbers map outside the per-row closure.
         // None for regular Documents (gutter shows composed-row
@@ -1979,8 +2003,23 @@ impl EditorView {
             .fg
             .map(|c| c.to_rgb_u32(0x9399b2))
             .unwrap_or(0x9399b2);
-        let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = (visible_start..visible_end)
-            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+        // `gutter.fold.summary` — the trailer's tone, same element the
+        // TUI peer resolves. Falls back to the dim `overlay` tone.
+        let fold_summary_color = resolved_theme
+            .get(theme_ids.gutter_fold_summary)
+            .fg
+            .map(|c| c.to_rgb_u32(0x6c7086))
+            .unwrap_or(0x6c7086);
+        // Total buffer lines, for `folded_line_span`'s forward walk over
+        // sibling folds whose own heading is hidden by this one.
+        let total_lines_for_folds = snapshot.buffer.line_count();
+        // Built over the fold-aware `visible_lines` walk (which already
+        // skipped collapsed bodies) rather than a source-line range, so
+        // the pane fills to `viewport_height` rows however much is
+        // folded above.
+        let gutter_meta: Vec<crate::editor_element::GutterLineMeta> = visible_lines
+            .iter()
+            .map(|l| *l as usize)
             .map(|line_idx| {
                 // Show a marker on every foldable head (open or closed)
                 // when foldenable is on, matching the TUI peer — `▾`
@@ -2047,10 +2086,32 @@ impl EditorView {
                     };
                     (glyph, fg)
                 });
+                // The ` ⋯ N lines` trailer for a collapsed head row.
+                // `folded_line_span` + `fold_summary_text` are the
+                // shared helpers the TUI peer calls, so both renderers
+                // report the same count in the same words. Built here
+                // (not in the element) to keep paint-time free of fold
+                // lookups, like every other pre-resolved gutter field.
+                let fold_summary =
+                    fold_index
+                        .closed_fold_at(line_idx as u32)
+                        .map(|(start, end)| {
+                            let n = lattice_host::folds::folded_line_span(
+                                &pane_folds,
+                                start,
+                                end,
+                                total_lines_for_folds,
+                            );
+                            (
+                                lattice_host::folds::fold_summary_text(n),
+                                fold_summary_color,
+                            )
+                        });
                 crate::editor_element::GutterLineMeta {
                     line_idx: line_idx as u32,
                     display_line,
                     fold_marker,
+                    fold_summary,
                     severity,
                     diff_sign,
                     is_virtual: false,
@@ -2068,8 +2129,9 @@ impl EditorView {
         // side-by-side diff colours both sides. `None` ⇒ no diff session for
         // this buffer ⇒ no tints.
         let pane_sign_map = rs_guard.diff.sign_maps.get(&pane.buffer_id).cloned();
-        let diff_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
-            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+        let diff_tint_per_row: Vec<Option<u32>> = visible_lines
+            .iter()
+            .map(|l| *l as usize)
             .map(|line_idx| {
                 pane_sign_map
                     .as_ref()
@@ -2104,8 +2166,9 @@ impl EditorView {
         // CM.3d (2026-07-22): compilation location-line bg tint,
         // computed from the render-state location-line index.
         // Same shape as diff tint above.
-        let compilation_location_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
-            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+        let compilation_location_tint_per_row: Vec<Option<u32>> = visible_lines
+            .iter()
+            .map(|l| *l as usize)
             .map(|line_idx| {
                 rs_guard
                     .compilation_location_lines
@@ -2134,10 +2197,38 @@ impl EditorView {
                 // zeroed in slice A.4 (`1e1da8d`) so the element
                 // can't recover the cursor's line text itself —
                 // pass it via `CursorState.line_text` here.
-                let line_text = snapshot.buffer.line(cursor.line).unwrap_or_default();
+                // Safety net (TUI parity): a cursor sitting inside a
+                // closed fold's hidden body projects onto the fold's
+                // head — the visible row standing for that range — so
+                // the user always sees a caret on a real row. The
+                // element matches `line_idx` against the visible gutter
+                // exactly, so an unprojected hidden line yields NO
+                // cursor at all; the TUI's caret walk has done this
+                // projection from the start.
+                //
+                // `snap_cursor_past_closed_folds` is supposed to keep
+                // the cursor out of hidden regions, and a bug there
+                // (fixed 2026-08-09) is how this surfaced — but the
+                // projection stays as defence in depth, exactly as it
+                // is documented to be on the TUI side: any code path
+                // that sets a cursor without snapping lands here.
+                let visible_cursor_line = fold_index
+                    .enclosing_closed_fold(cursor.line)
+                    .map(|(start, _)| start)
+                    .unwrap_or(cursor.line);
+                let line_text = snapshot
+                    .buffer
+                    .line(visible_cursor_line)
+                    .unwrap_or_default();
                 Some(crate::editor_element::CursorState {
-                    line: cursor.line,
-                    byte: cursor.byte,
+                    line: visible_cursor_line,
+                    byte: if visible_cursor_line == cursor.line {
+                        cursor.byte
+                    } else {
+                        // Projected onto a different line — the original
+                        // byte offset means nothing there.
+                        0
+                    },
                     shape,
                     line_text,
                 })

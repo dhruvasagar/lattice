@@ -23,7 +23,6 @@ use lattice_protocol::position::Position;
 
 use crate::buffer_state::DiffSource;
 use crate::magit_branch_mode::MagitBranchMode;
-use crate::magit_commit_mode::MagitCommitMode;
 use crate::magit_diff_mode::MagitDiffMode;
 use crate::magit_file_revision_mode::MagitFileRevisionMode;
 use crate::magit_log_mode::MagitLogMode;
@@ -421,6 +420,67 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod compose_buffers_are_not_browsers {
+    use super::*;
+    // Only the exclusion test names this mode now — the production
+    // policy list deliberately does not mention it.
+    use crate::magit_commit_mode::MagitCommitMode;
+
+    /// Reported 2026-08-09: writing a commit message was impossible —
+    /// `i` fired `magit-global-gitignore` instead of entering Insert.
+    ///
+    /// `magit-core-mode` is the shared vocabulary of magit's READ-ONLY
+    /// list buffers: `i` ignores a path, `S`/`U` stage and unstage,
+    /// `h` opens the dispatch menu. Those are safe there precisely
+    /// because nothing in those buffers is editable — the rule MG.49
+    /// settled on, and the reason single letters could be claimed at
+    /// all. It is a MINOR mode, so it beats the builtin vim grammar.
+    ///
+    /// `magit-commit-mode` is the odd one out: it is not a browser, it
+    /// is the compose buffer for a commit message (`*magit:commit*`,
+    /// `*magit:amend*`, reword, augment, merge-edit). Listing it here
+    /// pointed the whole browsing vocabulary at the one magit buffer
+    /// that exists to be typed into, and `i` — the single most
+    /// important key in an editable buffer — was the casualty.
+    ///
+    /// Emacs draws the same line: a commit message is composed in a
+    /// text buffer under `with-editor`, not in a `magit-mode` buffer,
+    /// so none of magit's browsing keys reach it.
+    #[test]
+    fn the_commit_compose_buffer_does_not_get_the_browsing_keymap() {
+        let ActivationPolicy::Majors(majors) = MagitCoreMode.activation_policy() else {
+            panic!("magit-core-mode activates on a fixed set of majors");
+        };
+        assert!(
+            !majors.contains(&MagitCommitMode::mode_id()),
+            "magit-commit-mode is the commit-message COMPOSE buffer, not a browser — \
+             giving it the core keymap shadows `i` (and `S`/`U`/`C`/`h`/`yr`) in the one \
+             magit buffer the user types into"
+        );
+        // The browsers still have it — this is a scoping fix, not a
+        // retreat from the shared-minor-mode pattern.
+        assert!(majors.contains(&MagitStatusMode::mode_id()));
+        assert!(majors.contains(&MagitDiffMode::mode_id()));
+        assert!(majors.contains(&MagitLogMode::mode_id()));
+    }
+
+    /// The other half of the bug: `i` really is claimed by this mode,
+    /// so the exclusion above is load-bearing rather than incidental.
+    /// If `i` is ever moved off the core keymap this test should be
+    /// deleted, not relaxed.
+    #[test]
+    fn the_core_keymap_claims_i_in_normal_mode() {
+        assert!(
+            magit_core_keymap_entries()
+                .iter()
+                .any(|e| e.chord == "i" && e.command == Some("action:magit-global-gitignore")),
+            "`i` is a magit-core browsing chord — that is why an editable \
+             magit buffer must not carry this keymap"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1055,7 +1115,17 @@ impl Mode for MagitCoreMode {
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::Majors(vec![
             MagitStatusMode::mode_id(),
-            MagitCommitMode::mode_id(),
+            // `magit-commit-mode` is deliberately ABSENT. Every other
+            // major here is a read-only list, which is what lets this
+            // mode claim bare letters at all (MG.49's rule: the chords
+            // are inert where nothing is editable). The commit buffer
+            // is the exception — it exists to be typed into — and this
+            // mode is a MINOR, so it beats the builtin vim grammar:
+            // listing it here made `i` open the .gitignore prompt
+            // instead of entering Insert, and there was no way to write
+            // a commit message at all. Emacs draws the same line, from
+            // the other side: a message is composed in a text buffer
+            // under `with-editor`, never in a `magit-mode` buffer.
             MagitDiffMode::mode_id(),
             MagitLogMode::mode_id(),
             // MG.26b: `magit-blame-mode` is gone from this list because

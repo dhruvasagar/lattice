@@ -43,17 +43,22 @@
   plugin-host stage — see typed-motion-dispatch.md §3.)
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
+    - [X] commands
+    - [ ] yank
+    - [X] pane buffers
+    - [ ] macros
+    - [X] searches
 - [ ] auto indent
 - [ ] auto formatting
 - [ ] Spell Check
-- [ ] buffer history within pane, <C-^> to go back and <C-&> to go forward
+- [X] buffer history within pane, <C-^> to go back and <C-&> to go forward
 - [ ] <C-=>, <C--> for zooming (font-size) in GPUI
 - [X] Implement org cycle like folding behavior
 - [X] Implement basic emacs style <C-x> bindings
   - [X] <C-x>b :buffer
 - [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
 - [X] modeline line / column number indicators don't update as the cursor moves and lag behind
-- [ ] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
+- [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
   - [X] <C-x><C-s> for :write
   - [X] <C-x><C-f> file :files
   - [X] <C-x>0 :close

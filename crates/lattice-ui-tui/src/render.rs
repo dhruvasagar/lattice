@@ -4390,10 +4390,16 @@ pub(crate) fn compose_pane_lines(
     let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
-        // Keep one cell of left padding for the empty-marker `~` line
-        // and to mirror vim's `:set nonumber` (no gutter, but content
-        // still has a one-cell margin from the edge).
-        2
+        // `:set nonumber` still paints a gutter — `format_gutter_cell`
+        // ALWAYS emits its three trailing cells (separator + fold-glyph
+        // slot + gap), so the width must cover them. `2` here made
+        // `saturating_sub(label_cols + 3)` clamp to zero and the cell
+        // came out 3 cells wide against a declared width of 2: the body
+        // painted one column right of where every arithmetic consumer
+        // thought it was, and the caret landed a cell to its LEFT — on
+        // the last character instead of after it. Same class as the `↪`
+        // fix in `format_gutter_cell`, opposite direction.
+        GUTTER_TRAILING_PAD
     })
     // DB.4: horizontal centring widens the gutter (content + cursor shift
     // right); 0 for non-centred buffers.
@@ -6968,7 +6974,10 @@ fn cursor_screen_position_at(
     let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
-        2
+        // Must match `compose_visible_lines_inner`'s `gutter_w` exactly —
+        // see the note there. `2` put the caret one cell left of the
+        // glyph on every `nonumber` buffer.
+        GUTTER_TRAILING_PAD
     }) + view.content_left_pad; // DB.4: keep cursor col aligned with centring.
     // W.4.t: body content width = the columns a wrapped line is
     // broken at. Must match `compose_visible_lines_inner`'s
@@ -8726,6 +8735,58 @@ mod tests {
             Some(3),
             "signcolumn=no + nonu ⇒ content at the 3-cell fold gutter, got {lean0:?}"
         );
+    }
+
+    /// Reported 2026-08-09: typing in the magit commit buffer drew the
+    /// caret one cell to the LEFT of the insertion point — on the last
+    /// character typed rather than after it.
+    ///
+    /// Not commit-specific: `magit-commit-mode` sets `Number = false`,
+    /// and that is the whole trigger. `format_gutter_cell` ALWAYS emits
+    /// three trailing cells (separator + fold-glyph slot + gap), but the
+    /// `nonumber` gutter width was declared as `2`, so its
+    /// `saturating_sub(label_cols + 3)` clamped to zero and the cell came
+    /// out 3 wide. The body painted at column 3 while `buffer_w` and the
+    /// caret's `sign + gutter_w + body_col` both assumed 2.
+    ///
+    /// Asserts the invariant that actually matters — the caret column is
+    /// the column the NEXT glyph will occupy — with numbers off and on,
+    /// so a future change to either gutter branch cannot drift them
+    /// apart again.
+    #[test]
+    fn caret_lands_after_the_last_glyph_with_numbers_off() {
+        for numbers in [false, true] {
+            let mut app = app_with("abc\n", 5);
+            app.editor.option_cache.show_line_numbers = numbers;
+            // Insertion point: end of "abc".
+            app.editor
+                .set_cursor(lattice_protocol::position::Position::new(0, 3));
+            app.editor.publish_render_state();
+            let snap = app.ad().snapshot.clone();
+            let composed = compose_visible_lines(&app, &snap, 5, 40);
+            let painted: String = composed[0]
+                .spans
+                .iter()
+                .map(|sp| sp.content.as_ref())
+                .collect();
+            let body_col = painted.find('a').expect("body painted");
+            let area = Rect::new(0, 0, 40, 5);
+            let pos = cursor_screen_position_at(
+                &FrameView::from_app(&app),
+                &snap,
+                area,
+                app.ad().cursor,
+                0,
+                app.panes().tree.active().id,
+            )
+            .expect("caret visible");
+            assert_eq!(
+                pos.0 as usize,
+                body_col + 3,
+                "number={numbers}: caret must sit AFTER the last glyph \
+                 (body starts at {body_col} in {painted:?})"
+            );
+        }
     }
 
     #[test]

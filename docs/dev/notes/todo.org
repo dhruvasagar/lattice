@@ -44,10 +44,10 @@
 - [ ] focus mode
 - [ ] history (command, macros, yank, etc.)
     - [X] commands
-    - [ ] yank
     - [X] pane buffers
-    - [ ] macros
     - [X] searches
+    - [ ] yank
+    - [ ] macros
 - [ ] auto indent
 - [ ] auto formatting
 - [ ] Spell Check

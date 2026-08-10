@@ -167,7 +167,8 @@ fn status_modified() {
         status,
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Modified)
+            unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         }
     );
 }
@@ -182,7 +183,8 @@ fn status_untracked() {
         status,
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Untracked)
+            unstaged: Some(PathStatus::Untracked),
+            ..PathChange::CLEAN
         }
     );
 }
@@ -198,7 +200,8 @@ fn status_added() {
         status,
         PathChange {
             staged: Some(PathStatus::Added),
-            unstaged: None
+            unstaged: None,
+            ..PathChange::CLEAN
         }
     );
 }
@@ -216,7 +219,8 @@ fn status_deleted() {
         status,
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Deleted)
+            unstaged: Some(PathStatus::Deleted),
+            ..PathChange::CLEAN
         }
     );
 }
@@ -245,9 +249,93 @@ fn status_conflicted() {
         PathChange {
             staged: Some(PathStatus::Modified),
             unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         },
         "both axes carry a modification; neither is a conflict"
     );
+}
+
+/// Reported-adjacent (2026-08-10): the parser used the default
+/// porcelain form, which QUOTES and octal-escapes any path git thinks
+/// needs it — and `core.quotepath` is on by default, so every
+/// non-ASCII filename came back as `"\303\251t\303\251.txt"`.
+/// The resulting `PathBuf` named a file that does not exist, so magit
+/// showed a mangled row and acting on it would have missed.
+///
+/// `-z` returns paths verbatim.
+#[test]
+fn non_ascii_paths_are_not_quoted_or_escaped() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "été.txt", "a\n");
+    git_add(&repo, "été.txt");
+    git_commit(&repo, "initial");
+    write_file(workdir, "été.txt", "b\n");
+
+    let statuses = WorkingTree::statuses(&repo).unwrap();
+    let paths: Vec<String> = statuses
+        .iter()
+        .map(|(p, _)| p.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        paths.contains(&"été.txt".to_string()),
+        "path must round-trip verbatim, got {paths:?}"
+    );
+}
+
+/// A staged rename is `Renamed` (it used to be `Added`, so it rendered
+/// as "new file"), and the path it came FROM survives.
+///
+/// With `-z` a rename is two NUL-separated records — the new path,
+/// then the original — which is also why the ` -> ` form is not parsed:
+/// ` -> ` is legal inside a filename.
+#[test]
+fn a_staged_rename_keeps_its_origin() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "old name.txt", "a\n");
+    git_add(&repo, "old name.txt");
+    git_commit(&repo, "initial");
+    repo.run_git_str(["mv", "old name.txt", "new name.txt"])
+        .unwrap();
+
+    let statuses = WorkingTree::statuses(&repo).unwrap();
+    let (path, change) = statuses
+        .iter()
+        .find(|(p, _)| p.to_string_lossy() == "new name.txt")
+        .expect("renamed path present");
+    assert_eq!(change.staged, Some(PathStatus::Renamed));
+    assert_eq!(change.unstaged, None);
+    assert_eq!(
+        change.original_path.as_deref(),
+        Some(std::path::Path::new("old name.txt")),
+        "the origin travels with the change"
+    );
+    assert_eq!(path.to_string_lossy(), "new name.txt");
+}
+
+/// A type change (regular file ⇄ symlink) used to decode to `None` on
+/// both axes, so the path vanished from the status view — a change the
+/// user could neither see nor stage.
+#[cfg(unix)]
+#[test]
+fn a_type_change_is_reported_not_dropped() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "target.txt", "a\n");
+    write_file(workdir, "tc.txt", "a\n");
+    git_add(&repo, "target.txt");
+    git_add(&repo, "tc.txt");
+    git_commit(&repo, "initial");
+    std::fs::remove_file(workdir.join("tc.txt")).unwrap();
+    std::os::unix::fs::symlink("target.txt", workdir.join("tc.txt")).unwrap();
+
+    let statuses = WorkingTree::statuses(&repo).unwrap();
+    let (_, change) = statuses
+        .iter()
+        .find(|(p, _)| p.to_string_lossy() == "tc.txt")
+        .expect("a type change must appear in the status at all");
+    assert_eq!(change.unstaged, Some(PathStatus::TypeChanged));
 }
 
 #[test]
@@ -299,7 +387,8 @@ fn stage_and_unstage() {
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Modified)
+            unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         }
     );
 
@@ -311,7 +400,8 @@ fn stage_and_unstage() {
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
         PathChange {
             staged: Some(PathStatus::Modified),
-            unstaged: None
+            unstaged: None,
+            ..PathChange::CLEAN
         },
         "a staged modification is staged + modified, not added"
     );
@@ -322,7 +412,8 @@ fn stage_and_unstage() {
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Modified)
+            unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         }
     );
 }
@@ -599,7 +690,8 @@ fn stash_list_apply_pop_drop() {
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Modified)
+            unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         }
     );
     assert!(Stash::list(&repo).unwrap().is_empty());
@@ -622,7 +714,8 @@ fn stash_apply_keeps_entry() {
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
         PathChange {
             staged: None,
-            unstaged: Some(PathStatus::Modified)
+            unstaged: Some(PathStatus::Modified),
+            ..PathChange::CLEAN
         }
     );
     assert_eq!(Stash::list(&repo).unwrap().len(), 1);

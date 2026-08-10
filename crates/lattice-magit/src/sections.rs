@@ -173,7 +173,7 @@ impl SectionIndex {
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
-                            PathStatus::Conflicted => vec![
+                            PathStatus::Unmerged => vec![
                                 lattice_cells::style::StyledSpan {
                                     start: 2,
                                     end: label_end,
@@ -315,14 +315,20 @@ impl SectionIndex {
 
 fn status_label(status: PathStatus) -> &'static str {
     match status {
-        PathStatus::Clean => "clean",
         PathStatus::Modified => "modified",
         PathStatus::Added => "new file",
         PathStatus::Deleted => "deleted",
+        // Git's own wording for each. `renamed` / `copied` used to
+        // render as "new file" because the parser collapsed them into
+        // `Added`; the origin path travels on
+        // `PathChange::original_path` but is not shown yet — see the
+        // note in `refresh`.
+        PathStatus::Renamed => "renamed",
+        PathStatus::Copied => "copied",
+        PathStatus::TypeChanged => "typechange",
         PathStatus::Untracked => "untracked",
         PathStatus::Ignored => "ignored",
         PathStatus::Unmerged => "unmerged",
-        PathStatus::Conflicted => "modified",
     }
 }
 
@@ -351,14 +357,15 @@ mod tests {
         // renders — the comment there documents the pairing; this
         // test catches drift mechanically instead of by inspection.
         for status in [
-            PathStatus::Clean,
             PathStatus::Modified,
             PathStatus::Added,
             PathStatus::Deleted,
+            PathStatus::Renamed,
+            PathStatus::Copied,
+            PathStatus::TypeChanged,
             PathStatus::Untracked,
             PathStatus::Ignored,
             PathStatus::Unmerged,
-            PathStatus::Conflicted,
         ] {
             let label = status_label(status);
             assert!(

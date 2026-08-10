@@ -92,14 +92,22 @@ pub(crate) enum StatusLine {
 /// number of leading spaces when the underlying source line is
 /// itself indented — never collides with these.
 ///
-/// Must stay in sync with `sections::status_label`'s outputs (the
-/// deduplicated set — `PathStatus::Modified` and `::Conflicted` both
-/// render `"modified"`).
-pub(crate) const FILE_LABELS: [&str; 7] = [
-    "clean",
+/// Must stay in sync with `sections::status_label`'s outputs — the
+/// test `status_label_is_a_subset_of_actions_file_labels` enforces it
+/// mechanically rather than by inspection.
+///
+/// `"clean"` is gone with `PathStatus::Clean`: a clean path is
+/// `PathChange::CLEAN` (nothing on either axis) and never reaches a
+/// rendered row. `"renamed"` / `"copied"` / `"typechange"` arrived
+/// with the variants that were previously collapsed into `Added` (or,
+/// for a type change, dropped entirely).
+pub(crate) const FILE_LABELS: [&str; 9] = [
     "modified",
     "new file",
     "deleted",
+    "renamed",
+    "copied",
+    "typechange",
     "untracked",
     "ignored",
     "unmerged",

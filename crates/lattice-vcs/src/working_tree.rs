@@ -2,27 +2,47 @@ use std::path::{Path, PathBuf};
 
 use crate::{Repository, Result, VcsError};
 
-/// The status of a path in the working tree relative to the index and HEAD.
+/// One axis of a path's change, as git reports it.
+///
+/// Deliberately does NOT include a "clean" or "both staged and
+/// unstaged" value: those are properties of the pair, not of one
+/// axis, and [`PathChange`] expresses them (`None` and `Some` on both
+/// sides respectively). Encoding them here is what produced the
+/// original bug — a staged modification had to claim to be `Added`
+/// so the consumer would file it in the right section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PathStatus {
-    /// File is tracked and unmodified.
-    Clean,
-    /// File is tracked and has unstaged modifications in the working tree.
+    /// Content changed. On the index axis: staged for commit. On the
+    /// worktree axis: not yet staged.
     Modified,
-    /// File is newly staged (in the index but not in HEAD).
+    /// Path exists on this side but not the one it is compared against
+    /// — a new file.
     Added,
-    /// File was tracked but has been removed from the working tree.
+    /// Path was removed.
     Deleted,
-    /// File is not tracked by git.
+    /// Path moved from somewhere else; the origin is
+    /// [`PathChange::original_path`]. Index axis only — git does not
+    /// detect worktree renames.
+    Renamed,
+    /// Path was copied from somewhere else; origin as for
+    /// [`Self::Renamed`]. Only produced when rename detection is
+    /// configured to find copies (`status.renames=copies`).
+    Copied,
+    /// The path's TYPE changed — regular file ⇄ symlink ⇄ submodule —
+    /// with or without a content change. Git spells this `T`, and
+    /// dropping it (as this parser used to) makes the file vanish from
+    /// the status view entirely: a change you can neither see nor
+    /// stage.
+    TypeChanged,
+    /// File is not tracked by git. A whole-path state, not an axis.
     Untracked,
-    /// File is ignored via `.gitignore`.
+    /// File is ignored via `.gitignore`. A whole-path state.
     Ignored,
-    /// File has unmerged entries (conflict markers present, e.g. during
-    /// merge/rebase).
+    /// File has unmerged entries — a real merge conflict. Covers all
+    /// seven of git's combinations (`DD`, `AU`, `UD`, `UA`, `DU`,
+    /// `AA`, `UU`). A whole-path state: the resolution work is in the
+    /// worktree, so it is reported there.
     Unmerged,
-    /// File has both staged and unstaged changes (modified in index AND
-    /// working tree).
-    Conflicted,
 }
 
 /// A path's porcelain `XY` status, kept as the TWO independent axes git
@@ -41,7 +61,7 @@ pub enum PathStatus {
 /// a merge conflict) purely to make it appear in both. One value cannot
 /// answer both "which section" and "what label" without lying about one
 /// of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathChange {
     /// Index vs HEAD. `None` when nothing is staged for this path.
     pub staged: Option<PathStatus>,
@@ -49,6 +69,9 @@ pub struct PathChange {
     /// index. Also carries [`PathStatus::Untracked`] / `Ignored` /
     /// `Unmerged`, which are whole-path states rather than one axis.
     pub unstaged: Option<PathStatus>,
+    /// Where a [`PathStatus::Renamed`] / [`PathStatus::Copied`] path
+    /// came from. `None` for every other status.
+    pub original_path: Option<PathBuf>,
 }
 
 impl PathChange {
@@ -56,6 +79,7 @@ impl PathChange {
     pub const CLEAN: Self = Self {
         staged: None,
         unstaged: None,
+        original_path: None,
     };
 
     /// `true` when git reports no change on either axis.
@@ -76,7 +100,9 @@ impl WorkingTree {
     pub fn path_status(repo: &Repository, path: impl AsRef<Path>) -> Result<PathChange> {
         let path = path.as_ref();
         let output =
-            repo.run_git_str(["status", "--porcelain=v1", "--", &path.to_string_lossy()])?;
+            // `-z` for the same reason as `statuses` — a non-ASCII
+            // path would otherwise come back quoted and escaped.
+            repo.run_git_str(["status", "--porcelain=v1", "-z", "--", &path.to_string_lossy()])?;
 
         if output.trim().is_empty() {
             // File might be tracked but clean, or nonexistent.
@@ -89,8 +115,8 @@ impl WorkingTree {
                 ))),
             }
         } else {
-            let status = parse_porcelain_line(output.lines().next().unwrap_or(""));
-            Ok(status)
+            let record = output.split('\0').find(|r| !r.is_empty()).unwrap_or("");
+            Ok(parse_porcelain_line(record))
         }
     }
 
@@ -99,23 +125,48 @@ impl WorkingTree {
     ///
     /// Includes untracked files. Uses `git status --porcelain=v1`.
     pub fn statuses(repo: &Repository) -> Result<Vec<(PathBuf, PathChange)>> {
-        let output = repo.run_git_str(["status", "--porcelain=v1"])?;
+        // `-z` is not an optimisation, it is the only correct form.
+        //
+        // Without it git QUOTES any path that needs escaping, and
+        // `core.quotepath` defaults to on — so every non-ASCII filename
+        // comes back as `"\303\251t\303\251.txt"`, quotes and octal
+        // escapes included, and the parsed `PathBuf` names a file that
+        // does not exist. Renames also arrive as `old -> new` in one
+        // field, which cannot be split unambiguously: ` -> ` is legal in
+        // a filename.
+        //
+        // With `-z`, records are NUL-terminated, paths are verbatim, and
+        // a rename/copy is TWO records — the new path, then the original
+        // (note the order is the reverse of the ` -> ` form).
+        let output = repo.run_git_str(["status", "--porcelain=v1", "-z"])?;
         let mut results = Vec::new();
+        let mut records = output.split('\0').filter(|r| !r.is_empty());
 
-        for line in output.lines() {
-            if line.len() < 4 {
+        while let Some(record) = records.next() {
+            // "XY " plus at least one byte of path.
+            if record.len() < 4 {
                 continue;
             }
-            let status = parse_porcelain_line(line);
-            // Extract path from porcelain line (skip status chars + space)
-            let path_str = line[3..].trim();
-            // Handle rename entries ("R  old -> new")
-            let path_str = if path_str.contains(" -> ") {
-                path_str.split(" -> ").last().unwrap_or(path_str)
-            } else {
-                path_str
+            let change = parse_porcelain_line(record);
+            // Byte 3 is always a char boundary: `XY` and the separator
+            // are ASCII.
+            let path = PathBuf::from(&record[3..]);
+            // Only the INDEX axis carries rename/copy detection in
+            // porcelain v1, so only an `R`/`C` in column X means git
+            // emitted an extra origin record. Keying off column Y as
+            // well would swallow the next file's record whenever git
+            // did not emit one.
+            let original_path = match record.chars().next() {
+                Some('R' | 'C') => records.next().map(PathBuf::from),
+                _ => None,
             };
-            results.push((PathBuf::from(path_str), status));
+            results.push((
+                path,
+                PathChange {
+                    original_path,
+                    ..change
+                },
+            ));
         }
 
         Ok(results)
@@ -141,14 +192,14 @@ fn parse_porcelain_line(line: &str) -> PathChange {
     match (x, y) {
         ('?', '?') => {
             return PathChange {
-                staged: None,
                 unstaged: Some(PathStatus::Untracked),
+                ..PathChange::CLEAN
             };
         }
         ('!', '!') => {
             return PathChange {
-                staged: None,
                 unstaged: Some(PathStatus::Ignored),
+                ..PathChange::CLEAN
             };
         }
         // Unmerged: `U` on either side, plus the `AA` / `DD` both-added
@@ -156,34 +207,39 @@ fn parse_porcelain_line(line: &str) -> PathChange {
         // the resolution work is in the worktree.
         ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D') => {
             return PathChange {
-                staged: None,
                 unstaged: Some(PathStatus::Unmerged),
+                ..PathChange::CLEAN
             };
         }
         _ => {}
     }
 
-    // Index axis. `R` (renamed) and `C` (copied) both introduce a path
-    // that HEAD does not have, so `Added` is the honest label for the
-    // new side; git's own `status` says "renamed"/"copied", which needs
-    // a `PathStatus` variant this enum does not have yet.
+    // Index axis (vs HEAD).
     let staged = match x {
         'M' => Some(PathStatus::Modified),
         'A' => Some(PathStatus::Added),
         'D' => Some(PathStatus::Deleted),
-        'R' | 'C' => Some(PathStatus::Added),
+        'R' => Some(PathStatus::Renamed),
+        'C' => Some(PathStatus::Copied),
+        'T' => Some(PathStatus::TypeChanged),
         _ => None,
     };
 
-    // Worktree axis.
+    // Worktree axis (vs index). Git does not detect worktree renames,
+    // so `R`/`C` cannot appear here.
     let unstaged = match y {
         'M' => Some(PathStatus::Modified),
         'D' => Some(PathStatus::Deleted),
         'A' => Some(PathStatus::Added),
+        'T' => Some(PathStatus::TypeChanged),
         _ => None,
     };
 
-    PathChange { staged, unstaged }
+    PathChange {
+        staged,
+        unstaged,
+        original_path: None,
+    }
 }
 
 #[cfg(test)]
@@ -215,7 +271,8 @@ mod tests {
             parse("M "),
             PathChange {
                 staged: Some(PathStatus::Modified),
-                unstaged: None
+                unstaged: None,
+                ..PathChange::CLEAN
             }
         );
         // Unstaged modification.
@@ -223,7 +280,8 @@ mod tests {
             parse(" M"),
             PathChange {
                 staged: None,
-                unstaged: Some(PathStatus::Modified)
+                unstaged: Some(PathStatus::Modified),
+                ..PathChange::CLEAN
             }
         );
         // Both axes at once — two modifications, not a conflict.
@@ -231,7 +289,8 @@ mod tests {
             parse("MM"),
             PathChange {
                 staged: Some(PathStatus::Modified),
-                unstaged: Some(PathStatus::Modified)
+                unstaged: Some(PathStatus::Modified),
+                ..PathChange::CLEAN
             }
         );
         // A genuinely new file, staged.
@@ -239,7 +298,8 @@ mod tests {
             parse("A "),
             PathChange {
                 staged: Some(PathStatus::Added),
-                unstaged: None
+                unstaged: None,
+                ..PathChange::CLEAN
             }
         );
         // Staged new file with further unstaged edits.
@@ -247,7 +307,8 @@ mod tests {
             parse("AM"),
             PathChange {
                 staged: Some(PathStatus::Added),
-                unstaged: Some(PathStatus::Modified)
+                unstaged: Some(PathStatus::Modified),
+                ..PathChange::CLEAN
             }
         );
         // Deletions, each side.
@@ -255,21 +316,49 @@ mod tests {
             parse("D "),
             PathChange {
                 staged: Some(PathStatus::Deleted),
-                unstaged: None
+                unstaged: None,
+                ..PathChange::CLEAN
             }
         );
         assert_eq!(
             parse(" D"),
             PathChange {
                 staged: None,
-                unstaged: Some(PathStatus::Deleted)
+                unstaged: Some(PathStatus::Deleted),
+                ..PathChange::CLEAN
             }
         );
-        // Rename / copy introduce a path HEAD lacks, so `Added` is the
-        // honest label for the new side until `PathStatus` grows a
-        // `Renamed` variant.
-        assert_eq!(parse("R ").staged, Some(PathStatus::Added));
-        assert_eq!(parse("C ").staged, Some(PathStatus::Added));
+        // Rename / copy are their own statuses now — they used to be
+        // reported as `Added`, so a staged rename read as "new file".
+        assert_eq!(parse("R ").staged, Some(PathStatus::Renamed));
+        assert_eq!(parse("C ").staged, Some(PathStatus::Copied));
+        // Renamed in the index AND edited in the worktree.
+        assert_eq!(
+            parse("RM"),
+            PathChange {
+                staged: Some(PathStatus::Renamed),
+                unstaged: Some(PathStatus::Modified),
+                ..PathChange::CLEAN
+            }
+        );
+        // Type change (file ⇄ symlink ⇄ submodule), each axis. These
+        // used to decode to `None` on both sides, which silently
+        // dropped the path from the status view — a change the user
+        // could neither see nor stage.
+        assert_eq!(parse("T ").staged, Some(PathStatus::TypeChanged));
+        assert_eq!(parse(" T").unstaged, Some(PathStatus::TypeChanged));
+        assert_eq!(
+            parse("TT"),
+            PathChange {
+                staged: Some(PathStatus::TypeChanged),
+                unstaged: Some(PathStatus::TypeChanged),
+                ..PathChange::CLEAN
+            }
+        );
+        // Git never reports a worktree rename/copy, so those columns
+        // stay unclaimed rather than guessing.
+        assert_eq!(parse(" R").unstaged, None);
+        assert_eq!(parse(" C").unstaged, None);
     }
 
     /// Whole-path states are not per-axis: git spells them in both

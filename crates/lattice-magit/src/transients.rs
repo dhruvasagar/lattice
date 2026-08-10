@@ -126,6 +126,7 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("revert", REVERT_ROWS),
         ("revert/sequence", REVERT_SEQUENCE_ROWS),
         ("merge", MERGE_ROWS),
+        ("merge/sequence", MERGE_SEQUENCE_ROWS),
         ("tag", TAG_ROWS),
         ("rebase/start", REBASE_START_ROWS),
         ("rebase/sequence", REBASE_SEQUENCE_ROWS),
@@ -880,6 +881,41 @@ const MERGE_ROWS: &[TransientRow] = &[
         doc: "Merge a branch and delete it — the delete is refused if the merge did not take",
         action: "action:magit-global-merge-absorb",
         placeholder: "merge_absorb_op",
+    },
+];
+
+/// The merge menu while a merge is STOPPED on a conflict.
+///
+/// Peer of `CHERRY_PICK_SEQUENCE_ROWS`, and it exists for the same
+/// reason: every row in `MERGE_ROWS` is a way IN, and git refuses all
+/// of them while `MERGE_HEAD` is present ("you have not concluded your
+/// merge"). An ungated menu therefore showed the user seven rows that
+/// could only fail, and no row at all for the two things they actually
+/// wanted.
+///
+/// No `skip`: that is a sequencer verb, and a merge is a single
+/// operation with nothing to skip to. `--quit` is left out too — it
+/// forgets the merge while keeping the index, which is a recovery tool
+/// rather than a way out, and `q` is the menu's dismiss key anyway.
+///
+/// Keys follow the overload convention the sequencer menus established:
+/// `m` is *merge* when idle and *continue* when stopped, `a` is
+/// *absorb* when idle and *abort* when stopped. Safe only because the
+/// gate never shows both sets at once.
+const MERGE_SEQUENCE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "m",
+        label: "continue",
+        doc: "Conclude the merge after resolving the conflict",
+        action: "action:magit-global-merge-continue",
+        placeholder: "merge_continue_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "abort",
+        doc: "Abandon the merge, restoring the branch as it was",
+        action: "action:magit-global-merge-abort",
+        placeholder: "merge_abort_op",
     },
 ];
 
@@ -1808,6 +1844,15 @@ pub fn revert_in_progress() -> bool {
     in_flight() == Some(lattice_vcs::InFlightOp::Revert)
 }
 
+/// Is a merge stopped on a conflict?
+///
+/// `MERGE_HEAD` was checked nowhere in the workspace before this — a
+/// stopped merge was the one mid-flight state with no representation
+/// at all.
+pub fn merge_in_progress() -> bool {
+    in_flight() == Some(lattice_vcs::InFlightOp::Merge)
+}
+
 /// The one detector every sequencer gate reads.
 ///
 /// These used to be four independent marker checks here, which drifted
@@ -1982,10 +2027,15 @@ fn revert_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     }
 }
 
-fn merge_transient(ids: &MagitActionIds) -> TransientSpec {
+fn merge_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
+    let groups = if in_progress {
+        vec![row_group("Merge in progress", ids, MERGE_SEQUENCE_ROWS)]
+    } else {
+        vec![row_group("Merge", ids, MERGE_ROWS)]
+    };
     TransientSpec {
         title: "Merge".into(),
-        groups: vec![row_group("Merge", ids, MERGE_ROWS)],
+        groups,
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -2066,6 +2116,10 @@ pub struct DispatchGates {
     pub cherry_pick: bool,
     /// MG.42-E4: a revert sequence stopped on a conflict.
     pub revert: bool,
+    /// A merge stopped on a conflict. `MERGE_HEAD` was checked nowhere
+    /// before this, so the merge menu offered only ways IN while git
+    /// refused every one of them.
+    pub merge: bool,
 }
 
 impl DispatchGates {
@@ -2083,6 +2137,7 @@ impl DispatchGates {
             rebase: rebase_in_progress(),
             cherry_pick: cherry_pick_in_progress(),
             revert: revert_in_progress(),
+            merge: merge_in_progress(),
         }
     }
 }
@@ -2310,7 +2365,7 @@ pub fn root_menu_spec(
         "magit-menu-patches" => patch_transient(ids, gates.am),
         "magit-menu-rebase" => rebase_transient(ids, gates.rebase),
         "magit-menu-tag" => tag_transient(ids),
-        "magit-menu-merge" => merge_transient(ids),
+        "magit-menu-merge" => merge_transient(ids, gates.merge),
         _ => return None,
     };
     let _ = ctx;
@@ -3868,6 +3923,16 @@ mod sequencer_gate_tests {
         // MG.43a added the `--no-commit` halves; both are ways IN, so
         // both belong to the idle set.
         // MG.43d added the commit-MOVING rows; every one is a way IN.
+        // A stopped merge offers only the ways OUT, and an idle one
+        // only the ways IN — git refuses every `MERGE_ROWS` verb while
+        // `MERGE_HEAD` exists, so an ungated menu was seven rows that
+        // could only fail.
+        assert_eq!(keys(&merge_transient(&ids, true)), vec!["m", "a"]);
+        let idle_merge = keys(&merge_transient(&ids, false));
+        assert!(
+            idle_merge.len() > 2 && !idle_merge.contains(&"continue".to_string()),
+            "idle merge offers the ways in: {idle_merge:?}"
+        );
         assert_eq!(
             keys(&cherry_pick_transient(&ids, false)),
             vec!["A", "a", "h", "d", "n", "s"]
@@ -3902,6 +3967,11 @@ mod sequencer_gate_tests {
                 "revert",
                 revert_transient(&ids, false),
                 revert_transient(&ids, true),
+            ),
+            (
+                "merge",
+                merge_transient(&ids, false),
+                merge_transient(&ids, true),
             ),
         ] {
             let label_for = |spec: &TransientSpec, key: &str| {

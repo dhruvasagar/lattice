@@ -63,14 +63,22 @@ conditional.
 A diff session whose sign map contains conflict regions. In practice:
 a merge or rebase that left conflict markers in a file you then diff.
 
+## Walking the conflicts
+
+`]c` and `[c` move to the next / previous hunk and wrap at the end. In
+a conflict session those hunks **are** the conflict regions, so the
+pair walks you conflict-to-conflict — land on one, resolve it with
+`d3o` / `dB`, `]c` to the next.
+
+They come from [`diff-mode`](help:diff-mode) rather than this mode,
+because moving between regions is the same motion whether the region
+is a conflict or an ordinary change.
+
 ## Not implemented yet
 
-- **Conflict navigation.** There is no next-conflict / prev-conflict
-  motion. `]c` / `[c` ([`diff-mode`](help:diff-mode)) walk diff hunks,
-  which in a conflicted file will step through conflict regions among
-  the rest, but nothing jumps conflict-to-conflict.
 - **A dedicated conflict gutter.** Conflict regions carry the diff
-  sign map's conflict kind, but there is no separate marker column.
+  sign map's conflict kind, but there is no separate marker column
+  distinguishing a conflict from a change at a glance.
 
 ## See also
 

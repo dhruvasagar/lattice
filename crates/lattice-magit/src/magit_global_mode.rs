@@ -401,6 +401,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // fail-fast + log-the-outcome shape fits any one-shot git
     // invocation whose result can't come back synchronously.
     remote_op!("action:magit-global-stash-create", RemoteOp::STASH);
+    // The merge sequence rows — the two things a stopped merge can do.
+    remote_op!(
+        "action:magit-global-merge-continue",
+        RemoteOp::MERGE_CONTINUE
+    );
+    remote_op!("action:magit-global-merge-abort", RemoteOp::MERGE_ABORT);
     // MG.41e: the rebase sequencer rows.
     remote_op!(
         "action:magit-global-rebase-continue",
@@ -2601,6 +2607,21 @@ impl RemoteOp {
     pub const REVERT_ABORT: Self = Self {
         what: "revert --abort",
         args: &["revert", "--abort"],
+        flags: &[],
+    };
+    /// Conclude a merge stopped on a conflict. Equivalent to
+    /// committing the prepared merge message once the index is clean;
+    /// git refuses it while unmerged paths remain, which is the right
+    /// answer and is reported rather than swallowed.
+    pub const MERGE_CONTINUE: Self = Self {
+        what: "merge --continue",
+        args: &["merge", "--continue"],
+        flags: &[],
+    };
+    /// Throw the merge away and restore the branch.
+    pub const MERGE_ABORT: Self = Self {
+        what: "merge --abort",
+        args: &["merge", "--abort"],
         flags: &[],
     };
     pub const REBASE_CONTINUE: Self = Self {

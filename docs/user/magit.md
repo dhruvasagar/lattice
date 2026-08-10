@@ -333,10 +333,14 @@ nothing is running.
 
 | Operation | Menu | While stopped |
 |---|---|---|
+| Merge | `C-c g` → merge | continue · abort |
 | Cherry-pick | `A` | continue · skip · abort |
 | Revert | `_` | continue · skip · abort |
 | Rebase | `C-c g` → rebase | continue · skip · abort |
 | `git am` | `C-c g` → patches | continue · skip · abort |
+
+A merge has no `skip` — that is a sequencer verb, and a merge is one
+operation with nothing to skip to.
 
 Keys are deliberately overloaded between the two states — `A` is
 *pick* when idle and *continue* when stopped — which is magit's own
@@ -349,11 +353,9 @@ menu.
 
 ### What is not there yet
 
-- **No next-conflict motion.** Nothing jumps conflict-to-conflict
-  within a file; `]c` / `[c` walk diff hunks.
-- **No merge menu.** A stopped merge is announced and its conflicts
-  are listed and stageable, but committing the resolution is an
-  ordinary commit (`c c`) rather than a `merge --continue` row.
+- **No conflict gutter.** Conflict regions carry the diff sign map's
+  conflict kind, but no marker column distinguishes a conflict from an
+  ordinary change at a glance.
 
 ## When magit changes files on disk
 

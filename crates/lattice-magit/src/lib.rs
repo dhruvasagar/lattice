@@ -2932,6 +2932,14 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Skip the commit a stopped rebase is sitting on",
     );
     reg(
+        "action:magit-global-merge-continue",
+        "Conclude a merge that stopped on a conflict, once the resolution is staged",
+    );
+    reg(
+        "action:magit-global-merge-abort",
+        "Abandon a merge in progress, restoring the branch",
+    );
+    reg(
         "action:magit-global-cherry-pick-continue",
         "Resume a cherry-pick that stopped on a conflict",
     );
@@ -4631,6 +4639,7 @@ mod tests {
                 &ids,
                 &outside_magit(),
                 transients::DispatchGates {
+                    merge: false,
                     bisect: in_progress,
                     notes_merge: false,
                     am: false,
@@ -4688,6 +4697,7 @@ mod tests {
                 &ids,
                 &outside_magit(),
                 transients::DispatchGates {
+                    merge: false,
                     bisect: in_progress,
                     notes_merge: false,
                     am: false,
@@ -5840,6 +5850,7 @@ mod tests {
                 &Default::default(),
                 &outside_magit(),
                 transients::DispatchGates {
+                    merge: false,
                     bisect: true,
                     notes_merge: false,
                     am: false,

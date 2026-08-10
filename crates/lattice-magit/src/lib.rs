@@ -28,6 +28,9 @@ pub mod options;
 // paramount-#1 claim staging rests on, and MG.22 relocates this module
 // into `magit-hunk-mode` as the owner of diff content.
 pub mod hunk;
+/// DS.1: syntax spans for the code inside a diff. Owned by
+/// `magit-hunk-mode` — see `docs/dev/architecture/span-layering.md`.
+mod hunk_syntax;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
 pub mod magit_cherry_mode;

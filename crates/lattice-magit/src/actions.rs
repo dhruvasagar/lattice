@@ -53,6 +53,14 @@ pub struct StatusBufferState {
     pub pending_cursor: Option<crate::cursor_restore::HunkRestore>,
     /// MG.18d: the wake-baked bus the resolved position goes back on.
     pub cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    /// DS.3: the grammar registry, for syntax-highlighting the code
+    /// inside an inline-expanded diff.
+    ///
+    /// `None` in a harness without the service — the diff then renders
+    /// exactly as it did before syntax layering existed, which is the
+    /// degradation this feature is designed around rather than an
+    /// error path.
+    pub lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
 }
 
 // ── line classification ─────────────────────────────────
@@ -383,7 +391,7 @@ fn toggle_expand(
     cursor_line: u32,
 ) -> Option<Effect> {
     let key = entry_key(&sl);
-    let (handle, wd, rt, existing_count, pending, bid, context, hl) = {
+    let (handle, wd, rt, existing_count, pending, bid, context, hl, registry) = {
         let g = s.lock().ok()?;
         let h = g.store.handle_for(g.buffer_id)?;
         let context = context_lines(&g.config);
@@ -396,6 +404,7 @@ fn toggle_expand(
             g.buffer_id,
             context,
             g.headerline.clone(),
+            g.lang_registry.clone(),
         )
     };
 
@@ -438,28 +447,29 @@ fn toggle_expand(
                 // MG.31: the git call happens HERE, inside the spawned
                 // task, not above on the actor thread. See
                 // [`expand_payload`].
-                let (text, line_count, spans) = match expand_payload(wd, sl, context).await {
-                    Ok(payload) => payload,
-                    // MG.56: say something. Returning quietly here is
-                    // what made `=` look like an unbound key on a row
-                    // whose changes had been committed elsewhere — the
-                    // press did fire, git did answer, and the answer
-                    // was an empty patch.
-                    Err(miss) => {
-                        crate::headerline::publish_notice(
-                            &hl,
-                            Some(match miss {
-                                ExpandMiss::NoChanges => {
-                                    format!("no changes in {path} — press gr to refresh")
-                                }
-                                ExpandMiss::Failed(e) => {
-                                    format!("could not diff {path}: {e}")
-                                }
-                            }),
-                        );
-                        return;
-                    }
-                };
+                let (text, line_count, spans) =
+                    match expand_payload(wd, sl, context, registry).await {
+                        Ok(payload) => payload,
+                        // MG.56: say something. Returning quietly here is
+                        // what made `=` look like an unbound key on a row
+                        // whose changes had been committed elsewhere — the
+                        // press did fire, git did answer, and the answer
+                        // was an empty patch.
+                        Err(miss) => {
+                            crate::headerline::publish_notice(
+                                &hl,
+                                Some(match miss {
+                                    ExpandMiss::NoChanges => {
+                                        format!("no changes in {path} — press gr to refresh")
+                                    }
+                                    ExpandMiss::Failed(e) => {
+                                        format!("could not diff {path}: {e}")
+                                    }
+                                }),
+                            );
+                            return;
+                        }
+                    };
                 let _ = handle
                     .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
                     .await;
@@ -522,6 +532,7 @@ async fn expand_payload(
     workdir: PathBuf,
     sl: StatusLine,
     context: i64,
+    lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
 ) -> Result<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>), ExpandMiss> {
     tokio::task::spawn_blocking(move || {
         let raw = run_show(&workdir, &sl, context)
@@ -538,7 +549,14 @@ async fn expand_payload(
         // the diff into the status rows below.
         let text = raw.trim_end_matches('\n').to_string();
         let line_count = text.lines().count();
-        let spans = crate::highlight::diff_styled_spans(&text);
+        // DS.3: syntax under the diff colouring when a grammar
+        // registry is available, the flat classifier when it is not.
+        // Both produce one span row per line; the layered path adds
+        // rows beneath the diff layer rather than changing it.
+        let spans = match lang_registry {
+            Some(registry) => crate::hunk_syntax::layered_diff_spans(&text, registry),
+            None => crate::highlight::diff_styled_spans(&text),
+        };
         Ok((text, line_count, spans))
     })
     .await
@@ -2066,6 +2084,63 @@ mod expand_payload_tests {
         }
     }
 
+    /// DS.3 end-to-end: with a grammar registry, the code inside an
+    /// inline-expanded diff carries syntax spans UNDER the diff layer.
+    ///
+    /// Goes through `expand_payload` — the real path `=` takes — rather
+    /// than calling the span builder directly, because the thing worth
+    /// pinning is that the registry actually reaches it.
+    #[test]
+    fn an_expanded_diff_carries_syntax_under_the_diff_layer() {
+        use lattice_cells::style::Style;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.rs"), "fn main() {}\n").expect("write base");
+        git_ok(p, &["add", "a.rs"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        std::fs::write(p.join("a.rs"), "fn main() {\n    let x = 1;\n}\n").expect("write");
+
+        let registry = lattice_syntax::LangRegistry::standard().expect("registry");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (text, _, spans) = rt
+            .block_on(expand_payload(
+                p.to_path_buf(),
+                unstaged("a.rs"),
+                3,
+                Some(registry),
+            ))
+            .expect("a modified tracked file has a diff");
+
+        let added = text
+            .lines()
+            .position(|l| l.starts_with("+    let x"))
+            .expect("the added line is in the diff");
+        let style_at = |byte: usize| {
+            spans[added]
+                .iter()
+                .find(|s| byte >= s.start && byte < s.end)
+                .map(|s| s.style)
+        };
+        assert_eq!(
+            style_at(0),
+            Some(Style::DiffAdd),
+            "the `+` column stays diff-coloured, which is also what the \
+             sign map reads to tint the row"
+        );
+        let code = style_at(5);
+        assert!(
+            code.is_some() && code != Some(Style::DiffAdd),
+            "the code past the marker must resolve to a syntax style, got {code:?}"
+        );
+    }
+
     /// The relocation must not change what the caller receives: the
     /// trimmed diff text, its line count, and one span row per line.
     #[test]
@@ -2080,6 +2155,7 @@ mod expand_payload_tests {
                 dir.path().to_path_buf(),
                 unstaged("a.txt"),
                 3,
+                None,
             ))
             .expect("a modified tracked file has a diff");
 
@@ -2127,7 +2203,7 @@ mod expand_payload_tests {
             .build()
             .expect("runtime");
         let (text, line_count, spans) = rt
-            .block_on(expand_payload(p.to_path_buf(), unstaged("a.txt"), 3))
+            .block_on(expand_payload(p.to_path_buf(), unstaged("a.txt"), 3, None))
             .expect("a modified tracked file has a diff");
 
         let body: Vec<&str> = text.lines().collect();
@@ -2175,6 +2251,7 @@ mod expand_payload_tests {
             dir.path().to_path_buf(),
             unstaged("b.txt"),
             3,
+            None,
         ));
         // MG.56: not merely "nothing was inserted" — WHY. This used to
         // assert only the silence, which is exactly the behaviour that
@@ -2216,6 +2293,7 @@ mod expand_payload_tests {
                 dir.path().to_path_buf(),
                 unstaged("a.txt"),
                 3,
+                None,
             ));
 
             let mut max_gap = Duration::ZERO;

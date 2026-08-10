@@ -78,8 +78,19 @@ pub(crate) enum DiffLineClass {
 }
 
 impl DiffLineClass {
+    /// Does this class name a CONTENT line — one whose bytes past the
+    /// change marker are code?
+    ///
+    /// The layered path (`hunk_syntax::layered_diff_spans`) uses this
+    /// to decide how much of the line the diff layer claims: a content
+    /// line cedes everything past the marker to syntax, a header keeps
+    /// the whole line because there is no code on it to show through.
+    pub(crate) fn is_content(self) -> bool {
+        matches!(self, Self::Added | Self::Removed | Self::Context)
+    }
+
     /// The foreground style for this class, or `None` for unstyled.
-    fn style(self) -> Option<Style> {
+    pub(crate) fn style(self) -> Option<Style> {
         match self {
             Self::Added => Some(Style::DiffAdd),
             Self::Removed => Some(Style::DiffRemove),

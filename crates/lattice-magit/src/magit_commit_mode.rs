@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{Effect, QuitScope};
+use lattice_grammar::Effect;
 use lattice_mode::{
     ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -348,10 +348,7 @@ impl Mode for MagitCommitMode {
                             tracing::error!(target: "lattice_magit", "commit failed: {e}");
                         }
                     }));
-                    Some(Effect::QuitEditor {
-                        force: false,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
             // ── abort (C-c C-k) ─────────────────────────
@@ -359,10 +356,7 @@ impl Mode for MagitCommitMode {
                 action_name: "action:magit-commit-abort",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let _ = state(ctx)?;
-                    Some(Effect::QuitEditor {
-                        force: false,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
             // <CR> — visit the file at cursor AS STAGED (the index

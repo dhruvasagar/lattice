@@ -20,7 +20,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{EchoLevel, Effect, QuitScope};
+use lattice_grammar::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -149,10 +149,7 @@ impl Mode for MagitNotesMode {
                             tracing::error!(target: "lattice_magit", "note save {sha}: {e}");
                         }
                     }));
-                    Some(Effect::QuitEditor {
-                        force: true,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
             ActionHandlerContribution {
@@ -164,10 +161,7 @@ impl Mode for MagitNotesMode {
                     // saving" is precisely what the chord promises. A
                     // dirty-buffer prompt here would ask a question the
                     // user just answered.
-                    Some(Effect::QuitEditor {
-                        force: true,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
         ]

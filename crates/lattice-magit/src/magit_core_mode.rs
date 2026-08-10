@@ -523,6 +523,40 @@ mod compose_buffers_are_not_browsers {
         );
     }
 
+    /// A compose buffer must never QUIT THE EDITOR when it closes.
+    ///
+    /// Reported 2026-08-10: `C-c C-c` in the commit buffer exited
+    /// lattice. Every magit view is a full-pane buffer opened IN PLACE,
+    /// so `Effect::QuitEditor { scope: Pane }` carries vim's `:q`
+    /// semantics — "close the pane; if it is the last one, quit" — and
+    /// on a single-pane layout the most routine action in the whole
+    /// feature took the session down with it.
+    ///
+    /// `magit-core`'s `q` already carried this fix (see the comment at
+    /// `action:magit-close`); the three COMPOSE modes were missed, which
+    /// is how a fixed bug came back on a different chord. `BuryBuffer`
+    /// restores the buffer the compose view displaced and cannot exit.
+    ///
+    /// Checked against the sources because the handlers are closures
+    /// needing a full `ActionContext` to invoke — the same mechanical
+    /// style as `status_label_is_a_subset_of_actions_file_labels`. If a
+    /// magit buffer ever genuinely needs to quit the editor, this test
+    /// is the place to say so deliberately.
+    #[test]
+    fn no_compose_mode_can_quit_the_editor() {
+        for (name, src) in [
+            ("magit_commit_mode", include_str!("magit_commit_mode.rs")),
+            ("magit_notes_mode", include_str!("magit_notes_mode.rs")),
+            ("magit_rebase_mode", include_str!("magit_rebase_mode.rs")),
+        ] {
+            assert!(
+                !src.contains("Effect::QuitEditor"),
+                "{name} returns `Effect::QuitEditor` — on a single-pane layout that \
+                 exits lattice. Compose buffers close with `Effect::BuryBuffer`."
+            );
+        }
+    }
+
     /// The other half of the bug: `i` really is claimed by this mode,
     /// so the exclusion above is load-bearing rather than incidental.
     /// If `i` is ever moved off the core keymap this test should be

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use lattice_protocol::position::Position;
 
 use lattice_config;
-use lattice_grammar::{Effect, QuitScope};
+use lattice_grammar::Effect;
 use lattice_mode::{
     ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -189,10 +189,7 @@ impl Mode for MagitRebaseMode {
                             tracing::error!(target: "lattice_magit", "rebase failed: {e}");
                         }
                     }));
-                    Some(Effect::QuitEditor {
-                        force: false,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
             // abort (C-c C-k) — MG.12. No rebase has necessarily
@@ -219,10 +216,7 @@ impl Mode for MagitRebaseMode {
                     if rebase_in_progress(&gitdir) {
                         Some(abort_rebase_confirm())
                     } else {
-                        Some(Effect::QuitEditor {
-                            force: false,
-                            scope: QuitScope::Pane,
-                        })
+                        Some(Effect::BuryBuffer)
                     }
                 }),
             },
@@ -239,10 +233,7 @@ impl Mode for MagitRebaseMode {
                             let _ = repo.run_git(["rebase", "--abort"]);
                         }
                     }));
-                    Some(Effect::QuitEditor {
-                        force: false,
-                        scope: QuitScope::Pane,
-                    })
+                    Some(Effect::BuryBuffer)
                 }),
             },
             // <CR> — show commit detail for the todo line at cursor,

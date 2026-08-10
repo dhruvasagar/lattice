@@ -135,40 +135,32 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
     let mut unstaged: Vec<SectionEntry> = Vec::new();
     let mut untracked: Vec<SectionEntry> = Vec::new();
 
-    for (path, status) in statuses {
-        match status {
-            PathStatus::Untracked => {
+    // Porcelain reports TWO independent axes per path (see
+    // `lattice_vcs::PathChange`): what the index has staged, and what
+    // the worktree has beyond it. Place each on its own axis, so a file
+    // carrying both appears in both sections with the correct label on
+    // each row — and a staged MODIFICATION stays "modified" instead of
+    // being reported as `Added` purely to make it land in the staged
+    // section, which is what rendered it as "new file".
+    for (path, change) in statuses {
+        if let Some(staged_status) = change.staged {
+            staged.push(SectionEntry::File {
+                path: path.clone(),
+                status: staged_status,
+            });
+        }
+        match change.unstaged {
+            Some(PathStatus::Untracked) => {
                 untracked.push(SectionEntry::UntrackedFile { path });
             }
-            PathStatus::Added => {
-                staged.push(SectionEntry::File { path, status });
-            }
-            PathStatus::Modified => {
+            // Ignored files never appear in the status view; `None` is
+            // a worktree that matches the index.
+            Some(PathStatus::Ignored) | None => {}
+            Some(unstaged_status) => {
                 unstaged.push(SectionEntry::File {
-                    path: path.clone(),
-                    status,
+                    path,
+                    status: unstaged_status,
                 });
-            }
-            PathStatus::Conflicted => {
-                // Both staged and unstaged changes — appears in both sections
-                staged.push(SectionEntry::File {
-                    path: path.clone(),
-                    status,
-                });
-                unstaged.push(SectionEntry::File { path, status });
-            }
-            PathStatus::Deleted => {
-                unstaged.push(SectionEntry::File { path, status });
-            }
-            PathStatus::Unmerged => {
-                // Show unmerged in unstaged with a distinct label
-                unstaged.push(SectionEntry::File {
-                    path: path.clone(),
-                    status,
-                });
-            }
-            PathStatus::Ignored | PathStatus::Clean => {
-                // Skip — ignored files don't appear in status
             }
         }
     }

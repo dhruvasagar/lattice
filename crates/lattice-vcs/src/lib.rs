@@ -46,4 +46,4 @@ pub use remote::{Remote, RemoteEntry, parse_remote_v};
 pub use repository::Repository;
 pub use stash::Stash;
 pub use submodule::{Submodule, SubmoduleEntry, SubmoduleState, parse_submodule_status};
-pub use working_tree::{PathStatus, WorkingTree};
+pub use working_tree::{PathChange, PathStatus, WorkingTree};

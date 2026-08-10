@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Command;
 
 use lattice_vcs::{
-    Bisect, Branch, Commit, GitBlob, Index, PathStatus, Reference, Remote, Repository, Stash,
-    Submodule, SubmoduleState, WorkingTree,
+    Bisect, Branch, Commit, GitBlob, Index, PathChange, PathStatus, Reference, Remote, Repository,
+    Stash, Submodule, SubmoduleState, WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -151,7 +151,7 @@ fn status_clean() {
     git_commit(&repo, "initial");
 
     let status = WorkingTree::path_status(&repo, "a.txt").unwrap();
-    assert_eq!(status, PathStatus::Clean);
+    assert_eq!(status, PathChange::CLEAN);
 }
 
 #[test]
@@ -163,7 +163,13 @@ fn status_modified() {
     write_file(repo.workdir().unwrap(), "a.txt", "modified\n");
 
     let status = WorkingTree::path_status(&repo, "a.txt").unwrap();
-    assert_eq!(status, PathStatus::Modified);
+    assert_eq!(
+        status,
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Modified)
+        }
+    );
 }
 
 #[test]
@@ -172,7 +178,13 @@ fn status_untracked() {
     write_file(repo.workdir().unwrap(), "untracked.txt", "new\n");
 
     let status = WorkingTree::path_status(&repo, "untracked.txt").unwrap();
-    assert_eq!(status, PathStatus::Untracked);
+    assert_eq!(
+        status,
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Untracked)
+        }
+    );
 }
 
 #[test]
@@ -182,7 +194,13 @@ fn status_added() {
     git_add(&repo, "new.txt");
 
     let status = WorkingTree::path_status(&repo, "new.txt").unwrap();
-    assert_eq!(status, PathStatus::Added);
+    assert_eq!(
+        status,
+        PathChange {
+            staged: Some(PathStatus::Added),
+            unstaged: None
+        }
+    );
 }
 
 #[test]
@@ -194,7 +212,13 @@ fn status_deleted() {
     std::fs::remove_file(repo.workdir().unwrap().join("a.txt")).unwrap();
 
     let status = WorkingTree::path_status(&repo, "a.txt").unwrap();
-    assert_eq!(status, PathStatus::Deleted);
+    assert_eq!(
+        status,
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Deleted)
+        }
+    );
 }
 
 #[test]
@@ -212,8 +236,18 @@ fn status_conflicted() {
     // Modify again in worktree
     write_file(workdir, "a.txt", "both staged and unstaged\n");
 
+    // `MM`: staged changes AND further unstaged ones. This is NOT a
+    // merge conflict — it used to be reported as `PathStatus::Conflicted`
+    // purely so magit's refresh would put the row in both sections.
     let status = WorkingTree::path_status(&repo, "a.txt").unwrap();
-    assert_eq!(status, PathStatus::Conflicted);
+    assert_eq!(
+        status,
+        PathChange {
+            staged: Some(PathStatus::Modified),
+            unstaged: Some(PathStatus::Modified),
+        },
+        "both axes carry a modification; neither is a conflict"
+    );
 }
 
 #[test]
@@ -230,14 +264,24 @@ fn statuses_multiple() {
     git_add(&repo, "new.txt");
 
     let statuses = WorkingTree::statuses(&repo).unwrap();
-    let by_path: std::collections::HashMap<String, PathStatus> = statuses
+    let by_path: std::collections::HashMap<String, PathChange> = statuses
         .into_iter()
         .map(|(p, s)| (p.to_string_lossy().to_string(), s))
         .collect();
 
-    assert_eq!(by_path.get("tracked.txt"), Some(&PathStatus::Modified));
-    assert_eq!(by_path.get("new.txt"), Some(&PathStatus::Added));
-    assert_eq!(by_path.get("untracked.txt"), Some(&PathStatus::Untracked));
+    assert_eq!(
+        by_path.get("tracked.txt").and_then(|c| c.unstaged),
+        Some(PathStatus::Modified)
+    );
+    assert_eq!(by_path.get("tracked.txt").and_then(|c| c.staged), None);
+    assert_eq!(
+        by_path.get("new.txt").and_then(|c| c.staged),
+        Some(PathStatus::Added)
+    );
+    assert_eq!(
+        by_path.get("untracked.txt").and_then(|c| c.unstaged),
+        Some(PathStatus::Untracked)
+    );
 }
 
 #[test]
@@ -253,21 +297,33 @@ fn stage_and_unstage() {
     // Verify modified
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Modified
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Modified)
+        }
     );
 
-    // Stage
+    // Stage. This used to assert `Added` — the bug, pinned as intent:
+    // staging a MODIFICATION does not make the file new, and magit
+    // rendered the row as "new file" because of it.
     Index::stage_path(&repo, "a.txt").unwrap();
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Added
+        PathChange {
+            staged: Some(PathStatus::Modified),
+            unstaged: None
+        },
+        "a staged modification is staged + modified, not added"
     );
 
     // Unstage
     Index::unstage_path(&repo, "a.txt").unwrap();
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Modified
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Modified)
+        }
     );
 }
 
@@ -283,7 +339,7 @@ fn commit_create() {
     // Verify file is clean after commit
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Clean
+        PathChange::CLEAN
     );
 
     // Verify commit message
@@ -529,7 +585,7 @@ fn stash_list_apply_pop_drop() {
     Stash::create(&repo, Some("my stash"), false).unwrap();
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Clean
+        PathChange::CLEAN
     );
 
     // List
@@ -541,7 +597,10 @@ fn stash_list_apply_pop_drop() {
     Stash::pop(&repo, 0).unwrap();
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Modified
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Modified)
+        }
     );
     assert!(Stash::list(&repo).unwrap().is_empty());
 }
@@ -561,7 +620,10 @@ fn stash_apply_keeps_entry() {
     Stash::apply(&repo, 0).unwrap();
     assert_eq!(
         WorkingTree::path_status(&repo, "a.txt").unwrap(),
-        PathStatus::Modified
+        PathChange {
+            staged: None,
+            unstaged: Some(PathStatus::Modified)
+        }
     );
     assert_eq!(Stash::list(&repo).unwrap().len(), 1);
 

@@ -5,11 +5,11 @@
 //! pages had to say out loud: every `magit.*` name a user reached for
 //! failed with `unknown option`.
 //!
-//! **`magit.hunk.syntax-highlight` is deliberately absent**, though the
-//! design fragment lists it. It would gate language-aware hunk content,
-//! and that feature does not exist — an option that changes nothing is
-//! the same failure as a menu row that does nothing, just quieter,
-//! because `:set` reports success. It lands with the feature.
+//! **`magit.hunk.syntax-highlight` landed with its feature**, as the
+//! note that used to stand here promised. It was withheld until the
+//! feature existed because an option that changes nothing is the same
+//! failure as a menu row that does nothing, just quieter — `:set`
+//! reports success either way.
 //!
 //! **`magit.hunk.line-backgrounds` is absent too, and lives elsewhere
 //! instead**: it became `ui.diff.line-backgrounds` in `lattice-diff`.
@@ -51,6 +51,22 @@ lattice_config::options! {
     #[name("magit.hunk.context-lines")]
     #[validate(validate_context_lines)]
     pub MagitHunkContextLines: i64 = 3;
+
+    /// Syntax-highlight the code inside a diff, with the `+` / `-`
+    /// colouring layered over it. On by default.
+    ///
+    /// Turning it off gives the flat per-line colouring magit had
+    /// before — every added line one green, every removed line one red
+    /// — and skips the tree-sitter parse each hunk otherwise costs.
+    /// The parse runs off the actor thread and is bounded by the hunk,
+    /// not the file, so this is an aesthetic switch rather than a
+    /// performance one for all but the largest diffs.
+    ///
+    /// Read per refresh, not at buffer open, so `:set` takes effect on
+    /// the next `gr` rather than only on reopen — the same contract
+    /// `magit.hunk.context-lines` has.
+    #[name("magit.hunk.syntax-highlight")]
+    pub MagitHunkSyntaxHighlight: bool = true;
 }
 
 #[cfg(test)]

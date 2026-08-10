@@ -116,6 +116,9 @@ pub struct DiffState {
     /// `:set magit.hunk.context-lines` takes effect on the next `gr`
     /// rather than only on reopen.
     config: Option<std::sync::Arc<lattice_config::ConfigRegistry>>,
+    /// DS.4: the grammar registry, for syntax under the diff colouring.
+    /// `None` ⇒ the flat classifier, as before.
+    lang_registry: Option<std::sync::Arc<lattice_syntax::LangRegistry>>,
 }
 
 /// `magit.hunk.context-lines`, or git's own default when there is no
@@ -312,6 +315,9 @@ impl Mode for MagitDiffMode {
                     config: ctx
                         .service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone()),
+                    lang_registry: ctx
+                        .service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                        .map(|outer| (*outer).clone()),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -327,12 +333,19 @@ impl Mode for MagitDiffMode {
                 &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                     .map(|outer| (*outer).clone()),
             );
+            let activation_registry = crate::hunk_syntax::syntax_registry(
+                ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                    .map(|outer| (*outer).clone()),
+                ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                    .map(|outer| (*outer).clone())
+                    .as_ref(),
+            );
             let text = tokio::task::spawn_blocking(move || {
                 run_diff(&wd, &scope, path_for_task.as_deref(), &[], context)
             })
             .await
             .unwrap_or_default();
-            let spans = crate::highlight::diff_styled_spans(&text);
+            let spans = crate::hunk_syntax::diff_spans(&text, activation_registry.as_ref());
             crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
@@ -359,7 +372,7 @@ fn refresh_with(
     s: Arc<Mutex<DiffState>>,
     restore: Option<crate::cursor_restore::HunkRestore>,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id, cursor_bus, extra, context) = {
+    let (handle, wd, scope, path, pending, buffer_id, cursor_bus, extra, context, registry) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -371,6 +384,7 @@ fn refresh_with(
             g.cursor_bus.clone(),
             g.extra_args.clone(),
             context_lines(&g.config),
+            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
         )
     };
     tokio::task::spawn(async move {
@@ -379,7 +393,7 @@ fn refresh_with(
         })
         .await
         .unwrap_or_default();
-        let spans = crate::highlight::diff_styled_spans(&text);
+        let spans = crate::hunk_syntax::diff_spans(&text, registry.as_ref());
         let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
         crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
@@ -404,7 +418,7 @@ fn spawn_mutation_and_refresh(
     label: String,
     mutate: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id, extra, context) = {
+    let (handle, wd, scope, path, pending, buffer_id, extra, context, registry) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -415,6 +429,7 @@ fn spawn_mutation_and_refresh(
             g.buffer_id,
             g.extra_args.clone(),
             context_lines(&g.config),
+            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
         )
     };
     tokio::task::spawn(async move {
@@ -427,7 +442,7 @@ fn spawn_mutation_and_refresh(
         })
         .await
         .unwrap_or_default();
-        let spans = crate::highlight::diff_styled_spans(&text);
+        let spans = crate::hunk_syntax::diff_spans(&text, registry.as_ref());
         crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);

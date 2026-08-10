@@ -13,8 +13,8 @@ DS.3, after both halves exist and are tested in isolation.
 | DS.1 | Hunk reconstruction + syntax spans, pure | ✅ |
 | DS.2 | The layered composition, pure | ✅ |
 | DS.3 | Wire magit-status | ✅ |
-| DS.4 | Wire diff / revision / stash-show / commit | 📝 |
-| DS.5 | Option gate + user docs | 📝 |
+| DS.4 | Wire diff / revision / stash-show / commit | ✅ |
+| DS.5 | Option gate + user docs | ✅ |
 | DS.6 | Blob-accurate parse for `magit-diff-mode` | ⛔ |
 
 ---
@@ -81,7 +81,7 @@ Switch `actions.rs`'s inline-expand span call to the new seam. First
 slice with a visible change; the row tint and marker colour must be
 unchanged from before, with code text now syntax-coloured.
 
-## DS.4 — wire the remaining views 📝
+## DS.4 — wire the remaining views ✅
 
 `magit-diff-mode` (3 call sites), `magit-revision-mode`, and the
 commit buffer's staged-diff region. Split from DS.3 so a problem in
@@ -92,12 +92,32 @@ restricts diff colouring to `[diff_start_line, diff_end_line)` so the
 buffer's own `--- Staged diff ---` header is not misread as a diff
 `---` marker. That windowing has to survive.
 
-## DS.5 — option gate + user docs 📝
+Landed. `windowed_diff_spans` slices the region out and styles it
+alone, which makes the window literal rather than incidental —
+`commit_buffer_styled_spans` is gone, superseded, with its test
+migrated. A single `diff_spans` entry point replaced the
+choose-layered-or-flat `match` that DS.3 had inlined, so the five
+views cannot drift.
+
+`magit-stash-show-mode` needed no change: it renders through
+`magit-diff-mode`'s path.
+
+## DS.5 — option gate + user docs ✅
 
 `magit.diff.syntax` (default on) so the parse can be turned off, and a
 paragraph in the magit user page. Deferred behind the wiring
 deliberately: whether an option is warranted depends on what DS.3/DS.4
 cost in practice, and inventing one first would be guessing.
+
+Landed as **`magit.hunk.syntax-highlight`** — the name `options.rs`
+had already reserved, with a note saying it was withheld precisely
+until the feature existed ("an option that changes nothing is the same
+failure as a menu row that does nothing, just quieter"). The slice
+plan had invented `magit.diff.syntax`; the existing decision won.
+
+Off routes through the same `None`-registry path a missing grammar
+takes, so there is one degradation path rather than two. Resolved at
+USE time, not stored, so `:set` lands on the next `gr`.
 
 ## DS.6 — blob-accurate parse ⛔
 

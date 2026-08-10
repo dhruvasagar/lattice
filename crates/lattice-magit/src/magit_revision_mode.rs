@@ -308,7 +308,21 @@ impl Mode for MagitRevisionMode {
             // `---`/`+++`, so the plain whole-buffer diff styler is
             // safe to apply directly (same reuse `magit-diff-mode`
             // makes for its own `git diff` output).
-            let spans = crate::highlight::diff_styled_spans(&text);
+            // DS.4: the header lines carry no `+`/`-` marker, so the
+            // layered path classifies them as context and leaves them
+            // to the (absent) syntax layer — byte-identical to before.
+            // Only the diff region below gains syntax.
+            let spans = crate::hunk_syntax::diff_spans(
+                &text,
+                crate::hunk_syntax::syntax_registry(
+                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                        .map(|outer| (*outer).clone()),
+                    ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone())
+                        .as_ref(),
+                )
+                .as_ref(),
+            );
             crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 ph.store_and_wake(buffer_id, spans);

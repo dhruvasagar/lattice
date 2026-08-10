@@ -134,37 +134,14 @@ fn spans_for(class: DiffLineClass, line_len: usize) -> Vec<StyledSpan> {
 /// Color a unified diff: `+`/`-` content lines, `@@` hunk headers,
 /// `diff --git`/`---`/`+++` file headers. Used verbatim by
 /// `magit-status`'s inline-expanded diffs (`actions.rs`) and by
-/// `magit-diff-mode`'s whole-buffer `git diff` content; `commit_buffer_styled_spans`
-/// below reuses it for the staged-diff region of the commit buffer.
+/// `magit-diff-mode`'s whole-buffer `git diff` content. The commit
+/// buffer's staged-diff region goes through
+/// `hunk_syntax::windowed_diff_spans`, which slices the region out and
+/// layers syntax under this styling.
 pub(crate) fn diff_styled_spans(diff: &str) -> Vec<Vec<StyledSpan>> {
     diff.lines()
         .map(|line| spans_for(classify_diff_line(line), line.len()))
         .collect()
-}
-
-/// Color the staged-diff region of the commit buffer
-/// (`magit-commit-mode`) without misclassifying the buffer's own
-/// `"--- Staged diff ... ---"` header line as a diff `---` file
-/// marker (a naive whole-buffer `diff_styled_spans` call would style
-/// it `Style::Link`, since it also starts with `---`). Only lines at
-/// or after `diff_start_line` get diff coloring; everything before
-/// (the header line) and after (the message marker + typed message)
-/// stays unstyled.
-pub(crate) fn commit_buffer_styled_spans(
-    text: &str,
-    diff_start_line: usize,
-    diff_end_line: usize,
-) -> Vec<Vec<StyledSpan>> {
-    let mut result: Vec<Vec<StyledSpan>> = text.lines().map(|_| Vec::new()).collect();
-    for (i, line) in text.lines().enumerate() {
-        if i < diff_start_line || i >= diff_end_line {
-            continue;
-        }
-        if let Some(slot) = result.get_mut(i) {
-            *slot = spans_for(classify_diff_line(line), line.len());
-        }
-    }
-    result
 }
 
 /// Find the first whitespace-delimited, hex-looking token (≥4 chars)
@@ -662,27 +639,6 @@ mod tests {
     fn remote_styled_spans_leave_the_empty_list_sentence_alone() {
         let spans = remote_styled_spans("No remotes.\n");
         assert!(spans.iter().all(|s| s.is_empty()));
-    }
-
-    #[test]
-    fn commit_buffer_styled_spans_scopes_diff_coloring_and_skips_the_header_line() {
-        let text = "--- Staged diff (review before committing) ---\n+added\n--- Commit message (edit below) ---\nmy message\n";
-        // Line 0 is the header (starts with "---" but must NOT be
-        // colored as a diff file marker); line 1 is the real diff
-        // content (diff_start_line=1); line 2 is the marker, out of
-        // range (diff_end_line=2), so it must also stay unstyled
-        // despite ALSO starting with "---".
-        let spans = commit_buffer_styled_spans(text, 1, 2);
-        assert!(
-            spans[0].is_empty(),
-            "header line must not be colored as a diff marker"
-        );
-        assert_eq!(spans[1][0].style, Style::DiffAdd);
-        assert!(
-            spans[2].is_empty(),
-            "message marker line must not be colored despite starting with ---"
-        );
-        assert!(spans[3].is_empty());
     }
 
     #[test]

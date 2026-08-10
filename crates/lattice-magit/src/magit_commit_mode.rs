@@ -482,10 +482,18 @@ impl Mode for MagitCommitMode {
                 .position(|l| l.contains(DIFF_MARKER))
                 .unwrap_or(0);
             let line_count = initial.lines().count();
-            let spans = crate::highlight::commit_buffer_styled_spans(
+            let spans = crate::hunk_syntax::windowed_diff_spans(
                 &initial,
                 diff_start_line + 1,
                 line_count,
+                crate::hunk_syntax::syntax_registry(
+                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                        .map(|outer| (*outer).clone()),
+                    ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone())
+                        .as_ref(),
+                )
+                .as_ref(),
             );
             crate::buffer_io::replace_buffer_text(&handle, initial).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {

@@ -209,6 +209,79 @@ fn lang_from_diff_header(rest: &str) -> Lang {
     }
 }
 
+/// The spans for a unified diff — the ONE entry point every magit view
+/// that shows a diff calls.
+///
+/// `None` registry ⇒ the flat classifier, exactly as before syntax
+/// layering existed. That is the designed degradation, not an error
+/// path: a harness without the service, or a build without grammars,
+/// renders the diff the way it always did.
+///
+/// One function rather than a `match` repeated at each call site, so
+/// the five views cannot drift — and so DS.5's option gate has a
+/// single place to live.
+pub(crate) fn diff_spans(diff: &str, registry: Option<&Arc<LangRegistry>>) -> Vec<Vec<StyledSpan>> {
+    match registry {
+        Some(r) => layered_diff_spans(diff, r.clone()),
+        None => crate::highlight::diff_styled_spans(diff),
+    }
+}
+
+/// DS.5 — the grammar registry to highlight with, or `None`.
+///
+/// `None` when there is no grammar service (a stripped harness) or
+/// when `magit.hunk.syntax-highlight` is off. Both collapse to the
+/// same answer on purpose: the flat classifier is the degradation
+/// path, so the option turns the feature off by taking the same route
+/// a missing grammar already takes.
+///
+/// Resolved at USE time rather than stored, so `:set` lands on the
+/// next refresh — the contract `magit.hunk.context-lines` set.
+pub(crate) fn syntax_registry(
+    registry: Option<Arc<LangRegistry>>,
+    config: Option<&Arc<lattice_config::ConfigRegistry>>,
+) -> Option<Arc<LangRegistry>> {
+    let enabled = config
+        .and_then(|c| c.get_typed::<crate::options::MagitHunkSyntaxHighlight>())
+        .map(|v| *v)
+        // No config registry ⇒ the option's own default, not `false`:
+        // a harness without config should behave like a default install.
+        .unwrap_or(true);
+    registry.filter(|_| enabled)
+}
+
+/// DS.4 — spans for a buffer whose diff occupies only part of it.
+///
+/// The commit buffer is a message region, a marker line, then the
+/// staged diff. Its own marker starts with `---`, which the diff
+/// classifier would read as a file header — so the diff region is
+/// SLICED OUT and styled alone, rather than styling the whole buffer
+/// and hoping the marker survives. The window is the invariant, and
+/// this keeps it literal.
+///
+/// `diff_start_line` / `diff_end_line` are inclusive-exclusive line
+/// indices into `text`. Rows outside get no spans.
+pub(crate) fn windowed_diff_spans(
+    text: &str,
+    diff_start_line: usize,
+    diff_end_line: usize,
+    registry: Option<&Arc<LangRegistry>>,
+) -> Vec<Vec<StyledSpan>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<Vec<StyledSpan>> = vec![Vec::new(); lines.len()];
+    let end = diff_end_line.min(lines.len());
+    if diff_start_line >= end {
+        return out;
+    }
+    let region = lines[diff_start_line..end].join("\n");
+    for (i, row) in diff_spans(&region, registry).into_iter().enumerate() {
+        if let Some(slot) = out.get_mut(diff_start_line + i) {
+            *slot = row;
+        }
+    }
+    out
+}
+
 /// DS.2 — the layered spans for a unified diff: diff colouring on top,
 /// syntax underneath.
 ///
@@ -612,6 +685,98 @@ diff --git a/a.rs b/a.rs
             out[marker].is_empty(),
             "the marker itself is not code and carries no syntax"
         );
+    }
+
+    /// Migrated from `highlight::commit_buffer_styled_spans`, which
+    /// this replaced. The invariant is the commit buffer's own
+    /// `--- Staged diff ---` marker: it starts with `---` and would be
+    /// read as a diff FILE HEADER if the whole buffer were styled at
+    /// once. Slicing the region out is what keeps that impossible
+    /// rather than merely unlikely.
+    #[test]
+    fn the_commit_buffers_own_marker_is_never_styled_as_a_diff_header() {
+        let text = "--- Staged diff (review before committing) ---\n\
+                    +added\n\
+                    --- Commit message (edit below) ---\n\
+                    my message\n";
+        // Line 1 is the only diff content: [1, 2).
+        let spans = windowed_diff_spans(text, 1, 2, None);
+        assert!(
+            spans[0].is_empty(),
+            "the header must not be coloured as a diff file marker"
+        );
+        assert_eq!(spans[1][0].style, lattice_cells::style::Style::DiffAdd);
+        assert!(
+            spans[2].is_empty(),
+            "the message marker must stay unstyled despite starting with ---"
+        );
+        assert!(spans[3].is_empty(), "the message itself is not diff text");
+    }
+
+    /// The window also holds with a grammar in play — syntax must not
+    /// leak outside the diff region.
+    #[test]
+    fn the_window_holds_with_syntax_enabled() {
+        let text = "--- Staged diff ---\n\
+                    diff --git a/a.rs b/a.rs\n\
+                    @@ -1,1 +1,1 @@\n\
+                    +fn main() {}\n\
+                    --- Commit message ---\n\
+                    my message\n";
+        let spans = windowed_diff_spans(text, 1, 4, Some(&registry()));
+        assert!(spans[0].is_empty(), "header outside the window");
+        let added = 3;
+        assert!(
+            spans[added].len() > 1,
+            "the added line carries the diff marker plus syntax"
+        );
+        assert!(spans[4].is_empty(), "message marker outside the window");
+        assert!(spans[5].is_empty(), "message outside the window");
+    }
+
+    // ── DS.5: the option gate ──────────────────────────────
+
+    /// Off ⇒ no registry ⇒ the flat classifier. The option turns the
+    /// feature off by the same route a missing grammar takes, so there
+    /// is one degradation path rather than two.
+    #[test]
+    fn the_option_off_falls_back_to_the_flat_classifier() {
+        let config = Arc::new(lattice_config::ConfigRegistry::new());
+        // `options! { … }` is a compile-time declaration; boot is what
+        // makes it a runtime fact in a registry.
+        config.init_from_linkme();
+        config
+            .set_typed::<crate::options::MagitHunkSyntaxHighlight>(false)
+            .expect("the option is declared, so it can be set");
+        assert!(
+            syntax_registry(Some(registry()), Some(&config)).is_none(),
+            "syntax-highlight=off must yield no registry"
+        );
+    }
+
+    #[test]
+    fn the_option_defaults_on_and_survives_a_missing_config() {
+        assert!(
+            syntax_registry(Some(registry()), None).is_some(),
+            "a harness without config must behave like a default install"
+        );
+        let config = Arc::new(lattice_config::ConfigRegistry::new());
+        assert!(
+            syntax_registry(Some(registry()), Some(&config)).is_some(),
+            "an unregistered option falls back to its default, which is on"
+        );
+        let booted = Arc::new(lattice_config::ConfigRegistry::new());
+        booted.init_from_linkme();
+        assert!(
+            syntax_registry(Some(registry()), Some(&booted)).is_some(),
+            "and the declared default is on"
+        );
+    }
+
+    /// No grammar service ⇒ `None` regardless of the option.
+    #[test]
+    fn no_registry_stays_none_however_the_option_is_set() {
+        assert!(syntax_registry(None, None).is_none());
     }
 
     #[test]

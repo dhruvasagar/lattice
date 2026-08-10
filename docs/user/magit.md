@@ -280,6 +280,32 @@ nothing shifts down and back up while git answers.
 
 ---
 
+## Diffs are syntax-highlighted
+
+Every magit view that shows a diff — the status buffer's inline `=`,
+`:magit-diff`, a commit's detail view, a stash, and the staged diff in
+the commit-message buffer — highlights the code inside it, with the
+diff colouring layered on top:
+
+- the `+` / `-` column keeps its green / red, and the row keeps its
+  add / remove background tint;
+- everything to the right of that column is coloured by the file's
+  language.
+
+The language comes from the path in the diff's own header, so a
+multi-file diff highlights each file with its own grammar, and a file
+whose type has no grammar simply stays uncoloured.
+
+**Hunks are fragments**, not whole files — a hunk starts mid-function,
+so the parser has no enclosing context. Tokens it can resolve
+(keywords, strings, comments, numbers) are coloured; tokens that need
+the surrounding code are left plain. It errs toward *uncoloured*
+rather than *miscoloured*: a hunk that will not parse looks exactly
+like a magit diff did before this existed.
+
+Turn it off with `:set magit.hunk.syntax-highlight=off`. It takes
+effect on the next refresh (`gr`), not only on reopen.
+
 ## Conflicts, and finishing what you started
 
 A merge, rebase, cherry-pick, revert or `git am` that hits a conflict
@@ -407,6 +433,7 @@ for options that should exist, not ones that do.
 | Option | Default | What it does |
 |---|---|---|
 | `magit.hunk.context-lines` | `3` | Unchanged lines of context around each hunk in every patch magit generates — the status buffer's inline `=`, `:magit-diff`, and a commit's detail view. `D` overrides it for one view. |
+| `magit.hunk.syntax-highlight` | `on` | Syntax-highlight the code inside a diff, with the `+` / `-` colouring layered over it. Off gives the flat per-line colouring — every added line one green, every removed line one red — and skips the parse. |
 | `ui.diff.line-backgrounds` | `true` | Tint whole rows by what the diff did to them. `false` leaves foreground colouring only, for themes where a full-row wash fights the syntax colours underneath. |
 
 `ui.diff.line-backgrounds` is **not** under `magit.*` on purpose: the

@@ -404,7 +404,7 @@ fn toggle_expand(
             g.buffer_id,
             context,
             g.headerline.clone(),
-            g.lang_registry.clone(),
+            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
         )
     };
 
@@ -549,14 +549,7 @@ async fn expand_payload(
         // the diff into the status rows below.
         let text = raw.trim_end_matches('\n').to_string();
         let line_count = text.lines().count();
-        // DS.3: syntax under the diff colouring when a grammar
-        // registry is available, the flat classifier when it is not.
-        // Both produce one span row per line; the layered path adds
-        // rows beneath the diff layer rather than changing it.
-        let spans = match lang_registry {
-            Some(registry) => crate::hunk_syntax::layered_diff_spans(&text, registry),
-            None => crate::highlight::diff_styled_spans(&text),
-        };
+        let spans = crate::hunk_syntax::diff_spans(&text, lang_registry.as_ref());
         Ok((text, line_count, spans))
     })
     .await

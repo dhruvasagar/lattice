@@ -656,6 +656,82 @@ was removed. `BufferStore` is find (`find_by_name`), write-handle
 (`handle_for`), and generic insertion (`insert_document_buffer`).
 See `design.md` §5.10.5 and `multibuffer-views.md` §3.7.
 
+### 5.5 Modes declare their refresh action; the chord is shared
+
+`gr` means **refresh this view** in every synthetic buffer. That is a
+property of synthetic views as a class, not of any one of them — so by
+the "shared behaviour is a minor mode, never a copied keymap" standing
+rule the chord belongs on one shared minor, not re-declared per mode.
+
+It was re-declared per mode. As of 2026-08-10 three independent copies
+existed — `magit-core-mode` (`action:magit-refresh`), `compilation-mode`
+(`action:compilation-recompile`), `providers::search`
+(`action:search-refresh`) — and the two synthetic views that landed most
+recently, `*problems*` and narrow, **had no `gr` at all**. Nobody
+noticed, because a gap in a copied set does not announce itself. That is
+the failure this section closes.
+
+#### The seam
+
+```rust
+// on the `Mode` trait, defaulting to None
+fn refresh_action(&self) -> Option<ActionId> { None }
+```
+
+The mode declares **which of its own actions** refreshes its view. It
+does not declare a body. The body stays exactly where §5.3 puts it — an
+`ActionHandler` closure registered against that `ActionId` by the owning
+crate.
+
+Dispatch is generic:
+
+1. `refreshable-view-mode` (a minor in `lattice-mode`) contributes one
+   keymap entry: `gr` → `action:view-refresh`.
+2. Its handler walks the focused buffer's active modes, **minors first
+   in activation order, then the major**, and takes the first
+   `Some(action_id)`. Most-specific-wins: a provider minor on a
+   multibuffer beats the generic `MultibufferMode`.
+3. It dispatches that `ActionId` through the existing
+   `ActionHandlerRegistry`. Nothing about the handler changes.
+4. When more than one active mode declares a refresh action, the first
+   wins and the rest are logged at `debug!` — diagnosable, not silent.
+
+Activation is automatic: the mode-activation cascade activates
+`refreshable-view-mode` when any activated mode returns `Some`. A mode
+author writes **one line** and gets the chord. (`implies()` is the
+fallback if evaluating that predicate inside the cascade proves awkward
+— but it costs a second line to remember, and a forgotten `implies()`
+kills the chord as silently as the copied keymap did.)
+
+#### Why declare a target rather than do the work
+
+Two alternatives were considered and rejected.
+
+- **`ViewRefreshService` keyed by `BufferId`, holding closures.**
+  Rejected: needs per-buffer registration, `DocumentClosed` cleanup, and
+  closure storage — and it recreates the silent gap one level down, since
+  a provider that forgets to register gets a dead key with nothing to
+  catch it. It also puts a body somewhere no other mode body lives.
+- **`Mode::refresh(&self, ctx)` doing the work in the trait method.**
+  Rejected: modes would then have two ways to express an action body —
+  an `action_handlers()` closure or this — and `magit-refresh` already
+  exists as the former, so the trait method would duplicate or orphan it.
+
+Declaring a target is an indirection of exactly one level, which is what
+`invocation_runner()` and `mirrors_option()` already do on this trait.
+The consumer is generic host machinery reading uniformly across every
+mode, which is the condition the substrate-vs-mode rule sets for a trait
+method.
+
+#### The absence becomes visible
+
+Default `None` means the generic handler echoes **"nothing to refresh
+here"** instead of swallowing the key. A synthetic view without a
+refresh now says so. `*problems*` stops failing silently the moment the
+shared minor lands, before anyone implements its refresh body.
+
+Sequencing: [`../operations/slice-plans/refreshable-views.md`](../operations/slice-plans/refreshable-views.md).
+
 ## 6. Option resolution
 
 ### 6.1 Layers (highest to lowest priority)

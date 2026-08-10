@@ -1325,6 +1325,90 @@ See the slice plan (L7) for sequencing.
 
 ---
 
+## 17. References as an editable view (the second terminus)
+
+`gr` opens a **picker** of reference locations. That is the right
+surface for *go to one of these* and it does not change. It is the wrong
+surface for *rename this argument at all fifteen call sites*, which is
+what references are mostly for — and today that workflow has no surface
+at all.
+
+The editable peer is a [multibuffer](multibuffer-views.md): one excerpt
+per reference site with ±2 lines of context, edits propagating to the
+source files through the standard M.3 pipeline.
+
+### It is a terminus, not a new pipeline
+
+§16's flow is unchanged end to end. The request, the cancellation token,
+the anchor stash, the wake, and `drain_pending_references` are all
+untouched host substrate. What changes is only what the drain does with
+the result:
+
+	gr                    → LspRequest::References      → picker      (unchanged)
+	:lsp-references       → LspRequest::ReferencesView  → multibuffer (new)
+	gr *in that view*     → LspRequest::ReferencesViewRefresh         (new)
+
+Three **data** arms on `LspRequest`, not three Effects and not a host
+`Action` variant — the grain §16 established. The pending-request state
+records which terminus the in-flight request is for, so the drain routes
+without guessing.
+
+Mode-side async is not reintroduced here. The refresh handler cannot
+spawn its own request (it holds only `&ActionContext`); it returns
+`Effect::Lsp(LspRequest::ReferencesViewRefresh)` and the host substrate
+executes, reading the view's **stored origin** from the service rather
+than the live cursor — the cursor is inside the multibuffer by then, and
+refreshing against it would re-query the wrong symbol.
+
+### Ownership
+
+The provider lives in **`lattice-lsp`**, which takes a dependency on
+`lattice-multibuffer` (acyclic: multibuffer depends on neither LSP nor
+magit). This reverses the 2026-06-01 "all providers live in
+`lattice-multibuffer`" lock for subsystem-owned providers — see
+[`multibuffer-views.md`](multibuffer-views.md) §3.7. `gr`'s binding, the
+handler closures, the view, the per-view service and the minor mode then
+all sit in one crate.
+
+- `LspReferencesService`, keyed by `BufferId` — the origin (uri,
+  position, symbol) for refresh, and the last result set.
+- `LspReferencesMode`, a minor identity marker. It declares
+  `refresh_action()` (`mode-architecture.md` §5.5) and so inherits `gr`
+  from the shared refreshable-view minor; it does **not** bind `gr`
+  itself.
+- `open_references_view(activator, locations, origin) -> BufferId`,
+  called from the drain arm. `&mut Editor` is the `ModeActivator`, the
+  same shape `providers::problems` uses for `:copen`.
+
+Shape follows `providers::problems` (~350 lines), not
+`providers::search` (~1676): the LSP layer delivers the location list
+over an existing channel, so the provider composes a delivered result
+rather than owning a scan.
+
+### Version skew
+
+A reference location is a `(path, line, col)` captured at query time. If
+a source file changed between the query and the user's edit, applying
+into a stale offset corrupts the file. The view warns before applying
+rather than writing blind; `gr` (refresh) is the recovery path.
+
+### Why no chord opens it
+
+`:lsp-references` is deliberately the only trigger for now. `gR` is
+unbound today but is vim's Virtual Replace mode, so binding it would
+foreclose a grammar slot permanently (paramount goal #3) for a novel
+command — the same reasoning that reserves the 1–2 letter ex-command
+shorts. The discoverable path is instead a **bulk outcome from the
+picker** (`<C-q>`, the telescope idiom): browse in the picker, then send
+the whole result set to an editable view when you realise you need to
+edit all of them. That is a slice of its own — `translate_picker` is a
+hardcoded host-side router and "send results to a view" has to mean
+something per `PickerSource` — and it generalises past references.
+
+Sequencing: [`../operations/slice-plans/lsp-references-view.md`](../operations/slice-plans/lsp-references-view.md).
+
+---
+
 ## See also
 
 - [design.md §5.4](design.md) -- canonical design.

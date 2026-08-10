@@ -116,19 +116,20 @@ review each, accept most, reject some" workflow.
 - Compose: shares file-boundary-fold rendering with A.1; per-excerpt
   accept/reject UI generalises into A.8.
 
-### A.3 `LspReferencesProvider` 📝
+### A.3 `LspReferencesProvider` 📝 — **designed, owned by `lattice-lsp`**
 
-`gr` (find references) / `:lsp-references` opens every reference site as a
-multibuffer. Each excerpt shows the call-site with configurable surrounding
-context (default ±2 lines). Edit-in-place propagates to source files for
-cross-callsite refactors.
+Every reference site as an editable multibuffer (±2 lines of context per
+excerpt), for cross-callsite refactors.
 
-- Extra deps: LSP subsystem (already in lattice).
-- User surface: `gr` keymap, `:lsp-references [<symbol>]` ex-command.
-- Edit propagation: standard via M.3; per-source LSP version match enforced —
-  if a source-file version changed mid-edit, surface a warning before applying.
-- Tests: mock LSP returns 8 reference locations across 3 files → 8 excerpts;
-  edit one → source file updates; version-mismatch path prompts user.
+- Design: [`lsp-architecture.md`](../../architecture/lsp-architecture.md) §17.
+  Slice plan: [`lsp-references-view.md`](lsp-references-view.md) (LR series).
+- **Lives in `lattice-lsp`**, not here — see the provider-home reversal at the
+  top of this file.
+- **`gr` does not open it.** `gr` keeps its two existing meanings: the
+  references *picker* in a source buffer (right surface for "go to one of
+  these"), and *refresh* in a synthetic view. The view opens via
+  `:lsp-references`, and later via `<C-q>` from the picker (LR.5).
+- Depends on [`refreshable-views.md`](refreshable-views.md) RV.1 for `gr`.
 
 ### A.4 `DiagnosticsProvider` ❌ STRUCK (2026-08-10)
 

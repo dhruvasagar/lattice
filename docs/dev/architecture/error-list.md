@@ -11,7 +11,9 @@ the `q`-chords are preserved as aliases for muscle memory.
 Companion to `compilation-mode.md` (the first producer) and
 `design.md` §5.1.1 (position history — a sibling core navigation
 substrate). Sequencing lives in
-`../operations/slice-plans/compilation-mode.md` (slices CM.2, CM.7, CM.8).
+`../operations/slice-plans/compilation-mode.md` (slices CM.2, CM.7, CM.8)
+and, for the multi-producer work of §3.1–§3.3,
+`../operations/slice-plans/error-list-producers.md` (EP series).
 
 ## 1. It is core state, not mode-owned
 
@@ -93,33 +95,130 @@ that effect.
 
 An empty error list echoes `no error list` for **every** target —
 error-list commands touch only the error list (vim's `E42: No Errors`).
-Diagnostics are **not** coupled in: they own dedicated navigation —
-`[d` / `]d` (current-file, mode-owned by `lsp-diagnostics-mode`) and
-the `:diagnostics` picker. Keeping the two apart is the mode-ownership
-boundary; an earlier empty-list fallback-to-diagnostics was removed
-(CM.7) as a boundary blur.
+An earlier empty-list fallback-to-diagnostics was removed (CM.7) as a
+boundary blur: one command must not silently mean two different things
+depending on whether the list happens to be populated.
+
+This holds unchanged now that the language server *is* a producer
+(§3.2), and it is what makes that reversal safe. `:cnext` always walks
+the error list — never "the error list, unless it is empty, in which
+case the current buffer's diagnostics". Diagnostics keep their own
+dedicated navigation: `[d` / `]d` (current-file, mode-owned by
+`lsp-diagnostics-mode`) and the `:diagnostics` picker. Being a
+*producer of* the shared list and being *reachable through* a separate
+per-buffer motion are orthogonal; CM.7 rejected conflating the
+motions, not sharing the list.
 
 ## 3. Producers feed it over a native seam
 
-A producer builds `Vec<ErrorEntry>` and hands it to `set_error_list`.
-Producers below `lattice-host` (e.g. `lattice-compilation`) deliver
-off-thread via the native `InboundBus → AppEffect::SetErrorList
-{ entries }` seam (the host arm calls `set_error_list`) — the same
-transport pattern LSP uses for its own async host-state updates,
-**not** any plugin path.
+A producer builds `Vec<ErrorEntry>` and hands it to `set_error_list`
+**tagged with its own source** (§3.1). Producers below `lattice-host`
+(e.g. `lattice-compilation`) deliver off-thread via the native
+`InboundBus → AppEffect::SetErrorList { source, entries }` seam (the
+host arm calls `set_error_list`) — the same transport pattern LSP uses
+for its own async host-state updates, **not** any plugin path.
 
-Today the sole producer is [compilation mode](compilation-mode.md),
-whose four built-in parsers (cargo/rustc, gnu-style, a `file:line:col`
+The first producer is [compilation mode](compilation-mode.md), whose
+four built-in parsers (cargo/rustc, gnu-style, a `file:line:col`
 catch-all, and a Rust test/`panic!` matcher) turn any CLI tool's
 `file:line:col` output into entries — see
 [`compilation-mode.md`](compilation-mode.md) §5 for the parser detail.
 Note that **both** the compiler's stderr *and* the process's stdout are
 parsed, so `cargo test` panics (which print `thread '…' panicked at
 path:line:col` on stdout) populate the list alongside compiler and
-linter diagnostics. The list is producer-agnostic by construction:
-project search (and other tools) can feed the identical list later with
-zero change to the navigation above. LSP diagnostics are deliberately
-**not** a producer — they keep their own navigation surfaces (§2).
+linter diagnostics. The second is the language server (§3.2). The list
+is producer-agnostic by construction: project search (and other tools)
+can feed the identical list later with zero change to the navigation
+above.
+
+### 3.1 Sources are tagged; a write replaces one source's slice
+
+`set_error_list(entries)` originally replaced the **whole** list. With
+more than one producer that is a clobber: the language server
+republishes on every edit-debounce, so a live diagnostic feed would
+overwrite a compile run's entries *while the user is walking them*.
+
+Entries therefore carry a **source tag**, and a write replaces only
+that source's slice:
+
+```
+ErrorSource { Compilation, Lsp }        // in lattice-protocol
+AppEffect::SetErrorList { source, entries }
+ErrorList { slices: Vec<(ErrorSource, Vec<ErrorEntry>)>, index: usize }
+```
+
+A producer never sees the other slices; it hands over its own full set
+and the list splices it in. `ErrorSource` is a small closed enum today
+— a plugin-producer variant lands with the plugin path (§6), not
+speculatively.
+
+**Slices concatenate in a fixed source order (`Compilation`, then
+`Lsp`); order *within* a slice is the producer's own.** Producer order
+is information — rustc emits the root cause before the cascading
+errors it caused — and sorting the merged list by path would destroy
+it. The cost is that a file with both a compile error and a language-
+server diagnostic is visited twice by `:cnextfile`. That is honest:
+they are two different tools' opinions about the same file, and §2's
+"maximal run of consecutive entries sharing a path" still holds within
+each slice.
+
+### 3.2 The language server is a producer, under user policy
+
+`lattice-lsp` subscribes to its own `publishDiagnostics` broadcast,
+maps `DiagnosticSeverity` onto `ErrorSeverity` (the mapping the
+`ErrorSeverity` doc-comment always anticipated: *"producers map their
+own severity onto this small set"*), and publishes the workspace set
+through the same `InboundBus → AppEffect::SetErrorList` seam
+compilation uses. All of it lives in `lattice-lsp`; the host learns
+nothing about LSP.
+
+Whether that feed is live is **user policy**, not a design bet:
+
+| | |
+|---|---|
+| **Option** | `lsp.diagnostics-to-error-list` — bool, default `true` |
+| **Command** | `:lsp-diagnostics-to-error-list` — one-shot snapshot into the `Lsp` slice |
+
+- `true` — every publish refreshes the `Lsp` slice (debounced, §3.3).
+  The command still works, as a forced refresh after a server restart.
+- `false` — publishes do not touch the list. The diagnostics cache
+  still updates, so `[d` / `]d`, inline end-of-line text and the
+  signcolumn are unaffected. The command pulls a snapshot on demand.
+- Toggling `true → false` **stops the feed; it does not clear the
+  slice.** Turning the option off must never destroy what the user is
+  currently reading.
+- Toggling `false → true` takes a snapshot immediately rather than
+  waiting for the next edit, so the list matches the setting at once.
+  Toggle-on and the command are one function with two callers.
+
+The option lives in the `lsp` group, not `diagnostics`: that group is
+*presentation* (`ui.diagnostics.inline`, `…inline-min-severity`), and
+this is producer behaviour. It also keeps the option namespace
+symmetric with the command's.
+
+**Scope, stated honestly:** this surfaces what servers have
+*published*, which is not a workspace scan. rust-analyzer publishes
+workspace-wide after a check; other servers publish only for open
+files. The command echoes the entry count so the user is not misled
+into reading an empty result as a clean tree.
+
+### 3.3 Two properties that make a live feed safe
+
+Without both of these, a default-on feed is worse than no feed.
+
+**Coalesce.** `publishDiagnostics` arrives per-URI at edit-debounce
+rate. The subscriber keeps the workspace map and pushes a rebuilt
+`Vec<ErrorEntry>` on a short idle debounce (~250ms) — never one push
+per notification. Per-keystroke `Vec` rebuilds crossing the inbound
+seam are exactly the background churn paramount goal #1 forbids.
+
+**Re-anchor the index.** `ErrorList::set` reset `index` to 0, which is
+correct for a fresh compile run and wrong for a refresh: the user
+walking entry 7 would be thrown back to entry 1 every time they typed.
+A slice write re-points the index at the **same entry** — matched on
+`(path, message)`, tolerant of line drift — and falls back, in order,
+to the first entry of the same path at-or-after the old line, then to
+0. Producer-initiated replacement (a new compile run) keeps the reset.
 
 ## 4. Three views of one list
 
@@ -143,10 +242,23 @@ family is the step surface. All three are views of one list.
 
 - **#1 Performance.** Navigation is O(1) list indexing + the existing
   (benched) `jump_to_file_line_col` path; population is off-thread
-  (producer side). No UI-thread work.
+  (producer side). No UI-thread work. The live diagnostic feed is
+  coalesced on an idle debounce (§3.3) so a fast typist does not drive
+  `Vec` rebuilds across the inbound seam.
+- **#2 Extensibility.** The tagged-slice write (§3.1) is what a
+  third-party producer needs: the plugin boundary currently hard-
+  refuses `AppEffect::SetErrorList` partly because an untagged write
+  cannot be scoped to its author. Tagging is the precondition for
+  lifting that.
 - **#3 Everything-is-a-buffer.** The list is generic core state (like
   the jump ring); the `*problems*` view is a plain `Multibuffer`
   Document — no kind-branching.
+- **#4 Asynchronicity.** The producer reaches the screen over
+  `InboundBus`, whose `send` bakes in the `async_landed` wake — so a
+  diagnostic republish repaints without waiting for a keystroke. This
+  is mandatory, not stylistic: a bare `TickCallback` here would
+  reproduce the "it only updates when I press something" bug class
+  `boot-composition.md` §3 exists to design out.
 
 ## 6. Rejected alternatives
 
@@ -164,3 +276,30 @@ family is the step surface. All three are views of one list.
   diagnostics on their existing `[d`/`]d` + `:diagnostics` (no parallel
   list), and kept the `q`-chords since `e`/`E` collide with multibuffer
   excerpt navigation and `q` is the recognized quickfix chord.
+- **Sorting the merged list by `(path, line)`.** Rejected (§3.1):
+  reads tidier, but destroys producer order, and producer order carries
+  meaning — rustc emits the root cause ahead of the errors it cascades
+  into. Slices concatenate instead; the duplicate-file visit that costs
+  is accepted.
+- **A `DiagnosticsProvider` multibuffer** (catalogue entry A.4 in
+  `slice-plans/multibuffer-providers.md`). **Struck, not built.**
+  It would stand up a second editable diagnostics surface beside
+  `*problems*`, which already exists and already groups by file. Making
+  the language server an `ErrorList` producer (§3.2) yields the
+  grouped view, the picker, and the whole `:next-error` family at once.
+- **Per-source filters (`:problems lsp`, `:problems compile`).**
+  Deferred, not rejected — plausible once two sources are routinely
+  live, but speculative before anyone has run merged lists in anger.
+
+### Reversed: "LSP diagnostics are deliberately not a producer"
+
+Recorded by CM.7 and reversed 2026-08-10 on merit (heuristic #1). The
+original reasoning was a mode-ownership boundary — but the producer
+code lives in `lattice-lsp`, publishes `ErrorEntry` through the
+protocol floor, and teaches the host nothing about LSP, so the
+boundary is intact. The stated principle it was protecting — no
+state-dependent command meaning — is preserved verbatim (§2). What
+remained was a carve-out contradicting §3's own "producer-agnostic by
+construction", which cost the user the grouped `*problems*` view,
+the `:error-list` picker, and cross-file `:next-error` over
+diagnostics for no compensating gain.

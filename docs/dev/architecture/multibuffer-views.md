@@ -1098,7 +1098,7 @@ arms.
 | Source-buffer close | Multibuffer holds `BufferId`s only; publishes `MultibufferSourceClosed { view, source }` on close; providers choose policy | Different providers want different behaviour (search drops; diff keeps as historical reference); deferring to provider is correct. |
 | Activator return type | `()` on the trait; signals drain via Editor's internal queue | Keeps `RendererSignal` out of `lattice-mode`. |
 | Async-scan UX | Open empty view immediately; populate via batched events; headerline shows progress | Paramount goal #1 (UI thread does no I/O); goal #4 (async by construction). |
-| Provider crate location | All in-tree providers live in `lattice-multibuffer/src/providers/`, feature-gated | User decision (2026-06-01) — providers we ship are part of multibuffer's deliverable, not standalone crates. |
+| Provider crate location | All in-tree providers live in `lattice-multibuffer/src/providers/`, feature-gated | User decision (2026-06-01) — providers we ship are part of multibuffer's deliverable, not standalone crates. **Partially reversed 2026-08-10, see below.** |
 | Status surface | Headerline (view-header virtual row) | Discoverable, uniform across providers, doesn't fragment user attention. Convention extends to all future async-populated buffer kinds. |
 | Excerpt motions location | `lattice-multibuffer/src/motions.rs`, contributed via `MultibufferMode::keymap()` | Excerpts only exist in multibuffers; motion ownership tracks data ownership. |
 
@@ -1108,7 +1108,42 @@ arms.
 - **Buffer-locals access on `ModeContext`.** ModeContext's design rationale (App-managed buffer-locals, App-side writes) stays. Per-provider state lives in per-provider services keyed by `BufferId`. Buffer-locals stay reserved for cross-cutting App-owned state (syntax handles, fold lists, icons).
 - **Sync initial scan + async continuation.** Even a "fast first batch" sync scan on the dispatch thread violates paramount goal #1. Trigger returns immediately; everything happens via events.
 - **`Document: Any` + downcast for typed handle access.** Contaminates the universal trait; opens the escape-hatch pattern for every future kind. Typed registry (`MultibufferRegistry`) keeps the downcast confined to multibuffer's own crate.
-- **Provider crates external to `lattice-multibuffer`.** User decision (2026-06-01): providers ship with multibuffer; the convention is one crate, feature-gated provider submodules.
+- **Provider crates external to `lattice-multibuffer`.** User decision (2026-06-01): providers ship with multibuffer; the convention is one crate, feature-gated provider submodules. **Partially reversed 2026-08-10 — see below.**
+
+#### Reversed 2026-08-10: a provider owned by a subsystem lives in that subsystem's crate
+
+The 2026-06-01 lock holds for providers with **no owning subsystem** —
+`search`, `narrow` and `problems` stay in
+`lattice-multibuffer/src/providers/`. It is reversed for providers that
+*are* a subsystem's user-facing surface: **the owning crate owns the
+provider**, and takes a dependency on `lattice-multibuffer`.
+
+- LSP surfaces (references, workspace symbols, refactor preview, call /
+  type hierarchy) → `lattice-lsp`.
+- VCS surfaces (project diff, git hunks) → `lattice-magit`.
+
+**Why (heuristic #1, on merit).** The original lock treated "where does
+the code live" as a packaging question. It is a mode-ownership question.
+`gr` is bound in `lattice-lsp`'s `LspNavMode`; the handler body sits on
+`Editor` in `lattice-host`. Adding the *view* in `lattice-multibuffer`
+would spread one surface across three crates — the half-migration the
+mode-ownership standing rule exists to prevent, with the acid test
+(a provider landing should require zero `Editor::` additions) failing
+outright. Putting the provider in the owning crate lets the chord, the
+handler closure and the view land together, and pulls the handler off
+`Editor` as a side effect.
+
+**Direction is clean:** `lattice-multibuffer` depends on neither
+`lattice-lsp` nor `lattice-magit`, so `lattice-lsp → lattice-multibuffer`
+and `lattice-magit → lattice-multibuffer` are both acyclic. It is
+strictly *better* than the locked direction, which would have made
+`lattice-multibuffer` — a substrate crate — depend on LSP and VCS.
+
+**What the lock got right and keeps:** the provider *template* is
+unchanged (service trait + handle, provider-minor mode, public trigger
+function, typed events, `register_<provider>` boot helper). Only the
+crate it is compiled into moves. Feature-gating moves with it — a
+provider is gated by its owning crate's features, not multibuffer's.
 
 ### 3.8 Excerpt-header visual model (MH, 2026-06-17)
 

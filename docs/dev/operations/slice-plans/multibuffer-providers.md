@@ -4,6 +4,28 @@
 > plan. The completed M.0–M.10 + M.V slices remain in the archive for
 > historical reference; this file owns the pending provider work.
 
+> **⚠️ Statuses below are stale (reviewed 2026-08-10, not yet re-baselined).**
+> A review against the current tree found: **A.6** shipped (the error-list
+> substrate + `providers/problems.rs` *are* the editable `:copen` quickfix);
+> **A.16** subsumed by it; **A.7** largely subsumed by `lattice-magit`;
+> **A.4 struck** (below); and the dependency blockers cited for **A.1** /
+> **A.7** (`D.7` VCS, diff extraction, `lattice-diagnostics` extraction)
+> **dissolved** — `lattice-vcs`, `lattice-diff` and `lattice-lsp` are all
+> standalone crates now. A full re-tier was deliberately deferred; treat 📝
+> icons here as unverified until then.
+>
+> **Provider home — reversed 2026-08-10.** The 2026-06-01 lock ("all in-tree
+> providers live in `lattice-multibuffer/src/providers/`, feature-gated";
+> `multibuffer-views.md` §3.7) is superseded for provider surfaces owned by
+> an existing subsystem: **the owning crate owns the provider**, taking a dep
+> on `lattice-multibuffer` (acyclic — multibuffer depends on neither). LSP
+> surfaces (A.3, A.9, A.8, A.10, A.11) belong in `lattice-lsp`; VCS surfaces
+> (A.1, A.7) in `lattice-magit`. Rationale: the mode-ownership standing rule
+> — a provider whose chord lives in `lattice-lsp` and whose view lives in
+> `lattice-multibuffer` while its handler sits on `Editor` is a three-way
+> half-migration. `search`, `narrow` and `problems` stay put: they have no
+> owning subsystem.
+
 Each entry below is a provider submodule in
 `crates/lattice-multibuffer/src/providers/<name>.rs`, gated behind a cargo
 feature. The repeated shape (locked 2026-06-01 in architecture §3.7 "Provider
@@ -108,20 +130,18 @@ cross-callsite refactors.
 - Tests: mock LSP returns 8 reference locations across 3 files → 8 excerpts;
   edit one → source file updates; version-mismatch path prompts user.
 
-### A.4 `DiagnosticsProvider` 📝
+### A.4 `DiagnosticsProvider` ❌ STRUCK (2026-08-10)
 
-All LSP diagnostics across the workspace as one multibuffer. Header per excerpt
-encodes severity (Error/Warning/Info/Hint), file:line, and the message; the
-excerpt body shows the offending line + context.
+**Not built.** It would stand up a second editable diagnostics multibuffer
+beside `*problems*`, which already exists and already groups by file. Making
+the language server a producer of the core `ErrorList` instead yields the
+grouped view, the `:error-list` picker, and the whole `:next-error` family at
+once, for a fraction of the surface.
 
-- Extra deps: LSP subsystem.
-- User surface: `:diagnostics` (all severities), `:diagnostics warning`
-  (filter), `:diagnostics file <path>` (single-file scope); `]d` / `[d`
-  motions for next/prev diagnostic inside the multibuffer.
-- Edit propagation: fixing the offending line updates the source; LSP re-runs
-  on the next debounce tick; diagnostic excerpts auto-remove when cleared.
-- Tests: 12 diagnostics across 4 files → 12 excerpts; filter by severity;
-  edit clears matching diagnostic after next LSP republish.
+- Superseded by: [`error-list.md`](../../architecture/error-list.md) §3.2 and
+  slice plan [`error-list-producers.md`](error-list-producers.md) (EP series).
+- The user-facing surface survives — `:diagnostics` gets repointed at the
+  grouped view in EP.5.
 
 ### A.6 `QuickfixProvider` 📝
 

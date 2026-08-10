@@ -124,6 +124,10 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
     // MG.21f. Costs a stat in the overwhelmingly common case — the
     // git calls behind the progress numbers run only once a bisect is
     // actually in flight, which is why `in_progress` gates `state`.
+    // Which multi-commit operation is stopped mid-flight, if any.
+    // Marker files in the gitdir, so it cannot go stale behind a git
+    // command the user ran in a terminal.
+    index.in_flight = lattice_vcs::InFlightOp::detect(repo);
     index.bisect = match lattice_vcs::Bisect::state(repo) {
         Ok(state) => state,
         Err(e) => {

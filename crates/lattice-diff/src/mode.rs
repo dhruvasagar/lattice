@@ -384,17 +384,18 @@ impl Mode for DiffMode {
 /// (design `diff-extraction.md` §4): it should activate **only** on
 /// buffers whose diff session carries conflict regions
 /// ([`crate::overlay::DiffSignKind::Conflict`]), and will contribute the
-/// conflict-resolution chords (keep-ours / keep-theirs / keep-both /
-/// next-conflict) + a conflict gutter.
+/// conflict-resolution chords (keep-ours / keep-theirs / keep-both).
 ///
-/// v1 is a deliberate marker **shell**: the activation predicate is
-/// [`sign_map_has_conflicts`]; the resolution chords and the
-/// bridge-driven activation wiring are a tracked follow-up. Conflict
-/// *resolution* actions don't exist yet, so DX.8 establishes the
-/// separately-activatable surface **without inventing behaviour** — the
-/// decomposition (conflict resolution ≠ 2-way diffing) is the win, not a
-/// premature chord set. `Guard = ()`: it allocates no per-buffer
-/// resources until the resolution chords land.
+/// DX.8 landed this as a marker shell; CR.3 filled it in. The chords
+/// are REAL — `d2o` / `d3o` / `d2p` / `d3p` / `dB`, with handler
+/// bodies below calling the matching `DiffSubsystem::diff_*_effect`
+/// resolver. (This comment claimed otherwise long after they shipped,
+/// as did the user page, which is a worse bug than a missing feature:
+/// it tells the user not to try.)
+///
+/// Still outstanding: next-conflict / prev-conflict navigation and a
+/// dedicated conflict gutter. `Guard = ()` — the mode allocates no
+/// per-buffer resources.
 pub struct DiffConflictMode;
 
 impl DiffConflictMode {

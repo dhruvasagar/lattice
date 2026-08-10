@@ -1796,7 +1796,7 @@ pub fn bisect_in_progress() -> bool {
 /// IS the state — no parsing, and it cannot go stale behind our back
 /// the way a cached flag would.
 pub fn cherry_pick_in_progress() -> bool {
-    sequencer_head_exists("CHERRY_PICK_HEAD")
+    in_flight() == Some(lattice_vcs::InFlightOp::CherryPick)
 }
 
 /// MG.42-E4: is a revert sequence stopped on a conflict?
@@ -1805,14 +1805,23 @@ pub fn cherry_pick_in_progress() -> bool {
 /// "sequencer running" flag because the two menus offer different ways
 /// IN — pick vs. revert — even though their ways OUT are identical.
 pub fn revert_in_progress() -> bool {
-    sequencer_head_exists("REVERT_HEAD")
+    in_flight() == Some(lattice_vcs::InFlightOp::Revert)
 }
 
-fn sequencer_head_exists(marker: &str) -> bool {
+/// The one detector every sequencer gate reads.
+///
+/// These used to be four independent marker checks here, which drifted
+/// from each other and from the status buffer: `am_in_progress` matched
+/// ANY `rebase-apply` (so a legacy-backend rebase reported `am` too),
+/// and `cherry_pick_in_progress` fired during an interactive rebase,
+/// which leaves `CHERRY_PICK_HEAD` behind as an implementation detail —
+/// offering `cherry-pick --continue` where only `rebase --continue`
+/// finishes the job. [`lattice_vcs::InFlightOp::detect`] resolves the
+/// precedence once, and the status headerline reads the same answer.
+fn in_flight() -> Option<lattice_vcs::InFlightOp> {
     crate::workdir::magit_workdir()
         .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .map(|repo| repo.gitdir().join(marker).exists())
-        .unwrap_or(false)
+        .and_then(|repo| lattice_vcs::InFlightOp::detect(&repo))
 }
 
 /// MG.41e: is a rebase stopped, mid-conflict or at an `edit` stop?
@@ -1826,22 +1835,11 @@ fn sequencer_head_exists(marker: &str) -> bool {
 /// [`am_in_progress`] looks at the same path: the two are
 /// distinguishable only by the `applying` marker file `am` leaves.
 pub fn rebase_in_progress() -> bool {
-    crate::workdir::magit_workdir()
-        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .map(|repo| {
-            let gitdir = repo.gitdir();
-            gitdir.join("rebase-merge").exists()
-                || (gitdir.join("rebase-apply").exists()
-                    && !gitdir.join("rebase-apply").join("applying").exists())
-        })
-        .unwrap_or(false)
+    in_flight() == Some(lattice_vcs::InFlightOp::Rebase)
 }
 
 pub fn am_in_progress() -> bool {
-    crate::workdir::magit_workdir()
-        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .map(|repo| repo.gitdir().join("rebase-apply").exists())
-        .unwrap_or(false)
+    in_flight() == Some(lattice_vcs::InFlightOp::ApplyPatch)
 }
 
 /// MG.37: is a `git notes merge` stopped on a conflict?
@@ -2139,7 +2137,7 @@ pub const ROOT_MENUS: &[RootMenu] = &[
         // `-submodule` majors bind `d` for delete-this-row, and a minor
         // shadows a major.
 
-        // Reachable via the dispatch, which `h` opens.
+        // Reachable via the dispatch, which `C-c g` opens.
         chord: None,
         action: "action:magit-menu-diff",
         doc: "Diff menu",
@@ -2149,7 +2147,7 @@ pub const ROOT_MENUS: &[RootMenu] = &[
         // `c`: change operator, but `magit-branch` binds `c` (create) and
         // `magit-refs` binds `c` (checkout).
 
-        // Reachable via the dispatch, which `h` opens.
+        // Reachable via the dispatch, which `C-c g` opens.
         chord: None,
         action: "action:magit-menu-commit",
         doc: "Commit menu",
@@ -2234,7 +2232,7 @@ pub const ROOT_MENUS: &[RootMenu] = &[
         // `p`: paste is inert, but `magit-remote` (prune) and `magit-stash`
         // (pop) bind `p`.
 
-        // Reachable via the dispatch, which `h` opens.
+        // Reachable via the dispatch, which `C-c g` opens.
         chord: None,
         action: "action:magit-menu-push",
         doc: "Push menu",
@@ -2250,7 +2248,7 @@ pub const ROOT_MENUS: &[RootMenu] = &[
         source: "magit-menu-rebase",
         // `r`: replace operator, but `magit-remote` binds `r` (rename).
 
-        // Reachable via the dispatch, which `h` opens.
+        // Reachable via the dispatch, which `C-c g` opens.
         chord: None,
         action: "action:magit-menu-rebase",
         doc: "Rebase menu",

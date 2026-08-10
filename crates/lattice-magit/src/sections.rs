@@ -89,6 +89,14 @@ pub struct SectionIndex {
     /// carries diff-bearing-file invariants — a path, a stage
     /// operation, an expandable patch — and a bisect has none of them.
     pub bisect: Option<lattice_vcs::BisectState>,
+    /// MG: the multi-commit operation the repo is stopped inside —
+    /// merge, rebase, cherry-pick, revert, `am` — or `None` when idle.
+    ///
+    /// Repo state like `bisect`, and here for the same reason: the
+    /// status buffer is where a user lands to resolve conflicts, and
+    /// without this it showed unmerged files with nothing saying WHAT
+    /// they are unmerged from or how to get out.
+    pub in_flight: Option<lattice_vcs::InFlightOp>,
 }
 
 impl SectionIndex {

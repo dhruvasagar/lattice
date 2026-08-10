@@ -624,6 +624,20 @@ pub(crate) fn status_fields(index: &SectionIndex, workdir: &Path) -> Vec<Field> 
     if let Some(bisect) = &index.bisect {
         fields.push(Field::alert(bisect_label(bisect)));
     }
+    // The multi-commit operation the repo is stopped inside, for the
+    // same reason and in the same place as the bisect alert: BEFORE the
+    // clean-tree early return. A merge or rebase stopped on a conflict
+    // can leave the staged/unstaged counts looking ordinary, and the
+    // one moment the user most needs to know they are mid-rebase is the
+    // moment nothing else on screen says so.
+    //
+    // It also disambiguates the unmerged labels directly below it:
+    // "added by us" means the opposite thing during a rebase than
+    // during a merge, because a rebase replays your work onto the
+    // upstream (see `InFlightOp::ours_is_local`).
+    if let Some(op) = index.in_flight {
+        fields.push(Field::alert(op.label()));
+    }
     let (staged, unstaged, untracked) = (
         count(SectionKind::Staged),
         count(SectionKind::Unstaged),
@@ -1079,6 +1093,7 @@ mod tests {
             ahead,
             behind,
             bisect: None,
+            in_flight: None,
         }
     }
 
@@ -1466,6 +1481,38 @@ mod tests {
     fn stash_row_carries_the_count() {
         assert_eq!(rendered(stash_fields(3)), "3 stashes");
         assert_eq!(rendered(stash_fields(0)), "0 stashes");
+    }
+
+    /// The status headerline must say which operation is in flight.
+    ///
+    /// Before this, only a bisect was announced: a merge, rebase,
+    /// cherry-pick or revert stopped on a conflict showed unmerged
+    /// files with nothing on screen saying what they were unmerged
+    /// FROM, or which `--continue` would finish it.
+    #[test]
+    fn status_headerline_announces_the_operation_in_flight() {
+        for op in lattice_vcs::InFlightOp::ALL {
+            let mut index = status_index("main", 0, 0);
+            index.in_flight = Some(op);
+            let row = rendered(status_fields(&index, std::path::Path::new("/tmp/repo")));
+            assert!(
+                row.contains(op.label()),
+                "{:?} must be announced, got {row}",
+                op
+            );
+        }
+    }
+
+    /// The alert survives a clean tree — a conflict resolved into the
+    /// index but not yet committed leaves the counts ordinary, and
+    /// that is exactly when the user needs telling.
+    #[test]
+    fn the_in_flight_alert_survives_a_clean_tree() {
+        let mut index = status_index("main", 0, 0);
+        index.in_flight = Some(lattice_vcs::InFlightOp::Rebase);
+        let row = rendered(status_fields(&index, std::path::Path::new("/tmp/repo")));
+        assert!(row.contains("REBASING"), "{row}");
+        assert!(row.contains("clean"), "still reports the tree state: {row}");
     }
 
     #[test]

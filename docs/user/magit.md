@@ -280,6 +280,81 @@ nothing shifts down and back up while git answers.
 
 ---
 
+## Conflicts, and finishing what you started
+
+A merge, rebase, cherry-pick, revert or `git am` that hits a conflict
+**stops** and leaves the repository mid-operation. Three things tell
+you where you are and get you out.
+
+### 1. The headerline says what you are in
+
+The status buffer announces the stopped operation as an alert:
+
+    MERGING · REBASING · CHERRY-PICKING · REVERTING · APPLYING
+
+It is read from git's own marker files in the gitdir every refresh, so
+it stays right even when you run git in a terminal alongside lattice.
+It appears whether or not the tree looks dirty — a conflict resolved
+into the index but not yet committed leaves the counts looking
+ordinary, and that is exactly when you most need telling.
+
+### 2. The unmerged files say how they conflict
+
+Conflicted paths appear in **Unstaged changes** with git's own wording
+rather than a flat "unmerged":
+
+| Label | Meaning |
+|---|---|
+| `both modified` | Changed on both sides — the ordinary conflict |
+| `both added` | Created on both sides |
+| `both deleted` | Deleted on both sides |
+| `added by us` | Only our side created it |
+| `added by them` | Only their side created it |
+| `deleted by us` | We deleted it, they changed it |
+| `deleted by them` | They deleted it, we changed it |
+
+> **"Us" and "them" invert.** In a **merge**, "us" is the branch you
+> are on. In a **rebase**, **cherry-pick**, **revert** or **`am`**,
+> git replays your work *onto* the other side — so "us" is the
+> upstream and "them" is **your own commit**. Read the headerline
+> alert first; it tells you which reading applies.
+
+### 3. Resolve, stage, continue
+
+Edit the file to resolve it — or use the
+[`diff-conflict-mode`](help:diff-conflict-mode) chords (`d3o` to take
+their side, `dB` to keep both) on a diffed conflict region. Then stage
+the resolved file with `s`, exactly like any other change.
+
+With everything staged, finish the operation from its menu. The menus
+are **state-gated**: while a sequence is stopped they offer only the
+ways OUT, because `--continue` / `--skip` / `--abort` error when
+nothing is running.
+
+| Operation | Menu | While stopped |
+|---|---|---|
+| Cherry-pick | `A` | continue · skip · abort |
+| Revert | `_` | continue · skip · abort |
+| Rebase | `C-c g` → rebase | continue · skip · abort |
+| `git am` | `C-c g` → patches | continue · skip · abort |
+
+Keys are deliberately overloaded between the two states — `A` is
+*pick* when idle and *continue* when stopped — which is magit's own
+arrangement and is safe only because the gate never shows both sets at
+once.
+
+There are also ex-commands for the same operations, e.g.
+`:magit-rebase-continue`, if you would rather type than navigate a
+menu.
+
+### What is not there yet
+
+- **No next-conflict motion.** Nothing jumps conflict-to-conflict
+  within a file; `]c` / `[c` walk diff hunks.
+- **No merge menu.** A stopped merge is announced and its conflicts
+  are listed and stageable, but committing the resolution is an
+  ordinary commit (`c c`) rather than a `merge --continue` row.
+
 ## When magit changes files on disk
 
 Plenty of magit actions rewrite your working tree: checking out a

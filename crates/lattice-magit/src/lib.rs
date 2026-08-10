@@ -405,9 +405,67 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     // registered exactly once at boot; each view publishes its own
     // refresh body here. See `buffer_state::MagitView` for why a
     // per-mode registration of a shared action id is unsafe.
-    boot.register_service::<buffer_state::MagitViewsHandle>(Arc::new(
-        buffer_state::MagitViews::default(),
-    ));
+    let views: buffer_state::MagitViewsHandle = Arc::new(buffer_state::MagitViews::default());
+    boot.register_service::<buffer_state::MagitViewsHandle>(views.clone());
+
+    // Reactive refresh: a magit mutation invalidates EVERY magit view,
+    // not the one the chord fired in.
+    //
+    // MG.21g found this shape for bisect — "a bisect mark checks out a
+    // different commit, so the status buffer, any open log, and any
+    // open diff are all stale at once, and refreshing only the buffer
+    // the chord fired in would leave the others confidently showing
+    // the previous HEAD". Every repo mutation has that property. This
+    // is that observation generalised from one operation to all of
+    // them, driven by the event every mutation already publishes.
+    //
+    // ONE subscription for the subsystem rather than one per mode.
+    // The split is deliberate: each view still owns its own refresh
+    // body (`MagitView::refresh`, which is also what `gr` runs), so
+    // the mode-owns-its-surface rule is satisfied where the behaviour
+    // lives. Only the invalidation SIGNAL is shared — and it is shared
+    // because it is one fact about the repository, not eight. Copying
+    // the subscription into every view mode would be the duplication
+    // `prefer-minor-modes-over-duplication` warns about, in the shape
+    // where a missing copy is silent: the view that forgot it would
+    // simply go stale.
+    subscribe_view_invalidation(boot, views);
+}
+
+/// Refresh every live magit view whenever a magit mutation reports
+/// itself finished.
+///
+/// Split out of [`install`] so the wiring reads as one thing rather
+/// than nine lines at the end of a 300-line function.
+fn subscribe_view_invalidation(
+    boot: &mut impl SubsystemBoot,
+    views: buffer_state::MagitViewsHandle,
+) {
+    let bus = boot.event_bus().clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    bus.subscribe(
+        lattice_runtime::EventFilter::kind(
+            lattice_protocol::event::EventKind::BackgroundTaskFinished,
+        ),
+        lattice_runtime::SubscriptionTarget::Channel(tx),
+    );
+    // Not unsubscribed: this lives for the editor's lifetime, like the
+    // service registration above it. There is no teardown point — the
+    // subsystem outlives every buffer it serves.
+    boot.runtime_handle().spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if !magit_global_mode::invalidates_a_magit_view(&event) {
+                continue;
+            }
+            for view in views.all() {
+                // Each `refresh` spawns its own task and returns
+                // `None`; the effect channel is not how these land.
+                // The body is the one `gr` runs, so it carries the
+                // view's cursor-restore state and wakes the screen.
+                let _ = view.refresh();
+            }
+        }
+    });
 }
 
 /// IX.2: the execute half of each destructive pair, and the slots its

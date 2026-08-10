@@ -2957,6 +2957,24 @@ pub(crate) fn event_bus() -> Option<std::sync::Arc<lattice_runtime::EventBus>> {
     EVENT_BUS.get().cloned()
 }
 
+/// Does this event mean a magit view is now stale?
+///
+/// Only magit's own work does. An LSP request or a compilation
+/// finishing is also a `BackgroundTaskFinished`, and neither says
+/// anything about the repository — refreshing on those would run
+/// `git status` every time a build ended.
+///
+/// Deliberately keyed on the event's `source` rather than its `label`:
+/// labels are human sentences that change with wording, and every
+/// magit spawner already stamps the same source.
+pub(crate) fn invalidates_a_magit_view(event: &lattice_protocol::event::Event) -> bool {
+    matches!(
+        event,
+        lattice_protocol::event::Event::BackgroundTaskFinished { source, .. }
+            if source == "magit"
+    )
+}
+
 /// MG.41g: report a finished background operation — log **and**
 /// publish, in one call.
 ///
@@ -5365,5 +5383,44 @@ mod tests {
     fn base_branch_from_prompt_buffer_name_rejects_unrelated_names() {
         assert_eq!(base_branch_from_prompt_buffer_name("*magit:status*"), None);
         assert_eq!(base_branch_from_prompt_buffer_name("*prompt*"), None);
+    }
+}
+
+#[cfg(test)]
+mod reactive_refresh {
+    use super::invalidates_a_magit_view;
+    use lattice_protocol::event::{Event, TaskOutcome};
+
+    fn finished(source: &str) -> Event {
+        Event::BackgroundTaskFinished {
+            source: source.to_string(),
+            label: "push".to_string(),
+            outcome: TaskOutcome::Succeeded {
+                summary: "done".to_string(),
+            },
+        }
+    }
+
+    /// The whole point: a magit mutation reported by ANY surface — the
+    /// branch view, a transient row, an ex-command, another pane —
+    /// invalidates this buffer, so it refreshes without the user
+    /// pressing `gr`.
+    #[test]
+    fn a_magit_task_invalidates_the_view() {
+        assert!(invalidates_a_magit_view(&finished("magit")));
+    }
+
+    /// And nothing else does. An LSP request or a compilation
+    /// finishing publishes the same event KIND and says nothing about
+    /// the repository; refreshing on those would run `git status`
+    /// every time a build ended.
+    #[test]
+    fn another_subsystems_task_does_not() {
+        for source in ["lsp", "compilation", "plugin", ""] {
+            assert!(
+                !invalidates_a_magit_view(&finished(source)),
+                "{source:?} must not trigger a magit refresh"
+            );
+        }
     }
 }

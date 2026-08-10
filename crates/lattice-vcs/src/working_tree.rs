@@ -38,11 +38,73 @@ pub enum PathStatus {
     Untracked,
     /// File is ignored via `.gitignore`. A whole-path state.
     Ignored,
-    /// File has unmerged entries — a real merge conflict. Covers all
-    /// seven of git's combinations (`DD`, `AU`, `UD`, `UA`, `DU`,
-    /// `AA`, `UU`). A whole-path state: the resolution work is in the
-    /// worktree, so it is reported there.
-    Unmerged,
+    /// File has unmerged entries — a real merge conflict, carrying
+    /// WHICH of git's seven combinations it is. A whole-path state:
+    /// the resolution work is in the worktree, so it is reported
+    /// there.
+    Unmerged(UnmergedKind),
+}
+
+/// Which unmerged combination git reported.
+///
+/// "Us" is the branch being merged INTO (`HEAD` / the branch you are
+/// rebasing onto); "them" is the incoming side. During a rebase or
+/// cherry-pick the two are inverted relative to what people expect —
+/// git replays your commits ONTO the upstream, so "us" is the
+/// upstream and "them" is your own commit. Naming the side is the
+/// whole value of distinguishing these: "both modified" and "deleted
+/// by them" call for completely different resolutions, and a generic
+/// "unmerged" tells the user neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnmergedKind {
+    /// `DD` — deleted on both sides.
+    BothDeleted,
+    /// `AU` — added by us, unmerged on their side.
+    AddedByUs,
+    /// `UD` — deleted by them.
+    DeletedByThem,
+    /// `UA` — added by them.
+    AddedByThem,
+    /// `DU` — deleted by us.
+    DeletedByUs,
+    /// `AA` — added on both sides.
+    BothAdded,
+    /// `UU` — modified on both sides. The ordinary conflict.
+    BothModified,
+    /// A `U` combination git documents no name for. Kept rather than
+    /// guessed at: reporting it as one of the seven would be a lie,
+    /// and dropping it would make the path invisible in the status —
+    /// the same silent omission `T` used to have.
+    Other,
+}
+
+impl UnmergedKind {
+    /// Git's own wording for this combination, as `git status` prints
+    /// it in the long format.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BothDeleted => "both deleted",
+            Self::AddedByUs => "added by us",
+            Self::DeletedByThem => "deleted by them",
+            Self::AddedByThem => "added by them",
+            Self::DeletedByUs => "deleted by us",
+            Self::BothAdded => "both added",
+            Self::BothModified => "both modified",
+            Self::Other => "unmerged",
+        }
+    }
+
+    /// Every named combination, for exhaustive tests and label tables.
+    pub const ALL: [Self; 8] = [
+        Self::BothDeleted,
+        Self::AddedByUs,
+        Self::DeletedByThem,
+        Self::AddedByThem,
+        Self::DeletedByUs,
+        Self::BothAdded,
+        Self::BothModified,
+        Self::Other,
+    ];
 }
 
 /// A path's porcelain `XY` status, kept as the TWO independent axes git
@@ -179,6 +241,14 @@ impl WorkingTree {
 /// working-tree status. The two are decoded SEPARATELY — see
 /// [`PathChange`] for why collapsing them is a bug rather than a
 /// simplification.
+/// An unmerged path, on the worktree axis.
+fn unmerged(kind: UnmergedKind) -> PathChange {
+    PathChange {
+        unstaged: Some(PathStatus::Unmerged(kind)),
+        ..PathChange::CLEAN
+    }
+}
+
 fn parse_porcelain_line(line: &str) -> PathChange {
     let chars: Vec<char> = line.chars().take(2).collect();
     if chars.len() < 2 {
@@ -202,15 +272,21 @@ fn parse_porcelain_line(line: &str) -> PathChange {
                 ..PathChange::CLEAN
             };
         }
-        // Unmerged: `U` on either side, plus the `AA` / `DD` both-added
-        // and both-deleted cases. Reported on the unstaged axis because
-        // the resolution work is in the worktree.
-        ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D') => {
-            return PathChange {
-                unstaged: Some(PathStatus::Unmerged),
-                ..PathChange::CLEAN
-            };
-        }
+        // Unmerged. Git documents exactly seven combinations; each is
+        // decoded by name because they call for different resolutions
+        // ("both modified" and "deleted by them" are not the same
+        // problem). Reported on the unstaged axis because the
+        // resolution work is in the worktree.
+        ('D', 'D') => return unmerged(UnmergedKind::BothDeleted),
+        ('A', 'U') => return unmerged(UnmergedKind::AddedByUs),
+        ('U', 'D') => return unmerged(UnmergedKind::DeletedByThem),
+        ('U', 'A') => return unmerged(UnmergedKind::AddedByThem),
+        ('D', 'U') => return unmerged(UnmergedKind::DeletedByUs),
+        ('A', 'A') => return unmerged(UnmergedKind::BothAdded),
+        ('U', 'U') => return unmerged(UnmergedKind::BothModified),
+        // Any other `U` pairing: still unmerged, still visible, but not
+        // claimed to be one of the seven.
+        ('U', _) | (_, 'U') => return unmerged(UnmergedKind::Other),
         _ => {}
     }
 
@@ -368,16 +444,44 @@ mod tests {
         assert_eq!(parse("??").unstaged, Some(PathStatus::Untracked));
         assert_eq!(parse("??").staged, None);
         assert_eq!(parse("!!").unstaged, Some(PathStatus::Ignored));
-        // Unmerged, including both-added and both-deleted. Reported on
-        // the unstaged axis because the resolution work is in the
-        // worktree — matching where magit lists it.
-        for xy in ["UU", "AA", "DD", "AU", "UD"] {
+        // All SEVEN unmerged combinations, each decoded by name. They
+        // call for different resolutions — "both modified" and
+        // "deleted by them" are not the same problem — so collapsing
+        // them into one "unmerged" tells the user nothing about what
+        // to do.
+        for (xy, kind) in [
+            ("DD", UnmergedKind::BothDeleted),
+            ("AU", UnmergedKind::AddedByUs),
+            ("UD", UnmergedKind::DeletedByThem),
+            ("UA", UnmergedKind::AddedByThem),
+            ("DU", UnmergedKind::DeletedByUs),
+            ("AA", UnmergedKind::BothAdded),
+            ("UU", UnmergedKind::BothModified),
+        ] {
             assert_eq!(
                 parse(xy).unstaged,
-                Some(PathStatus::Unmerged),
-                "{xy} is an unmerged state"
+                Some(PathStatus::Unmerged(kind)),
+                "{xy} is {}",
+                kind.label()
             );
+            // Never mistaken for a staged change: the resolution work
+            // is in the worktree.
+            assert_eq!(parse(xy).staged, None, "{xy} claims nothing staged");
         }
+        // A `U` pairing git documents no name for stays visible and is
+        // not claimed to be one of the seven.
+        assert_eq!(
+            parse("UM").unstaged,
+            Some(PathStatus::Unmerged(UnmergedKind::Other))
+        );
+        // Every named kind has git's own wording, and no two collide.
+        let labels: std::collections::HashSet<&str> =
+            UnmergedKind::ALL.iter().map(|k| k.label()).collect();
+        assert_eq!(
+            labels.len(),
+            UnmergedKind::ALL.len(),
+            "labels must be distinct"
+        );
         // Too short to carry a status ⇒ nothing claimed.
         assert!(parse_porcelain_line("").is_clean());
     }

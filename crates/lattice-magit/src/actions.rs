@@ -76,6 +76,14 @@ pub(crate) enum StatusLine {
         /// file means *deleting* it, which is a different command and
         /// a different question to ask the user.
         untracked: bool,
+        /// Where a renamed / copied path came from, parsed back out of
+        /// the row's `old -> new` rendering.
+        ///
+        /// Load-bearing for UNSTAGE: `git reset HEAD -- <new>` alone
+        /// leaves the old path staged-DELETED, so "unstage this
+        /// rename" would record a deletion the user never asked for.
+        /// Both paths have to be reset together.
+        original_path: Option<PathBuf>,
     },
     Stash {
         index: usize,
@@ -101,7 +109,7 @@ pub(crate) enum StatusLine {
 /// rendered row. `"renamed"` / `"copied"` / `"typechange"` arrived
 /// with the variants that were previously collapsed into `Added` (or,
 /// for a type change, dropped entirely).
-pub(crate) const FILE_LABELS: [&str; 9] = [
+pub(crate) const FILE_LABELS: [&str; 16] = [
     "modified",
     "new file",
     "deleted",
@@ -110,6 +118,15 @@ pub(crate) const FILE_LABELS: [&str; 9] = [
     "typechange",
     "untracked",
     "ignored",
+    // The seven unmerged combinations, in git's own wording, plus the
+    // generic fallback for a `U` pairing git documents no name for.
+    "both deleted",
+    "added by us",
+    "deleted by them",
+    "added by them",
+    "deleted by us",
+    "both added",
+    "both modified",
     "unmerged",
 ];
 
@@ -144,11 +161,32 @@ pub(crate) fn classify_line_text(
             index: idx_str.parse().ok()?,
         });
     }
-    for label in FILE_LABELS {
+    // LONGEST FIRST, and that ordering is load-bearing rather than
+    // tidy: labels are matched as PREFIXES, and `"deleted"` is a
+    // prefix of `"deleted by us"`. Iterating in declaration order, a
+    // `deleted by us   path` row matches `"deleted"`, leaves
+    // `" by us   path"` (which does start with whitespace), and parses
+    // the path as `"by us   path"` — a file that does not exist. Same
+    // trap for `"deleted by them"`.
+    let mut labels = FILE_LABELS;
+    labels.sort_by_key(|l| std::cmp::Reverse(l.len()));
+    for label in labels {
         if let Some(rest) = trimmed.strip_prefix(label)
             && rest.starts_with(char::is_whitespace)
         {
-            let path = PathBuf::from(rest.trim_start());
+            let field = rest.trim_start();
+            // A rename / copy row renders `old -> new`. Split from the
+            // RIGHT: ` -> ` is legal inside a filename, and the new
+            // path — the one every action targets — is what follows
+            // the last separator. A ` -> ` inside the NEW name is not
+            // recoverable from the rendered text, which is inherent to
+            // the display form git and magit both use.
+            let (original_path, path) = match field.rsplit_once(" -> ") {
+                Some((from, to)) if label == "renamed" || label == "copied" => {
+                    (Some(PathBuf::from(from)), PathBuf::from(to))
+                }
+                _ => (None, PathBuf::from(field)),
+            };
             let staged = header_above()
                 .map(|h| h.starts_with("Staged"))
                 .unwrap_or(false);
@@ -160,6 +198,7 @@ pub(crate) fn classify_line_text(
                 path,
                 staged,
                 untracked: label == "untracked",
+                original_path,
             });
         }
     }
@@ -1493,17 +1532,26 @@ impl crate::buffer_state::MagitView for StatusView {
 
     fn unstage(&self, cursor: Position) -> Option<Effect> {
         let s = self.0.clone();
-        let (path, workdir) = {
+        let (path, original_path, workdir) = {
             let g = s.lock().ok()?;
-            let StatusLine::File { path, .. } = classify_line(&g, cursor.line)? else {
+            let StatusLine::File {
+                path,
+                original_path,
+                ..
+            } = classify_line(&g, cursor.line)?
+            else {
                 return None;
             };
-            (path, g.workdir.clone())
+            (path, original_path, g.workdir.clone())
         };
         spawn_mutation_and_refresh(s, format!("unstage {}", path.display()), move || {
             let repo =
                 Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
-            Index::unstage_path(&repo, &path)
+            // A rename is two index entries; both have to be reset or
+            // the old path stays staged-deleted. See `unstage_paths`.
+            let mut targets = vec![path.clone()];
+            targets.extend(original_path.clone());
+            Index::unstage_paths(&repo, &targets)
                 .map(|()| String::new())
                 .map_err(|e| e.to_string())
         })
@@ -1555,6 +1603,7 @@ mod tests {
             path: PathBuf::from(path),
             staged,
             untracked: false,
+            original_path: None,
         })
     }
 
@@ -1672,6 +1721,7 @@ mod tests {
                 path: PathBuf::from("src/lib.rs"),
                 staged: true,
                 untracked: false,
+                original_path: None,
             })
         );
     }
@@ -1686,6 +1736,7 @@ mod tests {
                 path: PathBuf::from("src/main.rs"),
                 staged: false,
                 untracked: false,
+                original_path: None,
             })
         );
     }
@@ -1747,6 +1798,7 @@ mod tests {
                 path: PathBuf::from("notes.txt"),
                 staged: false,
                 untracked: true,
+                original_path: None,
             })
         );
     }
@@ -1761,6 +1813,131 @@ mod tests {
                 path: PathBuf::from("old.rs"),
                 staged: false,
                 untracked: false,
+                original_path: None,
+            })
+        );
+    }
+
+    /// Every label a status row can carry must round-trip back to its
+    /// path — including the multi-word unmerged ones.
+    ///
+    /// The trap this pins: labels are matched as PREFIXES, and
+    /// `"deleted"` is a prefix of `"deleted by us"`. In declaration
+    /// order, a `deleted by us` row matched `"deleted"`, left
+    /// `" by us   path"` (whitespace-led, so the guard passed) and
+    /// parsed the path as `"by us   path"` — a file that does not
+    /// exist, so staging or visiting it would silently miss. Matching
+    /// longest-first is what makes this correct, which is why it is
+    /// asserted over the whole label set rather than one example.
+    #[test]
+    fn every_label_round_trips_to_its_path() {
+        for label in FILE_LABELS {
+            let line = format!(
+                "  {label:<width$} {path}",
+                width = crate::sections::LABEL_WIDTH,
+                path = "src/deep/path.rs"
+            );
+            let sl = classify_line_text(&line, header("Unstaged changes (1)"));
+            assert_eq!(
+                sl,
+                Some(StatusLine::File {
+                    path: PathBuf::from("src/deep/path.rs"),
+                    staged: false,
+                    untracked: label == "untracked",
+                    original_path: None,
+                }),
+                "label {label:?} must yield the path, not a fragment of its own text"
+            );
+        }
+    }
+
+    /// A rename row renders `old -> new`, and classification must
+    /// return the NEW path (what every action targets) while keeping
+    /// the origin — unstaging needs both, or the old path stays
+    /// staged-deleted.
+    #[test]
+    fn a_rename_row_yields_the_new_path_and_keeps_its_origin() {
+        let line = format!(
+            "  {label:<width$} {path}",
+            label = "renamed",
+            width = crate::sections::LABEL_WIDTH,
+            path = "docs/old name.md -> docs/new name.md"
+        );
+        let sl = classify_line_text(&line, header("Staged changes (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("docs/new name.md"),
+                staged: true,
+                untracked: false,
+                original_path: Some(PathBuf::from("docs/old name.md")),
+            })
+        );
+    }
+
+    /// ` -> ` is legal in a filename, so the split is from the RIGHT:
+    /// the new path is whatever follows the LAST separator.
+    #[test]
+    fn a_rename_splits_from_the_right() {
+        let line = format!(
+            "  {label:<width$} {path}",
+            label = "renamed",
+            width = crate::sections::LABEL_WIDTH,
+            path = "a -> b.txt -> c.txt"
+        );
+        match classify_line_text(&line, header("Staged changes (1)")) {
+            Some(StatusLine::File {
+                path,
+                original_path,
+                ..
+            }) => {
+                assert_eq!(path, PathBuf::from("c.txt"));
+                assert_eq!(original_path, Some(PathBuf::from("a -> b.txt")));
+            }
+            other => panic!("expected a File row, got {other:?}"),
+        }
+    }
+
+    /// Only rename / copy rows carry the arrow form — a MODIFIED file
+    /// whose name happens to contain ` -> ` keeps its whole name.
+    #[test]
+    fn only_rename_rows_split_on_the_arrow() {
+        let line = format!(
+            "  {label:<width$} {path}",
+            label = "modified",
+            width = crate::sections::LABEL_WIDTH,
+            path = "weird -> name.txt"
+        );
+        match classify_line_text(&line, header("Unstaged changes (1)")) {
+            Some(StatusLine::File {
+                path,
+                original_path,
+                ..
+            }) => {
+                assert_eq!(path, PathBuf::from("weird -> name.txt"));
+                assert_eq!(original_path, None);
+            }
+            other => panic!("expected a File row, got {other:?}"),
+        }
+    }
+
+    /// A path containing a label word must not be mistaken for one.
+    #[test]
+    fn a_path_that_looks_like_a_label_is_still_a_path() {
+        let line = format!(
+            "  {label:<width$} {path}",
+            label = "modified",
+            width = crate::sections::LABEL_WIDTH,
+            path = "deleted by us.txt"
+        );
+        let sl = classify_line_text(&line, header("Unstaged changes (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("deleted by us.txt"),
+                staged: false,
+                untracked: false,
+                original_path: None,
             })
         );
     }
@@ -1824,11 +2001,13 @@ mod tests {
             path: PathBuf::from("conflict.rs"),
             staged: true,
             untracked: false,
+            original_path: None,
         };
         let unstaged = StatusLine::File {
             path: PathBuf::from("conflict.rs"),
             staged: false,
             untracked: false,
+            original_path: None,
         };
         assert_ne!(entry_key(&staged), entry_key(&unstaged));
     }
@@ -1883,6 +2062,7 @@ mod expand_payload_tests {
             path: PathBuf::from(path),
             staged: false,
             untracked: false,
+            original_path: None,
         }
     }
 

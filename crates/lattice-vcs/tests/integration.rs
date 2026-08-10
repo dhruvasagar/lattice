@@ -338,6 +338,44 @@ fn a_type_change_is_reported_not_dropped() {
     assert_eq!(change.unstaged, Some(PathStatus::TypeChanged));
 }
 
+/// Unstaging a rename has to reset BOTH index entries.
+///
+/// A staged rename is the new path added AND the old one deleted.
+/// `git reset HEAD -- <new>` alone leaves `D  old` still staged — a
+/// deletion the user never asked for, which the next commit would
+/// record. Verified against real git rather than reasoned about,
+/// because the wrong version looks like it worked: the row does
+/// disappear from Staged changes.
+#[test]
+fn unstaging_a_rename_leaves_nothing_staged() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "old.txt", "hello\n");
+    git_add(&repo, "old.txt");
+    git_commit(&repo, "initial");
+    repo.run_git_str(["mv", "old.txt", "new.txt"]).unwrap();
+
+    let staged_rename = WorkingTree::statuses(&repo).unwrap();
+    let (_, change) = staged_rename
+        .iter()
+        .find(|(p, _)| p.to_string_lossy() == "new.txt")
+        .expect("rename staged");
+    let origin = change.original_path.clone().expect("origin recorded");
+
+    Index::unstage_paths(&repo, [std::path::Path::new("new.txt"), &origin]).unwrap();
+
+    let after = WorkingTree::statuses(&repo).unwrap();
+    let still_staged: Vec<String> = after
+        .iter()
+        .filter(|(_, c)| c.staged.is_some())
+        .map(|(p, c)| format!("{}: {:?}", p.display(), c.staged))
+        .collect();
+    assert!(
+        still_staged.is_empty(),
+        "unstaging a rename must leave the index at HEAD, still staged: {still_staged:?}"
+    );
+}
+
 #[test]
 fn statuses_multiple() {
     let (_dir, repo) = init_temp_repo();

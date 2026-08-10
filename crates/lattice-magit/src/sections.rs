@@ -9,10 +9,27 @@ use lattice_vcs::PathStatus;
 
 #[derive(Debug, Clone)]
 pub enum SectionEntry {
-    File { path: PathBuf, status: PathStatus },
-    Stash { index: usize, message: String },
-    Commit { sha: String, subject: String },
-    UntrackedFile { path: PathBuf },
+    File {
+        path: PathBuf,
+        status: PathStatus,
+        /// Where a renamed / copied path came from, so the row can
+        /// render `old -> new` the way git and magit do — and so
+        /// unstaging can reset BOTH paths. Resetting only the new one
+        /// leaves the old path staged-DELETED, a deletion the user
+        /// never asked for and the next commit would record.
+        original_path: Option<PathBuf>,
+    },
+    Stash {
+        index: usize,
+        message: String,
+    },
+    Commit {
+        sha: String,
+        subject: String,
+    },
+    UntrackedFile {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -140,13 +157,28 @@ impl SectionIndex {
                     spans.push(Vec::new());
                 }
                 match entry {
-                    SectionEntry::File { path, status } => {
+                    SectionEntry::File {
+                        path,
+                        status,
+                        original_path,
+                    } => {
                         let label = status_label(*status);
-                        let path_s = path.to_string_lossy();
-                        let path_text = format!("  {:<12} {}", label, path_s);
+                        // A rename / copy renders `old -> new`, as git
+                        // and magit both do: the origin is half the
+                        // information, and a row saying only `new` is
+                        // indistinguishable from a fresh file.
+                        let path_s = match original_path {
+                            Some(from) => std::borrow::Cow::Owned(format!(
+                                "{} -> {}",
+                                from.to_string_lossy(),
+                                path.to_string_lossy()
+                            )),
+                            None => path.to_string_lossy(),
+                        };
+                        let path_text = format!("  {label:<LABEL_WIDTH$} {path_s}");
                         out.push_str(&path_text);
                         out.push('\n');
-                        let path_start = 2 + 12 + 1;
+                        let path_start = 2 + LABEL_WIDTH + 1;
                         let label_end = 2 + label.len();
                         spans[line_idx] = match status {
                             PathStatus::Deleted => vec![
@@ -173,7 +205,7 @@ impl SectionIndex {
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
-                            PathStatus::Unmerged => vec![
+                            PathStatus::Unmerged(_) => vec![
                                 lattice_cells::style::StyledSpan {
                                     start: 2,
                                     end: label_end,
@@ -251,10 +283,10 @@ impl SectionIndex {
                     SectionEntry::UntrackedFile { path } => {
                         let label = "untracked";
                         let path_s = path.to_string_lossy();
-                        let line_text = format!("  {:<12} {}", label, path_s);
+                        let line_text = format!("  {label:<LABEL_WIDTH$} {path_s}");
                         out.push_str(&line_text);
                         out.push('\n');
-                        let path_start = 2 + 12 + 1;
+                        let path_start = 2 + LABEL_WIDTH + 1;
                         spans[line_idx] = vec![
                             lattice_cells::style::StyledSpan {
                                 start: 2,
@@ -328,9 +360,22 @@ fn status_label(status: PathStatus) -> &'static str {
         PathStatus::TypeChanged => "typechange",
         PathStatus::Untracked => "untracked",
         PathStatus::Ignored => "ignored",
-        PathStatus::Unmerged => "unmerged",
+        // Git's own wording per combination — "both modified" and
+        // "deleted by them" are different problems and a generic
+        // "unmerged" tells the user neither.
+        PathStatus::Unmerged(kind) => kind.label(),
     }
 }
+
+/// Width of the label column in a rendered file row.
+///
+/// Was a bare `12` written out at three sites. The unmerged labels
+/// ("deleted by them" is 15 columns) overflow that, and an overflowing
+/// `{:<12}` silently stops padding — which would have left the styled
+/// spans' hardcoded `path_start` pointing INTO the label. Derived from
+/// the labels themselves, with `label_column_fits_every_label` holding
+/// it honest.
+pub(crate) const LABEL_WIDTH: usize = 15;
 
 #[cfg(test)]
 mod tests {
@@ -351,12 +396,26 @@ mod tests {
         assert!(!is_section_header(""));
     }
 
+    /// `LABEL_WIDTH` must fit every label, or `{:<WIDTH$}` stops
+    /// padding and the styled spans' `path_start` lands inside the
+    /// label text instead of on the path.
+    #[test]
+    fn label_column_fits_every_label() {
+        for label in crate::actions::FILE_LABELS {
+            assert!(
+                label.len() <= LABEL_WIDTH,
+                "{label:?} is {} columns, wider than LABEL_WIDTH ({LABEL_WIDTH})",
+                label.len()
+            );
+        }
+    }
+
     #[test]
     fn status_label_is_a_subset_of_actions_file_labels() {
         // actions::FILE_LABELS must stay in sync with every label this
         // renders — the comment there documents the pairing; this
         // test catches drift mechanically instead of by inspection.
-        for status in [
+        let mut all = vec![
             PathStatus::Modified,
             PathStatus::Added,
             PathStatus::Deleted,
@@ -365,8 +424,15 @@ mod tests {
             PathStatus::TypeChanged,
             PathStatus::Untracked,
             PathStatus::Ignored,
-            PathStatus::Unmerged,
-        ] {
+        ];
+        // Every unmerged combination renders its own label, so every
+        // one has to be reachable from `classify_line`.
+        all.extend(
+            lattice_vcs::UnmergedKind::ALL
+                .into_iter()
+                .map(PathStatus::Unmerged),
+        );
+        for status in all {
             let label = status_label(status);
             assert!(
                 crate::actions::FILE_LABELS.contains(&label),

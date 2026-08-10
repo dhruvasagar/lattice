@@ -1166,6 +1166,7 @@ mod tests {
                 .map(|i| SectionEntry::File {
                     path: std::path::PathBuf::from(format!("f{i}.rs")),
                     status: lattice_vcs::PathStatus::Modified,
+                    original_path: None,
                 })
                 .collect(),
         });

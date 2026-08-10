@@ -16,10 +16,36 @@ impl Index {
 
     /// Unstage a file path (equivalent to `git reset HEAD -- <path>`).
     pub fn unstage_path(repo: &Repository, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        repo.run_git(["reset", "HEAD", "--", path.to_string_lossy().as_ref()])
+        Self::unstage_paths(repo, [path.as_ref()])
+    }
+
+    /// Unstage every path in one `git reset`, which is what a RENAME
+    /// requires.
+    ///
+    /// A staged rename occupies TWO index entries — the new path added
+    /// and the old one deleted — and resetting only the new one leaves
+    /// `D  old` still staged: a deletion the user never asked for, and
+    /// one the next commit would record. Resetting both together
+    /// returns the index to HEAD, leaving the rename visible in the
+    /// worktree as a delete plus an untracked file, which is exactly
+    /// how git reports an unstaged rename (it does not detect them).
+    pub fn unstage_paths<I, P>(repo: &Repository, paths: I) -> Result<()>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let owned: Vec<String> = paths
+            .into_iter()
+            .map(|p| p.as_ref().to_string_lossy().into_owned())
+            .collect();
+        if owned.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<&str> = vec!["reset", "HEAD", "--"];
+        args.extend(owned.iter().map(String::as_str));
+        repo.run_git(args)
             .map(|_| ())
-            .map_err(|e| VcsError::Index(format!("unstage_path {}: {}", path.display(), e)))
+            .map_err(|e| VcsError::Index(format!("unstage_paths {}: {}", owned.join(" "), e)))
     }
 
     /// MG.18a: apply a unified-diff `patch` to the index (`cached`) or

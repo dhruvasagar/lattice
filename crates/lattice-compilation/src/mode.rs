@@ -75,12 +75,12 @@ impl CompilationMode {
 fn compilation_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
+        // RV.2 (2026-08-10): `gr` is NOT declared here. It lives once on
+        // `refreshable-view-mode`; this mode names its refresh target
+        // via `Mode::refresh_action()` below, and the shared minor
+        // arrives through the implies cascade. The handler body
+        // (`action:compilation-recompile`) is unchanged.
         vec![
-            keymap_entry! {
-                mode: Normal, chord: "gr",
-                doc: "Recompile — re-run the last compilation command",
-                cmd: "action:compilation-recompile"
-            },
             keymap_entry! {
                 mode: Normal, chord: "<C-c>",
                 doc: "Kill the running compilation",
@@ -185,11 +185,25 @@ impl Mode for CompilationMode {
         CapabilitySet::empty()
     }
 
-    /// CM.3a: `gr` → recompile. Resolved at host translation time via
-    /// `CommandRegistry` against the `action:compilation-recompile`
-    /// name registered by `lattice-host::actions::populate`.
+    /// `<C-c>` kill + `<CR>` jump-to-location. Resolved at host
+    /// translation time via `CommandRegistry` against the names
+    /// registered by `lattice-host::actions::populate`.
+    ///
+    /// RV.2: `gr` is deliberately absent — see
+    /// [`Self::refresh_action`].
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(compilation_keymap_entries())
+    }
+
+    /// RV.2 (2026-08-10): recompile is this mode's refresh.
+    ///
+    /// The chord (`gr`) lives once on `refreshable-view-mode`, which the
+    /// implies cascade activates because this returns `Some`. The
+    /// handler body is unchanged — `action:compilation-recompile` is the
+    /// same command the mode's own `gr` entry used to name directly.
+    /// See `docs/dev/architecture/mode-architecture.md` §5.5.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:compilation-recompile")
     }
 
     /// CM.3c: severity gutter marks for the `*compilation*` buffer. Reads

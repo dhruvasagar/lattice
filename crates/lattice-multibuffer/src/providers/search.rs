@@ -26,15 +26,15 @@
 
 use lattice_protocol::CancellationToken;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId};
 use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, CapabilitySet, Keymap,
-    KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind, ModeRegistry,
-    ServiceRegistry, keymap_entry,
+    ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, CapabilitySet,
+    LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind, ModeRegistry,
+    ServiceRegistry,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 use tokio::sync::mpsc;
@@ -413,37 +413,6 @@ impl ProjectSearchMode {
     }
 }
 
-/// K.2.5 (2026-06-02): static keymap catalog for
-/// `ProjectSearchMode`.
-///
-/// One action chord:
-/// - `g` `r` → `action:search-refresh` (re-run scan with the
-///   view's current query)
-///
-/// `<CR>` navigation is handled by `MultibufferMode`'s generic
-/// `action:multibuffer-jump-to-source` handler (minor-mode
-/// keymap does not shadow it).
-///
-/// Action names registered by
-/// `crates/lattice-host/src/actions.rs:populate` against the
-/// host's `CommandRegistry`. The K.2.4 host translation pass
-/// resolves the names at registration time.
-///
-/// Replaces `crates/lattice-host/src/multibuffer_keymap.rs`'s
-/// `project_search_mode_layer_bindings` which built the trie by
-/// hand and was pushed explicitly via `KeymapHandle::push_layer`
-/// at boot.
-fn project_search_keymap_entries() -> &'static [KeymapEntry] {
-    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        vec![keymap_entry! {
-            mode: Normal, chord: "gr",
-            doc: "Re-run the project-search scan with the view's current query",
-            cmd: "action:search-refresh"
-        }]
-    })
-}
-
 pub struct ProjectSearchModeGuard {
     forwarder: Option<tokio::task::JoinHandle<()>>,
     subs: Vec<lattice_runtime::SubscriptionId>,
@@ -504,8 +473,15 @@ impl Mode for ProjectSearchMode {
     /// and `gr` re-runs the scan. Resolved at host translation
     /// time via `CommandRegistry` against the action names
     /// registered by `lattice-host::actions::populate`.
-    fn keymap(&self) -> Keymap {
-        Keymap::from_entries(project_search_keymap_entries())
+    /// RV.2 (2026-08-10): no keymap of its own any more.
+    ///
+    /// `gr` was this mode's only chord, and it now lives once on
+    /// `refreshable-view-mode` — pulled in by the implies cascade
+    /// because [`Self::refresh_action`] returns `Some`. `<CR>`
+    /// navigation still comes from `MultibufferMode`'s generic
+    /// `action:multibuffer-jump-to-source` handler.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:search-refresh")
     }
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {

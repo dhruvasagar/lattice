@@ -62,8 +62,12 @@ impl MagitCoreMode {
 fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
+        // RV.2 (2026-08-10): `gr` is NOT declared here. It lives once on
+        // `refreshable-view-mode`; this mode names its refresh target
+        // via `Mode::refresh_action()` below, and the shared minor
+        // arrives through the implies cascade. `action:magit-refresh`
+        // and its handler are unchanged — only the binding moved.
         vec![
-            keymap_entry! { mode: Normal, chord: "gr", doc: "Refresh current magit buffer", cmd: "action:magit-refresh" },
             keymap_entry! { mode: Normal, chord: "q", doc: "Close magit buffer", cmd: "action:magit-close" },
             keymap_entry! { mode: Normal, chord: "]]", doc: "Next section", cmd: "action:magit-next-section" },
             keymap_entry! { mode: Normal, chord: "[[", doc: "Previous section", cmd: "action:magit-prev-section" },
@@ -1239,6 +1243,18 @@ impl Mode for MagitCoreMode {
     }
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(magit_core_keymap_entries())
+    }
+
+    /// RV.2 (2026-08-10): magit-refresh is every magit buffer's refresh.
+    ///
+    /// Declared once here, on the minor that spans every magit view —
+    /// which is the same reason `gr` was bound here rather than
+    /// per-view. The chord itself now lives on `refreshable-view-mode`,
+    /// pulled in by the implies cascade because this returns `Some`; the
+    /// handler body is untouched. See
+    /// `docs/dev/architecture/mode-architecture.md` §5.5.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:magit-refresh")
     }
 
     /// MG.13: every magit-core chord, registered once at boot.

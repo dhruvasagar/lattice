@@ -115,6 +115,17 @@ impl Mode for PluginManagerMode {
         Keymap::from_entries(plugins_keymap_entries())
     }
 
+    /// RV.2 (2026-08-10): refresh is declared, not bound.
+    ///
+    /// `gr` used to be an entry in this mode's own keymap. It now lives
+    /// once on `refreshable-view-mode`, which the implies cascade
+    /// activates because this returns `Some`; the handler body for
+    /// `action:plugins-refresh` is unchanged. See
+    /// `docs/dev/architecture/mode-architecture.md` §5.5.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:plugins-refresh")
+    }
+
     /// The reload / unload / describe / refresh handlers (bodies in
     /// [`crate::actions`]). Registered globally by the host's
     /// `register_mode_action_handlers` walk, gated to `plugins-mode`-active
@@ -228,11 +239,6 @@ fn plugins_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "<CR>",
                 doc: "plugins: describe the plugin under the cursor",
                 cmd: "action:plugins-describe"
-            },
-            keymap_entry! {
-                mode: Normal, chord: "gr",
-                doc: "plugins: refresh the plugin list",
-                cmd: "action:plugins-refresh"
             },
             keymap_entry! {
                 mode: Normal, chord: "t",

@@ -52,7 +52,6 @@ fn keymap_entries() -> &'static [KeymapEntry] {
         vec![
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Run the action for the notification at cursor", cmd: "action:notification-run" },
             keymap_entry! { mode: Normal, chord: "d", doc: "Dismiss the notification at cursor", cmd: "action:notification-dismiss" },
-            keymap_entry! { mode: Normal, chord: "gr", doc: "Refresh the notification list", cmd: "action:notification-refresh" },
         ]
     })
 }
@@ -114,6 +113,17 @@ impl Mode for NotificationsMode {
     }
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(keymap_entries())
+    }
+
+    /// RV.2 (2026-08-10): refresh is declared, not bound.
+    ///
+    /// `gr` used to be an entry in this mode's own keymap. It now lives
+    /// once on `refreshable-view-mode`, which the implies cascade
+    /// activates because this returns `Some`; the handler body for
+    /// `action:notification-refresh` is unchanged. See
+    /// `docs/dev/architecture/mode-architecture.md` §5.5.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:notification-refresh")
     }
 
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {

@@ -55,21 +55,43 @@ and the second is logged; the shared minor is not active on a plain
 source buffer, so `gr` there still reaches LSP references (the
 regression that matters most).
 
-## RV.2 — Retrofit 📝
+## RV.2 — Retrofit ✅
 
 Two lines each: delete the `gr` `keymap_entry!`, add `refresh_action()`.
-Handler bodies do not move.
+Handler bodies did not move.
 
 | Crate | Mode | Action |
 |---|---|---|
 | `lattice-magit` | `magit-core-mode` | `magit-refresh` |
 | `lattice-compilation` | `compilation-mode` | `compilation-recompile` |
 | `lattice-multibuffer` | `providers::search` | `search-refresh` |
+| `lattice-plugin-manager` | `plugins-mode` | `plugins-refresh` |
+| `lattice-notify` | `notifications-mode` | `notification-refresh` |
 
-**Tests.** `gr` still refreshes each of the three (behaviour-preserving
-— any user-visible change here is a regression); no `chord: "gr"`
-remains outside the shared minor and `lattice-lsp`'s nav mode (grep
-gate, so copy number four cannot land quietly).
+> **There were five copies, not three.** `lattice-plugin-manager` and
+> `lattice-notify` also declared their own `gr`; neither was in the
+> design's inventory, and that inventory was written *by reading the
+> code*. They surfaced only because the retrofit grep swept the whole
+> tree. So the count stands at five duplicated and two missing
+> (`*problems*`, narrow) — and an inventory taken by hand missed 40% of
+> the duplicates. Precisely what "a gap in a copied set does not
+> announce itself" predicts, applied to the audit as well as the code.
+
+`providers::search` lost its `keymap()` entirely — `gr` was its only
+chord.
+
+**Tests.** `gr` still refreshes each (behaviour-preserving; any
+user-visible change here is a regression), and
+`lattice-host/tests/gr_is_declared_once.rs` walks the tree asserting
+`chord: "gr"` appears only in `refreshable_view_mode.rs` and
+`lattice-lsp/src/modes.rs`.
+
+**Why that test greps source rather than driving keys.** A behavioural
+test cannot catch this bug class: it would have passed on all five
+copies, and passed just as happily on the two views that had none. The
+property worth pinning is "declared once", so the test asserts that
+directly. Copy number six is a failing test, not a discovery months
+later.
 
 ## RV.3 — Close the gaps 📝
 

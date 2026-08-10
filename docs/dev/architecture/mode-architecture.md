@@ -663,13 +663,21 @@ property of synthetic views as a class, not of any one of them — so by
 the "shared behaviour is a minor mode, never a copied keymap" standing
 rule the chord belongs on one shared minor, not re-declared per mode.
 
-It was re-declared per mode. As of 2026-08-10 three independent copies
-existed — `magit-core-mode` (`action:magit-refresh`), `compilation-mode`
-(`action:compilation-recompile`), `providers::search`
-(`action:search-refresh`) — and the two synthetic views that landed most
-recently, `*problems*` and narrow, **had no `gr` at all**. Nobody
-noticed, because a gap in a copied set does not announce itself. That is
-the failure this section closes.
+It was re-declared per mode. As of 2026-08-10 **five** independent
+copies existed — `magit-core-mode` (`action:magit-refresh`),
+`compilation-mode` (`action:compilation-recompile`), `providers::search`
+(`action:search-refresh`), `plugins-mode` (`action:plugins-refresh`) and
+`notifications-mode` (`action:notification-refresh`) — while the two
+synthetic views that landed most recently, `*problems*` and narrow,
+**had no `gr` at all**. Nobody noticed, because a gap in a copied set
+does not announce itself. That is the failure this section closes.
+
+The first draft of this section said *three* copies. That count came
+from reading the code, and it was wrong by two — the last pair surfaced
+only when RV.2 grepped the whole tree. The failure mode applies to the
+audit as readily as to the code, which is why RV.2 ends in a source-grep
+test (`lattice-host/tests/gr_is_declared_once.rs`) rather than trusting
+the next hand-written inventory to be complete.
 
 #### The seam
 

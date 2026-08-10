@@ -35475,7 +35475,7 @@ impl Editor {
     /// `:` and plugins get identical treatment to a keystroke.
     pub fn dispatch_invocation(
         &mut self,
-        inv: lattice_grammar::CommandInvocation,
+        mut inv: lattice_grammar::CommandInvocation,
         out: &mut DispatchOutcome,
     ) {
         // K.3.5 (2026-06-02): missing-required-arg short-circuit.
@@ -35585,10 +35585,21 @@ impl Editor {
         // Nothing declared ⇒ echo. Deliberately not a silent swallow:
         // before RV.1, `gr` in `*problems*` and narrow did nothing at
         // all and nobody noticed. A view without a refresh now says so.
-        let mut dispatch_command = inv.command;
+        //
+        // The rewrite lands on `inv.command` itself, NOT on a local
+        // used only for the handler lookup below. A refresh action can
+        // be satisfied two different ways — an `ActionHandler` closure
+        // (magit, search, plugins, notify) or a live `ActionSpec::apply`
+        // (`action:compilation-recompile`) — and only the first goes
+        // through that lookup. Rewriting a local would leave the
+        // ActionSpec kind falling through to the *original*
+        // `action:view-refresh`, whose apply is a deliberate dead
+        // `Effect::None`, so `gr` in `*compilation*` would silently do
+        // nothing. Rewriting the invocation fixes every downstream path
+        // at once: handler lookup, per-kind runner, and the Action gate.
         if self.is_view_refresh_command(inv.command) {
             match self.resolve_refresh_action(buf_id) {
-                Some(target) => dispatch_command = target,
+                Some(target) => inv.command = target,
                 None => {
                     self.set_message(EchoLevel::Info, "nothing to refresh here".to_string());
                     return;
@@ -35601,7 +35612,7 @@ impl Editor {
             .get::<lattice_mode::ActionHandlerRegistryHandle>()
         {
             let action_handlers: &lattice_mode::ActionHandlerRegistry = &action_handlers_arc;
-            if let Some(handler) = action_handlers.lookup(dispatch_command) {
+            if let Some(handler) = action_handlers.lookup(inv.command) {
                 let ctx = lattice_mode::ActionContext {
                     buffer_id: lattice_protocol::ids::BufferId::new(buf_id.0 as u64),
                     cursor: self.cursor,

@@ -191,6 +191,56 @@ fn a_minor_declaration_beats_the_major() {
     );
 }
 
+/// A refresh action can be satisfied two ways: an `ActionHandler`
+/// closure, or a live `ActionSpec::apply` with no handler at all. Only
+/// the first goes through the `ActionHandlerRegistry` lookup.
+///
+/// This pins the second kind, which RV.2 shipped broken for a moment:
+/// `action:compilation-recompile` is an `ActionSpec` (registered by
+/// `actions::populate` with a real `AppEffect::CompileRun` apply) and
+/// has no handler, so a redirect that only rewrote the handler lookup
+/// let it fall through to `action:view-refresh` — whose apply is a
+/// deliberate dead `Effect::None`. `gr` in `*compilation*` did nothing,
+/// silently, and the whole suite stayed green.
+///
+/// Asserting on the *resolution* rather than on an observable recompile
+/// keeps this a unit-level pin: the invocation must carry the mode's
+/// own CommandId, whatever machinery later satisfies it.
+#[test]
+fn refresh_resolves_for_an_action_with_no_registered_handler() {
+    let mut editor = Editor::boot(CoreDocument::from_text("hello\n"));
+    // Deliberately register the command but NO ActionHandler for it —
+    // the `compilation-recompile` shape.
+    register_action(&editor, "action:spec-only-refresh");
+    let id = register_mode(
+        &editor,
+        DeclaringMode {
+            id: ModeId::new("spec-only-view-mode"),
+            kind: ModeKind::Minor,
+            action: "action:spec-only-refresh",
+        },
+    );
+    let buf = editor.active_buffer_id();
+    editor.activate_minor_by_id(buf, id);
+
+    let resolved = editor.resolve_refresh_action(buf);
+    assert_eq!(
+        resolved,
+        Some(command_id(&editor, "action:spec-only-refresh")),
+        "resolution must not depend on a handler being registered"
+    );
+    assert_ne!(
+        resolved,
+        editor
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+            .unwrap()
+            .load()
+            .id_by_name(lattice_mode::VIEW_REFRESH_ACTION),
+        "must resolve to the mode's own action, never back to the generic one"
+    );
+}
+
 /// Declaring a refresh must be the ONLY line a mode author writes —
 /// activation of the shared minor is automatic, or the chord dies as
 /// silently as the copied keymaps did.

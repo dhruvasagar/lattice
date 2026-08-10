@@ -90,9 +90,24 @@ impl Mode for ProblemsMinorMode {
         CapabilitySet::empty()
     }
     fn keymap(&self) -> Keymap {
-        // No contributed chords yet (a `q` → close binding can land
-        // in a follow-up once `action:problems-close` is registered).
+        // No contributed chords (a `q` → close binding can land in a
+        // follow-up once `action:problems-close` is registered).
+        //
+        // RV.3: `gr` is NOT declared here either — it lives once on
+        // `refreshable-view-mode`, reached via [`Self::refresh_action`].
         Keymap::default()
+    }
+
+    /// RV.3 (2026-08-10): rebuild the view from the current error list.
+    ///
+    /// Before RV.1 this view had no `gr` at all and the key was
+    /// silently swallowed — one of the two gaps that motivated the
+    /// shared chord. The list it renders is a snapshot taken at
+    /// `:copen` time, so it goes stale the moment a compile re-runs or
+    /// (post-EP.3) the language server republishes; refresh is how the
+    /// user catches it up without closing and re-opening.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some("action:problems-refresh")
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move { Ok(ProblemsMinorModeGuard) })
@@ -149,6 +164,34 @@ pub fn create_problems_view(
     registry: CommandRegistryHandle,
     lang_registry: Option<Arc<LangRegistry>>,
 ) -> Option<BufferId> {
+    let (sources, excerpts, n_files) = build_problems_excerpts(entries)?;
+
+    let n_entries = excerpts.len();
+    let view_id = create_multibuffer_view(
+        activator,
+        sources,
+        excerpts,
+        Some("*problems*".to_string()),
+        BufferFlags::default(),
+        registry,
+        lang_registry,
+    );
+
+    set_problems_headerline(activator, view_id, n_entries, n_files);
+    activator.activate_minor_by_id(view_id, ProblemsMinorMode::mode_id());
+    Some(view_id)
+}
+
+/// RV.3 (2026-08-10): the source-loading + excerpt-grouping step,
+/// shared by [`create_problems_view`] and [`refresh_problems_view`].
+///
+/// Returns `(sources, excerpts, n_files)`, or `None` when `entries` is
+/// empty or every referenced file proved unreadable — the two cases
+/// where there is nothing to show. Extracted rather than duplicated so
+/// a refresh cannot drift from the grouping an open produces.
+fn build_problems_excerpts(
+    entries: &[ErrorEntry],
+) -> Option<(HashMap<BufferId, Arc<dyn Document>>, Vec<Excerpt>, usize)> {
     if entries.is_empty() {
         return None;
     }
@@ -218,19 +261,17 @@ pub fn create_problems_view(
         return None;
     }
 
-    let n_entries = excerpts.len();
-    let view_id = create_multibuffer_view(
-        activator,
-        sources,
-        excerpts,
-        Some("*problems*".to_string()),
-        BufferFlags::default(),
-        registry,
-        lang_registry,
-    );
+    Some((sources, excerpts, n_files))
+}
 
-    // Sticky headerline — the entry/file count. Problems composition is
-    // synchronous (no scan), so straight to Complete.
+/// Sticky headerline — the entry/file count. Problems composition is
+/// synchronous (no scan), so straight to Complete.
+fn set_problems_headerline(
+    activator: &mut dyn ModeActivator,
+    view_id: BufferId,
+    n_entries: usize,
+    n_files: usize,
+) {
     if let Some(mb_reg) = activator.services().get::<MultibufferRegistryHandle>()
         && let Some(view) = mb_reg.handle(view_id)
     {
@@ -239,9 +280,41 @@ pub fn create_problems_view(
             emphasis: None,
         });
     }
+}
 
-    activator.activate_minor_by_id(view_id, ProblemsMinorMode::mode_id());
-    Some(view_id)
+/// RV.3 (2026-08-10): rebuild an existing `*problems*` view from the
+/// current error list, in place. Returns the new entry count, or `None`
+/// when the view is unknown to the multibuffer registry or the fresh
+/// entry set yields nothing to show (in which case the view is left
+/// exactly as it was — a refresh must never blank the buffer the user
+/// is reading).
+///
+/// In place is the whole point: [`create_problems_view`] mints a new
+/// `BufferId` every call, so "refresh" cannot be a re-open without
+/// stranding the old view and opening a second `*problems*`.
+/// [`crate::MultibufferDocumentHandle::replace_excerpts`] swaps the
+/// source map and excerpt list atomically and republishes, so the
+/// buffer the user is looking at simply becomes current.
+///
+/// Sources are re-read from disk, which is the point of a refresh here:
+/// the view's sources are freshly-spawned handles taken at open time,
+/// not the live editor buffers, so both the error list *and* the file
+/// contents may have moved on.
+pub fn refresh_problems_view(
+    activator: &mut dyn ModeActivator,
+    view_id: BufferId,
+    entries: &[ErrorEntry],
+) -> Option<usize> {
+    let (sources, excerpts, n_files) = build_problems_excerpts(entries)?;
+    let n_entries = excerpts.len();
+
+    let mb_reg = activator.services().get::<MultibufferRegistryHandle>()?;
+    let view = mb_reg.handle(view_id)?;
+    view.replace_excerpts(sources, excerpts);
+    drop(view);
+
+    set_problems_headerline(activator, view_id, n_entries, n_files);
+    Some(n_entries)
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -301,6 +374,24 @@ pub fn register_problems_ex_commands(registry: &mut CommandRegistry) {
             apply: Arc::new(|_ctx| Ok(Effect::AppAction(AppEffect::ProblemsClose))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
+        },
+    );
+
+    // RV.3: the refresh target `ProblemsMinorMode::refresh_action`
+    // names. Registered as a plain action rather than an ex-command —
+    // it is reached through the shared `gr`, not typed at the `:` line,
+    // and `:problems` already re-opens for anyone who wants that.
+    //
+    // Its `apply` is LIVE (not the dead `Effect::None` of a
+    // handler-intercepted action): this provider registers no
+    // `ActionHandler`, so the Action gate is what satisfies it. That is
+    // exactly the shape the RV.2 dispatch fix exists to support.
+    registry.register_action(
+        "action:problems-refresh",
+        "problems-mode `gr`: rebuild the `*problems*` view from the current error list.",
+        lattice_grammar::registry::ActionSpec {
+            apply: Arc::new(|_ctx| Ok(Effect::AppAction(AppEffect::ProblemsRefresh))),
+            args_schema: vec![],
         },
     );
 }

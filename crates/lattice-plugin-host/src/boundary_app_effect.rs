@@ -445,15 +445,18 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
-            // CM.4: `:copen` / `:cclose` open/close the `*problems*`
-            // multibuffer over core error state; like CompileRun /
-            // ErrorNav a native built-in, WIT surface deferred with
-            // the plugin host. Typed error, never lossy.
-            NativeAppEffect::ProblemsOpen | NativeAppEffect::ProblemsClose => {
+            // CM.4 / RV.3: `:copen` / `:cclose` / `gr` open, close and
+            // rebuild the `*problems*` multibuffer over core error
+            // state; like CompileRun / ErrorNav a native built-in, WIT
+            // surface deferred with the plugin host. Typed error,
+            // never lossy.
+            NativeAppEffect::ProblemsOpen
+            | NativeAppEffect::ProblemsClose
+            | NativeAppEffect::ProblemsRefresh => {
                 return Err(
-                    "AppEffect::Problems{Open,Close} open/close the *problems* view over core \
-                     error state; their plugin (WIT) surface is deferred with the plugin host \
-                     (compilation-mode.md §4)"
+                    "AppEffect::Problems{Open,Close,Refresh} open, close and rebuild the \
+                     *problems* view over core error state; their plugin (WIT) surface is \
+                     deferred with the plugin host (compilation-mode.md §4)"
                         .to_string(),
                 );
             }

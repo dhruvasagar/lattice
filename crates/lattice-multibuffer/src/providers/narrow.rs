@@ -86,6 +86,25 @@ impl Mode for NarrowMode {
         // lands in N.1.1.b once `action:narrow-widen` is registered).
         Keymap::default()
     }
+
+    // RV.3 (2026-08-10): narrow declares NO refresh action, and that is
+    // a decision rather than an omission.
+    //
+    // A narrow view is one excerpt over a **live** buffer, and
+    // `create_multibuffer_view` subscribes it to the source's
+    // `DocumentChanged` events — so it recomposes as the source is
+    // edited and is never stale. There is nothing a refresh could do
+    // that has not already happened.
+    //
+    // Contrast `providers::problems`, which reads its sources from disk
+    // into fresh handles at open time and renders a snapshot of the
+    // error list: both can drift, so it declares one.
+    //
+    // Leaving this `None` is now safe to state plainly, because the
+    // shared `gr` echoes "nothing to refresh here" instead of
+    // swallowing the key — the absence is spoken, which is precisely
+    // what pre-RV.1 narrow could not do.
+
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move { Ok(NarrowModeGuard) })
     }

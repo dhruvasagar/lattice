@@ -8884,6 +8884,49 @@ impl Editor {
                     }
                 }
             }
+            // RV.3 (2026-08-10): `gr` in a `*problems*` view — rebuild
+            // it from the CURRENT error list, in place. Same division
+            // as ProblemsOpen: the substrate crate owns the rebuild,
+            // this arm is generic glue (read error list → rebuild →
+            // echo).
+            //
+            // Guarded to problems views like ProblemsClose, so a stray
+            // dispatch cannot rebuild an unrelated multibuffer. In
+            // practice `gr` cannot arrive here from anywhere else --
+            // `refresh_action` resolution already scoped it -- but the
+            // guard costs nothing and keeps the arm honest on its own.
+            AppEffect::ProblemsRefresh => {
+                let active = self.active_pane_buffer_id();
+                let problems_id =
+                    lattice_multibuffer::providers::problems::ProblemsMinorMode::mode_id();
+                if !self.minor_mode_enabled_for(active, problems_id) {
+                    self.set_message(EchoLevel::Warn, "not a problems view".to_string());
+                } else if self.error_list().is_empty() {
+                    // Deliberately leave the view intact rather than
+                    // blanking it: an empty list after a clean build is
+                    // information, and destroying what the user is
+                    // reading to convey it is the wrong trade.
+                    self.set_message(
+                        EchoLevel::Info,
+                        "[problems] error list is empty — view unchanged".to_string(),
+                    );
+                } else {
+                    let entries = self.error_list().entries().to_vec();
+                    match lattice_multibuffer::providers::problems::refresh_problems_view(
+                        self, active, &entries,
+                    ) {
+                        Some(n) => {
+                            self.set_message(EchoLevel::Info, format!("[problems] {n} items"));
+                        }
+                        None => {
+                            self.set_message(
+                                EchoLevel::Warn,
+                                "[problems] no readable source files — view unchanged".to_string(),
+                            );
+                        }
+                    }
+                }
+            }
             // CM.4 (2026-07-22): `:cclose` — close the active
             // `*problems*` view, leaving the source buffers open.
             // Guarded to problems views (ProblemsMinorMode active) so

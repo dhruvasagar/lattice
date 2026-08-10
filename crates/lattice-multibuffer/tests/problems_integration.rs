@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_grammar::CommandRegistry;
 use lattice_mode::{BufferStore, BufferStoreHandle, ModeActivator, ModeId, ServiceRegistry};
-use lattice_multibuffer::providers::problems::{ProblemsMinorMode, create_problems_view};
+use lattice_multibuffer::providers::problems::{
+    ProblemsMinorMode, create_problems_view, refresh_problems_view,
+};
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle,
 };
@@ -54,11 +56,15 @@ struct MockActivator {
     services: Arc<ServiceRegistry>,
     minor_calls: Vec<(BufferId, ModeId)>,
     mb_registry: MultibufferRegistryHandle,
+    /// RV.3: kept so a test can assert refresh inserts no second
+    /// buffer.
+    store: Arc<StubBufferStore>,
 }
 
 impl MockActivator {
     fn new() -> Self {
         let stub_store = Arc::new(StubBufferStore::default());
+        let stub_store_keep = Arc::clone(&stub_store);
         let mb_registry: MultibufferRegistryHandle = Arc::new(InMemoryMultibufferRegistry::new());
 
         let mut services = ServiceRegistry::new();
@@ -70,7 +76,13 @@ impl MockActivator {
             services: Arc::new(services),
             minor_calls: Vec::new(),
             mb_registry,
+            store: stub_store_keep,
         }
+    }
+
+    /// How many buffers were inserted into the store.
+    fn insert_count(&self) -> usize {
+        self.store.inserts.lock().unwrap().len()
     }
 }
 
@@ -223,5 +235,121 @@ fn all_unreadable_files_returns_none() {
     assert!(
         view.is_none(),
         "all-unreadable entry list yields no view (skipped, not panicked)"
+    );
+}
+
+// ── RV.3: `gr` rebuilds the view in place ─────────────────────────────
+//
+// The view renders a SNAPSHOT of the error list taken at `:copen` time,
+// over sources read from disk at that moment. Both drift — a recompile
+// replaces the list, and the files themselves change. Refresh is how
+// the user catches up without closing and re-opening.
+
+#[test]
+fn refresh_picks_up_entries_added_since_the_view_opened() {
+    let tmp = TempFiles::new("refresh-add");
+    let file_a = tmp.write("a.rs", EIGHT_LINES);
+    let file_b = tmp.write("b.rs", FOUR_LINES);
+
+    let mut activator = MockActivator::new();
+    let opened = vec![entry(&file_a, 2, ErrorSeverity::Error, "borrow")];
+    let view_id = create_problems_view(&mut activator, &opened, registry_handle(), None).unwrap();
+    assert_eq!(
+        activator
+            .mb_registry
+            .handle(view_id)
+            .unwrap()
+            .excerpt_count(),
+        1
+    );
+
+    // A second compile run finds two more, one in a file the view had
+    // never seen.
+    let refreshed = vec![
+        entry(&file_a, 2, ErrorSeverity::Error, "borrow"),
+        entry(&file_a, 5, ErrorSeverity::Warning, "unused"),
+        entry(&file_b, 1, ErrorSeverity::Error, "type error"),
+    ];
+    let n = refresh_problems_view(&mut activator, view_id, &refreshed)
+        .expect("refresh returns the new entry count");
+    assert_eq!(n, 3);
+
+    let handle = activator.mb_registry.handle(view_id).unwrap();
+    assert_eq!(handle.excerpt_count(), 3, "new entries appear");
+    match &*handle.headerline() {
+        HeaderlineStatus::Complete { summary, .. } => {
+            assert_eq!(summary, "[problems] 3 in 2 files");
+        }
+        other => panic!("expected Complete headerline, got {other:?}"),
+    }
+}
+
+/// The whole reason refresh is not a re-open: `create_multibuffer_view`
+/// mints a fresh `BufferId` every call, so re-opening would strand the
+/// view the user is looking at and add a second `*problems*`.
+#[test]
+fn refresh_keeps_the_same_buffer_id() {
+    let tmp = TempFiles::new("refresh-same-id");
+    let file_a = tmp.write("a.rs", EIGHT_LINES);
+
+    let mut activator = MockActivator::new();
+    let opened = vec![entry(&file_a, 2, ErrorSeverity::Error, "borrow")];
+    let view_id = create_problems_view(&mut activator, &opened, registry_handle(), None).unwrap();
+
+    let shrunk = vec![entry(&file_a, 5, ErrorSeverity::Warning, "unused")];
+    refresh_problems_view(&mut activator, view_id, &shrunk).unwrap();
+
+    assert!(
+        activator.mb_registry.handle(view_id).is_some(),
+        "the original view id must still resolve — refresh is in place"
+    );
+    // Exactly one buffer was ever inserted: the open. Refresh must not
+    // insert a second.
+    assert_eq!(
+        activator.insert_count(),
+        1,
+        "refresh must not create another *problems* buffer"
+    );
+}
+
+/// A refresh that would show nothing leaves the view exactly as it was.
+/// Blanking the buffer the user is reading to convey "no results" is the
+/// wrong trade — the host arm echoes instead.
+#[test]
+fn refresh_with_nothing_to_show_leaves_the_view_untouched() {
+    let tmp = TempFiles::new("refresh-empty");
+    let file_a = tmp.write("a.rs", EIGHT_LINES);
+
+    let mut activator = MockActivator::new();
+    let opened = vec![entry(&file_a, 2, ErrorSeverity::Error, "borrow")];
+    let view_id = create_problems_view(&mut activator, &opened, registry_handle(), None).unwrap();
+
+    assert_eq!(refresh_problems_view(&mut activator, view_id, &[]), None);
+    assert_eq!(
+        activator
+            .mb_registry
+            .handle(view_id)
+            .unwrap()
+            .excerpt_count(),
+        1,
+        "an empty refresh must not blank the view"
+    );
+
+    // Same for a list whose files have all vanished.
+    let gone = vec![entry(
+        Path::new("/nonexistent/zzz.rs"),
+        0,
+        ErrorSeverity::Error,
+        "gone",
+    )];
+    assert_eq!(refresh_problems_view(&mut activator, view_id, &gone), None);
+    assert_eq!(
+        activator
+            .mb_registry
+            .handle(view_id)
+            .unwrap()
+            .excerpt_count(),
+        1,
+        "unreadable sources must not blank the view either"
     );
 }

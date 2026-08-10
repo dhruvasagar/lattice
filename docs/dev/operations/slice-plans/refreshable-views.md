@@ -93,20 +93,38 @@ property worth pinning is "declared once", so the test asserts that
 directly. Copy number six is a failing test, not a discovery months
 later.
 
-## RV.3 — Close the gaps 📝
+## RV.3 — Close the gaps ✅
 
-- `*problems*` (`providers::problems`) — refresh re-reads the current
-  `ErrorList` and rebuilds excerpts. Interacts with
-  [`error-list-producers.md`](error-list-producers.md): once the
-  language server feeds the list live, refresh is the manual peer of
-  that feed.
-- Narrow (`providers::narrow`) — decide on merit whether refresh means
-  anything for a one-excerpt view of a live buffer. If it does not,
-  leaving `refresh_action()` as `None` is a *correct* answer now that
-  the absence is spoken aloud rather than silent.
+**`*problems*` refreshes in place.** `AppEffect::ProblemsRefresh` →
+`refresh_problems_view`, which rebuilds sources + excerpts from the
+current `ErrorList` and swaps them atomically via `replace_excerpts`.
 
-**Tests.** `gr` in `*problems*` picks up entries added since the view
-opened.
+It is **not** a re-fire of `ProblemsOpen`: `create_multibuffer_view`
+mints a fresh `BufferId` on every call, so re-opening would strand the
+view the user is looking at and add a second `*problems*` buffer. A test
+pins the buffer id across a refresh, and another pins that exactly one
+buffer is ever inserted.
+
+An empty or all-unreadable refresh **leaves the view untouched** and
+echoes. Blanking the buffer the user is reading in order to say "no
+results" is the wrong trade.
+
+Interacts with [`error-list-producers.md`](error-list-producers.md):
+once the language server feeds the list live (EP.3), refresh becomes the
+manual peer of that feed — and the one that still matters when
+`lsp.diagnostics-to-error-list = false`.
+
+**Narrow declares no refresh, deliberately.** It is one excerpt over a
+*live* buffer, subscribed to the source's `DocumentChanged` events, so
+it recomposes as the source is edited and is never stale — there is
+nothing a refresh could do. `None` is now a statable answer rather than
+an oversight, precisely because the shared `gr` echoes "nothing to
+refresh here" instead of swallowing the key.
+
+**Tests.** Refresh picks up entries added since the view opened
+(including in a file the view had never seen); the buffer id survives;
+no second buffer is inserted; empty and all-unreadable refreshes leave
+the view intact.
 
 ---
 

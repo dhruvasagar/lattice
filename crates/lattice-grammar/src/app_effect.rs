@@ -885,6 +885,20 @@ pub enum AppEffect {
     /// `NarrowWiden` close shape, guarded to problems views. No-op +
     /// echo when the active buffer isn't a problems view.
     ProblemsClose,
+    /// RV.3 (2026-08-10): `gr` in a `*problems*` view — rebuild its
+    /// excerpts from the *current* error list, in place.
+    ///
+    /// Deliberately NOT a re-fire of [`Self::ProblemsOpen`]:
+    /// `create_multibuffer_view` mints a fresh `BufferId` on every
+    /// call, so re-opening would leave the old view behind and add a
+    /// second `*problems*` buffer rather than refreshing the one the
+    /// user is looking at. The host arm instead re-reads the error
+    /// list and hands it to
+    /// `lattice_multibuffer::providers::problems::refresh_problems_view`,
+    /// which swaps sources + excerpts atomically via
+    /// `replace_excerpts`. Same division as `ProblemsOpen`: the
+    /// substrate crate owns the rebuild, the host arm is generic glue.
+    ProblemsRefresh,
 }
 
 #[cfg(test)]

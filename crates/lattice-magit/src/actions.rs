@@ -1200,7 +1200,17 @@ fn spawn_mutation_and_refresh(
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         crate::magit_global_mode::finish_task(&label, result);
-        run_refresh(ctx).await;
+        // `finish_task` published `BackgroundTaskFinished`, and every
+        // live magit-status buffer is subscribed to it — including
+        // this one. Refreshing here as well would run `git status`
+        // twice per action.
+        //
+        // The fallback is not defensive padding: a harness that never
+        // installed an event bus has no subscriber, and without this
+        // the mutation would land with nothing redrawing it.
+        if crate::magit_global_mode::event_bus().is_none() {
+            run_refresh(ctx).await;
+        }
     });
     None
 }

@@ -2951,6 +2951,12 @@ pub(crate) fn set_event_bus(bus: std::sync::Arc<lattice_runtime::EventBus>) {
     let _ = EVENT_BUS.set(bus);
 }
 
+/// The bus `finish_task` publishes on, for modes that need to LISTEN
+/// to it. `None` in a harness that never installed one.
+pub(crate) fn event_bus() -> Option<std::sync::Arc<lattice_runtime::EventBus>> {
+    EVENT_BUS.get().cloned()
+}
+
 /// MG.41g: report a finished background operation — log **and**
 /// publish, in one call.
 ///

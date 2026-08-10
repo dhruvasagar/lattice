@@ -80,24 +80,23 @@ N≥10-excerpt view). All ✅ as of 2026-06-08.
 
 ## Priority A — daily-driver workflows
 
-### A.1 `ProjectDiffProvider` 📝
+### A.1 `ProjectDiffProvider` 📝 — **designed, owned by `lattice-magit`**
 
-Composes every changed file in the working tree (or a comparison range) into
-one multibuffer. One excerpt per hunk; file-boundary folds (M.8) group hunks
-per file so a 50-file diff collapses to a 50-row outline at `:set foldlevel=0`.
+Every changed file in the working tree as one editable multibuffer; one
+excerpt per hunk, folded per file.
 
-- Extra deps: **D.7** (VCS subsystem, deferred) for the hunk source-of-truth;
-  falls back to a `git diff`-shell-out implementation in the interim.
-- User surface: `:project-diff` (working tree vs HEAD), `:project-diff staged`,
-  `:project-diff <rev1>..<rev2>`, `:project-diff branch <name>`.
-- Edit propagation: hunk edits write back to the working-tree file via the
-  standard apply_edit path; staged-diff edits rewrite the index entry
-  (post-D.7).
-- Tests: 10-file diff → expected excerpt count; edit a hunk excerpt →
-  working-tree file updates and the hunk recomputes; closing a source file
-  auto-removes its excerpts; foldlevel=0 shows one row per file.
-- Compose: A.1 is the canonical AI-multi-file-diff base — A.2 reuses A.1's
-  rendering with a different edit-commit path.
+- Design: [`magit-project-diff.md`](../../architecture/magit-project-diff.md).
+  Slice plan: [`magit-project-diff.md`](magit-project-diff.md) (PD series).
+- **Lives in `lattice-magit`**, not here — see the provider-home reversal at
+  the top of this file. The stated `D.7` blocker is gone: `lattice-vcs` and
+  `lattice-diff` are both standalone crates, and magit already depends on both.
+- **Editable only where the post-image is a real file** — working-tree
+  comparisons edit through; staged and `rev..rev` open read-only, because an
+  index blob has no anchor to propagate into.
+- Inherits `gr` / `q` from `magit-core-mode`; declares neither.
+- Surface: `:magit-diff-project` + an `e` row on the Diff transient.
+- Compose: still the base A.2 (AI multi-file edits) would reuse — same
+  rendering, different commit path.
 
 ### A.2 `AIProposedEditsProvider` 📝
 

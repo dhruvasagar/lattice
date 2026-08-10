@@ -525,6 +525,31 @@ impl ModeRegistry {
             }
             self.validate_and_record_minor(active, plan, buffer, dep, caps, guards)?;
         }
+        // RV.1 (2026-08-10): a mode that declares a refresh action pulls
+        // in `refreshable-view-mode`, which owns the shared `gr` chord.
+        // Folding this into the implies walk — rather than asking each
+        // mode to list the minor in `implies()` — is deliberate: a
+        // forgotten `implies()` entry would kill the chord exactly as
+        // silently as the three copied `gr` keymap entries this
+        // replaced. One line (`refresh_action`) is the whole contract.
+        //
+        // Not an error when the minor is unregistered: a test harness or
+        // a trimmed build may register a view's mode without it, and the
+        // chord simply does not bind. `debug!` rather than silence so it
+        // is diagnosable.
+        if entry.refresh_action().is_some() {
+            let shared = crate::RefreshableViewMode::mode_id();
+            if !active.has_minor(shared) && mode != shared {
+                if self.is_registered(shared) {
+                    self.validate_and_record_minor(active, plan, buffer, shared, caps, guards)?;
+                } else {
+                    tracing::debug!(
+                        %mode,
+                        "mode declares refresh_action but refreshable-view-mode is not registered; `gr` will not bind"
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -765,6 +790,7 @@ mod tests {
         implies: Vec<ModeId>,
         target_kind: Option<BufferKind>,
         policy: crate::ActivationPolicy,
+        refresh: Option<&'static str>,
         activate_calls: StdArc<AtomicU32>,
         deactivate_calls: StdArc<AtomicU32>,
     }
@@ -789,6 +815,7 @@ mod tests {
                 implies: Vec::new(),
                 target_kind: None,
                 policy: crate::ActivationPolicy::Manual,
+                refresh: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
                 deactivate_calls: StdArc::new(AtomicU32::new(0)),
             }
@@ -806,6 +833,7 @@ mod tests {
                 implies: Vec::new(),
                 target_kind: None,
                 policy: crate::ActivationPolicy::Manual,
+                refresh: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
                 deactivate_calls: StdArc::new(AtomicU32::new(0)),
             }
@@ -824,6 +852,12 @@ mod tests {
         }
         fn with_policy(mut self, policy: crate::ActivationPolicy) -> Self {
             self.policy = policy;
+            self
+        }
+        /// RV.1: declare a refresh action, which should pull
+        /// `refreshable-view-mode` in through the implies cascade.
+        fn refreshing(mut self, action: &'static str) -> Self {
+            self.refresh = Some(action);
             self
         }
     }
@@ -850,6 +884,9 @@ mod tests {
         }
         fn activation_policy(&self) -> crate::ActivationPolicy {
             self.policy.clone()
+        }
+        fn refresh_action(&self) -> Option<&'static str> {
+            self.refresh
         }
         fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
             self.activate_calls.fetch_add(1, Ordering::SeqCst);
@@ -1476,6 +1513,116 @@ mod tests {
         );
         assert!(a.has_minor(rlnum));
         assert!(a.has_minor(lnum));
+    }
+
+    // ── RV.1: refresh_action pulls in the shared `gr` minor ──────────
+    //
+    // The contract these protect: a mode author writes ONE line
+    // (`refresh_action`) and gets the chord. If activation needed a
+    // second declaration (`implies`), forgetting it would kill `gr` as
+    // silently as the three copied keymap entries RV.1 replaced.
+
+    #[tokio::test]
+    async fn declaring_a_refresh_action_auto_activates_the_shared_minor() {
+        let mut r = ModeRegistry::new();
+        crate::refreshable_view_mode::register_refreshable_view_mode(&mut r);
+        let view = r
+            .register(MockMode::minor("some-view-mode").refreshing("action:some-view-refresh"))
+            .unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &evts(),
+            &svcs(),
+            buf(),
+            view,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        assert!(
+            a.has_minor(crate::RefreshableViewMode::mode_id()),
+            "a mode declaring refresh_action must get the shared `gr` minor \
+             without also listing it in implies()"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_major_declaring_a_refresh_action_also_gets_the_shared_minor() {
+        let mut r = ModeRegistry::new();
+        crate::refreshable_view_mode::register_refreshable_view_mode(&mut r);
+        let major = r
+            .register(MockMode::major("some-view-mode").refreshing("action:some-view-refresh"))
+            .unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        r.activate_major(
+            &mut a,
+            &g,
+            &cfg(),
+            &evts(),
+            &svcs(),
+            buf(),
+            major,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        assert!(
+            a.has_minor(crate::RefreshableViewMode::mode_id()),
+            "the cascade must fire for majors too — magit / compilation \
+             declare their refresh on the major"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_refresh_action_leaves_the_shared_minor_off() {
+        let mut r = ModeRegistry::new();
+        crate::refreshable_view_mode::register_refreshable_view_mode(&mut r);
+        let plain = r.register(MockMode::minor("plain-mode")).unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &evts(),
+            &svcs(),
+            buf(),
+            plain,
+            CapabilitySet::empty(),
+        )
+        .unwrap();
+        assert!(
+            !a.has_minor(crate::RefreshableViewMode::mode_id()),
+            "`gr` must not attach to ordinary buffers — it is LSP references there"
+        );
+    }
+
+    /// An unregistered shared minor must not fail activation: a trimmed
+    /// build or a focused test harness may not register it, and the
+    /// right outcome is "no `gr`", not "the view refuses to open".
+    #[tokio::test]
+    async fn missing_shared_minor_does_not_fail_activation() {
+        let mut r = ModeRegistry::new();
+        let view = r
+            .register(MockMode::minor("some-view-mode").refreshing("action:some-view-refresh"))
+            .unwrap();
+        let mut a = ActiveModes::new();
+        let g = GuardStoreHandle::new();
+        let res = r.activate_minor(
+            &mut a,
+            &g,
+            &cfg(),
+            &evts(),
+            &svcs(),
+            buf(),
+            view,
+            CapabilitySet::empty(),
+        );
+        assert!(res.is_ok(), "missing shared minor must degrade, not fail");
+        assert!(a.has_minor(view));
     }
 
     #[tokio::test]

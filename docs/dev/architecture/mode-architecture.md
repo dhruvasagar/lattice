@@ -675,26 +675,39 @@ the failure this section closes.
 
 ```rust
 // on the `Mode` trait, defaulting to None
-fn refresh_action(&self) -> Option<ActionId> { None }
+fn refresh_action(&self) -> Option<&'static str> { None }
 ```
 
-The mode declares **which of its own actions** refreshes its view. It
-does not declare a body. The body stays exactly where §5.3 puts it — an
-`ActionHandler` closure registered against that `ActionId` by the owning
-crate.
+The mode declares **which of its own actions** refreshes its view, by
+the same `"action:…"` name `action_handlers()` registers under — the
+`Option<&'static str>` shape `mirrors_option()` already uses. It does
+not declare a body. The body stays exactly where §5.3 puts it.
 
 Dispatch is generic:
 
 1. `refreshable-view-mode` (a minor in `lattice-mode`) contributes one
-   keymap entry: `gr` → `action:view-refresh`.
-2. Its handler walks the focused buffer's active modes, **minors first
-   in activation order, then the major**, and takes the first
-   `Some(action_id)`. Most-specific-wins: a provider minor on a
-   multibuffer beats the generic `MultibufferMode`.
-3. It dispatches that `ActionId` through the existing
-   `ActionHandlerRegistry`. Nothing about the handler changes.
-4. When more than one active mode declares a refresh action, the first
-   wins and the rest are logged at `debug!` — diagnosable, not silent.
+   keymap entry: `gr` → `action:view-refresh`, pushed at
+   `KeymapLayer::MinorMode` like every other mode keymap.
+2. **The host** resolves it — `Editor::resolve_refresh_action` walks the
+   focused buffer's active modes, **minors most-recently-activated
+   first, then the major**, and takes the first declaration.
+   Most-specific-wins: a provider minor on a multibuffer beats the
+   generic `MultibufferMode`.
+3. Chord dispatch redirects to the resolved `CommandId` before the
+   `ActionHandlerRegistry` lookup, so the owning crate's existing
+   handler runs unchanged.
+4. The walk does not stop early: a second declaration is logged at
+   `debug!` as shadowed. Two modes claiming the refresh is a wiring bug,
+   and silently picking one is how it would stay invisible.
+
+**Why the host resolves rather than the mode.** An `ActionHandler` gets
+only `&ActionContext` — buffer, cursor, services, events. The active-mode
+set lives on `Editor`, not in the `ServiceRegistry`, so a mode-side
+handler *cannot* do this walk. This is the same split
+[`invocation_runner`](#) already uses (`Editor::resolve_invocation_runner`
+is the sibling function, same walk, different table): the mode declares,
+the host walks and dispatches. `action:view-refresh` is a *generic* host
+action carrying no per-view logic — it only redirects.
 
 Activation is automatic: the mode-activation cascade activates
 `refreshable-view-mode` when any activated mode returns `Some`. A mode

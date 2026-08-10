@@ -382,6 +382,43 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// RV.1 (2026-08-10): which of *this mode's own actions* refreshes
+    /// its view, or `None` (the default) when the mode backs nothing
+    /// refreshable.
+    ///
+    /// `gr` means "refresh this view" in every synthetic buffer. That
+    /// is a property of synthetic views as a class, so the chord lives
+    /// once on [`RefreshableViewMode`](crate::RefreshableViewMode) —
+    /// **not** re-declared per mode. Before RV.1 it was re-declared per
+    /// mode, and the two views that landed most recently (`*problems*`,
+    /// narrow) had no `gr` at all: a gap in a copied set does not
+    /// announce itself.
+    ///
+    /// This declares a **target, not a body**. The handler stays exactly
+    /// where [`action_handlers`](Self::action_handlers) puts it — a mode
+    /// returning `Some("action:magit-refresh")` keeps the closure it
+    /// already registered under that name. Declaring a target rather
+    /// than doing the work is the same shape
+    /// [`invocation_runner`](Self::invocation_runner) and
+    /// [`mirrors_option`](Self::mirrors_option) already have; a
+    /// `refresh(&self, ctx)` doing the work would give modes two ways to
+    /// express one body.
+    ///
+    /// Returning `Some` also **auto-activates** `refreshable-view-mode`
+    /// through the implies cascade, so a mode author writes one line and
+    /// gets the chord.
+    ///
+    /// The host resolves this by walking the buffer's active modes
+    /// (minors most-recently-activated first, then major) — see
+    /// `Editor::resolve_refresh_action`. When no active mode declares
+    /// one, the chord echoes `nothing to refresh here` rather than being
+    /// swallowed, so the absence is spoken.
+    ///
+    /// See `docs/dev/architecture/mode-architecture.md` §5.5.
+    fn refresh_action(&self) -> Option<&'static str> {
+        None
+    }
+
     /// MA.1: a *minor* mode's default auto-activation policy
     /// (mode-architecture.md §7.4). The host's minor-activation
     /// resolver reads this for every registered minor when a buffer
@@ -466,6 +503,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn implies(&self) -> &[ModeId];
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
+    fn refresh_action(&self) -> Option<&'static str>;
     fn activation_policy(&self) -> ActivationPolicy;
     fn editable_tail(&self) -> Option<EditableTail>;
 
@@ -521,6 +559,9 @@ impl<M: Mode> DynMode for M {
     }
     fn invocation_runner(&self) -> Option<ModeId> {
         <M as Mode>::invocation_runner(self)
+    }
+    fn refresh_action(&self) -> Option<&'static str> {
+        <M as Mode>::refresh_action(self)
     }
     fn activation_policy(&self) -> ActivationPolicy {
         <M as Mode>::activation_policy(self)

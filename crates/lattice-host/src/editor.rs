@@ -1980,6 +1980,92 @@ impl Editor {
         self.invocation_runners.get(&runner_id).copied()
     }
 
+    /// RV.1: is `id` the generic `action:view-refresh` the shared `gr`
+    /// binds to?
+    ///
+    /// Resolved by name rather than cached in a field so there is no
+    /// boot-ordering coupling between this and command registration.
+    /// The cost is one `ServiceRegistry` lookup plus one name hash on
+    /// the action-dispatch path — which runs at chord rate (human
+    /// keypresses), not per frame or per glyph, so it is nowhere near
+    /// paramount-goal-#1 territory. Memoize if a dispatch bench ever
+    /// says otherwise.
+    pub fn is_view_refresh_command(&self, id: lattice_protocol::ids::CommandId) -> bool {
+        self.services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+            .and_then(|reg| reg.load().id_by_name(lattice_mode::VIEW_REFRESH_ACTION))
+            == Some(id)
+    }
+
+    /// RV.1 (2026-08-10): resolve the refresh action for `buffer_id` by
+    /// walking the active modes (minors most-recently-activated first,
+    /// then major) and returning the `CommandId` of the first
+    /// [`lattice_mode::Mode::refresh_action`] declared.
+    ///
+    /// Same walk as [`Self::resolve_invocation_runner`], different
+    /// table — most-specific-wins, so a provider minor on a multibuffer
+    /// beats the generic `MultibufferMode`. Backs the shared `gr` chord
+    /// (`refreshable-view-mode`): the mode declares which of its own
+    /// actions refreshes, the host walks and dispatches it.
+    ///
+    /// `None` when no active mode declares one — the caller echoes
+    /// rather than swallowing the key, so a view without a refresh says
+    /// so. See `docs/dev/architecture/mode-architecture.md` §5.5.
+    pub fn resolve_refresh_action(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Option<lattice_protocol::ids::CommandId> {
+        let modes = self.active_modes.get(&buffer_id)?;
+        let registry = self.mode_registry.load();
+        let mut declared: Option<&'static str> = None;
+        // Walk minors (most-recently-activated first), then the major.
+        // The walk does NOT stop at the first hit: continuing costs a
+        // handful of `Option` reads over the buffer's active modes and
+        // buys a `debug!` naming every shadowed declaration. Two modes
+        // both claiming the refresh is a wiring bug in one of them, and
+        // silently picking one is how it would stay invisible.
+        //
+        // Unlike `resolve_invocation_runner`, a minor missing from the
+        // registry skips rather than aborting the walk — one absent
+        // minor must not mask a major's declaration.
+        let candidates = modes
+            .minors()
+            .iter()
+            .rev()
+            .copied()
+            .chain(modes.major())
+            .filter_map(|id| registry.get(id).map(|m| (id, m)));
+        for (mode_id, mode) in candidates {
+            let Some(action) = mode.refresh_action() else {
+                continue;
+            };
+            match declared {
+                None => declared = Some(action),
+                Some(winner) => tracing::debug!(
+                    %mode_id,
+                    shadowed = action,
+                    winner,
+                    "several active modes declare a refresh action; the most specific wins"
+                ),
+            }
+        }
+        let action = declared?;
+        let cmd_reg = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()?;
+        let id = cmd_reg.load().id_by_name(action);
+        if id.is_none() {
+            // A mode declared an action name the command registry does
+            // not know. Loud at debug rather than a silent dead key —
+            // this is a wiring bug in the declaring crate.
+            tracing::debug!(
+                action,
+                "refresh_action names an unregistered command; `gr` will report nothing to refresh"
+            );
+        }
+        id
+    }
+
     /// D.4.d.0 (2026-05-29): lazy port into the per-document
     /// [`Self::cells_matrices`] registry. Returns the matrix
     /// cell for `buffer_id`, inserting an empty

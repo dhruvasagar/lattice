@@ -76,6 +76,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     // A `Manual` minor mode; REPL majors (`ai-conversation`, terminal, claude)
     // pull it in via `implies()`, so it never touches an ordinary buffer.
     crate::repl_mode::register_repl_mode(registry);
+    // RV.1: `refreshable-view-mode` owns the shared `gr` ("refresh this
+    // view"). A `Manual` minor pulled in automatically by the implies
+    // cascade for any mode declaring `refresh_action()`, so it never
+    // attaches to an ordinary document — `gr` there stays LSP
+    // references. Registered here so the cascade can find it.
+    crate::refreshable_view_mode::register_refreshable_view_mode(registry);
     // msg-mode.1: `messages-mode` is the major mode for the
     // editor's `*messages*` audit-log buffer. Replaces the
     // pre-msg-mode `text-mode + read-only-mode` combo so the

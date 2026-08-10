@@ -650,6 +650,14 @@ impl Editor {
         // mode's own crate.
         lattice_mode::register_repl_mode_actions(boot.commands_mut());
 
+        // RV.1: same shape for `refreshable-view-mode`'s
+        // `action:view-refresh` — the generic target the shared `gr`
+        // binds to. Its registered `apply` never runs: chord dispatch
+        // intercepts the CommandId, resolves the active modes'
+        // `refresh_action()`, and dispatches that instead. It exists so
+        // the name resolves for the keymap binding.
+        lattice_mode::register_refreshable_view_actions(boot.commands_mut());
+
         // BC.7 (2026-06-24): the multibuffer excerpt-jump motions
         // (`]e`/`[e`/`]E`/`[E`), the `:multibuffer-*` / `:narrow` / `:widen` /
         // `:search` ex-commands, AND the `zn` narrow operator SPEC are all

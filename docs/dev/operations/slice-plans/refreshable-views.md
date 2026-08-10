@@ -11,9 +11,18 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 
 | Slice | Title | Status |
 |---|---|---|
-| RV.1 | `Mode::refresh_action()` + `refreshable-view-mode` + generic dispatch | 📝 |
+| RV.1 | `Mode::refresh_action()` + `refreshable-view-mode` + generic dispatch | ✅ |
 | RV.2 | Retrofit the three existing copies | 📝 |
 | RV.3 | Close the gaps — `*problems*`, narrow | 📝 |
+
+> **RV.1 landed 2026-08-10.** Two things the design got wrong and the
+> code corrected (both fixed in `mode-architecture.md` §5.5):
+> `Option<ActionId>` does not exist — actions are `&'static str` names,
+> so the signature matches `mirrors_option()`; and **resolution had to
+> move host-side**, because `ActionContext` carries no active-mode set
+> (it lives on `Editor`, not the `ServiceRegistry`), so a mode-side
+> handler cannot do the walk. `Editor::resolve_refresh_action` is the
+> sibling of `resolve_invocation_runner` — same walk, different table.
 
 RV.1 before RV.2 (the seam must exist to migrate onto). RV.3 is
 independent of RV.2 and can land either side of it.

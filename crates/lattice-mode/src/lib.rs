@@ -80,6 +80,7 @@ pub mod error;
 pub mod event;
 pub mod foreground_cancel;
 pub mod guards;
+pub mod refreshable_view_mode;
 pub mod repl_mode;
 // Boot-composition BC.1: the generic *inbound* primitive — a channel whose
 // `send` wakes the editor (`async_landed`) and whose items drain per-tick
@@ -171,6 +172,12 @@ pub use lattice_keymap::KeymapEntry;
 // the layer + the K.1.c per-keystroke gate.
 pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
 pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_actions};
+// RV.1: the one place `gr` means "refresh this view" — the chord lives
+// here, each view's mode declares its own `refresh_action()` target.
+pub use crate::refreshable_view_mode::{
+    RefreshableViewMode, VIEW_REFRESH_ACTION, register_refreshable_view_actions,
+    register_refreshable_view_mode,
+};
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::foreground_cancel::{ForegroundCancel, ForegroundCancelHandle};
 pub use crate::modeline::{

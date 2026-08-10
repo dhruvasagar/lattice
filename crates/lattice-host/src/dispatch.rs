@@ -35574,12 +35574,34 @@ impl Editor {
         // (via this registry). The host's role is the generic
         // dispatch + effect-apply pipeline; provider-specific
         // logic lives in the mode's closure.
+        // RV.1 (2026-08-10): the shared `gr` resolves here. The chord is
+        // bound once on `refreshable-view-mode` to the generic
+        // `action:view-refresh`; each view's mode declares which of its
+        // OWN actions is the refresh via `Mode::refresh_action()`. This
+        // redirects the dispatch to that action so the handler body
+        // stays in the owning crate — the host contributes the walk, not
+        // the behaviour.
+        //
+        // Nothing declared ⇒ echo. Deliberately not a silent swallow:
+        // before RV.1, `gr` in `*problems*` and narrow did nothing at
+        // all and nobody noticed. A view without a refresh now says so.
+        let mut dispatch_command = inv.command;
+        if self.is_view_refresh_command(inv.command) {
+            match self.resolve_refresh_action(buf_id) {
+                Some(target) => dispatch_command = target,
+                None => {
+                    self.set_message(EchoLevel::Info, "nothing to refresh here".to_string());
+                    return;
+                }
+            }
+        }
+
         if let Some(action_handlers_arc) = self
             .services
             .get::<lattice_mode::ActionHandlerRegistryHandle>()
         {
             let action_handlers: &lattice_mode::ActionHandlerRegistry = &action_handlers_arc;
-            if let Some(handler) = action_handlers.lookup(inv.command) {
+            if let Some(handler) = action_handlers.lookup(dispatch_command) {
                 let ctx = lattice_mode::ActionContext {
                     buffer_id: lattice_protocol::ids::BufferId::new(buf_id.0 as u64),
                     cursor: self.cursor,

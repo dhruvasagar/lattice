@@ -17,6 +17,8 @@ pub mod clipboard;
 pub mod document;
 pub mod error;
 pub mod folding;
+// SS.1: the shared on-disk fingerprint (autoread + multibuffer sources).
+pub mod on_disk;
 pub mod search;
 pub mod ui;
 pub mod undo;

@@ -26,7 +26,7 @@ inheriting it, not by carrying its own copy.
 
 | Slice | Title | Status |
 |---|---|---|
-| SS.1 | Lower `OnDiskFingerprint` to `lattice-core` | 📝 |
+| SS.1 | Lower `OnDiskFingerprint` to `lattice-core` | ✅ |
 | SS.2 | Capture a baseline per source at insertion | 📝 |
 | SS.3 | Verify at save; refuse stale sources, keep the rest | 📝 |
 
@@ -36,7 +36,7 @@ without a baseline).
 
 ---
 
-## SS.1 — Lower the fingerprint 📝
+## SS.1 — Lower the fingerprint ✅
 
 A relocation, not a redesign. The type, its semantics and its tests
 move intact.

@@ -17,11 +17,11 @@ A.4 is **struck** by this work — see design §6).
 
 | Slice | Title | Status |
 |---|---|---|
-| EP.1 | Tagged sources — `ErrorSource` + scoped slice replace | 📝 |
-| EP.2 | Index re-anchoring across refreshes | 📝 |
-| EP.3 | LSP producer — subscriber, severity mapping, coalescing | 📝 |
-| EP.4 | Policy — option + `:lsp-diagnostics-to-error-list` | 📝 |
-| EP.5 | Retire the redundant `:diagnostics` help view | 📝 |
+| EP.1 | Tagged sources — `ErrorSource` + scoped slice replace | ✅ |
+| EP.2 | Index re-anchoring across refreshes | ✅ |
+| EP.3 | LSP producer — layer hook, severity mapping, coalescing | ✅ |
+| EP.4 | Policy — option + `:lsp-diagnostics-to-error-list` | ✅ |
+| EP.5 | ~~Retire the `:diagnostics` help view~~ — **rescoped**, see below | ✅ |
 
 Sequencing is strict: EP.1 before everything (it changes the payload
 type), EP.2 before EP.3 (a live feed without re-anchoring is a
@@ -29,7 +29,7 @@ regression, not a feature), EP.4 with or immediately after EP.3.
 
 ---
 
-## EP.1 — Tagged sources 📝
+## EP.1 — Tagged sources ✅
 
 Turn the whole-list replace into a per-source slice replace.
 
@@ -55,7 +55,7 @@ source argument threaded through.
 **Not in this slice:** no behaviour change is visible to the user —
 only one producer exists until EP.3.
 
-## EP.2 — Index re-anchoring 📝
+## EP.2 — Index re-anchoring ✅
 
 `ErrorList::set` resets `index` to 0. Correct for a new compile run,
 wrong for a refresh.
@@ -72,15 +72,18 @@ wrong for a refresh.
 ordinal; entry deleted → nearest-following rule; empty refresh → index
 0; compile re-run still resets.
 
-## EP.3 — LSP producer 📝
+## EP.3 — LSP producer ✅
 
 All new code in `lattice-lsp`.
 
-- Subscribe to the existing `publishDiagnostics` broadcast
-  (`lattice-lsp/src/actor.rs` — `diagnostics_subscriber_count` shows
-  the seam is already there).
-- Maintain the workspace URI → diagnostics map; map
-  `DiagnosticSeverity` → `ErrorSeverity`.
+- **Landed against `DiagnosticsLayer`, not the raw broadcast.** The
+  layer already maintains the merged workspace URI → diagnostics map
+  *and* a revision counter, so coalescing is "did the revision move?"
+  rather than a hand-rolled dedupe over `subscribe_diagnostics`. One
+  fewer subscriber and no second copy of the map.
+- Map `DiagnosticSeverity` → `ErrorSeverity`; an absent severity is
+  treated as `Error` (under-reporting a real error is the worse
+  failure).
 - **Coalesce on a ~250ms idle debounce**, one rebuilt `Vec` per quiet
   period, never one push per notification.
 - Publish via `SubsystemBoot::inbound::<Vec<ErrorEntry>>` →
@@ -96,7 +99,7 @@ presses a key first passes on the broken version too).
 **Bench.** Rebuild cost at 1k diagnostics; the debounce must hold the
 actor-thread contribution flat as publish rate rises.
 
-## EP.4 — Policy 📝
+## EP.4 — Policy ✅
 
 - Option `lsp.diagnostics-to-error-list`, bool, default `true`, group
   `lsp`, dashed spelling.
@@ -117,17 +120,29 @@ acts as a forced refresh; the echoed count matches.
 **Docs.** `:describe-option` / `:describe-command` metadata; a pointer
 from `lsp-architecture.md` to design §3.2.
 
-## EP.5 — Retire `:diagnostics` help view 📝
+## EP.5 — Rescoped ✅
 
-`dispatch.rs:3335` renders diagnostics as `HelpContent`. Redundant once
-the language server feeds `*problems*`. Repoint `:diagnostics` at the
-grouped view and delete the help-view path.
+**`:diagnostics` is NOT retired. The original premise was wrong twice.**
 
-Also delete `lattice-lsp/src/help_views.rs::lsp_references_help` —
-dead today (definition, no call sites), and (A) will not revive it.
+First, the surface was misidentified. `dispatch.rs:3335` is the **`gl`
+line-diagnostics popup** (`Effect::ShowDiagnosticsPopup`, diagnostics on
+the cursor's line via the hover pipeline) — a different feature, and not
+redundant with anything. `:diagnostics` is `do_list_diagnostics`, a
+**fuzzy picker** over the LSP snapshot.
 
-**Tests.** `:diagnostics` opens the grouped view; no `HelpContent`
-diagnostics path remains (grep gate).
+Second, even the picker is not redundant. `:error-list` browses the
+*merged* list; `:diagnostics` browses the *LSP-only* set — and with
+`lsp.diagnostics-to-error-list = false` it is the **only** way to browse
+diagnostics at all. Retiring it would have removed the browse surface
+for exactly the users who opted out of the feed.
+
+What was genuinely dead and is now deleted:
+`lattice-lsp/src/help_views.rs::lsp_references_help` — a definition with
+no call sites (`gr` has always opened a picker, not a help view).
+
+**Lesson recorded rather than quietly fixed:** this slice was specified
+from a grep of the string `"diagnostics"` rather than from reading the
+call path. Two of its three claims did not survive contact.
 
 ---
 

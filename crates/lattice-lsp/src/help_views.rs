@@ -78,64 +78,6 @@ pub fn diagnostics_help(layer: &DiagnosticsLayer) -> HelpContent {
     HelpContent::from_lines("diagnostics", lines)
 }
 
-/// Build a `*lsp:references*` view from a list of LSP `Location`s
-/// (Phase 4.2.d). Each row is
-/// `[path:line:col](file:path:line)  <line text>` -- the link's
-/// label uses 1-based line / column for display while the link
-/// target keeps the LSP 0-based line so the existing
-/// `do_help_follow_link` machinery jumps to the right row. The
-/// trailing line text is read from disk on a best-effort basis
-/// (missing files / lines render an empty preview); the work is
-/// bounded by the result count and only runs once per
-/// `:references` invocation.
-///
-/// Locations should already be sorted + deduped by the caller (the
-/// per-server fan-out path does this); this constructor is
-/// presentation-only.
-pub fn lsp_references_help(symbol: &str, locations: &[lsp_types::Location]) -> HelpContent {
-    let mut lines: Vec<String> = Vec::new();
-    let title_label = if symbol.is_empty() {
-        "(symbol)".to_string()
-    } else {
-        format!("\"{symbol}\"")
-    };
-    if locations.is_empty() {
-        lines.push(format!("# References for {title_label} (0 found)"));
-        lines.push(String::new());
-        lines.push("(no references)".to_string());
-        return HelpContent::from_lines("lsp:references", lines);
-    }
-    lines.push(format!(
-        "# References for {title_label} ({} found)",
-        locations.len()
-    ));
-    lines.push(String::new());
-
-    let mut file_cache: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for loc in locations {
-        let path = uri_to_path(&loc.uri)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| loc.uri.as_str().to_string());
-        let line0 = loc.range.start.line;
-        let col0 = loc.range.start.character;
-        let preview = file_cache.entry(path.clone()).or_insert_with(|| {
-            std::fs::read_to_string(&path)
-                .ok()
-                .map(|s| s.lines().map(|l| l.to_string()).collect())
-                .unwrap_or_default()
-        });
-        let line_text = preview.get(line0 as usize).cloned().unwrap_or_default();
-        let trimmed = one_line(&line_text).trim_start().to_string();
-        lines.push(format!(
-            "[{path}:{}:{}](file:{path}:{line0})  {trimmed}",
-            line0 + 1,
-            col0 + 1,
-        ));
-    }
-    HelpContent::from_lines("lsp:references", lines)
-}
-
 /// Build the `*lsp*` subsystem-wide log view (Phase 4.1.g).
 /// Snapshots `logger.snapshot_global()` and renders one row per
 /// record: `<timestamp> <level> <source> <message>`.

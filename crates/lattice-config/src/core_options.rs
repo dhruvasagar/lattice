@@ -464,6 +464,22 @@ crate::options! {
     #[name("ui.transient.max-rows")]
     pub TransientMaxRows: i64 = 20;
 
+    /// EP.4 (2026-08-10): does the language server feed the core error
+    /// list?
+    ///
+    /// On (the default), every coalesced `publishDiagnostics` refreshes
+    /// the `Lsp` slice, so `:problems` / `:copen`, the `:error-list`
+    /// picker and the `:next-error` family cover diagnostics as well as
+    /// compiler output. Off, the diagnostics cache still updates — `[d`
+    /// / `]d`, the inline summary and the signcolumn are unaffected —
+    /// and `:lsp-diagnostics-to-error-list` pulls a snapshot on demand.
+    ///
+    /// Lives in the `lsp` group rather than `diagnostics` because that
+    /// group is *presentation* (`ui.diagnostics.inline`); this is
+    /// producer behaviour. See `error-list.md` §3.2.
+    #[name("lsp.diagnostics-to-error-list")]
+    pub LspDiagnosticsToErrorList: bool = true;
+
     /// Where `:lsp-status` opens.
     #[name("lsp.status.display")]
     pub LspStatusDisplay: lattice_core::ui::display::BufferDisplayPreference =

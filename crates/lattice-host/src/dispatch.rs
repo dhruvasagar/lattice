@@ -8643,9 +8643,13 @@ impl Editor {
             // via the compilation inbound bus). Replace the core list;
             // echo the count only when non-empty (the empty vec sent on
             // a new run clears the stale list silently).
-            AppEffect::SetErrorList { source, entries } => {
+            AppEffect::SetErrorList {
+                source,
+                write,
+                entries,
+            } => {
                 let n = entries.len();
-                self.set_error_list(source, entries);
+                self.write_error_list(source, write, entries);
                 if n > 0 {
                     self.set_message(EchoLevel::Info, format!("error list: {n} items"));
                 }
@@ -27860,14 +27864,33 @@ impl Editor {
     /// entry point — CM.3's parser event-drain (and, later,
     /// diagnostics / search) calls this with freshly parsed entries.
     /// Resets the index to the first entry.
-    /// EP.1 (2026-08-10): replace `source`'s slice of the error list,
-    /// leaving every other producer's entries alone.
+    /// EP.1 (2026-08-10): replace `source`'s slice of the error list
+    /// for a **new run**, leaving every other producer's entries alone.
+    /// Resets the navigation index.
     pub fn set_error_list(
         &mut self,
         source: crate::error_list::ErrorSource,
         entries: Vec<crate::error_list::ErrorEntry>,
     ) {
         self.error_list.set(source, entries);
+    }
+
+    /// EP.2/EP.3 (2026-08-10): replace `source`'s slice, honouring the
+    /// producer's declared [`ErrorWrite`] — new run resets the index,
+    /// live refresh re-anchors it.
+    ///
+    /// [`ErrorWrite`]: lattice_protocol::error_list::ErrorWrite
+    pub fn write_error_list(
+        &mut self,
+        source: crate::error_list::ErrorSource,
+        write: lattice_protocol::error_list::ErrorWrite,
+        entries: Vec<crate::error_list::ErrorEntry>,
+    ) {
+        use lattice_protocol::error_list::ErrorWrite;
+        match write {
+            ErrorWrite::NewRun => self.error_list.set(source, entries),
+            ErrorWrite::Refresh => self.error_list.refresh(source, entries),
+        }
     }
 
     /// CM.2 (2026-07-22): read-only accessor for the error list.

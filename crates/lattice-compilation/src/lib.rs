@@ -163,6 +163,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             // EP.1: this producer owns the `Compilation` slice; an LSP
             // republish alongside it replaces only its own.
             source: lattice_protocol::error_list::ErrorSource::Compilation,
+            // A compile run is a new run: start at the top.
+            write: lattice_protocol::error_list::ErrorWrite::NewRun,
             entries,
         })]
     });

@@ -71,6 +71,27 @@ impl ErrorSource {
     }
 }
 
+/// Whether a producer's write is a fresh run or a live refresh.
+///
+/// EP.2/EP.3 (2026-08-10): the two are indistinguishable by looking at
+/// the entries — a language-server republish and a re-run compile can
+/// carry byte-identical lists — so the producer declares which it is
+/// and the host picks `ErrorList::set` or `ErrorList::refresh`.
+///
+/// Getting this wrong is user-visible: a refresh that resets snaps
+/// someone walking the list back to entry 1 on every keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ErrorWrite {
+    /// A fresh run — the user asked for new results and expects to
+    /// start at the top. Compilation always sends this.
+    NewRun,
+    /// A live update of an existing feed — keep the user where they
+    /// were. The language server always sends this, including its
+    /// first push (an empty list has nothing to anchor to, so it
+    /// degrades to index 0 anyway).
+    Refresh,
+}
+
 /// One navigable location on the error list. `line` / `col` are
 /// 0-based (the convention `Editor::jump_to_file_line_col` expects),
 /// matching LSP diagnostics.

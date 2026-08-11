@@ -44,10 +44,18 @@
 //!   an Editor-field. The inbound drains + the modeline (`ModelineElementUpdate`,
 //!   a generic event) wake stay host-side.
 
+use std::sync::Arc;
+
+use lattice_config::ConfigRegistry;
+use lattice_grammar::Effect;
+use lattice_grammar::app_effect::AppEffect;
 use lattice_mode::SubsystemBoot;
+use lattice_protocol::error_list::{ErrorEntry, ErrorSource, ErrorWrite};
 
 use crate::LspSupervisorHandle;
 use crate::completion::register_lsp_completion_mode;
+use crate::diagnostics_layer::DiagnosticsLayer;
+use crate::error_list_feed::ErrorListFeed;
 use crate::modes::register_lsp_log_modes;
 use crate::{
     LspCodeLensRefresh, LspDiagnosticRefresh, LspInlayHintRefresh, LspSemanticTokensRefresh,
@@ -77,4 +85,65 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.wake_on_event::<LspSemanticTokensRefresh>();
     boot.wake_on_event::<LspDiagnosticRefresh>();
     boot.wake_on_event::<LspCodeLensRefresh>();
+
+    // ── EP.3: the error-list feed ───────────────────────────────────────────
+    install_error_list_feed(boot);
+}
+
+/// EP.3 (2026-08-10): wire the language server up as a producer of the
+/// core error list.
+///
+/// `boot.inbound` is mandatory here, not stylistic: its `send` bakes in
+/// the `async_landed` wake, so a republish reaches `*problems*` and the
+/// `:next-error` family without waiting for a keystroke. A bare
+/// `tick_callback` would reproduce the "it only updates when I press
+/// something" bug class (`boot-composition.md` §3).
+///
+/// Every write is [`ErrorWrite::Refresh`] — a live feed must re-anchor
+/// the navigation index, or walking the list while typing snaps the
+/// user back to entry 1 on each keystroke (EP.2).
+///
+/// No-ops when the `DiagnosticsLayer` is absent (test harnesses that
+/// install a trimmed boot): the feed simply never starts, rather than
+/// panicking a subsystem installer.
+fn install_error_list_feed(boot: &mut impl SubsystemBoot) {
+    let Some(layer) = boot.service::<DiagnosticsLayer>() else {
+        tracing::debug!("lsp: DiagnosticsLayer service absent; error-list feed not started");
+        return;
+    };
+    let layer: DiagnosticsLayer = (*layer).clone();
+
+    let config = boot.service::<Arc<ConfigRegistry>>();
+
+    let bus = boot.inbound::<Vec<ErrorEntry>, _>(|entries| {
+        vec![Effect::AppAction(AppEffect::SetErrorList {
+            source: ErrorSource::Lsp,
+            write: ErrorWrite::Refresh,
+            entries,
+        })]
+    });
+
+    // Read the option every tick rather than capturing its value, so
+    // `:set lsp.diagnostics-to-error-list` takes effect immediately
+    // instead of at the next restart.
+    let enabled = move || match &config {
+        // `get_typed` returns None before the option registry is
+        // initialised; treat that as the option's default (on) rather
+        // than silently disabling a feature the user expects to have.
+        Some(cfg) => cfg
+            .get_typed::<lattice_config::core_options::LspDiagnosticsToErrorList>()
+            .map(|v| *v)
+            .unwrap_or(true),
+        None => true,
+    };
+
+    let feed = ErrorListFeed::spawn(layer, enabled, move |entries| {
+        // A send failure means the drain is gone — the editor is
+        // shutting down. Nothing to recover, and nothing worth
+        // surfacing to the user, but don't swallow it silently either.
+        if bus.send(entries).is_err() {
+            tracing::debug!("lsp: error-list drain closed; feed send dropped");
+        }
+    });
+    boot.register_service::<crate::error_list_feed::ErrorListFeedHandle>(Arc::new(feed));
 }

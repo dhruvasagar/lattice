@@ -62,6 +62,8 @@ pub mod diagnostics;
 pub mod diagnostics_layer;
 pub mod dynamic_registration;
 pub mod error;
+// EP.3: the language server as a producer of the core error list.
+pub mod error_list_feed;
 pub mod events;
 pub mod fan_in;
 pub mod features;

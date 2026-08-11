@@ -825,6 +825,10 @@ pub enum AppEffect {
         /// server republishing on edit-debounce cannot wipe a compile
         /// run's entries while the user walks them.
         source: lattice_protocol::error_list::ErrorSource,
+        /// EP.2: new run (reset the index) vs live refresh (re-anchor
+        /// it). Declared by the producer — not inferrable from the
+        /// entries.
+        write: lattice_protocol::error_list::ErrorWrite,
         entries: Vec<lattice_protocol::error_list::ErrorEntry>,
     },
     /// CM.3c (2026-07-22): the per-buffer severity gutter index for the

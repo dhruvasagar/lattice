@@ -582,6 +582,8 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-trace", "ex:lsp-trace"),
     ("lsp-trace-log", "ex:lsp-trace-log"),
     ("lsp-status", "ex:lsp-status"),
+    // LR.2: the editable references view (the picker stays on `gr`).
+    ("lsp-references", "ex:lsp-references"),
     // EP.4: exactly one alias — dashed + `lsp-` namespaced. No
     // collapsed form, no generic `diagnostics` alias.
     (

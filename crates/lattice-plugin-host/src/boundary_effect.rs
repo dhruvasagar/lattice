@@ -423,6 +423,19 @@ impl WitBoundary for NativeLspRequest {
             NativeLspRequest::Implementation => WitLspRequest::Implementation,
             NativeLspRequest::References => WitLspRequest::References,
             NativeLspRequest::FollowLink => WitLspRequest::FollowLink,
+            // LR.2: no WIT mirror yet. Adding one is a versioned
+            // plugin-API change and deserves its own slice rather than
+            // riding along with a host-side feature — the `BuryBuffer`
+            // shape. Collapsing it to `References` would be lossy in
+            // the direction that matters: the plugin would silently get
+            // the picker when it asked for the editable view.
+            NativeLspRequest::ReferencesView => {
+                return Err(
+                    "LspRequest::ReferencesView (`:lsp-references`) has no WIT mirror yet; \
+                     adding one is a versioned plugin-API change (lsp-architecture.md §17)"
+                        .to_string(),
+                );
+            }
         })
     }
     fn from_wit(w: WitLspRequest) -> Result<Self, String> {

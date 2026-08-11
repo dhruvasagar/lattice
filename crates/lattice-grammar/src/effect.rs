@@ -145,6 +145,16 @@ pub enum LspRequest {
     References,
     /// `gx` -- follow the `textDocument/documentLink` covering the cursor.
     FollowLink,
+    /// LR.2 (2026-08-11): `:lsp-references` -- the same
+    /// `textDocument/references` query as [`Self::References`], landing
+    /// at the **editable multibuffer** terminus instead of the picker.
+    ///
+    /// A data arm rather than a new `Effect` variant, per §16's grain:
+    /// a further LSP surface adds an arm here, not a host `Action`, not
+    /// a renderer classifier entry. The request, cancellation token,
+    /// anchor stash and wake are the unchanged substrate; only what the
+    /// drain does with the result differs.
+    ReferencesView,
 }
 
 #[derive(Debug, Clone)]

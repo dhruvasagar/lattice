@@ -16,7 +16,7 @@ Catalogue entry: A.3 in
 | Slice | Title | Status |
 |---|---|---|
 | LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | ✅ |
-| LR.2 | `:lsp-references` — second terminus on the existing drain | 📝 |
+| LR.2 | `:lsp-references` — second terminus on the existing drain | ✅ |
 | LR.3 | Refresh — origin-anchored re-query | 📝 |
 | LR.4 | Version-skew guard on edit propagation | 📝 |
 | LR.5 | `<C-q>` bulk outcome from the picker | 📝 |
@@ -47,7 +47,7 @@ closing the view drops the service entry; the view is a plain
 `BufferKind::Multibuffer` — it must pass
 `multibuffer_is_a_regular_buffer.rs` verbatim.
 
-## LR.2 — The second terminus 📝
+## LR.2 — The second terminus ✅
 
 - `LspRequest::ReferencesView` data arm (not a new `Effect`, not a new
   host `Action` — §16's grain).

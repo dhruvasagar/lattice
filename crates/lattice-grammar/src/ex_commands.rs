@@ -26,7 +26,7 @@
 use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
-use crate::effect::{Effect, QuitScope, SubstituteScope};
+use crate::effect::{Effect, LspRequest, QuitScope, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
@@ -1657,6 +1657,27 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // LR.2: the editable references view. One alias, dashed and
+    // `lsp-` namespaced. Deliberately no chord: `gR` is vim's Virtual
+    // Replace, unimplemented here, so binding it would foreclose a
+    // grammar slot rather than collide with one. `<C-q>` from the
+    // picker (LR.5) is the discoverable path.
+    let _lsp_references_view = registry.register_ex_command(
+        "ex:lsp-references",
+        "Open every reference to the symbol under the cursor as an editable multibuffer, \
+         one excerpt per site. Edits propagate to the source files. `gr` keeps opening the \
+         picker, which is the better surface for jumping to a single site.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::Lsp(LspRequest::ReferencesView))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     // EP.4: one alias, dashed + `lsp-` namespaced, per the ex-command
     // naming rule. No collapsed spelling, no generic `diagnostics`
     // alias -- a generic name would imply it works without LSP.

@@ -10480,9 +10480,21 @@ impl Editor {
     /// Browse-style, not a tag-intent drill-down: clears
     /// `pending_tag_origin` so `<C-t>` doesn't see a stale entry.
     pub fn lsp_references_request(&mut self) {
+        self.lsp_references_request_to(false);
+    }
+
+    /// LR.2 (2026-08-11): the same request, with the terminus declared.
+    ///
+    /// `to_view = false` is `gr` → the picker; `true` is
+    /// `:lsp-references` → the editable multibuffer. The whole async
+    /// substrate below is shared and untouched — only the drain's
+    /// destination differs, which is why this is a flag on the request
+    /// rather than a second pipeline (§16 rejected mode-side async).
+    pub fn lsp_references_request_to(&mut self, to_view: bool) {
         if let Some(token) = self.pending_references_token.take() {
             token.cancel();
         }
+        self.pending_references_to_view = to_view;
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
@@ -10609,6 +10621,10 @@ impl Editor {
             }
             LspRequest::References => {
                 self.lsp_references_request();
+                Vec::new()
+            }
+            LspRequest::ReferencesView => {
+                self.lsp_references_request_to(true);
                 Vec::new()
             }
             LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
@@ -10982,12 +10998,64 @@ impl Editor {
                     self.set_message(EchoLevel::Info, format!("no references for {label}"));
                     return;
                 }
+                // LR.2: route to the terminus the request declared.
+                // `gr` keeps the picker; `:lsp-references` opens the
+                // editable multibuffer.
+                if std::mem::take(&mut self.pending_references_to_view) {
+                    self.open_references_view(&symbol, &locations);
+                    return;
+                }
                 let title = if symbol.is_empty() {
                     "lsp:references".to_string()
                 } else {
                     format!("references: {symbol}")
                 };
                 self.open_lsp_locations_picker(title, &locations);
+            }
+        }
+    }
+
+    /// LR.2 (2026-08-11): open the references multibuffer over
+    /// `locations`.
+    ///
+    /// Thin host glue, matching the `ProblemsOpen` shape: the substrate
+    /// crate owns view construction, this reads the origin off live
+    /// editor state and echoes. The origin is captured HERE, at the
+    /// moment the result lands, from the request's own recorded
+    /// position — not from the cursor, which may have moved.
+    fn open_references_view(
+        &mut self,
+        symbol: &str,
+        locations: &[lattice_lsp::lsp_types::Location],
+    ) {
+        use lattice_lsp::providers::references::{ReferencesOrigin, create_references_view};
+
+        let uri = self
+            .buffer_uris
+            .get(&self.document_buffer_id)
+            .map(|u| u.as_str().to_string())
+            .unwrap_or_default();
+        let origin = ReferencesOrigin {
+            uri,
+            line: self.cursor.line,
+            character: self.cursor.byte,
+            symbol: symbol.to_string(),
+        };
+        let registry = self.registry.clone();
+        let lang = Some(self.lang_registry.clone());
+        match create_references_view(self, locations, origin, registry, lang) {
+            Some(view) => {
+                let _ = self.activate_buffer(view);
+                self.set_message(
+                    EchoLevel::Info,
+                    format!("[references] {} sites", locations.len()),
+                );
+            }
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    ":lsp-references: no readable source files for these references".to_string(),
+                );
             }
         }
     }

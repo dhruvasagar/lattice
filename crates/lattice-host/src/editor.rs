@@ -1793,6 +1793,14 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lattice_lsp::lsp_types::Location>>>,
     pub pending_definition_token: Option<CancellationToken>,
     pub pending_nav_kind: Option<LspNavKind>,
+    /// LR.2 (2026-08-11): which terminus the in-flight references
+    /// request is for — the picker (`gr`) or the editable multibuffer
+    /// (`:lsp-references`).
+    ///
+    /// Recorded when the request is issued so the drain routes without
+    /// guessing. `false` (picker) is the default because that is what
+    /// `gr` has always done and what every existing caller means.
+    pub pending_references_to_view: bool,
     pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
     pub pending_references_token: Option<CancellationToken>,
     pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,

@@ -1,6 +1,6 @@
 //! PH7.5 — the plugin-host perf ratchets (the CI gate on the §7 budgets).
 //!
-//! Companions to the criterion benches (`trampoline`, `fuzzy_finder`,
+//! Companions to the criterion benches (`trampoline`,
 //! `instantiate`), which record the descriptive numbers on `main`. These are
 //! the CI GATE: each measures a warm operation inline and asserts a **generous
 //! absolute ceiling** — orders of magnitude above the real (release) cost, so it
@@ -23,8 +23,7 @@
 use std::time::{Duration, Instant};
 
 use lattice_mode::CapabilitySet;
-use lattice_plugin_host::picker_task::{ActiveBufferSnapshot, PickerContext, Position};
-use lattice_plugin_host::{Capability, PluginBudget, PluginHost, PluginManifest, TrustTier};
+use lattice_plugin_host::{PluginBudget, PluginHost, PluginManifest, TrustTier};
 
 /// The median of `samples`, sorted in place.
 fn median(mut samples: Vec<Duration>) -> Duration {
@@ -105,96 +104,6 @@ fn typed_call_stays_within_ceiling() {
         m < Duration::from_micros(50),
         "typed host call median was {m:?}; expected < 50µs (§7 release budget < 500ns p99). \
          A gross regression in the canonical-ABI typed-call path."
-    );
-}
-
-// ── §7 row: guest→host picker path (the fuzzy-finder init round-trip) ─────────
-
-fn wit_ctx(workspace_root: &str) -> PickerContext {
-    PickerContext {
-        active_buffer: ActiveBufferSnapshot {
-            buffer_id: 0,
-            path: None,
-            language: None,
-            cursor: Position { line: 0, byte: 0 },
-            selection: None,
-            syntax_symbols: Vec::new(),
-        },
-        workspace_root: workspace_root.to_string(),
-        recent_files: Vec::new(),
-        position_history: Vec::new(),
-        buffers: Vec::new(),
-        marks: Vec::new(),
-        registers: Vec::new(),
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn picker_init_round_trip_stays_within_ceiling() {
-    let path = env!("FUZZY_FINDER_WASM");
-    if path.is_empty() {
-        eprintln!("SKIP: picker_init ratchet — fuzzy-finder plugin not built");
-        return;
-    }
-    // A small fixed tree so the walk is bounded — we gate the CALL path (channel
-    // + guest export + walk round-trip + marshalling), not disk throughput.
-    let tree = tempfile::tempdir().unwrap();
-    for i in 0..10 {
-        std::fs::write(tree.path().join(format!("f{i}.rs")), "").unwrap();
-    }
-    let root = std::fs::canonicalize(tree.path()).unwrap();
-    let root_str = root.to_str().unwrap().to_string();
-
-    let dirs = tempfile::tempdir().unwrap();
-    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
-    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
-    let manifest = PluginManifest::new(
-        "fuzzy-finder",
-        vec![Capability::FsRead(root.clone())],
-        CapabilitySet::empty(),
-    );
-    let (client, actor) = host
-        .spawn_picker_source(
-            &component,
-            &manifest,
-            TrustTier::Bundled,
-            PluginBudget::default(),
-            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
-        )
-        .await
-        .unwrap();
-    tokio::spawn(actor.run());
-
-    let ctx = wit_ctx(&root_str);
-    // Warm, then measure the median init round-trip.
-    for _ in 0..20 {
-        let _ = client
-            .init(ctx.clone(), vec![root_str.clone()])
-            .await
-            .unwrap();
-    }
-    let iters = 200usize;
-    let mut samples = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let t = Instant::now();
-        let out = client
-            .init(ctx.clone(), vec![root_str.clone()])
-            .await
-            .unwrap()
-            .unwrap();
-        samples.push(t.elapsed());
-        std::hint::black_box(out);
-    }
-    let m = median(samples);
-    eprintln!("[ph7.5-ratchet] picker_init median (10 files, debug): {m:?}");
-
-    // Release warm init over 50 files ≈ 110µs; a 10-file tree is less. 20ms is
-    // far above the real cost yet well under an O(file)-blowup or a lost-cache
-    // re-instantiation.
-    assert!(
-        m < Duration::from_millis(20),
-        "picker init round-trip median was {m:?}; expected < 20ms. \
-         A gross regression in the guest→host picker path (channel / walk / marshalling)."
     );
 }
 

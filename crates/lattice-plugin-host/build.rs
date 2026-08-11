@@ -24,10 +24,9 @@ fn main() {
     // A change to the shared WIT (the worlds the guests target) rebuilds both.
     println!("cargo:rerun-if-changed={}", wit_dir.display());
 
-    // Test fixtures live under `tests/fixtures/`; the `fuzzy-finder` validation
-    // plugin (PH7.4d) lives at the repo-root `plugins/`. All build the same way.
-    // Crate name uses a dash, artifact uses an underscore (`trampoline-guest` →
-    // `trampoline_guest.wasm`).
+    // Test fixtures live under `tests/fixtures/`; bundled plugins live at the
+    // repo-root `plugins/`. All build the same way. Crate name uses a dash,
+    // artifact uses an underscore (`trampoline-guest` → `trampoline_guest.wasm`).
     let fixtures = manifest_dir.join("tests").join("fixtures");
     build_guest(
         &fixtures.join("trampoline-guest"),
@@ -101,15 +100,6 @@ fn main() {
         "logging-guest",
         "LOGGING_GUEST_WASM",
     );
-    build_guest(
-        &manifest_dir
-            .join("..")
-            .join("..")
-            .join("plugins")
-            .join("fuzzy-finder"),
-        "fuzzy-finder",
-        "FUZZY_FINDER_WASM",
-    );
     // AP.1: the first bundled plugin — a multi-seam component (grammar + modes +
     // config). Built here so the loader integration test (loaded by known path,
     // like the mode/config drains) and the eventual bundling (AP.4) have the
@@ -130,9 +120,11 @@ fn main() {
 /// failure, so the dependent test/bench skips gracefully). `name` is the crate
 /// name; the artifact is `<name-with-underscores>.wasm`.
 fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
-    // A guest crate that isn't in the tree at all (e.g. `fuzzy-finder`,
-    // referenced here but never landed under `plugins/`) must be skipped
-    // BEFORE any `rerun-if-changed` is emitted.
+    // A guest crate that isn't in the tree must be skipped BEFORE any
+    // `rerun-if-changed` is emitted. Kept as a guard even though no caller
+    // currently points at a missing directory: `fuzzy-finder` was removed
+    // after `auto-pair` became the first bundled plugin, and its stale entry
+    // here cost every build a full relink until it was found.
     //
     // This is not a tidiness point, it is the build's single biggest cost.
     // Cargo re-runs a build script on every invocation when any declared

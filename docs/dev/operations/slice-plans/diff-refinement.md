@@ -15,7 +15,7 @@ piece that does not exist yet.
 
 | Slice | Title | Status |
 |---|---|---|
-| DR.1 | Word-level refinement in `lattice-diff` (pure) | 📝 |
+| DR.1 | Word-level refinement in `lattice-diff` (pure) | ✅ |
 | DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | 📝 |
 | DR.3 | Magit diffs publish refinement | 📝 |
 | DR.4 | `diff-mode` panes publish refinement | 📝 |
@@ -26,7 +26,7 @@ slip it without blocking anything.
 
 ---
 
-## DR.1 — The computation 📝
+## DR.1 — The computation ✅
 
 Pure, in `lattice-diff`. Two strings in, changed ranges out.
 

@@ -35,6 +35,9 @@
 
 pub mod compute;
 pub mod patch;
+// DR.1 (2026-08-12): intra-line refinement — which PART of a changed
+// line changed. Pure; `lattice-magit` and `diff-mode` both consume it.
+pub mod refine;
 pub mod types;
 
 // BC.6 / DX.6 (2026-06-24): the host-attached diff *subsystem*, moved
@@ -71,4 +74,5 @@ pub mod programmatic;
 pub use compute::{DiffEngineError, compute_diff};
 pub use install::install;
 pub use programmatic::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
+pub use refine::{LineRefinement, refine_pair, refine_runs};
 pub use types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};

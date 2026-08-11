@@ -59,6 +59,12 @@ pub enum ErrorSource {
     /// `lsp.references-to-error-list` (default off) — see
     /// `error-list.md` §3.2b.
     References,
+    /// LR.5 — the user sent a picker's filtered results here with
+    /// `<C-q>` (telescope's `send_to_qflist`). Deliberately ONE slice
+    /// for every picker: the defining fact is "I sent these", not which
+    /// picker they came from, and a second `<C-q>` replaces the first
+    /// exactly as telescope's does.
+    Picker,
 }
 
 impl ErrorSource {
@@ -66,10 +72,11 @@ impl ErrorSource {
     /// each keeps its producer's own ordering — producer order carries
     /// meaning (rustc emits the root cause ahead of the errors it
     /// cascades into), so sorting the merged list would destroy it.
-    pub const PRESENTATION_ORDER: [ErrorSource; 3] = [
+    pub const PRESENTATION_ORDER: [ErrorSource; 4] = [
         ErrorSource::Compilation,
         ErrorSource::Lsp,
         ErrorSource::References,
+        ErrorSource::Picker,
     ];
 
     /// Short label for echoes and filters.
@@ -78,6 +85,7 @@ impl ErrorSource {
             ErrorSource::Compilation => "compile",
             ErrorSource::Lsp => "lsp",
             ErrorSource::References => "refs",
+            ErrorSource::Picker => "picker",
         }
     }
 }

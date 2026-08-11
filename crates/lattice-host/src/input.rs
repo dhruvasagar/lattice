@@ -515,6 +515,10 @@ fn translate_picker(chord: KeyChord) -> Action {
             KeyKind::Char('s') => Action::PickerAcceptInSplit,
             KeyKind::Char('v') => Action::PickerAcceptInVSplit,
             KeyKind::Char('t') => Action::PickerAcceptInTab,
+            // LR.5: send the FILTERED result set somewhere editable —
+            // the telescope idiom. Echoes on a picker whose opener
+            // declared no bulk meaning, rather than doing nothing.
+            KeyKind::Char('q') => Action::PickerBulkAccept,
             _ => Action::None,
         };
     }

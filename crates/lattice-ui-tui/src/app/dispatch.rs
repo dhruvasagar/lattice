@@ -582,7 +582,8 @@ impl App {
             // `PickerBackspace` / `PickerSelectNext` /
             // `PickerSelectPrev` migrated to `Editor::dispatch`.
             // Phase 5.8.AF: migrated to host (consumed = true).
-            Action::PickerAccept | Action::PickerDismiss => {}
+            // LR.5: `PickerBulkAccept` is host-applied like its peers.
+            Action::PickerAccept | Action::PickerBulkAccept | Action::PickerDismiss => {}
 
             // 5.5.G.2: `EnterVisual` / `ExitVisual` / `ReselectLastVisual`
             // migrated to `Editor::dispatch`; routed through the

@@ -1398,12 +1398,15 @@ rather than writing blind; `gr` (refresh) is the recovery path.
 unbound today but is vim's Virtual Replace mode, so binding it would
 foreclose a grammar slot permanently (paramount goal #3) for a novel
 command — the same reasoning that reserves the 1–2 letter ex-command
-shorts. The discoverable path is instead a **bulk outcome from the
-picker** (`<C-q>`, the telescope idiom): browse in the picker, then send
-the whole result set to an editable view when you realise you need to
-edit all of them. That is a slice of its own — `translate_picker` is a
-hardcoded host-side router and "send results to a view" has to mean
-something per `PickerSource` — and it generalises past references.
+shorts. `<C-q>` is **not** that path, despite an earlier draft here saying so.
+Across the vim ecosystem it already means *send these results to the
+quickfix list* (telescope's `send_to_qflist`), and LR.5 implements that
+generic meaning for every picker. Giving a well-known chord a novel
+lattice-only meaning is what the UX-convention rule exists to prevent.
+
+So the view's triggers are `:lsp-references` and `gr` inside an open
+view (refresh). Discoverability rests on the ex-command and its
+`:describe-command` entry.
 
 Sequencing: [`../operations/slice-plans/lsp-references-view.md`](../operations/slice-plans/lsp-references-view.md).
 

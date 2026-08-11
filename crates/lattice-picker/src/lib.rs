@@ -514,6 +514,17 @@ impl Picker {
     /// Lives here rather than in the host's dispatch arm because `BS`
     /// and `<Esc>` both need it, and two copies of a precedence rule
     /// drift.
+    /// LR.5: the routing payloads of the candidates that survived the
+    /// current query — the FILTERED set, which is what `<C-q>` means.
+    /// Sending the unfiltered list would discard the work the user just
+    /// did typing a query (telescope's `send_to_qflist` semantics).
+    pub fn filtered_routing(&self) -> Vec<&RoutingPayload> {
+        self.candidates
+            .iter()
+            .filter_map(|c| self.routing_for(c))
+            .collect()
+    }
+
     pub fn transient_unwind(&mut self) -> bool {
         if self.transient.is_none() {
             return false;

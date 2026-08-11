@@ -19,7 +19,7 @@ Catalogue entry: A.3 in
 | LR.2 | `:lsp-references` — second terminus on the existing drain | ✅ |
 | LR.3 | Refresh — origin-anchored re-query | ✅ |
 | LR.4 | ~~Version-skew guard~~ — **superseded**, see below | ⛔ |
-| LR.5 | `<C-q>` bulk outcome from the picker | 📝 |
+| LR.5 | `<C-q>` sends picker results to the error list | ✅ |
 
 LR.5 is separable and generalises past references — it can slip without
 blocking anything above it.
@@ -109,21 +109,36 @@ paths in place. Superseded by
 (SS series); the references view inherits the fix rather than carrying
 a copy.
 
-## LR.5 — `<C-q>` from the picker 📝
+## LR.5 — `<C-q>` sends picker results to the error list ✅
 
-The discoverable path, and it generalises past references.
+**Re-specified before building.** The slice originally said `<C-q>`
+should open the references *view*, with each opener declaring its own
+bulk meaning. That is a novel meaning for a chord that already has a
+well-known one: across the vim ecosystem — telescope's
+`send_to_qflist`, fzf.vim's populate-quickfix — `<C-q>` in a fuzzy
+finder sends the results to the quickfix list. Users carry that muscle
+memory in with them, and the UX-convention rule says convention beats
+local rationale on a surface like this.
 
-- `translate_picker` (a hardcoded host-side router,
-  `lattice-host/src/input.rs:500`) gains `<C-q>` → a bulk-outcome
-  action.
-- The opener supplies the bulk outcome; `PickerSource`s without one make
-  `<C-q>` echo "not available for this picker" rather than doing
-  nothing.
-- References supplies "open these locations as a view".
+So it is **generic over every picker**, not a per-picker affordance:
 
-**Tests.** `<C-q>` in a references picker opens the view with the
-**filtered** result set, not the unfiltered one; a picker with no bulk
-outcome echoes; `<C-q>` does not leak to the buffer beneath.
+- `translate_picker` gains `<C-q>` → `Action::PickerBulkAccept`.
+- The host maps every **filtered** candidate whose routing payload
+  carries a location (`LspLocation`, `OpenFile`, `JumpInBuffer`) into
+  the error list's `Picker` slice, then dismisses.
+- Candidates with nowhere to jump to contribute nothing; a picker made
+  entirely of them (registers, marks, commands) echoes rather than
+  swallowing the key.
+- `ErrorSource::Picker` is one slice for all pickers — the defining
+  fact is "I sent these", not which picker they came from — and a
+  second `<C-q>` replaces the first, as telescope's does.
+
+The references *view* keeps its own trigger (`:lsp-references`); it
+never needed a picker chord.
+
+**Tests.** Locations land in the error list with line + column intact
+and the picker dismisses; a picker with no locations echoes and stays
+up; a send leaves a compile run's slice intact.
 
 ---
 
@@ -131,8 +146,8 @@ outcome echoes; `<C-q>` does not leak to the buffer beneath.
 
 - **A chord that opens the view directly.** `gR` is vim's Virtual
   Replace mode — unimplemented in lattice, so binding it would foreclose
-  the slot rather than collide with it. Revisit only if LR.5 proves
-  insufficiently discoverable in practice.
+  the slot rather than collide with it. `<C-q>` is NOT that chord: it
+  means send-to-quickfix (LR.5), not open-the-view.
 - **The rest of the LSP provider family** — A.9 workspace symbols, A.8
   refactor preview, A.10/A.11 hierarchies. Each is the same shape as
   LR.1–LR.3; do one first and see what the second one wants to share

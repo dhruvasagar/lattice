@@ -218,3 +218,139 @@ fn a_references_push_leaves_compile_and_lsp_slices_intact() {
         1
     );
 }
+
+// ── LR.5: `<C-q>` sends the filtered set to the error list ───────────
+//
+// This is telescope's `send_to_qflist`. Across the vim ecosystem
+// `<C-q>` in a fuzzy finder populates the quickfix list, so it is
+// generic over every picker rather than a per-picker affordance.
+
+/// A picker whose candidates carry no location has nothing to send, and
+/// must SAY so rather than swallowing the key.
+#[test]
+fn bulk_accept_with_no_locations_echoes_and_keeps_the_picker() {
+    use lattice_picker::{Picker, PickerAction, PickerSource};
+
+    let mut e = editor();
+    e.set_active_picker(Picker::new(
+        "buffers",
+        PickerSource::Buffers,
+        PickerAction::SwitchToBuffer,
+    ));
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    e.do_picker_bulk_accept(&mut out);
+
+    assert!(
+        e.picker.is_some(),
+        "nothing was sent, so the picker stays up"
+    );
+    assert!(
+        e.error_list()
+            .entries_from(lattice_host::error_list::ErrorSource::Picker)
+            .is_empty(),
+        "an empty send must not create a slice"
+    );
+}
+
+/// The generic path: a locations picker sends its rows to the error
+/// list and dismisses. Not references-specific — the picker source is
+/// irrelevant, only whether its candidates have somewhere to jump to.
+#[test]
+fn bulk_accept_sends_locations_to_the_error_list() {
+    use lattice_host::error_list::ErrorSource;
+    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+
+    let dir = std::env::temp_dir().join(format!("lattice-lr5-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("x.rs");
+    std::fs::write(
+        &file,
+        "one
+two
+three
+",
+    )
+    .unwrap();
+
+    let loc = |line: u32| Location {
+        uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+        range: Range {
+            start: Position { line, character: 2 },
+            end: Position { line, character: 3 },
+        },
+    };
+
+    let mut e = editor();
+    e.open_lsp_locations_picker("references: foo", &[loc(0), loc(2)]);
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    e.do_picker_bulk_accept(&mut out);
+
+    let sent = e.error_list().entries_from(ErrorSource::Picker);
+    assert_eq!(sent.len(), 2, "both rows land in the error list");
+    assert_eq!(sent[0].line, 0);
+    assert_eq!(sent[1].line, 2);
+    assert_eq!(sent[0].col, 2, "the column survives the round trip");
+    assert!(e.picker.is_none(), "a successful send dismisses the picker");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The send replaces only its own slice — a compile run being walked
+/// survives someone sending a picker's results.
+#[test]
+fn a_picker_send_leaves_a_compile_run_intact() {
+    use lattice_host::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
+    use lattice_lsp::lsp_types::{Location, Position, Range, Uri};
+
+    let dir = std::env::temp_dir().join(format!("lattice-lr5b-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("y.rs");
+    std::fs::write(
+        &file, "a
+b
+",
+    )
+    .unwrap();
+
+    let mut e = editor();
+    e.set_error_list(
+        ErrorSource::Compilation,
+        vec![ErrorEntry {
+            path: std::path::PathBuf::from("build.rs"),
+            line: 9,
+            col: 0,
+            severity: ErrorSeverity::Error,
+            message: "boom".to_string(),
+        }],
+    );
+
+    e.open_lsp_locations_picker(
+        "refs",
+        &[Location {
+            uri: format!("file://{}", file.display()).parse::<Uri>().unwrap(),
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                },
+            },
+        }],
+    );
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    e.do_picker_bulk_accept(&mut out);
+
+    assert_eq!(
+        e.error_list().entries_from(ErrorSource::Compilation).len(),
+        1,
+        "sending from a picker must not disturb a compile run"
+    );
+    assert_eq!(e.error_list().entries_from(ErrorSource::Picker).len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

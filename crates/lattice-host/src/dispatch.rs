@@ -3058,6 +3058,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 None => _out.merge(editor.do_picker_accept()),
             }
         }
+        Action::PickerBulkAccept => {
+            editor.do_picker_bulk_accept(_out);
+        }
         Action::PickerDismiss => {
             let signals = editor.do_picker_dismiss();
             _out.renderer_signals.extend(signals);
@@ -11163,6 +11166,81 @@ impl Editor {
         self.lsp_references_request_to(crate::editor::ReferencesTerminus::View);
         self.document_buffer_id = saved_buffer;
         self.cursor = saved_cursor;
+    }
+
+    /// LR.5 (2026-08-11): `<C-q>` — send the picker's FILTERED
+    /// candidates to the error list, then dismiss.
+    ///
+    /// **This is telescope's `send_to_qflist`, and the binding means
+    /// the same thing here.** Across the vim ecosystem `<C-q>` in a
+    /// fuzzy finder populates the quickfix list; users carry that
+    /// muscle memory in with them, so it is generic over every picker
+    /// rather than a per-picker affordance. An earlier cut had it open
+    /// the references multibuffer — a novel meaning for a chord that
+    /// already has a well-known one, which the UX-convention rule
+    /// exists to prevent.
+    ///
+    /// Filtered, not raw: sending the whole result set would discard
+    /// the query the user just typed, which is the opposite of what
+    /// "send these" means after narrowing.
+    ///
+    /// Candidates with no location contribute nothing. A picker made
+    /// entirely of them (registers, marks, commands) echoes rather than
+    /// swallowing the key — the dead-key failure RV.1 spent a slice
+    /// removing from `gr`.
+    pub fn do_picker_bulk_accept(&mut self, out: &mut DispatchOutcome) {
+        use lattice_picker::RoutingPayload;
+        use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource, ErrorWrite};
+
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+
+        let mut entries: Vec<ErrorEntry> = Vec::new();
+        for routing in picker.filtered_routing() {
+            // Only location-bearing payloads can become entries. The
+            // rest (a register, a command, a buffer id) have nowhere to
+            // jump to, so they are skipped rather than faked.
+            let (path, line, col) = match routing {
+                RoutingPayload::LspLocation { path, line, col } => (path.clone(), *line, *col),
+                RoutingPayload::OpenFile { path } => (path.clone(), 0, 0),
+                RoutingPayload::JumpInBuffer {
+                    buffer_id,
+                    line,
+                    col,
+                } => {
+                    let Some(path) = self.path_for_buffer(lattice_core::BufferId(*buffer_id))
+                    else {
+                        continue;
+                    };
+                    (path, *line, *col)
+                }
+                _ => continue,
+            };
+            entries.push(ErrorEntry {
+                path,
+                line,
+                col,
+                severity: ErrorSeverity::Info,
+                message: String::new(),
+            });
+        }
+
+        if entries.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                "nothing here has a location to send".to_string(),
+            );
+            return;
+        }
+
+        let n = entries.len();
+        // A new send REPLACES the picker slice, matching telescope --
+        // and per-source slices mean it leaves a compile run alone.
+        self.write_error_list(ErrorSource::Picker, ErrorWrite::NewRun, entries);
+        let signals = self.do_picker_dismiss();
+        out.renderer_signals.extend(signals);
+        self.set_message(EchoLevel::Info, format!("error list: {n} item(s)"));
     }
 
     /// LR.2 (2026-08-11): open the references multibuffer over

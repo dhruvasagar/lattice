@@ -500,6 +500,10 @@ pub enum Action {
     PickerAcceptInVSplit,
     /// `<C-t>` — accept candidate in a new tab.
     PickerAcceptInTab,
+    /// LR.5 (2026-08-11): `<C-q>` — send every candidate that survived
+    /// the current query to the picker's declared bulk outcome, and
+    /// dismiss. Echoes when the opener declared none.
+    PickerBulkAccept,
     /// Drop the picker without acting on any candidate.
     PickerDismiss,
 

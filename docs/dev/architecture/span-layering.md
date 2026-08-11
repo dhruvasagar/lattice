@@ -10,6 +10,11 @@ had never been described together. Writing it down is what makes the
 next overlay cheap.
 
 > Slice plan: [`magit-diff-syntax`](../operations/slice-plans/magit-diff-syntax.md).
+>
+> Second consumer: [`diff-refinement.md`](diff-refinement.md) — which
+> found the one gap in the contract below. §1's background axis is
+> per-ROW; intra-line refinement needs a per-RANGE background, the only
+> layer so far that the existing two axes cannot express.
 
 ## 1. Two axes, not one
 

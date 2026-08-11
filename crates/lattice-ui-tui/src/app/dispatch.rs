@@ -1154,6 +1154,8 @@ impl App {
                 self.do_open_lsp_trace_log(server_id.as_deref())
             }
             Effect::LspStatus => self.do_lsp_status(),
+            // EP.4: the manual pull. Host-resident like the feed itself.
+            Effect::LspDiagnosticsToErrorList => self.do_lsp_diagnostics_to_error_list(),
             Effect::LspServerLogListing => self.do_lsp_server_log_listing(),
             Effect::LspRestart { server_id } => self.do_lsp_restart(&server_id),
             Effect::LspProgressCancel { server_id } => {
@@ -1397,6 +1399,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
+        | Effect::LspDiagnosticsToErrorList
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }
@@ -1542,6 +1545,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
+        | Effect::LspDiagnosticsToErrorList
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }

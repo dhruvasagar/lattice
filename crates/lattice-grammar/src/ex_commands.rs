@@ -1657,6 +1657,25 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // EP.4: one alias, dashed + `lsp-` namespaced, per the ex-command
+    // naming rule. No collapsed spelling, no generic `diagnostics`
+    // alias -- a generic name would imply it works without LSP.
+    let _lsp_diagnostics_to_error_list = registry.register_ex_command(
+        "ex:lsp-diagnostics-to-error-list",
+        "Pull the language server's currently published diagnostics into the error list \
+         (`:problems` / `:next-error` / the picker). The manual peer of \
+         `lsp.diagnostics-to-error-list`; surfaces what servers have published, which is \
+         not a workspace scan.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspDiagnosticsToErrorList)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_server_log = registry.register_ex_command(
         "ex:lsp-server-log",
         "Picker-style listing of every running LSP server actor with workspace root + buffer count + capability summary; each row links to its log + trace via `exec:` URLs (`:lsp-server-log`).",

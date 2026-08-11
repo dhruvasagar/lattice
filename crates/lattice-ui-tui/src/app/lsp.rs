@@ -1219,6 +1219,14 @@ impl App {
         self.mutate_editor(move |e| e.do_toggle_lsp_trace(&name));
     }
 
+    /// EP.4: `:lsp-diagnostics-to-error-list` -- pull the currently
+    /// published diagnostics into the error list. Body lives on
+    /// `Editor` (host-resident, like the live feed); this is the thin
+    /// renderer-side delegation.
+    pub fn do_lsp_diagnostics_to_error_list(&mut self) {
+        self.mutate_editor(|e| e.do_lsp_diagnostics_to_error_list());
+    }
+
     /// `:lsp-status` -- render every running server in a
     /// help-style buffer.
     pub fn do_lsp_status(&mut self) {

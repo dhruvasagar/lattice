@@ -690,6 +690,17 @@ pub enum Effect {
     /// `:lsp-status` -- render every running server (id, root,
     /// pid, uptime, capability summary) in a help-style buffer.
     LspStatus,
+    /// EP.4 (2026-08-10): `:lsp-diagnostics-to-error-list` -- pull the
+    /// current published diagnostics into the error list's `Lsp` slice
+    /// on demand.
+    ///
+    /// The manual peer of the live feed gated by
+    /// `lsp.diagnostics-to-error-list`. Useful when that option is off,
+    /// and as a forced refresh after a server restart when it is on.
+    /// Echoes the entry count, because this surfaces what servers have
+    /// *published* -- not a workspace scan -- and an empty result must
+    /// not be misread as a clean tree.
+    LspDiagnosticsToErrorList,
     /// `:lsp-server-log` -- picker-style listing of every running
     /// server actor with workspace root + buffer count +
     /// capability summary, each row carrying `exec:` links to

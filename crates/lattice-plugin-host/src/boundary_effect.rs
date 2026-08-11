@@ -704,6 +704,19 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             WitEffect::OpenLspTraceLog(server_id.clone())
         }
         NativeEffect::LspStatus => WitEffect::LspStatus,
+        // EP.4: `:lsp-diagnostics-to-error-list` writes core error
+        // state from a native subsystem, exactly like
+        // `AppEffect::SetErrorList` — whose plugin surface is
+        // deliberately refused pending the plugin host. Same treatment
+        // here: typed error, never lossy.
+        NativeEffect::LspDiagnosticsToErrorList => {
+            return Err(
+                "Effect::LspDiagnosticsToErrorList feeds core error state from the native LSP \
+                 subsystem; its plugin (WIT) surface is deferred with AppEffect::SetErrorList \
+                 (error-list.md §3.2)"
+                    .to_string(),
+            );
+        }
         NativeEffect::LspServerLogListing => WitEffect::LspServerLogListing,
         NativeEffect::LspRestart { server_id } => WitEffect::LspRestart(server_id.clone()),
         NativeEffect::LspProgressCancel { server_id } => {

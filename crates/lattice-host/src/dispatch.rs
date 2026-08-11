@@ -27875,6 +27875,39 @@ impl Editor {
         self.error_list.set(source, entries);
     }
 
+    /// EP.4 (2026-08-10): pull the language server's currently
+    /// published diagnostics into the error list on demand.
+    ///
+    /// The manual peer of the feed gated by
+    /// `lsp.diagnostics-to-error-list`: the pull path when that option
+    /// is off, and a forced refresh (e.g. after a server restart) when
+    /// it is on. Both paths call this one function, so a snapshot and a
+    /// live tick can never diverge.
+    ///
+    /// Writes as a `Refresh`, not a new run — pulling must not throw a
+    /// user walking the list back to entry 1 any more than the live
+    /// feed may.
+    ///
+    /// Echoes the count deliberately: this surfaces what servers have
+    /// **published**, which is not a workspace scan (rust-analyzer
+    /// publishes workspace-wide after a check; others only for open
+    /// files). An empty result must not read as a clean tree.
+    pub fn do_lsp_diagnostics_to_error_list(&mut self) {
+        let entries = lattice_lsp::error_list_feed::current_entries(&self.lsp_diagnostics);
+        let n = entries.len();
+        self.write_error_list(
+            crate::error_list::ErrorSource::Lsp,
+            lattice_protocol::error_list::ErrorWrite::Refresh,
+            entries,
+        );
+        let msg = if n == 0 {
+            "no diagnostics published by any server".to_string()
+        } else {
+            format!("error list: {n} diagnostic(s) from lsp")
+        };
+        self.set_message(EchoLevel::Info, msg);
+    }
+
     /// EP.2/EP.3 (2026-08-10): replace `source`'s slice, honouring the
     /// producer's declared [`ErrorWrite`] — new run resets the index,
     /// live refresh re-anchors it.
@@ -30542,6 +30575,23 @@ impl Editor {
                 // and cheap when method is `Manual` (the recompute
                 // returns immediately).
                 self.recompute_folds();
+            }
+            // EP.4: turning the feed ON takes a snapshot immediately
+            // rather than waiting for the next republish, so the list
+            // matches the setting at once. Toggling OFF deliberately
+            // does NOT clear the slice — stopping a feed must never
+            // destroy what the user is currently reading.
+            //
+            // Same function as the ex-command, so a toggle and a manual
+            // pull can never produce different results.
+            "lsp.diagnostics-to-error-list" => {
+                if *self
+                    .config
+                    .get_typed::<lattice_config::core_options::LspDiagnosticsToErrorList>()
+                    .unwrap_or_else(|| std::sync::Arc::new(true))
+                {
+                    self.do_lsp_diagnostics_to_error_list();
+                }
             }
             "scrollbind" => {
                 // D.0b: rebuild the singleton scrollbind group so the
@@ -34438,6 +34488,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
+        | Effect::LspDiagnosticsToErrorList
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }
@@ -34583,6 +34634,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
         | Effect::LspStatus
+        | Effect::LspDiagnosticsToErrorList
         | Effect::LspServerLogListing
         | Effect::LspRestart { .. }
         | Effect::LspProgressCancel { .. }

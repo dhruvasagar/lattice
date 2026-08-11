@@ -582,6 +582,12 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-trace", "ex:lsp-trace"),
     ("lsp-trace-log", "ex:lsp-trace-log"),
     ("lsp-status", "ex:lsp-status"),
+    // EP.4: exactly one alias — dashed + `lsp-` namespaced. No
+    // collapsed form, no generic `diagnostics` alias.
+    (
+        "lsp-diagnostics-to-error-list",
+        "ex:lsp-diagnostics-to-error-list",
+    ),
     ("lsp-server-log", "ex:lsp-server-log"),
     ("lsp-restart", "ex:lsp-restart"),
     ("lsp-progress-cancel", "ex:lsp-progress-cancel"),

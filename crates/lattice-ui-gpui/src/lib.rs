@@ -1274,6 +1274,10 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
+            // EP.4: GPUI parity for the manual diagnostics pull.
+            Effect::LspDiagnosticsToErrorList => {
+                self.mutate_editor(|e| e.do_lsp_diagnostics_to_error_list());
+            }
             Effect::LspRestart { server_id } => {
                 self.mutate_editor(move |e| e.do_lsp_restart(&server_id));
             }

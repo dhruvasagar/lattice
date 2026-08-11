@@ -166,6 +166,13 @@ pub enum LspRequest {
     /// plausible-looking answer. The substrate reads the origin the
     /// view recorded when it opened.
     ReferencesViewRefresh,
+    /// EP.6 (2026-08-11): `:lsp-references-to-error-list` — the same
+    /// query, landing in the **error list** instead of a surface.
+    ///
+    /// A third terminus rather than a cache snapshot: unlike
+    /// diagnostics there is no standing "current references" state to
+    /// pull from, so the command must run the query.
+    ReferencesToErrorList,
 }
 
 #[derive(Debug, Clone)]

@@ -11,7 +11,7 @@
 
 use lattice_core::Document as CoreDocument;
 use lattice_grammar::LspRequest;
-use lattice_host::editor::Editor;
+use lattice_host::editor::{Editor, ReferencesTerminus};
 
 fn editor() -> Editor {
     Editor::boot(CoreDocument::from_text("fn main() {}\n"))
@@ -25,8 +25,9 @@ fn gr_requests_the_picker_terminus() {
     // pinned here is the terminus flag the request records, which is
     // set before any gate.
     let _ = e.lsp_request(LspRequest::References);
-    assert!(
-        !e.pending_references_to_view,
+    assert_eq!(
+        e.pending_references_terminus,
+        ReferencesTerminus::Picker,
         "`gr` must stay the picker — the view is a peer surface, not a replacement"
     );
 }
@@ -36,8 +37,9 @@ fn gr_requests_the_picker_terminus() {
 fn lsp_references_requests_the_view_terminus() {
     let mut e = editor();
     let _ = e.lsp_request(LspRequest::ReferencesView);
-    assert!(
-        e.pending_references_to_view,
+    assert_eq!(
+        e.pending_references_terminus,
+        ReferencesTerminus::View,
         "`:lsp-references` must record the view terminus"
     );
 }
@@ -49,11 +51,12 @@ fn lsp_references_requests_the_view_terminus() {
 fn the_terminus_does_not_leak_between_requests() {
     let mut e = editor();
     let _ = e.lsp_request(LspRequest::ReferencesView);
-    assert!(e.pending_references_to_view);
+    assert_eq!(e.pending_references_terminus, ReferencesTerminus::View);
 
     let _ = e.lsp_request(LspRequest::References);
-    assert!(
-        !e.pending_references_to_view,
+    assert_eq!(
+        e.pending_references_terminus,
+        ReferencesTerminus::Picker,
         "a later `gr` must not inherit the previous request's terminus"
     );
 }
@@ -90,9 +93,10 @@ fn refresh_outside_a_references_view_echoes() {
         e.refreshing_references_view.is_none(),
         "a refresh outside a references view must not arm a request"
     );
-    assert!(
-        !e.pending_references_to_view,
-        "and must not leave the terminus flag set for a later `gr`"
+    assert_eq!(
+        e.pending_references_terminus,
+        ReferencesTerminus::Picker,
+        "and must not leave a terminus armed for a later `gr`"
     );
 }
 
@@ -129,5 +133,88 @@ fn the_references_mode_declares_its_refresh() {
     assert_eq!(
         <LspReferencesMode as Mode>::refresh_action(&LspReferencesMode),
         Some("action:lsp-references-refresh"),
+    );
+}
+
+// ── EP.6: references as a third, opt-in error-list producer ──────────
+
+/// The third terminus is recorded distinctly from the other two.
+#[test]
+fn references_to_error_list_records_its_own_terminus() {
+    let mut e = editor();
+    let _ = e.lsp_request(LspRequest::ReferencesToErrorList);
+    assert_eq!(e.pending_references_terminus, ReferencesTerminus::ErrorList,);
+}
+
+#[test]
+fn the_references_to_error_list_command_resolves() {
+    let e = editor();
+    let reg = e
+        .services
+        .get::<lattice_grammar::CommandRegistryHandle>()
+        .unwrap();
+    assert!(
+        reg.load()
+            .id_by_name("ex:lsp-references-to-error-list")
+            .is_some()
+    );
+}
+
+/// Opt-in: the option must default OFF. Diagnostics default on because
+/// they ARE errors; references would change what `]qq` walks for
+/// everyone using it on compile output.
+#[test]
+fn the_references_option_defaults_off() {
+    let e = editor();
+    let on = e
+        .config
+        .get_typed::<lattice_config::core_options::LspReferencesToErrorList>()
+        .map(|v| *v)
+        .unwrap_or(false);
+    assert!(!on, "references must not join the error list by default");
+}
+
+/// The clobber regression, per source: a references push replaces only
+/// the References slice. This is what made the producer acceptable —
+/// §17 rejected it precisely because it would collide with a live
+/// compile list, and per-source slices are the answer.
+#[test]
+fn a_references_push_leaves_compile_and_lsp_slices_intact() {
+    use lattice_host::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
+    use lattice_protocol::error_list::ErrorWrite;
+
+    fn entry(p: &str, line: u32) -> ErrorEntry {
+        ErrorEntry {
+            path: std::path::PathBuf::from(p),
+            line,
+            col: 0,
+            severity: ErrorSeverity::Error,
+            message: format!("m{line}"),
+        }
+    }
+
+    let mut e = editor();
+    e.set_error_list(ErrorSource::Compilation, vec![entry("c.rs", 1)]);
+    e.write_error_list(
+        ErrorSource::Lsp,
+        ErrorWrite::Refresh,
+        vec![entry("l.rs", 2)],
+    );
+    e.write_error_list(
+        ErrorSource::References,
+        ErrorWrite::NewRun,
+        vec![entry("r.rs", 3)],
+    );
+
+    assert_eq!(e.error_list().len(), 3);
+    assert_eq!(
+        e.error_list().entries_from(ErrorSource::Compilation).len(),
+        1,
+        "a references push must not disturb a compile run being walked"
+    );
+    assert_eq!(e.error_list().entries_from(ErrorSource::Lsp).len(), 1);
+    assert_eq!(
+        e.error_list().entries_from(ErrorSource::References).len(),
+        1
     );
 }

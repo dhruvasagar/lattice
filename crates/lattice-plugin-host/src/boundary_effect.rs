@@ -429,7 +429,9 @@ impl WitBoundary for NativeLspRequest {
             // shape. Collapsing it to `References` would be lossy in
             // the direction that matters: the plugin would silently get
             // the picker when it asked for the editable view.
-            NativeLspRequest::ReferencesView | NativeLspRequest::ReferencesViewRefresh => {
+            NativeLspRequest::ReferencesView
+            | NativeLspRequest::ReferencesViewRefresh
+            | NativeLspRequest::ReferencesToErrorList => {
                 return Err(
                     "LspRequest::ReferencesView (`:lsp-references`) has no WIT mirror yet; \
                      adding one is a versioned plugin-API change (lsp-architecture.md §17)"

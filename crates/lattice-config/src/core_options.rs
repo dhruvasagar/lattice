@@ -480,6 +480,18 @@ crate::options! {
     #[name("lsp.diagnostics-to-error-list")]
     pub LspDiagnosticsToErrorList: bool = true;
 
+    /// EP.6 (2026-08-11): do references queries also populate the core
+    /// error list?
+    ///
+    /// **Default off**, unlike `lsp.diagnostics-to-error-list`.
+    /// Diagnostics ARE errors and belong in a list called the error
+    /// list; references would change what it means — someone walking
+    /// compile errors with `]qq` should not have that set grow every
+    /// time they look up a symbol. `:lsp-references-to-error-list`
+    /// pushes on demand when this is off. See `error-list.md` §3.2b.
+    #[name("lsp.references-to-error-list")]
+    pub LspReferencesToErrorList: bool = false;
+
     /// Where `:lsp-status` opens.
     #[name("lsp.status.display")]
     pub LspStatusDisplay: lattice_core::ui::display::BufferDisplayPreference =

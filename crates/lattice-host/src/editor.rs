@@ -97,6 +97,23 @@ pub struct OverlayWake(pub Arc<tokio::sync::Notify>);
 
 /// 2026-05-26: invocation-runner function pointer. The host
 /// registers one per [`lattice_mode::Mode`] whose
+/// EP.6 (2026-08-11): where a references result should land.
+///
+/// One query, three surfaces. Kept as an enum rather than a bool
+/// because a third case arrived within a day of the second — and a
+/// bool that grew a "…or the error list" meaning would have been the
+/// silent-wrong-terminus bug waiting to happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReferencesTerminus {
+    /// `gr` — the locations picker. The historical behaviour.
+    #[default]
+    Picker,
+    /// `:lsp-references` — the editable multibuffer.
+    View,
+    /// `:lsp-references-to-error-list` — the core error list.
+    ErrorList,
+}
+
 /// [`lattice_mode::Mode::invocation_runner`] returns `Some(id)`.
 /// Returns `true` when the runner claimed the invocation,
 /// `false` when [`Editor::run_invocation`] should fall through
@@ -1793,14 +1810,13 @@ pub struct Editor {
         Option<tokio::sync::mpsc::UnboundedReceiver<Vec<lattice_lsp::lsp_types::Location>>>,
     pub pending_definition_token: Option<CancellationToken>,
     pub pending_nav_kind: Option<LspNavKind>,
-    /// LR.2 (2026-08-11): which terminus the in-flight references
-    /// request is for — the picker (`gr`) or the editable multibuffer
-    /// (`:lsp-references`).
+    /// LR.2 / EP.6: which terminus the in-flight references request is
+    /// for.
     ///
     /// Recorded when the request is issued so the drain routes without
-    /// guessing. `false` (picker) is the default because that is what
-    /// `gr` has always done and what every existing caller means.
-    pub pending_references_to_view: bool,
+    /// guessing. Defaults to `Picker` because that is what `gr` has
+    /// always done and what every existing caller means.
+    pub pending_references_terminus: ReferencesTerminus,
     /// LR.3: when the in-flight references request is a *refresh*, the
     /// view to rebuild in place. `None` means "open a new view".
     ///

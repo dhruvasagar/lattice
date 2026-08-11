@@ -1678,6 +1678,25 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         },
     );
 
+    // EP.6: references into the error list, on demand. A third
+    // terminus on the references drain, not a cache snapshot — there is
+    // no standing "current references" state to pull from.
+    let _lsp_references_to_error_list = registry.register_ex_command(
+        "ex:lsp-references-to-error-list",
+        "Find references to the symbol under the cursor and put them in the error list \
+         (`:next-error` / `]qq` / `:problems`). The manual peer of \
+         `lsp.references-to-error-list`, which is off by default.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::Lsp(LspRequest::ReferencesToErrorList))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     // EP.4: one alias, dashed + `lsp-` namespaced, per the ex-command
     // naming rule. No collapsed spelling, no generic `diagnostics`
     // alias -- a generic name would imply it works without LSP.

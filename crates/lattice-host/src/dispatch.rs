@@ -10480,21 +10480,20 @@ impl Editor {
     /// Browse-style, not a tag-intent drill-down: clears
     /// `pending_tag_origin` so `<C-t>` doesn't see a stale entry.
     pub fn lsp_references_request(&mut self) {
-        self.lsp_references_request_to(false);
+        self.lsp_references_request_to(crate::editor::ReferencesTerminus::Picker);
     }
 
     /// LR.2 (2026-08-11): the same request, with the terminus declared.
     ///
-    /// `to_view = false` is `gr` → the picker; `true` is
-    /// `:lsp-references` → the editable multibuffer. The whole async
-    /// substrate below is shared and untouched — only the drain's
-    /// destination differs, which is why this is a flag on the request
-    /// rather than a second pipeline (§16 rejected mode-side async).
-    pub fn lsp_references_request_to(&mut self, to_view: bool) {
+    /// The whole async substrate below is shared and untouched — only
+    /// the drain's destination differs, which is why the terminus is
+    /// recorded on the request rather than forked into a second
+    /// pipeline (§16 rejected mode-side async).
+    pub fn lsp_references_request_to(&mut self, terminus: crate::editor::ReferencesTerminus) {
         if let Some(token) = self.pending_references_token.take() {
             token.cancel();
         }
-        self.pending_references_to_view = to_view;
+        self.pending_references_terminus = terminus;
         // Browse-style; not a tag-intent drill-down.
         self.pending_tag_origin = None;
         // M.6.2: lsp-nav-mode gate (after cancel-stale-work).
@@ -10624,11 +10623,15 @@ impl Editor {
                 Vec::new()
             }
             LspRequest::ReferencesView => {
-                self.lsp_references_request_to(true);
+                self.lsp_references_request_to(crate::editor::ReferencesTerminus::View);
                 Vec::new()
             }
             LspRequest::ReferencesViewRefresh => {
                 self.lsp_references_refresh();
+                Vec::new()
+            }
+            LspRequest::ReferencesToErrorList => {
+                self.lsp_references_request_to(crate::editor::ReferencesTerminus::ErrorList);
                 Vec::new()
             }
             LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
@@ -11005,14 +11008,36 @@ impl Editor {
                 // LR.2: route to the terminus the request declared.
                 // `gr` keeps the picker; `:lsp-references` opens the
                 // editable multibuffer.
-                if std::mem::take(&mut self.pending_references_to_view) {
-                    // LR.3: a refresh rebuilds the view it was fired
-                    // from; a fresh `:lsp-references` opens a new one.
-                    match self.refreshing_references_view.take() {
-                        Some(view) => self.rebuild_references_view(view, &locations),
-                        None => self.open_references_view(&symbol, &locations),
+                let terminus = std::mem::take(&mut self.pending_references_terminus);
+
+                // EP.6: the option is ORTHOGONAL to the terminus — when
+                // on, every references query also feeds the list,
+                // whatever surface it was headed for.
+                let opt_on = self
+                    .config
+                    .get_typed::<lattice_config::core_options::LspReferencesToErrorList>()
+                    .map(|v| *v)
+                    .unwrap_or(false);
+                if opt_on || terminus == crate::editor::ReferencesTerminus::ErrorList {
+                    self.push_references_to_error_list(&locations);
+                }
+
+                match terminus {
+                    crate::editor::ReferencesTerminus::View => {
+                        // LR.3: a refresh rebuilds the view it was fired
+                        // from; a fresh `:lsp-references` opens a new one.
+                        match self.refreshing_references_view.take() {
+                            Some(view) => self.rebuild_references_view(view, &locations),
+                            None => self.open_references_view(&symbol, &locations),
+                        }
+                        return;
                     }
-                    return;
+                    crate::editor::ReferencesTerminus::ErrorList => {
+                        // The push above WAS the outcome; echoing is
+                        // done there.
+                        return;
+                    }
+                    crate::editor::ReferencesTerminus::Picker => {}
                 }
                 let title = if symbol.is_empty() {
                     "lsp:references".to_string()
@@ -11022,6 +11047,38 @@ impl Editor {
                 self.open_lsp_locations_picker(title, &locations);
             }
         }
+    }
+
+    /// EP.6 (2026-08-11): push reference sites into the error list's
+    /// `References` slice.
+    ///
+    /// Severity `Info`: the list wants one, and a reference is
+    /// informational, not a problem. `NewRun` rather than `Refresh` —
+    /// a fresh question deserves a fresh answer at the top, unlike the
+    /// diagnostics feed's continuous update.
+    ///
+    /// Replaces only the `References` slice, so a compile run being
+    /// walked survives it. That per-source isolation is what made this
+    /// producer acceptable at all (`error-list.md` §3.2b).
+    fn push_references_to_error_list(&mut self, locations: &[lattice_lsp::lsp_types::Location]) {
+        use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource, ErrorWrite};
+
+        let mut entries: Vec<ErrorEntry> = Vec::new();
+        for loc in locations {
+            let Some(path) = lattice_lsp::actor::uri_to_path(&loc.uri) else {
+                continue;
+            };
+            entries.push(ErrorEntry {
+                path,
+                line: loc.range.start.line,
+                col: loc.range.start.character,
+                severity: ErrorSeverity::Info,
+                message: "reference".to_string(),
+            });
+        }
+        let n = entries.len();
+        self.write_error_list(ErrorSource::References, ErrorWrite::NewRun, entries);
+        self.set_message(EchoLevel::Info, format!("error list: {n} reference(s)"));
     }
 
     /// LR.3 (2026-08-11): rebuild `view` in place from a fresh result
@@ -11103,7 +11160,7 @@ impl Editor {
             line: origin.line,
             byte: origin.character,
         };
-        self.lsp_references_request_to(true);
+        self.lsp_references_request_to(crate::editor::ReferencesTerminus::View);
         self.document_buffer_id = saved_buffer;
         self.cursor = saved_cursor;
     }

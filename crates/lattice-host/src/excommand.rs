@@ -584,6 +584,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-status", "ex:lsp-status"),
     // LR.2: the editable references view (the picker stays on `gr`).
     ("lsp-references", "ex:lsp-references"),
+    // EP.6: references into the error list, on demand.
+    (
+        "lsp-references-to-error-list",
+        "ex:lsp-references-to-error-list",
+    ),
     // EP.4: exactly one alias — dashed + `lsp-` namespaced. No
     // collapsed form, no generic `diagnostics` alias.
     (

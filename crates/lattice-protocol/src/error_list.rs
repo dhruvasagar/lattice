@@ -53,6 +53,12 @@ pub enum ErrorSource {
     Compilation,
     /// `lattice-lsp` — `publishDiagnostics`, coalesced.
     Lsp,
+    /// `lattice-lsp` — reference sites from a `textDocument/references`
+    /// query. Not errors; the list is a navigable set of source
+    /// locations and fifteen call sites is exactly that. Opt-in via
+    /// `lsp.references-to-error-list` (default off) — see
+    /// `error-list.md` §3.2b.
+    References,
 }
 
 impl ErrorSource {
@@ -60,13 +66,18 @@ impl ErrorSource {
     /// each keeps its producer's own ordering — producer order carries
     /// meaning (rustc emits the root cause ahead of the errors it
     /// cascades into), so sorting the merged list would destroy it.
-    pub const PRESENTATION_ORDER: [ErrorSource; 2] = [ErrorSource::Compilation, ErrorSource::Lsp];
+    pub const PRESENTATION_ORDER: [ErrorSource; 3] = [
+        ErrorSource::Compilation,
+        ErrorSource::Lsp,
+        ErrorSource::References,
+    ];
 
     /// Short label for echoes and filters.
     pub fn label(self) -> &'static str {
         match self {
             ErrorSource::Compilation => "compile",
             ErrorSource::Lsp => "lsp",
+            ErrorSource::References => "refs",
         }
     }
 }

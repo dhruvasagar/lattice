@@ -18,7 +18,7 @@ Catalogue entry: A.3 in
 | LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | LR.2 | `:lsp-references` — second terminus on the existing drain | ✅ |
 | LR.3 | Refresh — origin-anchored re-query | ✅ |
-| LR.4 | Version-skew guard on edit propagation | 📝 |
+| LR.4 | ~~Version-skew guard~~ — **superseded**, see below | ⛔ |
 | LR.5 | `<C-q>` bulk outcome from the picker | 📝 |
 
 LR.5 is separable and generalises past references — it can slip without
@@ -89,18 +89,25 @@ excerpt appears; refresh re-queries the origin symbol, not whatever is
 under the multibuffer cursor (the bug this slice is shaped to prevent);
 refresh with the origin file deleted → warn, leave the view intact.
 
-## LR.4 — Version-skew guard 📝
+## LR.4 — Superseded ⛔
 
-A location is `(path, line, col)` captured at query time. If the source
-changed in between, applying into a stale offset corrupts it.
+**Not built here.** Specifying it surfaced that the slice was wrong in
+two ways, both discovered by reading the save path rather than the
+query path:
 
-- Compare the source's version/mtime at edit time against capture.
-- On mismatch: warn and refuse that excerpt's write; do not silently
-  apply. `gr` is the recovery path.
+- The failure is **data loss, not a stale offset**. `Document::save` on
+  a multibuffer writes every dirty source to disk, so a source that
+  changed externally gets silently overwritten with the view's stale
+  copy plus the edit.
+- It is **not references-specific**. `search` and `problems` load from
+  disk identically, and the save path is explicitly shared — its own
+  comment says "generic for ALL multibuffer views".
 
-**Tests.** Edit a source file behind the view, then edit that excerpt →
-warned and not applied; unaffected excerpts in the same view still
-apply.
+A references-only guard would have left two known-identical data-loss
+paths in place. Superseded by
+[`multibuffer-stale-sources.md`](multibuffer-stale-sources.md)
+(SS series); the references view inherits the fix rather than carrying
+a copy.
 
 ## LR.5 — `<C-q>` from the picker 📝
 

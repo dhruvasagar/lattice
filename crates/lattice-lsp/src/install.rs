@@ -88,6 +88,52 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // ── EP.3: the error-list feed ───────────────────────────────────────────
     install_error_list_feed(boot);
+
+    // ── LR.1: the references multibuffer ────────────────────────────────────
+    install_references_provider(boot);
+}
+
+/// LR.1 (2026-08-11): register the references view's mode + per-view
+/// service, and wire its `DocumentClosed` cleanup.
+///
+/// The provider lives in this crate rather than `lattice-multibuffer`
+/// per the provider-home reversal: `gr`'s binding, the handler bodies
+/// and the view all belong to the LSP subsystem, so they sit together.
+fn install_references_provider(boot: &mut impl SubsystemBoot) {
+    use crate::providers::references::{
+        LspReferencesService, LspReferencesServiceHandle, register_references_mode,
+    };
+
+    register_references_mode(boot.modes_mut());
+
+    let service: LspReferencesServiceHandle = Arc::new(LspReferencesService::new());
+    boot.register_service::<LspReferencesServiceHandle>(Arc::clone(&service));
+
+    // Drop a closed view's stored origin. Same shape as
+    // `register_multibuffer_modes`: only wire the subscriber when a
+    // runtime is in scope, so `Editor` constructed outside one (the
+    // host lib tests) skips it rather than panicking. A skipped
+    // subscriber leaks at most one small entry per view in a
+    // short-lived test process.
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!(
+            "references: no tokio runtime in scope; skipping DocumentClosed cleanup \
+             (expected in test paths)"
+        );
+        return;
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+    boot.event_bus().subscribe(
+        lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::DocumentClosed),
+        lattice_runtime::SubscriptionTarget::Channel(tx),
+    );
+    handle.spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let lattice_protocol::Event::DocumentClosed { id } = event {
+                service.forget_by_document_id(id);
+            }
+        }
+    });
 }
 
 /// EP.3 (2026-08-10): wire the language server up as a producer of the

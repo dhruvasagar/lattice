@@ -82,6 +82,7 @@ pub mod modeline;
 pub mod modes;
 pub mod pending;
 pub mod position;
+pub mod providers;
 pub mod show_document;
 pub mod show_message_request;
 pub mod supervisor;

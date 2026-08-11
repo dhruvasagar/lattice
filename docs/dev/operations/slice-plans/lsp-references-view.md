@@ -15,7 +15,7 @@ Catalogue entry: A.3 in
 
 | Slice | Title | Status |
 |---|---|---|
-| LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | 📝 |
+| LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | LR.2 | `:lsp-references` — second terminus on the existing drain | 📝 |
 | LR.3 | Refresh — origin-anchored re-query | 📝 |
 | LR.4 | Version-skew guard on edit propagation | 📝 |
@@ -26,7 +26,7 @@ blocking anything above it.
 
 ---
 
-## LR.1 — Provider skeleton 📝
+## LR.1 — Provider skeleton ✅
 
 - `lattice-lsp/Cargo.toml` gains `lattice-multibuffer`. **Assert the
   direction holds**: `lattice-multibuffer` must not gain an LSP dep.

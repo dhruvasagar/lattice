@@ -18,14 +18,34 @@
 // `AppEffect::SetErrorList` payload share ONE type. Re-exported here so
 // existing callers (`lattice_host::error_list::ErrorEntry`, the CM.2
 // tests) are unchanged. The *list* stays host-local (below).
-pub use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity};
+pub use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
 
 /// The error list: an ordered set of entries plus a cursor
 /// (`index`) into them. `:cnext` / `]q` walk the index (wrapping
 /// vim-style); `:cc N` jumps to the Nth (1-based). Empty by default.
+///
+/// EP.1 (2026-08-10): entries are held as **per-source slices**, not
+/// one flat vec, and a producer's write replaces only its own slice.
+/// The flat view every consumer reads ([`Self::entries`]) is the
+/// concatenation in [`ErrorSource::PRESENTATION_ORDER`], each slice
+/// keeping its producer's own ordering.
+///
+/// Two producers on one untagged list is a clobber: the language server
+/// republishes on every edit-debounce, so its feed would wipe a compile
+/// run's entries while the user walked them. Sorting the merged list
+/// instead of concatenating was rejected — producer order is
+/// information (rustc emits the root cause before the cascade).
+///
+/// See `docs/dev/architecture/error-list.md` §3.1.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ErrorList {
-    entries: Vec<ErrorEntry>,
+    /// One run per source, kept in `PRESENTATION_ORDER`. A source with
+    /// nothing to show simply has no run here.
+    slices: Vec<(ErrorSource, Vec<ErrorEntry>)>,
+    /// Flat concatenation of `slices`, rebuilt on every write. Cached
+    /// rather than recomputed because `entries()` returns a borrowed
+    /// slice and every navigation call reads it.
+    flat: Vec<ErrorEntry>,
     index: usize,
 }
 
@@ -34,27 +54,72 @@ impl ErrorList {
         Self::default()
     }
 
-    /// Replace the entire list, resetting the index to 0. This is
-    /// the producer entry point (compilation / diagnostics / search
-    /// call it via [`crate::editor::Editor::set_error_list`]).
-    pub fn set(&mut self, entries: Vec<ErrorEntry>) {
-        self.entries = entries;
+    /// Replace `source`'s entries, leaving every other source's alone,
+    /// and reset the index to 0.
+    ///
+    /// This is the producer entry point (compilation / LSP call it via
+    /// [`crate::editor::Editor::set_error_list`]). An empty `entries`
+    /// clears just that source's run — which is what a fresh compile
+    /// with no errors means, and it must not disturb the language
+    /// server's diagnostics sitting alongside.
+    ///
+    /// The index reset is correct for a *new run*; EP.2 adds
+    /// re-anchoring for the refresh case, where resetting would throw a
+    /// user walking entry 7 back to entry 1 every time they typed.
+    pub fn set(&mut self, source: ErrorSource, entries: Vec<ErrorEntry>) {
+        match self.slices.iter_mut().find(|(s, _)| *s == source) {
+            Some(run) => run.1 = entries,
+            None => self.slices.push((source, entries)),
+        }
+        self.slices.retain(|(_, e)| !e.is_empty());
+        self.slices.sort_by_key(|(s, _)| {
+            ErrorSource::PRESENTATION_ORDER
+                .iter()
+                .position(|p| p == s)
+                .unwrap_or(usize::MAX)
+        });
+        self.rebuild_flat();
         self.index = 0;
     }
 
+    /// Rebuild the cached flat view from `slices`.
+    fn rebuild_flat(&mut self) {
+        self.flat = self
+            .slices
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().cloned())
+            .collect();
+    }
+
+    /// The entries contributed by one source, or an empty slice when it
+    /// has none.
+    pub fn entries_from(&self, source: ErrorSource) -> &[ErrorEntry] {
+        self.slices
+            .iter()
+            .find(|(s, _)| *s == source)
+            .map(|(_, e)| e.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Which sources currently contribute entries, in presentation
+    /// order.
+    pub fn sources(&self) -> Vec<ErrorSource> {
+        self.slices.iter().map(|(s, _)| *s).collect()
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.flat.is_empty()
     }
 
     /// CM.4 (2026-07-22): read-only slice of the entries. The
     /// `:copen` producer clones these to build the `*problems*`
     /// multibuffer view.
     pub fn entries(&self) -> &[ErrorEntry] {
-        &self.entries
+        &self.flat
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.flat.len()
     }
 
     /// The 0-based index the list currently points at. Meaningless
@@ -66,7 +131,7 @@ impl ErrorList {
     /// The entry the index currently points at, or `None` when the
     /// list is empty.
     pub fn current(&self) -> Option<&ErrorEntry> {
-        self.entries.get(self.index)
+        self.flat.get(self.index)
     }
 
     /// Move the index by `delta`, wrapping vim-style (`:cnext` past
@@ -74,14 +139,14 @@ impl ErrorList {
     /// wraps to the last), and return the entry now under the index.
     /// `None` only when the list is empty.
     pub fn step(&mut self, delta: i64) -> Option<&ErrorEntry> {
-        let len = self.entries.len();
+        let len = self.flat.len();
         if len == 0 {
             return None;
         }
         // `rem_euclid` keeps the result in `[0, len)` for any sign.
         let next = (self.index as i64 + delta).rem_euclid(len as i64);
         self.index = next as usize;
-        self.entries.get(self.index)
+        self.flat.get(self.index)
     }
 
     /// Jump to the `n`th entry (1-based, vim `:cc N`). `n == None`
@@ -92,11 +157,11 @@ impl ErrorList {
         match n {
             None => self.current(),
             Some(n) => {
-                if n == 0 || n > self.entries.len() {
+                if n == 0 || n > self.flat.len() {
                     return None;
                 }
                 self.index = n - 1;
-                self.entries.get(self.index)
+                self.flat.get(self.index)
             }
         }
     }
@@ -110,7 +175,7 @@ impl ErrorList {
     /// distinct diagnostics selects the first at that line.
     pub fn set_index_to_matching(&mut self, path: &std::path::Path, line: u32) -> bool {
         if let Some(pos) = self
-            .entries
+            .flat
             .iter()
             .position(|e| e.line == line && e.path == path)
         {
@@ -135,15 +200,15 @@ impl ErrorList {
     /// following `:cnext` walks that file top-to-bottom). `None` only
     /// when the list is empty.
     pub fn step_file(&mut self, delta: i64) -> Option<&ErrorEntry> {
-        if self.entries.is_empty() {
+        if self.flat.is_empty() {
             return None;
         }
         // Group-start indices: index 0, plus every index whose path
         // differs from the previous entry's (contiguous same-path run =
         // one file group).
         let mut starts: Vec<usize> = vec![0];
-        for i in 1..self.entries.len() {
-            if self.entries[i].path != self.entries[i - 1].path {
+        for i in 1..self.flat.len() {
+            if self.flat[i].path != self.flat[i - 1].path {
                 starts.push(i);
             }
         }
@@ -152,25 +217,25 @@ impl ErrorList {
         let ngroups = starts.len() as i64;
         let next_group = (cur_group as i64 + delta).rem_euclid(ngroups) as usize;
         self.index = starts[next_group];
-        self.entries.get(self.index)
+        self.flat.get(self.index)
     }
 
     /// Jump to the first entry (`:cfirst`). `None` when empty.
     pub fn first(&mut self) -> Option<&ErrorEntry> {
-        if self.entries.is_empty() {
+        if self.flat.is_empty() {
             return None;
         }
         self.index = 0;
-        self.entries.first()
+        self.flat.first()
     }
 
     /// Jump to the last entry (`:clast`). `None` when empty.
     pub fn last(&mut self) -> Option<&ErrorEntry> {
-        if self.entries.is_empty() {
+        if self.flat.is_empty() {
             return None;
         }
-        self.index = self.entries.len() - 1;
-        self.entries.last()
+        self.index = self.flat.len() - 1;
+        self.flat.last()
     }
 }
 
@@ -200,11 +265,14 @@ mod tests {
     #[test]
     fn set_resets_index_to_zero() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a", 1), entry("b", 2), entry("c", 3)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a", 1), entry("b", 2), entry("c", 3)],
+        );
         // Walk forward, then re-set: index must reset.
         qf.step(2);
         assert_eq!(qf.index(), 2);
-        qf.set(vec![entry("x", 9), entry("y", 8)]);
+        qf.set(ErrorSource::Compilation, vec![entry("x", 9), entry("y", 8)]);
         assert_eq!(qf.index(), 0);
         assert_eq!(qf.current(), Some(&entry("x", 9)));
     }
@@ -212,7 +280,7 @@ mod tests {
     #[test]
     fn step_wraps_forward_past_end_to_first() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a", 1), entry("b", 2)]);
+        qf.set(ErrorSource::Compilation, vec![entry("a", 1), entry("b", 2)]);
         assert_eq!(qf.current(), Some(&entry("a", 1)));
         assert_eq!(qf.step(1), Some(&entry("b", 2)));
         // Past the end wraps to the first.
@@ -223,7 +291,10 @@ mod tests {
     #[test]
     fn step_wraps_backward_past_start_to_last() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a", 1), entry("b", 2), entry("c", 3)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a", 1), entry("b", 2), entry("c", 3)],
+        );
         // At index 0, stepping back wraps to the last.
         assert_eq!(qf.step(-1), Some(&entry("c", 3)));
         assert_eq!(qf.index(), 2);
@@ -240,7 +311,10 @@ mod tests {
     #[test]
     fn jump_to_is_one_based_and_bounds_checked() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a", 1), entry("b", 2), entry("c", 3)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a", 1), entry("b", 2), entry("c", 3)],
+        );
         // 1-based: :cc 2 -> index 1.
         assert_eq!(qf.jump_to(Some(2)), Some(&entry("b", 2)));
         assert_eq!(qf.index(), 1);
@@ -256,7 +330,10 @@ mod tests {
     #[test]
     fn first_and_last() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a", 1), entry("b", 2), entry("c", 3)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a", 1), entry("b", 2), entry("c", 3)],
+        );
         assert_eq!(qf.last(), Some(&entry("c", 3)));
         assert_eq!(qf.index(), 2);
         assert_eq!(qf.first(), Some(&entry("a", 1)));
@@ -266,7 +343,10 @@ mod tests {
     #[test]
     fn set_index_to_matching_finds_by_path_and_line() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a.rs", 1), entry("b.rs", 5), entry("b.rs", 9)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a.rs", 1), entry("b.rs", 5), entry("b.rs", 9)],
+        );
         // Match on (path, line) moves the index and returns true.
         assert!(qf.set_index_to_matching(&PathBuf::from("b.rs"), 9));
         assert_eq!(qf.index(), 2);
@@ -299,12 +379,15 @@ mod tests {
     fn step_file_lands_on_first_entry_of_each_file_and_wraps() {
         let mut qf = ErrorList::new();
         // Two files: a.rs (2 entries) then b.rs (2 entries).
-        qf.set(vec![
-            entry("a.rs", 1),
-            entry("a.rs", 4),
-            entry("b.rs", 2),
-            entry("b.rs", 7),
-        ]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![
+                entry("a.rs", 1),
+                entry("a.rs", 4),
+                entry("b.rs", 2),
+                entry("b.rs", 7),
+            ],
+        );
         // Start at index 0 (a.rs, first). Next file → b.rs first entry.
         assert_eq!(qf.step_file(1), Some(&entry("b.rs", 2)));
         assert_eq!(qf.index(), 2);
@@ -319,7 +402,10 @@ mod tests {
     #[test]
     fn step_file_from_mid_file_goes_to_next_file_start() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("a.rs", 1), entry("a.rs", 4), entry("b.rs", 2)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a.rs", 1), entry("a.rs", 4), entry("b.rs", 2)],
+        );
         // Sit on a.rs's SECOND entry, then :cnextfile → b.rs first.
         qf.step(1);
         assert_eq!(qf.index(), 1);
@@ -330,12 +416,151 @@ mod tests {
     #[test]
     fn step_file_single_file_is_stable() {
         let mut qf = ErrorList::new();
-        qf.set(vec![entry("only.rs", 1), entry("only.rs", 9)]);
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("only.rs", 1), entry("only.rs", 9)],
+        );
         // One file group → next/prev file both resolve to its start.
         assert_eq!(qf.step_file(1), Some(&entry("only.rs", 1)));
         assert_eq!(qf.index(), 0);
         assert_eq!(qf.step_file(-1), Some(&entry("only.rs", 1)));
         assert_eq!(qf.index(), 0);
+    }
+
+    // ── EP.1: tagged sources, scoped replace ──────────────────────
+    //
+    // The reason the slice exists: two producers on one untagged list
+    // clobber each other. The language server republishes on every
+    // edit-debounce, so its feed would wipe a compile run's entries
+    // while the user was walking them.
+
+    #[test]
+    fn a_write_replaces_only_its_own_source() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("c.rs", 1), entry("c.rs", 2)],
+        );
+        qf.set(ErrorSource::Lsp, vec![entry("l.rs", 9)]);
+        assert_eq!(qf.len(), 3);
+
+        // A second compile run replaces ONLY the compile slice.
+        qf.set(ErrorSource::Compilation, vec![entry("c.rs", 7)]);
+        assert_eq!(qf.entries_from(ErrorSource::Compilation).len(), 1);
+        assert_eq!(
+            qf.entries_from(ErrorSource::Lsp),
+            &[entry("l.rs", 9)],
+            "the LSP slice must survive a compile run — this is the clobber"
+        );
+        assert_eq!(qf.len(), 2);
+    }
+
+    #[test]
+    fn slices_concatenate_in_presentation_order() {
+        let mut qf = ErrorList::new();
+        // Insert LSP first to prove order comes from PRESENTATION_ORDER,
+        // not from insertion.
+        qf.set(ErrorSource::Lsp, vec![entry("l.rs", 9)]);
+        qf.set(ErrorSource::Compilation, vec![entry("c.rs", 1)]);
+        assert_eq!(
+            qf.entries(),
+            &[entry("c.rs", 1), entry("l.rs", 9)],
+            "compilation precedes lsp regardless of write order"
+        );
+        assert_eq!(
+            qf.sources(),
+            vec![ErrorSource::Compilation, ErrorSource::Lsp]
+        );
+    }
+
+    /// Producer order within a slice is preserved — rustc emits the
+    /// root cause ahead of the errors it cascades into, and sorting the
+    /// merged list would destroy that.
+    #[test]
+    fn producer_order_within_a_slice_is_untouched() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("z.rs", 90), entry("a.rs", 1), entry("m.rs", 50)],
+        );
+        assert_eq!(
+            qf.entries(),
+            &[entry("z.rs", 90), entry("a.rs", 1), entry("m.rs", 50)],
+            "entries must NOT be sorted by path or line"
+        );
+    }
+
+    #[test]
+    fn an_empty_write_clears_only_that_source() {
+        let mut qf = ErrorList::new();
+        qf.set(ErrorSource::Compilation, vec![entry("c.rs", 1)]);
+        qf.set(ErrorSource::Lsp, vec![entry("l.rs", 9)]);
+
+        // A clean build sends an empty vec.
+        qf.set(ErrorSource::Compilation, vec![]);
+        assert!(qf.entries_from(ErrorSource::Compilation).is_empty());
+        assert_eq!(qf.entries(), &[entry("l.rs", 9)]);
+        assert_eq!(qf.sources(), vec![ErrorSource::Lsp]);
+        assert!(!qf.is_empty(), "the LSP slice still has entries");
+    }
+
+    /// `step_file`'s "maximal run of consecutive entries sharing a
+    /// path" operates on the concatenation, so it still lands on
+    /// first-of-file across a two-slice list.
+    #[test]
+    fn step_file_works_across_two_slices() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("c.rs", 1), entry("c.rs", 4)],
+        );
+        qf.set(ErrorSource::Lsp, vec![entry("l.rs", 2), entry("l.rs", 7)]);
+
+        // Start on c.rs's first. Next file → l.rs's FIRST entry.
+        assert_eq!(qf.step_file(1), Some(&entry("l.rs", 2)));
+        assert_eq!(qf.index(), 2);
+        // Wraps back to c.rs's first.
+        assert_eq!(qf.step_file(1), Some(&entry("c.rs", 1)));
+        assert_eq!(qf.index(), 0);
+    }
+
+    /// A file flagged by BOTH producers stays ONE file group when its
+    /// entries land adjacent across the slice boundary — `step_file`
+    /// groups by *maximal run of consecutive entries sharing a path*,
+    /// and the concatenation puts them side by side. So the common case
+    /// does NOT double-visit.
+    #[test]
+    fn the_same_file_from_two_sources_stays_one_group_when_adjacent() {
+        let mut qf = ErrorList::new();
+        qf.set(ErrorSource::Compilation, vec![entry("same.rs", 1)]);
+        qf.set(ErrorSource::Lsp, vec![entry("same.rs", 5)]);
+        assert_eq!(qf.len(), 2);
+        // One group → `:cnextfile` wraps to its own start.
+        assert_eq!(qf.step_file(1), Some(&entry("same.rs", 1)));
+        assert_eq!(qf.index(), 0);
+    }
+
+    /// The double-visit the concatenation *can* produce, and its actual
+    /// precondition: the shared path is NON-contiguous in the flat view,
+    /// so it forms two separate groups. This is the real cost of
+    /// concatenating rather than merge-sorting — narrower than "any file
+    /// flagged by both producers", which is what the design first said.
+    #[test]
+    fn a_non_contiguous_path_forms_two_groups() {
+        let mut qf = ErrorList::new();
+        // `same.rs` is split by `other.rs` inside the compile slice.
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("same.rs", 1), entry("other.rs", 2)],
+        );
+        qf.set(ErrorSource::Lsp, vec![entry("same.rs", 5)]);
+
+        // Groups: [same.rs] [other.rs] [same.rs] — three, not two.
+        assert_eq!(qf.step_file(1), Some(&entry("other.rs", 2)));
+        assert_eq!(qf.step_file(1), Some(&entry("same.rs", 5)));
+        assert_eq!(qf.index(), 2);
+        // And wraps back to the first group.
+        assert_eq!(qf.step_file(1), Some(&entry("same.rs", 1)));
     }
 
     #[test]

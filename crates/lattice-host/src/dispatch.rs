@@ -8643,9 +8643,9 @@ impl Editor {
             // via the compilation inbound bus). Replace the core list;
             // echo the count only when non-empty (the empty vec sent on
             // a new run clears the stale list silently).
-            AppEffect::SetErrorList { entries } => {
+            AppEffect::SetErrorList { source, entries } => {
                 let n = entries.len();
-                self.set_error_list(entries);
+                self.set_error_list(source, entries);
                 if n > 0 {
                     self.set_message(EchoLevel::Info, format!("error list: {n} items"));
                 }
@@ -27860,8 +27860,14 @@ impl Editor {
     /// entry point — CM.3's parser event-drain (and, later,
     /// diagnostics / search) calls this with freshly parsed entries.
     /// Resets the index to the first entry.
-    pub fn set_error_list(&mut self, entries: Vec<crate::error_list::ErrorEntry>) {
-        self.error_list.set(entries);
+    /// EP.1 (2026-08-10): replace `source`'s slice of the error list,
+    /// leaving every other producer's entries alone.
+    pub fn set_error_list(
+        &mut self,
+        source: crate::error_list::ErrorSource,
+        entries: Vec<crate::error_list::ErrorEntry>,
+    ) {
+        self.error_list.set(source, entries);
     }
 
     /// CM.2 (2026-07-22): read-only accessor for the error list.

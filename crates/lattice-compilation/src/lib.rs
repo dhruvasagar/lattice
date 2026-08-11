@@ -159,7 +159,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // is baked into `InboundBus::send`, so the list reaches the screen
     // off-keystroke without a keypress.
     let qf_bus = boot.inbound::<Vec<ErrorEntry>, _>(|entries| {
-        vec![Effect::AppAction(AppEffect::SetErrorList { entries })]
+        vec![Effect::AppAction(AppEffect::SetErrorList {
+            // EP.1: this producer owns the `Compilation` slice; an LSP
+            // republish alongside it replaces only its own.
+            source: lattice_protocol::error_list::ErrorSource::Compilation,
+            entries,
+        })]
     });
 
     // CM.3c: the twin off-thread → host-state seam for the `*compilation*`

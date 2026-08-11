@@ -12,7 +12,7 @@
 use lattice_core::Document as CoreDocument;
 use lattice_grammar::ErrorTarget;
 use lattice_host::editor::Editor;
-use lattice_host::error_list::{ErrorEntry, ErrorSeverity};
+use lattice_host::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
 
 fn write_file(dir: &std::path::Path, name: &str, contents: &str) -> std::path::PathBuf {
     let path = dir.join(name);
@@ -40,11 +40,14 @@ fn error_next_walks_entries_across_files_and_wraps() {
 
     // Three entries across two files. Index starts at 0 (on entry 0),
     // un-jumped; the first `:cnext` steps to entry 1.
-    editor.set_error_list(vec![
-        entry(&file_a, 1, 0, "first error"),
-        entry(&file_b, 0, 0, "second error"),
-        entry(&file_a, 2, 0, "third error"),
-    ]);
+    editor.set_error_list(
+        ErrorSource::Compilation,
+        vec![
+            entry(&file_a, 1, 0, "first error"),
+            entry(&file_b, 0, 0, "second error"),
+            entry(&file_a, 2, 0, "third error"),
+        ],
+    );
     assert_eq!(editor.error_list().len(), 3);
     assert!(!editor.error_list().is_empty());
     assert_eq!(editor.error_list().index(), 0);
@@ -102,11 +105,14 @@ fn error_prev_wraps_and_cc_first_last_resolve() {
     let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
-    editor.set_error_list(vec![
-        entry(&file_a, 1, 0, "first"),
-        entry(&file_b, 1, 0, "second"),
-        entry(&file_a, 3, 0, "third"),
-    ]);
+    editor.set_error_list(
+        ErrorSource::Compilation,
+        vec![
+            entry(&file_a, 1, 0, "first"),
+            entry(&file_b, 1, 0, "second"),
+            entry(&file_a, 3, 0, "third"),
+        ],
+    );
 
     // Prev from index 0 wraps to the last (entry 2, a.txt line 3).
     editor.do_error_nav(ErrorTarget::Prev);
@@ -164,11 +170,14 @@ fn compile_jump_to_location_moves_cursor_and_syncs_index() {
     let file_b = write_file(dir.path(), "b.txt", "b0\nb1\nb2\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
-    editor.set_error_list(vec![
-        entry(&file_a, 1, 0, "first"),
-        entry(&file_b, 2, 1, "second"),
-        entry(&file_a, 3, 0, "third"),
-    ]);
+    editor.set_error_list(
+        ErrorSource::Compilation,
+        vec![
+            entry(&file_a, 1, 0, "first"),
+            entry(&file_b, 2, 1, "second"),
+            entry(&file_a, 3, 0, "third"),
+        ],
+    );
     assert_eq!(editor.error_list().index(), 0);
     let history_before = editor.position_history.len();
 
@@ -217,7 +226,7 @@ fn compile_jump_to_location_without_matching_entry_still_jumps() {
     let file_b = write_file(dir.path(), "b.txt", "b0\nb1\n");
 
     let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
-    editor.set_error_list(vec![entry(&file_a, 1, 0, "only")]);
+    editor.set_error_list(ErrorSource::Compilation, vec![entry(&file_a, 1, 0, "only")]);
     assert_eq!(editor.error_list().index(), 0);
 
     let mut out = DispatchOutcome::default();
@@ -298,11 +307,14 @@ fn error_list_picker_lists_entries_and_empty_echoes() {
         Some("no error list")
     );
 
-    editor.set_error_list(vec![
-        entry(&file_a, 1, 0, "first"),
-        entry(&file_b, 0, 0, "second"),
-        entry(&file_a, 0, 0, "third"),
-    ]);
+    editor.set_error_list(
+        ErrorSource::Compilation,
+        vec![
+            entry(&file_a, 1, 0, "first"),
+            entry(&file_b, 0, 0, "second"),
+            entry(&file_a, 0, 0, "third"),
+        ],
+    );
     editor.do_list_errors();
     let picker = editor.picker.as_ref().expect("picker opened");
     assert_eq!(picker.title, "error list (3)");
@@ -327,13 +339,16 @@ fn error_list_file_nav_lands_on_first_entry_of_each_file() {
     );
 
     // a.txt (2 entries) → b.txt (2 entries) → c.txt (1 entry).
-    editor.set_error_list(vec![
-        entry(&file_a, 1, 0, "a-first"),
-        entry(&file_a, 3, 0, "a-second"),
-        entry(&file_b, 0, 0, "b-first"),
-        entry(&file_b, 2, 0, "b-second"),
-        entry(&file_c, 1, 0, "c-only"),
-    ]);
+    editor.set_error_list(
+        ErrorSource::Compilation,
+        vec![
+            entry(&file_a, 1, 0, "a-first"),
+            entry(&file_a, 3, 0, "a-second"),
+            entry(&file_b, 0, 0, "b-first"),
+            entry(&file_b, 2, 0, "b-second"),
+            entry(&file_c, 1, 0, "c-only"),
+        ],
+    );
 
     let name = |e: &Editor| {
         e.document

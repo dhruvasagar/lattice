@@ -156,11 +156,20 @@ speculatively.
 `Lsp`); order *within* a slice is the producer's own.** Producer order
 is information — rustc emits the root cause before the cascading
 errors it caused — and sorting the merged list by path would destroy
-it. The cost is that a file with both a compile error and a language-
-server diagnostic is visited twice by `:cnextfile`. That is honest:
-they are two different tools' opinions about the same file, and §2's
-"maximal run of consecutive entries sharing a path" still holds within
-each slice.
+it.
+
+§2's file-grouping rule ("maximal run of consecutive entries sharing a
+path") applies to the **concatenation**, not per slice, which makes the
+cost smaller than it first appears. When both producers flag the same
+file their entries land *adjacent* across the slice boundary, so they
+form **one** file group and `:cnextfile` does not double-visit.
+
+The double-visit is real but narrower: it happens when a path is
+**non-contiguous** in the flat view — e.g. compilation reports
+`same.rs` then `other.rs`, and the language server also reports
+`same.rs`, giving three groups. That is accepted. Both tests are
+pinned in `error_list.rs` so the boundary between the two cases stays
+explicit.
 
 ### 3.2 The language server is a producer, under user policy
 

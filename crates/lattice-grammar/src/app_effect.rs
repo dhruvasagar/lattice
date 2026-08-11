@@ -820,6 +820,11 @@ pub enum AppEffect {
     /// The parser (below-host `lattice-compilation`) and this payload
     /// share the `lattice_protocol::error_list::ErrorEntry` type.
     SetErrorList {
+        /// EP.1 (2026-08-10): which producer this run came from. The
+        /// host arm replaces only this source's slice, so a language
+        /// server republishing on edit-debounce cannot wipe a compile
+        /// run's entries while the user walks them.
+        source: lattice_protocol::error_list::ErrorSource,
         entries: Vec<lattice_protocol::error_list::ErrorEntry>,
     },
     /// CM.3c (2026-07-22): the per-buffer severity gutter index for the

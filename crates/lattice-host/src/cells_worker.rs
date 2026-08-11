@@ -1432,11 +1432,29 @@ fn build_row_cells(
 /// exactly as the cell projection does.
 // B2.2: live — the canonical per-row builder behind
 // `build_display_rows` → `build_display_matrix` → `recompute_pane`.
+/// DR.2: which refinement (if any) covers `byte`. First match wins,
+/// matching the foreground axis's rule; refine spans do not overlap in
+/// practice, and if a producer ever emits overlapping ones the earlier
+/// simply claims the byte rather than the result being undefined.
+fn refine_at_byte(
+    refine: &[lattice_cells::RefineSpan],
+    byte: usize,
+) -> Option<lattice_cells::RefineKind> {
+    refine
+        .iter()
+        .find(|r| byte >= r.start && byte < r.end)
+        .map(|r| r.kind)
+}
+
 fn build_display_row(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
     line_inlays: &[(u32, &str)],
     ws: &WhitespaceConfig,
+    // DR.2: byte ranges whose background differs from the row's. Empty
+    // for every buffer that publishes none, which is all of them until
+    // DR.3 — hence byte-identical output in that case.
+    line_refine: &[lattice_cells::RefineSpan],
 ) -> (
     Box<str>,
     Vec<crate::display_matrix::DisplayRun>,
@@ -1454,14 +1472,36 @@ fn build_display_row(
         style: lattice_syntax::Style,
         flags: u16,
     ) {
+        push_refined(out, runs, s, style, flags, None)
+    }
+
+    /// DR.2: as `push`, with an explicit refinement. A run merges only
+    /// when the refinement matches too, so a refine boundary splits
+    /// runs exactly as a style change does — no new splitting concept,
+    /// just one more field in the equality.
+    fn push_refined(
+        out: &mut String,
+        runs: &mut Vec<DisplayRun>,
+        s: &str,
+        style: lattice_syntax::Style,
+        flags: u16,
+        refine: Option<lattice_cells::RefineKind>,
+    ) {
         if s.is_empty() {
             return;
         }
         let len = s.len() as u32;
         out.push_str(s);
         match runs.last_mut() {
-            Some(last) if last.style == style && last.flags == flags => last.len += len,
-            _ => runs.push(DisplayRun { len, style, flags }),
+            Some(last) if last.style == style && last.flags == flags && last.refine == refine => {
+                last.len += len
+            }
+            _ => runs.push(DisplayRun {
+                len,
+                style,
+                flags,
+                refine,
+            }),
         }
     }
 
@@ -1567,7 +1607,14 @@ fn build_display_row(
             }
         }
         if !emitted {
-            push(&mut out, &mut runs, ch.encode_utf8(&mut tmp), style, 0);
+            push_refined(
+                &mut out,
+                &mut runs,
+                ch.encode_utf8(&mut tmp),
+                style,
+                0,
+                refine_at_byte(line_refine, byte),
+            );
             col += 1;
         }
     }
@@ -1620,8 +1667,15 @@ fn build_display_rows(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let (text, runs, col_map, col_count) =
-            build_display_row(&text, line_spans, line_inlays, inputs.whitespace);
+        let (text, runs, col_map, col_count) = build_display_row(
+            &text,
+            line_spans,
+            line_inlays,
+            inputs.whitespace,
+            // DR.2: no producer publishes refine spans until DR.3,
+            // so this is empty and output is byte-identical.
+            &[],
+        );
         rows.push(DisplayLine {
             source_line: line_idx,
             text: Arc::from(text),
@@ -2353,6 +2407,92 @@ fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> latt
 
 #[cfg(test)]
 mod tests {
+    // ── DR.2: intra-line refinement rides DisplayRun ─────────────────
+
+    #[test]
+    fn no_refine_spans_leaves_every_run_unrefined() {
+        let (_t, runs, _cm, _c) =
+            build_display_row("let x = 1;", &[], &[], &WhitespaceConfig::default(), &[]);
+        assert!(
+            runs.iter().all(|r| r.refine.is_none()),
+            "a buffer publishing no refinement must be byte-identical to before DR.2"
+        );
+    }
+
+    #[test]
+    fn a_refine_span_splits_runs_and_marks_only_its_bytes() {
+        use lattice_cells::{RefineKind, RefineSpan};
+        // Refine "x" only (byte 4..5) in `let x = 1;`.
+        let (_t, runs, _cm, _c) = build_display_row(
+            "let x = 1;",
+            &[],
+            &[],
+            &WhitespaceConfig::default(),
+            &[RefineSpan {
+                start: 4,
+                end: 5,
+                kind: RefineKind::Added,
+            }],
+        );
+        let refined: u32 = runs
+            .iter()
+            .filter(|r| r.refine == Some(RefineKind::Added))
+            .map(|r| r.len)
+            .sum();
+        assert_eq!(refined, 1, "exactly the refined byte is marked");
+        let total: u32 = runs.iter().map(|r| r.len).sum();
+        assert_eq!(total, 10, "the row still covers every byte");
+    }
+
+    /// A tab expands to several display columns, so a renderer-side
+    /// walk over RENDERED bytes would drift. Refinement is resolved in
+    /// the worker against SOURCE bytes precisely to avoid that.
+    #[test]
+    fn refinement_survives_tab_expansion() {
+        use lattice_cells::{RefineKind, RefineSpan};
+        let ws = WhitespaceConfig {
+            tabstop: 4,
+            ..WhitespaceConfig::default()
+        };
+        // "\tab" — refine "ab" at source bytes 1..3.
+        let (_t, runs, _cm, _c) = build_display_row(
+            "\tab",
+            &[],
+            &[],
+            &ws,
+            &[RefineSpan {
+                start: 1,
+                end: 3,
+                kind: RefineKind::Removed,
+            }],
+        );
+        let refined: u32 = runs
+            .iter()
+            .filter(|r| r.refine == Some(RefineKind::Removed))
+            .map(|r| r.len)
+            .sum();
+        assert_eq!(refined, 2, "the two source bytes, not tab-expanded columns");
+    }
+
+    /// A span past the end of the line must be ignored, not panic — a
+    /// stale refinement racing a shorter re-render is a real case.
+    #[test]
+    fn an_out_of_range_refine_span_is_ignored() {
+        use lattice_cells::{RefineKind, RefineSpan};
+        let (_t, runs, _cm, _c) = build_display_row(
+            "ab",
+            &[],
+            &[],
+            &WhitespaceConfig::default(),
+            &[RefineSpan {
+                start: 50,
+                end: 60,
+                kind: RefineKind::Added,
+            }],
+        );
+        assert!(runs.iter().all(|r| r.refine.is_none()));
+    }
+
     use super::*;
     use crate::render_state::{CellsRenderState, RenderState};
     use lattice_core::Document;
@@ -3385,7 +3525,7 @@ mod tests {
             inlay_fg,
             &ws,
         );
-        let (dtext, runs, col_map, col_count) = build_display_row(text, &spans, &inlays, &ws);
+        let (dtext, runs, col_map, col_count) = build_display_row(text, &spans, &inlays, &ws, &[]);
 
         // Project display runs → cells (the ws-off resolution path).
         let mut projected: Vec<Cell> = Vec::new();

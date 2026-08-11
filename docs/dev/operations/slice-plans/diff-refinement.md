@@ -16,7 +16,7 @@ piece that does not exist yet.
 | Slice | Title | Status |
 |---|---|---|
 | DR.1 | Word-level refinement in `lattice-diff` (pure) | ✅ |
-| DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | 📝 |
+| DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | ✅ |
 | DR.3 | Magit diffs publish refinement | 📝 |
 | DR.4 | `diff-mode` panes publish refinement | 📝 |
 
@@ -50,7 +50,7 @@ character boundaries.
 **Bench.** Refinement cost for a typical hunk, and the pathological
 case (one long minified line) confirming the threshold short-circuits.
 
-## DR.2 — The background axis 📝
+## DR.2 — The background axis ✅
 
 The one genuinely new mechanism. Today `Cell.bg` comes from the row's
 `DiffSignKind` and nothing can override a sub-range.

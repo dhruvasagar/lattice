@@ -126,6 +126,37 @@ pub struct StyledSpan {
     pub style: Style,
 }
 
+/// DR.2 (2026-08-12): a byte range whose **background** differs from
+/// its row's — intra-line diff refinement.
+///
+/// A second, independent axis from [`StyledSpan`], and deliberately a
+/// separate type rather than a `bg` field on that one. The foreground
+/// axis resolves by first-match-wins over a concatenated list; a
+/// background is a different question with different precedence, and
+/// fusing them would force every existing span producer to have an
+/// opinion about a concern it does not have.
+///
+/// See `docs/dev/architecture/diff-refinement.md` §3 and
+/// `span-layering.md` §1 (the two-axis contract this extends).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefineSpan {
+    /// Byte offset within the line where the span starts.
+    pub start: usize,
+    /// Byte offset within the line (exclusive).
+    pub end: usize,
+    pub kind: RefineKind,
+}
+
+/// Which side of a refined pair a [`RefineSpan`] belongs to. Picks the
+/// theme element, and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefineKind {
+    /// Bytes added on this line — `diff.add.refine.bg`.
+    Added,
+    /// Bytes removed from this line — `diff.remove.refine.bg`.
+    Removed,
+}
+
 /// Trait implemented by `SyntaxHandle` (and future highlight providers).
 /// Used by `Document::excerpt_highlights` so that `lattice-runtime` can
 /// expose per-excerpt highlighting through the `Document` trait without

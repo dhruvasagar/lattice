@@ -131,6 +131,21 @@ fn display_run_to_style(
     if fg != 0 {
         style = style.fg(rgb_u32_to_color(fg));
     }
+    // DR.2: intra-line refinement. A refined run overrides its row's
+    // diff tint with a stronger one; foreground is untouched, which is
+    // what keeps the syntax colour visible underneath. Set here rather
+    // than by a byte-range walk in the renderer because run boundaries
+    // already account for tab expansion and whitespace markers — a
+    // source-byte walk over RENDERED content drifts on the first tab.
+    if let Some(kind) = run.refine {
+        let element = match kind {
+            lattice_cells::RefineKind::Added => ids.diff_add_refine_bg,
+            lattice_cells::RefineKind::Removed => ids.diff_remove_refine_bg,
+        };
+        if let Some(bg) = resolved.get(element).bg {
+            style = style.bg(rgb_u32_to_color(bg.to_rgb_u32(0)));
+        }
+    }
     let m = &host.modifiers;
     let mut mods = Modifier::empty();
     if m.bold {
@@ -224,6 +239,7 @@ mod tests {
                 len: s.len() as u32,
                 style: *style,
                 flags: *flags,
+                refine: None,
             });
             text.push_str(s);
         }

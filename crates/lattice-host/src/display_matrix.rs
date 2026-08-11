@@ -49,6 +49,15 @@ pub struct DisplayRun {
     pub len: u32,
     pub style: Style,
     pub flags: u16,
+    /// DR.2 (2026-08-12): intra-line diff refinement — when `Some`,
+    /// this run's **background** overrides its row's diff tint.
+    ///
+    /// The second axis of `span-layering.md`, narrowed from per-row to
+    /// per-range. Runs already split wherever appearance changes, so
+    /// carrying it here costs one field and no new splitting concept.
+    /// Foreground is untouched, which is what keeps the syntax colour
+    /// DS.1–DS.5 added visible under the refinement.
+    pub refine: Option<lattice_cells::RefineKind>,
 }
 
 /// Closed-fold head marker carried by the first visible line of a
@@ -352,6 +361,7 @@ mod tests {
                     len: text.len() as u32,
                     style: Style::Default,
                     flags: 0,
+                    refine: None,
                 }]
                 .into_boxed_slice(),
             ),

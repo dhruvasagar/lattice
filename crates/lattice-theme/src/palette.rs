@@ -140,6 +140,8 @@ pub fn default_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", Color::Indexed(236))
 }
 
@@ -189,6 +191,8 @@ pub fn macchiato_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x36, 0x3a, 0x4f))
 }
 
@@ -241,6 +245,8 @@ pub fn catppuccin_latte_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe8, 0xc8))
         .with("diff.deletion.bg", rgb(0xf5, 0xd5, 0xd5))
         .with("diff.conflict.bg", rgb(0xee, 0xd8, 0xee))
+        .with("diff.add.refine.bg", rgb(0x9b, 0xee, 0x97))
+        .with("diff.remove.refine.bg", rgb(0xf5, 0x99, 0x99))
         .with("cursor_line.bg", rgb(0xcc, 0xd0, 0xda))
 }
 
@@ -293,6 +299,8 @@ pub fn gruvbox_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x3c, 0x38, 0x36))
 }
 
@@ -337,6 +345,8 @@ pub fn gruvbox_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe8, 0xc0))
         .with("diff.deletion.bg", rgb(0xf5, 0xd5, 0xd0))
         .with("diff.conflict.bg", rgb(0xee, 0xd8, 0xe6))
+        .with("diff.add.refine.bg", rgb(0x99, 0xe8, 0x90))
+        .with("diff.remove.refine.bg", rgb(0xf5, 0x99, 0x95))
         .with("cursor_line.bg", rgb(0xeb, 0xdb, 0xb2))
 }
 
@@ -380,6 +390,8 @@ pub fn tokyonight_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x29, 0x2e, 0x42))
 }
 
@@ -423,6 +435,8 @@ pub fn tokyonight_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xe8, 0xe4, 0xc8))
         .with("diff.deletion.bg", rgb(0xf2, 0xd2, 0xd5))
         .with("diff.conflict.bg", rgb(0xe6, 0xd5, 0xee))
+        .with("diff.add.refine.bg", rgb(0x99, 0xe8, 0x92))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x97, 0x99))
         .with("cursor_line.bg", rgb(0xc4, 0xc8, 0xda))
 }
 
@@ -466,6 +480,8 @@ pub fn dracula_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x44, 0x47, 0x5a))
 }
 
@@ -509,6 +525,8 @@ pub fn dracula_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xea, 0xc4))
         .with("diff.deletion.bg", rgb(0xf5, 0xd2, 0xcc))
         .with("diff.conflict.bg", rgb(0xee, 0xd2, 0xe8))
+        .with("diff.add.refine.bg", rgb(0x99, 0xe8, 0x90))
+        .with("diff.remove.refine.bg", rgb(0xf5, 0x97, 0x92))
         .with("cursor_line.bg", rgb(0xe4, 0xe4, 0xd8))
 }
 
@@ -553,6 +571,8 @@ pub fn nord_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x3b, 0x42, 0x52))
 }
 
@@ -597,6 +617,8 @@ pub fn nord_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xee, 0xe8, 0xcc))
         .with("diff.deletion.bg", rgb(0xf2, 0xd5, 0xd8))
         .with("diff.conflict.bg", rgb(0xe8, 0xd8, 0xe8))
+        .with("diff.add.refine.bg", rgb(0x99, 0xe8, 0x92))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x99, 0x9b))
         .with("cursor_line.bg", rgb(0xd8, 0xde, 0xe9))
 }
 
@@ -641,6 +663,8 @@ pub fn solarized_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x07, 0x36, 0x42))
 }
 
@@ -685,6 +709,8 @@ pub fn solarized_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe6, 0xbe))
         .with("diff.deletion.bg", rgb(0xf2, 0xd5, 0xc8))
         .with("diff.conflict.bg", rgb(0xea, 0xd6, 0xdc))
+        .with("diff.add.refine.bg", rgb(0x9e, 0xe8, 0x8a))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x99, 0x90))
         .with("cursor_line.bg", rgb(0xee, 0xe8, 0xd5))
 }
 
@@ -728,6 +754,8 @@ pub fn one_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x2c, 0x31, 0x3a))
 }
 
@@ -771,6 +799,8 @@ pub fn one_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe8, 0xc4))
         .with("diff.deletion.bg", rgb(0xf5, 0xd2, 0xd2))
         .with("diff.conflict.bg", rgb(0xee, 0xd2, 0xe8))
+        .with("diff.add.refine.bg", rgb(0x99, 0xe8, 0x90))
+        .with("diff.remove.refine.bg", rgb(0xf5, 0x97, 0x97))
         .with("cursor_line.bg", rgb(0xee, 0xee, 0xee))
 }
 
@@ -814,6 +844,8 @@ pub fn everforest_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x34, 0x3f, 0x44))
 }
 
@@ -857,6 +889,8 @@ pub fn everforest_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe6, 0xbe))
         .with("diff.deletion.bg", rgb(0xf2, 0xd5, 0xc8))
         .with("diff.conflict.bg", rgb(0xea, 0xd6, 0xdc))
+        .with("diff.add.refine.bg", rgb(0x9e, 0xe8, 0x8a))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x99, 0x90))
         .with("cursor_line.bg", rgb(0xef, 0xeb, 0xd4))
 }
 
@@ -900,6 +934,8 @@ pub fn rosepine_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x21, 0x1f, 0x30))
 }
 
@@ -943,6 +979,8 @@ pub fn rosepine_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe6, 0xc8))
         .with("diff.deletion.bg", rgb(0xf2, 0xd8, 0xd5))
         .with("diff.conflict.bg", rgb(0xea, 0xd8, 0xe2))
+        .with("diff.add.refine.bg", rgb(0x9e, 0xe8, 0x92))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x9b, 0x99))
         .with("cursor_line.bg", rgb(0xf4, 0xed, 0xe8))
 }
 
@@ -986,6 +1024,8 @@ pub fn monokai_dark_palette() -> Palette {
         .with("diff.change.bg", rgb(50, 50, 0))
         .with("diff.deletion.bg", rgb(60, 0, 0))
         .with("diff.conflict.bg", rgb(60, 0, 60))
+        .with("diff.add.refine.bg", rgb(0x00, 0x5c, 0x00))
+        .with("diff.remove.refine.bg", rgb(0x6f, 0x00, 0x00))
         .with("cursor_line.bg", rgb(0x3e, 0x3d, 0x32))
 }
 
@@ -1030,6 +1070,8 @@ pub fn monokai_light_palette() -> Palette {
         .with("diff.change.bg", rgb(0xf0, 0xe8, 0xbe))
         .with("diff.deletion.bg", rgb(0xf2, 0xd2, 0xd8))
         .with("diff.conflict.bg", rgb(0xea, 0xd2, 0xe2))
+        .with("diff.add.refine.bg", rgb(0x9e, 0xe8, 0x8d))
+        .with("diff.remove.refine.bg", rgb(0xf2, 0x97, 0x9b))
         .with("cursor_line.bg", rgb(0xe6, 0xe6, 0xda))
 }
 

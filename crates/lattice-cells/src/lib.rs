@@ -64,7 +64,7 @@ pub use matrix::{
     DisplaySliceIter, wrap_segments,
 };
 pub use row::{CellRow, InlayOffset};
-pub use style::{ExcerptHighlight, ExcerptHighlighter, Style, StyledSpan};
+pub use style::{ExcerptHighlight, ExcerptHighlighter, RefineKind, RefineSpan, Style, StyledSpan};
 pub use version::MatrixVersion;
 pub use virtual_rows::{
     AnchorPosition, BASE_SCALE, ProviderId, ScaleRun, VirtualRow, VirtualRowKind, VirtualRowMatrix,

@@ -334,6 +334,21 @@ fn display_run_to_synthetic_cell(
         weight: host.weight,
         scale: host.scale,
     };
+    // DR.2: intra-line refinement — a refined run overrides its row's
+    // diff tint with a stronger background. Foreground untouched, so
+    // the syntax colour stays visible under it. `style_key` already
+    // includes `cell.bg`, so run grouping picks this up for free.
+    let refine_bg = run
+        .refine
+        .and_then(|kind| {
+            let element = match kind {
+                lattice_cells::RefineKind::Added => ids.diff_add_refine_bg,
+                lattice_cells::RefineKind::Removed => ids.diff_remove_refine_bg,
+            };
+            resolved.get(element).bg
+        })
+        .map(|c| c.to_rgb_u32(0))
+        .unwrap_or(0);
     let is_inlay = run.flags & cell_flags::INLAY != 0;
     let is_ws = run.flags & cell_flags::WS_MARKER != 0;
     let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
@@ -351,7 +366,7 @@ fn display_run_to_synthetic_cell(
             RichAttrs::default(),
         )
     } else {
-        (Cell::new(0, style_fg, 0, mods), rich)
+        (Cell::new(0, style_fg, refine_bg, mods), rich)
     }
 }
 

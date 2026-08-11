@@ -797,6 +797,22 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Removed-line background tint (baseline/left pane of a side-by-side diff). \
          Reuses the deletion-block palette role for a consistent red.",
     );
+    // DR.2 (2026-08-12): intra-line refinement — the sub-range of a
+    // changed line that actually differs. A STRONGER version of the
+    // row tint it sits inside, so the eye lands on the changed words
+    // without losing the row's add/remove identity. Foreground is
+    // untouched, which is what keeps the syntax highlighting DS.1–DS.5
+    // added visible underneath.
+    reg_one(
+        "diff.add.refine.bg",
+        spec().bg("diff.add.refine.bg"),
+        "Background for the added bytes within a refined diff line (intra-line refinement).",
+    );
+    reg_one(
+        "diff.remove.refine.bg",
+        spec().bg("diff.remove.refine.bg"),
+        "Background for the removed bytes within a refined diff line (intra-line refinement).",
+    );
     reg_one(
         "diff.deletion_block",
         spec().bg("diff.deletion.bg"),
@@ -1284,6 +1300,10 @@ pub struct BuiltinElementIds {
     pub diff_remove_sign: ElementId,
     pub diff_conflict_sign: ElementId,
     pub diff_add_line: ElementId,
+    /// DR.2: intra-line refinement backgrounds — the sub-range of a
+    /// changed line that actually differs.
+    pub diff_add_refine_bg: ElementId,
+    pub diff_remove_refine_bg: ElementId,
     pub diff_change_line: ElementId,
     /// D-fix.3b: removed-line tint for the baseline/left pane.
     pub diff_remove_line: ElementId,
@@ -1459,6 +1479,8 @@ impl Default for BuiltinElementIds {
             diff_remove_sign: ElementId::INVALID,
             diff_conflict_sign: ElementId::INVALID,
             diff_add_line: ElementId::INVALID,
+            diff_add_refine_bg: ElementId::INVALID,
+            diff_remove_refine_bg: ElementId::INVALID,
             diff_change_line: ElementId::INVALID,
             diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
@@ -1656,6 +1678,8 @@ impl BuiltinElementIds {
             diff_remove_sign: id("diff.remove.sign"),
             diff_conflict_sign: id("diff.conflict.sign"),
             diff_add_line: id("diff.add.line"),
+            diff_add_refine_bg: id("diff.add.refine.bg"),
+            diff_remove_refine_bg: id("diff.remove.refine.bg"),
             diff_change_line: id("diff.change.line"),
             diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),

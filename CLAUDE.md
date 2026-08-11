@@ -139,6 +139,12 @@ These rules emerged from prior architectural debates and corrections. They are L
 
 ### Workflow
 
+- **One slice, one commit.** Each slice in a plan lands as its own commit, with its own message explaining why that slice exists. Do NOT batch several slices into one commit because they happened to be written in the same sitting — the plan's slice boundaries are the review and bisect boundaries, and collapsing them throws away exactly the structure the plan was for.
+
+  **Commit each slice as it goes green**, rather than writing three and committing at the end. Batching creates interleaved hunks in shared files (`dispatch.rs`, `effect.rs`) that then have to be carved apart by hand, and a botched carve produces a commit that does not compile — worse than the batching it was fixing.
+
+  **The one legitimate exception is a slice that cannot compile without its neighbour.** EP.3's diagnostics feed reads the option EP.4 was specified to add, so the option had to ship with EP.3 or EP.3 would not build. When that happens: land them together, and say in the message which slice absorbed what and why. Do not split a commit into a state that fails to build merely to match the plan's numbering.
+
 - **A commit is fmt-clean, warning-clean and green — verified BEFORE committing, not after.** Three gates, in this order, every time:
 
   ```

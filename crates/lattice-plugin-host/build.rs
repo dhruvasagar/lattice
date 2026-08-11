@@ -130,6 +130,26 @@ fn main() {
 /// failure, so the dependent test/bench skips gracefully). `name` is the crate
 /// name; the artifact is `<name-with-underscores>.wasm`.
 fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
+    // A guest crate that isn't in the tree at all (e.g. `fuzzy-finder`,
+    // referenced here but never landed under `plugins/`) must be skipped
+    // BEFORE any `rerun-if-changed` is emitted.
+    //
+    // This is not a tidiness point, it is the build's single biggest cost.
+    // Cargo re-runs a build script on every invocation when any declared
+    // `rerun-if-changed` path does not exist — it cannot prove the input is
+    // unchanged, so it assumes it changed. Emitting those lines for an absent
+    // directory therefore dirtied `lattice-plugin-host` on EVERY build, which
+    // relinked `lattice-host` and each of its 25 integration-test binaries.
+    // A fully-cached `cargo test -p lattice-host` cost ~445s almost entirely
+    // in that relink; the tests themselves run in seconds.
+    //
+    // Skipping also emits the empty env var, so the dependent test still
+    // compiles and skips gracefully — same contract as a failed build below.
+    if !guest_dir.join("Cargo.toml").exists() {
+        println!("cargo:rustc-env={env_var}=");
+        return;
+    }
+
     // Rebuild the guest whenever its source or manifest changes (the shared
     // WIT rerun is registered once in `main`).
     println!("cargo:rerun-if-changed={}", guest_dir.join("src").display());

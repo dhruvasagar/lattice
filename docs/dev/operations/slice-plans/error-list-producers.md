@@ -22,6 +22,7 @@ A.4 is **struck** by this work — see design §6).
 | EP.3 | LSP producer — layer hook, severity mapping, coalescing | ✅ |
 | EP.4 | Policy — option + `:lsp-diagnostics-to-error-list` | ✅ |
 | EP.5 | ~~Retire the `:diagnostics` help view~~ — **rescoped**, see below | ✅ |
+| EP.6 | References as a third producer, opt-in | 📝 |
 
 Sequencing is strict: EP.1 before everything (it changes the payload
 type), EP.2 before EP.3 (a live feed without re-anchoring is a
@@ -143,6 +144,27 @@ no call sites (`gr` has always opened a picker, not a help view).
 **Lesson recorded rather than quietly fixed:** this slice was specified
 from a grep of the string `"diagnostics"` rather than from reading the
 call path. Two of its three claims did not survive contact.
+
+## EP.6 — References as a third producer 📝
+
+Design: [`error-list.md`](../../architecture/error-list.md) §3.2b.
+Builds on LR.2's terminus routing.
+
+- `ErrorSource::References` in `lattice-protocol`.
+- Option `lsp.references-to-error-list`, bool, default **`false`**
+  (diagnostics default on; references do not — see the design for why).
+- Ex-command `:lsp-references-to-error-list` — a third terminus on the
+  references drain, not a cache snapshot: there is no standing
+  references state to pull from.
+- The terminus becomes an enum (`Picker` / `View` / `ErrorList`),
+  replacing LR.2's bool.
+- Option on ⇒ any references query also pushes the `References` slice,
+  whatever its terminus. Severity `Info`; write kind `NewRun`.
+
+**Tests.** A references push leaves compile and LSP slices intact (the
+clobber regression, per source); option off ⇒ `gr` does not touch the
+list but the command does; the terminus enum does not leak between
+requests; severity is `Info`.
 
 ---
 

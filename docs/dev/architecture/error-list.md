@@ -211,6 +211,55 @@ workspace-wide after a check; other servers publish only for open
 files. The command echoes the entry count so the user is not misled
 into reading an empty result as a clean tree.
 
+### 3.2b References are a third producer, opt-in
+
+Reference sites are not errors — no severity, no diagnosis. But the
+error list is a *navigable set of source locations*, and fifteen call
+sites is exactly that. Vim's quickfix culture has always treated the
+list as the universal result sink (`:cexpr`, `:grep`, `:cfile`), and
+§3.1's tagged slices mean references can join without touching anyone
+else's entries.
+
+| | |
+|---|---|
+| **Option** | `lsp.references-to-error-list` — bool, default **`false`** |
+| **Command** | `:lsp-references-to-error-list` — query at the cursor, push the result |
+
+**Default off, unlike diagnostics' default on.** Diagnostics *are*
+errors and belong in a list called the error list; turning them on
+changes nothing about what the list means. References would: someone
+walking compile errors with `]qq` should not have that set silently
+grow every time they look up a symbol. Opt-in is the honest default for
+a producer whose entries are not problems.
+
+**The manual command runs the query; it does not snapshot.** Unlike
+diagnostics, there is no standing "current references" state to pull
+from — a references result exists only as the answer to a query. So the
+command is a **third terminus** on the drain §17 already routes:
+
+	gr                            → picker
+	:lsp-references               → multibuffer
+	:lsp-references-to-error-list → error list
+
+The option is orthogonal to the terminus: when on, *any* references
+query also pushes to the `References` slice, whatever surface it was
+headed for. Severity is `Info` — the list wants one, and a reference is
+informational, not a problem.
+
+Each query is an `ErrorWrite::NewRun`: a fresh question deserves a
+fresh answer at the top of the list, unlike the diagnostics feed's
+continuous refresh.
+
+**This reverses §17's rejection**, which read: *"references aren't
+errors, have no severity, and hijacking `]qq` for them would collide
+with a live compile list."* Two of those three still hold and are
+answered rather than dismissed — the severity is chosen explicitly
+above, and the collision is what EP.1's per-source slices removed: a
+references push replaces only the `References` slice, so a compile run
+survives it. What remains is the taste question of whether they belong
+in that list at all, and the option is the answer: the user decides,
+and the default says no.
+
 ### 3.3 Two properties that make a live feed safe
 
 Without both of these, a default-on feed is worse than no feed.

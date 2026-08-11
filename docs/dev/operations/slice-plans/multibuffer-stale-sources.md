@@ -27,7 +27,7 @@ inheriting it, not by carrying its own copy.
 | Slice | Title | Status |
 |---|---|---|
 | SS.1 | Lower `OnDiskFingerprint` to `lattice-core` | ✅ |
-| SS.2 | Capture a baseline per source at insertion | 📝 |
+| SS.2 | Capture a baseline per source at insertion | ✅ |
 | SS.3 | Verify at save; refuse stale sources, keep the rest | 📝 |
 
 Strict order: SS.1 unblocks SS.2 (the type must be reachable from
@@ -52,7 +52,7 @@ move intact.
 
 **Not in this slice:** no behaviour change whatsoever.
 
-## SS.2 — Baseline at insertion 📝
+## SS.2 — Baseline at insertion ✅
 
 - `MultibufferDocumentHandle` records
   `HashMap<BufferId, OnDiskFingerprint>` alongside its source map.

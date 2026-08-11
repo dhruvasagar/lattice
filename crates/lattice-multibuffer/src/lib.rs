@@ -377,6 +377,20 @@ enum SourceForwardMsg {
 
 struct MultibufferState {
     sources: HashMap<BufferId, Arc<dyn Document>>,
+    /// SS.2 (2026-08-11): the on-disk identity each source had when it
+    /// entered the view.
+    ///
+    /// A multibuffer's sources are SNAPSHOTS — read once at
+    /// view-creation and held for the view's lifetime — while
+    /// `Document::save` writes every dirty one back. Without a baseline
+    /// that silently overwrites whatever changed the file externally
+    /// (a rebase, a formatter, another pane). SS.3 compares against
+    /// this before writing.
+    ///
+    /// Pathless sources (synthetic documents) are absent and are never
+    /// stale — there is no file to conflict with.
+    /// See `docs/dev/architecture/multibuffer-stale-sources.md`.
+    source_fingerprints: HashMap<BufferId, lattice_core::on_disk::OnDiskFingerprint>,
     excerpts: Vec<Excerpt>,
     /// K.4.7 (2026-06-07): per-source SyntaxHandle for excerpt
     /// highlighting. Populated by `add_source` when `lang_registry`
@@ -480,6 +494,19 @@ pub struct MultibufferDocumentHandle {
     inner: Arc<MultibufferInner>,
 }
 
+/// SS.2: the on-disk baseline for one source, or `None` when it has no
+/// path (a synthetic document — nothing on disk to conflict with).
+///
+/// Called at insertion, where the source's in-memory text IS what was
+/// just read from disk, so the baseline is exact and costs one `stat`.
+fn fingerprint_source(
+    source: &Arc<dyn Document>,
+) -> Option<lattice_core::on_disk::OnDiskFingerprint> {
+    let path = source.path()?;
+    let text = source.snapshot().buffer.as_string();
+    Some(lattice_core::on_disk::OnDiskFingerprint::from_path_and_text(&path, &text))
+}
+
 impl MultibufferDocumentHandle {
     /// Construct a multibuffer composing `sources` + `excerpts`.
     ///
@@ -561,6 +588,10 @@ impl MultibufferDocumentHandle {
                 id,
                 buffer_id,
                 state: std::sync::Mutex::new(MultibufferState {
+                    source_fingerprints: sources
+                        .iter()
+                        .filter_map(|(id, src)| fingerprint_source(src).map(|fp| (*id, fp)))
+                        .collect(),
                     sources,
                     excerpts,
                     source_syntax: HashMap::new(),
@@ -887,6 +918,14 @@ impl MultibufferDocumentHandle {
             }
         }
         let mut state = self.lock_state();
+        // SS.2: re-baseline against the NEW source set. Carrying the old
+        // map forward would leave fingerprints for sources that are gone
+        // and none for the ones just added — a refresh must not inherit
+        // a stale baseline.
+        state.source_fingerprints = sources
+            .iter()
+            .filter_map(|(id, src)| fingerprint_source(src).map(|fp| (*id, fp)))
+            .collect();
         state.sources = sources;
         state.excerpts = excerpts;
         // M.11 (2026-06-02): same rebuild as `append_excerpts` —
@@ -924,8 +963,20 @@ impl MultibufferDocumentHandle {
     /// long-lived `SyntaxHandle` for it. The handle worker runs on
     /// the tokio runtime of the caller (the scan task); subsequent
     /// reparsing is async and wait-free at read time.
+    /// SS.2: the recorded on-disk baseline for `source`, if any.
+    /// `None` for a pathless (synthetic) source, which is never stale.
+    pub fn source_fingerprint(
+        &self,
+        source: BufferId,
+    ) -> Option<lattice_core::on_disk::OnDiskFingerprint> {
+        self.lock_state().source_fingerprints.get(&source).cloned()
+    }
+
     pub fn add_source(&self, id: BufferId, source: Arc<dyn Document>) {
         let mut state = self.lock_state();
+        if let Some(fp) = fingerprint_source(&source) {
+            state.source_fingerprints.insert(id, fp);
+        }
         state.sources.insert(id, source.clone());
         let path = source.path();
         tracing::debug!(

@@ -20,6 +20,19 @@
 // tests) are unchanged. The *list* stays host-local (below).
 pub use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity, ErrorSource};
 
+/// EP.2: what a slice write should do with the navigation index.
+///
+/// Private because the choice is expressed at the call site by picking
+/// [`ErrorList::set`] or [`ErrorList::refresh`] — naming the two
+/// intentions rather than passing a bool nobody can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// New run: start at the top.
+    Reset,
+    /// Live refresh: keep the user where they were.
+    Keep,
+}
+
 /// The error list: an ordered set of entries plus a cursor
 /// (`index`) into them. `:cnext` / `]q` walk the index (wrapping
 /// vim-style); `:cc N` jumps to the Nth (1-based). Empty by default.
@@ -54,8 +67,8 @@ impl ErrorList {
         Self::default()
     }
 
-    /// Replace `source`'s entries, leaving every other source's alone,
-    /// and reset the index to 0.
+    /// Replace `source`'s entries for a **new run**, leaving every
+    /// other source's alone.
     ///
     /// This is the producer entry point (compilation / LSP call it via
     /// [`crate::editor::Editor::set_error_list`]). An empty `entries`
@@ -63,10 +76,43 @@ impl ErrorList {
     /// with no errors means, and it must not disturb the language
     /// server's diagnostics sitting alongside.
     ///
-    /// The index reset is correct for a *new run*; EP.2 adds
-    /// re-anchoring for the refresh case, where resetting would throw a
-    /// user walking entry 7 back to entry 1 every time they typed.
+    /// Resets the index to 0, which is what a new run means: the
+    /// user asked for fresh results and expects to start at the top.
+    /// For a *refresh* of an existing feed use [`Self::refresh`] —
+    /// resetting there would throw a user walking entry 7 back to entry
+    /// 1 every time they typed.
     pub fn set(&mut self, source: ErrorSource, entries: Vec<ErrorEntry>) {
+        self.splice(source, entries, Anchor::Reset);
+    }
+
+    /// EP.2 (2026-08-10): replace `source`'s entries the way a *live
+    /// feed* does — keeping the user where they were.
+    ///
+    /// The distinction from [`Self::set`] is the **producer's to
+    /// declare**, never inferred from the data: a language server
+    /// republishing after a keystroke is a refresh, a compile run is a
+    /// new run, and the two are indistinguishable by looking at the
+    /// entries. Without this, the default-on diagnostic feed would make
+    /// `:cnext` unusable — which is precisely the experience someone
+    /// would set `lsp.diagnostics-to-error-list = false` to escape.
+    ///
+    /// Re-anchoring, in order: the same entry by `(path, message)`
+    /// (tolerant of line drift, since typing above an error moves it);
+    /// else the first entry of the same path at-or-after the old line;
+    /// else index 0.
+    pub fn refresh(&mut self, source: ErrorSource, entries: Vec<ErrorEntry>) {
+        self.splice(source, entries, Anchor::Keep);
+    }
+
+    /// Shared body of [`Self::set`] and [`Self::refresh`].
+    fn splice(&mut self, source: ErrorSource, entries: Vec<ErrorEntry>, anchor: Anchor) {
+        // Capture the identity of the entry under the index BEFORE the
+        // rebuild — afterwards the ordinal is meaningless.
+        let previous = match anchor {
+            Anchor::Keep => self.current().cloned(),
+            Anchor::Reset => None,
+        };
+
         match self.slices.iter_mut().find(|(s, _)| *s == source) {
             Some(run) => run.1 = entries,
             None => self.slices.push((source, entries)),
@@ -79,7 +125,38 @@ impl ErrorList {
                 .unwrap_or(usize::MAX)
         });
         self.rebuild_flat();
-        self.index = 0;
+
+        self.index = match previous {
+            None => 0,
+            Some(prev) => self.reanchor(&prev),
+        };
+    }
+
+    /// Where the index should land after a refresh, given the entry it
+    /// pointed at before. See [`Self::refresh`] for the ordering.
+    fn reanchor(&self, prev: &ErrorEntry) -> usize {
+        // 1. The same entry, wherever it moved to. Line is excluded
+        //    from the match on purpose: editing above an error shifts
+        //    its line without making it a different error.
+        if let Some(i) = self
+            .flat
+            .iter()
+            .position(|e| e.path == prev.path && e.message == prev.message)
+        {
+            return i;
+        }
+        // 2. It is gone — land on the next surviving entry in the same
+        //    file, so the user keeps working where they were.
+        if let Some(i) = self
+            .flat
+            .iter()
+            .position(|e| e.path == prev.path && e.line >= prev.line)
+        {
+            return i;
+        }
+        // 3. The file itself is clean now. Start over rather than
+        //    pointing somewhere arbitrary.
+        0
     }
 
     /// Rebuild the cached flat view from `slices`.
@@ -561,6 +638,131 @@ mod tests {
         assert_eq!(qf.index(), 2);
         // And wraps back to the first group.
         assert_eq!(qf.step_file(1), Some(&entry("same.rs", 1)));
+    }
+
+    // ── EP.2: index re-anchoring across a refresh ─────────────────
+    //
+    // A live diagnostic feed republishes on every edit-debounce. If a
+    // refresh reset the index, walking the list while typing would snap
+    // the user back to entry 1 on every keystroke — the experience
+    // `lsp.diagnostics-to-error-list = false` exists to escape.
+
+    #[test]
+    fn refresh_keeps_the_user_on_the_same_entry_when_one_is_inserted_above() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Lsp,
+            vec![entry("a.rs", 10), entry("a.rs", 20), entry("a.rs", 30)],
+        );
+        qf.step(2);
+        assert_eq!(qf.current(), Some(&entry("a.rs", 30)));
+
+        // The server republishes with an extra entry ABOVE — every
+        // ordinal shifts by one.
+        qf.refresh(
+            ErrorSource::Lsp,
+            vec![
+                entry("a.rs", 5),
+                entry("a.rs", 10),
+                entry("a.rs", 20),
+                entry("a.rs", 30),
+            ],
+        );
+        assert_eq!(
+            qf.current(),
+            Some(&entry("a.rs", 30)),
+            "must follow the ENTRY, not the ordinal"
+        );
+        assert_eq!(qf.index(), 3);
+    }
+
+    /// Editing above an error shifts its line without making it a
+    /// different error, so the identity match ignores `line`.
+    #[test]
+    fn refresh_tolerates_line_drift() {
+        let mut qf = ErrorList::new();
+        qf.set(ErrorSource::Lsp, vec![entry("a.rs", 10), entry("a.rs", 20)]);
+        qf.step(1);
+        assert_eq!(qf.current(), Some(&entry("a.rs", 20)));
+
+        // Same two errors, both pushed down three lines.
+        qf.refresh(ErrorSource::Lsp, vec![entry("a.rs", 13), entry("a.rs", 23)]);
+        assert_eq!(qf.index(), 1, "still on the second error, now at line 23");
+        assert_eq!(qf.current().map(|e| e.line), Some(23));
+    }
+
+    /// When the entry is fixed, land on the next surviving one in the
+    /// same file rather than jumping to the top.
+    #[test]
+    fn refresh_falls_forward_within_the_file_when_the_entry_is_gone() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Lsp,
+            vec![entry("a.rs", 10), entry("a.rs", 20), entry("a.rs", 30)],
+        );
+        qf.step(1);
+        assert_eq!(qf.current(), Some(&entry("a.rs", 20)));
+
+        // The user fixed the line-20 error.
+        qf.refresh(ErrorSource::Lsp, vec![entry("a.rs", 10), entry("a.rs", 30)]);
+        assert_eq!(
+            qf.current(),
+            Some(&entry("a.rs", 30)),
+            "next surviving entry in the same file, not entry 1"
+        );
+    }
+
+    #[test]
+    fn refresh_resets_when_the_whole_file_is_clean() {
+        let mut qf = ErrorList::new();
+        qf.set(ErrorSource::Lsp, vec![entry("a.rs", 10), entry("b.rs", 1)]);
+        qf.step(1);
+        assert_eq!(qf.current(), Some(&entry("b.rs", 1)));
+
+        qf.refresh(ErrorSource::Lsp, vec![entry("a.rs", 10)]);
+        assert_eq!(qf.index(), 0, "nothing to anchor to — start over");
+    }
+
+    /// The producer declares the intent; a new run still resets even
+    /// when an anchor was available.
+    #[test]
+    fn a_new_run_still_resets_the_index() {
+        let mut qf = ErrorList::new();
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a.rs", 10), entry("a.rs", 20)],
+        );
+        qf.step(1);
+        assert_eq!(qf.index(), 1);
+
+        // Identical entries, but via `set` — a fresh compile.
+        qf.set(
+            ErrorSource::Compilation,
+            vec![entry("a.rs", 10), entry("a.rs", 20)],
+        );
+        assert_eq!(
+            qf.index(),
+            0,
+            "a new run starts at the top even though the entry survived"
+        );
+    }
+
+    /// Re-anchoring reads the FLAT view, so an LSP refresh must not
+    /// move the index off a compile entry the user is sitting on.
+    #[test]
+    fn refresh_of_one_source_keeps_the_index_on_another_sources_entry() {
+        let mut qf = ErrorList::new();
+        qf.set(ErrorSource::Compilation, vec![entry("c.rs", 1)]);
+        qf.set(ErrorSource::Lsp, vec![entry("l.rs", 9)]);
+        // Sit on the compile entry (index 0 after the LSP set).
+        assert_eq!(qf.current(), Some(&entry("c.rs", 1)));
+
+        qf.refresh(ErrorSource::Lsp, vec![entry("l.rs", 9), entry("l.rs", 12)]);
+        assert_eq!(
+            qf.current(),
+            Some(&entry("c.rs", 1)),
+            "an LSP republish must not drag the cursor off a compile entry"
+        );
     }
 
     #[test]

@@ -223,6 +223,28 @@ pub enum RuntimeError {
     /// `Core` / `Grammar` (the write was tried but invalid).
     #[error("document is read-only")]
     ReadOnly,
+
+    /// SS.3 (2026-08-11): a multibuffer save refused one or more
+    /// sources because the file changed on disk after the view
+    /// snapshotted it.
+    ///
+    /// Typed rather than a message blob because the caller wants the
+    /// paths: the user has to go look at those files, and the recovery
+    /// (refresh the view — `gr` / `:copen` / `:search` — which re-reads
+    /// from disk) is per-view, not per-error-string.
+    ///
+    /// The other sources in the same save DID persist; this is a
+    /// partial-success report, not a failed write. See
+    /// `docs/dev/architecture/multibuffer-stale-sources.md` §2.1.
+    #[error(
+        "changed on disk since this view opened, not overwritten: {}. \
+         Refresh the view to pick up the new content.",
+        .paths.iter().map(|p| p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string()))
+            .collect::<Vec<_>>().join(", ")
+    )]
+    SourcesChangedOnDisk { paths: Vec<std::path::PathBuf> },
 }
 
 #[cfg(test)]

@@ -494,6 +494,29 @@ pub struct MultibufferDocumentHandle {
     inner: Arc<MultibufferInner>,
 }
 
+/// SS.3: has `path`'s content changed since `baseline` was taken?
+///
+/// Cheap `(mtime, size)` pre-gate first; only a file that looks moved
+/// is re-read and hashed. The content hash is authoritative, so a bare
+/// `touch` — mtime bumped, bytes identical — is correctly NOT stale.
+///
+/// An unreadable file is treated as **not stale**: the subsequent save
+/// will fail on its own and report a real I/O error, which is a better
+/// message than "changed on disk" for a file that was deleted.
+fn is_stale_on_disk(
+    path: &std::path::Path,
+    baseline: &lattice_core::on_disk::OnDiskFingerprint,
+) -> bool {
+    if baseline.stat_unchanged(path) {
+        return false;
+    }
+    let Ok(disk_text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let current = lattice_core::on_disk::OnDiskFingerprint::from_path_and_text(path, &disk_text);
+    !current.same_content(baseline)
+}
+
 /// SS.2: the on-disk baseline for one source, or `None` when it has no
 /// path (a synthetic document — nothing on disk to conflict with).
 ///
@@ -1552,9 +1575,18 @@ impl Document for MultibufferDocumentHandle {
         // (and awaited on) its source actor before we read + save the
         // sources. Without the flush, `:w` races the forwarder and
         // could persist a source missing the user's last keystrokes.
-        let sources: Vec<Arc<dyn Document>> = {
+        // SS.3: carry each source's baseline alongside it so the write
+        // can be refused if the file moved underneath the view.
+        let sources: Vec<(
+            Arc<dyn Document>,
+            Option<lattice_core::on_disk::OnDiskFingerprint>,
+        )> = {
             let state = self.lock_state();
-            state.sources.values().cloned().collect()
+            state
+                .sources
+                .iter()
+                .map(|(id, src)| (src.clone(), state.source_fingerprints.get(id).cloned()))
+                .collect()
         };
         let forward_tx = self.inner.source_forward_tx.clone();
         Pending::spawn(async move {
@@ -1578,11 +1610,32 @@ impl Document for MultibufferDocumentHandle {
             let mut saved_path: Option<std::path::PathBuf> = None;
             let mut fallback_path: Option<std::path::PathBuf> = None;
             let mut last_err: Option<RuntimeError> = None;
-            for source in &sources {
+            let mut skipped: Vec<std::path::PathBuf> = Vec::new();
+            for (source, baseline) in &sources {
                 if fallback_path.is_none() {
                     fallback_path = source.path();
                 }
                 if !source.dirty() {
+                    continue;
+                }
+                // SS.3: refuse a source whose file changed on disk after
+                // the view snapshotted it. Writing it would silently
+                // discard that external change — the whole reason this
+                // guard exists.
+                //
+                // Refuse the SOURCE, not the save: a 30-file view must
+                // not fail wholesale because one file moved, and a save
+                // that fails wholesale teaches a `:w!` habit that
+                // discards exactly what is being protected.
+                if let (Some(path), Some(baseline)) = (source.path(), baseline.as_ref())
+                    && is_stale_on_disk(&path, baseline)
+                {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "multibuffer save: source changed on disk since the view loaded it; \
+                         refusing to overwrite"
+                    );
+                    skipped.push(path);
                     continue;
                 }
                 match source.save().await {
@@ -1596,6 +1649,14 @@ impl Document for MultibufferDocumentHandle {
             }
             if let Some(e) = last_err {
                 return Err(e);
+            }
+            if !skipped.is_empty() {
+                // Surface WHICH files, not a count: the user has to go
+                // look at them, and the recovery (refresh the view —
+                // `gr`, `:copen`, `:search`) re-reads from disk. The
+                // other sources already persisted above; this is a
+                // partial-success report.
+                return Err(RuntimeError::SourcesChangedOnDisk { paths: skipped });
             }
             saved_path.or(fallback_path).ok_or(RuntimeError::ReadOnly)
         })

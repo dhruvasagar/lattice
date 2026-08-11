@@ -28,7 +28,7 @@ inheriting it, not by carrying its own copy.
 |---|---|---|
 | SS.1 | Lower `OnDiskFingerprint` to `lattice-core` | ✅ |
 | SS.2 | Capture a baseline per source at insertion | ✅ |
-| SS.3 | Verify at save; refuse stale sources, keep the rest | 📝 |
+| SS.3 | Verify at save; refuse stale sources, keep the rest | ✅ |
 
 Strict order: SS.1 unblocks SS.2 (the type must be reachable from
 `lattice-multibuffer`), SS.2 before SS.3 (nothing to verify against
@@ -67,7 +67,7 @@ move intact.
 source records none; `replace_excerpts` re-baselines the new source set
 rather than carrying stale entries forward.
 
-## SS.3 — Verify at save 📝
+## SS.3 — Verify at save ✅
 
 - In `Document::save`, per dirty source: cheap `(mtime, size)`
   pre-gate → re-read + content-hash on mismatch → refuse only if the

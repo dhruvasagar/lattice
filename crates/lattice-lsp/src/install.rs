@@ -105,6 +105,9 @@ fn install_references_provider(boot: &mut impl SubsystemBoot) {
     };
 
     register_references_mode(boot.modes_mut());
+    // The refresh action's command must resolve for the mode's
+    // `refresh_action()` target and its handler registration.
+    crate::providers::references::register_references_actions(boot.commands_mut());
 
     let service: LspReferencesServiceHandle = Arc::new(LspReferencesService::new());
     boot.register_service::<LspReferencesServiceHandle>(Arc::clone(&service));

@@ -155,6 +155,17 @@ pub enum LspRequest {
     /// anchor stash and wake are the unchanged substrate; only what the
     /// drain does with the result differs.
     ReferencesView,
+    /// LR.3 (2026-08-11): `gr` **inside** a references view — re-run the
+    /// query at the view's stored origin and rebuild it in place.
+    ///
+    /// Distinct from [`Self::ReferencesView`] because the position it
+    /// queries is different: this one must NOT read the live cursor.
+    /// By the time a refresh fires the cursor sits inside the
+    /// multibuffer, so querying there would ask about whatever symbol
+    /// happens to be under it — a different question with a
+    /// plausible-looking answer. The substrate reads the origin the
+    /// view recorded when it opened.
+    ReferencesViewRefresh,
 }
 
 #[derive(Debug, Clone)]

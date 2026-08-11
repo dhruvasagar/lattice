@@ -10627,6 +10627,10 @@ impl Editor {
                 self.lsp_references_request_to(true);
                 Vec::new()
             }
+            LspRequest::ReferencesViewRefresh => {
+                self.lsp_references_refresh();
+                Vec::new()
+            }
             LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
         }
     }
@@ -11002,7 +11006,12 @@ impl Editor {
                 // `gr` keeps the picker; `:lsp-references` opens the
                 // editable multibuffer.
                 if std::mem::take(&mut self.pending_references_to_view) {
-                    self.open_references_view(&symbol, &locations);
+                    // LR.3: a refresh rebuilds the view it was fired
+                    // from; a fresh `:lsp-references` opens a new one.
+                    match self.refreshing_references_view.take() {
+                        Some(view) => self.rebuild_references_view(view, &locations),
+                        None => self.open_references_view(&symbol, &locations),
+                    }
                     return;
                 }
                 let title = if symbol.is_empty() {
@@ -11013,6 +11022,90 @@ impl Editor {
                 self.open_lsp_locations_picker(title, &locations);
             }
         }
+    }
+
+    /// LR.3 (2026-08-11): rebuild `view` in place from a fresh result
+    /// set. Thin host glue; the substrate crate owns the rebuild.
+    fn rebuild_references_view(
+        &mut self,
+        view: lattice_core::BufferId,
+        locations: &[lattice_lsp::lsp_types::Location],
+    ) {
+        use lattice_lsp::providers::references::refresh_references_view;
+        match refresh_references_view(self, view, locations) {
+            Some(n) => {
+                self.set_message(EchoLevel::Info, format!("[references] {n} sites"));
+            }
+            None => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    "[references] nothing to show — view unchanged".to_string(),
+                );
+            }
+        }
+    }
+
+    /// LR.3 (2026-08-11): re-run the references query for the ACTIVE
+    /// references view and rebuild it in place.
+    ///
+    /// The position comes from the view's stored origin, never from the
+    /// live cursor. That distinction is the whole point of the slice:
+    /// on refresh the cursor is inside the multibuffer, so a
+    /// cursor-derived query would silently answer a different question.
+    ///
+    /// Not a references view, or no origin recorded ⇒ echo. Never a
+    /// silent no-op: `gr` reaching here at all means the user asked.
+    pub fn lsp_references_refresh(&mut self) {
+        use lattice_lsp::providers::references::{LspReferencesMode, LspReferencesServiceHandle};
+
+        let view = self.active_pane_buffer_id();
+        if !self.minor_mode_enabled_for(view, LspReferencesMode::mode_id()) {
+            self.set_message(EchoLevel::Warn, "not a references view".to_string());
+            return;
+        }
+        let Some(svc) = self.services.get::<LspReferencesServiceHandle>() else {
+            self.set_message(
+                EchoLevel::Warn,
+                "references: service unavailable; cannot refresh".to_string(),
+            );
+            return;
+        };
+        let Some(origin) = svc.origin(view) else {
+            self.set_message(
+                EchoLevel::Warn,
+                "references: this view has no recorded origin to re-query".to_string(),
+            );
+            return;
+        };
+
+        // Re-issue against the ORIGIN document, which is generally not
+        // the focused buffer (that is the view itself). Resolve it back
+        // to a buffer so the existing request path — which reads
+        // `document_buffer_id` — targets the right document.
+        let origin_buffer = self
+            .buffer_uris
+            .iter()
+            .find(|(_, uri)| uri.as_str() == origin.uri)
+            .map(|(id, _)| *id);
+        let Some(origin_buffer) = origin_buffer else {
+            self.set_message(
+                EchoLevel::Warn,
+                "references: the origin buffer is no longer open; cannot refresh".to_string(),
+            );
+            return;
+        };
+
+        self.refreshing_references_view = Some(view);
+        let saved_buffer = self.document_buffer_id;
+        let saved_cursor = self.cursor;
+        self.document_buffer_id = origin_buffer;
+        self.cursor = lattice_protocol::position::Position {
+            line: origin.line,
+            byte: origin.character,
+        };
+        self.lsp_references_request_to(true);
+        self.document_buffer_id = saved_buffer;
+        self.cursor = saved_cursor;
     }
 
     /// LR.2 (2026-08-11): open the references multibuffer over

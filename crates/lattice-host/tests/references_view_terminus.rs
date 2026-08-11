@@ -75,3 +75,59 @@ fn both_reference_surfaces_are_registered() {
     assert!(picker.is_some(), "`gr`'s action must still resolve");
     assert_ne!(view, picker, "the two surfaces must stay distinct");
 }
+
+// ── LR.3: refresh re-queries the ORIGIN, not the cursor ──────────────
+
+/// `gr` outside a references view must say so, not silently no-op.
+/// Before RV.1 an unhandled `gr` was swallowed; the whole point of the
+/// shared chord is that absence is spoken.
+#[test]
+fn refresh_outside_a_references_view_echoes() {
+    let mut e = editor();
+    let _ = e.lsp_request(LspRequest::ReferencesViewRefresh);
+    // No view is active, so no request was issued.
+    assert!(
+        e.refreshing_references_view.is_none(),
+        "a refresh outside a references view must not arm a request"
+    );
+    assert!(
+        !e.pending_references_to_view,
+        "and must not leave the terminus flag set for a later `gr`"
+    );
+}
+
+/// The refresh action is registered, so the mode's declared target
+/// resolves and RV.1's dispatch can redirect `gr` to it.
+#[test]
+fn the_refresh_action_resolves() {
+    let e = editor();
+    let reg = e
+        .services
+        .get::<lattice_grammar::CommandRegistryHandle>()
+        .unwrap();
+    assert!(
+        reg.load()
+            .id_by_name("action:lsp-references-refresh")
+            .is_some(),
+        "`gr` in the view resolves through this id; unregistered means a dead key"
+    );
+}
+
+/// The references mode is registered and declares its refresh, which is
+/// what pulls `refreshable-view-mode` in through the implies cascade.
+#[test]
+fn the_references_mode_declares_its_refresh() {
+    use lattice_lsp::providers::references::LspReferencesMode;
+    use lattice_mode::Mode;
+    let e = editor();
+    assert!(
+        e.mode_registry
+            .load()
+            .is_registered(LspReferencesMode::mode_id()),
+        "the cascade can only pull in a registered mode"
+    );
+    assert_eq!(
+        <LspReferencesMode as Mode>::refresh_action(&LspReferencesMode),
+        Some("action:lsp-references-refresh"),
+    );
+}

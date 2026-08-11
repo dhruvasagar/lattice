@@ -1801,6 +1801,14 @@ pub struct Editor {
     /// guessing. `false` (picker) is the default because that is what
     /// `gr` has always done and what every existing caller means.
     pub pending_references_to_view: bool,
+    /// LR.3: when the in-flight references request is a *refresh*, the
+    /// view to rebuild in place. `None` means "open a new view".
+    ///
+    /// Without this a refresh would open a SECOND `*references*` buffer
+    /// beside the one the user pressed `gr` in — the same mistake
+    /// `*problems*` refresh had to avoid, since `create_multibuffer_view`
+    /// mints a fresh `BufferId` every call.
+    pub refreshing_references_view: Option<lattice_core::BufferId>,
     pub pending_references_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ReferencesOutcome>>,
     pub pending_references_token: Option<CancellationToken>,
     pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,

@@ -38,10 +38,12 @@ use std::sync::Arc;
 
 use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId, DocumentBuilder};
+use lattice_grammar::Effect;
+use lattice_grammar::LspRequest;
 use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
-    CapabilitySet, Keymap, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
-    ModeRegistry,
+    ActionContext, ActionHandler, ActionHandlerContribution, CapabilitySet, Keymap,
+    LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 use lattice_multibuffer::view::create_multibuffer_view;
 use lattice_multibuffer::{Excerpt, ExcerptHeader, HeaderlineStatus, MultibufferRegistryHandle};
@@ -179,6 +181,15 @@ impl LspReferencesMode {
 
 pub struct LspReferencesModeGuard;
 
+/// The refresh action this mode declares and handles.
+pub const REFRESH_ACTION: &str = "action:lsp-references-refresh";
+
+/// Returns the host-owned effect; the substrate reads the view's stored
+/// origin rather than the live cursor (see [`ReferencesOrigin`]).
+fn refresh_handler() -> ActionHandler {
+    Arc::new(|_ctx: &ActionContext<'_>| Some(Effect::Lsp(LspRequest::ReferencesViewRefresh)))
+}
+
 impl Mode for LspReferencesMode {
     type Guard = LspReferencesModeGuard;
 
@@ -201,10 +212,21 @@ impl Mode for LspReferencesMode {
         Keymap::default()
     }
 
-    /// LR.3 wires the handler; declaring the target here is what pulls
-    /// in the shared `gr` minor through the implies cascade.
+    /// Declaring the target is what pulls in the shared `gr` minor
+    /// through the implies cascade.
     fn refresh_action(&self) -> Option<&'static str> {
-        Some("action:lsp-references-refresh")
+        Some(REFRESH_ACTION)
+    }
+
+    /// LR.3: the refresh handler. Mode owns the *decision*; the host
+    /// owns the generic async execution — §16's split, unchanged. The
+    /// handler holds only `&ActionContext` and so could not drive the
+    /// request even if it wanted to.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![ActionHandlerContribution {
+            action_name: REFRESH_ACTION,
+            handler: refresh_handler(),
+        }]
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -378,9 +400,61 @@ pub fn create_references_view(
     Some(view)
 }
 
+/// LR.3 (2026-08-11): rebuild an existing references view from a fresh
+/// result set, in place.
+///
+/// In place is the point: [`create_references_view`] mints a new
+/// `BufferId` every call, so a refresh that re-opened would strand the
+/// view the user pressed `gr` in and add a second `*references*`
+/// beside it — the mistake `*problems*` refresh had to avoid too.
+///
+/// Returns the new site count, or `None` when the view is unknown or
+/// the fresh results yield nothing to show — in which case the view is
+/// left exactly as it was. A refresh must never blank the buffer the
+/// user is reading.
+pub fn refresh_references_view(
+    activator: &mut dyn ModeActivator,
+    view: BufferId,
+    locations: &[Location],
+) -> Option<usize> {
+    let (sources, excerpts, n_files) = build_reference_excerpts(locations)?;
+    let n_sites = excerpts.len();
+
+    let reg = activator.services().get::<MultibufferRegistryHandle>()?;
+    let handle = reg.handle(view)?;
+    handle.replace_excerpts(sources, excerpts);
+    drop(handle);
+
+    let symbol = activator
+        .services()
+        .get::<LspReferencesServiceHandle>()
+        .and_then(|svc| svc.origin(view))
+        .map(|o| o.symbol)
+        .unwrap_or_default();
+    set_references_headerline(activator, view, &symbol, n_sites, n_files);
+    Some(n_sites)
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Boot integration
 // ─────────────────────────────────────────────────────────────────
+
+/// Register `action:lsp-references-refresh` so the mode's declared
+/// refresh target resolves at boot.
+///
+/// The `apply` is a dead `Effect::None`: the mode's `action_handlers`
+/// closure intercepts before the grammar Action gate. It exists so the
+/// `CommandId` resolves — the `repl-mode` shape.
+pub fn register_references_actions(registry: &mut CommandRegistry) {
+    registry.register_action(
+        REFRESH_ACTION,
+        "lsp-references-mode `gr`: re-run the query at the view's origin and rebuild in place.",
+        lattice_grammar::registry::ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+        },
+    );
+}
 
 /// Register the provider-minor mode.
 pub fn register_references_mode(modes: &mut ModeRegistry) {

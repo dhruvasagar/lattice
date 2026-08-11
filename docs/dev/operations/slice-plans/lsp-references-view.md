@@ -17,7 +17,7 @@ Catalogue entry: A.3 in
 |---|---|---|
 | LR.1 | `lattice-lsp` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | LR.2 | `:lsp-references` — second terminus on the existing drain | ✅ |
-| LR.3 | Refresh — origin-anchored re-query | 📝 |
+| LR.3 | Refresh — origin-anchored re-query | ✅ |
 | LR.4 | Version-skew guard on edit propagation | 📝 |
 | LR.5 | `<C-q>` bulk outcome from the picker | 📝 |
 
@@ -72,7 +72,7 @@ unchanged — but confirm with
 `grep -rn "LspRequest::ReferencesView" crates/lattice-ui-gpui/` and
 record the empty result rather than assuming.
 
-## LR.3 — Refresh 📝
+## LR.3 — Refresh ✅
 
 - `LspReferencesMode::refresh_action()` → `action:lsp-references-refresh`.
   `gr` arrives from RV.1's shared minor; **no `chord: "gr"` in this

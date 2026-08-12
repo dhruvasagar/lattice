@@ -338,11 +338,11 @@ impl SectionIndex {
                 if let Some((key, diff)) = inline(entry, section.kind) {
                     let diff = diff.trim_end();
                     if !diff.is_empty() {
-                        let diff_spans = crate::hunk_syntax::diff_spans(diff, lang_registry);
-                        // DR.3: refinement for the SAME diff text,
-                        // produced here so it is indexed by the same
-                        // line numbers and grows in lockstep below.
-                        let diff_refine = crate::hunk_syntax::diff_refinements(diff);
+                        // One call, both axes — a view cannot compute
+                        // one without the other and render
+                        // inconsistently.
+                        let styled = crate::hunk_syntax::styled_diff(diff, lang_registry);
+                        let (diff_spans, diff_refine) = (styled.spans, styled.refine);
                         let mut count = 0usize;
                         for (i, line) in diff.lines().enumerate() {
                             let line_idx = out.matches('\n').count();

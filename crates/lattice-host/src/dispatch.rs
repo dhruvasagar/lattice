@@ -15756,7 +15756,7 @@ impl Editor {
             // DR.3: refinement rides the same update, so it is spliced
             // by THIS loop rather than a parallel one — the property the
             // sign-derivation comment below insists on.
-            let refine = update.refine;
+            let incoming_refine = update.refine;
             let op = update.op;
             let locals = self.buffer_locals.entry(buf_id).or_default();
             let existing = || {
@@ -15765,8 +15765,20 @@ impl Editor {
                     .map(|e| e.0.clone())
                     .unwrap_or_default()
             };
-            let final_spans = match op {
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => spans,
+            // DR.3: refinement takes the SAME op as the spans, through
+            // the same generic splice. A `=` expansion inserts lines
+            // mid-buffer; if only one list shifted, the refinement
+            // would sit over the wrong rows.
+            let existing_refine = || {
+                locals
+                    .get::<crate::modes::ExtraRefinement>()
+                    .map(|e| e.0.clone())
+                    .unwrap_or_default()
+            };
+            let (final_spans, final_refine) = match op {
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
+                    (spans, incoming_refine)
+                }
                 lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
                     start_line,
                     spans,
@@ -15777,7 +15789,21 @@ impl Editor {
                         start_line,
                         spans,
                     );
-                    merged
+                    let mut merged_refine = existing_refine();
+                    // Keep the refinement list the same length as the
+                    // span list even when the producer sent none, so
+                    // the two stay index-aligned.
+                    merged_refine.resize(
+                        merged.len().saturating_sub(incoming_refine.len()),
+                        Vec::new(),
+                    );
+                    lattice_mode::pending_synthetic_highlights::splice_insert(
+                        &mut merged_refine,
+                        start_line,
+                        incoming_refine,
+                    );
+                    merged_refine.resize(merged.len(), Vec::new());
+                    (merged, merged_refine)
                 }
                 lattice_mode::pending_synthetic_highlights::HighlightsOp::RemoveAt {
                     start_line,
@@ -15789,7 +15815,13 @@ impl Editor {
                         start_line,
                         count,
                     );
-                    merged
+                    let mut merged_refine = existing_refine();
+                    lattice_mode::pending_synthetic_highlights::splice_remove(
+                        &mut merged_refine,
+                        start_line,
+                        count,
+                    );
+                    (merged, merged_refine)
                 }
             };
             // MG.21a: derive the line-background signs from the SAME spans
@@ -15816,7 +15848,7 @@ impl Editor {
             // own; the splice ops carry none, and an empty vec CLEARS
             // any previous refinement rather than leaving it stranded
             // over text that has shifted underneath it.
-            locals.insert(crate::modes::ExtraRefinement(refine));
+            locals.insert(crate::modes::ExtraRefinement(final_refine));
         }
         if !sign_updates.is_empty() {
             let mut map = (*self.provider_diff_signs).clone();

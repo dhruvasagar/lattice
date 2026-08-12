@@ -301,9 +301,37 @@ pub(crate) fn diff_refinements(diff: &str) -> Vec<Vec<lattice_cells::RefineSpan>
 /// the five views cannot drift — and so DS.5's option gate has a
 /// single place to live.
 pub(crate) fn diff_spans(diff: &str, registry: Option<&Arc<LangRegistry>>) -> Vec<Vec<StyledSpan>> {
-    match registry {
-        Some(r) => layered_diff_spans(diff, r.clone()),
-        None => crate::highlight::diff_styled_spans(diff),
+    styled_diff(diff, registry).spans
+}
+
+/// Everything a diff-bearing view needs to render one diff: foreground
+/// spans and intra-line refinement, from ONE call.
+///
+/// The two are produced together deliberately. Every magit view that
+/// shows a diff has to publish both, and a view that computed one
+/// without the other would render inconsistently — which is precisely
+/// the bug DS-fix chased down (`gr` rebuilt spans through the flat
+/// classifier while `=` used the layered one) and precisely the bug
+/// DR.3 then reintroduced for refinement (the refresh path published
+/// it, the `=` toggle did not).
+///
+/// Two call sites that must agree is a bug waiting to happen; one
+/// return value that carries both cannot disagree.
+pub(crate) struct StyledDiff {
+    pub spans: Vec<Vec<StyledSpan>>,
+    pub refine: Vec<Vec<lattice_cells::RefineSpan>>,
+}
+
+pub(crate) fn styled_diff(diff: &str, registry: Option<&Arc<LangRegistry>>) -> StyledDiff {
+    StyledDiff {
+        spans: match registry {
+            Some(r) => layered_diff_spans(diff, r.clone()),
+            None => crate::highlight::diff_styled_spans(diff),
+        },
+        // Refinement is independent of the grammar registry: it
+        // compares diff TEXT, so it works even where syntax degrades
+        // to the flat classifier.
+        refine: diff_refinements(diff),
     }
 }
 
@@ -518,6 +546,46 @@ diff --git a/src/a.rs b/src/a.rs
         assert!(
             r.iter().all(|row| row.is_empty()),
             "1 removal vs 2 additions has no principled pairing"
+        );
+    }
+
+    /// Both routes into a diff view must produce the SAME two axes.
+    ///
+    /// This assertion is here because its absence caused the same bug
+    /// twice: DS-fix found `gr` rebuilding spans through the flat
+    /// classifier while `=` used the layered one, and DR.3 then shipped
+    /// refinement on the refresh path only, so an expansion opened with
+    /// `=` showed none. `styled_diff` is the single entry point that
+    /// makes disagreeing impossible; this proves it returns both.
+    #[test]
+    fn styled_diff_returns_both_axes_from_one_call() {
+        let registry = registry();
+        let styled = styled_diff(PAIRED_DIFF, Some(&registry));
+        assert_eq!(
+            styled.spans,
+            diff_spans(PAIRED_DIFF, Some(&registry)),
+            "the span axis must match the standalone entry point"
+        );
+        assert_eq!(
+            styled.refine,
+            diff_refinements(PAIRED_DIFF),
+            "the refinement axis must match too"
+        );
+        assert!(
+            styled.refine.iter().any(|r| !r.is_empty()),
+            "this fixture refines, so a route that dropped refinement would be caught"
+        );
+    }
+
+    /// Refinement does not depend on the grammar registry — it compares
+    /// diff TEXT. A harness without grammars still refines, so the two
+    /// axes degrade independently rather than together.
+    #[test]
+    fn refinement_survives_a_missing_grammar_registry() {
+        let without = styled_diff(PAIRED_DIFF, None);
+        assert!(
+            without.refine.iter().any(|r| !r.is_empty()),
+            "no registry must still refine"
         );
     }
 

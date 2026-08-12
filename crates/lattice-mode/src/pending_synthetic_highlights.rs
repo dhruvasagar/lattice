@@ -113,12 +113,28 @@ impl PendingSyntheticHighlights {
         start_line: u32,
         spans: Vec<Vec<StyledSpan>>,
     ) {
+        self.insert_at_refined_and_wake(buffer_id, start_line, spans, Vec::new())
+    }
+
+    /// DR.3: splice spans AND refinement at the same offset.
+    ///
+    /// The `=` toggle inserts an expansion's lines mid-buffer; both
+    /// lists must shift by the same amount or the refinement ends up
+    /// over the wrong rows. Carrying them in one update and splicing
+    /// them with one implementation is what makes that impossible.
+    pub fn insert_at_refined_and_wake(
+        &self,
+        buffer_id: BufferId,
+        start_line: u32,
+        spans: Vec<Vec<StyledSpan>>,
+        refine: Vec<Vec<RefineSpan>>,
+    ) {
         if let Ok(mut map) = self.map.lock() {
             map.insert(
                 buffer_id,
                 HighlightsUpdate {
                     op: HighlightsOp::InsertAt { start_line, spans },
-                    refine: Vec::new(),
+                    refine,
                 },
             );
         }
@@ -174,11 +190,10 @@ pub type PendingSyntheticHighlightsHandle = Arc<PendingSyntheticHighlights>;
 /// function (rather than inlined at the drain call site) so the
 /// line-offset arithmetic — the exact thing that regressed into an
 /// in-place overwrite once already — has its own unit tests.
-pub fn splice_insert(
-    base: &mut Vec<Vec<StyledSpan>>,
-    start_line: u32,
-    spans: Vec<Vec<StyledSpan>>,
-) {
+/// DR.3: generic over the span type so foreground spans and
+/// intra-line refinement are shifted by ONE implementation. Two copies
+/// of this arithmetic is precisely how the two lists drift apart.
+pub fn splice_insert<T>(base: &mut Vec<Vec<T>>, start_line: u32, spans: Vec<Vec<T>>) {
     let at = (start_line as usize).min(base.len());
     base.splice(at..at, spans);
 }
@@ -186,7 +201,7 @@ pub fn splice_insert(
 /// Remove `count` lines from `base` starting at `start_line`,
 /// shifting everything after them up by `count`. Exact inverse of
 /// [`splice_insert`].
-pub fn splice_remove(base: &mut Vec<Vec<StyledSpan>>, start_line: u32, count: usize) {
+pub fn splice_remove<T>(base: &mut Vec<Vec<T>>, start_line: u32, count: usize) {
     let start = (start_line as usize).min(base.len());
     let end = (start + count).min(base.len());
     base.drain(start..end);

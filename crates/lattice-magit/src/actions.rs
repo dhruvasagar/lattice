@@ -447,7 +447,7 @@ fn toggle_expand(
                 // MG.31: the git call happens HERE, inside the spawned
                 // task, not above on the actor thread. See
                 // [`expand_payload`].
-                let (text, line_count, spans) =
+                let (text, line_count, spans, refine) =
                     match expand_payload(wd, sl, context, registry).await {
                         Ok(payload) => payload,
                         // MG.56: say something. Returning quietly here is
@@ -482,7 +482,7 @@ fn toggle_expand(
                     g.expanded.insert(key, line_count);
                 }
                 if let Some(ref ph) = pending {
-                    ph.insert_at_and_wake(bid, start_line, spans);
+                    ph.insert_at_refined_and_wake(bid, start_line, spans, refine);
                 }
             });
         }
@@ -533,7 +533,15 @@ async fn expand_payload(
     sl: StatusLine,
     context: i64,
     lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
-) -> Result<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>), ExpandMiss> {
+) -> Result<
+    (
+        String,
+        usize,
+        Vec<Vec<lattice_cells::style::StyledSpan>>,
+        Vec<Vec<lattice_cells::RefineSpan>>,
+    ),
+    ExpandMiss,
+> {
     tokio::task::spawn_blocking(move || {
         let raw = run_show(&workdir, &sl, context)
             .ok_or_else(|| ExpandMiss::Failed("git could not read the diff".to_string()))?;
@@ -549,8 +557,13 @@ async fn expand_payload(
         // the diff into the status rows below.
         let text = raw.trim_end_matches('\n').to_string();
         let line_count = text.lines().count();
-        let spans = crate::hunk_syntax::diff_spans(&text, lang_registry.as_ref());
-        Ok((text, line_count, spans))
+        // DR.3 fix: the `=` toggle publishes refinement too. It
+        // previously took spans alone, so an expansion opened by `=`
+        // showed no intra-line highlight while the same expansion
+        // rebuilt by `gr` did — the same route asymmetry DS-fix
+        // removed for syntax.
+        let styled = crate::hunk_syntax::styled_diff(&text, lang_registry.as_ref());
+        Ok((text, line_count, styled.spans, styled.refine))
     })
     .await
     .unwrap_or_else(|e| Err(ExpandMiss::Failed(e.to_string())))
@@ -2126,7 +2139,7 @@ mod expand_payload_tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let (text, _, spans) = rt
+        let (text, _, spans, _) = rt
             .block_on(expand_payload(
                 p.to_path_buf(),
                 unstaged("a.rs"),
@@ -2167,7 +2180,7 @@ mod expand_payload_tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let (text, line_count, spans) = rt
+        let (text, line_count, spans, _) = rt
             .block_on(expand_payload(
                 dir.path().to_path_buf(),
                 unstaged("a.txt"),
@@ -2219,7 +2232,7 @@ mod expand_payload_tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let (text, line_count, spans) = rt
+        let (text, line_count, spans, _) = rt
             .block_on(expand_payload(p.to_path_buf(), unstaged("a.txt"), 3, None))
             .expect("a modified tracked file has a diff");
 

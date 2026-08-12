@@ -65,7 +65,7 @@ fn make_hunks(n: u32) -> Arc<HunkIndex> {
         hunks.push(Hunk {
             kind: HunkKind::Add,
             ranges: smallvec![LineRange::new(start, start), LineRange::new(start, end)],
-            refine: Vec::new(),
+            refine: Default::default(),
         });
     }
     Arc::new(HunkIndex {

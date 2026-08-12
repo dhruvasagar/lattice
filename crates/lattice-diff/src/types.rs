@@ -99,21 +99,27 @@ pub enum DiffAlgorithm {
 pub struct Hunk {
     pub kind: HunkKind,
     pub ranges: SmallVec<[LineRange; 3]>,
-    /// DR.4 (2026-08-12): intra-line refinement for this hunk's paired
-    /// lines — which BYTES of each changed line actually changed.
+    /// DR.4 (2026-08-12): intra-line refinement for this hunk — which
+    /// BYTES of each changed line actually changed.
     ///
-    /// One entry per paired line, aligned with `ranges[0]` (and
-    /// `ranges[1]`, which is the same length whenever this is
-    /// non-empty). `None` for a pair that declined refinement; the
-    /// whole vec is empty for a hunk that has no pairing at all
-    /// (`Add` / `Remove`, or unequal-length runs).
+    /// **Per side, not per pair** (DR.5, 2026-08-12). `refine.removed`
+    /// is indexed by `line - ranges[0].start` and `refine.added` by
+    /// `line - ranges[1].start`; the two need not be the same length,
+    /// which is the whole point — the predecessor shape was pair-keyed
+    /// and so could not describe an *n*-removed / *m*-added hunk at
+    /// all, making the commonest "rewrite a line and add a comment
+    /// above it" hunk decline refinement outright.
+    ///
+    /// Empty for a hunk that declined (`Add` / `Remove`, identical
+    /// regions, a wholesale rewrite, or one past the size cap), which
+    /// renders exactly as it did before refinement existed.
     ///
     /// Carried ON the hunk rather than in a parallel map keyed by hunk
     /// index, so refinement cannot desynchronise from the ranges it
     /// describes — the same "one thing being shifted" property the
     /// sign-map derivation relies on. Computed once at diff time, not
     /// per render.
-    pub refine: Vec<Option<crate::refine::LineRefinement>>,
+    pub refine: crate::refine::RegionRefinement,
 }
 
 /// Published hunk list with the algorithm used and a

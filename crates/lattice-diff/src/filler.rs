@@ -265,7 +265,7 @@ mod tests {
         Hunk {
             kind,
             ranges: smallvec![baseline, current],
-            refine: Vec::new(),
+            refine: Default::default(),
         }
     }
 
@@ -422,7 +422,7 @@ mod tests {
         let i = idx(vec![Hunk {
             kind: HunkKind::Add,
             ranges: smallvec![LineRange::new(0, 0)],
-            refine: Vec::new(),
+            refine: Default::default(),
         }]);
         assert!(compute_filler_rows(&i, Side::Baseline).is_empty());
         assert!(compute_filler_rows(&i, Side::Current).is_empty());
@@ -501,7 +501,7 @@ mod tests {
         Hunk {
             kind,
             ranges: smallvec![base, local, remote],
-            refine: Vec::new(),
+            refine: Default::default(),
         }
     }
 
@@ -615,7 +615,7 @@ mod tests {
         let i = idx(vec![Hunk {
             kind: HunkKind::Change,
             ranges: smallvec![LineRange::new(0, 5)],
-            refine: Vec::new(),
+            refine: Default::default(),
         }]);
         for side in [Side::Baseline, Side::Current, Side::Remote] {
             assert!(compute_filler_rows(&i, side).is_empty());

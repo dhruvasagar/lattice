@@ -213,9 +213,15 @@ fn lang_from_diff_header(rest: &str) -> Lang {
 /// which *part* of each changed line changed.
 ///
 /// Walks the diff for maximal runs of `-` lines followed by `+` lines
-/// and refines each pair through `lattice_diff::refine_runs`, which
-/// declines unequal runs and wholly-dissimilar pairs (see its docs —
-/// a wrong pairing is confidently misleading emphasis).
+/// and refines each run pair through `lattice_diff::refine_regions`.
+///
+/// DR.5 (2026-08-12): the run lengths no longer have to match. The
+/// predecessor paired lines positionally and declined the whole run
+/// whenever the two sides differed in length, which silently dropped
+/// refinement from the commonest shape there is — rewrite one line and
+/// add a comment above it. `refine_regions` diffs the two runs as
+/// regions and scatters the result back per line, so each side is
+/// indexed independently.
 ///
 /// Byte offsets are shifted by [`MARKER`] because the refinement is
 /// computed on the line CONTENT while the buffer row carries the
@@ -262,27 +268,29 @@ pub(crate) fn diff_refinements(diff: &str) -> Vec<Vec<lattice_cells::RefineSpan>
         let removed: Vec<&str> = lines[rm_start..rm_end].iter().map(|l| strip(l)).collect();
         let added: Vec<&str> = lines[add_start..add_end].iter().map(|l| strip(l)).collect();
 
-        for (n, refinement) in lattice_diff::refine_runs(&removed, &added)
-            .into_iter()
-            .enumerate()
-        {
-            let Some(r) = refinement else { continue };
-            // Shift back over the `-` / `+` column.
-            let shift = |ranges: &[std::ops::Range<usize>], kind: RefineKind| {
-                ranges
-                    .iter()
-                    .map(|x| RefineSpan {
-                        start: x.start + MARKER,
-                        end: x.end + MARKER,
-                        kind,
-                    })
-                    .collect::<Vec<_>>()
-            };
+        let refinement = lattice_diff::refine_regions(&removed, &added);
+        // Shift back over the `-` / `+` column.
+        let shift = |ranges: &[std::ops::Range<usize>], kind: RefineKind| {
+            ranges
+                .iter()
+                .map(|x| RefineSpan {
+                    start: x.start + MARKER,
+                    end: x.end + MARKER,
+                    kind,
+                })
+                .collect::<Vec<_>>()
+        };
+        // DR.5: the two sides are walked independently — their lengths
+        // are unrelated now, so zipping them would drop the tail of
+        // whichever run is longer.
+        for (n, ranges) in refinement.removed.iter().enumerate() {
             if let Some(slot) = out.get_mut(rm_start + n) {
-                *slot = shift(&r.removed, RefineKind::Removed);
+                *slot = shift(ranges, RefineKind::Removed);
             }
+        }
+        for (n, ranges) in refinement.added.iter().enumerate() {
             if let Some(slot) = out.get_mut(add_start + n) {
-                *slot = shift(&r.added, RefineKind::Added);
+                *slot = shift(ranges, RefineKind::Added);
             }
         }
     }
@@ -536,16 +544,60 @@ diff --git a/src/a.rs b/src/a.rs
         );
     }
 
-    /// RUST_DIFF replaces one line AND adds another — a 1-vs-2 run,
-    /// which the equal-length rule declines. Pinned because it is a
-    /// very common diff shape, and this is the visible cost of refusing
-    /// to guess which addition replaced the removal (DR.1's docs).
+    /// RUST_DIFF replaces one line AND adds another — a 1-vs-2 run.
+    ///
+    /// **This test asserted the opposite until DR.5**, pinning that an
+    /// unequal run refines nothing, on the reasoning that guessing
+    /// which addition replaced the removal would be confidently
+    /// misleading. The reasoning was sound and the conclusion was
+    /// wrong: you do not have to guess, because you do not have to
+    /// pair. `refine_regions` diffs the runs as regions, so the common
+    /// "change a line and add one beside it" shape refines like any
+    /// other. Inverted deliberately — the old assertion was the bug,
+    /// not a guarantee.
     #[test]
-    fn an_unequal_run_refines_nothing_even_though_it_looks_paired() {
+    fn an_unequal_run_refines_on_both_sides() {
+        use lattice_cells::RefineKind;
+        let lines: Vec<&str> = RUST_DIFF.lines().collect();
+        let r = diff_refinements(RUST_DIFF);
+        let mut seen = Vec::new();
+        for (i, row) in r.iter().enumerate() {
+            for span in row {
+                assert!(
+                    span.start >= MARKER,
+                    "refinement must not cover the +/- column: {span:?}"
+                );
+                seen.push((span.kind, lines[i][span.start..span.end].to_string()));
+            }
+        }
+        assert!(
+            seen.iter()
+                .any(|(k, t)| *k == RefineKind::Removed && t.contains("old")),
+            "the removed identifier refines: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|(k, t)| *k == RefineKind::Added && t.contains("new")),
+            "the added identifier refines: {seen:?}"
+        );
+    }
+
+    /// The surplus added line is wholly new, so its row tint already
+    /// says everything — it must NOT come back fully refined, or the
+    /// second colour adds nothing and the emphasis stops meaning
+    /// "look here".
+    #[test]
+    fn the_wholly_new_line_of_an_unequal_run_is_not_refined() {
+        let lines: Vec<&str> = RUST_DIFF.lines().collect();
+        let printed = lines
+            .iter()
+            .position(|l| l.contains("println!"))
+            .expect("the added line is in the fixture");
         let r = diff_refinements(RUST_DIFF);
         assert!(
-            r.iter().all(|row| row.is_empty()),
-            "1 removal vs 2 additions has no principled pairing"
+            r[printed].is_empty(),
+            "a line with no counterpart carries no refinement: {:?}",
+            r[printed]
         );
     }
 

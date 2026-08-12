@@ -152,7 +152,7 @@ impl PendingSyntheticHighlights {
                 buffer_id,
                 HighlightsUpdate {
                     op: HighlightsOp::RemoveAt { start_line, count },
-                    refine: Vec::new(),
+                    refine: Default::default(),
                 },
             );
         }

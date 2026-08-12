@@ -347,7 +347,7 @@ mod tests {
         Hunk {
             kind,
             ranges: smallvec![baseline, current],
-            refine: Vec::new(),
+            refine: Default::default(),
         }
     }
 
@@ -397,7 +397,7 @@ mod tests {
         let h = Hunk {
             kind: HunkKind::Add,
             ranges: smallvec![LineRange::new(0, 0)],
-            refine: Vec::new(),
+            refine: Default::default(),
         };
         assert!(
             fold_from_hunk(&h, 1).is_none(),

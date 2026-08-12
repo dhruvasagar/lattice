@@ -96,7 +96,7 @@ fn hunk(kind: HunkKind, base_start: u32, base_len: u32, cur_start: u32, cur_len:
             LineRange::new(base_start, base_start + base_len),
             LineRange::new(cur_start, cur_start + cur_len),
         ],
-        refine: Vec::new(),
+        refine: Default::default(),
     }
 }
 

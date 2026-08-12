@@ -19,7 +19,7 @@ piece that does not exist yet.
 | DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | ✅ |
 | DR.3 | Magit diffs publish refinement | ✅ |
 | DR.4 | `diff-mode` panes publish refinement | ✅ |
-| DR.5 | Region-to-region refinement (unbalanced hunks) | 📝 |
+| DR.5 | Region-to-region refinement (unbalanced hunks) | ✅ |
 
 DR.1 and DR.2 are independent and can land in either order; both gate
 DR.3. DR.4 is a second consumer proving the mechanism generalised —
@@ -137,7 +137,7 @@ vec is aligned with `ranges[0]` so consumers can index by
 
 ---
 
-## DR.5 — Region-to-region refinement 📝
+## DR.5 — Region-to-region refinement ✅
 
 **The gap, reported from use (2026-08-12).** A hunk that removes one
 line and adds twelve — "rewrite this line, and add a doc comment above
@@ -167,7 +167,19 @@ regions, then map the byte ranges back onto lines.
   pair-aligned and cannot express *n* removed against *m* added, so the
   hunk carries per-side, per-line range lists instead.
 - Keep the `MAX_REFINED_SHARE` bail-out — "nearly all of it changed"
-  is still noise — but evaluate it per region, not per pair.
+  is still noise — but evaluate it **per line, per side**.
+
+  > **Corrected during implementation.** This slice originally
+  > specified evaluating the threshold *per region*. That is wrong,
+  > and wrong in a way that silently defeats the slice: in an
+  > unbalanced hunk the surplus added lines are wholly new by
+  > definition, so a region-wide measure is dragged over the bar by
+  > lines that were never refinement candidates. The first test run
+  > caught it — a 1-removed / 3-added region measured 72% and declined,
+  > which is precisely the case DR.5 exists to fix. DR.1's *pair*-
+  > coupled form ("both sides must come in under") fails for the same
+  > reason. Per line is also the right question on its own terms:
+  > refinement is rendered per line.
 - **One pipeline, both axes.** The computation stays in
   `compute::fill_refinements`, called from `two_way`, so render and
   refresh keep reading one precomputed answer (DR.4's property) rather

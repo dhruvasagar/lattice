@@ -95,6 +95,59 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
+**Multibuffer-provider review + follow-on work (2026-08-10 → 08-12).**
+A review of the pending provider catalogue
+([`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md))
+found it stale — **A.6 had already shipped** (the error-list substrate
+plus the `*problems*` view IS the editable quickfix), **A.16** was
+subsumed by it, **A.7** largely covered by `lattice-magit`, and the
+dependency blockers cited for **A.1** / **A.4** had dissolved
+(`lattice-vcs` / `lattice-diff` / `lattice-lsp` are all standalone
+crates now). Five plans landed out of that review; only ONE is a new
+provider, because the gaps turned out to be mostly substrate.
+
+| Plan | Slices | Outcome |
+|---|---|---|
+| [`refreshable-views.md`](slice-plans/refreshable-views.md) | RV.1–3 ✅ | `gr` is ONE shared chord over `Mode::refresh_action()`. Five modes had copied it; `*problems*` and narrow had none. |
+| [`error-list-producers.md`](slice-plans/error-list-producers.md) | EP.1–6 ✅ | Per-source slices; the language server and references both feed the error list, each opt-in-gated. |
+| [`lsp-references-view.md`](slice-plans/lsp-references-view.md) | LR.1–3, LR.5 ✅ | `:lsp-references` opens an **editable** references multibuffer (catalogue A.3); `<C-q>` sends any picker's filtered results to the error list. |
+| [`multibuffer-stale-sources.md`](slice-plans/multibuffer-stale-sources.md) | SS.1–3 ✅ | **Data-loss fix:** `:w` on a multibuffer silently overwrote source files that had changed on disk. |
+| [`diff-refinement.md`](slice-plans/diff-refinement.md) | DR.1–4 ✅ | Word-level intra-line diff highlighting — which *part* of a changed line changed. |
+
+Two catalogue entries were **struck rather than built**: **A.4
+`DiagnosticsProvider`** (making the language server an `ErrorList`
+producer yields the grouped view, the picker and the whole
+`:next-error` family at once, beside a `*problems*` view that already
+exists) and **LR.4** (specified as a references-only version-skew
+guard; reading the save path showed it was data loss across *three*
+providers, so it became the SS plan).
+
+Two bugs surfaced that were on no plan and mattered more than the
+features around them: the multibuffer save above, and **magit diffs
+losing syntax highlighting on `gr`** — two code paths built the same
+buffer and only one highlighted. A third, `9e46c270`, was pure
+build hygiene: a stale build-script reference to a deleted plugin
+dirtied `lattice-plugin-host` on *every* build, relinking 25 test
+binaries; cached `cargo test -p lattice-host` went 445s → 185s.
+
+**Still open from this review:** **PD.1–5**
+([`magit-project-diff.md`](slice-plans/magit-project-diff.md), catalogue
+A.1 — the editable cross-file working-tree diff, owned by
+`lattice-magit`); similarity-scored pairing for diff refinement (the
+equal-length rule declines the very common "replace one line, add
+another" shape); and `lattice-ui-tui`'s ~80s
+`chrome_rows_composes_with_arbitrary_splits_and_terminal_sizes`, which
+makes a full-workspace gate unrunnable on a loaded machine.
+
+**Provider-home reversal (2026-08-11).** The 2026-06-01 lock ("all
+in-tree providers live in `lattice-multibuffer/src/providers/`,
+feature-gated") is **superseded for providers owned by a subsystem**:
+the owning crate owns the provider and takes a dep on
+`lattice-multibuffer` (acyclic — multibuffer depends on neither
+`lattice-lsp` nor `lattice-magit`). Rationale + the mode-ownership
+argument in [`multibuffer-views.md`](../architecture/multibuffer-views.md)
+§3.7. `search` / `narrow` / `problems` stay put: no owning subsystem.
+
 **surround-mode landed (2026-07-25, branch `feature/surround-mode`):**
 vim-surround semantics as a native minor mode in `lattice-mode`
 (`SurroundMode`, SU.1–SU.3b). Three grammar operators

@@ -505,6 +505,75 @@ mod tests {
         CellRow::new(cells, 0, inlays)
     }
 
+    // ---- DR.5 — a refined run reaches the painted cell (GPUI peer) ----
+    //
+    // The exact peer of `cells_render`'s pair in `lattice-ui-tui`.
+    // Refinement is computed once in `lattice-diff` and both renderers
+    // read the same `DisplayRun.refine`, so the two paint sites are the
+    // only place they can silently diverge — and neither had a test.
+
+    fn theme_defaults() -> (
+        std::sync::Arc<lattice_host::ui::theme::ResolvedTheme>,
+        lattice_host::ui::theme::BuiltinElementIds,
+    ) {
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        (reg.resolved(), BuiltinElementIds::capture(&reg))
+    }
+
+    fn refined_run(refine: Option<lattice_cells::RefineKind>) -> DisplayRun {
+        DisplayRun {
+            len: 3,
+            style: lattice_syntax::Style::Default,
+            flags: 0,
+            refine,
+        }
+    }
+
+    /// A refined run paints a background; an unrefined one does not.
+    /// The foreground is untouched either way — refinement is a
+    /// background axis, which is what keeps syntax colour readable.
+    #[test]
+    fn a_refined_run_paints_the_refine_background() {
+        let (resolved, ids) = theme_defaults();
+        let (plain, _) = display_run_to_synthetic_cell(&refined_run(None), &resolved, &ids, 0, 0);
+        let (refined, _) = display_run_to_synthetic_cell(
+            &refined_run(Some(lattice_cells::RefineKind::Removed)),
+            &resolved,
+            &ids,
+            0,
+            0,
+        );
+        assert_eq!(plain.bg, 0, "an unrefined run carries no background");
+        assert_ne!(refined.bg, 0, "a refined run must paint one");
+        assert_eq!(
+            refined.fg, plain.fg,
+            "refinement is a background axis; the syntax fg survives"
+        );
+    }
+
+    /// The two sides paint DIFFERENT backgrounds — a shared colour
+    /// would render an addition and a deletion identically.
+    #[test]
+    fn the_two_refine_sides_paint_different_backgrounds() {
+        let (resolved, ids) = theme_defaults();
+        let paint = |kind| {
+            display_run_to_synthetic_cell(&refined_run(Some(kind)), &resolved, &ids, 0, 0)
+                .0
+                .bg
+        };
+        let added = paint(lattice_cells::RefineKind::Added);
+        let removed = paint(lattice_cells::RefineKind::Removed);
+        assert_ne!(added, 0);
+        assert_ne!(removed, 0);
+        assert_ne!(
+            added, removed,
+            "added and removed refinement must be distinguishable"
+        );
+    }
+
     /// Empty row → empty triple. Defensive baseline.
     #[test]
     fn empty_row_yields_empty_triple() {
@@ -559,11 +628,13 @@ mod tests {
                         len: 2,
                         style: lattice_syntax::Style::Keyword,
                         flags: 0,
+                        refine: None,
                     },
                     DisplayRun {
                         len: 5,
                         style: lattice_syntax::Style::Default,
                         flags: cell_flags::INLAY,
+                        refine: None,
                     },
                 ]
                 .into_boxed_slice(),
@@ -613,6 +684,7 @@ mod tests {
                     len: text.len() as u32,
                     style: lattice_syntax::Style::Heading1,
                     flags: 0,
+                    refine: None,
                 }]
                 .into_boxed_slice(),
             ),
@@ -653,11 +725,13 @@ mod tests {
                         len: 3,
                         style: lattice_syntax::Style::Default,
                         flags: 0,
+                        refine: None,
                     },
                     DisplayRun {
                         len: 5,
                         style: lattice_syntax::Style::Heading2,
                         flags: 0,
+                        refine: None,
                     },
                 ]
                 .into_boxed_slice(),
@@ -682,6 +756,7 @@ mod tests {
                     len: 5,
                     style: lattice_syntax::Style::Default,
                     flags: 0,
+                    refine: None,
                 }]
                 .into_boxed_slice(),
             ),
@@ -718,11 +793,13 @@ mod tests {
                         len: 2,
                         style: lattice_syntax::Style::Default,
                         flags: 0,
+                        refine: None,
                     },
                     DisplayRun {
                         len: 2,
                         style: lattice_syntax::Style::Heading1,
                         flags: 0,
+                        refine: None,
                     },
                 ]
                 .into_boxed_slice(),
@@ -757,15 +834,24 @@ mod tests {
             text: std::sync::Arc::from(text),
             runs: std::sync::Arc::from(
                 vec![
+                    // DR.2 added `refine` to `DisplayRun` and updated
+                    // GPUI's production paint path but not these
+                    // `window`-gated initializers, so this test module
+                    // has not compiled since. Invisible because
+                    // `--features window` is not in the default build —
+                    // the exact gap the cross-renderer parity rule
+                    // exists to prevent.
                     DisplayRun {
                         len: 1,
                         style: lattice_syntax::Style::Heading1,
                         flags: 0,
+                        refine: None,
                     },
                     DisplayRun {
                         len: 1,
                         style: lattice_syntax::Style::Heading2,
                         flags: 0,
+                        refine: None,
                     },
                 ]
                 .into_boxed_slice(),

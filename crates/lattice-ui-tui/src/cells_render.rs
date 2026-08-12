@@ -205,6 +205,77 @@ mod tests {
             .collect()
     }
 
+    // ---- DR.5 — a refined run actually reaches the painted style ----
+    //
+    // Every other refinement test in the tree stops one layer short of
+    // this: `lattice-diff` pins the computed byte ranges, and
+    // `cells_worker` pins that a `RefineSpan` splits runs and sets
+    // `DisplayRun.refine`. Nothing asserted that the flag then becomes
+    // a background on the painted style — which is exactly where
+    // "computes correctly, renders nothing" hides, and where a missing
+    // or unresolved theme element would be invisible to the whole
+    // existing suite.
+
+    /// A run carrying `RefineKind::Removed` paints the removed-refine
+    /// background, and its foreground is untouched — refinement is a
+    /// background axis, which is what keeps syntax colour readable
+    /// underneath it.
+    #[test]
+    fn a_refined_run_paints_the_refine_background() {
+        let (resolved, ids) = defaults();
+        let plain = DisplayRun {
+            len: 3,
+            style: lattice_syntax::Style::Default,
+            flags: 0,
+            refine: None,
+        };
+        let refined = DisplayRun {
+            refine: Some(lattice_cells::RefineKind::Removed),
+            ..plain.clone()
+        };
+
+        let plain_style = display_run_to_style(&plain, &resolved, &ids, 0);
+        let refined_style = display_run_to_style(&refined, &resolved, &ids, 0);
+
+        assert!(
+            plain_style.bg.is_none(),
+            "an unrefined run sets no background of its own"
+        );
+        assert!(
+            refined_style.bg.is_some(),
+            "a refined run must paint a background — the theme element \
+             resolves, and this is the assertion the rest of the DR \
+             suite could not make"
+        );
+        assert_eq!(
+            refined_style.fg, plain_style.fg,
+            "refinement is a background axis; the syntax fg survives"
+        );
+    }
+
+    /// The two sides resolve to DIFFERENT backgrounds. A single shared
+    /// colour would render an addition and a deletion identically,
+    /// which reads as a bug rather than as emphasis.
+    #[test]
+    fn the_two_refine_sides_paint_different_backgrounds() {
+        let (resolved, ids) = defaults();
+        let run = |kind| DisplayRun {
+            len: 3,
+            style: lattice_syntax::Style::Default,
+            flags: 0,
+            refine: Some(kind),
+        };
+        let added =
+            display_run_to_style(&run(lattice_cells::RefineKind::Added), &resolved, &ids, 0);
+        let removed =
+            display_run_to_style(&run(lattice_cells::RefineKind::Removed), &resolved, &ids, 0);
+        assert!(added.bg.is_some() && removed.bg.is_some());
+        assert_ne!(
+            added.bg, removed.bg,
+            "added and removed refinement must be distinguishable"
+        );
+    }
+
     // ---- B2.4 — DisplayMatrix → source spans ----
     //
     // `display_line_to_source_spans` is the TUI's cutover from the

@@ -39463,10 +39463,12 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![LineRange::new(0, 2), LineRange::new(3, 5)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Remove,
                     ranges: smallvec![LineRange::new(5, 7), LineRange::new(10, 10)],
+                    refine: Vec::new(),
                 },
             ],
             algorithm: DiffAlgorithm::Histogram,
@@ -39500,10 +39502,12 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![LineRange::new(0, 2), LineRange::new(3, 5)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Remove,
                     ranges: smallvec![LineRange::new(5, 7), LineRange::new(10, 10)],
+                    refine: Vec::new(),
                 },
             ],
             algorithm: DiffAlgorithm::Histogram,
@@ -39636,6 +39640,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(0, 3), LineRange::new(0, 3)],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,
@@ -39673,6 +39678,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![LineRange::new(2, 3), LineRange::new(2, 3)],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,
@@ -39808,6 +39814,7 @@ mod tests {
                 // baseline empty range at row 0, current rows
                 // 0..2.
                 ranges: smallvec![LineRange::new(0, 0), LineRange::new(0, 2)],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,
@@ -39873,6 +39880,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(15, 16), LineRange::new(15, 16)],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,
@@ -39949,6 +39957,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(0, 1), LineRange::new(0, 1)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: rev,
@@ -39989,6 +39998,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 11)],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,
@@ -40039,6 +40049,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![LineRange::new(3, 3), LineRange::new(3, 7)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -40089,6 +40100,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![LineRange::new(0, 0), LineRange::new(0, 4)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -40662,6 +40674,7 @@ mod tests {
                 hunks: vec![Hunk {
                     kind: HunkKind::Add,
                     ranges: smallvec![LineRange::new(1, 1), LineRange::new(1, 4)],
+                    refine: Vec::new(),
                 }],
                 algorithm: DiffAlgorithm::Histogram,
                 revision: rev,
@@ -43749,6 +43762,7 @@ mod tests {
                     LineRange::new(1, 2), // local: "LOCAL-bbb"
                     LineRange::new(1, 2), // remote: "REMOTE-bbb"
                 ],
+                refine: Vec::new(),
             }],
             algorithm: lattice_diff::DiffAlgorithm::Histogram,
             revision: rev,

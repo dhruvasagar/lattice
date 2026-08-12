@@ -53,6 +53,7 @@ impl Sink for TwoWaySink {
         self.hunks.push(Hunk {
             kind,
             ranges: smallvec![a, b],
+            refine: Vec::new(),
         });
     }
 
@@ -142,11 +143,46 @@ pub enum DiffEngineError {
 pub(crate) fn two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkIndex {
     let a_str = a.to_string();
     let b_str = b.to_string();
-    let hunks = two_way_str(&a_str, &b_str, algorithm);
+    let mut hunks = two_way_str(&a_str, &b_str, algorithm);
+    // DR.4: refine here, where BOTH sides are in hand, rather than at
+    // render time where only the baseline is. Computed once per diff
+    // and carried on the hunk, so every consumer reads the same answer
+    // and none of them re-derives it.
+    fill_refinements(&mut hunks, &a_str, &b_str);
     HunkIndex {
         hunks,
         algorithm,
         revision: 0,
+    }
+}
+
+/// DR.4: populate each `Change` hunk's `refine` from the two sides.
+///
+/// Only `Change` pairs lines at all — an `Add` has no removed
+/// counterpart and a `Remove` no added one. Within a `Change`, the
+/// pairing is `lattice_diff::refine_runs`'s: positional, and only when
+/// the two ranges are the same length (it returns empty otherwise, so
+/// the hunk simply keeps an empty `refine`).
+fn fill_refinements(hunks: &mut [Hunk], a: &str, b: &str) {
+    let a_lines: Vec<&str> = a.lines().collect();
+    let b_lines: Vec<&str> = b.lines().collect();
+    for hunk in hunks.iter_mut() {
+        if hunk.kind != HunkKind::Change {
+            continue;
+        }
+        let (Some(before), Some(after)) = (hunk.ranges.first(), hunk.ranges.get(1)) else {
+            continue;
+        };
+        let slice = |src: &[&str], r: &LineRange| -> Vec<String> {
+            (r.start as usize..r.end as usize)
+                .filter_map(|i| src.get(i).map(|s| s.to_string()))
+                .collect()
+        };
+        let removed = slice(&a_lines, before);
+        let added = slice(&b_lines, after);
+        let removed_refs: Vec<&str> = removed.iter().map(|s| s.as_str()).collect();
+        let added_refs: Vec<&str> = added.iter().map(|s| s.as_str()).collect();
+        hunk.refine = crate::refine::refine_runs(&removed_refs, &added_refs);
     }
 }
 
@@ -364,6 +400,7 @@ fn merge_three_way(
         merged.push(Hunk {
             kind,
             ranges: smallvec![union_base, local_range, remote_range],
+            refine: Vec::new(),
         });
     }
 
@@ -412,6 +449,82 @@ fn classify_three_way_attributed(base: LineRange, side: LineRange) -> HunkKind {
         // An empty/empty union shouldn't occur after a
         // hunk-taking iteration; classify defensively.
         (true, true) => HunkKind::Change,
+    }
+}
+
+#[cfg(test)]
+mod refine_at_compute_time {
+    use super::*;
+
+    fn rope(s: &str) -> Rope {
+        Rope::from_str(s)
+    }
+
+    /// DR.4: a Change hunk carries its own refinement, computed once at
+    /// diff time. The render path only has the baseline rope, so if it
+    /// were not computed here it could not be computed at all.
+    #[test]
+    fn a_change_hunk_carries_refinement() {
+        let a = rope("fn main() {\n    let old = 1;\n}\n");
+        let b = rope("fn main() {\n    let new = 1;\n}\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        let change = idx
+            .hunks
+            .iter()
+            .find(|h| h.kind == HunkKind::Change)
+            .expect("one changed line");
+        let r = change
+            .refine
+            .first()
+            .and_then(|x| x.as_ref())
+            .expect("refined");
+        // The ranges address the SOURCE line, not the diff line — there
+        // is no +/- marker here.
+        let line = "    let old = 1;";
+        let got: Vec<&str> = r.removed.iter().map(|x| &line[x.clone()]).collect();
+        assert_eq!(got, vec!["old"]);
+    }
+
+    /// An Add has no removed counterpart, so nothing pairs and the
+    /// hunk keeps an empty `refine` rather than a vec of `None`.
+    #[test]
+    fn an_add_hunk_carries_no_refinement() {
+        let a = rope("one\n");
+        let b = rope("one\ntwo\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert!(idx.hunks.iter().all(|h| h.refine.is_empty()));
+    }
+
+    /// Unequal runs decline, exactly as DR.1 specifies — the same rule
+    /// magit's path follows, so the two consumers agree.
+    #[test]
+    fn an_unequal_change_declines_refinement() {
+        let a = rope("alpha\n");
+        let b = rope("one\ntwo\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert!(
+            idx.hunks
+                .iter()
+                .all(|h| h.refine.iter().all(|r| r.is_none())),
+            "1-vs-2 has no principled pairing"
+        );
+    }
+
+    /// Refinement is aligned with `ranges[0]`, so consumers can index
+    /// it by (line - range.start) — which is what the overlay does.
+    #[test]
+    fn refinement_is_aligned_with_the_baseline_range() {
+        let a = rope("a1\na2\n");
+        let b = rope("b1\nb2\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        for h in idx.hunks.iter().filter(|h| h.kind == HunkKind::Change) {
+            let span = h.ranges[0].end - h.ranges[0].start;
+            assert_eq!(
+                h.refine.len(),
+                span as usize,
+                "one entry per baseline line in the hunk"
+            );
+        }
     }
 }
 

@@ -392,12 +392,23 @@ impl DiffOverlayVirtualRowProvider {
                 HunkKind::Add => continue,
             };
             for line_idx in baseline_range.start..baseline_range.end {
+                // DR.4: this deletion-block row's refinement, computed
+                // at diff time and carried on the hunk. Read, never
+                // recomputed — the render path has only the baseline
+                // rope, so it could not pair lines even if it wanted to.
+                let refine_for_row = hunk
+                    .refine
+                    .get((line_idx - baseline_range.start) as usize)
+                    .and_then(|r| r.as_ref())
+                    .map(|r| r.removed.as_slice())
+                    .unwrap_or(&[]);
                 let cells = render_baseline_line(
                     &baseline_rope,
                     line_idx,
                     syntax,
                     per_line_spans.as_ref(),
                     default_fg,
+                    refine_for_row,
                 );
                 rows.push(VirtualRow {
                     anchor_line: current_anchor,
@@ -460,6 +471,10 @@ fn render_baseline_line(
     syntax: Option<&SyntaxContext>,
     per_line_spans: Option<&Vec<Vec<lattice_syntax::StyledSpan>>>,
     default_fg: u32,
+    // DR.4: byte ranges on THIS line whose background is the refined
+    // removal tint rather than the row's uniform one. Empty when the
+    // pair declined refinement, which renders exactly as before.
+    refine: &[std::ops::Range<usize>],
 ) -> Vec<Cell> {
     let idx = line_idx as usize;
     if idx >= rope.len_lines() {
@@ -470,6 +485,20 @@ fn render_baseline_line(
         .and_then(|p| p.get(idx))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
+    // DR.4: resolve the refined-removal background once per line from
+    // the SAME theme element the magit path uses
+    // (`diff.remove.refine.bg`), rather than a local constant — one
+    // colour, one place to change it. `0` (transparent) without a
+    // syntax context, which is also the no-refinement value, so a
+    // themeless harness renders exactly as before.
+    let refine_bg: u32 = syntax
+        .and_then(|ctx| {
+            ctx.resolved
+                .get(ctx.ids.diff_remove_refine_bg)
+                .bg
+                .map(|c| c.to_rgb_u32(0))
+        })
+        .unwrap_or(0);
     let mut out: Vec<Cell> = Vec::with_capacity(line.len_chars());
     let mut byte_idx: usize = 0;
     for ch in line.chars() {
@@ -494,7 +523,18 @@ fn render_baseline_line(
         } else {
             0
         };
-        out.push(Cell::new(ch as u32, fg, 0, 0));
+        // DR.4: refinement is a BACKGROUND, so the syntax fg resolved
+        // above survives underneath it — the same axis separation the
+        // magit path uses.
+        let bg: u32 = if refine
+            .iter()
+            .any(|r| byte_idx >= r.start && byte_idx < r.end)
+        {
+            refine_bg
+        } else {
+            0
+        };
+        out.push(Cell::new(ch as u32, fg, bg, 0));
         byte_idx += ch.len_utf8();
     }
     out
@@ -709,6 +749,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 10)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "fn main() {}\n");
@@ -729,6 +770,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(0, 1), LineRange::new(10, 10)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render_with_syntax(&s, "fn main() {}\n");
@@ -760,6 +802,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Add,
             ranges: smallvec![LineRange::new(5, 5), LineRange::new(5, 8)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         assert!(render(&s, "alpha\nbeta\n").is_empty());
@@ -773,6 +816,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(0, 3), LineRange::new(10, 10)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "alpha\nbeta\ngamma\n");
@@ -795,6 +839,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Change,
             ranges: smallvec![LineRange::new(0, 2), LineRange::new(20, 22)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "first\nsecond\n");
@@ -816,6 +861,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(0, 2), LineRange::new(5, 5)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "removed-1\nremoved-2\n");
@@ -838,6 +884,7 @@ mod tests {
                 LineRange::new(0, 2),
                 LineRange::new(0, 2)
             ],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "x\ny\n");
@@ -853,6 +900,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(50, 53), LineRange::new(10, 10)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let rows = render(&s, "only one line\n");
@@ -870,6 +918,7 @@ mod tests {
         let hunk = Hunk {
             kind: HunkKind::Remove,
             ranges: smallvec![LineRange::new(0, 2), LineRange::new(10, 10)],
+            refine: Vec::new(),
         };
         let s = session_with_hunks(bid(1), vec![hunk]);
         let p = DiffOverlayVirtualRowProvider::new(s);
@@ -913,6 +962,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![LineRange::new(5, 5), LineRange::new(10, 13)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -931,6 +981,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(0, 2), LineRange::new(20, 22)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -953,6 +1004,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Remove,
                 ranges: smallvec![LineRange::new(5, 8), LineRange::new(10, 10)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -973,14 +1025,17 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Remove,
                     ranges: smallvec![LineRange::new(5, 8), LineRange::new(10, 10)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![LineRange::new(0, 2), LineRange::new(20, 22)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Add,
                     ranges: smallvec![LineRange::new(3, 3), LineRange::new(30, 33)],
+                    refine: Vec::new(),
                 },
             ],
             algorithm: DiffAlgorithm::Histogram,
@@ -1013,6 +1068,7 @@ mod tests {
                     LineRange::new(0, 2),
                     LineRange::new(0, 2)
                 ],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -1041,6 +1097,7 @@ mod tests {
                     LineRange::new(5, 7),   // local / current
                     LineRange::new(20, 22), // remote
                 ],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -1064,6 +1121,7 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![LineRange::new(0, 1), LineRange::new(0, 1),],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Conflict,
@@ -1072,6 +1130,7 @@ mod tests {
                         LineRange::new(5, 6),
                         LineRange::new(5, 6),
                     ],
+                    refine: Vec::new(),
                 },
             ],
             algorithm: DiffAlgorithm::Histogram,
@@ -1092,10 +1151,12 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![LineRange::new(0, 1), LineRange::new(100, 102)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Add,
                     ranges: smallvec![LineRange::new(5, 5), LineRange::new(10, 12)],
+                    refine: Vec::new(),
                 },
             ],
             algorithm: DiffAlgorithm::Histogram,
@@ -1122,6 +1183,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![LineRange::new(0, 0), LineRange::new(5, 7)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 4,
@@ -1141,10 +1203,12 @@ mod tests {
             Hunk {
                 kind: HunkKind::Remove,
                 ranges: smallvec![LineRange::new(0, 2), LineRange::new(10, 10)],
+                refine: Vec::new(),
             },
             Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![LineRange::new(3, 4), LineRange::new(50, 51)],
+                refine: Vec::new(),
             },
         ];
         let s = session_with_hunks(bid(1), hunks);

@@ -297,6 +297,7 @@ mod tests {
         Hunk {
             kind,
             ranges: smallvec![baseline, current],
+            refine: Vec::new(),
         }
     }
 
@@ -481,6 +482,7 @@ mod tests {
         let i = idx(vec![Hunk {
             kind: HunkKind::Add,
             ranges: smallvec![LineRange::new(0, 0)], // only one range
+            refine: Vec::new(),
         }]);
         assert_eq!(map_baseline_to_current(&i, 42), 42);
         assert_eq!(map_current_to_baseline(&i, 42), 42);
@@ -543,6 +545,7 @@ mod tests {
         Hunk {
             kind,
             ranges: smallvec![base, local, remote],
+            refine: Vec::new(),
         }
     }
 

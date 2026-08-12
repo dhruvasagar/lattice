@@ -18,7 +18,7 @@ piece that does not exist yet.
 | DR.1 | Word-level refinement in `lattice-diff` (pure) | ✅ |
 | DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | ✅ |
 | DR.3 | Magit diffs publish refinement | ✅ |
-| DR.4 | `diff-mode` panes publish refinement | 📝 |
+| DR.4 | `diff-mode` panes publish refinement | ✅ |
 
 DR.1 and DR.2 are independent and can land in either order; both gate
 DR.3. DR.4 is a second consumer proving the mechanism generalised —
@@ -106,16 +106,32 @@ at the end of this slice.
 span on that word only; a pure addition carries none; toggling
 `diff.refine` off reverts to today's spans exactly.
 
-## DR.4 — `diff-mode` publishes it 📝
+## DR.4 — `diff-mode` publishes it ✅
 
 The second consumer, and the reason DR.1 lives in `lattice-diff`
 rather than in magit.
 
-- Side-by-side panes refine the same paired lines: removed ranges on
-  the baseline side, added ranges on the proposed side.
+**Computed at diff time, not render time.** `render_rows` only receives
+the BASELINE source, so it cannot pair lines even in principle.
+Refinement is therefore filled in `two_way`, where both ropes are in
+hand, and carried on the `Hunk` itself — not in a parallel map keyed by
+hunk index, so it cannot desync from the ranges it describes. The
+overlay reads it; nothing recomputes.
 
-**Tests.** Both panes of a side-by-side diff carry complementary
-refine spans for the same pair.
+That also means the two consumers share one computation with no
+redundancy: magit works from diff *text* through `styled_diff`,
+`diff-mode` works from *hunks* through `Hunk.refine`, and both resolve
+the same `diff.remove.refine.bg` theme element.
+
+**Scope note.** Only the deletion-block (baseline) side renders today —
+that is what `render_rows` emits. The added-side ranges are computed
+and carried on the hunk, ready for whichever surface wants them.
+
+**Tests.** A Change hunk carries refinement whose ranges slice the
+changed word out of the SOURCE line; an Add carries none; unequal runs
+decline (same rule as magit's path, so the two consumers agree); the
+vec is aligned with `ranges[0]` so consumers can index by
+`line - range.start`, which is what the overlay does.
 
 ---
 

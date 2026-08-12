@@ -99,6 +99,21 @@ pub enum DiffAlgorithm {
 pub struct Hunk {
     pub kind: HunkKind,
     pub ranges: SmallVec<[LineRange; 3]>,
+    /// DR.4 (2026-08-12): intra-line refinement for this hunk's paired
+    /// lines — which BYTES of each changed line actually changed.
+    ///
+    /// One entry per paired line, aligned with `ranges[0]` (and
+    /// `ranges[1]`, which is the same length whenever this is
+    /// non-empty). `None` for a pair that declined refinement; the
+    /// whole vec is empty for a hunk that has no pairing at all
+    /// (`Add` / `Remove`, or unequal-length runs).
+    ///
+    /// Carried ON the hunk rather than in a parallel map keyed by hunk
+    /// index, so refinement cannot desynchronise from the ranges it
+    /// describes — the same "one thing being shifted" property the
+    /// sign-map derivation relies on. Computed once at diff time, not
+    /// per render.
+    pub refine: Vec<Option<crate::refine::LineRefinement>>,
 }
 
 /// Published hunk list with the algorithm used and a

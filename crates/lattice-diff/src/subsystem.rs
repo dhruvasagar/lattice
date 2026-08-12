@@ -3163,6 +3163,7 @@ mod tests {
             hunks: vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec::smallvec![LineRange::new(3, 4), LineRange::new(5, 6)],
+                refine: Vec::new(),
             }],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
@@ -3965,6 +3966,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 2), lr(3, 5)],
+                refine: Vec::new(),
             }],
         );
         let plan = sub
@@ -3996,6 +3998,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 2), lr(3, 5)],
+                refine: Vec::new(),
             }],
         );
         let plan_edit = sub.compute_get_edit(key, 3, None).into_plan().unwrap().edit;
@@ -4037,6 +4040,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 2), lr(3, 5)],
+                refine: Vec::new(),
             }],
         );
         match sub.diff_put_effect(key, 3, None) {
@@ -4060,6 +4064,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![lr(0, 0), lr(2, 4)],
+                refine: Vec::new(),
             }],
         );
         let plan = sub
@@ -4092,6 +4097,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Remove,
                 ranges: smallvec![lr(0, 2), lr(5, 5)],
+                refine: Vec::new(),
             }],
         );
         // Cursor must sit exactly at the empty-current anchor
@@ -4125,6 +4131,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Remove,
                 ranges: smallvec![lr(0, 1), lr(5, 5)],
+                refine: Vec::new(),
             }],
         );
         assert!(sub.compute_get_edit(key, 4, None).is_nothing());
@@ -4141,6 +4148,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 2), lr(10, 12)],
+                refine: Vec::new(),
             }],
         );
         assert!(sub.compute_get_edit(key, 0, None).is_nothing());
@@ -4160,6 +4168,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert!(sub.compute_get_edit(key, 0, None).is_nothing());
@@ -4194,6 +4203,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert!(sub.compute_get_edit(bid(1), 0, None).is_nothing());
@@ -4241,6 +4251,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 2), lr(0, 2)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_put_plan(current, 0, None);
@@ -4276,6 +4287,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Add,
                 ranges: smallvec![lr(0, 0), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_put_plan(current, 0, None);
@@ -4311,6 +4323,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Remove,
                 ranges: smallvec![lr(0, 2), lr(0, 0)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_put_plan(current, 0, None);
@@ -4352,6 +4365,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert_eq!(
@@ -4382,6 +4396,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert_eq!(
@@ -4401,6 +4416,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert_eq!(
@@ -4425,14 +4441,17 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![lr(0, 1), lr(0, 1)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![lr(1, 2), lr(5, 6)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![lr(2, 3), lr(10, 11)],
+                    refine: Vec::new(),
                 },
             ],
         );
@@ -5085,6 +5104,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         // Active = local, target = remote → pull REMOTE's
@@ -5121,6 +5141,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         match sub.compute_keep_both_edit(local, 0, remote) {
@@ -5157,6 +5178,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert!(matches!(
@@ -5175,6 +5197,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert!(matches!(
@@ -5195,6 +5218,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         match sub.diff_keep_theirs_effect(local, 0) {
@@ -5229,6 +5253,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         match sub.diff_keep_both_effect(local, 0) {
@@ -5257,6 +5282,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         assert!(matches!(
@@ -5278,6 +5304,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         match sub.diff_put_theirs_effect(local, 0) {
@@ -5306,10 +5333,12 @@ mod tests {
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![lr(0, 1), lr(1, 2)],
+                    refine: Vec::new(),
                 },
                 Hunk {
                     kind: HunkKind::Change,
                     ranges: smallvec![lr(2, 3), lr(5, 6)],
+                    refine: Vec::new(),
                 },
             ],
         );
@@ -5343,6 +5372,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_get_edit(local, 0, Some(bid(99)));
@@ -5365,6 +5395,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         let default = sub.compute_get_edit(current, 0, None);
@@ -5399,6 +5430,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Conflict,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         // Active = local (pane 1), target = remote (pane 2).
@@ -5433,6 +5465,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_put_plan(current, 0, None);
@@ -5629,6 +5662,7 @@ mod tests {
             vec![Hunk {
                 kind: HunkKind::Change,
                 ranges: smallvec![lr(0, 1), lr(0, 1), lr(0, 1)],
+                refine: Vec::new(),
             }],
         );
         let outcome = sub.compute_put_plan(local, 0, Some(local));

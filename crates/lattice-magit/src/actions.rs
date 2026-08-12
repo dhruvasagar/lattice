@@ -1233,6 +1233,13 @@ struct RefreshContext {
     /// MG.22b: `magit.hunk.context-lines`, snapshotted with the rest of
     /// the refresh inputs.
     context: i64,
+    /// DS-fix (2026-08-12): the grammar registry the reopened
+    /// expansions highlight through, snapshotted with the rest of the
+    /// refresh inputs and resolved through the SAME
+    /// `hunk_syntax::syntax_registry` gate the `=` toggle uses — so the
+    /// `magit.hunk.syntax-highlight` option means one thing on both
+    /// routes.
+    lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
     state: Arc<Mutex<StatusBufferState>>,
 }
 
@@ -1266,6 +1273,10 @@ fn refresh_context(s: &Arc<Mutex<StatusBufferState>>) -> Option<RefreshContext> 
         restore,
         cursor_bus: g.cursor_bus.clone(),
         context: context_lines(&g.config),
+        lang_registry: crate::hunk_syntax::syntax_registry(
+            g.lang_registry.clone(),
+            g.config.as_ref(),
+        ),
         state: Arc::clone(s),
     })
 }
@@ -1281,6 +1292,7 @@ async fn run_refresh(ctx: RefreshContext) {
         ctx.restore,
         ctx.cursor_bus,
         ctx.context,
+        ctx.lang_registry,
         ctx.state,
     )
     .await;
@@ -1311,16 +1323,18 @@ async fn do_refresh(
     restore: Option<crate::cursor_restore::HunkRestore>,
     cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
     context: i64,
+    lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
     state: Arc<Mutex<StatusBufferState>>,
 ) {
     // MG.27: the row says "refreshing" for the whole of this function,
     // cleared by the guard's drop — including if the `spawn_blocking`
     // below panics or the task is cancelled when the buffer closes.
     let _busy = crate::headerline::busy(&headerline);
-    let (text, spans, header, reopened) =
-        tokio::task::spawn_blocking(move || refresh::build_and_format(&wd, &open, context))
-            .await
-            .expect("spawn_blocking");
+    let (text, spans, header, reopened) = tokio::task::spawn_blocking(move || {
+        refresh::build_and_format(&wd, &open, context, lang_registry.as_ref())
+    })
+    .await
+    .expect("spawn_blocking");
     // MG.14: publish before the edit — the header describes the state
     // the body is about to show, and `set` is a comparison plus (at
     // most) one atomic, nowhere near the edit's cost.

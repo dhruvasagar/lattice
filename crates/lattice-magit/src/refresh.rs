@@ -31,6 +31,10 @@ pub fn build_and_format(
     workdir: &PathBuf,
     expanded: &HashSet<String>,
     context: i64,
+    // DS-fix (2026-08-12): the grammar registry the reopened
+    // expansions highlight through. Without it a refresh rebuilt every
+    // open diff with the flat classifier and the syntax layer vanished.
+    lang_registry: Option<&std::sync::Arc<lattice_syntax::LangRegistry>>,
 ) -> (
     String,
     Vec<Vec<StyledSpan>>,
@@ -57,15 +61,18 @@ pub fn build_and_format(
     // this function — it runs on `spawn_blocking`, never the actor.
     // Cost is proportional to what the user had open, which is what an
     // expansion already costs; nothing is fetched for a collapsed entry.
-    let (text, spans, reopened) = index.format_buffer_styled_with(|entry, kind| {
-        let line = entry_as_status_line(entry, kind)?;
-        let key = crate::actions::entry_key(&line);
-        if !expanded.contains(&key) {
-            return None;
-        }
-        let diff = crate::actions::run_show(workdir, &line, context)?;
-        (!diff.trim().is_empty()).then_some((key, diff))
-    });
+    let (text, spans, reopened) = index.format_buffer_styled_with(
+        |entry, kind| {
+            let line = entry_as_status_line(entry, kind)?;
+            let key = crate::actions::entry_key(&line);
+            if !expanded.contains(&key) {
+                return None;
+            }
+            let diff = crate::actions::run_show(workdir, &line, context)?;
+            (!diff.trim().is_empty()).then_some((key, diff))
+        },
+        lang_registry,
+    );
     if text.is_empty() {
         (
             "No changes (working tree clean)\n".to_string(),
@@ -327,12 +334,106 @@ mod expansion_survives_refresh {
         })
     }
 
+    /// A repo whose modified file is Rust, so the diff has something
+    /// for a grammar to colour.
+    fn repo_with_an_unstaged_rust_change() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.rs"), "fn main() {\n    let old = 1;\n}\n").unwrap();
+        git_ok(p, &["add", "a.rs"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        std::fs::write(p.join("a.rs"), "fn main() {\n    let new = 2;\n}\n").unwrap();
+        dir
+    }
+
+    fn rust_open_key() -> String {
+        crate::actions::entry_key(&crate::actions::StatusLine::File {
+            path: PathBuf::from("a.rs"),
+            staged: false,
+            untracked: false,
+            original_path: None,
+        })
+    }
+
+    /// DS-fix (2026-08-12): THE regression. A refresh rebuilt every open
+    /// expansion with the FLAT classifier, so the syntax layer DS.1–DS.5
+    /// added silently vanished on `gr` — diff colouring stayed, token
+    /// colour did not.
+    ///
+    /// The absent assertion is what let it through: `sections.rs` called
+    /// `highlight::diff_styled_spans` directly while the `=` toggle went
+    /// through `hunk_syntax::diff_spans`, and nothing compared the two
+    /// routes. This does.
+    #[test]
+    fn a_refreshed_expansion_keeps_its_syntax_highlighting() {
+        let dir = repo_with_an_unstaged_rust_change();
+        let wd = dir.path().to_path_buf();
+        let open: HashSet<String> = [rust_open_key()].into_iter().collect();
+        let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
+
+        let (_text, with_syntax, _h, _r) = build_and_format(&wd, &open, 3, Some(&registry));
+        let (_text, flat, _h, _r) = build_and_format(&wd, &open, 3, None);
+
+        // The flat route is what the bug shipped; it must still be
+        // reachable (a harness without grammars), just not the default.
+        let count = |rows: &Vec<Vec<StyledSpan>>| rows.iter().map(|r| r.len()).sum::<usize>();
+        assert!(
+            count(&with_syntax) > count(&flat),
+            "a registry must add the syntax layer: {} spans with, {} without",
+            count(&with_syntax),
+            count(&flat),
+        );
+    }
+
+    /// The invariant `sections.rs`'s own comment claimed and the code
+    /// stopped honouring: an expansion looks the same however it got
+    /// there. Compares the refresh route against the `=`-toggle route
+    /// on the same diff text.
+    #[test]
+    fn refresh_and_toggle_produce_the_same_spans_for_one_diff() {
+        let dir = repo_with_an_unstaged_rust_change();
+        let wd = dir.path().to_path_buf();
+        let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
+        let line = crate::actions::StatusLine::File {
+            path: PathBuf::from("a.rs"),
+            staged: false,
+            untracked: false,
+            original_path: None,
+        };
+        let diff = crate::actions::run_show(&wd, &line, 3).expect("diff");
+        let diff = diff.trim_end();
+
+        // The `=` toggle's route.
+        let toggle = crate::hunk_syntax::diff_spans(diff, Some(&registry));
+
+        // The refresh route, sliced back out of the rebuilt buffer.
+        let open: HashSet<String> = [rust_open_key()].into_iter().collect();
+        let (text, refreshed, _h, _r) = build_and_format(&wd, &open, 3, Some(&registry));
+        let start = text
+            .lines()
+            .position(|l| l.starts_with("diff --git"))
+            .expect("the inlined diff is in the buffer");
+        let slice: Vec<Vec<StyledSpan>> = refreshed
+            .into_iter()
+            .skip(start)
+            .take(toggle.len())
+            .collect();
+
+        assert_eq!(
+            slice, toggle,
+            "an expansion must look identical however it got there"
+        );
+    }
+
     #[test]
     fn an_open_entrys_diff_comes_back_in_the_rebuilt_text() {
         let dir = repo_with_an_unstaged_change();
         let wd = dir.path().to_path_buf();
 
-        let collapsed = build_and_format(&wd, &HashSet::new(), 3);
+        let collapsed = build_and_format(&wd, &HashSet::new(), 3, None);
         assert!(
             !collapsed.0.contains("@@"),
             "nothing was open, so no diff is inlined:\n{}",
@@ -341,7 +442,7 @@ mod expansion_survives_refresh {
         assert!(collapsed.3.is_empty());
 
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (text, spans, _, reopened) = build_and_format(&wd, &open, 3);
+        let (text, spans, _, reopened) = build_and_format(&wd, &open, 3, None);
         assert!(
             text.contains("line 2 EDITED"),
             "the open entry's diff is inlined:\n{text}"
@@ -392,14 +493,15 @@ mod expansion_survives_refresh {
         // Nothing expanded: the source has no ranges to offer at all,
         // which is what leaves `<Tab>` on such a row with nothing to
         // close.
-        let (collapsed_text, _, _, collapsed_expanded) = build_and_format(&wd, &HashSet::new(), 3);
+        let (collapsed_text, _, _, collapsed_expanded) =
+            build_and_format(&wd, &HashSet::new(), 3, None);
         assert!(collapsed_expanded.is_empty(), "nothing is expanded");
 
         // Expanded: exactly one entry gains a range, and it must stop at
         // that entry's own diff rather than running on into the rows
         // below — the stale-range shape the report describes.
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (text, _, _, expanded) = build_and_format(&wd, &open, 3);
+        let (text, _, _, expanded) = build_and_format(&wd, &open, 3, None);
         let count = expanded
             .get(&open_key())
             .copied()
@@ -436,7 +538,7 @@ mod expansion_survives_refresh {
     fn the_rebuilt_key_is_the_one_the_toggle_uses() {
         let dir = repo_with_an_unstaged_change();
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (_, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &open, 3);
+        let (_, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &open, 3, None);
         assert!(
             reopened.contains_key(&open_key()),
             "keyed as `f:false:a.txt`, the same as `classify_line` derives from the row"
@@ -449,7 +551,7 @@ mod expansion_survives_refresh {
     fn a_stale_key_expands_nothing_and_does_not_survive() {
         let dir = repo_with_an_unstaged_change();
         let stale: HashSet<String> = ["f:false:gone.txt".to_string()].into_iter().collect();
-        let (text, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &stale, 3);
+        let (text, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &stale, 3, None);
         assert!(!text.contains("@@"), "nothing inlined:\n{text}");
         assert!(reopened.is_empty(), "the stale key is dropped, not carried");
     }

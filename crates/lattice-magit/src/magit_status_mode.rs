@@ -231,8 +231,24 @@ impl Mode for MagitStatusMode {
                     &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone()),
                 );
+                // DS-fix (2026-08-12): the initial build highlights
+                // through the same gate the `=` toggle and the refresh
+                // use, so a status buffer looks the same however it got
+                // rendered.
+                let lang_registry = crate::hunk_syntax::syntax_registry(
+                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                        .map(|outer| (*outer).clone()),
+                    ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone())
+                        .as_ref(),
+                );
                 let (text, spans, header, _) = tokio::task::spawn_blocking(move || {
-                    refresh::build_and_format(&wd, &std::collections::HashSet::new(), context)
+                    refresh::build_and_format(
+                        &wd,
+                        &std::collections::HashSet::new(),
+                        context,
+                        lang_registry.as_ref(),
+                    )
                 })
                 .await
                 .expect("spawn_blocking");

@@ -105,7 +105,7 @@ impl SectionIndex {
     }
 
     pub fn format_buffer_styled(&self) -> (String, Vec<Vec<lattice_cells::style::StyledSpan>>) {
-        let (text, spans, _) = self.format_buffer_styled_with(|_, _| None);
+        let (text, spans, _) = self.format_buffer_styled_with(|_, _| None, None);
         (text, spans)
     }
 
@@ -124,9 +124,15 @@ impl SectionIndex {
     /// `Vec<(key, line_count)>` is the rebuilt expansion bookkeeping —
     /// counts are recomputed rather than carried, because staging a
     /// hunk makes the diff shorter.
+    /// DS-fix (2026-08-12): `lang_registry` is what makes a refreshed
+    /// expansion look like a freshly-opened one. `None` degrades to the
+    /// flat classifier, the same designed degradation
+    /// `hunk_syntax::diff_spans` documents — a harness without the
+    /// grammar service renders the diff the way it always did.
     pub fn format_buffer_styled_with(
         &self,
         inline: impl Fn(&SectionEntry, SectionKind) -> Option<(String, String)>,
+        lang_registry: Option<&std::sync::Arc<lattice_syntax::LangRegistry>>,
     ) -> (
         String,
         Vec<Vec<lattice_cells::style::StyledSpan>>,
@@ -311,12 +317,20 @@ impl SectionIndex {
                 }
                 // MG.18d: the entry's own diff, if it was open before
                 // the refresh. Highlighted through the same
-                // `diff_styled_spans` the `=` toggle uses, so an
+                // `hunk_syntax::diff_spans` the `=` toggle uses, so an
                 // expansion looks identical however it got there.
+                //
+                // DS-fix (2026-08-12): this used to call the FLAT
+                // `highlight::diff_styled_spans` directly, so a refresh
+                // silently dropped the syntax layer DS.1–DS.5 added and
+                // an expansion rebuilt by `gr` lost its colour. The
+                // comment above already claimed the invariant; the code
+                // stopped honouring it when the layered path landed at
+                // the `=` site only.
                 if let Some((key, diff)) = inline(entry, section.kind) {
                     let diff = diff.trim_end();
                     if !diff.is_empty() {
-                        let diff_spans = crate::highlight::diff_styled_spans(diff);
+                        let diff_spans = crate::hunk_syntax::diff_spans(diff, lang_registry);
                         let mut count = 0usize;
                         for (i, line) in diff.lines().enumerate() {
                             let line_idx = out.matches('\n').count();

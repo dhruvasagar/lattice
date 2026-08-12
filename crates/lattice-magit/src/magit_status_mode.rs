@@ -242,7 +242,7 @@ impl Mode for MagitStatusMode {
                         .map(|outer| (*outer).clone())
                         .as_ref(),
                 );
-                let (text, spans, header, _) = tokio::task::spawn_blocking(move || {
+                let (text, spans, header, _, refine) = tokio::task::spawn_blocking(move || {
                     refresh::build_and_format(
                         &wd,
                         &std::collections::HashSet::new(),
@@ -253,10 +253,11 @@ impl Mode for MagitStatusMode {
                 .await
                 .expect("spawn_blocking");
                 crate::headerline::publish(&hl, header);
-                refresh::apply_and_highlight(
+                refresh::apply_and_highlight_refined(
                     handle.clone(),
                     text,
                     spans,
+                    refine,
                     pending.clone(),
                     buffer_id,
                 )

@@ -698,6 +698,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         last_edit: None,
         excerpt_syntax: excerpt_syntax_arc,
         extra_spans: Arc::from([]),
+        extra_refine: std::sync::Arc::from(Vec::new().into_boxed_slice()),
     };
 
     // T.6.t: the host `Theme` struct is gone; `recompute_pane` reads

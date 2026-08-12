@@ -105,7 +105,7 @@ impl SectionIndex {
     }
 
     pub fn format_buffer_styled(&self) -> (String, Vec<Vec<lattice_cells::style::StyledSpan>>) {
-        let (text, spans, _) = self.format_buffer_styled_with(|_, _| None, None);
+        let (text, spans, _, _) = self.format_buffer_styled_with(|_, _| None, None);
         (text, spans)
     }
 
@@ -137,9 +137,15 @@ impl SectionIndex {
         String,
         Vec<Vec<lattice_cells::style::StyledSpan>>,
         Vec<(String, usize)>,
+        // DR.3: intra-line refinement, indexed by the SAME line numbers
+        // as `spans` and produced by the same walk — so an inline
+        // expansion shifts both by construction, never one without the
+        // other.
+        Vec<Vec<lattice_cells::RefineSpan>>,
     ) {
         let mut out = String::new();
         let mut spans: Vec<Vec<lattice_cells::style::StyledSpan>> = Vec::new();
+        let mut refine: Vec<Vec<lattice_cells::RefineSpan>> = Vec::new();
         let mut expanded: Vec<(String, usize)> = Vec::new();
 
         for section in &self.sections {
@@ -156,6 +162,7 @@ impl SectionIndex {
             let line_idx = out.matches('\n').count();
             while spans.len() <= line_idx {
                 spans.push(Vec::new());
+                refine.push(Vec::new());
             }
             out.push_str(&header);
             out.push('\n');
@@ -169,6 +176,7 @@ impl SectionIndex {
                 let line_idx = out.matches('\n').count();
                 while spans.len() <= line_idx {
                     spans.push(Vec::new());
+                    refine.push(Vec::new());
                 }
                 match entry {
                     SectionEntry::File {
@@ -331,16 +339,24 @@ impl SectionIndex {
                     let diff = diff.trim_end();
                     if !diff.is_empty() {
                         let diff_spans = crate::hunk_syntax::diff_spans(diff, lang_registry);
+                        // DR.3: refinement for the SAME diff text,
+                        // produced here so it is indexed by the same
+                        // line numbers and grows in lockstep below.
+                        let diff_refine = crate::hunk_syntax::diff_refinements(diff);
                         let mut count = 0usize;
                         for (i, line) in diff.lines().enumerate() {
                             let line_idx = out.matches('\n').count();
                             while spans.len() <= line_idx {
                                 spans.push(Vec::new());
+                                refine.push(Vec::new());
                             }
                             out.push_str(line);
                             out.push('\n');
                             if let Some(row) = diff_spans.get(i) {
                                 spans[line_idx] = row.clone();
+                            }
+                            if let Some(row) = diff_refine.get(i) {
+                                refine[line_idx] = row.clone();
                             }
                             count += 1;
                         }
@@ -352,11 +368,12 @@ impl SectionIndex {
             let line_idx = out.matches('\n').count();
             while spans.len() <= line_idx {
                 spans.push(Vec::new());
+                refine.push(Vec::new());
             }
             out.push('\n');
         }
 
-        (out, spans, expanded)
+        (out, spans, expanded, refine)
     }
 
     // MG.14 removed `branch_status_line()`. It formatted branch +

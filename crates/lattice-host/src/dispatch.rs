@@ -14406,6 +14406,18 @@ impl Editor {
         let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
             Arc::from(extra_spans_vec.into_boxed_slice());
 
+        // DR.3: intra-line refinement, from the same drain that set the
+        // spans above. Empty for every buffer without it, so the row
+        // build is byte-identical.
+        let extra_refine_vec: Vec<Vec<lattice_cells::RefineSpan>> = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::ExtraRefinement>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        let extra_refine: Arc<[Vec<lattice_cells::RefineSpan>]> =
+            Arc::from(extra_refine_vec.into_boxed_slice());
+
         // Folds. Active buffer: live mutable slot
         // (`Editor::folds`). Non-active: per-buffer entry on
         // `buffer_locals`.
@@ -14534,6 +14546,7 @@ impl Editor {
             last_edit,
             excerpt_syntax,
             extra_spans,
+            extra_refine,
         }
     }
 
@@ -15724,7 +15737,7 @@ impl Editor {
         };
         let entries: Vec<(
             lattice_core::BufferId,
-            lattice_mode::pending_synthetic_highlights::HighlightsOp,
+            lattice_mode::pending_synthetic_highlights::HighlightsUpdate,
         )> = {
             let mut map = match pending.map.lock() {
                 Ok(m) => m,
@@ -15739,7 +15752,12 @@ impl Editor {
             lattice_core::BufferId,
             Vec<(u32, crate::diff::overlay::DiffSignKind)>,
         )> = Vec::new();
-        for (buf_id, op) in entries {
+        for (buf_id, update) in entries {
+            // DR.3: refinement rides the same update, so it is spliced
+            // by THIS loop rather than a parallel one — the property the
+            // sign-derivation comment below insists on.
+            let refine = update.refine;
+            let op = update.op;
             let locals = self.buffer_locals.entry(buf_id).or_default();
             let existing = || {
                 locals
@@ -15794,6 +15812,11 @@ impl Editor {
                 },
             ));
             locals.insert(crate::modes::ExtraHighlights(final_spans));
+            // DR.3: publish refinement alongside. `Replace` carries its
+            // own; the splice ops carry none, and an empty vec CLEARS
+            // any previous refinement rather than leaving it stranded
+            // over text that has shifted underneath it.
+            locals.insert(crate::modes::ExtraRefinement(refine));
         }
         if !sign_updates.is_empty() {
             let mut map = (*self.provider_diff_signs).clone();

@@ -96,6 +96,29 @@ impl BufferLocal for ExtraHighlights {
     }
 }
 
+/// DR.3 (2026-08-12): per-buffer intra-line diff refinement — the byte
+/// ranges whose BACKGROUND differs from their row's diff tint.
+///
+/// The second axis of `span-layering.md`, narrowed from per-row to
+/// per-range. Published with [`ExtraHighlights`] by the same update and
+/// spliced by the same loop, so the two cannot drift apart when an
+/// inline expansion shifts lines.
+///
+/// Empty is the universal default and renders byte-identically.
+#[derive(Debug, Clone, Default)]
+pub struct ExtraRefinement(pub Vec<Vec<lattice_cells::RefineSpan>>);
+
+impl BufferLocal for ExtraRefinement {
+    const NAME: &'static str = "text-mode.extra-refinement";
+    const DOC: &'static str = "Per-buffer intra-line diff refinement: byte ranges whose \
+         background differs from their row's diff tint, indexed by source line. \
+         Published alongside `extra-highlights` so the two shift together.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("{} line(s) of refinement", self.0.len())
+    }
+}
+
 /// DB.4: the content block width (widest line, in cells) for a buffer that
 /// should be horizontally centred by widening its gutter. Set by the dashboard;
 /// the renderer computes `left_pad = (viewport_width - width) / 2` and adds it

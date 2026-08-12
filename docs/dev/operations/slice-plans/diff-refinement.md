@@ -17,7 +17,7 @@ piece that does not exist yet.
 |---|---|---|
 | DR.1 | Word-level refinement in `lattice-diff` (pure) | ✅ |
 | DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | ✅ |
-| DR.3 | Magit diffs publish refinement | 📝 |
+| DR.3 | Magit diffs publish refinement | ✅ |
 | DR.4 | `diff-mode` panes publish refinement | 📝 |
 
 DR.1 and DR.2 are independent and can land in either order; both gate
@@ -78,7 +78,21 @@ panicking.
 rule. `grep -rn "RefineSpan" crates/lattice-ui-gpui/` must be non-empty
 at the end of this slice.
 
-## DR.3 — Magit publishes it 📝
+## DR.3 — Magit publishes it ✅
+
+> **Landed without the `diff.refine` option.** The plan specified one
+> (default on). It is not there: refinement rides the existing
+> `magit.hunk.syntax-highlight` gate's sibling path and adds no new
+> user-facing switch yet. Deferred rather than dropped — add it if
+> anyone wants the uniform look back.
+>
+> **The equal-length pairing rule bites more than expected.** The
+> module's own `RUST_DIFF` fixture (replace one line, add another) is a
+> 1-vs-2 run and refines *nothing*. That is DR.1 refusing to guess, and
+> it is correct, but "replace a line and add another" is a very common
+> shape — so refinement will often appear absent. Pinned as its own
+> test. This is the evidence for prioritising the deferred
+> similarity-scored pairing.
 
 - `hunk_syntax` (which already owns what is inside a magit diff,
   `span-layering.md` §6) computes refinement during the async refresh

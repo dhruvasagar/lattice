@@ -16,13 +16,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use lattice_cells::StyledSpan;
+use lattice_cells::{RefineSpan, StyledSpan};
 use lattice_core::BufferId;
 
 /// Entry in the pending highlights map: a full replacement, or a
 /// splice (insert or remove) that shifts every subsequent line's
 /// spans to stay aligned with a text edit that inserted/removed
 /// lines at the same position.
+#[derive(Debug, Clone)]
 pub enum HighlightsOp {
     Replace(Vec<Vec<StyledSpan>>),
     InsertAt {
@@ -35,9 +36,30 @@ pub enum HighlightsOp {
     },
 }
 
+/// DR.3 (2026-08-12): one op's worth of published highlighting —
+/// foreground spans plus, optionally, intra-line diff refinement.
+///
+/// Refinement rides the SAME update rather than a parallel channel,
+/// and that is deliberate. The drain's own comment states the rule for
+/// diff signs: *"deriving rather than carrying signs on a parallel
+/// channel is what makes the tint impossible to desynchronise from the
+/// text — an inline diff expansion shifts spans and signs by
+/// construction, because there is only one thing being shifted."*
+/// A second channel for refinement would reintroduce exactly that
+/// hazard: a `=` expansion inserts lines, and two lists spliced by two
+/// code paths can disagree. One update, one splice.
+///
+/// `refine` is empty for every producer that has none, which is all of
+/// them except magit's diff views.
+#[derive(Debug, Clone)]
+pub struct HighlightsUpdate {
+    pub op: HighlightsOp,
+    pub refine: Vec<Vec<RefineSpan>>,
+}
+
 /// Shared state between async refresh tasks and the Editor's tick drain.
 pub struct PendingSyntheticHighlights {
-    pub map: Arc<Mutex<HashMap<BufferId, HighlightsOp>>>,
+    pub map: Arc<Mutex<HashMap<BufferId, HighlightsUpdate>>>,
     pub waker: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
@@ -53,8 +75,25 @@ impl PendingSyntheticHighlights {
     /// Editor drains them on the next tick. Replaces any existing highlights
     /// for the buffer.
     pub fn store_and_wake(&self, buffer_id: BufferId, spans: Vec<Vec<StyledSpan>>) {
+        self.store_refined_and_wake(buffer_id, spans, Vec::new());
+    }
+
+    /// DR.3: as [`Self::store_and_wake`], carrying intra-line
+    /// refinement alongside the spans so both shift together.
+    pub fn store_refined_and_wake(
+        &self,
+        buffer_id: BufferId,
+        spans: Vec<Vec<StyledSpan>>,
+        refine: Vec<Vec<RefineSpan>>,
+    ) {
         if let Ok(mut map) = self.map.lock() {
-            map.insert(buffer_id, HighlightsOp::Replace(spans));
+            map.insert(
+                buffer_id,
+                HighlightsUpdate {
+                    op: HighlightsOp::Replace(spans),
+                    refine,
+                },
+            );
         }
         self.fire_waker();
     }
@@ -75,7 +114,13 @@ impl PendingSyntheticHighlights {
         spans: Vec<Vec<StyledSpan>>,
     ) {
         if let Ok(mut map) = self.map.lock() {
-            map.insert(buffer_id, HighlightsOp::InsertAt { start_line, spans });
+            map.insert(
+                buffer_id,
+                HighlightsUpdate {
+                    op: HighlightsOp::InsertAt { start_line, spans },
+                    refine: Vec::new(),
+                },
+            );
         }
         self.fire_waker();
     }
@@ -87,7 +132,13 @@ impl PendingSyntheticHighlights {
     /// (e.g. toggle-diff collapsing inline content back down).
     pub fn remove_at_and_wake(&self, buffer_id: BufferId, start_line: u32, count: usize) {
         if let Ok(mut map) = self.map.lock() {
-            map.insert(buffer_id, HighlightsOp::RemoveAt { start_line, count });
+            map.insert(
+                buffer_id,
+                HighlightsUpdate {
+                    op: HighlightsOp::RemoveAt { start_line, count },
+                    refine: Vec::new(),
+                },
+            );
         }
         self.fire_waker();
     }

@@ -1487,6 +1487,13 @@ pub struct PaneCellsInputs {
     /// `[]` for every buffer without the local — the merge is a no-op
     /// then, so ordinary panes render byte-identically.
     pub extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]>,
+    /// DR.3 (2026-08-12): per-line intra-line diff refinement — byte
+    /// ranges whose BACKGROUND overrides their row's diff tint.
+    /// Sourced from the buffer's `ExtraRefinement` local, published by
+    /// the same drain as `extra_spans` so the two cannot drift. Empty
+    /// `[]` for every buffer without it, so ordinary panes render
+    /// byte-identically.
+    pub extra_refine: Arc<[Vec<lattice_cells::RefineSpan>]>,
 }
 
 impl Default for CellsRenderState {

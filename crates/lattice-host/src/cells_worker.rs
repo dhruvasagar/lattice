@@ -485,7 +485,11 @@ pub fn recompute_pane(
     // re-seed (help-content swap) would otherwise keep stale link
     // styling. The gate is free for ordinary panes (`extra_spans`
     // empty), which dominate.
-    let rebuilt = if pane.extra_spans.is_empty() {
+    // DR.3: refinement gates the incremental path for the same reason
+    // `extra_spans` does — the incremental build reuses rows verbatim
+    // and would keep stale refinement after a diff refresh shifted the
+    // text under it.
+    let rebuilt = if pane.extra_spans.is_empty() && pane.extra_refine.is_empty() {
         try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, true)
             .and_then(|mut dm| {
                 dm.wrap_width = effective_wrap;
@@ -509,6 +513,7 @@ pub fn recompute_pane(
                 pane.syntax_handle.as_deref(),
                 &pane.excerpt_syntax,
                 &pane.extra_spans,
+                &pane.extra_refine,
                 ct,
                 &pane.inlay_hints,
                 &pane.folds,
@@ -761,6 +766,7 @@ fn try_incremental_build(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, new_version));
@@ -801,6 +807,7 @@ fn try_incremental_build(
             default_flags,
             inlay_fg,
             whitespace,
+            refine_by_line: &[],
         };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
         // Suffix: lines past the edit — reuse with shifted source line.
@@ -896,6 +903,7 @@ fn try_incremental_build(
         default_flags,
         inlay_fg,
         whitespace,
+        refine_by_line: &[],
     };
     let mut cur = rebuild_lo;
     while cur < rebuild_hi {
@@ -1016,6 +1024,7 @@ fn build_matrix(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, version));
@@ -1043,6 +1052,7 @@ fn build_matrix(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: &[],
             };
             let mut chunks: Vec<Arc<CellChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -1185,6 +1195,10 @@ struct ChunkInputs<'a> {
     /// whitespace-marker substitution. Empty (`show: false`) when
     /// the user hasn't enabled `display.show_whitespace`.
     whitespace: &'a WhitespaceConfig,
+    /// DR.3: per-line intra-line refinement, indexed by ABSOLUTE source
+    /// line (unlike `per_line_spans`, which is relative to
+    /// `spans_base`). Empty for every buffer that publishes none.
+    refine_by_line: &'a [Vec<lattice_cells::RefineSpan>],
 }
 
 /// Build the row vector for one chunk covering source lines
@@ -1672,9 +1686,11 @@ fn build_display_rows(
             line_spans,
             line_inlays,
             inputs.whitespace,
-            // DR.2: no producer publishes refine spans until DR.3,
-            // so this is empty and output is byte-identical.
-            &[],
+            inputs
+                .refine_by_line
+                .get(line_idx as usize)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
         );
         rows.push(DisplayLine {
             source_line: line_idx,
@@ -1753,6 +1769,9 @@ fn build_display_matrix(
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
     excerpt_syntax: &[crate::render_state::ExcerptSyntax],
     extra_spans: &[Vec<lattice_syntax::StyledSpan>],
+    // DR.3: per-line intra-line refinement; empty for every buffer
+    // that publishes none.
+    extra_refine: &[Vec<lattice_cells::RefineSpan>],
     ct: CellTheme<'_>,
     inlay_hints: &[crate::render_state::InlayHintRow],
     folds: &[lattice_core::Fold],
@@ -1829,6 +1848,7 @@ fn build_display_matrix(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: extra_refine,
             };
             let rows = build_display_rows(&inputs, 0, line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, version));
@@ -1848,6 +1868,7 @@ fn build_display_matrix(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: extra_refine,
             };
             let mut chunks: Vec<Arc<DisplayChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -2005,6 +2026,7 @@ fn try_incremental_display_build(
                 default_flags,
                 inlay_fg,
                 whitespace,
+                refine_by_line: &[],
             };
             let rows = build_display_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
@@ -2037,6 +2059,7 @@ fn try_incremental_display_build(
             default_flags,
             inlay_fg,
             whitespace,
+            refine_by_line: &[],
         };
         rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
         rows.extend(
@@ -2144,6 +2167,7 @@ fn try_incremental_display_build(
         default_flags,
         inlay_fg,
         whitespace,
+        refine_by_line: &[],
     };
 
     // Assemble the zone rows in source-line order:
@@ -2677,6 +2701,7 @@ mod tests {
             last_edit,
             excerpt_syntax: Arc::from([]),
             extra_spans: Arc::from([]),
+            extra_refine: Arc::from(Vec::new().into_boxed_slice()),
         };
         let pane_matrices = {
             let mut m = std::collections::HashMap::new();
@@ -3614,6 +3639,7 @@ mod tests {
             None,
             &[],
             &extra,
+            &[],
             ct,
             &[],
             &[],
@@ -3693,6 +3719,7 @@ mod tests {
         let dm = build_display_matrix(
             snap.as_ref(),
             None,
+            &[],
             &[],
             &[],
             ct,
@@ -5275,6 +5302,7 @@ mod tests {
                     last_edit,
                     excerpt_syntax: Arc::from([]),
                     extra_spans: Arc::from([]),
+                    extra_refine: Arc::from(Vec::new().into_boxed_slice()),
                 };
                 let cells = CellsRenderState {
                     matrix: matrix_cell.clone(),
@@ -5426,6 +5454,7 @@ mod tests {
                 last_edit: None,
                 excerpt_syntax: Arc::from([]),
                 extra_spans: Arc::from([]),
+                extra_refine: Arc::from(Vec::new().into_boxed_slice()),
             };
             let cells = CellsRenderState {
                 matrix: matrix_cell.clone(),
@@ -5517,6 +5546,7 @@ mod tests {
             last_edit: None,
             excerpt_syntax: Arc::from([]),
             extra_spans: Arc::from([]),
+            extra_refine: Arc::from(Vec::new().into_boxed_slice()),
         }
     }
 

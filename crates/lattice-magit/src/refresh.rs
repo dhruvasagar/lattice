@@ -40,6 +40,8 @@ pub fn build_and_format(
     Vec<Vec<StyledSpan>>,
     Vec<Field>,
     HashMap<String, usize>,
+    // DR.3: intra-line refinement, line-aligned with the spans above.
+    Vec<Vec<lattice_cells::RefineSpan>>,
 ) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
@@ -50,6 +52,7 @@ pub fn build_and_format(
                 Vec::new(),
                 Vec::new(),
                 HashMap::new(),
+                Vec::new(),
             );
         }
     };
@@ -61,7 +64,7 @@ pub fn build_and_format(
     // this function — it runs on `spawn_blocking`, never the actor.
     // Cost is proportional to what the user had open, which is what an
     // expansion already costs; nothing is fetched for a collapsed entry.
-    let (text, spans, reopened) = index.format_buffer_styled_with(
+    let (text, spans, reopened, refine) = index.format_buffer_styled_with(
         |entry, kind| {
             let line = entry_as_status_line(entry, kind)?;
             let key = crate::actions::entry_key(&line);
@@ -79,9 +82,10 @@ pub fn build_and_format(
             Vec::new(),
             header,
             HashMap::new(),
+            Vec::new(),
         )
     } else {
-        (text, spans, header, reopened.into_iter().collect())
+        (text, spans, header, reopened.into_iter().collect(), refine)
     }
 }
 
@@ -277,9 +281,31 @@ pub async fn apply_and_highlight(
     pending_highlights: Option<PendingSyntheticHighlightsHandle>,
     buffer_id: BufferId,
 ) {
+    apply_and_highlight_refined(
+        handle,
+        text,
+        spans,
+        Vec::new(),
+        pending_highlights,
+        buffer_id,
+    )
+    .await
+}
+
+/// DR.3: as [`apply_and_highlight`], publishing intra-line refinement
+/// with the spans — one update, so the two cannot drift when an inline
+/// expansion shifts lines.
+pub async fn apply_and_highlight_refined(
+    handle: Arc<dyn Document>,
+    text: String,
+    spans: Vec<Vec<StyledSpan>>,
+    refine: Vec<Vec<lattice_cells::RefineSpan>>,
+    pending_highlights: Option<PendingSyntheticHighlightsHandle>,
+    buffer_id: BufferId,
+) {
     crate::buffer_io::replace_buffer_text(&handle, text).await;
     if let Some(ref ph) = pending_highlights {
-        ph.store_and_wake(buffer_id, spans);
+        ph.store_refined_and_wake(buffer_id, spans, refine);
     }
 }
 
@@ -374,8 +400,8 @@ mod expansion_survives_refresh {
         let open: HashSet<String> = [rust_open_key()].into_iter().collect();
         let registry = lattice_syntax::LangRegistry::standard().expect("standard registry");
 
-        let (_text, with_syntax, _h, _r) = build_and_format(&wd, &open, 3, Some(&registry));
-        let (_text, flat, _h, _r) = build_and_format(&wd, &open, 3, None);
+        let (_text, with_syntax, _h, _r, _) = build_and_format(&wd, &open, 3, Some(&registry));
+        let (_text, flat, _h, _r, _) = build_and_format(&wd, &open, 3, None);
 
         // The flat route is what the bug shipped; it must still be
         // reachable (a harness without grammars), just not the default.
@@ -411,7 +437,7 @@ mod expansion_survives_refresh {
 
         // The refresh route, sliced back out of the rebuilt buffer.
         let open: HashSet<String> = [rust_open_key()].into_iter().collect();
-        let (text, refreshed, _h, _r) = build_and_format(&wd, &open, 3, Some(&registry));
+        let (text, refreshed, _h, _r, _) = build_and_format(&wd, &open, 3, Some(&registry));
         let start = text
             .lines()
             .position(|l| l.starts_with("diff --git"))
@@ -442,7 +468,7 @@ mod expansion_survives_refresh {
         assert!(collapsed.3.is_empty());
 
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (text, spans, _, reopened) = build_and_format(&wd, &open, 3, None);
+        let (text, spans, _, reopened, _) = build_and_format(&wd, &open, 3, None);
         assert!(
             text.contains("line 2 EDITED"),
             "the open entry's diff is inlined:\n{text}"
@@ -493,7 +519,7 @@ mod expansion_survives_refresh {
         // Nothing expanded: the source has no ranges to offer at all,
         // which is what leaves `<Tab>` on such a row with nothing to
         // close.
-        let (collapsed_text, _, _, collapsed_expanded) =
+        let (collapsed_text, _, _, collapsed_expanded, _) =
             build_and_format(&wd, &HashSet::new(), 3, None);
         assert!(collapsed_expanded.is_empty(), "nothing is expanded");
 
@@ -501,7 +527,7 @@ mod expansion_survives_refresh {
         // that entry's own diff rather than running on into the rows
         // below — the stale-range shape the report describes.
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (text, _, _, expanded) = build_and_format(&wd, &open, 3, None);
+        let (text, _, _, expanded, _) = build_and_format(&wd, &open, 3, None);
         let count = expanded
             .get(&open_key())
             .copied()
@@ -538,7 +564,7 @@ mod expansion_survives_refresh {
     fn the_rebuilt_key_is_the_one_the_toggle_uses() {
         let dir = repo_with_an_unstaged_change();
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (_, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &open, 3, None);
+        let (_, _, _, reopened, _) = build_and_format(&dir.path().to_path_buf(), &open, 3, None);
         assert!(
             reopened.contains_key(&open_key()),
             "keyed as `f:false:a.txt`, the same as `classify_line` derives from the row"
@@ -551,7 +577,8 @@ mod expansion_survives_refresh {
     fn a_stale_key_expands_nothing_and_does_not_survive() {
         let dir = repo_with_an_unstaged_change();
         let stale: HashSet<String> = ["f:false:gone.txt".to_string()].into_iter().collect();
-        let (text, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &stale, 3, None);
+        let (text, _, _, reopened, _) =
+            build_and_format(&dir.path().to_path_buf(), &stale, 3, None);
         assert!(!text.contains("@@"), "nothing inlined:\n{text}");
         assert!(reopened.is_empty(), "the stale key is dropped, not carried");
     }

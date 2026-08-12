@@ -120,6 +120,7 @@ fn rs_for(
         // single-file bench pane has no excerpts, so an empty slice.
         excerpt_syntax: Arc::from(Vec::new()),
         extra_spans: Arc::from(Vec::new()),
+        extra_refine: std::sync::Arc::from(Vec::new().into_boxed_slice()),
         inlay_hints: inlay_hints.clone(),
         folds: folds.clone(),
         viewport_height: VIEWPORT_HEIGHT,

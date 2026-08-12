@@ -209,6 +209,86 @@ fn lang_from_diff_header(rest: &str) -> Lang {
     }
 }
 
+/// DR.3 (2026-08-12): intra-line refinement for a unified diff —
+/// which *part* of each changed line changed.
+///
+/// Walks the diff for maximal runs of `-` lines followed by `+` lines
+/// and refines each pair through `lattice_diff::refine_runs`, which
+/// declines unequal runs and wholly-dissimilar pairs (see its docs —
+/// a wrong pairing is confidently misleading emphasis).
+///
+/// Byte offsets are shifted by [`MARKER`] because the refinement is
+/// computed on the line CONTENT while the buffer row carries the
+/// leading `+` / `-`. Getting this wrong would tint one column left of
+/// the change, which is exactly the kind of off-by-one that looks like
+/// a rendering bug rather than a mapping bug.
+///
+/// Returns one entry per diff line, aligned with [`diff_spans`].
+pub(crate) fn diff_refinements(diff: &str) -> Vec<Vec<lattice_cells::RefineSpan>> {
+    use lattice_cells::{RefineKind, RefineSpan};
+
+    let lines: Vec<&str> = diff.lines().collect();
+    let mut out: Vec<Vec<RefineSpan>> = vec![Vec::new(); lines.len()];
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        // A run of removals...
+        let rm_start = i;
+        while i < lines.len()
+            && crate::highlight::classify_diff_line(lines[i]) == DiffLineClass::Removed
+        {
+            i += 1;
+        }
+        let rm_end = i;
+        if rm_end == rm_start {
+            i += 1;
+            continue;
+        }
+        // ...immediately followed by a run of additions.
+        let add_start = i;
+        while i < lines.len()
+            && crate::highlight::classify_diff_line(lines[i]) == DiffLineClass::Added
+        {
+            i += 1;
+        }
+        let add_end = i;
+        if add_end == add_start {
+            continue;
+        }
+
+        fn strip(l: &str) -> &str {
+            l.get(MARKER..).unwrap_or("")
+        }
+        let removed: Vec<&str> = lines[rm_start..rm_end].iter().map(|l| strip(l)).collect();
+        let added: Vec<&str> = lines[add_start..add_end].iter().map(|l| strip(l)).collect();
+
+        for (n, refinement) in lattice_diff::refine_runs(&removed, &added)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(r) = refinement else { continue };
+            // Shift back over the `-` / `+` column.
+            let shift = |ranges: &[std::ops::Range<usize>], kind: RefineKind| {
+                ranges
+                    .iter()
+                    .map(|x| RefineSpan {
+                        start: x.start + MARKER,
+                        end: x.end + MARKER,
+                        kind,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if let Some(slot) = out.get_mut(rm_start + n) {
+                *slot = shift(&r.removed, RefineKind::Removed);
+            }
+            if let Some(slot) = out.get_mut(add_start + n) {
+                *slot = shift(&r.added, RefineKind::Added);
+            }
+        }
+    }
+    out
+}
+
 /// The spans for a unified diff — the ONE entry point every magit view
 /// that shows a diff calls.
 ///
@@ -355,6 +435,114 @@ index 1234567..89abcde 100644
 +    println!(\"hi\");
  }
 ";
+
+    // ── DR.3: intra-line refinement ──────────────────────────────
+
+    /// One line replaced by one line — the shape refinement is for.
+    const PAIRED_DIFF: &str = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,3 +1,3 @@
+ fn main() {
+-    let old = 1;
++    let new = 1;
+ }
+";
+
+    /// The paired substitution refines to the changed word on BOTH
+    /// sides, offset past the `-` / `+` column.
+    #[test]
+    fn a_paired_substitution_refines_both_sides() {
+        use lattice_cells::RefineKind;
+        let r = diff_refinements(PAIRED_DIFF);
+        let removed: Vec<_> = r
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.iter().any(|s| s.kind == RefineKind::Removed))
+            .collect();
+        let added: Vec<_> = r
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.iter().any(|s| s.kind == RefineKind::Added))
+            .collect();
+        assert_eq!(removed.len(), 1, "one removed line refines");
+        assert_eq!(added.len(), 1, "its counterpart refines");
+
+        // Offsets must clear the marker column — a refinement starting
+        // at 0 would tint the `-` itself.
+        for (_, row) in removed.iter().chain(added.iter()) {
+            for span in row.iter() {
+                assert!(
+                    span.start >= MARKER,
+                    "refinement must not cover the +/- column: {span:?}"
+                );
+            }
+        }
+    }
+
+    /// The ranges must slice out of the actual buffer line, which is
+    /// what proves the MARKER shift is right rather than merely
+    /// plausible.
+    #[test]
+    fn refined_ranges_slice_the_changed_word_from_the_line() {
+        use lattice_cells::RefineKind;
+        let lines: Vec<&str> = PAIRED_DIFF.lines().collect();
+        let r = diff_refinements(PAIRED_DIFF);
+        let mut seen = Vec::new();
+        for (i, row) in r.iter().enumerate() {
+            for span in row {
+                let text = &lines[i][span.start..span.end];
+                seen.push((span.kind, text.to_string()));
+            }
+        }
+        assert!(
+            seen.iter()
+                .any(|(k, t)| *k == RefineKind::Removed && t == "old"),
+            "the removed identifier refines: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|(k, t)| *k == RefineKind::Added && t == "new"),
+            "the added identifier refines: {seen:?}"
+        );
+    }
+
+    /// RUST_DIFF replaces one line AND adds another — a 1-vs-2 run,
+    /// which the equal-length rule declines. Pinned because it is a
+    /// very common diff shape, and this is the visible cost of refusing
+    /// to guess which addition replaced the removal (DR.1's docs).
+    #[test]
+    fn an_unequal_run_refines_nothing_even_though_it_looks_paired() {
+        let r = diff_refinements(RUST_DIFF);
+        assert!(
+            r.iter().all(|row| row.is_empty()),
+            "1 removal vs 2 additions has no principled pairing"
+        );
+    }
+
+    /// A pure addition has no removed counterpart, so nothing pairs.
+    #[test]
+    fn a_pure_addition_refines_nothing() {
+        let diff = "\
+@@ -1,1 +1,2 @@
+ fn main() {
++    println!(\"hi\");
+";
+        let r = diff_refinements(diff);
+        assert!(r.iter().all(|row| row.is_empty()));
+    }
+
+    /// Refinement is line-aligned with `diff_spans`, which is what lets
+    /// the two ride one update and shift together.
+    #[test]
+    fn refinement_is_line_aligned_with_the_spans() {
+        assert_eq!(
+            diff_refinements(PAIRED_DIFF).len(),
+            diff_spans(PAIRED_DIFF, None).len(),
+            "one entry per diff line on both axes"
+        );
+    }
 
     fn spans(diff: &str) -> Vec<Vec<StyledSpan>> {
         syntax_spans_for_diff(diff, registry())

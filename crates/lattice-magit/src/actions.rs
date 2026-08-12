@@ -1330,7 +1330,7 @@ async fn do_refresh(
     // cleared by the guard's drop — including if the `spawn_blocking`
     // below panics or the task is cancelled when the buffer closes.
     let _busy = crate::headerline::busy(&headerline);
-    let (text, spans, header, reopened) = tokio::task::spawn_blocking(move || {
+    let (text, spans, header, reopened, refine) = tokio::task::spawn_blocking(move || {
         refresh::build_and_format(&wd, &open, context, lang_registry.as_ref())
     })
     .await
@@ -1349,7 +1349,7 @@ async fn do_refresh(
     // about to become this text, and reading it back would race the
     // very edit being applied.
     let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
-    refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+    refresh::apply_and_highlight_refined(handle, text, spans, refine, pending, bid).await;
     // Sent AFTER the replace lands: a cursor delivered first would be
     // clamped against the outgoing content. The send wakes the editor,
     // so the cursor arrives without the user touching a key

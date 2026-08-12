@@ -19,10 +19,12 @@ piece that does not exist yet.
 | DR.2 | The background-overlay axis: `RefineSpan` → `Cell.bg` | ✅ |
 | DR.3 | Magit diffs publish refinement | ✅ |
 | DR.4 | `diff-mode` panes publish refinement | ✅ |
+| DR.5 | Region-to-region refinement (unbalanced hunks) | 📝 |
 
 DR.1 and DR.2 are independent and can land in either order; both gate
 DR.3. DR.4 is a second consumer proving the mechanism generalised —
-slip it without blocking anything.
+slip it without blocking anything. DR.5 replaces DR.1's pairing rule
+and is the one remaining correctness gap.
 
 ---
 
@@ -135,11 +137,61 @@ vec is aligned with `ranges[0]` so consumers can index by
 
 ---
 
+## DR.5 — Region-to-region refinement 📝
+
+**The gap, reported from use (2026-08-12).** A hunk that removes one
+line and adds twelve — "rewrite this line, and add a doc comment above
+it", one of the commonest shapes there is — renders with no refinement
+at all. `refine_runs` returns empty whenever
+`removed.len() != added.len()`, so the whole hunk falls back to the
+uniform tint.
+
+**DR.1's justification for that rule was factually wrong**, and the
+comment saying so is in the code: *"Magit declines the same case."* It
+does not. `magit-diff-update-hunk-refinement` hands the hunk's **whole
+removed region** and **whole added region** to `smerge-refine-regions`,
+which word-diffs the two concatenated texts. Unbalanced hunks are not
+a special case there — they are the ordinary case, handled by not
+pairing lines in the first place. Confirmed against two screenshots: a
+1↔1 hunk refines (as ours does) and a 6↔2 hunk also refines (ours does
+not).
+
+The deferred "similarity-scored pairing" idea below is therefore
+answered rather than adopted: pairing is the wrong frame. Diff the
+regions, then map the byte ranges back onto lines.
+
+- Concatenate the hunk's removed lines and its added lines; word-diff
+  the two regions with the existing tokenizer + `imara-diff` pass.
+- Map the resulting byte ranges back to per-line ranges on each side.
+  This changes the carried shape: `Vec<Option<LineRefinement>>` is
+  pair-aligned and cannot express *n* removed against *m* added, so the
+  hunk carries per-side, per-line range lists instead.
+- Keep the `MAX_REFINED_SHARE` bail-out — "nearly all of it changed"
+  is still noise — but evaluate it per region, not per pair.
+- **One pipeline, both axes.** The computation stays in
+  `compute::fill_refinements`, called from `two_way`, so render and
+  refresh keep reading one precomputed answer (DR.4's property) rather
+  than each deriving its own.
+- **TUI and GPUI in lockstep.** Both consume `Hunk.refine` through the
+  same overlay, so the shape change must land in both renderers' read
+  sites in the same patch — the audit is
+  `grep -rn "refine" crates/lattice-ui-gpui/ crates/lattice-ui-tui/`.
+
+**Tests.** A 1↔12 hunk refines the changed token on the removed line
+(the reported case, verbatim); a 6↔2 hunk refines on both sides; the
+existing 1↔1 cases keep their current output exactly (DR.5 must be a
+superset, not a replacement that shifts balanced results); a wholly
+rewritten region still declines; refinement survives a `gr` refresh
+with the same spans it had on first render.
+
+---
+
 ## Deferred
 
-- **Similarity-scored pairing** for unequal `-`/`+` runs. Better in
-  principle, but a wrong pairing is confidently misleading; ship the
-  positional rule and see whether the gap is felt.
+- **Similarity-scored pairing** for unequal `-`/`+` runs —
+  **superseded by DR.5**, which removes pairing rather than improving
+  it. Kept here so the reasoning trail is visible: this entry was the
+  recorded plan, and it was aimed at the wrong mechanism.
 - **Character-level granularity** as an option. Only if word-level
   proves insufficient — the default must stay word-level (design §5).
 - **Refinement in the unified `:diff` / patch surfaces** beyond magit

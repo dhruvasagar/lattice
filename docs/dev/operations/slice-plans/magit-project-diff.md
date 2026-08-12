@@ -16,7 +16,7 @@ Catalogue entry: A.1 in
 | Slice | Title | Status |
 |---|---|---|
 | PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | ✅ |
-| PD.2 | Async scan — changed set → hunks → excerpts, headerline progress | 📝 |
+| PD.2 | Scan — changed set → baselines → excerpts | ✅ |
 | PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | 📝 |
 | PD.4 | Edit propagation + the read-only rule | 📝 |
 | PD.5 | File-boundary folds | 📝 |
@@ -46,7 +46,19 @@ empty view is a legitimate intermediate). PD.5 is independent.
 entry; `magit-core-mode` is active on it (so `gr` / `q` resolve without
 this crate binding them — the duplication regression).
 
-## PD.2 — Async scan 📝
+## PD.2 — The scan ✅
+
+> **Landed as the blocking half only.** `scan_changed_files` is pure and
+> synchronous, documented as `spawn_blocking`-only; the batched-events +
+> headerline-progress machinery moves to PD.3, where a trigger actually
+> exists to drive it. Splitting it that way keeps PD.2 testable against
+> real repos without a runtime, and stops PD.3 from being a bare
+> ex-command with nothing behind it.
+>
+> **The bench is still owed** (throughput + actor-latency-during-scan).
+> Recorded here rather than implied by the ✅.
+
+
 
 - `working_tree::statuses(repo)` → changed paths; `compute_diff` per
   file → hunks; hunk post-image range → excerpt.

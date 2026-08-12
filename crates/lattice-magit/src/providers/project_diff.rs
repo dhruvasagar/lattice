@@ -403,6 +403,66 @@ pub fn create_project_diff_view(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// The scan
+// ─────────────────────────────────────────────────────────────────
+
+/// Collect the changed files and their baseline text.
+///
+/// **Blocking by construction, and must run on `spawn_blocking`.** It
+/// shells out to git once for the status and once per changed file for
+/// the baseline blob; on the editor actor's `current_thread` runtime a
+/// bare `tokio::spawn` would put every one of those on the actor
+/// thread. Paramount goal #1 — see the standing rule.
+///
+/// Returns `(path, baseline_text)` pairs. A file whose baseline cannot
+/// be read is **skipped, not fatal**: a newly-added file has no `HEAD`
+/// blob at all, which is a normal state rather than an error, and one
+/// unreadable path must not cost the user every other changed file.
+pub fn scan_changed_files(
+    workdir: &std::path::Path,
+    comparison: ProjectDiffComparison,
+) -> Vec<(PathBuf, String)> {
+    use lattice_vcs::{GitBlob, Repository, WorkingTree};
+
+    let Ok(repo) = Repository::discover(workdir) else {
+        tracing::debug!(
+            workdir = %workdir.display(),
+            "project-diff: not a git repository"
+        );
+        return Vec::new();
+    };
+    let Ok(statuses) = WorkingTree::statuses(&repo) else {
+        tracing::debug!("project-diff: `git status` failed");
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (rel, change) in statuses {
+        // Which axis the comparison reads. Working tree vs HEAD wants
+        // anything that differs from HEAD at all; staged wants only
+        // what is in the index.
+        let relevant = match comparison {
+            ProjectDiffComparison::WorkingTree => {
+                change.staged.is_some() || change.unstaged.is_some()
+            }
+            ProjectDiffComparison::Staged => change.staged.is_some(),
+        };
+        if !relevant {
+            continue;
+        }
+
+        // The baseline side. An added file has no HEAD blob — treat it
+        // as empty rather than skipping, so the whole file shows as
+        // added rather than the file vanishing from the view.
+        let baseline = GitBlob::read_path(&repo, "HEAD", &rel)
+            .map(|r| r.to_string())
+            .unwrap_or_default();
+        out.push((workdir.join(&rel), baseline));
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Boot integration
 // ─────────────────────────────────────────────────────────────────
 
@@ -474,6 +534,99 @@ mod tests {
     #[test]
     fn no_files_yields_nothing_to_show() {
         assert!(build_project_diff_excerpts(&[]).is_none());
+    }
+
+    // ── PD.2: the scan ───────────────────────────────────────────
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let st = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    /// A repo with one committed file modified, and one brand-new file.
+    fn repo_with_changes() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git(p, &["init"]);
+        git(p, &["config", "user.email", "t@lattice.dev"]);
+        git(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("tracked.rs"), "fn main() {\n    let old = 1;\n}\n").unwrap();
+        git(p, &["add", "tracked.rs"]);
+        git(p, &["commit", "-m", "base"]);
+        std::fs::write(p.join("tracked.rs"), "fn main() {\n    let new = 2;\n}\n").unwrap();
+        std::fs::write(p.join("added.rs"), "fn fresh() {}\n").unwrap();
+        git(p, &["add", "added.rs"]);
+        dir
+    }
+
+    #[test]
+    fn the_scan_finds_modified_and_added_files() {
+        let dir = repo_with_changes();
+        let found = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(names.contains(&"tracked.rs".to_string()), "got {names:?}");
+        assert!(names.contains(&"added.rs".to_string()), "got {names:?}");
+    }
+
+    /// A newly-added file has no HEAD blob. That is a normal state, not
+    /// an error — it must come back with an EMPTY baseline so the whole
+    /// file reads as added, rather than vanishing from the view.
+    #[test]
+    fn an_added_file_gets_an_empty_baseline_rather_than_being_skipped() {
+        let dir = repo_with_changes();
+        let found = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let added = found
+            .iter()
+            .find(|(p, _)| p.ends_with("added.rs"))
+            .expect("the added file is in the scan");
+        assert!(added.1.is_empty(), "no HEAD blob ⇒ empty baseline");
+    }
+
+    /// The staged comparison reads the index axis only, so a purely
+    /// unstaged modification is not in it.
+    #[test]
+    fn the_staged_comparison_excludes_unstaged_only_changes() {
+        let dir = repo_with_changes();
+        let staged = scan_changed_files(dir.path(), ProjectDiffComparison::Staged);
+        let names: Vec<String> = staged
+            .iter()
+            .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(
+            names.contains(&"added.rs".to_string()),
+            "added.rs was `git add`ed: {names:?}"
+        );
+        assert!(
+            !names.contains(&"tracked.rs".to_string()),
+            "tracked.rs is modified but unstaged: {names:?}"
+        );
+    }
+
+    /// Not a repository is a normal thing to point at, not a panic.
+    #[test]
+    fn a_non_repository_scans_to_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree).is_empty());
+    }
+
+    /// End to end: the scan feeds the excerpt builder, and the modified
+    /// file yields at least one hunk excerpt.
+    #[test]
+    fn the_scan_feeds_the_excerpt_builder() {
+        let dir = repo_with_changes();
+        let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let (sources, excerpts, n_files) =
+            build_project_diff_excerpts(&files).expect("changed files yield excerpts");
+        assert!(n_files >= 1);
+        assert!(!excerpts.is_empty());
+        assert_eq!(sources.len(), n_files, "one source document per file shown");
     }
 
     #[test]

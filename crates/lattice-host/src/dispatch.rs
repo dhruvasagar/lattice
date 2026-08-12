@@ -8957,6 +8957,49 @@ impl Editor {
                     );
                 }
             }
+            // PV.1 (2026-08-12): the generic provider-view seam — the one
+            // arm that replaces the per-provider trigger arm.
+            //
+            // Everything specific to a provider (what to scan, how to
+            // build excerpts, what to call the view, how to word its
+            // success and its refusal) lives in the registered opener,
+            // in the provider's own crate. This arm knows only three
+            // things: look the name up, hand the opener `&mut *self` as
+            // the `ModeActivator` it needs, and apply the outcome.
+            //
+            // The `services.get` result is an owned `Arc`, so the
+            // immutable borrow of `self` ends before the opener takes
+            // `&mut *self` — no borrow conflict, and no need to clone
+            // host state into the call.
+            AppEffect::OpenProviderView { provider, args } => {
+                let opener = self
+                    .services
+                    .get::<lattice_mode::ProviderViewRegistryHandle>()
+                    .and_then(|reg| reg.lookup(&provider));
+                match opener {
+                    Some(open) => match open(self, &args) {
+                        lattice_mode::ProviderViewOutcome::Opened { view, message } => {
+                            let _ = self.activate_buffer(view);
+                            if let Some(message) = message {
+                                self.set_message(EchoLevel::Info, message);
+                            }
+                        }
+                        lattice_mode::ProviderViewOutcome::Declined { message } => {
+                            self.set_message(EchoLevel::Warn, message);
+                        }
+                    },
+                    // A trigger reached a provider nobody registered:
+                    // a feature-gated-out build, or a boot-wiring bug.
+                    // Say which name failed — "nothing happened" is the
+                    // one outcome the user cannot debug.
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            format!("no provider view registered under `{provider}`"),
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -114,6 +114,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         std::sync::Arc::new(crate::providers::project_diff::ProjectDiffService::new()),
     );
 
+    // PD.3: the view opener, on the generic provider-view seam. With
+    // the ex-command and the transient row (both registered below),
+    // this is the ENTIRE trigger — no `Editor::` method, no host
+    // `Action` variant, no dispatch arm. That is the acid test a
+    // provider crate is meant to pass, and it is the reason PV.1 built
+    // the seam instead of spending a third `AppEffect` variant here.
+    crate::providers::project_diff::register_project_diff_provider(boot.services_mut());
+
     // MG.24a: the second shared minor. `magit-core-mode` is every magit
     // buffer; this one is every magit buffer that renders a diff.
     boot.modes_mut()
@@ -820,6 +828,53 @@ fn register_ex_commands(
         "Open the Magit refs buffer — every branch, remote-tracking branch and tag.",
         magit_refs_mode::REFS_BUFFER,
         "magit-refs-mode",
+    );
+    // PD.3 (2026-08-12): the project-diff view — every changed file at
+    // once, as editable source. Not `mk`-able: it opens a multibuffer,
+    // not a synthetic Document, so it routes through the generic
+    // provider-view seam (`AppEffect::OpenProviderView`) rather than
+    // `Effect::OpenSyntheticBuffer`. The opener itself lives in
+    // `providers::project_diff`; this is one of its two front-ends
+    // (the other is the Diff transient's `e` row), and both name the
+    // same registered provider so they cannot drift.
+    //
+    // One dashed namespaced alias, per the ex-command naming rule. No
+    // collapsed spelling, and no new 1–2 letter short.
+    registry.register_ex_command(
+        "magit-diff-project",
+        "Open every changed file in the working tree as one editable diff view. \
+         Pass `staged` to see the index against HEAD instead (read-only).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            // The comparison rides as a plain string so the opener owns
+            // the parse — the ex-command must not learn the provider's
+            // vocabulary, or adding a comparison would mean editing two
+            // places that then have to agree.
+            parse_args: Arc::new(|line: &str, _bang: bool| {
+                let trimmed = line.trim();
+                Ok(if trimmed.is_empty() {
+                    Args::None
+                } else {
+                    Args::String(trimmed.to_string())
+                })
+            }),
+            apply: Arc::new(|ctx| {
+                Ok(Effect::AppAction(
+                    lattice_grammar::app_effect::AppEffect::OpenProviderView {
+                        provider: crate::providers::project_diff::PROVIDER_NAME.to_string(),
+                        args: ctx.args.clone(),
+                    },
+                ))
+            }),
+            args_schema: vec![lattice_grammar::args::ArgSpec::optional(
+                "comparison",
+                lattice_grammar::args::ArgKind::String,
+                "`staged` for the index against HEAD; omitted for the working tree",
+            )],
+            surface_form: SurfaceForm::Keyword,
+        },
     );
     // Fold audit fix: `magit-dispatch` / `magit-file-dispatch` open
     // their OWN named transients (registered into
@@ -2475,6 +2530,13 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-diff-file",
         "Open file diff in a dedicated buffer",
+    );
+    // PD.3: the Diff transient's `e` row. `MagitActionIds::resolve`
+    // picks it up from the `action:magit-` prefix, so the row wires
+    // itself once the name is registered here.
+    reg(
+        "action:magit-diff-project",
+        "Open every changed file as one editable diff view",
     );
     reg(
         "action:magit-stage-patch",
@@ -5912,7 +5974,9 @@ mod tests {
             // node's own binding before its children, so a bound `d`
             // makes `dv` unreachable and `d` itself was `diff-file`.
             // The rows are where those two keep working.
-            115,
+            // PD.3: +1 diff row (`e` edit) — the editable cross-file
+            // project diff, a peer of `d` rather than a replacement.
+            116,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -5942,7 +6006,8 @@ mod tests {
             // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4;
             // MG.43f: +2; MG.43h: none; MG.43d: +6.
             // MG.49: +2, the same two Diff rows as the guard above.
-            118,
+            // PD.3: +1, the same `e` Diff row as the guard above.
+            119,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

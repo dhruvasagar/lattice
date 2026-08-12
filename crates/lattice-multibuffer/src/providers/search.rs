@@ -382,22 +382,6 @@ lattice_protocol::register_event!(
     "lattice-multibuffer",
 );
 
-/// Fired by the forwarder task after `append_excerpts` so the
-/// cells worker rebuilds the display matrix without waiting for
-/// the next keystroke — fixes the blank-results-until-keypress
-/// symptom on `:search spawn`.
-#[derive(Debug, Clone)]
-pub struct MultibufferExcerptsReady {
-    pub view: BufferId,
-}
-
-lattice_protocol::register_event!(
-    MultibufferExcerptsReady,
-    "multibuffer.excerpts-ready",
-    "New excerpts appended to a multibuffer view.",
-    "lattice-multibuffer",
-);
-
 // ─────────────────────────────────────────────────────────────────
 // Provider-minor mode
 // ─────────────────────────────────────────────────────────────────
@@ -785,7 +769,7 @@ impl Mode for ProjectSearchMode {
                                 hit_count_in_batch += fh.rows.len();
                                 view.append_excerpts(excerpts);
                             }
-                            bus_for_task.publish_typed(MultibufferExcerptsReady {
+                            bus_for_task.publish_typed(crate::events::MultibufferExcerptsReady {
                                 view: view_id_for_task,
                             });
 

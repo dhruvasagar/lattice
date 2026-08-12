@@ -148,7 +148,18 @@ pub enum InsertLineEdit {
 /// Variants are added incrementally during slice 8.i as each
 /// historical `Action` variant is promoted from the legacy
 /// `bind_legacy` bridge to a typed `CommandInvocation`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **`Eq` was dropped in PV.1 (2026-08-12)**, deliberately.
+/// [`Self::OpenProviderView`] carries an [`Args`](crate::args::Args) so a
+/// provider's trigger keeps the typed multi-argument shape the `:` line
+/// and transient rows already produce — and `Args` reaches
+/// `ArgValue::Invocation(Box<CommandInvocation>)`, which is `PartialEq`
+/// but not `Eq`. The alternative (flattening the payload to a
+/// `Option<String>`) would force every provider to re-encode structured
+/// arguments as strings, which is the stringly-typed weakness the seam
+/// exists to avoid. Nothing keys a map or set on `AppEffect`; `PartialEq`
+/// is what the round-trip tests use.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AppEffect {
     /// Graceful editor shutdown. The App's `apply_effect` arm
     /// publishes `Event::BeforeQuit` and sets the `should_quit`
@@ -908,6 +919,36 @@ pub enum AppEffect {
     /// `replace_excerpts`. Same division as `ProblemsOpen`: the
     /// substrate crate owns the rebuild, the host arm is generic glue.
     ProblemsRefresh,
+    /// PV.1 (2026-08-12): **open the multibuffer view a provider owns**
+    /// — the generic replacement for the per-provider trigger variant.
+    ///
+    /// A multibuffer view can only be created through `ModeActivator`,
+    /// which is `&mut`-backed and therefore host-only, so every provider
+    /// trigger has to round-trip through an effect. `SearchTrigger` /
+    /// `ProblemsOpen` each spent a variant here plus a host match arm
+    /// plus a plugin-boundary arm on exactly that — three crates touched
+    /// per provider, against a design whose acid test is that a provider
+    /// crate touches none.
+    ///
+    /// Here the host arm is provider-agnostic: look `provider` up in the
+    /// `ProviderViewRegistry`, call the registered opener with the host
+    /// as the activator and `args` verbatim, then apply the generic
+    /// outcome (activate + echo, or echo the refusal). What the opener
+    /// computes, and how it words its own success and refusal, stays in
+    /// the provider's crate.
+    ///
+    /// `args` is the trigger's parameters as the `:` line or transient
+    /// row produced them — the same `Args` shape a command handler
+    /// receives, so one opener serves both front-ends.
+    ///
+    /// `:narrow` / `zn` deliberately do NOT route through here; see
+    /// [`Self::NarrowTrigger`] and `lattice_mode::provider_view`'s module
+    /// docs for why a range resolved against cursor / Visual / marks is
+    /// not a provider parameter.
+    OpenProviderView {
+        provider: String,
+        args: crate::args::Args,
+    },
 }
 
 #[cfg(test)]

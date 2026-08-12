@@ -17,7 +17,7 @@ Catalogue entry: A.1 in
 |---|---|---|
 | PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | PD.2 | Scan — changed set → baselines → excerpts | ✅ |
-| PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | 📝 |
+| PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | ✅ |
 | PD.4 | Edit propagation + the read-only rule | 📝 |
 | PD.5 | File-boundary folds | 📝 |
 
@@ -79,23 +79,65 @@ that presses a key first passes on the broken version too).
 *and* actor-latency-during-scan, the pair the provider tests require —
 `multibuffer/benches/actor_latency_during_scan.rs` is the model.
 
-## PD.3 — Trigger 📝
+## PD.3 — Trigger ✅
 
-- Ex-command `:magit-diff-project`, one dashed namespaced alias. No
-  collapsed spelling; no new 1–2 letter short.
+> **Landed with the PV.1 seam, in one commit.** The acid test in this
+> slice — "zero `Editor::` additions" — could not be met by the shape
+> the three existing providers use (a per-provider `AppEffect` variant
+> plus a host dispatch arm plus a plugin-boundary arm). Rather than
+> spend a fourth variant and then argue the acid test had been met on a
+> technicality, PD.3 built the **generic provider-view seam** first and
+> became its first consumer. Seam + first user land together because a
+> seam with no consumer is dead code and a consumer with no seam does
+> not compile — the documented "cannot compile without its neighbour"
+> exception to one-slice-one-commit.
+>
+> The seam's design is `multibuffer-views.md` §3.7a; its follow-on
+> migrations are PV.2 / PV.3 in
+> [`multibuffer-providers.md`](multibuffer-providers.md).
+>
+> **PD.2's deferred async half landed here too**, as specified — the
+> trigger is what gave the batched scan something to drive.
+
+- Ex-command `:magit-diff-project`, one dashed namespaced alias, with
+  an optional `staged` argument. No collapsed spelling; no new 1–2
+  letter short.
 - A fourth `TransientRow` on `DIFF_SHOW_ROWS`: key `e`, label `edit`,
   "Edit the working-tree diff across files". `d` / `f` / `v` unchanged.
-- Handler body in `lattice-magit`, registered against its own ActionId.
-  **Zero `Editor::` additions** — the acid test.
+- `action:magit-diff-project` + its handler in `magit_global_mode`'s
+  contribution list. Both front-ends return the *same*
+  `AppEffect::OpenProviderView`, so they cannot drift.
+- `open_project_diff` — the registered opener. Opens the view **empty
+  and immediately**, then streams. Re-triggering re-drives the scan
+  into the existing `*magit:project-diff*` buffer rather than stacking
+  a second buffer under the same name.
+- The scan: `spawn_blocking` for the git status + baselines, then
+  `spawn_blocking` per batch for the reads + diffs; `attach_batch` on
+  the async side spawns source documents and appends. Headerline
+  carries progress and completion. Each batch publishes
+  `MultibufferExcerptsReady` — the registered off-keystroke wake.
+- **Zero `Editor::` additions, zero host `Action` variants, zero
+  per-provider host arms** — the acid test, met rather than argued.
+
+**Also fixed here (a latent bug, not scope creep).**
+`MultibufferExcerptsReady` and its `wake_on_event` registration lived
+inside `lattice-multibuffer`'s feature-gated `providers::search`
+module. A `--no-default-features` build — and any provider outside that
+crate, which is exactly what this one is — therefore had **no
+off-keystroke wake at all**: excerpts would have appeared only on the
+next keypress. Moved to the crate root, wake un-gated.
 
 **Tests.** The transient's `e` opens the view; `d`, `f`, `v` still do
 what they did (the regression that matters — the trie checks a node's
 own binding before its children, which is what pushed `f` and `v` into
-this menu in the first place); the ex-command resolves.
+this menu in the first place); the ex-command resolves; the comparison
+argument parses (including the case/whitespace and unknown-value
+paths); a file that vanished mid-scan is skipped, not fatal.
 
-**GPUI parity.** No new `Effect` variant expected — confirm with
-`grep -rn "project.diff" crates/lattice-ui-gpui/` and record the empty
-result rather than assuming it.
+**GPUI parity.** No new `Effect` variant — `AppEffect` extension only,
+which both renderers route through the existing `Effect::AppAction`
+path. Confirmed with `grep -rn "project.diff\|OpenProviderView"
+crates/lattice-ui-gpui/` → empty, recorded here rather than assumed.
 
 ## PD.4 — Edit propagation + the read-only rule 📝
 

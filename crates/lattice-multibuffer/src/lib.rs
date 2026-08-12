@@ -42,6 +42,10 @@
 //! * **M.5–M.8** — expand-context, provider trait + first
 //!   consumer, fold providers.
 
+// PV.1 (2026-08-12): crate-level events, moved out of the
+// feature-gated `providers::search` so the off-keystroke wake exists in
+// every build and every provider crate can publish it.
+pub mod events;
 pub mod install;
 pub mod mode;
 pub mod motions;
@@ -49,6 +53,7 @@ pub mod providers;
 pub mod registry;
 pub mod view;
 
+pub use crate::events::MultibufferExcerptsReady;
 pub use crate::install::install;
 pub use crate::mode::{
     MultibufferMode, register_multibuffer_ex_commands, register_multibuffer_modes,

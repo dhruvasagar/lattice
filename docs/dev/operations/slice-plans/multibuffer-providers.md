@@ -68,6 +68,83 @@ N≥10-excerpt view). All ✅ as of 2026-06-08.
 
 ---
 
+## PV — the provider-view seam
+
+Cross-cutting infrastructure shared by every entry below. Design:
+[`multibuffer-views.md`](../../architecture/multibuffer-views.md) §3.7a.
+
+| Slice | Title | Status |
+|---|---|---|
+| PV.1 | `ProviderViewRegistry` + `AppEffect::OpenProviderView` + one host arm | ✅ |
+| PV.2 | Migrate `:search`; delete `AppEffect::SearchTrigger` | 📝 |
+| PV.3 | Migrate `:copen` / `:cclose` / problems-refresh; delete those variants | 📝 |
+
+### PV.1 — the seam ✅
+
+Landed 2026-08-12 together with its first consumer (magit's
+project-diff, PD.3) — a seam with no consumer is dead code and a
+consumer with no seam does not compile.
+
+Before it, each provider spent an `AppEffect` variant, a host dispatch
+arm and a plugin-boundary arm on "open my view", because view creation
+needs the `&mut`-backed `ModeActivator` and a trigger only has `&self`.
+Three crates touched for the N+1th provider, against a design whose
+acid test is that a provider crate touches none. Now a provider
+registers an opener under a name and the host's single arm calls it.
+
+Also un-gated `MultibufferExcerptsReady` (it lived inside the
+feature-gated `providers::search` module, so a `--no-default-features`
+build and every out-of-crate provider had no off-keystroke wake).
+
+### PV.2 — migrate project-search 📝
+
+`:search`'s host arm reads one host fact the opener cannot: the
+resolved `SearchContextSize` option for the active buffer. (`current_dir`
+is already a service — `CurrentDirHandle`, which the mode's `gr` refresh
+handler already uses.)
+
+- Promote resolved-option reads to a service handle, so any mode can
+  read a user option off-chord rather than only through the host arm.
+- `providers::search` registers its opener under `project-search`;
+  `register_search_ex_command` returns `OpenProviderView` with the
+  query as `Args::String`.
+- Delete `AppEffect::SearchTrigger`, its host arm, and its
+  plugin-boundary arm.
+
+**Tests.** `:search foo` still streams; `gr` still refreshes (it never
+went through the host arm); the option is read at trigger time, so
+`:set search.context_size` before `:search` still takes effect.
+
+### PV.3 — migrate problems 📝
+
+`:copen`'s host arm reads `self.error_list()`.
+
+- Promote the error list to a service handle. Defensible on its own —
+  EP.1's multiple producers already write it through effects, and a
+  mode wanting to read it off-chord has no path today.
+- `providers::problems` registers openers for open; `:cclose` and
+  problems-refresh follow the same treatment.
+- Delete `AppEffect::{ProblemsOpen,ProblemsClose,ProblemsRefresh}` and
+  their arms.
+
+**Tests.** `:copen` groups the current list; `gr` rebuilds in place
+(not a re-open — `create_multibuffer_view` mints a fresh `BufferId`);
+`:cclose` still refuses outside a problems view.
+
+### Not migrating: `narrow`
+
+`:narrow` / `zn` keep their typed `AppEffect::{NarrowTrigger,NarrowLines}`
+variants. Their host arm resolves a *range against live editor state* —
+active composed document, cursor, last-Visual extent, mark table, and
+the composed→source one-hop translation. None of that is a provider
+parameter, and exporting it through `ModeActivator` to make narrow fit
+would pollute a generic trait with one consumer's surface (the
+`Document::excerpts()` rejection, §3.6). Narrow is an editing operation
+that yields a multibuffer, not a parameterised provider open. Recorded
+as a decision, not left to read as an oversight.
+
+---
+
 ## Priority labels
 
 - **A** — daily-driver workflows; high impact, high frequency.

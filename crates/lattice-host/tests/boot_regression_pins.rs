@@ -391,7 +391,7 @@ async fn multibuffer_excerpts_ready_wakes_async_landed_off_keystroke() {
     let editor = boot();
     assert_event_wakes(
         &editor,
-        lattice_multibuffer::providers::search::MultibufferExcerptsReady {
+        lattice_multibuffer::MultibufferExcerptsReady {
             view: lattice_core::BufferId(1),
         },
     )

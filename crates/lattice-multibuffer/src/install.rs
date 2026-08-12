@@ -111,13 +111,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::providers::search::register_project_search_service(boot.services_mut());
 
     // ── Off-keystroke wake ──────────────────────────────────────────────────
-    // `MultibufferExcerptsReady` (fired by the search forwarder after each
-    // appended batch) wakes `async_landed` so the actor republishes render
-    // state and the cells worker picks up the new excerpt syntax — without a
-    // keypress. Replaces the host's hand-rolled mpsc→notify forwarder; the wake
-    // is baked into the primitive (can't-forget). Ordering with the
+    // `MultibufferExcerptsReady` (published by any provider after appending a
+    // batch) wakes `async_landed` so the actor republishes render state and the
+    // cells worker picks up the new excerpt syntax — without a keypress.
+    // Replaces the host's hand-rolled mpsc→notify forwarder; the wake is baked
+    // into the primitive (can't-forget). Ordering with the
     // `AsyncRenderStatePublished` → cells bridge is unchanged (that bridge stays
     // host-side, downstream of this wake).
-    #[cfg(feature = "search")]
-    boot.wake_on_event::<crate::providers::search::MultibufferExcerptsReady>();
+    //
+    // PV.1 (2026-08-12): NO LONGER `#[cfg(feature = "search")]`. The event is a
+    // property of multibuffer views, not of searching; gating it meant a
+    // `--no-default-features` build — and any provider living outside this
+    // crate, like magit's project-diff — appended excerpts that only appeared
+    // on the next keypress.
+    boot.wake_on_event::<crate::events::MultibufferExcerptsReady>();
 }

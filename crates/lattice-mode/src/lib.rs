@@ -108,6 +108,10 @@ pub mod modeline;
 pub mod modes;
 pub mod pending_synthetic_highlights;
 pub mod plugin_meta_sink;
+// PV.1 (2026-08-12): the generic provider-view seam — one host primitive
+// for "open the multibuffer view a provider owns", replacing the
+// per-provider `AppEffect` variant + host arm + plugin-boundary arm.
+pub mod provider_view;
 pub mod registry;
 pub mod services;
 // DB.5 (design.md §9.1): the generic `Startup` boot-completion typed event.
@@ -160,6 +164,9 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
 pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
+pub use crate::provider_view::{
+    ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry, ProviderViewRegistryHandle,
+};
 pub use crate::services::ServiceRegistry;
 pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;

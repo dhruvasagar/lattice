@@ -160,6 +160,26 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:status*",
         "magit-status-mode"
     );
+    // PD.3 (2026-08-12): the Diff transient's `e` row — the editable
+    // cross-file project diff. It cannot use `open!`: the view is a
+    // multibuffer, not a synthetic Document, so it routes through the
+    // generic provider-view seam instead of `OpenSyntheticBuffer`.
+    //
+    // The handler is a pure name + args hand-off; everything the view
+    // does lives in `providers::project_diff`'s registered opener. The
+    // ex-command `:magit-diff-project` returns the identical effect, so
+    // the two front-ends cannot drift apart.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-diff-project",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            Some(Effect::AppAction(
+                lattice_grammar::app_effect::AppEffect::OpenProviderView {
+                    provider: crate::providers::project_diff::PROVIDER_NAME.to_string(),
+                    args: ctx.args.clone(),
+                },
+            ))
+        }),
+    });
     open!(
         "action:magit-global-commit",
         "*magit:commit*",

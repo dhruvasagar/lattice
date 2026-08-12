@@ -460,6 +460,22 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
+            // PV.1: the generic provider-view seam. Its WIT surface is
+            // deferred deliberately rather than incidentally — exposing
+            // it would let a plugin open any registered provider's view
+            // by name, which is a capability question (which providers
+            // is a plugin allowed to trigger?) that belongs with the
+            // plugin host's capability model, not ahead of it. Typed
+            // error, never lossy.
+            NativeAppEffect::OpenProviderView { .. } => {
+                return Err(
+                    "AppEffect::OpenProviderView opens a registered provider's multibuffer view \
+                     by name; its plugin (WIT) surface is deferred with the plugin host, pending \
+                     the capability model for which providers a plugin may trigger \
+                     (multibuffer-views.md §3.7a)"
+                        .to_string(),
+                );
+            }
         })
     }
 

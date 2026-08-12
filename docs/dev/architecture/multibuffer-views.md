@@ -803,6 +803,91 @@ impl Mode for MultibufferMode {
 Generic. Knows nothing about *why* excerpts exist. Provider-
 minors layer provider-specific behaviour on top.
 
+### 3.7a The provider-view seam — how a trigger reaches the activator (PV.1, 2026-08-12)
+
+§3.7 says a provider ships "a public trigger function that the
+host's ex-command dispatcher calls." It did not say *how* the call
+gets there, and the answer that emerged in practice was: badly.
+
+A view can only be created through `ModeActivator`, which is
+`&mut`-backed and therefore host-only. A trigger — an ex-command's
+`apply`, or a chord-fired action handler — runs against `&self`
+state and can only return an `Effect`. So every provider needs some
+effect that carries "open my view" back to a holder of the
+activator. Search, problems and narrow each spent their own
+`AppEffect` variant on that, plus a match arm in the host's
+dispatcher, plus a third arm at the plugin boundary. Three crates
+touched for the N+1th provider — against a design whose acid test
+is that a provider crate touches none.
+
+**The seam.** One `AppEffect::OpenProviderView { provider, args }`
+and one registry, `lattice_mode::ProviderViewRegistry`:
+
+```rust
+pub enum ProviderViewOutcome {
+    Opened { view: BufferId, message: Option<String> },
+    Declined { message: String },
+}
+
+pub type ProviderViewOpener =
+    Arc<dyn Fn(&mut dyn ModeActivator, &Args) -> ProviderViewOutcome + Send + Sync>;
+```
+
+The host creates the registry before the subsystem `install` list
+and registers it as a service. A provider registers an opener under
+a name during its own `install`. The host's arm looks the name up,
+calls the opener with itself as the activator, and applies the
+outcome: activate + echo, or echo the refusal. It never learns what
+the provider computed, or how the provider words its own success
+and refusal.
+
+**What this buys.** A provider crate now ships a multibuffer view
+with zero host edits — the trigger, the keymap, the handler bodies,
+the async scan and the view all sit in one crate. `lattice-magit`'s
+project-diff (PD.3) is the first provider to pass that test
+end-to-end.
+
+**Why `Args` and not a string.** Provider triggers carry genuinely
+different payloads (a search query, a diff comparison, nothing at
+all), and transient rows already project their flags into
+`Args::List`. Flattening the payload to a `String` would force every
+provider to re-encode structured arguments as text, which is the
+stringly-typed weakness a generic seam is otherwise prone to. The
+cost is that `AppEffect` gives up its `Eq` derive (`Args` reaches
+`ArgValue::Invocation`, which is `PartialEq` only); nothing keys a
+map or set on `AppEffect`, so this is paid in a derive, not in
+behaviour.
+
+**Why `narrow` deliberately does NOT use it.** `:narrow` / `zn`
+also produce a multibuffer, and they keep their typed
+`AppEffect::{NarrowTrigger,NarrowLines}` variants. They are not the
+same operation: narrowing resolves a *range against live editor
+state* — the active composed document, the cursor, the last Visual
+extent, the mark table, and the composed→source one-hop translation
+— none of which is a provider parameter. Routing it through the
+seam would mean exporting marks and visual state through
+`ModeActivator`, polluting a generic trait with one consumer's
+surface, which is the rejection §3.6 already made against
+`Document::excerpts()`. Narrow is an *editing operation that yields
+a multibuffer*, not a parameterised provider open, and it is
+recorded here as a decision rather than left to read as an
+oversight.
+
+Search and problems DO belong on the seam and migrate in PV.2 /
+PV.3; each first needs one host fact promoted to a service (a
+resolved-option reader, and the error list respectively) — both
+defensible on their own, since a mode may legitimately want either
+off-chord.
+
+**The wake is crate-level, not search-level.** PV.1 also moved
+`MultibufferExcerptsReady` out of the feature-gated
+`providers::search` module to the crate root, and un-gated its
+`wake_on_event` registration. The event is a property of a
+multibuffer view, not of searching; gating it meant a
+`--no-default-features` build — and any provider living outside
+`lattice-multibuffer` — appended excerpts that only became visible
+on the next keypress.
+
 ### Provider model
 
 A multibuffer **provider** is a unit of code (a submodule of

@@ -34,14 +34,17 @@ use std::sync::Arc;
 
 use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId, DocumentBuilder};
-use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
+use lattice_grammar::{Args, CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
     CapabilitySet, Keymap, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
     ModeRegistry,
 };
 use lattice_multibuffer::view::create_multibuffer_view;
-use lattice_multibuffer::{Excerpt, ExcerptHeader, HeaderlineStatus, MultibufferRegistryHandle};
-use lattice_runtime::{Document, spawn_document};
+use lattice_multibuffer::{
+    Excerpt, ExcerptHeader, HeaderlineStatus, MultibufferDocumentHandle, MultibufferExcerptsReady,
+    MultibufferRegistryHandle,
+};
+use lattice_runtime::{Document, EventBus, spawn_document};
 use lattice_syntax::LangRegistry;
 
 /// Context lines above and below each hunk. Wider than the ±2 the
@@ -273,25 +276,36 @@ pub fn file_hunk_ranges(before: &str, after: &str) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Build the sources + excerpts for a set of changed files.
+/// One changed file, read and diffed: the working-tree text plus the
+/// post-image ranges its hunks occupy.
 ///
-/// `files` is `(path, baseline_text)`; the working-tree text is read
-/// from disk. Returns `None` when there is nothing to show — no
-/// changed files, or every one unreadable.
-///
-/// A file that fails to read is logged and skipped: one unreadable
-/// path must not cost the user every other changed file.
-#[allow(clippy::type_complexity)]
-pub fn build_project_diff_excerpts(
-    files: &[(PathBuf, String)],
-) -> Option<(HashMap<BufferId, Arc<dyn Document>>, Vec<Excerpt>, usize)> {
-    if files.is_empty() {
-        return None;
-    }
-    let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
-    let mut excerpts: Vec<Excerpt> = Vec::new();
-    let mut n_files = 0usize;
+/// The two halves of building a batch are split around this type on
+/// purpose. Producing it is filesystem + CPU work
+/// ([`read_and_diff`], `spawn_blocking`-only); consuming it spawns
+/// document actors and touches the view ([`attach_batch`], async side).
+/// Fusing them — the PD.1 shape, where one function read, diffed and
+/// spawned — would have put every `read_to_string` and every diff on
+/// the actor thread the moment a trigger existed to call it.
+#[derive(Debug, Clone)]
+pub struct FileHunks {
+    pub path: PathBuf,
+    /// The working-tree text, as read during the scan.
+    pub text: String,
+    /// Post-image excerpt ranges, one per hunk, context already applied.
+    pub ranges: Vec<(u32, u32)>,
+}
 
+/// **The blocking half.** Read each changed file and compute its hunk
+/// ranges against the baseline the scan collected.
+///
+/// Pure, no tokio, no view access — call it inside `spawn_blocking`.
+///
+/// A file that fails to read is logged and skipped: one unreadable path
+/// must not cost the user every other changed file. A file whose hunks
+/// all vanished (it was edited back to the baseline between the status
+/// call and the read) contributes nothing rather than an empty group.
+pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
+    let mut out = Vec::with_capacity(files.len());
     for (path, baseline) in files {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -308,98 +322,51 @@ pub fn build_project_diff_excerpts(
         if ranges.is_empty() {
             continue;
         }
-
-        let source_id = BufferId::next();
-        let document = DocumentBuilder::default()
-            .with_text(&text)
-            .with_path(path.clone())
-            .build();
-        let source_registry = Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
-        let handle = spawn_document(source_id, document, source_registry);
-        sources.insert(source_id, Arc::new(handle) as Arc<dyn Document>);
-        n_files += 1;
-
-        for (start, end) in ranges {
-            let header = hunk_excerpt_header(path, start);
-            excerpts.push(Excerpt::new(source_id, start, end).with_header(header));
-        }
-    }
-
-    if excerpts.is_empty() {
-        return None;
-    }
-    Some((sources, excerpts, n_files))
-}
-
-/// Set the sticky headerline: what is being compared, and whether it
-/// is editable.
-///
-/// Stating read-only here is deliberate — the design's §2.2: a
-/// read-only view must be *explained*, not merely enforced, or it
-/// reads as a bug.
-fn set_project_diff_headerline(
-    activator: &mut dyn ModeActivator,
-    view: BufferId,
-    comparison: ProjectDiffComparison,
-    n_hunks: usize,
-    n_files: usize,
-) {
-    if let Some(reg) = activator.services().get::<MultibufferRegistryHandle>()
-        && let Some(handle) = reg.handle(view)
-    {
-        let editable = if comparison.is_editable() {
-            ""
-        } else {
-            " (read-only)"
-        };
-        handle.set_headerline(HeaderlineStatus::Complete {
-            summary: format!(
-                "[project-diff: {}{editable}] {n_hunks} hunks in {n_files} files",
-                comparison.label()
-            ),
-            emphasis: None,
+        out.push(FileHunks {
+            path: path.clone(),
+            text,
+            ranges,
         });
     }
+    out
 }
 
-/// Open a project-diff multibuffer over `files`.
+/// **The view-touching half.** Spawn a source document per file, add it
+/// to `view`'s source map, and append one excerpt per hunk.
 ///
-/// Returns the view's `BufferId`, or `None` when there is nothing to
-/// show — the caller echoes rather than opening an empty view.
-pub fn create_project_diff_view(
-    activator: &mut dyn ModeActivator,
-    files: &[(PathBuf, String)],
-    state: ProjectDiffState,
-    registry: CommandRegistryHandle,
-    lang_registry: Option<Arc<LangRegistry>>,
-) -> Option<BufferId> {
-    let (sources, excerpts, n_files) = build_project_diff_excerpts(files)?;
-    let n_hunks = excerpts.len();
+/// Returns the number of excerpts appended, so the caller can keep a
+/// running hunk count for the headerline without re-reading the view.
+///
+/// Appending (rather than replacing) is what makes the view fill
+/// progressively: the user sees the first files while the rest are
+/// still being read.
+pub fn attach_batch(view: &MultibufferDocumentHandle, batch: &[FileHunks]) -> usize {
+    let mut appended = 0usize;
+    for file in batch {
+        let source_id = BufferId::next();
+        let document = DocumentBuilder::default()
+            .with_text(&file.text)
+            .with_path(file.path.clone())
+            .build();
+        // A source document in a provider view gets its own empty
+        // command registry behind the `ArcSwap` handle `spawn_document`
+        // expects — the same shape the search provider's sources use.
+        let source_registry = Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+        let handle = spawn_document(source_id, document, source_registry);
+        view.add_source(source_id, Arc::new(handle) as Arc<dyn Document>);
 
-    let view = create_multibuffer_view(
-        activator,
-        sources,
-        excerpts,
-        Some("*magit:project-diff*".to_string()),
-        BufferFlags::default(),
-        registry,
-        lang_registry,
-    );
-
-    if let Some(svc) = activator.services().get::<ProjectDiffServiceHandle>() {
-        svc.set_state(view, state.clone());
-        if let Some(reg) = activator.services().get::<MultibufferRegistryHandle>()
-            && let Some(handle) = reg.handle(view)
-        {
-            svc.index_document(handle.document_id(), view);
-        }
-    } else {
-        tracing::debug!("project-diff: service not registered; refresh will be unavailable");
+        let excerpts: Vec<Excerpt> = file
+            .ranges
+            .iter()
+            .map(|(start, end)| {
+                Excerpt::new(source_id, *start, *end)
+                    .with_header(hunk_excerpt_header(&file.path, *start))
+            })
+            .collect();
+        appended += excerpts.len();
+        view.append_excerpts(excerpts);
     }
-
-    set_project_diff_headerline(activator, view, state.comparison, n_hunks, n_files);
-    activator.activate_minor_by_id(view, MagitProjectDiffMode::mode_id());
-    Some(view)
+    appended
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -463,6 +430,285 @@ pub fn scan_changed_files(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// The trigger
+// ─────────────────────────────────────────────────────────────────
+
+/// The name this provider is registered under in the
+/// [`ProviderViewRegistry`]. Both front-ends —
+/// `:magit-diff-project` and the Diff transient's `e` row — name it.
+pub const PROVIDER_NAME: &str = "magit-project-diff";
+
+/// The view's buffer name. Stable, so re-triggering finds the buffer
+/// the user already has open instead of stacking a second one beside it
+/// under the same name (which would make `:b *magit:project-diff*`
+/// ambiguous).
+pub const VIEW_NAME: &str = "*magit:project-diff*";
+
+/// Files read + diffed per batch before the view is touched.
+///
+/// Small enough that the first hunks land almost immediately on a large
+/// working tree; large enough that a 200-file diff does not pay 200
+/// round-trips between the blocking pool and the actor. Not a user
+/// option — the right value is a property of the two costs, not of
+/// anyone's preference.
+const SCAN_BATCH: usize = 8;
+
+/// Which comparison the trigger's arguments asked for.
+///
+/// Anything unrecognised falls back to the working tree rather than
+/// refusing: the working tree is the daily driver, and a typo in an
+/// argument is a worse reason to show nothing than to show the default.
+fn comparison_from_args(args: &Args) -> ProjectDiffComparison {
+    let raw = match args {
+        Args::String(s) => Some(s.trim().to_ascii_lowercase()),
+        Args::List(values) => values.iter().find_map(|v| match v {
+            lattice_grammar::ArgValue::String(s) => Some(s.trim().to_ascii_lowercase()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    match raw.as_deref() {
+        Some("staged") | Some("index") => ProjectDiffComparison::Staged,
+        _ => ProjectDiffComparison::WorkingTree,
+    }
+}
+
+/// Find the project-diff view already open, if there is one.
+///
+/// Name lookup alone is not enough — a buffer could carry the name
+/// without being a live multibuffer (a stale registry entry, a test
+/// harness) — so the candidate must also resolve to a multibuffer
+/// handle before it is reused.
+fn existing_view(services: &lattice_mode::ServiceRegistry) -> Option<BufferId> {
+    let store = services.get::<lattice_mode::BufferStoreHandle>()?;
+    let id = store.find_by_name(VIEW_NAME)?;
+    let registry = services.get::<MultibufferRegistryHandle>()?;
+    registry.handle(id).map(|_| id)
+}
+
+/// Open (or re-drive) the project-diff view.
+///
+/// This is the closure registered on the generic provider-view seam, so
+/// it is the whole of what the host does for this feature: the host arm
+/// looks the name up, calls this with itself as the activator, and
+/// applies the returned [`ProviderViewOutcome`].
+///
+/// The view opens **empty and immediately**; the scan runs off-thread
+/// and streams into it. Re-triggering with the view already open
+/// re-drives the scan into the same buffer rather than minting a second
+/// one — which is also why the excerpts are cleared here rather than in
+/// the task: the clear must be visible before the first batch lands, or
+/// the old and new scans briefly show together.
+pub fn open_project_diff(
+    activator: &mut dyn ModeActivator,
+    args: &Args,
+) -> lattice_mode::ProviderViewOutcome {
+    use lattice_mode::ProviderViewOutcome;
+
+    let comparison = comparison_from_args(args);
+    let Some(workdir) = crate::workdir::magit_workdir() else {
+        return ProviderViewOutcome::Declined {
+            message: "magit: not inside a git repository".to_string(),
+        };
+    };
+
+    let services = activator.services();
+    let Some(registry) = services.get::<CommandRegistryHandle>() else {
+        return ProviderViewOutcome::Declined {
+            message: "magit: command registry unavailable; cannot open the project diff"
+                .to_string(),
+        };
+    };
+    let lang_registry = services.get::<Arc<LangRegistry>>().map(|h| (*h).clone());
+
+    let reopened = existing_view(&services);
+    let view = match reopened {
+        Some(view) => view,
+        None => create_multibuffer_view(
+            activator,
+            HashMap::new(),
+            Vec::new(),
+            Some(VIEW_NAME.to_string()),
+            BufferFlags::default(),
+            (*registry).clone(),
+            lang_registry,
+        ),
+    };
+
+    let Some(mb_registry) = services.get::<MultibufferRegistryHandle>() else {
+        return ProviderViewOutcome::Declined {
+            message: "magit: multibuffer registry unavailable; cannot open the project diff"
+                .to_string(),
+        };
+    };
+    let Some(handle) = mb_registry.handle(view) else {
+        return ProviderViewOutcome::Declined {
+            message: "magit: the project-diff view failed to open".to_string(),
+        };
+    };
+
+    if let Some(svc) = services.get::<ProjectDiffServiceHandle>() {
+        svc.set_state(
+            view,
+            ProjectDiffState {
+                workdir: workdir.clone(),
+                comparison,
+            },
+        );
+        svc.index_document(handle.document_id(), view);
+    } else {
+        tracing::debug!("project-diff: service not registered; view state will not be tracked");
+    }
+
+    // Empty the view before the scan starts. On a first open this is a
+    // no-op; on a re-trigger it is what stops the previous scan's
+    // excerpts from sitting above the new ones.
+    handle.replace_excerpts(HashMap::new(), Vec::new());
+    handle.set_headerline(HeaderlineStatus::InProgress {
+        label: format!("Computing {} diff", comparison.label()),
+        count: Some(0),
+        emphasis: None,
+    });
+
+    activator.activate_minor_by_id(view, MagitProjectDiffMode::mode_id());
+
+    let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
+    spawn_project_diff_scan(view, workdir, comparison, mb_registry, events);
+
+    ProviderViewOutcome::Opened {
+        view,
+        message: Some(format!(
+            "project-diff: scanning the {} …",
+            comparison.label()
+        )),
+    }
+}
+
+/// Run the scan off-thread and stream its batches into `view`.
+///
+/// Shape, and why:
+///
+/// - The git status + baseline reads and the per-file read + diff both
+///   run under **`spawn_blocking`**. The editor actor is a
+///   `current_thread` runtime, so a bare `tokio::spawn` for that work
+///   would land every `read_to_string` and every diff on the actor
+///   thread — paramount goal #1's forbidden pattern, and the reason
+///   PD.2 documented `scan_changed_files` as blocking-only before any
+///   caller existed.
+/// - Excerpts are appended **per batch**, so the view fills
+///   progressively instead of blinking from empty to complete.
+/// - Each batch publishes [`MultibufferExcerptsReady`], which is the
+///   registered off-keystroke wake. Without it the excerpts would sit
+///   invisible until the user happened to press a key — the bug class
+///   that reads as a rendering fault and is not one.
+///
+/// There is no typed batch event + forwarder pair here (the shape
+/// `providers::search` uses) because producer and consumer are the same
+/// task: the bus exists to decouple a producer from an unknown set of
+/// subscribers, and inventing one for a single known consumer would be
+/// indirection without a reader.
+fn spawn_project_diff_scan(
+    view: BufferId,
+    workdir: PathBuf,
+    comparison: ProjectDiffComparison,
+    mb_registry: Arc<MultibufferRegistryHandle>,
+    events: Option<Arc<EventBus>>,
+) {
+    let editable_note = if comparison.is_editable() {
+        ""
+    } else {
+        " (read-only)"
+    };
+
+    tokio::spawn(async move {
+        let scanned = tokio::task::spawn_blocking({
+            let workdir = workdir.clone();
+            move || scan_changed_files(&workdir, comparison)
+        })
+        .await;
+        let files = match scanned {
+            Ok(files) => files,
+            Err(e) => {
+                tracing::warn!(error = %e, "project-diff: the scan task failed");
+                Vec::new()
+            }
+        };
+
+        // The view may have been closed while the scan ran. Every
+        // handle lookup below re-checks, so a closed view ends the task
+        // instead of appending into a registry entry nobody reads.
+        let Some(handle) = mb_registry.handle(view) else {
+            return;
+        };
+
+        if files.is_empty() {
+            handle.set_headerline(HeaderlineStatus::Complete {
+                summary: format!(
+                    "[project-diff: {}{editable_note}] no changes",
+                    comparison.label()
+                ),
+                emphasis: None,
+            });
+            if let Some(events) = &events {
+                events.publish_typed(MultibufferExcerptsReady { view });
+            }
+            return;
+        }
+
+        let total_files = files.len();
+        let mut files_done = 0usize;
+        let mut hunks = 0usize;
+
+        for chunk in files.chunks(SCAN_BATCH) {
+            let owned: Vec<(PathBuf, String)> = chunk.to_vec();
+            let built = match tokio::task::spawn_blocking(move || read_and_diff(&owned)).await {
+                Ok(built) => built,
+                Err(e) => {
+                    tracing::warn!(error = %e, "project-diff: a batch failed to read; skipping it");
+                    continue;
+                }
+            };
+
+            let Some(handle) = mb_registry.handle(view) else {
+                return;
+            };
+            hunks += attach_batch(&handle, &built);
+            files_done += chunk.len();
+
+            handle.set_headerline(HeaderlineStatus::InProgress {
+                label: format!(
+                    "Computing {} diff ({files_done}/{total_files} files)",
+                    comparison.label()
+                ),
+                count: Some(hunks),
+                emphasis: None,
+            });
+            if let Some(events) = &events {
+                events.publish_typed(MultibufferExcerptsReady { view });
+            }
+        }
+
+        let Some(handle) = mb_registry.handle(view) else {
+            return;
+        };
+        // The file count is the number of files that actually produced
+        // hunks, which can be lower than the scanned count: a file can be
+        // edited back to its baseline between `git status` and the read.
+        let shown_files = handle.source_buffer_ids().len();
+        handle.set_headerline(HeaderlineStatus::Complete {
+            summary: format!(
+                "[project-diff: {}{editable_note}] {hunks} hunks in {shown_files} files",
+                comparison.label()
+            ),
+            emphasis: None,
+        });
+        if let Some(events) = &events {
+            events.publish_typed(MultibufferExcerptsReady { view });
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Boot integration
 // ─────────────────────────────────────────────────────────────────
 
@@ -470,6 +716,36 @@ pub fn register_project_diff_mode(modes: &mut ModeRegistry) {
     modes
         .register(MagitProjectDiffMode)
         .expect("magit-project-diff-mode registers without conflict at boot");
+}
+
+/// Register the view opener on the generic provider-view seam.
+///
+/// This — plus an ex-command and a transient row, both also in this
+/// crate — is the whole of the trigger. No `Editor::` method, no host
+/// `Action` variant, no dispatch arm: the acid test a provider crate is
+/// supposed to pass.
+///
+/// A missing registry means the host did not publish the seam (an older
+/// boot, or a test harness); logged and skipped, because refusing to
+/// boot over an unavailable optional surface is the worse failure.
+pub fn register_project_diff_provider(services: &lattice_mode::ServiceRegistry) {
+    let Some(registry) = services.get::<lattice_mode::ProviderViewRegistryHandle>() else {
+        tracing::debug!(
+            "project-diff: no ProviderViewRegistry; `:magit-diff-project` will not be available"
+        );
+        return;
+    };
+    if !registry.register(
+        PROVIDER_NAME,
+        Arc::new(|activator: &mut dyn ModeActivator, args: &Args| {
+            open_project_diff(activator, args)
+        }),
+    ) {
+        tracing::warn!(
+            provider = PROVIDER_NAME,
+            "project-diff: a provider view is already registered under this name"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -533,7 +809,7 @@ mod tests {
 
     #[test]
     fn no_files_yields_nothing_to_show() {
-        assert!(build_project_diff_excerpts(&[]).is_none());
+        assert!(read_and_diff(&[]).is_empty());
     }
 
     // ── PD.2: the scan ───────────────────────────────────────────
@@ -616,17 +892,67 @@ mod tests {
         assert!(scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree).is_empty());
     }
 
-    /// End to end: the scan feeds the excerpt builder, and the modified
-    /// file yields at least one hunk excerpt.
+    /// End to end across the blocking half: the scan feeds
+    /// `read_and_diff`, and the modified file comes back with hunks.
     #[test]
-    fn the_scan_feeds_the_excerpt_builder() {
+    fn the_scan_feeds_the_blocking_half() {
         let dir = repo_with_changes();
         let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
-        let (sources, excerpts, n_files) =
-            build_project_diff_excerpts(&files).expect("changed files yield excerpts");
-        assert!(n_files >= 1);
-        assert!(!excerpts.is_empty());
-        assert_eq!(sources.len(), n_files, "one source document per file shown");
+        let built = read_and_diff(&files);
+        assert!(!built.is_empty(), "changed files yield hunks");
+        assert!(
+            built.iter().all(|f| !f.ranges.is_empty()),
+            "a file with no surviving hunks is dropped, not carried empty"
+        );
+        assert!(
+            built.iter().any(|f| f.path.ends_with("tracked.rs")),
+            "the modified file is in the built batch: {:?}",
+            built.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// The blocking half never panics on a path that vanished between
+    /// `git status` and the read — a rebase or a `rm` mid-scan is a
+    /// normal race, not an error state.
+    #[test]
+    fn a_file_that_disappeared_mid_scan_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("never-existed.rs");
+        let built = read_and_diff(&[(gone, "fn old() {}\n".to_string())]);
+        assert!(built.is_empty());
+    }
+
+    // ── PD.3: the trigger ────────────────────────────────────────
+
+    /// The comparison selector is an argument, not a second entry
+    /// point — one opener serves `:magit-diff-project` and the Diff
+    /// transient's `e` row.
+    #[test]
+    fn the_comparison_comes_from_the_trigger_arguments() {
+        assert_eq!(
+            comparison_from_args(&Args::None),
+            ProjectDiffComparison::WorkingTree
+        );
+        assert_eq!(
+            comparison_from_args(&Args::String("staged".into())),
+            ProjectDiffComparison::Staged
+        );
+        assert_eq!(
+            comparison_from_args(&Args::String("  INDEX ".into())),
+            ProjectDiffComparison::Staged,
+            "case and surrounding space are not the user's problem"
+        );
+    }
+
+    /// An unrecognised argument opens the daily driver rather than
+    /// refusing: showing nothing is a worse answer to a typo than
+    /// showing the default.
+    #[test]
+    fn an_unknown_comparison_falls_back_to_the_working_tree() {
+        assert_eq!(
+            comparison_from_args(&Args::String("nonsense".into())),
+            ProjectDiffComparison::WorkingTree
+        );
     }
 
     #[test]

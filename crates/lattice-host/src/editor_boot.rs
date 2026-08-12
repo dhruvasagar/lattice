@@ -549,6 +549,18 @@ impl Editor {
         boot.register_service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>(
             vrp.clone() as Arc<dyn lattice_mode::VirtualRowRegistrar>
         );
+        // PV.1 (2026-08-12): the provider-view registry. Same shape as
+        // `vrp` above and registered for the same reason — a host-created
+        // table that subsystem installs *write into*, so it must exist
+        // before the install list runs. Providers register an opener
+        // under a name (`boot.service::<ProviderViewRegistryHandle>()`);
+        // the `AppEffect::OpenProviderView` arm looks the name up and
+        // calls it with the Editor as the activator. This is what lets a
+        // provider crate ship a multibuffer view with ZERO host changes —
+        // see `lattice_mode::provider_view` + multibuffer-views.md §3.7a.
+        boot.register_service::<lattice_mode::ProviderViewRegistryHandle>(Arc::new(
+            lattice_mode::ProviderViewRegistry::new(),
+        ));
         lattice_ai::install(&mut boot);
         // NOTIF.1a: the notification store + the inbound bus expiry
         // rides on. Installed early because it owns no modes and no

@@ -130,14 +130,45 @@ build hygiene: a stale build-script reference to a deleted plugin
 dirtied `lattice-plugin-host` on *every* build, relinking 25 test
 binaries; cached `cargo test -p lattice-host` went 445s → 185s.
 
-**Still open from this review:** **PD.1–5**
+**Still open from this review:** **PD.4–5**
 ([`magit-project-diff.md`](slice-plans/magit-project-diff.md), catalogue
-A.1 — the editable cross-file working-tree diff, owned by
-`lattice-magit`); similarity-scored pairing for diff refinement (the
-equal-length rule declines the very common "replace one line, add
-another" shape); and `lattice-ui-tui`'s ~80s
+A.1 — edit propagation and file folds; PD.1–3 have landed);
+**PV.2–3** (migrating `:search` and `:copen` onto the provider-view
+seam PD.3 built — see below); **DR.5**, region-to-region diff
+refinement; and `lattice-ui-tui`'s ~80s
 `chrome_rows_composes_with_arbitrary_splits_and_terminal_sizes`, which
 makes a full-workspace gate unrunnable on a loaded machine.
+
+**The provider-view seam (PV.1, 2026-08-12).** PD.3's acid test —
+"a provider crate adds its view with zero host changes" — could not be
+met by the shape search, problems and narrow all use: a per-provider
+`AppEffect` variant, a host dispatch arm, and a plugin-boundary arm,
+three crates for the N+1th provider. Rather than spend a fourth variant
+and call the test passed, PD.3 built the generic seam first
+(`lattice_mode::ProviderViewRegistry` + one
+`AppEffect::OpenProviderView` + one host arm) and became its first
+consumer. `multibuffer-views.md` §3.7a carries the design; PV.2 / PV.3
+migrate search and problems, each after promoting one host fact to a
+service. `:narrow` deliberately stays on its typed variants — it
+resolves a range against cursor / Visual / marks, which is not a
+provider parameter, and making it fit would export editor state through
+`ModeActivator`.
+
+That slice also un-gated a latent bug: `MultibufferExcerptsReady` and
+its off-keystroke wake lived inside `lattice-multibuffer`'s
+feature-gated `providers::search` module, so a `--no-default-features`
+build — and any provider outside that crate — appended excerpts that
+appeared only on the next keypress.
+
+**DR.5, and a wrong claim corrected.** The refinement gap above was
+recorded as wanting "similarity-scored pairing". Reading magit shows
+that is not what it does: `magit-diff-update-hunk-refinement` hands the
+hunk's *whole* removed region and *whole* added region to
+`smerge-refine-regions`, which word-diffs the two concatenated texts —
+unbalanced hunks fall out of that naturally. `refine.rs`'s comment
+claiming "Magit declines the same case" is therefore false. The fix is
+region-to-region refinement, which subsumes the equal-length case
+rather than special-casing it.
 
 **Provider-home reversal (2026-08-11).** The 2026-06-01 lock ("all
 in-tree providers live in `lattice-multibuffer/src/providers/`,

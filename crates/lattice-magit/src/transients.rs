@@ -130,6 +130,13 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("tag", TAG_ROWS),
         ("rebase/start", REBASE_START_ROWS),
         ("rebase/sequence", REBASE_SEQUENCE_ROWS),
+        // PD.3 (2026-08-12): these two were never listed, so the drift
+        // tests below had never covered the Diff or Log menus — `d`,
+        // `f` and `v` included. Exactly the bookkeeping lapse this
+        // function's doc comment warns about, found by adding a fourth
+        // Diff row and noticing nothing checked it.
+        ("diff/show", DIFF_SHOW_ROWS),
+        ("log/show", LOG_SHOW_ROWS),
     ]
 }
 
@@ -692,6 +699,21 @@ const DIFF_SHOW_ROWS: &[TransientRow] = &[
         doc: "Open the file at cursor side-by-side against its baseline",
         action: "action:magit-diff-side-by-side",
         placeholder: "diff_side_by_side",
+    },
+    // PD.3 (2026-08-12): the editable cross-file view. `e` for "edit"
+    // reads correctly and is free. `p` (for "project") was considered
+    // and passed over — real magit binds `p` to *diff paths* in this
+    // same menu, so reusing it would fight muscle memory people already
+    // have.
+    //
+    // A peer of `d`, not a replacement for it: `d` is the patch view
+    // people already know, and the editable view earns its own row.
+    TransientRow {
+        key: "e",
+        label: "edit",
+        doc: "Edit the working-tree diff across files",
+        action: "action:magit-diff-project",
+        placeholder: "diff_project",
     },
 ];
 
@@ -4407,6 +4429,28 @@ mod root_menu_chord_tests {
                  magit buffer — so {source} is free to take it",
             );
         }
+    }
+
+    /// PD.3: the Diff menu carries four targets, and `e` is the new one.
+    ///
+    /// `d` / `f` / `v` are asserted alongside it because they are the
+    /// regression that matters: they only live in this menu at all
+    /// because binding `d` to it took their chords (the trie checks a
+    /// node's own binding before its children), so a row lost here is a
+    /// chord lost outright, silently.
+    #[test]
+    fn the_diff_menu_carries_d_f_v_and_the_new_e_row() {
+        let by_key: std::collections::HashMap<&str, &str> =
+            DIFF_SHOW_ROWS.iter().map(|r| (r.key, r.action)).collect();
+        assert_eq!(by_key.len(), 4, "four targets: {by_key:?}");
+        assert_eq!(by_key.get("d"), Some(&"action:magit-global-diff"));
+        assert_eq!(by_key.get("f"), Some(&"action:magit-diff-file"));
+        assert_eq!(by_key.get("v"), Some(&"action:magit-diff-side-by-side"));
+        assert_eq!(
+            by_key.get("e"),
+            Some(&"action:magit-diff-project"),
+            "`e` opens the editable cross-file view"
+        );
     }
 
     /// Every entry resolves to a spec, or a chord would open nothing.

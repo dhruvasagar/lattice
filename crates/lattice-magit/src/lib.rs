@@ -51,6 +51,7 @@ pub mod magit_stash_show_mode;
 pub mod magit_status_mode;
 pub mod magit_submodule_mode;
 pub mod picker_sources;
+pub mod providers;
 pub mod refresh;
 pub mod sections;
 pub mod transients;
@@ -100,6 +101,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitCoreMode)
         .expect("magit-core-mode registers without conflict");
+
+    // PD.1 (2026-08-12): the project-diff view's identity marker. It
+    // declares no chords — `implies` pulls in `magit-core-mode`, so it
+    // inherits `gr` / `q` / `]]` / `[[` by joining the family rather
+    // than by copying them.
+    crate::providers::project_diff::register_project_diff_mode(boot.modes_mut());
+
+    // PD.1: per-view state (workdir + which comparison), plus the
+    // DocumentId index the DocumentClosed cleanup keys on.
+    boot.register_service::<crate::providers::project_diff::ProjectDiffServiceHandle>(
+        std::sync::Arc::new(crate::providers::project_diff::ProjectDiffService::new()),
+    );
 
     // MG.24a: the second shared minor. `magit-core-mode` is every magit
     // buffer; this one is every magit buffer that renders a diff.

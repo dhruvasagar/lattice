@@ -15,7 +15,7 @@ Catalogue entry: A.1 in
 
 | Slice | Title | Status |
 |---|---|---|
-| PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | 📝 |
+| PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | PD.2 | Async scan — changed set → hunks → excerpts, headerline progress | 📝 |
 | PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | 📝 |
 | PD.4 | Edit propagation + the read-only rule | 📝 |
@@ -26,7 +26,7 @@ empty view is a legitimate intermediate). PD.5 is independent.
 
 ---
 
-## PD.1 — Provider skeleton 📝
+## PD.1 — Provider skeleton ✅
 
 - `lattice-magit/Cargo.toml` gains `lattice-multibuffer`. **Assert the
   direction holds** — `lattice-multibuffer` must not gain a magit or

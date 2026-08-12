@@ -18,6 +18,12 @@ license.workspace = true
 [dependencies]
 lattice-vcs = { path = "../lattice-vcs" }
 lattice-diff = { path = "../lattice-diff" }
+# PD.1 (2026-08-12): the project-diff view is a multibuffer. The provider
+# lives HERE, not in `lattice-multibuffer`, per the provider-home
+# reversal (`multibuffer-views.md` §3.7): magit already owns both inputs
+# (vcs statuses, diff hunks), so trigger + keymap + handler + view sit in
+# one crate. Acyclic — multibuffer depends on neither magit nor diff.
+lattice-multibuffer = { path = "../lattice-multibuffer" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }
@@ -33,6 +39,10 @@ lattice-syntax = { path = "../lattice-syntax" }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tracing = { workspace = true }
 ropey = { workspace = true }
+# PD.1: source documents need the same `ArcSwap<CommandRegistry>` handle
+# `spawn_document` expects. Was dev-only; the provider needs it in the
+# lib.
+arc-swap = { workspace = true }
 smallvec = { workspace = true }
 
 [dev-dependencies]

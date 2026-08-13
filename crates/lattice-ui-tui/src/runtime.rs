@@ -604,7 +604,7 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // never clears → no flicker. Within-row trailing cells already clear
         // for rows present in both frames; only the vacated rows bleed.
         let active_buffer = app.active_buffer_id();
-        let line_count = app.ad().snapshot.buffer.line_count() as usize;
+        let line_count = app.ad().snapshot.buffer.content_line_count() as usize;
         if last_active_buffer.is_some_and(|(prev_id, prev_lines)| {
             prev_id != active_buffer && line_count < prev_lines
         }) {

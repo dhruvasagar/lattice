@@ -412,7 +412,7 @@ impl std::fmt::Debug for HelpBuffer {
             .field("title", &self.title)
             .field("scroll", &self.scroll)
             .field("cursor", &self.cursor)
-            .field("line_count", &self.content.line_count())
+            .field("line_count", &self.content.content_line_count())
             .finish()
     }
 }
@@ -443,9 +443,11 @@ impl HelpContent {
 
 impl HelpBuffer {
     /// Number of visible content lines (the popup renderer uses this
-    /// to clamp scroll). Equivalent to `content.line_count()`.
+    /// to clamp scroll). CV.3: content space, as the name already
+    /// promised — it was reading ropey's raw count, which let the
+    /// scroll clamp reach one row past the last help line.
     pub fn line_count(&self) -> u32 {
-        self.content.line_count()
+        self.content.content_line_count()
     }
 
     /// Iterate the rendered lines top-down. Allocates -- `Buffer`

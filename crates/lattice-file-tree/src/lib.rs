@@ -98,8 +98,11 @@ impl FileTreeBuffer {
         Ok((buf, entries))
     }
 
+    /// Entries in the listing. CV.3: content space — this bounds
+    /// cursor motion, and the empty line ropey reports after the
+    /// listing's terminating newline is not an entry.
     pub fn line_count(&self) -> u32 {
-        self.content.line_count()
+        self.content.content_line_count()
     }
 
     /// Same shape as `HelpBuffer::move_cursor` so the active-buffer

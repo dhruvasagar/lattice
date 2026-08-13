@@ -688,7 +688,11 @@ fn resolve_grammar_range(
     match range {
         Range::Whole => {
             let buffer = document.buffer();
-            let last_line = buffer.line_count().saturating_sub(1);
+            // CV.3: content space. `:%` covers the buffer's real last
+            // line — ropey's raw count would extend a whole-buffer
+            // range onto the phantom line after the terminating
+            // newline.
+            let last_line = buffer.content_line_count().saturating_sub(1);
             let start = Position::ZERO;
             let end = Position::new(last_line, line_byte_len(buffer, last_line));
             Ok(ProtoRange::new(start, end))
@@ -699,7 +703,9 @@ fn resolve_grammar_range(
             // `cursor.line + count - 1`, clamped to the buffer's
             // last addressable line.
             let buffer = document.buffer();
-            let last = buffer.line_count().saturating_sub(1);
+            // CV.3: content space — `2dd` at the end of a file must
+            // clamp to the last real line, not the phantom one.
+            let last = buffer.content_line_count().saturating_sub(1);
             let start_line = cursor.line;
             let end_line = start_line.saturating_add(count.saturating_sub(1)).min(last);
             Ok(ProtoRange::new(

@@ -1510,16 +1510,13 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
         .unwrap_or(0)
 }
 
+/// CV.3: the last line a motion or range may address — content
+/// space. One of three hand-rolled copies of this before the rename;
+/// all three now sit on the accessor, and this one no longer
+/// materialises the whole buffer with `as_string()` to ask whether it
+/// ends in a newline.
 fn last_addressable_line(buffer: &lattice_core::Buffer) -> u32 {
-    let lc = buffer.line_count();
-    let s = buffer.as_string();
-    if lc == 0 {
-        0
-    } else if s.ends_with('\n') {
-        lc.saturating_sub(2)
-    } else {
-        lc.saturating_sub(1)
-    }
+    buffer.content_line_count().saturating_sub(1)
 }
 
 /// Extend a linewise content range to consume the trailing
@@ -1647,7 +1644,10 @@ fn comment_text_object(ctx: &TextObjectContext, inner: bool) -> Result<ProtoRang
     let Some(leader) = ctx.comment_syntax.and_then(|c| c.line.as_deref()) else {
         return Ok(ProtoRange::new(ctx.at, ctx.at));
     };
-    let line_count = ctx.buffer.line_count();
+    // CV.3: content space — the phantom line ropey reports after a
+    // terminating newline is not a comment line and must not be
+    // walked into.
+    let line_count = ctx.buffer.content_line_count();
     if leader.is_empty() || line_count == 0 {
         return Ok(ProtoRange::new(ctx.at, ctx.at));
     }

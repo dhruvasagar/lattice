@@ -225,7 +225,7 @@ mod tests {
         // convention). Three rows → "\n\n" (2 separating
         // newlines + 3 empty content lines).
         assert_eq!(snap.buffer.as_string(), "\n\n");
-        assert_eq!(snap.buffer.line_count(), 3);
+        assert_eq!(snap.buffer.content_line_count(), 3);
         assert_eq!(snap.cursor, Position::new(0, 0));
         assert!(!snap.alt_screen);
         assert_eq!(snap.origin_top_line, 0);
@@ -240,7 +240,7 @@ mod tests {
         // per row, padded with spaces). Trailing `\n` is
         // dropped at the rope level (vim last-line convention).
         assert_eq!(snap.buffer.as_string(), "hi\nyo\nok");
-        assert_eq!(snap.buffer.line_count(), 3);
+        assert_eq!(snap.buffer.content_line_count(), 3);
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
             feed(&shared, format!("r{i}\r\n").as_bytes());
         }
         let snap = shared.build_normal_snapshot();
-        let line_count = snap.buffer.line_count();
+        let line_count = snap.buffer.content_line_count();
         let last_doc_line = line_count - 1;
         let grid_line = snap.origin_top_line + last_doc_line as i32;
         let bot = {

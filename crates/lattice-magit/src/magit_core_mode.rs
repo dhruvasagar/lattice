@@ -404,7 +404,7 @@ fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() {
+    for l in 0..snap.buffer.content_line_count() {
         if let Some(t) = snap.buffer.line(l)
             && crate::sections::is_section_header(t.trim())
         {
@@ -429,7 +429,7 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() {
+    for l in 0..snap.buffer.content_line_count() {
         if let Some(raw) = snap.buffer.line(l) {
             // Section headers and one-off status messages ("No
             // changes...") all render at column 0 — never indented —
@@ -641,7 +641,7 @@ pub(crate) fn diff_file_lines(store: &BufferStoreHandle, buffer_id: BufferId) ->
         return vec![];
     };
     let snap = h.snapshot();
-    (0..snap.buffer.line_count())
+    (0..snap.buffer.content_line_count())
         .filter(|l| {
             snap.buffer
                 .line(*l)
@@ -658,7 +658,7 @@ fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     };
     let snap = h.snapshot();
     let mut lines = Vec::new();
-    for l in 0..snap.buffer.line_count() {
+    for l in 0..snap.buffer.content_line_count() {
         if let Some(t) = snap.buffer.line(l) {
             let t = t.trim();
             if t.starts_with("@@") || t.starts_with("diff --git") {

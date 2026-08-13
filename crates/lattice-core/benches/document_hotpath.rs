@@ -69,7 +69,7 @@ fn viewport_walk(c: &mut Criterion) {
         let doc = build_doc(size);
         // Viewport: 50 lines starting at row min(size/2, size-50).
         let start = size.saturating_sub(50).min(size / 2) as u32;
-        let line_count = doc.buffer().line_count();
+        let line_count = doc.buffer().content_line_count();
         g.throughput(Throughput::Elements(50));
         g.bench_with_input(BenchmarkId::from_parameter(size), &doc, |bencher, d| {
             bencher.iter(|| {

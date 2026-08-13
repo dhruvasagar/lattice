@@ -59,7 +59,9 @@ pub(crate) async fn append_text(handle: &Arc<dyn Document>, text: String) {
         return;
     }
     let snap = handle.snapshot();
-    let last_line = snap.buffer.line_count().saturating_sub(1);
+    // CV.3: ROPE space — the append point is the very end of the
+    // buffer, past the terminating newline.
+    let last_line = snap.buffer.rope_line_count().saturating_sub(1);
     let line_text = snap.buffer.line(last_line).unwrap_or_default();
     let pos = lattice_protocol::position::Position::new(last_line, line_text.len() as u32);
     let edit = lattice_protocol::edit::Edit::insert(pos, text);

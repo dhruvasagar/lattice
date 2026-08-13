@@ -4395,7 +4395,7 @@ pub(crate) fn compose_pane_lines(
     // §8.2 hot path: never materialise the whole buffer -- iterate
     // ropey's line API and pull only the visible window. A 100MB
     // log file should cost the same per-frame as a 100-line file.
-    let total_lines = snap.buffer.line_count();
+    let total_lines = snap.buffer.content_line_count();
     let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {
@@ -6796,7 +6796,7 @@ fn closed_fold_display_span(
         view.folds.as_ref(),
         fold.start_line,
         fold.end_line,
-        snap.buffer.line_count(),
+        snap.buffer.content_line_count(),
     )
 }
 
@@ -6894,7 +6894,7 @@ fn buffer_line_to_visible_row_with(
             .map(|cell| cell.load_full())
             .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()))
     };
-    let total_lines = snap.buffer.line_count();
+    let total_lines = snap.buffer.content_line_count();
     let mut buf_line = scroll;
     let mut row: u32 = 0;
     while row < viewport_height && buf_line < total_lines {
@@ -7007,7 +7007,7 @@ fn cursor_screen_position_at(
     // any code path that sets `app.editor.cursor` without first running
     // `snap_cursor_past_closed_folds` (e.g. edits that shift line
     // numbers underneath an unchanged cursor).
-    let total_lines = snap.buffer.line_count().max(1);
+    let total_lines = snap.buffer.content_line_count().max(1);
     let gutter_w = (if view.show_line_numbers {
         gutter_width(total_lines)
     } else {

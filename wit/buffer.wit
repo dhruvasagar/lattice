@@ -20,7 +20,10 @@ interface buffer {
         /// range is sliced out of the rope — the whole document never crosses
         /// ("zero-copy at the slice level", §9.6).
         get-text-range: func(r: range) -> result<string, string>;
-        /// Total line count.
+        /// Lines the document has: `"a\nb\n"` is two lines, and so is
+        /// `"a\nb"` — a trailing newline terminates the last line rather
+        /// than starting another. Safe as the bound of a
+        /// `0..line-count` walk calling `line`.
         line-count: func() -> u32;
         /// Total byte length.
         byte-len: func() -> u64;

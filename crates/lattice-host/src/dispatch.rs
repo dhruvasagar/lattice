@@ -1639,7 +1639,7 @@ impl Editor {
             );
         }
         let snapshot = self.document.snapshot();
-        let total_lines = snapshot.buffer.line_count();
+        let total_lines = snapshot.buffer.content_line_count();
         let mut out: Vec<lattice_protocol::position::Range> =
             Vec::with_capacity(cache.highlights.len());
         for h in &cache.highlights {
@@ -6361,7 +6361,7 @@ impl Editor {
         // both go through `cells_worker::gutter_cols` so the horizontal
         // and vertical clamps can never drift on the gutter reservation
         // (the drift that produced the `G` tail-clip regression).
-        let total_lines = self.document.snapshot().buffer.line_count().max(1);
+        let total_lines = self.document.snapshot().buffer.content_line_count().max(1);
         let gutter =
             crate::cells_worker::gutter_cols(total_lines, self.option_cache.show_line_numbers);
         full.saturating_sub(gutter)
@@ -8826,7 +8826,7 @@ impl Editor {
                 // buffer (works for a plain document AND a multibuffer
                 // view -- `self.document` is the active document).
                 let composed = self.document.snapshot();
-                let last_line = composed.buffer.line_count().saturating_sub(1);
+                let last_line = composed.buffer.content_line_count().saturating_sub(1);
                 let cursor_line = self.active_cursor().line.min(last_line);
                 // N.1.2: the last Visual selection (preserved after `:`
                 // left Visual) supplies `Range::Selection` and the `'<` /
@@ -12286,7 +12286,7 @@ impl Editor {
         // `highlight_lines` returns `Err` (stale / no grammar) → no
         // spans → plain previews (graceful, picker-preview-highlight.md
         // §6). Line-relative byte offsets are preserved verbatim.
-        let line_count = snap.buffer.line_count();
+        let line_count = snap.buffer.content_line_count();
         let syntax_highlights: Vec<Vec<lattice_completion::DisplaySpan>> = self
             .syntax
             .as_ref()
@@ -14628,7 +14628,7 @@ impl Editor {
         let wrap_reserved_cols = if has_gutter {
             let line_count = snapshot
                 .as_ref()
-                .map(|s| s.buffer.line_count())
+                .map(|s| s.buffer.content_line_count())
                 .unwrap_or(1);
             crate::cells_worker::gutter_cols(line_count, self.option_cache.show_line_numbers)
         } else {
@@ -14704,7 +14704,7 @@ impl Editor {
         if cache.hints.is_empty() {
             return (empty, 0);
         }
-        let total_lines: u32 = snapshot.buffer.line_count();
+        let total_lines: u32 = snapshot.buffer.content_line_count();
         let rows: Vec<crate::render_state::InlayHintRow> = cache
             .hints
             .iter()
@@ -17770,7 +17770,7 @@ impl Editor {
         }
         match self.active_editable_tail() {
             Some(tail) => {
-                let line_count = self.document.snapshot().buffer.line_count();
+                let line_count = self.document.snapshot().buffer.content_line_count();
                 let start = edit.range.start;
                 !tail.permits(start.line, start.byte, line_count)
             }
@@ -19143,7 +19143,7 @@ impl Editor {
         let wrap_width = self.active_wrap_width();
         if wrap_width == 0 {
             let snap = self.document.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
+            let last = snap.buffer.content_line_count().saturating_sub(1);
             let line = (self.cursor.line + 1).min(last);
             let max_byte = snap.buffer.line_byte_len(line);
             self.cursor.line = line;
@@ -19164,7 +19164,7 @@ impl Editor {
             self.cursor.byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
         } else {
             // first segment of the next source line
-            let last = snap.buffer.line_count().saturating_sub(1);
+            let last = snap.buffer.content_line_count().saturating_sub(1);
             if cur_line >= last {
                 return;
             }
@@ -19583,7 +19583,7 @@ impl Editor {
         if self.viewport_height == 0 {
             return None;
         }
-        let total_lines = self.document.snapshot().buffer.line_count();
+        let total_lines = self.document.snapshot().buffer.content_line_count();
         if total_lines == 0 {
             return None;
         }
@@ -19889,7 +19889,7 @@ impl Editor {
         let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
-        let total = buffer.line_count();
+        let total = buffer.content_line_count();
         let line = match vpos {
             lattice_grammar::ViewportPos::Top => self.scroll,
             lattice_grammar::ViewportPos::Middle => {
@@ -19989,7 +19989,7 @@ impl Editor {
         let step = height.saturating_sub(2).max(1);
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
-        let total = buffer.line_count();
+        let total = buffer.content_line_count();
         let new_line = if down {
             let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, step, total)
@@ -20020,7 +20020,7 @@ impl Editor {
     pub fn do_scroll_line(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         let buffer = self.active_text();
-        let total = buffer.line_count();
+        let total = buffer.content_line_count();
         let last = last_addressable_line(&buffer);
         if down {
             let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
@@ -22897,7 +22897,7 @@ impl Editor {
                         .snapshot()
                         .buffer
                         .line_byte_len(self.cursor.line);
-                    if self.cursor.line + 1 < self.document.snapshot().buffer.line_count() {
+                    if self.cursor.line + 1 < self.document.snapshot().buffer.content_line_count() {
                         lattice_protocol::position::Position::new(self.cursor.line + 1, 0)
                     } else {
                         let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
@@ -22936,7 +22936,7 @@ impl Editor {
         };
         for (i, row) in rows.iter().enumerate() {
             let target_line = start_line + i as u32;
-            let total_lines = self.document.snapshot().buffer.line_count();
+            let total_lines = self.document.snapshot().buffer.content_line_count();
             if target_line >= total_lines {
                 let last = total_lines.saturating_sub(1);
                 let last_len = self.document.snapshot().buffer.line_byte_len(last);
@@ -26468,7 +26468,7 @@ impl Editor {
                     }
                 }
                 let snap = self.document.snapshot();
-                let last = snap.buffer.line_count().saturating_sub(1);
+                let last = snap.buffer.content_line_count().saturating_sub(1);
                 let target_line = line.saturating_sub(1).min(last);
                 self.set_cursor(lattice_protocol::position::Position::new(target_line, 0));
             }
@@ -31411,7 +31411,7 @@ impl Editor {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(no file)".to_string());
         let lang = lattice_syntax::Lang::detect_from_path(snap.path());
-        let line_count = snap.buffer.line_count();
+        let line_count = snap.buffer.content_line_count();
         let byte_count = snap.buffer.as_string().len();
         let dirty = if self.document.dirty() { "yes" } else { "no" };
         lines.push(format!("path:           {path}"));
@@ -35197,20 +35197,14 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
     }
 }
 
-/// Compute the last addressable line of `buf`. ropey reports an
-/// extra empty line for any rope ending in `\n`; this helper returns
-/// the line index of the last non-trailing-empty row instead.
+/// The last line a motion or range may address — content space.
+///
+/// CV.3: one of three hand-rolled copies of this correction before the
+/// `line_count` → `rope_line_count` rename; all three now sit on
+/// [`lattice_core::Buffer::content_line_count`], which is the same
+/// correction with a name.
 pub(crate) fn last_addressable_line(buf: &lattice_core::Buffer) -> u32 {
-    let lc = buf.line_count();
-    if lc == 0 {
-        return 0;
-    }
-    let last_idx = lc - 1;
-    if buf.line_byte_len(last_idx) == 0 && lc >= 2 {
-        last_idx - 1
-    } else {
-        last_idx
-    }
+    buf.content_line_count().saturating_sub(1)
 }
 
 /// T.9.d: render a resolved [`crate::ui::theme::Style`] as a single
@@ -36064,7 +36058,7 @@ impl Editor {
         inv: lattice_grammar::CommandInvocation,
     ) -> bool {
         let cursor_in_tail = self.active_editable_tail().is_some_and(|tail| {
-            let line_count = self.document.snapshot().buffer.line_count();
+            let line_count = self.document.snapshot().buffer.content_line_count();
             tail.permits(self.cursor.line, self.cursor.byte, line_count)
         });
         if cursor_in_tail {
@@ -36572,7 +36566,7 @@ impl Editor {
                                     end_col: 0,
                                 });
                         let mut out = String::new();
-                        let line_count = buffer.line_count();
+                        let line_count = buffer.content_line_count();
                         for line in extents.start_line..=extents.end_line {
                             if line >= line_count {
                                 break;
@@ -36600,7 +36594,9 @@ impl Editor {
                         let (start_line, end_line) = match range {
                             Some(r) => (
                                 r.start.line,
-                                r.end.line.min(buffer.line_count().saturating_sub(1)),
+                                r.end
+                                    .line
+                                    .min(buffer.content_line_count().saturating_sub(1)),
                             ),
                             None => (0, 0),
                         };
@@ -37486,7 +37482,7 @@ mod tests {
     #[test]
     fn narrow_paragraph_bounds_are_blank_delimited() {
         let buf = lattice_core::Buffer::from_text("a\nb\n\nc\nd\n");
-        let last = buf.line_count().saturating_sub(1);
+        let last = buf.content_line_count().saturating_sub(1);
         assert_eq!(paragraph_bounds(&buf, 1, last), (0, 1));
         assert_eq!(paragraph_bounds(&buf, 3, last), (3, 4));
         // A blank cursor line narrows just that line.
@@ -37549,7 +37545,7 @@ mod tests {
     #[test]
     fn narrow_range_bare_is_current_paragraph() {
         let buf = lattice_core::Buffer::from_text("a\nb\n\nc\n");
-        let last = buf.line_count().saturating_sub(1);
+        let last = buf.content_line_count().saturating_sub(1);
         let marks = std::collections::HashMap::new();
         let r = resolve_narrow_range(&None, 1, last, None, &marks, &buf);
         assert_eq!(r, (0, 1));
@@ -45034,7 +45030,12 @@ mod tests {
         // (line numbers on by default) so `segment_count` matches the
         // renderer's wrapped rows.
         let gutter = crate::cells_worker::gutter_cols(
-            editor.document.snapshot().buffer.line_count().max(1),
+            editor
+                .document
+                .snapshot()
+                .buffer
+                .content_line_count()
+                .max(1),
             editor.option_cache.show_line_numbers,
         );
         assert!(gutter > 0, "line-numbered pane reserves a gutter");
@@ -45267,9 +45268,15 @@ mod tests {
     /// the cache.
     fn enable_wrap(editor: &mut crate::editor::Editor, wrap_width: u32) {
         let _ = editor.do_set("wrap");
-        let rope_lines = editor.document.snapshot().buffer.line_count().max(1);
-        let gutter =
-            crate::cells_worker::gutter_cols(rope_lines, editor.option_cache.show_line_numbers);
+        // CV.3: the gutter is sized in content space now, so the test
+        // helper must ask the same question the production path asks.
+        let lines = editor
+            .document
+            .snapshot()
+            .buffer
+            .content_line_count()
+            .max(1);
+        let gutter = crate::cells_worker::gutter_cols(lines, editor.option_cache.show_line_numbers);
         editor.pane_tree.active_mut().viewport_width = wrap_width + gutter;
         assert_eq!(
             editor.body_text_width(),

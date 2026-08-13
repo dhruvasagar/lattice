@@ -1404,21 +1404,12 @@ pub(crate) fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
     buf.line_byte_len(line)
 }
 
+/// The last line a motion or range may address — content space.
+///
+/// CV.3: the third of three hand-rolled copies of this correction,
+/// all now sitting on `Buffer::content_line_count`.
 pub(crate) fn last_addressable_line(buf: &Buffer) -> u32 {
-    let lc = buf.line_count();
-    if lc == 0 {
-        return 0;
-    }
-    // ropey reports an extra empty line for any rope ending in
-    // `\n`. Detect that by checking whether the last "line" the
-    // rope reports is empty, without materialising the entire
-    // buffer text.
-    let last_idx = lc - 1;
-    if buf.line_byte_len(last_idx) == 0 && lc >= 2 {
-        last_idx - 1
-    } else {
-        last_idx
-    }
+    buf.content_line_count().saturating_sub(1)
 }
 
 pub(super) fn is_valid_mark_name(c: char) -> bool {
@@ -4073,7 +4064,7 @@ mod tests {
             .document
             .snapshot()
             .buffer
-            .line_count()
+            .content_line_count()
             .saturating_sub(1);
         assert_eq!(a.editor.cursor.line, last_line);
         let _ = std::fs::remove_file(path);

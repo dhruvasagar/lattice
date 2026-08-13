@@ -663,7 +663,7 @@ fn text_end(s: &str) -> (u32, u32) {
 /// Replace the entire buffer with `text`.
 async fn full_replace(handle: &std::sync::Arc<dyn lattice_runtime::Document>, text: &str) {
     let snap = handle.snapshot();
-    let last_line = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
     let range = lattice_protocol::Range::new(
         lattice_protocol::position::Position::new(0, 0),
@@ -702,7 +702,7 @@ async fn reproject(
     };
     let (end, replacement) = if clear_prompt {
         let snap = handle.snapshot();
-        let last_line = snap.buffer.line_count().saturating_sub(1);
+        let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
         let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
         (
             (last_line, last_len),
@@ -812,7 +812,9 @@ fn send_handler(anchor: Arc<AtomicU32>) -> ActionHandler {
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let handle = store.handle_for(buffer_id)?;
         let snap = handle.snapshot();
-        let last_line = snap.buffer.line_count().saturating_sub(1);
+        // CV.3: content space — the prompt region is user-typed lines;
+        // a phantom empty line after the terminating newline is not one.
+        let last_line = snap.buffer.content_line_count().saturating_sub(1);
         // The prompt is `anchor..=last_line` (marker on the anchor line,
         // `<C-j>` continuation lines below).
         let anchor_line = anchor.load(Ordering::Relaxed).min(last_line);

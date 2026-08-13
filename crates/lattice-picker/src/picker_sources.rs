@@ -734,18 +734,14 @@ impl PickerSourceGenerator for LinesSource {
     fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         let buffer = ctx.active_buffer.buffer;
         let buffer_id = ctx.active_buffer.buffer_id;
-        let line_count = buffer.line_count();
+        // CV.3: content space. This used to hand-roll the
+        // trailing-empty-line correction inline — the accessor is that
+        // correction, named.
+        let line_count = buffer.content_line_count();
         if line_count == 0 {
             return Err("lines: empty buffer".into());
         }
-        // ropey reports a trailing empty line when the buffer
-        // ends in `\n`; drop it so the picker doesn't dangle a
-        // blank "phantom" row past the last addressable line.
-        let last = if buffer.line_byte_len(line_count - 1) == 0 && line_count >= 2 {
-            line_count - 2
-        } else {
-            line_count - 1
-        };
+        let last = line_count - 1;
         let mut pairs = Vec::with_capacity(last as usize + 1);
         for line in 0..=last {
             let text = buffer.line(line).unwrap_or_default();

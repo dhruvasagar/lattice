@@ -284,7 +284,7 @@ impl Mode for MagitCommitMode {
                         // which is the safe direction for a buffer
                         // whose entire purpose is the message.
                         let mut message = String::new();
-                        for l in 0..snap.buffer.line_count() as u32 {
+                        for l in 0..snap.buffer.content_line_count() {
                             let text = snap.buffer.line(l).unwrap_or_default();
                             if text.contains(DIFF_MARKER) {
                                 break;

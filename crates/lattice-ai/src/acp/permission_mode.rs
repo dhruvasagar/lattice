@@ -364,7 +364,7 @@ pub fn register_ai_permission_actions(registry: &mut lattice_grammar::CommandReg
 /// the same way the conversation drain seeds its transcript.
 async fn full_replace(handle: &std::sync::Arc<dyn lattice_runtime::Document>, text: &str) {
     let snap = handle.snapshot();
-    let last_line = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
     let range = lattice_protocol::Range::new(
         lattice_protocol::position::Position::new(0, 0),

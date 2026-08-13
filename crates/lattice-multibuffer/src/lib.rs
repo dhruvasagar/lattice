@@ -789,7 +789,10 @@ impl MultibufferDocumentHandle {
         let Some(source) = state.sources.get(&source_id) else {
             return;
         };
-        let source_line_count = source.snapshot().buffer.line_count() as i64;
+        // CV.3: content space — an excerpt may only expand onto lines
+        // the source actually has, never the phantom one ropey reports
+        // after a terminating newline.
+        let source_line_count = source.snapshot().buffer.content_line_count() as i64;
         if source_line_count == 0 {
             return;
         }

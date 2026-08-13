@@ -91,7 +91,9 @@ impl Mode for AiLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
+                    let last_line = // CV.3: ROPE space — the append point is the very end of
+                    // the buffer, past the terminating newline.
+                    snapshot.buffer.rope_line_count().saturating_sub(1);
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -137,7 +139,9 @@ impl Mode for AiLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1);
+                    let last_line = // CV.3: ROPE space — append point, past the terminating
+                    // newline.
+                    snap.buffer.rope_line_count().saturating_sub(1);
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,

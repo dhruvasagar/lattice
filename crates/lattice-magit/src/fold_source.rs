@@ -108,7 +108,7 @@ impl FoldSource for MagitStatusFoldSource {
             return Vec::new();
         };
         let snap = handle.snapshot();
-        let total = snap.buffer.line_count();
+        let total = snap.buffer.content_line_count();
         let mut folds = Vec::new();
 
         // MG.48: the SECTION level.

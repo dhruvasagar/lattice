@@ -1038,7 +1038,7 @@ fn jump_to_section(ctx: &ActionContext<'_>, prefix: &str) -> Effect {
         .and_then(|store| store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32)))
         .and_then(|handle| {
             let snap = handle.snapshot();
-            (0..snap.buffer.line_count()).find(|l| {
+            (0..snap.buffer.content_line_count()).find(|l| {
                 snap.buffer
                     .line(*l)
                     .is_some_and(|t| t.trim_start().starts_with(prefix))

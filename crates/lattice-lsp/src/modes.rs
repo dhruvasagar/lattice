@@ -104,7 +104,7 @@ impl Mode for LspServerLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
+                    let last_line = snapshot.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -161,7 +161,7 @@ impl Mode for LspServerLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1);
+                    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -237,7 +237,7 @@ impl Mode for LspLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
+                    let last_line = snapshot.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -279,7 +279,7 @@ impl Mode for LspLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1);
+                    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -359,7 +359,7 @@ impl Mode for LspTraceLogMode {
                 }
                 if !text.is_empty() {
                     let snapshot = handle.snapshot();
-                    let last_line = snapshot.buffer.line_count().saturating_sub(1);
+                    let last_line = snapshot.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snapshot.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,
@@ -416,7 +416,7 @@ impl Mode for LspTraceLogMode {
                         continue;
                     }
                     let snap = handle.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1);
+                    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — append point
                     let line_text = snap.buffer.line(last_line).unwrap_or_default();
                     let pos = lattice_protocol::position::Position::new(
                         last_line,

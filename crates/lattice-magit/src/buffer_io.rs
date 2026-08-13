@@ -25,7 +25,7 @@ use lattice_runtime::Document;
 /// user would be told about no longer exists.
 pub(crate) async fn replace_buffer_text(handle: &Arc<dyn Document>, text: String) {
     let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
+    let last = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — full-extent replace
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let end = Position::new(last, last_line.len() as u32);
     let _ = handle

@@ -45,7 +45,7 @@ impl PluginManagerMode {
 /// task; callers spawn it off the actor thread.
 pub(crate) async fn write_all(handle: &Arc<dyn Document>, text: String) {
     let snap = handle.snapshot();
-    let last_line = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.rope_line_count().saturating_sub(1); // CV.3: rope — whole-buffer extent
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
     let range = lattice_protocol::Range::new(
         lattice_protocol::Position::new(0, 0),

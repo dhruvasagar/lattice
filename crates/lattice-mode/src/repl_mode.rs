@@ -121,7 +121,10 @@ fn focus_input_handler() -> ActionHandler {
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let handle = store.handle_for(buffer_id)?;
         let snap = handle.snapshot();
-        let last_line = snap.buffer.line_count().saturating_sub(1);
+        // CV.3: content space — the REPL prompt is the last REAL line.
+        // Ropey's raw count would focus the phantom empty line after a
+        // terminating newline instead of the prompt.
+        let last_line = snap.buffer.content_line_count().saturating_sub(1);
         let end_byte = snap
             .buffer
             .line(last_line)

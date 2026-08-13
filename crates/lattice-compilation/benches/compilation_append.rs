@@ -47,7 +47,7 @@ fn batch_text() -> String {
 /// `append_at_end` does (snapshot → end position → one insert batch).
 fn append_at_end(handle: &RopeDocumentHandle, text: &str) {
     let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let pos = Position::new(last, last_line.len() as u32);
     block_on(handle.apply_edit_batch(vec![Edit::insert(pos, text.to_string())])).unwrap();

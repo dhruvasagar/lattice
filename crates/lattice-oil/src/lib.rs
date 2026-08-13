@@ -122,8 +122,11 @@ impl OilBuffer {
         self.snapshot.get(line as usize)
     }
 
+    /// Entries in the listing. CV.3: content space — this bounds
+    /// cursor motion, and the empty line ropey reports after the
+    /// listing's terminating newline is not an entry.
     pub fn line_count(&self) -> u32 {
-        self.content.line_count()
+        self.content.content_line_count()
     }
 
     pub fn move_cursor(&mut self, dx: i32, dy: i32, viewport: usize) {

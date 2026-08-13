@@ -32,7 +32,8 @@ impl App {
         // `ActiveDocumentRenderState` instead of
         // `self.editor.document.snapshot()`. Same Arc — `ad.snapshot`
         // is captured at publish time from the same handle.
-        let total_lines = self.ad().snapshot.buffer.line_count();
+        // CV.3: content space — this bounds a walk over painted lines.
+        let total_lines = self.ad().snapshot.buffer.content_line_count();
         if total_lines == 0 {
             return scroll;
         }

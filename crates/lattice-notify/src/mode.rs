@@ -27,7 +27,12 @@ async fn replace_buffer_text(handle: &Arc<dyn lattice_runtime::Document>, text: 
     use lattice_protocol::edit::Edit;
     use lattice_protocol::position::{Position, Range};
     let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
+    // CV.3: ROPE space, deliberately. A full-extent replace must span
+    // to the end of the rope — for "a\n" that is (1,0), past the
+    // terminating newline. Content space would stop at (0,1) and leave
+    // the newline behind, so the "replace everything" contract would
+    // quietly stop replacing everything.
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let end = Position::new(last, last_line.len() as u32);
     let _ = handle

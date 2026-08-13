@@ -778,7 +778,7 @@ mod major_gating {
             editor.viewport_height = 20;
             editor.do_open_dashboard();
             assert_eq!(editor.cursor, Position::ZERO, "dashboard opens at top");
-            let last_line = editor.active_text().line_count().saturating_sub(1);
+            let last_line = editor.active_text().content_line_count().saturating_sub(1);
             assert!(last_line > 1, "dashboard has multi-line content");
             let mut partial: Vec<KeyChord> = Vec::new();
             editor.dispatch_chord(chord(key), &mut partial);

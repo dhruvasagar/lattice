@@ -1703,7 +1703,12 @@ impl EditorView {
         } else {
             pane.cursor
         };
-        let total_lines_u32 = snapshot.buffer.line_count();
+        // CV.3: content space. Sizes the gutter and bounds the fold
+        // walk; it must move in lockstep with the host's
+        // `cells_worker::gutter_cols` and the TUI's `gutter_width`,
+        // because the soft-wrap width is `viewport_width - gutter` —
+        // a half-move desyncs the vertical clamp from what is painted.
+        let total_lines_u32 = snapshot.buffer.content_line_count();
         let total_lines = total_lines_u32 as usize;
         // we will fill raw_lines after computing visible_start/end
         #[cfg(feature = "profile-frames")]
@@ -2018,7 +2023,8 @@ impl EditorView {
             .unwrap_or(0x6c7086);
         // Total buffer lines, for `folded_line_span`'s forward walk over
         // sibling folds whose own heading is hidden by this one.
-        let total_lines_for_folds = snapshot.buffer.line_count();
+        // CV.3: content space — folds span real lines.
+        let total_lines_for_folds = snapshot.buffer.content_line_count();
         // Built over the fold-aware `visible_lines` walk (which already
         // skipped collapsed bodies) rather than a source-line range, so
         // the pane fills to `viewport_height` rows however much is

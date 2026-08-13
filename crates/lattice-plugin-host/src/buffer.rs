@@ -51,9 +51,17 @@ impl DocumentResource {
         self.snapshot.buffer.slice(range).map_err(|e| e.to_string())
     }
 
-    /// Total line count.
+    /// Lines the document has, in the sense the WIT contract means:
+    /// `"a\nb\n"` is two lines.
+    ///
+    /// CV.3: content space. This surfaced ropey's raw count, so a
+    /// guest iterating `0..line-count` and calling `line(n)` got one
+    /// phantom empty line at the end of every normal file — a
+    /// rope-implementation detail leaking across the plugin boundary,
+    /// which every guest author would then have to rediscover and
+    /// correct for.
     pub fn line_count(&self) -> u32 {
-        self.snapshot.buffer.line_count()
+        self.snapshot.buffer.content_line_count()
     }
 
     /// Total byte length.

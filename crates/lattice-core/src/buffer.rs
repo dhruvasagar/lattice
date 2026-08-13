@@ -56,7 +56,7 @@ impl Buffer {
         }
     }
 
-    pub fn line_count(&self) -> u32 {
+    pub fn rope_line_count(&self) -> u32 {
         // ropey's `len_lines` counts the trailing implicit empty line for any
         // rope ending in a newline. For an empty rope it returns 1. We surface
         // ropey's count directly; callers compose semantics they need.
@@ -70,15 +70,15 @@ impl Buffer {
     ///
     /// This is the count for anything that lays out, addresses or
     /// counts document content — display rows, `G`, `:$`, `%`
-    /// progress. [`Self::line_count`] is ropey's raw count and reports
+    /// progress. [`Self::rope_line_count`] is ropey's raw count and reports
     /// one more for any rope ending in `\n`; feeding that to a layout
     /// or coverage range is what puts a phantom empty row at the end
     /// of every normal file (CV.2).
     ///
     /// Never zero: an empty buffer is one empty line, matching
-    /// [`Self::line_count`] and vim.
+    /// [`Self::rope_line_count`] and vim.
     pub fn content_line_count(&self) -> u32 {
-        let rope_lines = self.line_count();
+        let rope_lines = self.rope_line_count();
         if rope_lines >= 2 && self.line_byte_len(rope_lines - 1) == 0 {
             rope_lines - 1
         } else {
@@ -129,7 +129,7 @@ impl Buffer {
     /// keeps the per-frame work proportional to the viewport, not
     /// the document.
     pub fn line(&self, line: u32) -> Option<String> {
-        if line >= self.line_count() {
+        if line >= self.rope_line_count() {
             return None;
         }
         let slice = self.rope.line(line as usize);
@@ -146,7 +146,7 @@ impl Buffer {
     /// O(log n). Cheap helper for renderers that want to know a
     /// line's width without materialising its text.
     pub fn line_byte_len(&self, line: u32) -> u32 {
-        if line >= self.line_count() {
+        if line >= self.rope_line_count() {
             return 0;
         }
         let slice = self.rope.line(line as usize);
@@ -233,7 +233,7 @@ impl Buffer {
     }
 
     pub fn position_to_byte(&self, pos: Position) -> CoreResult<usize> {
-        let line_count = self.line_count();
+        let line_count = self.rope_line_count();
         if pos.line >= line_count {
             return Err(ProtocolError::PositionOutOfBounds {
                 position: pos,
@@ -467,7 +467,7 @@ mod tests {
     fn empty_buffer_has_one_logical_line() {
         // Ropey's convention: an empty rope still presents one (empty) line.
         let b = Buffer::empty();
-        assert_eq!(b.line_count(), 1);
+        assert_eq!(b.rope_line_count(), 1);
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         // Ropey's convention: a rope ending with `\n` reports one extra (empty)
         // trailing line. Documenting current behavior so changes are intentional.
         let b = Buffer::from_text("a\nb\n");
-        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.rope_line_count(), 3);
     }
 
     /// The content-space peer of the test above: the same rope that

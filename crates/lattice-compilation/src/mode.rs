@@ -125,7 +125,10 @@ async fn append_at_end(handle: &Arc<dyn Document>, text: String) {
         return;
     }
     let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
+    // CV.3: ROPE space — this addresses the very end of the buffer
+    // (append point / full-extent replace), which lives past the
+    // terminating newline.
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let pos = Position::new(last, last_line.len() as u32);
     let _ = handle.apply_edit_batch(vec![Edit::insert(pos, text)]).await;
@@ -134,7 +137,10 @@ async fn append_at_end(handle: &Arc<dyn Document>, text: String) {
 /// Replace the whole buffer with `header` as one edit.
 async fn reset_to(handle: &Arc<dyn Document>, header: &str) {
     let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
+    // CV.3: ROPE space — this addresses the very end of the buffer
+    // (append point / full-extent replace), which lives past the
+    // terminating newline.
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let end = Position::new(last, last_line.len() as u32);
     let edit = Edit::replace(Range::new(Position::ZERO, end), header.to_string());

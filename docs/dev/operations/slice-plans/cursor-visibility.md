@@ -13,7 +13,7 @@ conflating them is how the second one keeps getting "fixed".
 |---|---|---|
 | CV.1 | `G` leaves the cursor one row below the drawn area | ✅ |
 | CV.2 | Phantom trailing line: a file ending in `\n` renders one row too many | ✅ |
-| CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | 📝 |
+| CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | ✅ |
 | CV.4 | The other readers of the matrix's stamped `wrap_width` | ✅ |
 | CV.5 | Oil / file-tree cursor highlight trails the caret by `scroll` | ✅ |
 | CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 (own plan) |
@@ -191,61 +191,77 @@ this, so a half-move would desync CV.1's clamp).
 the phantom baked in as a fifth numbered row on a four-line file; it is
 now the second `~`.
 
-## CV.3 — name the spaces 📝
+## CV.3 — name the spaces ✅
 
-The reason CV.2 has been fixed more than once is that the primitive
-makes the wrong answer the default and asks **123 call sites** to
-remember the correction. There is no authoritative "last line" helper
-anywhere in the tree.
+**Done 2026-08-13.** `Buffer::line_count()` is now
+`Buffer::rope_line_count()`, and every call site was visited by the
+compiler exactly once. `Buffer::content_line_count()` (landed with
+CV.2) is the other half.
 
-There are four distinct quantities, and conflating any two regenerates
-this bug class:
+The rename was the point. Adding the accessor alone would have left the
+wrong answer as the default and asked 100+ sites to remember the
+correction — the condition that let CV.2 recur. Removing the old name
+made each site an error that had to be classified.
 
-| space | counts | affected by |
-|---|---|---|
-| rope | ropey `len_lines()` | trailing `\n` ⇒ phantom |
-| logical / content | document lines | trailing `\n` only |
-| display rows | rows laid out | folds (range → 1 row), soft wrap (1 → N), virtual rows |
-| viewport rows | rows visible in THIS pane | split geometry, scroll, chrome |
+### What the triage found
 
-`G` and the motions are **content** space — vim's `G` goes to the last
-line of the buffer, not the last display row. The renderer's last row is
-**display / viewport** space, and that authority already exists and is
-correct: `DisplayMatrix::row_count()`
-(`crates/lattice-host/src/display_matrix.rs:166`) is computed after
-wrap, folds and virtual rows, per pane. The architecture already has the
-right separation; CV.2 is one space leaking into another at a specific
-boundary, not a missing abstraction everywhere.
+**Genuinely rope space** — a small, coherent set, all of them
+addressing the *physical end of the buffer* rather than its content:
 
-**The rename is the anti-regression mechanism.** Rename the raw
-accessor to `rope_line_count()` and add a content-space accessor under a
-NEW name. Do **not** reuse `line_count()` for the corrected semantics:
-reusing it silently flips the meaning of all 123 sites, whereas removing
-it makes the compiler stop at each one exactly once. That triage is the
-work, and it needs judgement — some sites genuinely want rope space (LSP
-position mapping, byte-offset math).
+- full-extent replaces (`replace_buffer_text` in magit / notify /
+  plugin-manager, ACP's `full_replace`, `synthetic_buffers`' whole-doc
+  edit — whose comment already said *"A full replace must span every
+  line, phantom trailing line included"*);
+- append-at-the-very-end log writers (LSP, agent, compilation,
+  plugin-trace) — the insertion point sits past the terminating
+  newline;
+- `Buffer`'s own internals: `line`, `line_byte_len`, `position_to_byte`
+  bounds-check against ropey, and `content_line_count` derives from it.
 
-**Half of this landed with CV.2.** `Buffer::content_line_count()` now
-exists — the new-name accessor. What remains is the rename of
-`line_count()` → `rope_line_count()` and the 123-site triage it forces.
-Do not skip the rename on the grounds that "the accessor exists now":
-the accessor without the rename leaves the wrong answer as the default,
-which is the exact condition that let CV.2 recur.
+**Everything else was content space**, and several were latent bugs
+rather than neutral renames:
 
-Two findings from CV.2 that belong in the triage:
+- `Range::Whole` — `:%` extended a whole-buffer range onto the phantom
+  line;
+- `Range::CurrentLine` — `2dd` at EOF clamped against it;
+- the `:lines` picker, which hand-rolled the correction inline with a
+  comment about "phantom" rows;
+- REPL focus-input, which jumped to the phantom line instead of the
+  prompt;
+- `HelpBuffer::line_count`, whose doc said *"visible content lines"*
+  while returning ropey's raw count, letting the popup scroll clamp
+  reach a row past the last help line;
+- the WIT plugin API's `line-count`, which leaked a ropey
+  implementation detail across the plugin boundary — every guest
+  iterating `0..line-count` got one phantom empty line, and every guest
+  author would have had to rediscover that. The WIT doc now names the
+  semantics instead of saying "Total line count".
 
-- **The gutter is still rope space** — `gutter_width` (TUI),
-  `cells_worker::gutter_cols` (host), and GPUI's
-  `total_lines_for_gutter` all take the raw count. They agree with each
-  other, so the only symptom today is one wasted column on a file of
-  exactly 10ⁿ content lines. They must move **together**: CV.1's wrap
-  width is `viewport_width - gutter_cols(...)`, so a half-move desyncs
-  the vertical clamp from what gets painted, which is the CV.1 bug
-  again by another route.
-- **`last_addressable_line` exists three times** — `lattice-grammar`
-  (`builtins.rs`), `lattice-ui-tui` (`app.rs`), `lattice-host`
-  (`dispatch.rs`) — all computing `content_line_count() - 1` by hand.
-  The triage should collapse them onto the accessor.
+### The three copies are one
+
+`last_addressable_line` existed three times — `lattice-grammar`,
+`lattice-ui-tui`, `lattice-host` — each re-deriving the correction, one
+of them materialising the whole buffer with `as_string()` to ask
+whether it ended in a newline. All three are now
+`content_line_count().saturating_sub(1)`.
+
+### The gutter moved, in lockstep
+
+CV.2 deliberately left gutter width in rope space because the host and
+both renderers agreed there, and the soft-wrap width is
+`viewport_width - gutter` — so a half-move would desync CV.1's vertical
+clamp from what is painted. All four sites moved together here:
+`cells_worker::gutter_cols`' callers (`body_text_width`,
+`wrap_reserved_cols`), the TUI's `gutter_width`, and GPUI's
+`total_lines_for_gutter`. A file of exactly 10ⁿ content lines no longer
+reserves a column it does not need.
+
+### Test expectations that were pinning the bug
+
+`recompute_re_publishes_when_document_line_count_changes` asserted
+`source_line_count == 5` for `"a\nb\nc\nd\n"`, with a comment naming
+the phantom as the reason. It is a four-line document; the assertion
+now says so.
 
 ## CV.4 — the other readers of the matrix's stamped `wrap_width` ✅
 

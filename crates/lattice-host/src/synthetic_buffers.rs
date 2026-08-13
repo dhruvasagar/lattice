@@ -177,7 +177,9 @@ impl Editor {
         // backs up past a trailing-newline line, which would leave that line
         // uncovered here (and on a reused buffer it collapses to line 0). A
         // full replace must span every line, phantom trailing line included.
-        let lc = snap.buffer.line_count();
+        // CV.3: ROPE space, and the comment above says why — a full replace
+        // must span the phantom trailing line too, or it leaves it behind.
+        let lc = snap.buffer.rope_line_count();
         let last_line = lc.saturating_sub(1);
         let line_len = snap.buffer.line_byte_len(last_line);
         let whole = lattice_protocol::position::Range {

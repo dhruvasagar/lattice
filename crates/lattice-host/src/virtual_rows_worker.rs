@@ -342,7 +342,8 @@ pub fn recompute_pane(
         return WorkerDecision::Clear;
     };
 
-    let source_line_count = snapshot.buffer.line_count();
+    // CV.3: content space — virtual rows anchor to real source lines.
+    let source_line_count = snapshot.buffer.content_line_count();
     let provider_snap = providers.snapshot(pane.buffer_id);
     let fingerprint = compute_fingerprint(&provider_snap, source_line_count);
 
@@ -811,8 +812,10 @@ mod tests {
         assert_eq!(d2, WorkerDecision::Recomputed);
         let v2 = cell.load_full().version;
         assert!(v2.0 > v1.0);
-        // ropey counts trailing implicit empty line: "a\nb\nc\nd\n" = 5
-        assert_eq!(cell.load_full().source_line_count, 5);
+        // CV.3: content space — "a\nb\nc\nd\n" is a FOUR line document.
+        // This pinned ropey's raw 5, i.e. the phantom line after the
+        // terminating newline, as the virtual-row matrix's extent.
+        assert_eq!(cell.load_full().source_line_count, 4);
     }
 
     #[test]

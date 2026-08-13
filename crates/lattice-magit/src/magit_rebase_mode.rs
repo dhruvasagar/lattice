@@ -168,7 +168,7 @@ impl Mode for MagitRebaseMode {
                         let handle = g.store.handle_for(g.buffer_id)?;
                         let snap = handle.snapshot();
                         let mut todo = String::new();
-                        for l in 0..snap.buffer.line_count() as u32 {
+                        for l in 0..snap.buffer.content_line_count() {
                             let text = snap.buffer.line(l).unwrap_or_default();
                             if text.starts_with('#') || text.trim().is_empty() {
                                 continue;

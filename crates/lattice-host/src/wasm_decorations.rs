@@ -139,7 +139,8 @@ impl Editor {
         let buffer_id = self.document_buffer_id;
         let snapshot = self.document.snapshot();
         let version = snapshot.version;
-        let line_count = snapshot.buffer.line_count();
+        // CV.3: content space — decorations address real lines.
+        let line_count = snapshot.buffer.content_line_count();
 
         // Up to date only when the producer set is unchanged AND this buffer's
         // cache matches the current document version. A changed registry always

@@ -197,7 +197,7 @@ fn snapshot_post_publish_read(c: &mut Criterion) {
             );
             bencher.iter(|| {
                 let snap = handle.snapshot();
-                black_box(snap.buffer.line_count());
+                black_box(snap.buffer.content_line_count());
                 black_box(snap.dirty);
                 black_box(snap.text_version);
             });

@@ -296,7 +296,7 @@ impl FoldSource for MagitHunkFoldSource {
             return Vec::new();
         };
         let snap = handle.snapshot();
-        let total = snap.buffer.line_count();
+        let total = snap.buffer.content_line_count();
         let lines: Vec<String> = (0..total)
             .map(|i| snap.buffer.line(i).unwrap_or_default())
             .collect();

@@ -1764,7 +1764,7 @@ pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> 
                 .wrapping_add(line as u64)
                 .wrapping_add((s.start as u64) << 20)
                 .wrapping_add((s.end as u64) << 4)
-                .wrapping_add(s.style as u64);
+                .wrapping_add(s.style.fingerprint());
         }
     }
     acc

@@ -9,7 +9,7 @@
 
 | Slice | Title | Status |
 |---|---|---|
-| DL.1 | `Style::Element(ElementId)` — spans can name a registered element | 📝 |
+| DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | 📝 |
 | DL.3 | Entry icons as leading virtual text | 📝 |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
@@ -31,9 +31,9 @@ each other because the tree is read-only and oil is writable: oil's `:w`
 rename derivation is the real risk in this plan and deserves its own
 commit and its own bisect slot.
 
-## DL.1 — `Style::Element(ElementId)` 📝
+## DL.1 — `Style::Element(ElementId)` ✅
 
-**Depends on:** nothing.
+**Landed 2026-08-13.** **Depends on:** nothing.
 
 Add the variant to `lattice_cells::style::Style`, and one arm to
 `lattice_syntax::theme_style::syntax_element_id` returning the id
@@ -53,6 +53,19 @@ what any mode or WASM plugin needs to own a themed span vocabulary. It
 lands here because this is the first consumer, but it is not
 conditional on the rest of the plan and should not be reverted if a
 later slice is deferred.
+
+**As landed.** `lattice-cells` — previously a zero-dependency leaf —
+now depends on `lattice-theme` so the variant carries a real
+`ElementId` rather than a bare `u32`. The edge is safe: `lattice-theme`
+is itself a deliberately minimal leaf (arc-swap + tracing), kept that
+way because it sits on the renderer hot path.
+
+One consumer broke, usefully: `extra_spans_version` folded a style into
+a cache hash with `style as u64`, which the compiler permitted only
+while every variant was field-less. It is now `Style::fingerprint()`,
+which **includes the payload** — two spans naming different registered
+elements must not collide, or retuning one element would leave a stale
+matrix painted.
 
 ## DL.2 — mode skeleton + `listing.*` vocabulary 📝
 

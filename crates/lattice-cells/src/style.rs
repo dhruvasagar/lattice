@@ -114,6 +114,61 @@ pub enum Style {
     HelpAction,
     /// Any other inline literal — a path, a filename, a git argument.
     HelpLiteral,
+    // ---- The open end of the vocabulary (DL.1) ----
+    /// A span styled by a **registered theme element**, named directly.
+    ///
+    /// Every variant above is a closed, editor-owned category, and that
+    /// is right for concepts the editor itself understands. It cannot
+    /// work for vocabularies that are open by nature — a per-language
+    /// file-icon palette has ~50 entries and grows, and a WASM plugin
+    /// can register a theme element by name but can **never** add a
+    /// variant to a Rust enum. Without this, themed highlighting is
+    /// reachable only by editing core, which makes it impossible for
+    /// plugins by construction (paramount goal #2).
+    ///
+    /// `syntax_element_id` returns the id unchanged, so this resolves
+    /// through exactly the same `ResolvedTheme` lookup as every builtin
+    /// category — a theme retunes it by name like any other element.
+    ///
+    /// Carries [`lattice_theme::ElementId`] (a `u32` newtype), so
+    /// `Style` stays `Copy` and its size is unchanged.
+    Element(lattice_theme::ElementId),
+}
+
+impl Style {
+    /// A stable-within-this-process numeric fingerprint, for folding a
+    /// style into a cache-version hash.
+    ///
+    /// DL.1: this exists because [`Style`] stopped being field-less.
+    /// Consumers used to write `style as u64`, which the compiler
+    /// allowed only while every variant was a unit — so adding
+    /// [`Style::Element`] would have broken them silently in spirit
+    /// (loudly in practice, which is how this was found). Routing them
+    /// through a named method means the payload is *included* in the
+    /// fingerprint: two spans differing only in which registered
+    /// element they name must not collide, or a theme-element change
+    /// would leave a stale matrix on screen.
+    pub fn fingerprint(self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        struct Fnv(u64);
+        impl Hasher for Fnv {
+            fn finish(&self) -> u64 {
+                self.0
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                for b in bytes {
+                    self.0 ^= u64::from(*b);
+                    self.0 = self.0.wrapping_mul(1099511628211);
+                }
+            }
+        }
+        let mut h = Fnv(14695981039346656037);
+        std::mem::discriminant(&self).hash(&mut h);
+        if let Style::Element(id) = self {
+            h.write(&id.0.to_le_bytes());
+        }
+        h.finish()
+    }
 }
 
 /// Byte-range span within one source line, carrying a semantic [`Style`].

@@ -73,6 +73,10 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::HelpCommand => ids.help_command,
         S::HelpAction => ids.help_action,
         S::HelpLiteral => ids.help_literal,
+        // DL.1: already an element id — a mode- or plugin-registered
+        // one that has no builtin slot, which is the whole point.
+        // Resolution downstream is identical to every arm above.
+        S::Element(id) => id,
     }
 }
 
@@ -114,6 +118,69 @@ mod tests {
         let resolved = reg.resolved();
         let ids = BuiltinElementIds::capture(&reg);
         (resolved, ids)
+    }
+
+    /// DL.1: a span may name a **mode-registered** element, and it
+    /// resolves through exactly the same path as a builtin category.
+    ///
+    /// Before this, `StyledSpan` could only carry a closed `Style`
+    /// variant bridged to `BuiltinElementIds` — so an element
+    /// registered by a mode (or, post-1.0, by a WASM plugin, which
+    /// cannot add a Rust enum variant at all) had no way to style a
+    /// span. Themed highlighting outside the core vocabulary was
+    /// impossible by construction.
+    #[test]
+    fn a_mode_registered_element_can_style_a_span() {
+        use lattice_theme::{ElementOwner, StyleSpec};
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let id = reg.register(
+            "listing.file.rust".into(),
+            ElementOwner::Mode("directory-listing-mode".into()),
+            StyleSpec::new().fg(Color::Rgb(0xDE, 0xA5, 0x84)),
+            "test element",
+        );
+        let ids = BuiltinElementIds::capture(&reg);
+
+        // The bridge hands the id straight back …
+        assert_eq!(syntax_element_id(&ids, Style::Element(id)), id);
+        // … and resolution yields the element's own style.
+        let resolved = reg.resolved();
+        let s = resolve_syntax_style(&resolved, &ids, Style::Element(id));
+        assert_eq!(s.fg, Some(Color::Rgb(0xDE, 0xA5, 0x84)));
+    }
+
+    /// The payload participates in the cache fingerprint: two spans
+    /// naming different elements must not collide, or retuning a theme
+    /// element would leave a stale matrix painted.
+    #[test]
+    fn element_styles_fingerprint_distinctly() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let a = reg.register(
+            "listing.file.rust".into(),
+            lattice_theme::ElementOwner::Mode("m".into()),
+            lattice_theme::StyleSpec::new(),
+            "a",
+        );
+        let b = reg.register(
+            "listing.file.python".into(),
+            lattice_theme::ElementOwner::Mode("m".into()),
+            lattice_theme::StyleSpec::new(),
+            "b",
+        );
+        assert_ne!(a, b, "precondition: distinct ids");
+        assert_ne!(
+            Style::Element(a).fingerprint(),
+            Style::Element(b).fingerprint()
+        );
+        assert_ne!(
+            Style::Element(a).fingerprint(),
+            Style::Keyword.fingerprint()
+        );
+        assert_eq!(
+            Style::Keyword.fingerprint(),
+            Style::Keyword.fingerprint(),
+            "stable within a process"
+        );
     }
 
     #[test]

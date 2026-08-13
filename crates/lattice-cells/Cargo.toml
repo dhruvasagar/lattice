@@ -21,7 +21,15 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-# `Arc<[T]>` everywhere. No other deps until S2 needs them.
+# `Arc<[T]>` everywhere; otherwise deliberately near-dep-free.
+#
+# DL.1: `lattice-theme` is the one exception, so `Style::Element` can
+# carry a real `ElementId` instead of a bare `u32`. The edge is safe —
+# `lattice-theme` is itself a minimal leaf (arc-swap + tracing only,
+# kept that way precisely because it sits on the renderer hot path) —
+# and it is what lets a mode- or plugin-registered theme element style
+# a span at all.
+lattice-theme = { path = "../lattice-theme" }
 
 [dev-dependencies]
 # D.0a (2026-05-28): bench virtual_row_layout + display_slice

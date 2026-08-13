@@ -2888,11 +2888,11 @@ impl EditorView {
                 ))
                 .into_any_element();
         };
-        let entries: Vec<lattice_file_tree::FileTreeEntry> = rs_guard
+        let entries: Vec<lattice_listing::file_tree::FileTreeEntry> = rs_guard
             .buffer_locals
             .map
             .get(&pane.buffer_id)
-            .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeEntries>())
+            .and_then(|locals| locals.get::<lattice_listing::file_tree::modes::FileTreeEntries>())
             .map(|e| e.0.clone())
             .unwrap_or_default();
         let (cursor_line, scroll) = if is_active {
@@ -2926,7 +2926,7 @@ impl EditorView {
                 let is_cursor = is_active && line_idx == cursor_line;
                 let is_dir = matches!(
                     entry.kind,
-                    lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                    lattice_listing::file_tree::FileTreeEntryKind::Directory { .. }
                 );
                 let (_glyph, icol) =
                     lattice_core::ui::icons::entry_visual(&entry.path, is_dir, nerd_fonts);

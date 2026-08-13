@@ -9,7 +9,7 @@
 
 | Slice | Title | Status |
 |---|---|---|
-| DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | 📝 |
+| DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | ✅ |
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | 📝 |
 | DL.3 | Entry icons as leading virtual text | 📝 |
@@ -38,9 +38,10 @@ each other because the tree is read-only and oil is writable: oil's `:w`
 rename derivation is the real risk in this plan and deserves its own
 commit and its own bisect slot.
 
-## DL.0 — merge the two listing crates 📝
+## DL.0 — merge the two listing crates ✅
 
-**Depends on:** nothing. **Behaviour change: none.**
+**Landed 2026-08-13** as `lattice-listing`. **Depends on:** nothing.
+**Behaviour change: none.**
 
 `lattice-oil` and `lattice-file-tree` become one crate (~1,240 lines,
 existing module trees preserved). Rationale is in the design fragment's
@@ -60,8 +61,12 @@ this plan exists to remove.
   DL.2/DL.4/DL.5 work, and mixing it into a move commit destroys the
   "pure move" property that makes this one reviewable.
 
-**Naming — open.** `lattice-listing` is crisp; `lattice-directory-listing`
-matches the mode name at the cost of length. Decide at implementation.
+**Named `lattice-listing`** — the `oil` / `file_tree` modules inside
+disambiguate, so the longer `lattice-directory-listing` bought nothing.
+Consumers moved from `lattice_oil::X` / `lattice_file_tree::X` to
+`lattice_listing::oil::X` / `lattice_listing::file_tree::X`; the module
+namespacing is required rather than cosmetic, since both trees export a
+`render_to_buffer` and a `modes` module.
 
 **Verification.** The whole workspace builds and tests green, and the
 diff is moves + manifest edits only. `git log --follow` should still

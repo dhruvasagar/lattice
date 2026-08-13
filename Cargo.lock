@@ -5292,16 +5292,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lattice-file-tree"
-version = "0.1.0"
-dependencies = [
- "lattice-config",
- "lattice-core",
- "lattice-mode",
- "lattice-protocol",
-]
-
-[[package]]
 name = "lattice-grammar"
 version = "0.1.0"
 dependencies = [
@@ -5347,16 +5337,15 @@ dependencies = [
  "lattice-core",
  "lattice-dashboard",
  "lattice-diff",
- "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
  "lattice-keymap",
+ "lattice-listing",
  "lattice-lsp",
  "lattice-magit",
  "lattice-mode",
  "lattice-multibuffer",
  "lattice-notify",
- "lattice-oil",
  "lattice-picker",
  "lattice-plugin-api",
  "lattice-plugin-host",
@@ -5394,6 +5383,16 @@ dependencies = [
  "lattice-grammar",
  "lattice-protocol",
  "tracing",
+]
+
+[[package]]
+name = "lattice-listing"
+version = "0.1.0"
+dependencies = [
+ "lattice-config",
+ "lattice-core",
+ "lattice-mode",
+ "lattice-protocol",
 ]
 
 [[package]]
@@ -5512,15 +5511,6 @@ dependencies = [
  "linkme",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "lattice-oil"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "lattice-mode",
- "lattice-protocol",
 ]
 
 [[package]]
@@ -5785,10 +5775,10 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
- "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
  "lattice-host",
+ "lattice-listing",
  "lattice-lsp",
  "lattice-mode",
  "lattice-notify",
@@ -5816,16 +5806,15 @@ dependencies = [
  "lattice-completion",
  "lattice-config",
  "lattice-core",
- "lattice-file-tree",
  "lattice-grammar",
  "lattice-help",
  "lattice-host",
  "lattice-keymap",
+ "lattice-listing",
  "lattice-lsp",
  "lattice-magit",
  "lattice-mode",
  "lattice-notify",
- "lattice-oil",
  "lattice-picker",
  "lattice-protocol",
  "lattice-runtime",

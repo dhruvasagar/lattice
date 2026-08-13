@@ -9,4 +9,4 @@
 //! a `pub use lattice_host::file_tree;` re-export in
 //! lattice-ui-tui's lib.rs.
 
-pub use lattice_file_tree::*;
+pub use lattice_listing::file_tree::*;

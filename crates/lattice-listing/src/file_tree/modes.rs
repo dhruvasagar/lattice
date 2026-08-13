@@ -35,7 +35,7 @@ use lattice_mode::{
     BufferLocal, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 
-use crate::FileTreeEntry;
+use super::FileTreeEntry;
 
 /// Major mode for file-tree buffers. Read-only contribution
 /// (`ReadOnly = true`); any buffer whose major is

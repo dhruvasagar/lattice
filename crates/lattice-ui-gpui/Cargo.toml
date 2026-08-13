@@ -77,7 +77,7 @@ lattice-terminal = { path = "../lattice-terminal" }
 # renderer names `lattice_file_tree::modes::FileTreeEntries` +
 # `FileTreeEntry` / `FileTreeEntryKind` to read them from the shared
 # `buffer_locals` typemap.
-lattice-file-tree = { path = "../lattice-file-tree" }
+lattice-listing = { path = "../lattice-listing" }
 # PU.6: `Effect::Confirm` opens a y/n transient via
 # `lattice_picker::confirm_transient_spec` — same dep the TUI peer
 # already carries for the picker/transient subsystem generally.

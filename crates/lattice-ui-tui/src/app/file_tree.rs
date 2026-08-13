@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use super::App;
-use lattice_file_tree::FileTreeEntry;
+use lattice_listing::file_tree::FileTreeEntry;
 
 impl App {
     /// Delegate to [`lattice_host::dispatch::Editor::set_file_tree_root`].

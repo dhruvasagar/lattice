@@ -138,22 +138,22 @@ impl BufferLocal for CenterContentWidth {
 
 // ---- file-tree-mode buffer-locals ----
 //
-// All three live in `lattice_file_tree::modes` alongside their
+// All three live in `lattice_listing::file_tree::modes` alongside their
 // declaring mode (`FileTreeMode`). Re-exported here so existing
 // `crate::modes::FileTreeRoot` etc. callsites compile without
 // change; new callers should import from `lattice_file_tree`
 // directly.
 
-pub use lattice_file_tree::{FileTreeEntries, FileTreeNerdFonts, FileTreeRoot};
+pub use lattice_listing::file_tree::{FileTreeEntries, FileTreeNerdFonts, FileTreeRoot};
 
 // ---- M.3.2.c.3: oil-mode buffer-locals ----
 //
-// `OilDir` moved to `lattice_oil::modes` alongside its
+// `OilDir` moved to `lattice_listing::oil::modes` alongside its
 // declaring mode (`OilMode`). Re-exported here so existing
 // `crate::modes::OilDir` callsites compile without change;
 // new callers should import from `lattice_oil` directly.
 
-pub use lattice_oil::OilDir;
+pub use lattice_listing::oil::OilDir;
 
 // ---- M.3.2.c.4: language-mode / text-mode buffer-locals ----
 //
@@ -275,8 +275,8 @@ pub use lattice_mode::{HelpMode, HoverMode};
 // convention; see each feature crate's `modes.rs`).
 // Re-exported here so `crate::modes::*` callsites keep
 // compiling; new code imports from the feature crate.
-pub use lattice_file_tree::FileTreeMode;
-pub use lattice_oil::OilMode;
+pub use lattice_listing::file_tree::FileTreeMode;
+pub use lattice_listing::oil::OilMode;
 
 /// Resolve the default major-mode id for a [`BufferKind`] via
 /// the registry's kind index (H.2).
@@ -425,8 +425,8 @@ mod tests {
         let mut registry = ModeRegistry::new();
         lattice_mode::register_foundation_modes(&mut registry);
         lattice_syntax::register_language_modes(&mut registry);
-        lattice_oil::register_oil_modes(&mut registry);
-        lattice_file_tree::register_file_tree_modes(&mut registry);
+        lattice_listing::oil::register_oil_modes(&mut registry);
+        lattice_listing::file_tree::register_file_tree_modes(&mut registry);
         lattice_terminal::register_terminal_modes(&mut registry);
 
         assert_eq!(
@@ -480,14 +480,14 @@ mod tests {
         // M.4 follow-up: per-kind modes register through
         // `lattice_mode::modes::register_foundation_modes`
         // *and* the feature-crate-owned mode registration
-        // helpers (`lattice_oil::register_oil_modes`, etc.).
+        // helpers (`lattice_listing::oil::register_oil_modes`, etc.).
         // App boot calls all of them; the test mirrors that
         // shape so the assertion set matches what an actual
         // boot produces.
         let mut registry = ModeRegistry::new();
         lattice_mode::register_foundation_modes(&mut registry);
-        lattice_oil::register_oil_modes(&mut registry);
-        lattice_file_tree::register_file_tree_modes(&mut registry);
+        lattice_listing::oil::register_oil_modes(&mut registry);
+        lattice_listing::file_tree::register_file_tree_modes(&mut registry);
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
         assert!(registry.is_registered(OilMode::mode_id()));
@@ -498,8 +498,8 @@ mod tests {
         let mut r = ModeRegistry::new();
         lattice_mode::register_foundation_modes(&mut r);
         lattice_syntax::register_language_modes(&mut r);
-        lattice_oil::register_oil_modes(&mut r);
-        lattice_file_tree::register_file_tree_modes(&mut r);
+        lattice_listing::oil::register_oil_modes(&mut r);
+        lattice_listing::file_tree::register_file_tree_modes(&mut r);
         lattice_terminal::register_terminal_modes(&mut r);
         r
     }

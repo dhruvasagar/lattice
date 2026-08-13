@@ -31,8 +31,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 tracing = { workspace = true }
 lattice-lsp = { path = "../lattice-lsp" }
 lattice-help = { path = "../lattice-help" }
-lattice-oil = { path = "../lattice-oil" }
-lattice-file-tree = { path = "../lattice-file-tree" }
+lattice-listing = { path = "../lattice-listing" }
 # T2 substrate swap (2026-05-25): terminal-cell color +
 # attribute types (`TerminalColor`, `NamedColor`, `CellAttrs`)
 # pattern-matched by `draw_terminal_pane` to translate the

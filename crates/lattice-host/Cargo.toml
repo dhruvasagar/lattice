@@ -33,8 +33,7 @@ lattice-help = { path = "../lattice-help" }
 # install (Phase-B). The host owns fragment -> HelpContent conversion +
 # BufferData::Dashboard creation (it owns the help machinery).
 lattice-dashboard = { path = "../lattice-dashboard" }
-lattice-file-tree = { path = "../lattice-file-tree" }
-lattice-oil = { path = "../lattice-oil" }
+lattice-listing = { path = "../lattice-listing" }
 # Phase 5.2 second wave: actions + excommand. Pure renderer-
 # agnostic logic that depends only on the grammar + protocol
 # substrate.

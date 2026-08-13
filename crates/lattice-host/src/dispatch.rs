@@ -12253,8 +12253,8 @@ impl Editor {
     ///
     /// Phase 5.8.AA.s: hoisted from TUI App. `FileTreeRoot` /
     /// `OilDir` buffer-locals are read through the canonical
-    /// domain-crate paths (`lattice_file_tree::modes::FileTreeRoot`,
-    /// `lattice_oil::modes::OilDir`) so the body is renderer-
+    /// domain-crate paths (`lattice_listing::file_tree::modes::FileTreeRoot`,
+    /// `lattice_listing::oil::modes::OilDir`) so the body is renderer-
     /// agnostic -- both peers can call it.
     pub fn build_picker_context<'a>(
         &'a self,
@@ -20188,7 +20188,7 @@ impl Editor {
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
-            .insert(lattice_oil::modes::OilDir(dir));
+            .insert(lattice_listing::oil::modes::OilDir(dir));
     }
 
     /// Read the dir an oil buffer represents from its `OilDir`
@@ -20197,7 +20197,7 @@ impl Editor {
     pub fn oil_dir_for(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+            .and_then(|locals| locals.get::<lattice_listing::oil::modes::OilDir>())
             .map(|d| d.0.clone())
     }
 
@@ -20242,7 +20242,7 @@ impl Editor {
             );
             return Vec::new();
         }
-        let oil = match lattice_oil::OilBuffer::open(&dir) {
+        let oil = match lattice_listing::oil::OilBuffer::open(&dir) {
             Ok(o) => o,
             Err(e) => {
                 self.set_message(
@@ -20375,10 +20375,10 @@ impl Editor {
                 let (dir, came_from) = self
                     .file_tree_entries_for(id)
                     .and_then(|entries| {
-                        lattice_file_tree::entry_at_line(&entries, line).map(|e| {
+                        lattice_listing::file_tree::entry_at_line(&entries, line).map(|e| {
                             if matches!(
                                 e.kind,
-                                lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                                lattice_listing::file_tree::FileTreeEntryKind::Directory { .. }
                             ) {
                                 (e.path.clone(), None)
                             } else {
@@ -20451,7 +20451,7 @@ impl Editor {
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
-            .insert(lattice_file_tree::modes::FileTreeRoot(root));
+            .insert(lattice_listing::file_tree::modes::FileTreeRoot(root));
     }
 
     /// Write `FileTreeEntries` AND re-render the buffer's rope.
@@ -20459,26 +20459,25 @@ impl Editor {
     pub fn set_file_tree_entries(
         &mut self,
         buffer_id: BufferId,
-        entries: Vec<lattice_file_tree::FileTreeEntry>,
+        entries: Vec<lattice_listing::file_tree::FileTreeEntry>,
     ) {
         let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
-        let content = lattice_file_tree::render_to_buffer(&entries, nerd_fonts);
+        let content = lattice_listing::file_tree::render_to_buffer(&entries, nerd_fonts);
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
-            .insert(lattice_file_tree::modes::FileTreeEntries(entries));
+            .insert(lattice_listing::file_tree::modes::FileTreeEntries(entries));
         self.buffers
             .with_file_tree_mut(buffer_id, |tree| tree.content = content);
     }
 
     /// Write `FileTreeNerdFonts` and re-render the rope.
     pub fn set_file_tree_nerd_fonts(&mut self, buffer_id: BufferId, nerd_fonts: bool) {
-        self.buffer_locals
-            .entry(buffer_id)
-            .or_default()
-            .insert(lattice_file_tree::modes::FileTreeNerdFonts(nerd_fonts));
+        self.buffer_locals.entry(buffer_id).or_default().insert(
+            lattice_listing::file_tree::modes::FileTreeNerdFonts(nerd_fonts),
+        );
         if let Some(entries) = self.file_tree_entries_for(buffer_id) {
-            let content = lattice_file_tree::render_to_buffer(&entries, nerd_fonts);
+            let content = lattice_listing::file_tree::render_to_buffer(&entries, nerd_fonts);
             self.buffers
                 .with_file_tree_mut(buffer_id, |tree| tree.content = content);
         }
@@ -20487,24 +20486,24 @@ impl Editor {
     pub fn file_tree_root_for(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeRoot>())
+            .and_then(|l| l.get::<lattice_listing::file_tree::modes::FileTreeRoot>())
             .map(|r| r.0.clone())
     }
 
     pub fn file_tree_entries_for(
         &self,
         buffer_id: BufferId,
-    ) -> Option<Vec<lattice_file_tree::FileTreeEntry>> {
+    ) -> Option<Vec<lattice_listing::file_tree::FileTreeEntry>> {
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeEntries>())
+            .and_then(|l| l.get::<lattice_listing::file_tree::modes::FileTreeEntries>())
             .map(|e| e.0.clone())
     }
 
     pub fn file_tree_nerd_fonts_for(&self, buffer_id: BufferId) -> Option<bool> {
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|l| l.get::<lattice_file_tree::modes::FileTreeNerdFonts>())
+            .and_then(|l| l.get::<lattice_listing::file_tree::modes::FileTreeNerdFonts>())
             .map(|n| n.0)
     }
 
@@ -20556,16 +20555,17 @@ impl Editor {
             .get_typed::<crate::ui::theme_options::UiNerdFonts>()
             .map(|v| *v)
             .unwrap_or(false);
-        let (tree, entries) = match lattice_file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
-            Ok(t) => t,
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("tree open error: {}: {e}", root.display()),
-                );
-                return Vec::new();
-            }
-        };
+        let (tree, entries) =
+            match lattice_listing::file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("tree open error: {}: {e}", root.display()),
+                    );
+                    return Vec::new();
+                }
+            };
         if matches!(
             self.active_buffer,
             BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
@@ -20608,15 +20608,15 @@ impl Editor {
             return Vec::new();
         };
         match entry.kind {
-            lattice_file_tree::FileTreeEntryKind::Directory { .. } => {
-                if let Err(e) = lattice_file_tree::toggle_entries_at(&mut entries, idx) {
+            lattice_listing::file_tree::FileTreeEntryKind::Directory { .. } => {
+                if let Err(e) = lattice_listing::file_tree::toggle_entries_at(&mut entries, idx) {
                     self.set_message(EchoLevel::Error, format!("toggle error: {e}"));
                     return Vec::new();
                 }
                 self.set_file_tree_entries(active_id, entries);
                 Vec::new()
             }
-            lattice_file_tree::FileTreeEntryKind::File => {
+            lattice_listing::file_tree::FileTreeEntryKind::File => {
                 let path = entry.path.clone();
                 let outcome = self.do_edit(Some(path), false);
                 match outcome {
@@ -31205,8 +31205,8 @@ impl Editor {
 impl Editor {
     /// 5.5.F.1: build the `:ls` / `:buffers` listing content.
     /// Mirrors the registry-walk + per-kind formatting that App's
-    /// `do_list_buffers` used; reads `lattice_file_tree::modes::FileTreeRoot`
-    /// and `lattice_oil::modes::OilDir` from `buffer_locals` so
+    /// `do_list_buffers` used; reads `lattice_listing::file_tree::modes::FileTreeRoot`
+    /// and `lattice_listing::oil::modes::OilDir` from `buffer_locals` so
     /// file-tree / oil rows show their root paths.
     pub fn build_list_buffers_content(&self) -> lattice_help::HelpContent {
         use crate::buffer_registry::BufferData;
@@ -31322,7 +31322,9 @@ impl Editor {
                     let root = self
                         .buffer_locals
                         .get(&id)
-                        .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                        .and_then(|locals| {
+                            locals.get::<lattice_listing::file_tree::modes::FileTreeRoot>()
+                        })
                         .map(|r| r.0.clone())
                         .unwrap_or_default();
                     lines.push(format!(
@@ -31342,7 +31344,7 @@ impl Editor {
                     let dir = self
                         .buffer_locals
                         .get(&id)
-                        .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                        .and_then(|locals| locals.get::<lattice_listing::oil::modes::OilDir>())
                         .map(|d| d.0.display().to_string())
                         .unwrap_or_default();
                     lines.push(format!(
@@ -34441,7 +34443,9 @@ pub fn raw_buffer_candidates(
             BufferData::FileTree(_) => {
                 let root_display = buffer_locals
                     .get(&id)
-                    .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                    .and_then(|locals| {
+                        locals.get::<lattice_listing::file_tree::modes::FileTreeRoot>()
+                    })
                     .map(|r| r.0.display().to_string())
                     .unwrap_or_else(|| "[no root]".to_string());
                 (
@@ -34456,7 +34460,7 @@ pub fn raw_buffer_candidates(
             BufferData::Oil(_) => {
                 let dir_display = buffer_locals
                     .get(&id)
-                    .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                    .and_then(|locals| locals.get::<lattice_listing::oil::modes::OilDir>())
                     .map(|d| d.0.display().to_string())
                     .unwrap_or_else(|| "[no dir]".to_string());
                 (
@@ -34596,7 +34600,7 @@ pub fn picker_buffer_entry(
         BufferData::FileTree(_) => {
             let root = buffer_locals
                 .get(&entry.id)
-                .and_then(|locals| locals.get::<lattice_file_tree::modes::FileTreeRoot>())
+                .and_then(|locals| locals.get::<lattice_listing::file_tree::modes::FileTreeRoot>())
                 .map(|r| r.0.clone());
             let title = root
                 .as_ref()
@@ -34613,7 +34617,7 @@ pub fn picker_buffer_entry(
         BufferData::Oil(_) => {
             let dir = buffer_locals
                 .get(&entry.id)
-                .and_then(|locals| locals.get::<lattice_oil::modes::OilDir>())
+                .and_then(|locals| locals.get::<lattice_listing::oil::modes::OilDir>())
                 .map(|d| d.0.clone());
             let title = dir
                 .as_ref()

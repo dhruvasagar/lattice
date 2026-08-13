@@ -449,8 +449,8 @@ impl Editor {
         // `lattice_lsp::install(boot)` (Phase-B list below). The completion mode
         // reads the supervisor handle via `boot.service::<LspSupervisorHandle>()`
         // (registered in Phase A above), so no host-side handle threading.
-        lattice_oil::register_oil_modes(boot.modes_mut());
-        lattice_file_tree::register_file_tree_modes(boot.modes_mut());
+        lattice_listing::oil::register_oil_modes(boot.modes_mut());
+        lattice_listing::file_tree::register_file_tree_modes(boot.modes_mut());
         let snippet_activation_policy = lattice_snippet::register_snippet_modes(
             boot.modes_mut(),
             snippet_registry_handle.clone(),
@@ -2181,11 +2181,11 @@ impl Editor {
             Editor::run_help_invocation,
         );
         editor.register_invocation_runner(
-            lattice_oil::OilMode::mode_id(),
+            lattice_listing::oil::OilMode::mode_id(),
             Editor::run_oil_invocation,
         );
         editor.register_invocation_runner(
-            lattice_file_tree::FileTreeMode::mode_id(),
+            lattice_listing::file_tree::FileTreeMode::mode_id(),
             Editor::run_file_tree_invocation,
         );
         editor.register_invocation_runner(

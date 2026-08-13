@@ -1,5 +1,5 @@
 [package]
-name = "lattice-oil"
+name = "lattice-listing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,9 @@ doctest = false
 [dependencies]
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# `file_tree` only (its mode contributes typed display options); kept at
+# the crate level because Cargo has no per-module dependency scope.
+lattice-config = { path = "../lattice-config" }
 lattice-mode = { path = "../lattice-mode" }
 
 [lints]

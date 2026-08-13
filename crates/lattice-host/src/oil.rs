@@ -4,4 +4,4 @@
 //! shape as `crate::file_tree`: host-side canonical path,
 //! lattice-ui-tui re-exports for backward compat.
 
-pub use lattice_oil::*;
+pub use lattice_listing::oil::*;

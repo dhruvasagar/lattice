@@ -3417,14 +3417,14 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         },
     );
     registry.register(
-        lattice_file_tree::FileTreeMode.id(),
+        lattice_listing::file_tree::FileTreeMode.id(),
         PaneRenderProvider {
             render: file_tree_pane_render,
             status: file_tree_pane_status,
         },
     );
     registry.register(
-        lattice_oil::OilMode.id(),
+        lattice_listing::oil::OilMode.id(),
         PaneRenderProvider {
             render: oil_pane_render,
             status: oil_pane_status,

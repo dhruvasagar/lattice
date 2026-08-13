@@ -66,8 +66,8 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
         .register(TextMode)
         .expect("text-mode must register without conflict");
     // `FileTreeMode` registers from
-    // `lattice_file_tree::register_file_tree_modes`, `OilMode`
-    // from `lattice_oil::register_oil_modes` -- both called by
+    // `lattice_listing::file_tree::register_file_tree_modes`, `OilMode`
+    // from `lattice_listing::oil::register_oil_modes` -- both called by
     // the App's boot path alongside this function.
     registry
         .register(HelpMode)

@@ -414,6 +414,18 @@ pub(crate) struct EditorElement {
     /// projection — not deleted; B4 deletes only the legacy highlight
     /// cache (`visible_spans` etc.). See architecture/display-line.md.
     pub(crate) display_matrix: Option<Arc<DisplayMatrix>>,
+    /// CV.4: this pane's soft-wrap column width from the host's
+    /// **live** published geometry
+    /// ([`lattice_host::render_state::CellsRenderState::wrap_width_for_pane`]),
+    /// or `0` when the pane does not wrap.
+    ///
+    /// Authoritative over the matrices' stamped `wrap_width`, which the
+    /// cells worker writes asynchronously: reading the stamp first made
+    /// this element paint unwrapped for as long as the worker lagged.
+    /// The TUI peer computes the equivalent from its pane rect at paint
+    /// time; this is the same number, derived from the same two
+    /// published inputs the worker will stamp from.
+    pub(crate) wrap_width_live: u32,
     /// T.5.b (theme-system): the resolved theme table + builtin
     /// element ids the display-line path resolves `DisplayRun`
     /// syntax-style tags through (`display_line_to_text_runs` →
@@ -981,18 +993,30 @@ impl Element for EditorElement {
                 }
             };
 
-        // W.5: the active matrix's wrap column width (0 = wrapping
-        // off / inactive pane / no matrix → every line is one segment,
-        // a byte-identical non-wrapping render). Read from the
-        // canonical `DisplayMatrix` first, then the `CellMatrix`, so
-        // the renderer and the host scroll model (which counts
-        // `segment_count`) agree on display-row geometry.
-        let wrap_width: u32 = self
-            .display_matrix
-            .as_ref()
-            .map(|m| m.wrap_width)
-            .or_else(|| self.cell_matrix.as_ref().map(|m| m.wrap_width))
-            .unwrap_or(0);
+        // W.5: the wrap column width (0 = wrapping off / inactive pane
+        // / no matrix → every line is one segment, a byte-identical
+        // non-wrapping render).
+        //
+        // CV.4: `wrap_width_live` — the host's published per-pane
+        // geometry — is authoritative, and the matrix stamps are only
+        // the fallback. The stamps are written by the cells worker
+        // asynchronously, so reading them *first* meant this element
+        // painted UNWRAPPED for as long as the worker lagged: on a
+        // freshly opened file, right after a resize, and on the
+        // keystroke that ran `:set wrap`. The TUI peer never had this
+        // because it computes its wrap width from the pane rect at
+        // paint time; the two peers disagreeing about how many rows a
+        // line occupies is exactly the class of desync CV.1 fixed on
+        // the host's scroll clamp.
+        let wrap_width: u32 = if self.wrap_width_live > 0 {
+            self.wrap_width_live
+        } else {
+            self.display_matrix
+                .as_ref()
+                .map(|m| m.wrap_width)
+                .or_else(|| self.cell_matrix.as_ref().map(|m| m.wrap_width))
+                .unwrap_or(0)
+        };
 
         // Per-row diagnostic-segment computation. Walks
         // `self.diagnostic_underlines` against (line_idx, line_text,

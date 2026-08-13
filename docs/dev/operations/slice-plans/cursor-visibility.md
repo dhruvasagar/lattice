@@ -14,7 +14,7 @@ conflating them is how the second one keeps getting "fixed".
 | CV.1 | `G` leaves the cursor one row below the drawn area | ✅ |
 | CV.2 | Phantom trailing line: a file ending in `\n` renders one row too many | ✅ |
 | CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | 📝 |
-| CV.4 | The other readers of the matrix's stamped `wrap_width` | 📝 |
+| CV.4 | The other readers of the matrix's stamped `wrap_width` | ✅ |
 | CV.5 | Oil / file-tree cursor highlight trails the caret by `scroll` | ✅ |
 | CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 (own plan) |
 
@@ -247,36 +247,55 @@ Two findings from CV.2 that belong in the triage:
   (`dispatch.rs`) — all computing `content_line_count() - 1` by hand.
   The triage should collapse them onto the accessor.
 
-## CV.4 — the other readers of the matrix's stamped `wrap_width` 📝
+## CV.4 — the other readers of the matrix's stamped `wrap_width` ✅
 
-CV.1 fixed the vertical scroll clamp. Found while fixing it: it was not
-the only reader treating the worker's stamp as live geometry. Recorded
-rather than folded into CV.1 — each is a distinct user-visible defect
-with its own blast radius, and one of them needs a test-harness change
-wide enough to deserve its own commit.
+**Fixed 2026-08-13.** CV.1 fixed the vertical scroll clamp; it was not
+the only reader treating the worker's asynchronous stamp as live
+geometry. Both remaining readers are now on live geometry, and the
+stamp is a fallback rather than the source.
 
-1. **`Editor::active_wrap_width`** (`dispatch.rs`) returns
-   `cells_matrix_for(bid).wrap_width` directly, and `gj` / `gk` /
-   `g0` / `g$` branch on it. With the stamp still `0` they silently
-   degrade to `j` / `k` / `0` / `$` — display-line motion stops being
-   display-line motion until the worker publishes. The same
-   `segment_count(line)` calls inside `do_display_line_{down,up}` also
-   want `line_display_width`'s fallback.
+### `active_wrap_width` — the display-line motions
 
-   The cost is in the tests, not the fix: `seed_wrap_matrix` is how
-   several `display_line_*` tests turn wrapping on at all, so pointing
-   `active_wrap_width` at live geometry makes them all need
-   `do_set("wrap")` plus a pane width.
+`gj` / `gk` / `g0` / `g$` branch on it, so with the stamp still `0`
+they silently degraded to `j` / `k` / `0` / `$`: display-line motion
+stopped being display-line motion on every freshly opened file, after
+every resize, and on the keystroke that ran `:set wrap`. It now
+delegates to `scroll_wrap_width()`, the same live derivation CV.1 gave
+the clamp, and the `segment_count` reads inside
+`do_display_line_{down,up}` go through a new `line_segment_count`
+built on `line_display_width` — so a line outside the windowed matrix
+is measured rather than silently called one row tall.
 
-2. **GPUI's renderer** (`editor_element.rs`, the `prepaint` wrap_width
-   read) takes the stamp from `DisplayMatrix` then `CellMatrix`, with
-   no live-geometry fallback — so on an unstamped matrix GPUI paints
-   *unwrapped* where the TUI paints wrapped (the TUI computes its own
-   wrap width from the pane rect at paint time). This is a genuine
-   peer divergence, and it is the reason CV.1 needed no GPUI edit:
-   after CV.1 the host budgets 2 rows where GPUI paints 1, which
-   over-scrolls for a frame — visible, but it cannot hide the cursor
-   the way under-scrolling did.
+### GPUI's renderer
+
+It read `wrap_width` from `DisplayMatrix` then `CellMatrix`, with no
+live fallback, so it painted **unwrapped** for as long as the worker
+lagged — while the TUI, which computes its wrap width from the pane
+rect at paint time, painted wrapped. Two peers disagreeing about how
+many rows a line occupies is the same class of desync CV.1 fixed on
+the host.
+
+Rather than teach GPUI a third derivation, the host now publishes the
+number: `CellsRenderState::wrap_width_for_pane` derives
+`viewport_width - wrap_reserved_cols` from the same two published
+inputs the worker stamps from, so it *is* the value the matrix will
+carry — one frame earlier. GPUI takes it as authoritative and keeps the
+stamps as fallback (`wrap_width_live == 0` ⇒ previous behaviour, which
+is what the popup pseudo-panes with no published entry get).
+
+### The test-harness debt this exposed
+
+`seed_wrap_matrix` was how several `display_line_*` tests turned
+wrapping on **at all** — the seeded stamp *was* the wrap switch, so
+they passed against a path that consulted neither the `wrap` option
+nor the pane. A new `enable_wrap(&mut editor, width)` helper turns it
+on the way a user does (`do_set("wrap")` plus a pane width whose body
+is exactly `width`), and every wrap test now goes through it;
+`seed_wrap_matrix` is reduced to what its name says.
+
+`display_line_down_advances_a_segment_with_an_unbuilt_matrix` is the
+pin, and is deliberately the one test in the family that does **not**
+seed.
 
 ## CV.5 — the oil / file-tree cursor highlight trails the caret ✅
 

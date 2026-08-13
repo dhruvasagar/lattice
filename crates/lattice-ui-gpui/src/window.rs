@@ -2694,6 +2694,11 @@ impl EditorView {
             // the GPU's primary shaping source; reading it per-pane is
             // what makes inactive panes paint full syntax through the
             // shared path. Same per-pane stale guard.
+            // CV.4: live per-pane wrap width, authoritative over the
+            // matrices' asynchronously-written stamps. Same two published
+            // inputs the cells worker stamps from, so this is the value the
+            // matrix will carry — just available a frame earlier.
+            wrap_width_live: rs_guard.cells.load().wrap_width_for_pane(pane.id),
             display_matrix: {
                 let cells = rs_guard.cells.load();
                 let ws = cells.whitespace_version_for_pane(pane.id);
@@ -4034,6 +4039,10 @@ impl Render for EditorView {
                         .map(|c| c.load_full())
                         .filter(|m| m.version.text == text_version);
                     let editor_element = crate::editor_element::EditorElement {
+                        // CV.4: live wrap width for this pseudo-pane; `0`
+                        // when it has no published entry, which falls back
+                        // to the matrix stamp exactly as before.
+                        wrap_width_live: cells.wrap_width_for_pane(pane),
                         // `usize::MAX - 1`: distinct ElementId from the
                         // floating popup (`usize::MAX`) and every real pane.
                         pane_idx: usize::MAX - 1,
@@ -4622,6 +4631,10 @@ impl Render for EditorView {
                 .map(|c| c.load_full())
                 .filter(|m| m.version.text == text_version);
             let editor_element = crate::editor_element::EditorElement {
+                // CV.4: live wrap width for the popup pseudo-pane; `0`
+                // when it has no published entry, which falls back to the
+                // matrix stamp exactly as before.
+                wrap_width_live: cells.wrap_width_for_pane(popup_pane),
                 // `usize::MAX`: a stable `ElementId` distinct from every
                 // real pane index (0, 1, 2, …) so GPUI tracks the popup
                 // element across frames without colliding.

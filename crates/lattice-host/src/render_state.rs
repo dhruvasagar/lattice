@@ -1301,6 +1301,31 @@ impl CellsRenderState {
             .unwrap_or(self.version.whitespace)
     }
 
+    /// CV.4: the soft-wrap column width for `pane_id` derived from
+    /// **live** published geometry — `viewport_width` minus the
+    /// gutter reservation, or `0` when the pane does not wrap.
+    ///
+    /// This is the value the cells worker will stamp onto the matrix
+    /// as `wrap_width`, computed from the same two published inputs,
+    /// and therefore available a frame *before* the worker runs. A
+    /// renderer that reads the matrix's stamp instead paints
+    /// unwrapped until the worker catches up: on a freshly opened
+    /// file, right after a resize, and on the keystroke that ran
+    /// `:set wrap`. Reading it here keeps both peers and the host's
+    /// scroll clamp on one number.
+    ///
+    /// `0` for a pane with no published entry (non-Document leaves
+    /// skip the cells path), which is the correct "no wrapping"
+    /// answer for them.
+    pub fn wrap_width_for_pane(&self, pane_id: lattice_core::ui::pane::PaneId) -> u32 {
+        self.panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .filter(|p| p.wrap)
+            .map(|p| p.viewport_width.saturating_sub(p.wrap_reserved_cols).max(1))
+            .unwrap_or(0)
+    }
+
     /// The **current** fold-axis stamp for `pane_id` — the peer of
     /// [`Self::whitespace_version_for_pane`], and needed for the same
     /// reason.

@@ -19106,11 +19106,35 @@ impl Editor {
         self.begin_insert_session();
     }
 
-    /// Return the wrap_width for the active buffer's cell matrix.
-    /// `0` means wrapping is off.
+    /// Columns a soft-wrapped line is broken at for the display-line
+    /// motions (`gj` / `gk` / `g0` / `g$`). `0` means wrapping is off.
+    ///
+    /// CV.4: live pane geometry, via the same
+    /// [`Self::scroll_wrap_width`] the vertical scroll clamp uses.
+    /// This read the cells matrix's stamped `wrap_width` until the
+    /// worker's publish caught up — which meant that on a freshly
+    /// opened file, right after a resize, or on the keystroke that ran
+    /// `:set wrap`, every display-line motion silently degraded to its
+    /// line-wise cousin: `gj` became `j`, `g0` became `0`. Same stale
+    /// stamp, same class of bug as CV.1, one axis over.
     fn active_wrap_width(&self) -> u32 {
-        let bid = self.active_buffer_id();
-        self.cells_matrix_for(bid).load_full().wrap_width
+        self.scroll_wrap_width()
+    }
+
+    /// Display rows source `line` occupies under soft-wrap — the
+    /// display-line motions' peer of `bottom_anchored_scroll`'s
+    /// `line_cost`. `1` when wrapping is off.
+    ///
+    /// CV.4: goes through [`Self::line_display_width`], so a line whose
+    /// row is outside the windowed matrix is measured rather than
+    /// silently reported as one row tall. `gj` on such a line used to
+    /// skip to the next source line instead of the next segment.
+    fn line_segment_count(&self, line: u32) -> u32 {
+        let wrap_width = self.active_wrap_width();
+        if wrap_width == 0 {
+            return 1;
+        }
+        lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
     }
 
     /// Vim's `gj` -- move down one display-line segment.
@@ -19132,12 +19156,7 @@ impl Editor {
         let cur_byte = self.cursor.byte;
         let cur_seg = cur_byte / wrap_width;
         let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
-        let seg_count = {
-            let bid = self.active_buffer_id();
-            self.cells_matrix_for(bid)
-                .load_full()
-                .segment_count(cur_line)
-        };
+        let seg_count = self.line_segment_count(cur_line);
         if cur_seg + 1 < seg_count {
             // next segment on the same source line
             let next_start = (cur_seg + 1) * wrap_width;
@@ -19191,12 +19210,7 @@ impl Editor {
             }
             let prev_line = cur_line - 1;
             let prev_len = snap.buffer.line_byte_len(prev_line);
-            let prev_segs = {
-                let bid = self.active_buffer_id();
-                self.cells_matrix_for(bid)
-                    .load_full()
-                    .segment_count(prev_line)
-            };
+            let prev_segs = self.line_segment_count(prev_line).max(1);
             let last_seg_start = (prev_segs - 1) * wrap_width;
             self.cursor.line = prev_line;
             self.cursor.byte =
@@ -45109,6 +45123,7 @@ mod tests {
         // Cache agrees with the live geometry here — this test covers
         // the built-matrix path; the sibling below covers the unbuilt
         // one.
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 12);
         // Close a fold over lines 2..=5 (its 3 hidden body lines must
         // NOT consume budget — the walk hops to the head).
@@ -45239,6 +45254,30 @@ mod tests {
 
     // ---- gj / gk / g0 / g$ display-line motions ----
 
+    /// Turn soft-wrap on **the way a user does** and give the pane a
+    /// width whose body is exactly `wrap_width` columns.
+    ///
+    /// CV.1/CV.4: wrap geometry is live pane geometry now, not the
+    /// matrix's stamped `wrap_width`. Before that, `seed_wrap_matrix`
+    /// alone was enough to make a test behave as if wrapping were on —
+    /// the seeded stamp *was* the wrap switch — so tests could pass
+    /// against a code path that never consulted the `wrap` option or
+    /// the pane at all. Every wrap test now goes through here, and
+    /// `seed_wrap_matrix` is reduced to what its name says: priming
+    /// the cache.
+    fn enable_wrap(editor: &mut crate::editor::Editor, wrap_width: u32) {
+        let _ = editor.do_set("wrap");
+        let rope_lines = editor.document.snapshot().buffer.line_count().max(1);
+        let gutter =
+            crate::cells_worker::gutter_cols(rope_lines, editor.option_cache.show_line_numbers);
+        editor.pane_tree.active_mut().viewport_width = wrap_width + gutter;
+        assert_eq!(
+            editor.body_text_width(),
+            wrap_width,
+            "enable_wrap must produce the requested body width"
+        );
+    }
+
     fn seed_wrap_matrix(editor: &crate::editor::Editor, wrap_width: u32, line_count: u32) {
         // Build a CellMatrix where every source line has col_count = wrap_width * 2,
         // so each line spans exactly 2 display segments at this wrap_width.
@@ -45271,11 +45310,49 @@ mod tests {
         // Cursor at byte 1 (segment 0). gj → segment 1, goal=1.
         let doc = lattice_core::Document::from_text("abcdefgh\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 1);
         editor.cursor = lattice_protocol::position::Position::new(0, 1);
         editor.do_display_line_down();
         assert_eq!(editor.cursor.byte, 5, "segment 1 start(4) + goal(1) = 5");
         assert_eq!(editor.goal_col, Some(1));
+    }
+
+    /// CV.4: the display-line motions against the cache state a **real**
+    /// editor is in — nothing seeded.
+    ///
+    /// `active_wrap_width` read the cells matrix's stamped `wrap_width`,
+    /// which the worker publishes asynchronously. Until it landed the
+    /// stamp was `0`, so `gj` took the `wrap_width == 0` branch and
+    /// silently degraded to `j` — display-line motion stopped being
+    /// display-line motion on every freshly opened file, after every
+    /// resize, and on the keystroke that ran `:set wrap`. The same
+    /// stale stamp as CV.1, one axis over.
+    ///
+    /// Every other test in this family calls `seed_wrap_matrix`, which
+    /// hands the motion the answer; this one deliberately does not.
+    #[test]
+    fn display_line_down_advances_a_segment_with_an_unbuilt_matrix() {
+        let doc = lattice_core::Document::from_text("abcdefgh\n");
+        let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
+        assert_eq!(
+            editor
+                .cells_matrix_for(editor.active_buffer_id())
+                .load_full()
+                .wrap_width,
+            0,
+            "precondition: the worker has not published wrap geometry yet"
+        );
+
+        editor.cursor = lattice_protocol::position::Position::new(0, 1);
+        editor.do_display_line_down();
+        assert_eq!(
+            editor.cursor.byte, 5,
+            "`gj` must step to the next wrap segment (4 + goal 1), not fall \
+             through to `j`"
+        );
+        assert_eq!(editor.cursor.line, 0, "still the same source line");
     }
 
     #[test]
@@ -45284,6 +45361,7 @@ mod tests {
         // gj → line 1, byte = goal=1.
         let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 2);
         editor.cursor = lattice_protocol::position::Position::new(0, 5);
         editor.do_display_line_down();
@@ -45295,6 +45373,7 @@ mod tests {
     fn display_line_up_retreats_segment_within_line() {
         let doc = lattice_core::Document::from_text("abcdefgh\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 1);
         editor.cursor = lattice_protocol::position::Position::new(0, 5); // seg 1
         editor.do_display_line_up();
@@ -45305,6 +45384,7 @@ mod tests {
     fn display_line_up_at_first_segment_goes_to_prev_line_last_seg() {
         let doc = lattice_core::Document::from_text("abcdefgh\nABCDEFGH\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 2);
         editor.cursor = lattice_protocol::position::Position::new(1, 1); // line 1, seg 0
         editor.do_display_line_up();
@@ -45317,6 +45397,7 @@ mod tests {
     fn display_line_start_moves_to_seg_start() {
         let doc = lattice_core::Document::from_text("abcdefgh\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 1);
         editor.cursor = lattice_protocol::position::Position::new(0, 6); // seg 1
         editor.do_display_line_start();
@@ -45328,6 +45409,7 @@ mod tests {
     fn display_line_end_moves_to_seg_end() {
         let doc = lattice_core::Document::from_text("abcdefgh\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 1);
         editor.cursor = lattice_protocol::position::Position::new(0, 1); // seg 0
         editor.do_display_line_end();
@@ -45350,6 +45432,7 @@ mod tests {
     fn goal_col_reset_on_non_display_line_action() {
         let doc = lattice_core::Document::from_text("abcdefgh\nABCD\n");
         let mut editor = Editor::boot(doc);
+        enable_wrap(&mut editor, 4);
         seed_wrap_matrix(&editor, 4, 2);
         editor.cursor = lattice_protocol::position::Position::new(0, 1);
         editor.do_display_line_down();

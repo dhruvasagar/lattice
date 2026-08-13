@@ -130,6 +130,20 @@ build hygiene: a stale build-script reference to a deleted plugin
 dirtied `lattice-plugin-host` on *every* build, relinking 25 test
 binaries; cached `cargo test -p lattice-host` went 445s → 185s.
 
+**Cursor visibility + line-count spaces (2026-08-13, live report).**
+`G` on a 219-line file puts the cursor on 219 while the last drawn row
+is 218, and the same file renders a phantom empty line 220. **Two
+separate defects**, tracked apart in
+[`cursor-visibility.md`](slice-plans/cursor-visibility.md) precisely
+because fixing the second can mask the first. The phantom line is a
+coordinate-space leak — `Buffer::line_count` returns ropey's raw count
+by design and 123 call sites each re-derive the correction, which is
+why it has been "fixed" more than once; the plan renames the raw
+accessor so the compiler forces the choice at every site. Nothing
+implemented; the plan opens with the one measurement that discriminates
+between its two hypotheses, because every confident diagnosis in the
+session that found it was wrong and every instrumented one was right.
+
 **Still open from this review:** **PD.4–5**
 ([`magit-project-diff.md`](slice-plans/magit-project-diff.md), catalogue
 A.1 — edit propagation and file folds; PD.1–3 have landed);

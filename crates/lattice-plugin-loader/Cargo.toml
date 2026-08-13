@@ -19,6 +19,15 @@ license.workspace = true
 # Sec.8 lifecycle) + docs/dev/architecture/boot-composition.md (the install
 # contract). Slice plan: docs/dev/operations/slice-plans/plugin-loader.md.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # The Phase-7 runtime: the wasmtime engine, the WIT API, the capability/fuel/
 # crash model, and every extension seam. PL8.A drives its lifecycle spine

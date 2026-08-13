@@ -11,6 +11,15 @@ license.workspace = true
 # host substrate depend on this. Construction logic and the
 # cell-builder worker land in S2 in `lattice-host`.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # `Arc<[T]>` everywhere. No other deps until S2 needs them.
 

@@ -16,6 +16,15 @@ license.workspace = true
 # drives them; `tokio` is a dev-dependency only, for the tests. No WASI view
 # yet (PH7.2); on-disk module cache + lazy instantiation land in PH7.1b.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # The runtime + Component Model + Cranelift AOT. Default features carry the
 # component-model + cranelift + wat stack; feature-trimming for build time

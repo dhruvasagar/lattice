@@ -5,6 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 ropey = { workspace = true }

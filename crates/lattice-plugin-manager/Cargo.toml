@@ -18,6 +18,15 @@ license.workspace = true
 # Design: the plugin-loader slice plan (PL8.H). Interactivity (reload/unload
 # chords) lands in PL8.H.3.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
 # `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,

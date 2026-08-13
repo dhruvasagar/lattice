@@ -19,6 +19,15 @@ license.workspace = true
 # `wasmtime` runtime into the host -- the no-per-frame-WASM invariant
 # (plugin-host.md slice plan PH7.5) stays intact.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # (intentionally none -- the catalog is generated Rust data with owned Strings;
 # no runtime dependency enters the graph a consumer inherits.)

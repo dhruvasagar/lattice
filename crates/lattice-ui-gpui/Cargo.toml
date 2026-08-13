@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 description = "Peer GPUI renderer for lattice — host-neutral substrate driving Zed's GPU-accelerated UI framework."
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # Renderer-neutral substrate. The whole point of this crate is to
 # prove `lattice-host` is reusable without `lattice-ui-tui` in the

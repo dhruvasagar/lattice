@@ -19,6 +19,15 @@ license.workspace = true
 #
 # Design: `docs/dev/architecture/plugin-observability.md` §6. Slice plan: PO.4.
 
+[lib]
+# Build-time: this crate has no doc examples, and `cargo test -p <crate>`
+# still compiles + links a doctest binary for it regardless. Measured at
+# ~100s of "merged doctests compilation" on a comparable crate, paid on
+# every test invocation. Turn it back on the moment a `///  ```rust`
+# example lands here — the point is to stop paying for nothing, not to
+# discourage examples.
+doctest = false
+
 [dependencies]
 # The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
 # `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,

@@ -377,22 +377,39 @@ impl KeymapRegistry {
     /// exposure is a keystroke immediately after a direct `bind()`,
     /// which is `:map` and plugin binds only.
     fn ensure_derived_fresh(&self) {
+        // The flag is cleared AFTER the stores, never before.
+        //
+        // Clearing first is a race, and a real one: a second thread
+        // reads `false`, takes the fast path, and loads an `ArcSwap`
+        // the first thread has not published yet. It surfaced as three
+        // `input::tests` chord tests that passed alone and failed in
+        // the full parallel run — exactly the shape of this bug.
         if !self
             .derived_dirty
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            .load(std::sync::atomic::Ordering::Acquire)
         {
             return;
         }
-        let (merged, minors) = {
-            let inner = self.inner.lock().expect("registry mutex");
-            (
-                inner.build_always_on_merged(),
-                inner.build_gated_mode_tries(),
-            )
-        };
+        let inner = self.inner.lock().expect("registry mutex");
+        // Re-check under the lock: another rebuilder may have finished
+        // while we waited, in which case its `Release` store already
+        // published everything we would rebuild.
+        if !self
+            .derived_dirty
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let merged = inner.build_always_on_merged();
+        let minors = inner.build_gated_mode_tries();
         self.merged.store(Arc::new(merged));
         self.gated_mode_tries.store(Arc::new(minors));
         self.rebuild_reverse_cache();
+        // Release: a reader observing `false` through the Acquire load
+        // above is guaranteed to see these stores.
+        self.derived_dirty
+            .store(false, std::sync::atomic::Ordering::Release);
+        drop(inner);
     }
 
     fn rebuild_reverse_cache(&self) {

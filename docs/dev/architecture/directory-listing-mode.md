@@ -53,41 +53,55 @@ precedent, and CV.5 is the cost of not having done it here: the report
 named only oil, and the file tree carried the identical defect with
 nothing to announce it. See `prefer-minor-modes-over-duplication`.
 
-### Where it lives
+### Where it lives — one crate for both views
 
-**A new sibling crate, `lattice-directory-listing`** — not either
-major's crate, and not `lattice-mode`.
+`lattice-oil` and `lattice-file-tree` **merge into a single crate**, and
+the minor lives there with them.
 
-`lattice-oil` and `lattice-file-tree` are siblings; neither depends on
-the other, and putting the shared minor in one would make the other
-depend on it for nothing. This is the one way the case differs from
-`magit-core-mode`, which lives inside `lattice-magit` because all of
-*its* majors are magit's.
+The two are the same domain seen twice: a flat editable listing of one
+directory, and a hierarchical read-only tree. That is not an analogy —
+it is visible in the code:
 
-`lattice-mode` is the wrong home for the opposite reason. It does host
-minors — `display.rs`, help, hover, completion, surround — but those are
-editor-wide concepts, and it is the substrate every mode crate depends
-on. A filesystem-entry icon vocabulary is domain knowledge; putting it
-there inverts the dependency direction.
+- both carry near-identical directory readers (`read_dir_entries` /
+  `initial_entries`) and entries→rope renderers (`render_to_buffer`),
+  which DL.4/DL.5 rewrite in both;
+- their entry models are one concept in two shapes —
+  `OilEntry { name, is_dir }` and
+  `FileTreeEntry { path, depth, kind }` — which is precisely the
+  `ListingEntries` the minor needs, already written twice;
+- **no consumer takes one without the other.** The only external
+  dependents are `lattice-host`, `lattice-ui-tui` and
+  `lattice-ui-gpui`, and all three depend on both.
 
-Nothing needs to depend on anything: the minor names `oil-mode` and
-`file-tree-mode` in its `ActivationPolicy` as **id strings**, so it
-depends on neither major and neither major depends on it. Its deps are
-`lattice-mode`, `lattice-core`, `lattice-theme`, `lattice-cells`, and it
-registers at the existing boot wiring (`lattice-host/src/modes.rs`,
-`editor_boot.rs`) beside `register_oil_modes` /
-`register_file_tree_modes`. Same one-crate-per-mode-family shape as
-`lattice-magit`, `lattice-multibuffer`, `lattice-compilation`,
-`lattice-dashboard`.
+So the split was buying no modularity anyone used, while forcing the
+duplication this whole design exists to remove. Merged, they are ~1,240
+lines across the two existing module trees.
 
-**The icon table moves with it.** `entry_visual` / `icon_for_entry` have
+**Why the alternatives lose.** Two placements were considered and both
+are worse:
+
+- *`lattice-oil` owns the minor, `lattice-file-tree` depends on it* —
+  the read-only tree would pull in oil's `:w` rename derivation and
+  disk-mutation machinery to obtain an icon vocabulary, and any future
+  listing-shaped provider would inherit that edge.
+- *A third crate depended on by both* — symmetric, but it leaves the
+  duplicated readers and renderers in place on either side of a crate
+  boundary, which is the actual problem.
+
+Note the coupling is real either way and was missed at first: activation
+alone needs no dependency (the policy names `oil-mode` /
+`file-tree-mode` as id strings), but the **entry data** does — the mode
+must read path + is-dir per row, so the majors and the minor must share
+one type. Merging is what makes that type have an obvious home.
+
+**The icon table comes too.** `entry_visual` / `icon_for_entry` have
 exactly two production callers in each renderer — the oil pane and the
 file-tree pane — and none anywhere else (no picker, no dashboard). Once
-DL.4/DL.5 delete those four paint paths the table has no consumer at
-all, so `lattice_core::ui::icons` and `lattice-ui-tui/src/icons.rs` move
-into the new crate rather than surviving as a shared utility. It was
-never shared infrastructure; it only ever served these two listings, and
-`lattice-core` sheds a domain table it should not have been carrying.
+DL.4/DL.5 delete those four paint paths the table has no consumer, so
+`lattice_core::ui::icons` and `lattice-ui-tui/src/icons.rs` move into
+the merged crate. They were never shared infrastructure; they only ever
+served these two listings, and `lattice-core` sheds a domain table it
+should not have been carrying.
 
 `directory-listing-mode` is a minor activated on both majors. It owns:
 

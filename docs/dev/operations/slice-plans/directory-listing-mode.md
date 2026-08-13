@@ -9,6 +9,7 @@
 
 | Slice | Title | Status |
 |---|---|---|
+| DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | 📝 |
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | 📝 |
 | DL.3 | Entry icons as leading virtual text | 📝 |
@@ -17,6 +18,12 @@
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
 
 ## Shape of the sequence
+
+DL.0 is a **pure move**: two crates become one, deps rewired, not a line
+of behaviour changed. It lands first because it makes DL.2's placement
+question disappear and lets DL.4/DL.5 converge the two duplicated
+directory readers and rope renderers *inside* one crate instead of
+across a boundary.
 
 DL.1–DL.3 are **invisible**: they add substrate and a mode that nothing
 consumes yet. Nothing about the painted frame changes, which is what
@@ -30,6 +37,35 @@ is a visible regression and a bad bisect point. They are separated from
 each other because the tree is read-only and oil is writable: oil's `:w`
 rename derivation is the real risk in this plan and deserves its own
 commit and its own bisect slot.
+
+## DL.0 — merge the two listing crates 📝
+
+**Depends on:** nothing. **Behaviour change: none.**
+
+`lattice-oil` and `lattice-file-tree` become one crate (~1,240 lines,
+existing module trees preserved). Rationale is in the design fragment's
+"Where it lives" — briefly: no consumer takes one without the other
+(`lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` all take both), and
+the two already duplicate their directory readers, their entries→rope
+renderers, and their entry models, which is the duplication the rest of
+this plan exists to remove.
+
+- Move both module trees into the merged crate; keep `oil` /
+  `file_tree` as separate modules.
+- Rewire `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` Cargo
+  manifests and the `register_oil_modes` / `register_file_tree_modes`
+  boot calls in `lattice-host/src/modes.rs` + `editor_boot.rs`.
+- **Do not converge anything yet.** The duplicated readers/renderers
+  and the two entry models stay exactly as they are — unifying them is
+  DL.2/DL.4/DL.5 work, and mixing it into a move commit destroys the
+  "pure move" property that makes this one reviewable.
+
+**Naming — open.** `lattice-listing` is crisp; `lattice-directory-listing`
+matches the mode name at the cost of length. Decide at implementation.
+
+**Verification.** The whole workspace builds and tests green, and the
+diff is moves + manifest edits only. `git log --follow` should still
+reach the pre-merge history of both trees.
 
 ## DL.1 — `Style::Element(ElementId)` ✅
 
@@ -71,18 +107,18 @@ matrix painted.
 
 **Depends on:** DL.1.
 
-**New crate `lattice-directory-listing`** owning `DirectoryListingMode`
-(a **minor**), with an `ActivationPolicy` naming `oil-mode` and
-`file-tree-mode` as id strings — so it depends on neither major and
-neither major depends on it. Deps: `lattice-mode`, `lattice-core`,
-`lattice-theme`, `lattice-cells`. Registered via
-`register_directory_listing_modes(&mut registry)` from
-`lattice-host/src/modes.rs` + `editor_boot.rs`, beside
-`register_oil_modes` / `register_file_tree_modes`.
+**Depends on:** DL.0, DL.1.
 
-See the design fragment's "Where it lives" for why not either major's
-crate (they are siblings) and why not `lattice-mode` (substrate must not
-carry domain vocabulary).
+`DirectoryListingMode` (a **minor**) lives in the merged crate from
+DL.0, alongside the two majors it activates on. `ActivationPolicy` names
+`oil-mode` and `file-tree-mode`.
+
+It also defines the shared **`ListingEntries`** buffer-local that both
+majors write — path + is-dir per row, the data the icon and colour
+lookup needs. This is the coupling that made placement matter:
+activation alone needs no dependency (the policy names mode ids as
+strings), but the entry data does, so the majors and the minor must
+share one type. DL.0 is what gives that type an obvious home.
 
 `on_activate` registers the `listing.*` elements through the
 `ThemeRegistryHandle` service under
@@ -170,6 +206,12 @@ sibling of the regular-buffer audit, and CV.5's invariant.
   callers per renderer — the oil pane and the file-tree pane — and none
   elsewhere, so DL.4/DL.5 leave them with no consumer. `lattice-core`
   sheds a domain table; the TUI's icon module goes away entirely.
+- **Converge what DL.0 deliberately left duplicated**: the two
+  directory readers (`read_dir_entries` / `initial_entries`), the two
+  entries→rope renderers (`render_to_buffer`), and the two entry models
+  now that `ListingEntries` (DL.2) is the shared shape. DL.0 moved them
+  into one crate without touching them so the move stayed reviewable;
+  this is where that debt is paid.
 - Benches per the four-artefact rule: first-paint and per-frame scroll
   cost on a ~5k-entry directory, into
   `docs/dev/operations/benchmarks.md`. The point is to prove the

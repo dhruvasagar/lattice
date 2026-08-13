@@ -190,10 +190,43 @@ impl std::fmt::Debug for LangRegistry {
 }
 
 impl LangRegistry {
-    /// Build the standard registry: rust, python, javascript, markdown
-    /// (block + inline). Returns an `Arc` so the App / multiple
-    /// `Syntax` instances can share one allocation.
+    /// The standard registry: rust, python, javascript, markdown
+    /// (block + inline) and the rest. Returns an `Arc` so the App /
+    /// multiple `Syntax` instances can share one allocation.
+    ///
+    /// **Memoised process-wide.** Building it compiles five tree-sitter
+    /// queries (highlights, injections, folds, symbols, textobjects)
+    /// for each of ~19 languages, which measured at **~1.2 s** — and
+    /// `Editor::boot` calls this every time. In the test suite that was
+    /// the dominant cost of the entire crate: one App-building test
+    /// took 1.28 s against 0.01 s for a test that builds no App, and
+    /// `lattice-ui-tui`'s 1683 tests took 779 s almost entirely on
+    /// this. In production it is paid at startup, to open one file.
+    ///
+    /// Sharing is safe by construction rather than by convention:
+    /// `LangRegistry` is a `HashMap` of `LangConfig`, has no interior
+    /// mutability and no `&mut self` method, so the cached value cannot
+    /// be observed to change. Handing every caller the same `Arc` is
+    /// what the type was built for — the doc above already said so.
+    ///
+    /// Only success is cached. A failure here means a static query
+    /// string does not compile, which is deterministic and fatal (every
+    /// caller `expect`s it), so re-deriving it costs nothing real and
+    /// avoids requiring `SyntaxError: Clone`.
     pub fn standard() -> Result<Arc<Self>, SyntaxError> {
+        static STANDARD: std::sync::OnceLock<Arc<LangRegistry>> = std::sync::OnceLock::new();
+        if let Some(cached) = STANDARD.get() {
+            return Ok(Arc::clone(cached));
+        }
+        let built = Self::build_standard()?;
+        Ok(Arc::clone(STANDARD.get_or_init(|| built)))
+    }
+
+    /// The uncached construction. Separated so [`standard`] can memoise
+    /// it; not public, because every caller wants the shared one.
+    ///
+    /// [`standard`]: Self::standard
+    fn build_standard() -> Result<Arc<Self>, SyntaxError> {
         let mut configs: HashMap<&'static str, LangConfig> = HashMap::new();
 
         configs.insert(

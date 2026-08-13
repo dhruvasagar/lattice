@@ -210,9 +210,12 @@ pub(crate) fn classify_line_text(
             });
         }
     }
-    // Only "Recent commits" entries fall through to here: "<sha> <subject>".
+    // Only commit entries fall through to here: "<sha> <subject>".
+    // Both commit sections render identical rows, so both must classify
+    // — otherwise `<CR>` would work under one heading and silently do
+    // nothing under the other.
     let header = header_above()?;
-    if header.starts_with("Recent commits") {
+    if header.starts_with("Recent commits") || header.starts_with("Unmerged into") {
         let sha = trimmed.split_whitespace().next()?;
         if !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()) {
             return Some(StatusLine::Commit {
@@ -1011,6 +1014,7 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
         ("action:magit-jump-unstaged", "Unstaged changes"),
         ("action:magit-jump-untracked", "Untracked files"),
         ("action:magit-jump-stashes", "Stashes"),
+        ("action:magit-jump-unmerged", "Unmerged into"),
         ("action:magit-jump-commits", "Recent commits"),
     ] {
         contributions.push(ActionHandlerContribution {
@@ -2006,6 +2010,34 @@ mod tests {
             Some(StatusLine::Commit {
                 sha: "a1b2c3d".to_string(),
             })
+        );
+    }
+
+    /// The unmerged section renders identical commit rows, so `<CR>`
+    /// must work there too. Without this the same row would be live
+    /// under one heading and inert under the other — a difference the
+    /// user cannot see and would read as a bug.
+    #[test]
+    fn commit_entry_classifies_sha_under_the_unmerged_header() {
+        let sl = classify_line_text(
+            "  a1b2c3d Fix the thing",
+            header("Unmerged into origin/main (3)"),
+        );
+        assert_eq!(
+            sl,
+            Some(StatusLine::Commit {
+                sha: "a1b2c3d".to_string(),
+            })
+        );
+    }
+
+    /// The unmerged section shows commits, which have no file diff to
+    /// expand — same as recent commits and stashes.
+    #[test]
+    fn the_unmerged_header_has_no_diff_source() {
+        assert_eq!(
+            diff_source_for_header("Unmerged into origin/main (3)"),
+            None
         );
     }
 

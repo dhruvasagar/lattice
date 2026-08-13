@@ -549,6 +549,7 @@ mod tests {
             behind: 0,
             bisect: None,
             in_flight: None,
+            upstream: None,
         };
 
         // Render the real status buffer and read its stash rows back

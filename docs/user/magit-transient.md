@@ -193,10 +193,13 @@ so `s` opens a submenu instead:
 | `u` | Unstaged changes |
 | `n` | Untracked files |
 | `z` | Stashes |
+| `m` | Unmerged into &lt;upstream&gt; |
 | `c` | Recent commits |
 
-Magit's own keys where the sections coincide; `c` is ours, since its
-status buffer shows unpushed/unpulled where ours shows recent commits.
+Magit's own keys where the sections coincide. `m` is ours (`u` was
+already unstaged). `c` is ours too — magit's status buffer has no
+plain "recent commits" section, because it always shows unpushed /
+unpulled; ours shows recent commits only when nothing is unpushed.
 A section with no entries isn't rendered at all, so jumping to it says
 so rather than leaving the cursor put.
 

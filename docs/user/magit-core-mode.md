@@ -269,7 +269,7 @@ sha or a fixed stash index cannot change under you.
 This mode owns the coarsest step:
 
 - `]]` / `[[` — section headers (`Staged changes`, `Unstaged changes`,
-  `Recent commits`).
+  `Unmerged into <upstream>`, `Recent commits`).
 
 The finer two belong to [`magit-hunk-mode`](help:magit-hunk-mode),
 because they only mean something where there is diff content:

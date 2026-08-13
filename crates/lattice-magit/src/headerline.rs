@@ -1094,6 +1094,7 @@ mod tests {
             behind,
             bisect: None,
             in_flight: None,
+            upstream: None,
         }
     }
 

@@ -145,6 +145,29 @@ the cursor exactly as the [stash list](help:magit-stash-mode)'s own
 a picker when the cursor is not on one. Full menu:
 [magit-transient](help:magit-transient).
 
+### Unmerged into &lt;upstream&gt;
+
+Commits this branch has that its upstream does not — everything you
+have not pushed yet. The header names the tracked ref, so it reads
+`Unmerged into origin/main (34)`. Rows are the same
+`<sha> <subject>` shape as Recent commits, and `<CR>` opens the same
+commit buffer.
+
+Shown only when there is something unpushed, and **Recent commits is
+hidden while it is** — the two are mutually exclusive. When everything
+is pushed the section disappears and Recent commits comes back. That
+is magit's behaviour (`magit-insert-unpushed-to-upstream-or-recent`):
+while you have unpushed work, "what have I not pushed" answers "what
+have I done lately" better, and showing both would list the same
+commits twice under two headings.
+
+A branch with no upstream — or a detached HEAD — has no such section.
+That is an ordinary state, not an error.
+
+Unlike Recent commits, this list is **not capped**: how much you have
+not pushed is a number worth having exactly right, and truncating it
+would make the header's own count a lie.
+
 ### Recent commits
 
 Last N commits (default 20) with abbreviated SHAs and subjects.
@@ -302,7 +325,7 @@ family:
 
 | Level | What you navigate | Chords |
 |---|---|---|
-| **Sections** | Top-level headers (Staged, Unstaged, Untracked, Stashes, Recent commits) | `]]` / `[[` |
+| **Sections** | Top-level headers (Staged, Unstaged, Untracked, Stashes, Unmerged into &lt;upstream&gt;, Recent commits) | `]]` / `[[` |
 | **Files / entries** | File headers within the current section, stash entries, commit lines | `]f` / `[f` |
 | **Hunks** | Individual diff hunks within an expanded file diff | `]c` / `[c` |
 

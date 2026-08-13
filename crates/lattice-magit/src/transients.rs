@@ -1105,6 +1105,16 @@ const JUMP_ROWS: &[TransientRow] = &[
         action: "action:magit-jump-stashes",
         placeholder: "jump_stashes_op",
     },
+    // `m` for "unmerged" — `u` is taken by unstaged, and magit's own
+    // jump menu keys are per-section initials with the same collisions
+    // resolved the same way.
+    TransientRow {
+        key: "m",
+        label: "unmerged",
+        doc: "Jump to the unmerged-into-upstream section",
+        action: "action:magit-jump-unmerged",
+        placeholder: "jump_unmerged_op",
+    },
     TransientRow {
         key: "c",
         label: "commits",

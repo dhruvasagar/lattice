@@ -2578,6 +2578,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
     reg("action:magit-jump-stashes", "Jump to the Stashes section");
     reg(
+        "action:magit-jump-unmerged",
+        "Jump to the Unmerged into <upstream> section",
+    );
+    reg(
         "action:magit-jump-commits",
         "Jump to the Recent commits section",
     );
@@ -5976,6 +5980,11 @@ mod tests {
             // The rows are where those two keep working.
             // PD.3: +1 diff row (`e` edit) — the editable cross-file
             // project diff, a peer of `d` rather than a replacement.
+            // MG-unmerged adds NO leaf here: the jump submenu is not
+            // rendered in the `outside_magit()` context this guard
+            // walks, so its `m` row never reaches this count. The
+            // one-row-per-section invariant is pinned separately, by
+            // the jump-submenu count test.
             116,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
@@ -6007,6 +6016,7 @@ mod tests {
             // MG.43f: +2; MG.43h: none; MG.43d: +6.
             // MG.49: +2, the same two Diff rows as the guard above.
             // PD.3: +1, the same `e` Diff row as the guard above.
+            // MG-unmerged: no change here either, for the same reason.
             119,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );

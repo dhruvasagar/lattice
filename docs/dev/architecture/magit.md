@@ -180,10 +180,11 @@ the `*magit:<kind>*` convention (consistent with `*messages*`, `*lsp*`,
 The primary workhorse. One buffer that shows the state of the current
 repository.
 
-**Sections** (top to bottom, each collapsible via fold). "Unpulled
-commits" / "Unpushed commits" sections are target design, **not built** —
-`SectionKind` has no such variants; the only ahead/behind signal today is
-the two counts in the branch status line (below), not a per-commit list:
+**Sections** (top to bottom, each collapsible via fold). The *unpushed*
+half is now built (`SectionKind::Unmerged`, below); **"Unpulled from
+&lt;upstream&gt;" remains target design and is not built** — there is no
+such variant, and the only behind-signal today is the count in the
+branch status line, not a per-commit list:
 
 | Section | Content | Data source |
 |---|---|---|
@@ -191,7 +192,26 @@ the two counts in the branch status line (below), not a per-commit list:
 | Unstaged changes | Files with working-tree changes — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Deleted`/`Unmerged`/`Conflicted` (unstaged) |
 | Untracked files | Untracked files, listed | `WorkingTree::statuses(repo)` filtered to `Untracked` |
 | Stashes | List of stashes with messages | `Stash::list(repo)` via gix |
+| Unmerged into &lt;upstream&gt; | Commits this branch has that its upstream does not — the unpushed list. Named for the tracked ref (`origin/main`). | `git log @{upstream}..HEAD` (CLI) |
 | Recent commits | Last N commits with abbreviated SHAs and subjects | `git log --oneline -N` (CLI, not gix) |
+
+**The last two are mutually exclusive**, as in magit
+(`magit-insert-unpushed-to-upstream-or-recent`): when anything is
+unpushed, that section answers "what have I done lately" better than a
+recent-commit list would, and showing both would list the same commits
+twice under two headings. Recent commits reappear the moment everything
+is pushed.
+
+The upstream's *name* rides on `SectionIndex::upstream`, beside
+`branch` / `ahead` / `behind`, rather than inside the `SectionKind`
+variant — those are repo-level facts a header renders, and keeping the
+variant a unit keeps `SectionKind` `Copy`. A branch with no upstream
+(or a detached HEAD) simply has no such section; that is an ordinary
+state, not an error.
+
+The unpushed list is **not** capped the way recent commits are: "how
+much have I not pushed" is a number the reader wants exactly right, and
+truncating it would make the header's own count a lie.
 
 A `Conflicted` path appears in BOTH the Staged and Unstaged sections
 simultaneously — real double-listing, not a bug (see §7.2's `entry_key`

@@ -47,6 +47,14 @@ pub enum SectionKind {
     Unstaged,
     Untracked,
     Stashes,
+    /// Commits on this branch that the upstream does not have —
+    /// magit's `Unmerged into <upstream>`.
+    ///
+    /// The upstream's NAME is not carried here: the variant stays
+    /// `Copy` and the ref lives on [`SectionIndex::upstream`], beside
+    /// `branch` / `ahead` / `behind`, which is where this struct
+    /// already keeps repo-level facts that a section header renders.
+    Unmerged,
     RecentCommits,
 }
 
@@ -57,11 +65,14 @@ pub enum SectionKind {
 /// lists (here implicitly, `actions.rs::section_header_above`, and
 /// `magit_core_mode.rs::section_headers`), free to drift out of sync
 /// with each other and with this list.
-pub const SECTION_HEADER_PREFIXES: [&str; 5] = [
+pub const SECTION_HEADER_PREFIXES: [&str; 6] = [
     "Staged changes",
     "Unstaged changes",
     "Untracked files",
     "Stashes",
+    // The upstream ref follows, so only the fixed part is listed —
+    // `is_section_header` is a prefix test, which is why this works.
+    "Unmerged into",
     "Recent commits",
 ];
 
@@ -97,6 +108,13 @@ pub struct SectionIndex {
     /// without this it showed unmerged files with nothing saying WHAT
     /// they are unmerged from or how to get out.
     pub in_flight: Option<lattice_vcs::InFlightOp>,
+    /// The upstream ref this branch tracks (`origin/main`), when it has
+    /// one, for the `Unmerged into <upstream>` header.
+    ///
+    /// Repo state like `branch` / `ahead` / `behind`, and here for the
+    /// same reason: it is a fact about the repository that a section
+    /// header renders, not a property of any entry.
+    pub upstream: Option<String>,
 }
 
 impl SectionIndex {
@@ -157,6 +175,14 @@ impl SectionIndex {
                 SectionKind::Unstaged => format!("Unstaged changes ({})", section.entries.len()),
                 SectionKind::Untracked => format!("Untracked files ({})", section.entries.len()),
                 SectionKind::Stashes => format!("Stashes ({})", section.entries.len()),
+                // The upstream name comes from the index rather than
+                // the variant, so a repo with no upstream still renders
+                // a sensible header instead of an empty ref.
+                SectionKind::Unmerged => format!(
+                    "Unmerged into {} ({})",
+                    self.upstream.as_deref().unwrap_or("upstream"),
+                    section.entries.len()
+                ),
                 SectionKind::RecentCommits => format!("Recent commits ({})", section.entries.len()),
             };
             let line_idx = out.matches('\n').count();
@@ -419,6 +445,68 @@ pub(crate) const LABEL_WIDTH: usize = 15;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The unmerged header carries the upstream ref, so the prefix
+    /// list holds only its fixed part — `is_section_header` must still
+    /// recognise the rendered line.
+    #[test]
+    fn the_unmerged_header_is_recognised_with_its_upstream_name() {
+        assert!(is_section_header("Unmerged into origin/main (34)"));
+        assert!(is_section_header("Unmerged into upstream (1)"));
+    }
+
+    /// A repo with no upstream still renders a sensible header rather
+    /// than an empty ref — the section is normally absent in that case,
+    /// but the renderer must not depend on that to be readable.
+    #[test]
+    fn a_missing_upstream_falls_back_to_a_readable_header() {
+        let index = SectionIndex {
+            sections: vec![Section {
+                kind: SectionKind::Unmerged,
+                header_line: 0,
+                body_start: 1,
+                body_end: 2,
+                entries: vec![SectionEntry::Commit {
+                    sha: "abc1234".into(),
+                    subject: "do a thing".into(),
+                }],
+            }],
+            upstream: None,
+            ..Default::default()
+        };
+        assert!(
+            index.format_buffer().contains("Unmerged into upstream (1)"),
+            "got {}",
+            index.format_buffer()
+        );
+    }
+
+    /// With an upstream, the header names it — the form magit uses and
+    /// the one the reader recognises.
+    #[test]
+    fn the_upstream_name_reaches_the_header() {
+        let index = SectionIndex {
+            sections: vec![Section {
+                kind: SectionKind::Unmerged,
+                header_line: 0,
+                body_start: 1,
+                body_end: 2,
+                entries: vec![SectionEntry::Commit {
+                    sha: "abc1234".into(),
+                    subject: "do a thing".into(),
+                }],
+            }],
+            upstream: Some("origin/main".into()),
+            ..Default::default()
+        };
+        assert!(
+            index
+                .format_buffer()
+                .contains("Unmerged into origin/main (1)"),
+            "got {}",
+            index.format_buffer()
+        );
+    }
 
     #[test]
     fn is_section_header_matches_every_rendered_header_prefix() {

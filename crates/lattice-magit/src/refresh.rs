@@ -198,10 +198,28 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
         })
         .collect();
 
-    let commits: Vec<SectionEntry> = recent_commits(repo)
+    // Commits this branch has that its upstream does not. Magit shows
+    // these INSTEAD of recent commits when there are any — the question
+    // "what have I not pushed yet" answers "what have I done lately"
+    // whenever the answer is non-empty, and showing both would list the
+    // same commits twice under two headings.
+    index.upstream = upstream_ref(repo);
+    let unmerged: Vec<SectionEntry> = unmerged_commits(repo)
         .into_iter()
         .map(|(sha, subject)| SectionEntry::Commit { sha, subject })
         .collect();
+
+    // Only computed when it will be shown — `git log` is a process
+    // spawn, and the common case on a branch with work on it is that
+    // this list is never rendered.
+    let commits: Vec<SectionEntry> = if unmerged.is_empty() {
+        recent_commits(repo)
+            .into_iter()
+            .map(|(sha, subject)| SectionEntry::Commit { sha, subject })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut line = 0usize;
 
@@ -228,6 +246,9 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
     push_section(&mut index, unstaged, SectionKind::Unstaged, &mut line);
     push_section(&mut index, untracked, SectionKind::Untracked, &mut line);
     push_section(&mut index, stashes, SectionKind::Stashes, &mut line);
+    push_section(&mut index, unmerged, SectionKind::Unmerged, &mut line);
+    // `push_section` skips an empty list, so the either/or above needs
+    // no branch here: exactly one of these two ever has entries.
     push_section(&mut index, commits, SectionKind::RecentCommits, &mut line);
 
     index
@@ -253,11 +274,45 @@ fn populate_ahead_behind(repo: &Repository, index: &mut SectionIndex) {
     }
 }
 
+/// The upstream ref this branch tracks, as `origin/main`.
+///
+/// `None` for a branch with no upstream, a detached HEAD, or a repo
+/// with no remote — all ordinary states, not errors, and each one
+/// simply means there is no "unmerged into" question to ask.
+fn upstream_ref(repo: &Repository) -> Option<String> {
+    let out = repo
+        .run_git_str(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .ok()?;
+    let name = out.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Commits on HEAD that `@{upstream}` does not have.
+///
+/// Empty when there is no upstream — `git rev-parse` fails and the
+/// whole section is skipped, which is the right rendering for a branch
+/// that tracks nothing.
+///
+/// No `-N` cap, unlike [`recent_commits`]: "how much have I not pushed"
+/// is a number the user wants exactly right, and truncating it to a
+/// screenful would make the header's count a lie.
+fn unmerged_commits(repo: &Repository) -> Vec<(String, String)> {
+    let output = repo
+        .run_git_str(["log", "--format=%h %s", "@{upstream}..HEAD"])
+        .unwrap_or_default();
+    parse_oneline_log(&output)
+}
+
 fn recent_commits(repo: &Repository) -> Vec<(String, String)> {
     let output = repo
         .run_git_str(["log", "--oneline", "-20", "--format=%h %s"])
         .unwrap_or_default();
+    parse_oneline_log(&output)
+}
 
+/// `<sha> <subject>` per line. Shared by both commit sections so the
+/// two cannot drift into parsing the same `git log` output differently.
+fn parse_oneline_log(output: &str) -> Vec<(String, String)> {
     output
         .lines()
         .filter(|l| !l.is_empty())
@@ -581,5 +636,145 @@ mod expansion_survives_refresh {
             build_and_format(&dir.path().to_path_buf(), &stale, 3, None);
         assert!(!text.contains("@@"), "nothing inlined:\n{text}");
         assert!(reopened.is_empty(), "the stale key is dropped, not carried");
+    }
+}
+
+#[cfg(test)]
+mod unmerged_into_upstream {
+    use super::*;
+    use std::process::Command;
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    /// A repo whose branch tracks a bare "remote", with `ahead`
+    /// commits made after the last push.
+    ///
+    /// A real bare remote rather than a stub: `@{upstream}` is resolved
+    /// by git itself, and a fake would prove only that our own fake
+    /// works.
+    fn repo_tracking_upstream(ahead: usize) -> (tempfile::TempDir, tempfile::TempDir) {
+        let remote = tempfile::tempdir().expect("tempdir");
+        git_ok(remote.path(), &["init", "--bare"]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.txt"), "base\n").unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        git_ok(p, &["branch", "-M", "main"]);
+        let remote_url = remote.path().to_string_lossy().into_owned();
+        git_ok(p, &["remote", "add", "origin", &remote_url]);
+        git_ok(p, &["push", "-u", "origin", "main"]);
+
+        for i in 0..ahead {
+            std::fs::write(p.join("a.txt"), format!("change {i}\n")).unwrap();
+            git_ok(p, &["add", "a.txt"]);
+            git_ok(p, &["commit", "-m", &format!("local change {i}")]);
+        }
+        (dir, remote)
+    }
+
+    fn kinds(index: &SectionIndex) -> Vec<SectionKind> {
+        index.sections.iter().map(|s| s.kind).collect()
+    }
+
+    /// The reported behaviour: commits the upstream does not have get
+    /// their own section, named for the upstream.
+    #[test]
+    fn unpushed_commits_appear_under_the_upstream_name() {
+        let (dir, _remote) = repo_tracking_upstream(3);
+        let repo = Repository::discover(dir.path()).expect("repo");
+        let index = build_section_index(&repo);
+
+        assert_eq!(index.upstream.as_deref(), Some("origin/main"));
+        let unmerged = index
+            .sections
+            .iter()
+            .find(|s| s.kind == SectionKind::Unmerged)
+            .expect("an unmerged section");
+        assert_eq!(unmerged.entries.len(), 3, "one row per unpushed commit");
+
+        let rendered = index.format_buffer();
+        assert!(
+            rendered.contains("Unmerged into origin/main (3)"),
+            "header names the upstream and counts: {rendered}"
+        );
+    }
+
+    /// The either/or rule: recent commits are shown ONLY when there is
+    /// nothing unpushed. Listing both would repeat the same commits
+    /// under two headings.
+    #[test]
+    fn recent_commits_are_hidden_while_anything_is_unmerged() {
+        let (dir, _remote) = repo_tracking_upstream(2);
+        let repo = Repository::discover(dir.path()).expect("repo");
+        let k = kinds(&build_section_index(&repo));
+        assert!(k.contains(&SectionKind::Unmerged), "got {k:?}");
+        assert!(
+            !k.contains(&SectionKind::RecentCommits),
+            "recent commits must yield to unmerged: {k:?}"
+        );
+    }
+
+    /// And they come back once everything is pushed — the transition
+    /// the user described, and the half that a one-way test would miss.
+    #[test]
+    fn recent_commits_return_once_everything_is_pushed() {
+        let (dir, _remote) = repo_tracking_upstream(2);
+        git_ok(dir.path(), &["push", "origin", "main"]);
+        let repo = Repository::discover(dir.path()).expect("repo");
+        let k = kinds(&build_section_index(&repo));
+        assert!(
+            !k.contains(&SectionKind::Unmerged),
+            "nothing is unpushed now: {k:?}"
+        );
+        assert!(
+            k.contains(&SectionKind::RecentCommits),
+            "recent commits come back: {k:?}"
+        );
+    }
+
+    /// A branch with no upstream is an ordinary state, not an error:
+    /// no unmerged section, and recent commits render as they always
+    /// did.
+    #[test]
+    fn a_branch_without_an_upstream_shows_recent_commits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.txt"), "base\n").unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+
+        let repo = Repository::discover(p).expect("repo");
+        let index = build_section_index(&repo);
+        assert_eq!(index.upstream, None);
+        let k = kinds(&index);
+        assert!(!k.contains(&SectionKind::Unmerged), "got {k:?}");
+        assert!(k.contains(&SectionKind::RecentCommits), "got {k:?}");
+    }
+
+    #[test]
+    fn the_log_parser_splits_sha_from_subject() {
+        let parsed = parse_oneline_log("abc1234 fix the thing\ndef5678 another\n");
+        assert_eq!(
+            parsed,
+            vec![
+                ("abc1234".to_string(), "fix the thing".to_string()),
+                ("def5678".to_string(), "another".to_string()),
+            ]
+        );
     }
 }

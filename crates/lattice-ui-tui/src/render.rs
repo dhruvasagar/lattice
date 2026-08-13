@@ -7663,6 +7663,126 @@ mod tests {
         a
     }
 
+    /// **CV.1: after `G`, the cursor's line must be a line the frame
+    /// actually painted.**
+    ///
+    /// Reported against a 219-line `todo.org` with `wrap = true`: `G`
+    /// put the cursor on line 219 while the last row drawn was 218, so
+    /// the caret sat one row below the visible area. The cause was in
+    /// the host's bottom clamp (`bottom_anchored_scroll`), which read
+    /// soft-wrap geometry from the cells matrix — published
+    /// asynchronously by the worker and windowed to the viewport. On
+    /// the keystroke that runs the motion that cache routinely holds
+    /// neither the pane's wrap width nor a row for the jump target,
+    /// and `segment_count` answers `1` for both, so the clamp budgeted
+    /// one row per line for content the renderer wrapped into two or
+    /// three.
+    ///
+    /// Asserted as the invariant rather than the instance, against the
+    /// painted frame rather than against `editor.scroll`: whatever the
+    /// geometry, the cursor's source line is among the line numbers in
+    /// the gutter. The app is deliberately **not** settled first — a
+    /// test that lets the worker publish before pressing `G` passes on
+    /// the broken build, which is exactly how this survived the
+    /// existing wrap tests (they pre-seed the matrix with
+    /// `seed_wrap_matrix`, handing the clamp the answer it is supposed
+    /// to derive).
+    #[test]
+    fn cursor_lands_on_a_painted_row_after_goto_last_line() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Prose-shaped: a mix of short lines and lines long enough to
+        // wrap into two or three rows at every width under test.
+        let text: String = (0..219)
+            .map(|i: u32| match i % 4 {
+                0 => format!("line {i}\n"),
+                1 => format!("{} {i}\n", "medium length body text".repeat(2)),
+                2 => String::from("\n"),
+                _ => format!("{} {i}\n", "a much longer paragraph of prose".repeat(4)),
+            })
+            .collect();
+
+        let mut failures: Vec<String> = Vec::new();
+        for wrap in [false, true] {
+            for split in [false, true] {
+                for &(tw, th) in &[(120u16, 30u16), (80, 30), (80, 24), (60, 20), (100, 45)] {
+                    let mut a = app_with(&text, 1);
+                    if wrap {
+                        a.editor
+                            .config
+                            .parse_and_set_command("wrap")
+                            .expect("`wrap` is settable");
+                        a.mutate_editor(|e| {
+                            e.rebuild_option_cache();
+                        });
+                    }
+                    if split {
+                        a.editor
+                            .pane_tree
+                            .split_active(crate::pane::SplitOrientation::Horizontal);
+                        a.editor.publish_render_state();
+                    }
+
+                    // Mirrors runtime.rs's per-frame viewport push.
+                    let chrome = chrome_rows(&a);
+                    let buffer_height =
+                        th.saturating_sub(1)
+                            .saturating_sub(chrome.tabline)
+                            .saturating_sub(chrome.extra()) as u32;
+                    let vh = a.active_pane_content_height(buffer_height);
+                    a.set_viewport_height(vh);
+                    a.set_pane_viewport(0, vh, tw as u32);
+
+                    let id = a.editor.builtins.goto_last_line;
+                    a.apply(crate::app::Action::Invoke(
+                        lattice_grammar::CommandInvocation::of(id.0),
+                    ));
+                    a.mutate_editor(|e| {
+                        e.publish_render_state();
+                    });
+
+                    let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+                    let snap = a.ad().snapshot.clone();
+                    terminal
+                        .draw(|f| {
+                            let _ = draw_frame(f, &a, &snap);
+                        })
+                        .unwrap();
+                    let buf = terminal.backend().buffer().clone();
+                    // Painted source lines = the leading gutter numbers.
+                    // Wrap-continuation rows have a blank gutter and so
+                    // contribute nothing, which is what we want: the
+                    // cursor's line must have a numbered row of its own.
+                    let painted: Vec<u32> = (0..th)
+                        .filter_map(|y| {
+                            let row: String =
+                                (0..tw).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                            row.trim_start().split(' ').next()?.parse::<u32>().ok()
+                        })
+                        .collect();
+
+                    let want = a.editor.cursor.line + 1;
+                    if !painted.contains(&want) {
+                        failures.push(format!(
+                            "wrap={wrap} split={split} {tw}x{th}: cursor on line {want} but the \
+                             frame painted lines {:?}..={:?} (scroll={})",
+                            painted.first(),
+                            painted.last(),
+                            a.editor.scroll,
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "`G` left the cursor off the painted area in {} of 20 geometries:\n  {}",
+            failures.len(),
+            failures.join("\n  "),
+        );
+    }
+
     /// `chrome_rows` is the single source of truth the runtime loop and
     /// `draw_frame` both read; verify it actually reflects tabline
     /// MG.41b: a transient's band is bounded by

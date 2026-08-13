@@ -6405,6 +6405,88 @@ impl Editor {
         col
     }
 
+    /// Columns a soft-wrapped line is broken at for the purposes of
+    /// the **vertical** scroll clamp, or `0` when `buffer` does not
+    /// wrap.
+    ///
+    /// CV.1: this is live geometry, deliberately NOT the
+    /// `wrap_width` the cells worker stamped on the matrix. The
+    /// worker publishes asynchronously, so on a freshly opened file,
+    /// immediately after a resize, or on the very keystroke that runs
+    /// `:set wrap`, the stamp is still `0` and
+    /// [`lattice_cells::CellMatrix::segment_count`] answers `1` for
+    /// every line. The clamp then budgets one row per line for
+    /// content the renderer is about to wrap into two or three, and
+    /// the cursor lands below the last painted row.
+    ///
+    /// The width comes from the surface that actually receives the
+    /// motion — the popup's inner width when a popup has focus,
+    /// mirroring the height selection in
+    /// [`Self::ensure_cursor_visible`], otherwise the pane body.
+    /// [`Self::body_text_width`] shares `cells_worker::gutter_cols`
+    /// with the worker's own `effective_wrap`, so the horizontal and
+    /// vertical clamps cannot drift on the gutter reservation.
+    ///
+    /// `wrap` itself is read from `option_cache`, not resolved
+    /// per-buffer. That matches the established host-side source
+    /// (`build_one_pane_cells_input`'s W.2 note: per-buffer wrap
+    /// divergence across panes is a later refinement) and, more
+    /// pointedly, a per-buffer resolve panics on the minimal configs
+    /// some tests boot — the same reason [`Self::body_text_width`]
+    /// reads the cache for `show_line_numbers`.
+    fn scroll_wrap_width(&self) -> u32 {
+        if !self.option_cache.wrap_lines {
+            return 0;
+        }
+        if self.popup_focused && self.popup_viewport_width > 0 {
+            // Floating popups are gutterless (`wrap_reserved_cols ==
+            // 0`); the fed width is already the inner text width.
+            return self.popup_viewport_width;
+        }
+        self.body_text_width().max(1)
+    }
+
+    /// Display width of a whole source line, in columns — the input
+    /// [`lattice_cells::wrap_segments`] divides by the wrap width to
+    /// get a line's soft-wrap height.
+    ///
+    /// Cache-then-measure, the same two-step
+    /// [`Self::cursor_display_col`] uses on the horizontal axis: the
+    /// built cell row is authoritative (its `col_count` is exactly
+    /// what the renderer painted, inlays and all), and a tab-expanded
+    /// scan of the rope stands in when no row is built.
+    ///
+    /// The fallback is not a nicety. The cells matrix is published
+    /// asynchronously and windowed to the viewport, so the rows a
+    /// *scroll* computation asks about — the ones between here and a
+    /// jump target — are precisely the rows most likely to be absent.
+    /// Treating "absent" as "one row tall" is what CV.1 was.
+    fn line_display_width(&self, line: u32) -> u32 {
+        let bid = self.active_buffer_id();
+        if let Some(cols) = self
+            .cells_matrix_for(bid)
+            .load_full()
+            .row_at_source_line(line)
+            .map(|row| row.col_count())
+        {
+            return cols;
+        }
+        let snap = self.document.snapshot();
+        let Some(text) = snap.buffer.line(line) else {
+            return 0;
+        };
+        let ts = self.option_cache.tabstop.max(1);
+        let mut col = 0u32;
+        for ch in text.chars() {
+            if ch == '\t' {
+                col = (col / ts + 1) * ts;
+            } else {
+                col += 1;
+            }
+        }
+        col
+    }
+
     /// HS.2: vim `z{l,h,L,H,s,e}` manual horizontal scroll. Mutates
     /// `leftcol` directly (no-op under `wrap`, like the cursor-follow
     /// clamp) and then keeps the cursor inside the new window —
@@ -6496,7 +6578,7 @@ impl Editor {
         let budget = budget.max(1);
         let buffer_id = self.active_buffer_id();
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
-        let cells = self.cells_matrix_for(buffer_id).load_full();
+        let wrap_width = self.scroll_wrap_width();
         // Fold geometry. Unlike soft-wrap / virtual rows — which only
         // ADD display rows to a source line — a closed fold REMOVES
         // them: its hidden body collapses onto the single visible head
@@ -6510,16 +6592,22 @@ impl Editor {
         let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
         // Display rows a single *visible* source `line` occupies:
         //   segment_count(line) + virtual_rows_anchored_at(line)
-        // W.3 (soft-wrap): `segment_count` is the published wrap
-        // geometry (⌈col_count / wrap_width⌉, or `1` when
-        // `wrap_width == 0`). The virtual-row term is the `M.V`
-        // excerpt-header fix. With wrap off and no virtual rows
-        // every visible line costs exactly `1`. Folded body lines
-        // never reach here — the walk hops over them to their head.
+        // W.3 (soft-wrap): ⌈line width / wrap_width⌉, floored at 1.
+        // The width goes through `line_display_width`, which prefers
+        // the built cell row and measures the rope when there is
+        // none — so an unbuilt or out-of-window row costs what it
+        // will actually paint, not the `1` the matrix would default
+        // to. The virtual-row term is the `M.V` excerpt-header fix.
+        // With wrap off and no virtual rows every visible line costs
+        // exactly `1`. Folded body lines never reach here — the walk
+        // hops over them to their head.
         let line_cost = |line: u32| -> u32 {
-            cells
-                .segment_count(line)
-                .saturating_add(vrows.virtual_rows_in_line_range(line, line))
+            let segments = if wrap_width == 0 {
+                1
+            } else {
+                lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
+            };
+            segments.saturating_add(vrows.virtual_rows_in_line_range(line, line))
         };
         // The previous *visible* line above `line`: hop straight to a
         // closed fold's head instead of iterating its collapsed body,
@@ -41712,6 +41800,12 @@ mod tests {
         let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
         editor.viewport_height = 10;
         editor.scroll = 0;
+        // CV.1: wrap is live pane geometry, not the matrix's stamp —
+        // turn it on the way a user does and give the pane a width
+        // whose 7-column gutter leaves a 4-column body.
+        let _ = editor.do_set("wrap");
+        editor.pane_tree.active_mut().viewport_width = 11;
+        assert_eq!(editor.body_text_width(), 4, "precondition: 4-column body");
         // Seed a cells matrix: 12 source lines × 8 columns, wrapped
         // at width 4 ⇒ segment_count == 2 per line.
         let rows: Vec<lattice_cells::CellRow> = (0..12u32)
@@ -45003,10 +45097,18 @@ mod tests {
     /// `bottom_anchored_scroll`.
     #[test]
     fn goto_last_line_keeps_last_line_visible_with_wrap_and_fold() {
-        // 12 source lines; wrap_width 4 with each line 8 cols wide ⇒
-        // every visible line costs 2 display rows.
+        // 12 source lines of 8 columns. `number` is on and the doc is
+        // 13 rope lines, so the gutter is 2 digits + 5 = 7 and an
+        // 11-column pane leaves a 4-column body ⇒ every visible line
+        // costs 2 display rows.
         let doc = lattice_core::Document::from_text("abcdefgh\n".repeat(12));
         let mut editor = Editor::boot(doc);
+        let _ = editor.do_set("wrap");
+        editor.pane_tree.active_mut().viewport_width = 11;
+        assert_eq!(editor.body_text_width(), 4, "precondition: 4-column body");
+        // Cache agrees with the live geometry here — this test covers
+        // the built-matrix path; the sibling below covers the unbuilt
+        // one.
         seed_wrap_matrix(&editor, 4, 12);
         // Close a fold over lines 2..=5 (its 3 hidden body lines must
         // NOT consume budget — the walk hops to the head).
@@ -45016,25 +45118,77 @@ mod tests {
             closed: true,
             identity: None,
         }];
-        // Small viewport so the clamp actually has to scroll.
+        // 14 rows of budget holds 7 two-row lines. Walking up from 11
+        // the visible lines are 11,10,9,8,7,6 and then — hopping over
+        // the closed fold's body — its head, line 2. Counting the
+        // hidden body instead would burn the budget at line 6 and stop
+        // three lines short.
+        editor.viewport_height = 14;
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+        editor.ensure_cursor_visible();
+        assert_eq!(
+            editor.scroll, 2,
+            "the walk must hop the closed fold's body and reach its head"
+        );
+    }
+
+    /// CV.1: the same wrap invariant as the test above, but with the
+    /// cells matrix in the state a **real** editor is in when the user
+    /// presses `G` — not pre-seeded.
+    ///
+    /// `seed_wrap_matrix` hands `bottom_anchored_scroll` the answer it
+    /// is supposed to derive, so every wrap test above passes on a
+    /// scroll model that reads wrap geometry *exclusively* from the
+    /// cache. The cache is published by the cells worker
+    /// asynchronously and is viewport-windowed, so on the keystroke
+    /// that runs the motion it routinely holds neither the pane's
+    /// wrap width (freshly opened file, resize, `:set wrap`) nor a row
+    /// for the jump target (any line outside the current window). In
+    /// both cases `segment_count` silently answers `1`, the clamp
+    /// believes the viewport holds more content lines than it does,
+    /// and the cursor lands one or more rows below the last painted
+    /// row — reported against a 219-line `todo.org` where `G` left the
+    /// cursor on line 219 with line 218 the last one drawn.
+    ///
+    /// The wrap width is live pane geometry (`body_text_width`), which
+    /// the horizontal clamp already treats as authoritative; only the
+    /// vertical clamp still trusted the cache for it.
+    #[test]
+    fn goto_last_line_keeps_last_line_visible_with_wrap_and_an_unbuilt_matrix() {
+        // 12 lines of 8 columns. Gutter for a 13-rope-line doc with
+        // `number` on is 2 digits + 5 = 7, so a 11-column pane leaves a
+        // 4-column body: every line costs exactly 2 display rows.
+        let doc = lattice_core::Document::from_text("abcdefgh\n".repeat(12));
+        let mut editor = Editor::boot(doc);
+        let _ = editor.do_set("wrap");
+        editor.pane_tree.active_mut().viewport_width = 11;
+        assert_eq!(
+            editor.body_text_width(),
+            4,
+            "precondition: the pane's wrap width is 4 columns"
+        );
+        // Deliberately NOT seeded — this is the whole point.
+        assert_eq!(
+            editor
+                .cells_matrix_for(editor.active_buffer_id())
+                .load_full()
+                .wrap_width,
+            0,
+            "precondition: the worker has not published wrap geometry yet"
+        );
+
         editor.viewport_height = 8;
         editor.cursor = lattice_protocol::position::Position::new(11, 0);
         editor.ensure_cursor_visible();
-        // The window [scroll..=11], skipping the closed fold body,
-        // must fit the cursor's line within the budget: the display
-        // rows from `scroll` to the last line cannot exceed the
-        // viewport, i.e. the last line is visible.
-        let budget = editor.viewport_height;
-        let rows = editor.bottom_anchored_scroll(11, budget);
-        assert!(
-            rows <= editor.scroll,
-            "scroll ({}) must reach the bottom-anchored minimum ({}) so line 11 is on-screen",
-            editor.scroll,
-            rows
-        );
-        assert!(
-            editor.scroll > 0,
-            "with 2-row-per-line wrap and an 8-row viewport, G must scroll"
+
+        // 8 rows of budget at 2 rows per line holds 4 lines, so the
+        // window anchored on line 11 starts at line 8. A clamp that
+        // counted 1 row per line would stop at line 4 and paint only
+        // as far as line 7.
+        assert_eq!(
+            editor.scroll, 8,
+            "with a 4-column body every line wraps to 2 rows, so an 8-row \
+             viewport holds 4 lines: `G` to line 11 must scroll to line 8"
         );
     }
 

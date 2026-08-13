@@ -16,7 +16,7 @@ conflating them is how the second one keeps getting "fixed".
 | CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | 📝 |
 | CV.4 | The other readers of the matrix's stamped `wrap_width` | 📝 |
 | CV.5 | Oil / file-tree cursor highlight trails the caret by `scroll` | ✅ |
-| CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 |
+| CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 (own plan) |
 
 ---
 
@@ -354,6 +354,14 @@ Note it composes with CV.2: these paths window by source line with no
 fold or wrap accounting at all, so they are the one place where the
 rope/content distinction genuinely does not arise today — and would,
 the moment they join the shared path.
+
+**Design + sequencing now live on their own**, because the fix turned
+out to be a storage migration plus a shared minor mode rather than a
+renderer change:
+
+- design — `docs/dev/architecture/directory-listing-mode.md`
+- slices — `docs/dev/operations/slice-plans/directory-listing-mode.md`
+  (DL.1–DL.6)
 
 ## Cross-renderer
 

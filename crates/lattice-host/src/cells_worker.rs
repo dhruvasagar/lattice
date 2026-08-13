@@ -425,7 +425,14 @@ pub fn recompute_pane(
     // fail against a whole-doc matrix whose `covered_end_line` is the
     // (smaller) line count and reject valid cache hits / incremental
     // results.
-    let coverage_line_count = snapshot.buffer.line_count();
+    //
+    // CV.2: **content** space, not ropey's raw `line_count()`. The
+    // raw count reports one extra line for any rope ending in `\n`,
+    // and every line-count in this file bounds either row production
+    // or the coverage range those rows are checked against — so the
+    // phantom logical line becomes a phantom display row, the
+    // numbered empty line 220 of a 219-line file.
+    let coverage_line_count = snapshot.buffer.content_line_count();
     let visible_lo = pane.scroll.min(coverage_line_count);
     let visible_hi = pane
         .scroll
@@ -588,7 +595,7 @@ pub fn sync_rebuild_pane_on_edit(
     } else {
         0
     };
-    let coverage_line_count = snapshot.buffer.line_count();
+    let coverage_line_count = snapshot.buffer.content_line_count();
     let visible_lo = pane.scroll.min(coverage_line_count);
     let visible_hi = pane
         .scroll
@@ -683,7 +690,14 @@ fn try_incremental_build(
 
     // Line-count consistency check guards against doc switches
     // where versions coincidentally line up.
-    let new_line_count = snapshot.buffer.line_count();
+    //
+    // CV.2: content space, matching `source_line_count` (which the
+    // build below stamps in content space). An edit that adds or
+    // removes the file's *terminating* newline moves the rope count
+    // without moving the content count, so `net_delta` disagrees and
+    // the check falls back to a full rebuild — conservative, and the
+    // safe direction.
+    let new_line_count = snapshot.buffer.content_line_count();
     let pre_count = published.source_line_count as i64;
     let expected_new = pre_count + edit.net_delta() as i64;
     if expected_new < 0 || expected_new as u32 != new_line_count {
@@ -977,7 +991,7 @@ fn build_matrix(
     version: MatrixVersion,
     whitespace: &WhitespaceConfig,
 ) -> CellMatrix {
-    let line_count = snapshot.buffer.line_count();
+    let line_count = snapshot.buffer.content_line_count();
     if line_count == 0 {
         return CellMatrix::empty();
     }
@@ -1782,7 +1796,13 @@ fn build_display_matrix(
     whitespace: &WhitespaceConfig,
 ) -> crate::display_matrix::DisplayMatrix {
     use crate::display_matrix::{DisplayChunk, DisplayMatrix};
-    let line_count = snapshot.buffer.line_count();
+    // CV.2: the row range, in **content** space. This is where the
+    // phantom trailing row was born: ropey's raw `line_count()` counts
+    // the empty line after a file's terminating `\n`, and building a
+    // row for it paints a numbered blank line no other editor shows.
+    // Also stamped as the matrix's `source_line_count`, so coverage
+    // and the incremental guard stay in the same space as the rows.
+    let line_count = snapshot.buffer.content_line_count();
     if line_count == 0 {
         return DisplayMatrix::empty();
     }
@@ -1928,7 +1948,7 @@ fn try_incremental_display_build(
         return None;
     }
 
-    let new_line_count = snapshot.buffer.line_count();
+    let new_line_count = snapshot.buffer.content_line_count();
     let pre_count = published.source_line_count as i64;
     let expected_new = pre_count + edit.net_delta() as i64;
     if expected_new < 0 || expected_new as u32 != new_line_count {

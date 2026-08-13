@@ -1780,11 +1780,17 @@ impl EditorView {
         // The TUI has always walked it this way: take source lines from
         // `scroll` until `viewport_height` VISIBLE ones are collected,
         // stepping over a closed fold's body in one jump.
+        //
+        // CV.2: bounded in CONTENT space. `total_lines_u32` is ropey's
+        // raw count and stays that way for the gutter (which must keep
+        // matching the host's `cells_worker::gutter_cols`), but a
+        // file's terminating `\n` must not earn a painted row — it
+        // showed as a numbered blank line 220 on a 219-line file.
         let visible_lines = lattice_host::folds::visible_source_lines(
             &fold_index,
             pane_scroll,
             viewport_height,
-            total_lines_u32,
+            snapshot.buffer.content_line_count(),
         );
 
         // Stage A.1: materialise only visible lines into a small

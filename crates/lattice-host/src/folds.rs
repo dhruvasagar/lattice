@@ -675,6 +675,16 @@ pub enum FoldMarker {
 /// over-collect when wrapping is on. Both renderers cap their row
 /// budget while emitting (`shaped_text.len() >= viewport_height` /
 /// `out.len() >= height`), which is where wrap is paid for.
+///
+/// **`total_lines` is CONTENT space** —
+/// [`lattice_core::Buffer::content_line_count`], never ropey's raw
+/// [`lattice_core::Buffer::line_count`]. This function decides which
+/// source lines get a row, so the raw count's phantom trailing line
+/// (present for every rope ending in `\n`, i.e. every normal file)
+/// becomes a phantom painted row: the numbered blank line 220 of a
+/// 219-line file that CV.2 was reported for. Both renderers call
+/// through here, so passing the wrong space in either one reintroduces
+/// it in that peer alone.
 pub fn visible_source_lines(
     fold_index: &FoldIndex,
     scroll: u32,

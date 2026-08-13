@@ -4451,17 +4451,21 @@ pub(crate) fn compose_pane_lines(
 
     // Build the visible-buffer-line ordering: starting from `scroll`,
     // skip lines inside closed folds, taking up to `height` entries.
-    // Bound the walk by `total_lines` from ropey -- O(1).
     // Shared with the GPUI peer (`lattice_host::folds::
     // visible_source_lines`) — this walk used to live inline here and
     // GPUI grew its own source-line-windowed version that under-filled
     // the pane whenever a fold closed. One implementation, one
     // behaviour.
+    //
+    // CV.2: bounded in CONTENT space. `total_lines` above is ropey's
+    // raw count and stays that way — it sizes the gutter, which must
+    // keep matching the host's `cells_worker::gutter_cols` — but a
+    // file's terminating `\n` must not earn a painted row.
     let visible: Vec<u32> = lattice_host::folds::visible_source_lines(
         &view.fold_index,
         ctx.scroll,
         height,
-        total_lines,
+        snap.buffer.content_line_count(),
     );
 
     // D.3.b.1 (2026-05-29): snapshot the virtual-row matrix
@@ -7663,6 +7667,63 @@ mod tests {
         a
     }
 
+    /// **CV.2: a file that ends in a newline must not paint an extra
+    /// empty row.**
+    ///
+    /// ropey reports one more line than the file has for any rope
+    /// ending in `\n` — the convention `Buffer::line_count` surfaces
+    /// verbatim. Feeding that raw count to the matrix build made the
+    /// phantom logical line into a phantom *display row*, so a
+    /// 219-line `todo.org` painted a numbered, empty line 220 that no
+    /// other editor shows. Below the real last line the frame must
+    /// show the no-such-line filler, not a numbered row.
+    #[test]
+    fn a_file_ending_in_a_newline_paints_no_extra_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // (label, text, lines the file actually has)
+        for (label, text, want_lines) in [
+            ("terminated", "alpha\nbravo\ncharlie\n", 3u32),
+            ("unterminated", "alpha\nbravo\ncharlie", 3),
+            // A genuinely blank final line IS content — the file ends
+            // with an empty line and then its terminator. Trimming it
+            // too would be the same bug in the other direction.
+            ("blank last line", "alpha\nbravo\ncharlie\n\n", 4),
+            ("single line", "alpha\n", 1),
+            ("empty", "", 1),
+        ] {
+            let (tw, th): (u16, u16) = (40, 12);
+            let mut a = app_with(text, 10);
+            a.set_pane_viewport(0, 10, tw as u32);
+            a.mutate_editor(|e| {
+                e.publish_render_state();
+            });
+            let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+            let snap = a.ad().snapshot.clone();
+            terminal
+                .draw(|f| {
+                    let _ = draw_frame(f, &a, &snap);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let numbered: Vec<u32> = (0..th)
+                .filter_map(|y| {
+                    let row: String = (0..tw).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                    row.trim_start().split(' ').next()?.parse::<u32>().ok()
+                })
+                .collect();
+
+            assert_eq!(
+                numbered,
+                (1..=want_lines).collect::<Vec<_>>(),
+                "{label}: the frame must number exactly the {want_lines} line(s) the \
+                 file has — a trailing newline terminates the last line, it does not \
+                 start another one"
+            );
+        }
+    }
+
     /// **CV.1: after `G`, the cursor's line must be a line the frame
     /// actually painted.**
     ///
@@ -9885,6 +9946,10 @@ mod tests {
         // tints resolved from the `selection` / `search.current`
         // elements (no fg recolor / bold), matching the GPUI peer — the
         // expected fingerprint reflects that converged styling.
+        // CV.2: the scene is a 4-line file, and the fingerprint used to
+        // carry a fifth NUMBERED row — the phantom line ropey reports
+        // for the terminating `\n`. It is now the second `~` filler,
+        // which is what vim shows and what the buffer actually has.
         let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Visual selection on line 1 (cols 4..=6), hlsearch + current
@@ -9903,7 +9968,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 5   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 

@@ -63,6 +63,29 @@ impl Buffer {
         u32::try_from(self.rope.len_lines()).unwrap_or(u32::MAX)
     }
 
+    /// Lines the document actually *has*, in the sense every editor
+    /// and every user means: `"a\nb\n"` is two lines, and so is
+    /// `"a\nb"`. A trailing newline terminates the last line rather
+    /// than starting a new one.
+    ///
+    /// This is the count for anything that lays out, addresses or
+    /// counts document content — display rows, `G`, `:$`, `%`
+    /// progress. [`Self::line_count`] is ropey's raw count and reports
+    /// one more for any rope ending in `\n`; feeding that to a layout
+    /// or coverage range is what puts a phantom empty row at the end
+    /// of every normal file (CV.2).
+    ///
+    /// Never zero: an empty buffer is one empty line, matching
+    /// [`Self::line_count`] and vim.
+    pub fn content_line_count(&self) -> u32 {
+        let rope_lines = self.line_count();
+        if rope_lines >= 2 && self.line_byte_len(rope_lines - 1) == 0 {
+            rope_lines - 1
+        } else {
+            rope_lines
+        }
+    }
+
     pub fn byte_len(&self) -> u64 {
         self.rope.len_bytes() as u64
     }
@@ -453,6 +476,22 @@ mod tests {
         // trailing line. Documenting current behavior so changes are intentional.
         let b = Buffer::from_text("a\nb\n");
         assert_eq!(b.line_count(), 3);
+    }
+
+    /// The content-space peer of the test above: the same rope that
+    /// ropey calls 3 lines is the 2-line file every editor shows.
+    #[test]
+    fn content_line_count_excludes_the_trailing_empty_line() {
+        assert_eq!(Buffer::from_text("a\nb\n").content_line_count(), 2);
+        // No terminating newline — nothing to exclude.
+        assert_eq!(Buffer::from_text("a\nb").content_line_count(), 2);
+        // A genuinely blank final line is content: the file ends with
+        // an empty line, then the terminator.
+        assert_eq!(Buffer::from_text("a\nb\n\n").content_line_count(), 3);
+        // Degenerate shapes stay at vim's one-empty-line floor.
+        assert_eq!(Buffer::empty().content_line_count(), 1);
+        assert_eq!(Buffer::from_text("").content_line_count(), 1);
+        assert_eq!(Buffer::from_text("\n").content_line_count(), 1);
     }
 
     #[test]

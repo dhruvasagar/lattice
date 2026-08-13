@@ -12,7 +12,7 @@ conflating them is how the second one keeps getting "fixed".
 | Slice | Title | Status |
 |---|---|---|
 | CV.1 | `G` leaves the cursor one row below the drawn area | ✅ |
-| CV.2 | Phantom trailing line: a file ending in `\n` renders one row too many | 📝 |
+| CV.2 | Phantom trailing line: a file ending in `\n` renders one row too many | ✅ |
 | CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | 📝 |
 | CV.4 | The other readers of the matrix's stamped `wrap_width` | 📝 |
 
@@ -125,28 +125,69 @@ fold it was written to test.
 The clamp is host-side, so both peers get the fix with no renderer
 change. GPUI needs no same-patch edit — but see CV.4.
 
-## CV.2 — the phantom trailing line 📝
+## CV.2 — the phantom trailing line ✅
 
-`Buffer::line_count()` (`crates/lattice-core/src/buffer.rs:59`) returns
-**ropey's raw count**: `"a\nb\n"` reports 3. Its doc comment says
-"callers compose semantics they need", and a test pins that as
-deliberate.
+**Fixed 2026-08-13.** The diagnosis (rope space used where content
+space is meant) was right. The *location* was not — worth recording,
+because the wrong location is a plausible one and fixing it alone
+changes nothing on screen.
 
-The leak that produces the visible row is
-`crates/lattice-host/src/cells_worker.rs:428`:
+### Where it actually came from
 
-```rust
-let coverage_line_count = snapshot.buffer.line_count();   // ROPE space
-let visible_lo = pane.scroll.min(coverage_line_count);
-```
+Measured by rendering three shapes through the real paint path and
+reading the gutter numbers back:
 
-Rope space used where **content** space is meant, bounding the range fed
-to the display matrix — so the phantom logical line becomes a phantom
-display row. `:591` has the same shape.
+| buffer | painted | correct |
+|---|---|---|
+| `"alpha\nbravo\ncharlie\n"` | 1,2,3,**4** | 1,2,3 |
+| `"alpha\nbravo\ncharlie"` | 1,2,3 | 1,2,3 |
+| `"alpha\nbravo\ncharlie\n\n"` | 1,2,3,4,**5** | 1,2,3,4 |
 
-**Do NOT fix this by clamping in display space.** That would break folds
-and wrap, which legitimately make display rows differ from content
-lines.
+`cells_worker.rs:428` and `:591` are real rope-space leaks and were
+fixed, but they clamp the *coverage* range for a cache-hit check —
+correcting them alone left all three rows exactly as above. The row
+that reaches the screen is produced by
+**`lattice_host::folds::visible_source_lines`**, whose `total_lines`
+bound both renderers were passing in rope space. That function is the
+single row producer shared by the TUI and GPUI, which is why it is
+also the right place to *name* the space: one doc comment now governs
+both peers, and passing the wrong count in either one reintroduces the
+row in that peer alone.
+
+### The fix
+
+- **`Buffer::content_line_count()`** (new, `lattice-core`) — the count
+  every editor and user means: `"a\nb\n"` is two lines, and so is
+  `"a\nb"`. Floors at 1, matching vim's one-empty-line empty buffer.
+  This is the "add a content-space accessor under a NEW name" half of
+  CV.3, landed early because CV.2 needs it; the rename-and-triage half
+  is still CV.3.
+- `visible_source_lines`' `total_lines` documented as content space,
+  and both call sites (`render.rs`, `window.rs`) switched.
+- All six `snapshot.buffer.line_count()` sites in `cells_worker`
+  switched, so the matrix's rows, its `source_line_count`, its
+  coverage range and the incremental guard all sit in one space.
+
+**Gutter width deliberately left in rope space.** `gutter_width` /
+`cells_worker::gutter_cols` are fed the raw count in the host *and*
+both renderers, so they agree today; a file of exactly 999 content
+lines gets a gutter one column wider than it needs. Cosmetic,
+consistent, and moving it means moving the host and both peers in
+lockstep — CV.3's job, not a drive-by (the wrap width is derived from
+this, so a half-move would desync CV.1's clamp).
+
+### Tests
+
+- `buffer::tests::content_line_count_excludes_the_trailing_empty_line`
+  — the accessor, including the shapes that must NOT be trimmed (a
+  genuinely blank final line is content).
+- `render::tests::a_file_ending_in_a_newline_paints_no_extra_row` —
+  the painted frame numbers exactly the lines the file has, across
+  terminated / unterminated / blank-last-line / single-line / empty.
+
+`dr3_active_pane_compose_characterization`'s expected fingerprint had
+the phantom baked in as a fifth numbered row on a four-line file; it is
+now the second `~`.
 
 ## CV.3 — name the spaces 📝
 
@@ -181,6 +222,28 @@ reusing it silently flips the meaning of all 123 sites, whereas removing
 it makes the compiler stop at each one exactly once. That triage is the
 work, and it needs judgement — some sites genuinely want rope space (LSP
 position mapping, byte-offset math).
+
+**Half of this landed with CV.2.** `Buffer::content_line_count()` now
+exists — the new-name accessor. What remains is the rename of
+`line_count()` → `rope_line_count()` and the 123-site triage it forces.
+Do not skip the rename on the grounds that "the accessor exists now":
+the accessor without the rename leaves the wrong answer as the default,
+which is the exact condition that let CV.2 recur.
+
+Two findings from CV.2 that belong in the triage:
+
+- **The gutter is still rope space** — `gutter_width` (TUI),
+  `cells_worker::gutter_cols` (host), and GPUI's
+  `total_lines_for_gutter` all take the raw count. They agree with each
+  other, so the only symptom today is one wasted column on a file of
+  exactly 10ⁿ content lines. They must move **together**: CV.1's wrap
+  width is `viewport_width - gutter_cols(...)`, so a half-move desyncs
+  the vertical clamp from what gets painted, which is the CV.1 bug
+  again by another route.
+- **`last_addressable_line` exists three times** — `lattice-grammar`
+  (`builtins.rs`), `lattice-ui-tui` (`app.rs`), `lattice-host`
+  (`dispatch.rs`) — all computing `content_line_count() - 1` by hand.
+  The triage should collapse them onto the accessor.
 
 ## CV.4 — the other readers of the matrix's stamped `wrap_width` 📝
 

@@ -6228,7 +6228,31 @@ fn apply_diff_tint(spans: Vec<Span<'static>>, bg: Color) -> Vec<Span<'static>> {
     spans
         .into_iter()
         .map(|s| {
-            let new_style = s.style.bg(bg);
+            // A span that already carries its OWN background keeps it.
+            //
+            // This function used to set `bg` unconditionally, and the
+            // row tint is applied last — so it erased every narrower
+            // background underneath it. Intra-line diff refinement was
+            // the visible casualty: it computed correctly, reached the
+            // run, and was painted onto the style, and then this
+            // overwrote it one step later. `cells_render`'s
+            // `display_run_to_style` states the contract this broke —
+            // "a refined run overrides its row's diff tint with a
+            // stronger one".
+            //
+            // The rule generalises rather than special-casing
+            // refinement: the row tint is the WIDER, weaker statement
+            // ("this line changed"); anything that painted a narrower
+            // background — refinement, a search match, the visual
+            // selection — is the more specific one and wins. Every
+            // comparable editor resolves it that way, and a selection
+            // that vanishes because it happens to fall on a diff line
+            // is the same bug wearing different clothes.
+            let new_style = if s.style.bg.is_some() {
+                s.style
+            } else {
+                s.style.bg(bg)
+            };
             Span::styled(s.content.into_owned(), new_style)
         })
         .collect()
@@ -7150,6 +7174,75 @@ mod tests {
     use super::*;
     use crate::app::App;
     use lattice_core::Document;
+
+    // ── the row tint must not erase narrower backgrounds ──────────
+    //
+    // Live-reported: intra-line diff refinement was invisible in
+    // magit-status. It computed correctly, survived the splice, reached
+    // the run, and was painted onto the span style — and then the
+    // row-level diff tint, applied last, overwrote every span's
+    // background including that one. GPUI never had the bug because it
+    // paints the tint as a quad BEHIND the text runs; the TUI flattens
+    // both into one ratatui `Style`, so ordering decides it.
+
+    use ratatui::style::{Color as RColor, Style as RStyle};
+    use ratatui::text::Span as RSpan;
+
+    /// A span with no background of its own takes the row tint — the
+    /// ordinary case, and the behaviour that must not change.
+    #[test]
+    fn the_row_tint_applies_where_there_is_no_background() {
+        let body = vec![RSpan::styled(
+            "let x = 1;",
+            RStyle::default().fg(RColor::White),
+        )];
+        let tinted = apply_diff_tint(body, RColor::Rgb(60, 0, 0));
+        assert_eq!(tinted[0].style.bg, Some(RColor::Rgb(60, 0, 0)));
+        assert_eq!(
+            tinted[0].style.fg,
+            Some(RColor::White),
+            "the tint never touches foreground"
+        );
+    }
+
+    /// A span that already carries a background KEEPS it. This is the
+    /// regression: refinement paints the narrower, stronger background,
+    /// and the wider row tint must not win over it.
+    #[test]
+    fn the_row_tint_does_not_erase_an_existing_background() {
+        let refine_bg = RColor::Rgb(0x6f, 0x00, 0x00);
+        let body = vec![
+            RSpan::styled("let ", RStyle::default().fg(RColor::White)),
+            RSpan::styled("old", RStyle::default().fg(RColor::White).bg(refine_bg)),
+            RSpan::styled(" = 1;", RStyle::default().fg(RColor::White)),
+        ];
+        let tinted = apply_diff_tint(body, RColor::Rgb(60, 0, 0));
+        assert_eq!(
+            tinted[1].style.bg,
+            Some(refine_bg),
+            "the refined span keeps its own background"
+        );
+        assert_eq!(
+            tinted[0].style.bg,
+            Some(RColor::Rgb(60, 0, 0)),
+            "its unrefined neighbours still take the row tint"
+        );
+        assert_eq!(tinted[2].style.bg, Some(RColor::Rgb(60, 0, 0)));
+    }
+
+    /// The same rule protects a selection or search match that happens
+    /// to fall on a diff line — previously the tint erased those too,
+    /// which is the same defect wearing different clothes.
+    #[test]
+    fn a_selection_background_survives_the_row_tint() {
+        let selection_bg = RColor::Rgb(0x30, 0x30, 0x60);
+        let body = vec![RSpan::styled(
+            "selected",
+            RStyle::default().bg(selection_bg),
+        )];
+        let tinted = apply_diff_tint(body, RColor::Rgb(0, 50, 0));
+        assert_eq!(tinted[0].style.bg, Some(selection_bg));
+    }
 
     /// The row budget must equal the rows actually emitted.
     ///

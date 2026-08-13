@@ -1996,6 +1996,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// DL.2: `directory-listing-mode` activates on **both** listing
+    /// majors, not just the one that happened to be tested.
+    ///
+    /// Registering a mode and having it activate are different things,
+    /// and the gap between them is silent — an `ActivationPolicy` that
+    /// names the wrong major id compiles, registers, and simply never
+    /// fires. Asserting on the buffer's active-mode set is the only
+    /// thing that catches it.
+    ///
+    /// Both kinds in one test on purpose: CV.5 was exactly the failure
+    /// where oil was checked and the file tree, carrying the identical
+    /// defect, was not.
+    #[tokio::test]
+    async fn directory_listing_mode_activates_on_oil_and_the_file_tree() {
+        let mode = lattice_listing::listing_mode::DirectoryListingMode::mode_id();
+
+        for kind in ["oil", "file-tree"] {
+            let tmp = unique_tempdir();
+            std::fs::write(tmp.join("existing.txt"), "x").expect("seed");
+
+            let mut a = app_with("hi", 5);
+            match kind {
+                "oil" => a.do_open_oil(Some(tmp.clone())),
+                _ => a.do_open_file_tree(Some(tmp.clone())),
+            }
+            let buffer_id = a.active_pane_buffer_id();
+
+            let active = crate::app::test_helpers::settle(&mut a, |app: &App| {
+                app.editor
+                    .active_modes
+                    .get(&buffer_id)
+                    .map(|m| m.is_active(mode))
+                    .unwrap_or(false)
+            })
+            .await;
+            assert!(
+                active,
+                "{kind}: directory-listing-mode must activate — it owns the \
+                 icons and themed row colours for this buffer"
+            );
+
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
     #[test]
     fn oil_keystroke_pipeline_inserts_into_oil_rope() {
         // Regression: before the run_oil_invocation rewrite,

@@ -33,4 +33,5 @@
 //! made the move unreviewable. See the slice plan.
 
 pub mod file_tree;
+pub mod listing_mode;
 pub mod oil;

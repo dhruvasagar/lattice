@@ -451,6 +451,7 @@ impl Editor {
         // (registered in Phase A above), so no host-side handle threading.
         lattice_listing::oil::register_oil_modes(boot.modes_mut());
         lattice_listing::file_tree::register_file_tree_modes(boot.modes_mut());
+        lattice_listing::listing_mode::register_listing_modes(boot.modes_mut());
         let snippet_activation_policy = lattice_snippet::register_snippet_modes(
             boot.modes_mut(),
             snippet_registry_handle.clone(),

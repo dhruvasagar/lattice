@@ -21,6 +21,9 @@ lattice-protocol = { path = "../lattice-protocol" }
 # the crate level because Cargo has no per-module dependency scope.
 lattice-config = { path = "../lattice-config" }
 lattice-mode = { path = "../lattice-mode" }
+# DL.2: `directory-listing-mode` registers its own `listing.*` theme
+# elements, so a theme owns the entry palette instead of `lattice-core`.
+lattice-theme = { path = "../lattice-theme" }
 
 [lints]
 workspace = true

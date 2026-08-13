@@ -427,6 +427,7 @@ mod tests {
         lattice_syntax::register_language_modes(&mut registry);
         lattice_listing::oil::register_oil_modes(&mut registry);
         lattice_listing::file_tree::register_file_tree_modes(&mut registry);
+        lattice_listing::listing_mode::register_listing_modes(&mut registry);
         lattice_terminal::register_terminal_modes(&mut registry);
 
         assert_eq!(
@@ -488,6 +489,7 @@ mod tests {
         lattice_mode::register_foundation_modes(&mut registry);
         lattice_listing::oil::register_oil_modes(&mut registry);
         lattice_listing::file_tree::register_file_tree_modes(&mut registry);
+        lattice_listing::listing_mode::register_listing_modes(&mut registry);
         assert!(registry.is_registered(HelpMode::mode_id()));
         assert!(registry.is_registered(FileTreeMode::mode_id()));
         assert!(registry.is_registered(OilMode::mode_id()));
@@ -500,6 +502,7 @@ mod tests {
         lattice_syntax::register_language_modes(&mut r);
         lattice_listing::oil::register_oil_modes(&mut r);
         lattice_listing::file_tree::register_file_tree_modes(&mut r);
+        lattice_listing::listing_mode::register_listing_modes(&mut r);
         lattice_terminal::register_terminal_modes(&mut r);
         r
     }

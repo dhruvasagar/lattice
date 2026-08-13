@@ -11,7 +11,7 @@
 |---|---|---|
 | DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | ✅ |
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
-| DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | 📝 |
+| DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | ✅ |
 | DL.3 | Entry icons as leading virtual text | 📝 |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
@@ -108,7 +108,9 @@ which **includes the payload** — two spans naming different registered
 elements must not collide, or retuning one element would leave a stale
 matrix painted.
 
-## DL.2 — mode skeleton + `listing.*` vocabulary 📝
+## DL.2 — mode skeleton + `listing.*` vocabulary ✅
+
+**Landed 2026-08-14.**
 
 **Depends on:** DL.1.
 
@@ -137,14 +139,46 @@ The mode also contributes its buffers' display options: `number=off`,
 kind checks** — that is what lets the shared path render a listing
 without a `match buffer_kind`.
 
-**Tests.** Activation on both majors and on neither other; every
-element registered and idempotent across re-activation; a theme
-override of `listing.file` reaching a language that does not override,
-and `listing.file.rust` winning where it does.
+**Tests.** Unit: the policy names exactly the two majors; the mode is a
+minor claiming no keymap; registration is idempotent by name; per
+language colours differ out of the box; the contributed options are the
+three display ones and not `ReadOnly`.
 
-**Naming is open** — `directory-listing-mode` vs `file-icons-mode`.
-Decide at implementation; the mode owns highlighting as well as icons,
-which argues for the former.
+End-to-end (`lattice-ui-tui`,
+`directory_listing_mode_activates_on_oil_and_the_file_tree`): the mode
+is **active on a real oil buffer and a real file-tree buffer**.
+Registering a mode and having it activate are different things and the
+gap is silent — a policy naming the wrong major id compiles, registers
+and never fires. Verified by deleting one major from the policy and
+watching that arm fail. Both kinds in one test on purpose: CV.5 was
+precisely the case where oil was checked and the tree, identically
+broken, was not.
+
+**Named `directory-listing-mode`** — it owns highlighting as well as
+icons.
+
+**As landed.** Defaults are **palette keys**, not the devicons literals:
+`listing.file.rust` inherits `listing.file` and sets
+`fg = palette("orange")`. Mapping each hardcoded RGB onto the nearest
+role in the active palette is what makes the colours follow a
+colourscheme at all — a literal would be theme-rooted in name only.
+
+Two guesses in the first draft were wrong and worth recording, because
+both fail *quietly*:
+
+- palette keys — `peach` / `mauve` / `sky` / `overlay1` do not exist in
+  `default_palette` (it is `orange` / `purple` / `cyan` / `overlay`).
+  An unknown key resolves to the inherited parent instead of erroring,
+  so every language rendered identically and nothing complained. The
+  family-vs-one-language test is what caught it and is the real guard
+  on this table.
+- the options assertion sniffed `format!("{:?}")`, but
+  `OptionOverrideSet`'s `Debug` is `finish_non_exhaustive` and prints
+  only a length — so the assertion passed on nothing. It compares
+  `TypeId`s now.
+
+`ReadOnly` is deliberately **not** contributed: the tree is read-only
+and oil is not, so it stays per-major.
 
 ## DL.3 — icons as leading virtual text 📝
 

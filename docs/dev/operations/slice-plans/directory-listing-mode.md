@@ -71,10 +71,18 @@ matrix painted.
 
 **Depends on:** DL.1.
 
-New crate or module owning `DirectoryListingMode` (a **minor**), with an
-`ActivationPolicy` naming `oil-mode` and `file-tree-mode`. Registered
-via `register_<mode>_*` in its own crate, per "modes own their full
-surface".
+**New crate `lattice-directory-listing`** owning `DirectoryListingMode`
+(a **minor**), with an `ActivationPolicy` naming `oil-mode` and
+`file-tree-mode` as id strings — so it depends on neither major and
+neither major depends on it. Deps: `lattice-mode`, `lattice-core`,
+`lattice-theme`, `lattice-cells`. Registered via
+`register_directory_listing_modes(&mut registry)` from
+`lattice-host/src/modes.rs` + `editor_boot.rs`, beside
+`register_oil_modes` / `register_file_tree_modes`.
+
+See the design fragment's "Where it lives" for why not either major's
+crate (they are siblings) and why not `lattice-mode` (substrate must not
+carry domain vocabulary).
 
 `on_activate` registers the `listing.*` elements through the
 `ThemeRegistryHandle` service under
@@ -156,8 +164,12 @@ sibling of the regular-buffer audit, and CV.5's invariant.
 
 **Depends on:** DL.5.
 
-- `ext_color` stops being a runtime lookup; it survives only as the
-  mode's default-registration source (or moves into the mode outright).
+- `ext_color` **moves into the mode crate outright**, along with the
+  rest of `lattice_core::ui::icons` and `lattice-ui-tui/src/icons.rs`.
+  Confirmed rather than assumed: those have exactly two production
+  callers per renderer — the oil pane and the file-tree pane — and none
+  elsewhere, so DL.4/DL.5 leave them with no consumer. `lattice-core`
+  sheds a domain table; the TUI's icon module goes away entirely.
 - Benches per the four-artefact rule: first-paint and per-frame scroll
   cost on a ~5k-entry directory, into
   `docs/dev/operations/benchmarks.md`. The point is to prove the

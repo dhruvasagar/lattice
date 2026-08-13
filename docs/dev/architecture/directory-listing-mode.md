@@ -53,6 +53,42 @@ precedent, and CV.5 is the cost of not having done it here: the report
 named only oil, and the file tree carried the identical defect with
 nothing to announce it. See `prefer-minor-modes-over-duplication`.
 
+### Where it lives
+
+**A new sibling crate, `lattice-directory-listing`** — not either
+major's crate, and not `lattice-mode`.
+
+`lattice-oil` and `lattice-file-tree` are siblings; neither depends on
+the other, and putting the shared minor in one would make the other
+depend on it for nothing. This is the one way the case differs from
+`magit-core-mode`, which lives inside `lattice-magit` because all of
+*its* majors are magit's.
+
+`lattice-mode` is the wrong home for the opposite reason. It does host
+minors — `display.rs`, help, hover, completion, surround — but those are
+editor-wide concepts, and it is the substrate every mode crate depends
+on. A filesystem-entry icon vocabulary is domain knowledge; putting it
+there inverts the dependency direction.
+
+Nothing needs to depend on anything: the minor names `oil-mode` and
+`file-tree-mode` in its `ActivationPolicy` as **id strings**, so it
+depends on neither major and neither major depends on it. Its deps are
+`lattice-mode`, `lattice-core`, `lattice-theme`, `lattice-cells`, and it
+registers at the existing boot wiring (`lattice-host/src/modes.rs`,
+`editor_boot.rs`) beside `register_oil_modes` /
+`register_file_tree_modes`. Same one-crate-per-mode-family shape as
+`lattice-magit`, `lattice-multibuffer`, `lattice-compilation`,
+`lattice-dashboard`.
+
+**The icon table moves with it.** `entry_visual` / `icon_for_entry` have
+exactly two production callers in each renderer — the oil pane and the
+file-tree pane — and none anywhere else (no picker, no dashboard). Once
+DL.4/DL.5 delete those four paint paths the table has no consumer at
+all, so `lattice_core::ui::icons` and `lattice-ui-tui/src/icons.rs` move
+into the new crate rather than surviving as a shared utility. It was
+never shared infrastructure; it only ever served these two listings, and
+`lattice-core` sheds a domain table it should not have been carrying.
+
 `directory-listing-mode` is a minor activated on both majors. It owns:
 
 - the theme-element vocabulary for entry presentation (§4),

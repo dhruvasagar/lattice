@@ -2801,11 +2801,17 @@ impl EditorView {
         };
         let rows: Vec<gpui::Div> = raw_text
             .split('\n')
+            // CV.5: `enumerate` runs BEFORE `skip`, so its index is
+            // already the absolute source line — the first row
+            // surviving the skip is `(scroll, …)`. Adding `scroll`
+            // again counted it twice, putting the cursor highlight
+            // `scroll` rows above the caret and reading each row's
+            // name/icon from the wrong entry. The TUI peer had the
+            // identical defect in `draw_oil_pane`.
             .enumerate()
             .skip(scroll)
             .take(viewport)
-            .map(|(i, name_str)| {
-                let line_idx = scroll + i;
+            .map(|(line_idx, name_str)| {
                 let is_cursor = is_active && line_idx == cursor_line;
                 // `entry_visual` only inspects `file_name()` / extension, so a
                 // bare relative name resolves the same icon as a full path —
@@ -2897,12 +2903,15 @@ impl EditorView {
         };
         let rows: Vec<gpui::Div> = raw_text
             .split('\n')
+            // CV.5: absolute index — `enumerate` precedes `skip`. See
+            // the note in the oil pane above; the entry pairing is
+            // unaffected (the `zip` also precedes the `skip`), but the
+            // cursor highlight landed `scroll` rows above the caret.
             .enumerate()
             .zip(entries.iter())
             .skip(scroll)
             .take(viewport)
-            .map(|((i, raw_line), entry)| {
-                let line_idx = scroll + i;
+            .map(|((line_idx, raw_line), entry)| {
                 let is_cursor = is_active && line_idx == cursor_line;
                 let is_dir = matches!(
                     entry.kind,

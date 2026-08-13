@@ -3833,12 +3833,15 @@ fn draw_file_tree_pane(
         .unwrap_or_default();
     let lines: Vec<Line> = raw_text
         .split('\n')
+        // CV.5: absolute index — `enumerate` precedes `skip`. See the
+        // note in `draw_oil_pane`; the entry pairing is unaffected
+        // (the `zip` also precedes the `skip`), but the cursor
+        // highlight landed `scroll` rows above the caret.
         .enumerate()
         .zip(entries.iter())
         .skip(scroll)
         .take(viewport)
-        .map(|((i, raw_line), entry)| {
-            let line_idx = scroll + i;
+        .map(|((line_idx, raw_line), entry)| {
             let is_cursor = is_active && line_idx == cursor_line;
             let is_dir = matches!(
                 entry.kind,
@@ -3897,11 +3900,17 @@ fn draw_oil_pane(
         .unwrap_or_default();
     let lines: Vec<Line> = raw_text
         .split('\n')
+        // CV.5: `enumerate` runs BEFORE `skip`, so its index is
+        // already the absolute source line — the first row surviving
+        // the skip is `(scroll, …)`. Adding `scroll` to it counted the
+        // scroll twice, which put the cursor highlight `scroll` rows
+        // above the caret and read every row's icon from the wrong
+        // entry. Both were invisible until a pane was short enough to
+        // scroll, which is why the report came from a split.
         .enumerate()
         .skip(scroll)
         .take(viewport)
-        .map(|(i, name_str)| {
-            let line_idx = scroll + i;
+        .map(|(line_idx, name_str)| {
             let is_cursor = is_active && line_idx == cursor_line;
             let entry = snapshot.get(line_idx);
             let is_dir = entry.map(|e| e.is_dir).unwrap_or(false);
@@ -7665,6 +7674,122 @@ mod tests {
         // through the cells / `DisplayMatrix` substrate (rebuilt on
         // publish); no explicit prime is needed for these render tests.
         a
+    }
+
+    /// **CV.5: in a pane-scoped listing the cursor highlight and the
+    /// caret must land on the same screen row, at any scroll.**
+    ///
+    /// Reported against oil in a horizontal split: scrolling the
+    /// cursor past the bottom of the pane made the highlight fall
+    /// behind while the caret stayed on the right line. The split is
+    /// not incidental — a full-height pane shows a short listing
+    /// without ever scrolling, and at `scroll == 0` the two agree.
+    ///
+    /// Oil and the file tree are checked together on purpose. They are
+    /// separate hand-written paint paths that were copied from each
+    /// other, so they carried the same defect; the report named only
+    /// oil, and testing only oil would have left the twin broken with
+    /// nothing to announce it.
+    #[test]
+    fn pane_listing_cursor_highlight_and_caret_share_a_row_when_scrolled() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn tempdir(tag: &str) -> std::path::PathBuf {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let d = std::env::temp_dir().join(format!("lattice-{tag}-cursorline-{nanos}-{n}"));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        for kind in ["oil", "file-tree"] {
+            let dir = tempdir(kind);
+            for i in 0..40 {
+                std::fs::write(dir.join(format!("file{i:03}.txt")), "x").unwrap();
+            }
+
+            let (tw, th): (u16, u16) = (60, 24);
+            let mut a = app_with("scratch\n", 1);
+            // A horizontal split, as reported: the pane is short enough
+            // that walking down the listing has to scroll.
+            a.editor
+                .pane_tree
+                .split_active(crate::pane::SplitOrientation::Horizontal);
+            a.editor.publish_render_state();
+            // The bodies `App::do_open_oil` / `do_open_file_tree` run —
+            // both are `pub(super)` to the `app` module, so drive the
+            // host call plus the signal fan-out directly.
+            let target = dir.clone();
+            let signals = a.mutate_editor_with(move |e| match kind {
+                "oil" => e.do_open_oil(Some(target)),
+                _ => e.do_open_file_tree(Some(target)),
+            });
+            for s in signals {
+                a.handle_renderer_signal(s);
+            }
+
+            let chrome = chrome_rows(&a);
+            let buffer_height = th
+                .saturating_sub(1)
+                .saturating_sub(chrome.tabline)
+                .saturating_sub(chrome.extra()) as u32;
+            let vh = a.active_pane_content_height(buffer_height);
+            a.set_viewport_height(vh);
+
+            // Walk down far enough that the pane must scroll.
+            let down = a.editor.builtins.line_down;
+            for _ in 0..(vh + 6) {
+                a.apply(crate::app::Action::Invoke(
+                    lattice_grammar::CommandInvocation::of(down.0),
+                ));
+            }
+            a.mutate_editor(|e| {
+                e.publish_render_state();
+            });
+            assert!(
+                a.editor.scroll > 0,
+                "{kind}: precondition — the split pane must have scrolled \
+                 (scroll={}, vh={vh})",
+                a.editor.scroll,
+            );
+
+            let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+            let snap = a.ad().snapshot.clone();
+            terminal
+                .draw(|f| {
+                    let _ = draw_frame(f, &a, &snap);
+                })
+                .unwrap();
+
+            let caret_row = terminal.get_cursor_position().unwrap().y;
+            let buf = terminal.backend().buffer().clone();
+            let highlighted: Vec<u16> = (0..th)
+                .filter(|&y| {
+                    (0..tw).any(|x| {
+                        buf[(x, y)]
+                            .style()
+                            .add_modifier
+                            .contains(Modifier::REVERSED)
+                    })
+                })
+                .collect();
+
+            let (scroll, cursor_line) = (a.editor.scroll, a.editor.cursor.line);
+            let _ = std::fs::remove_dir_all(&dir);
+
+            assert_eq!(
+                highlighted,
+                vec![caret_row],
+                "{kind}: the reverse-video cursor row must be exactly the caret's \
+                 row (caret_row={caret_row}, scroll={scroll}, cursor.line={cursor_line})",
+            );
+        }
     }
 
     /// **CV.2: a file that ends in a newline must not paint an extra

@@ -15,6 +15,8 @@ conflating them is how the second one keeps getting "fixed".
 | CV.2 | Phantom trailing line: a file ending in `\n` renders one row too many | ✅ |
 | CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | 📝 |
 | CV.4 | The other readers of the matrix's stamped `wrap_width` | 📝 |
+| CV.5 | Oil / file-tree cursor highlight trails the caret by `scroll` | ✅ |
+| CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 |
 
 ---
 
@@ -276,9 +278,92 @@ wide enough to deserve its own commit.
    over-scrolls for a frame — visible, but it cannot hide the cursor
    the way under-scrolling did.
 
+## CV.5 — the oil / file-tree cursor highlight trails the caret ✅
+
+**Fixed 2026-08-13.** Reported against oil in a horizontal split:
+scrolling the cursor past the bottom of the pane left the caret on the
+right line while the highlight fell behind.
+
+### Root cause
+
+```rust
+.enumerate()          // index is ALREADY absolute
+.skip(scroll)         // first surviving item is (scroll, …)
+.take(viewport)
+.map(|(i, name_str)| {
+    let line_idx = scroll + i;      // scroll counted twice
+```
+
+`enumerate` runs before `skip`, so its index is the absolute source
+line; adding `scroll` again makes it `2·scroll + k`. The highlight
+therefore fires `scroll` rows above the caret, which reads its row from
+`cursor.line - scroll` and is correct. Measured: `scroll = 7`,
+`cursor.line = 17` ⇒ caret row 10, highlight row 3 = 17 − 2·7.
+
+The split is not incidental. A full-height pane shows a short listing
+without ever scrolling, and at `scroll == 0` the two expressions agree
+— which is why this survived.
+
+**Four sites, one copied mistake:** `draw_oil_pane` and
+`draw_file_tree_pane` in the TUI, and both of their GPUI counterparts.
+Oil is worse than the highlight in both peers: it also indexes the
+entry list with the doubled value (`snapshot.get(line_idx)` /
+`entries.get(line_idx)`), so scrolled rows drew the wrong icon too.
+The file-tree paths pair their entries through a `zip` that precedes
+the `skip`, so only their highlight was wrong.
+
+The picker candidate loops use the same `enumerate → skip` shape and
+are **correct** — they compare against an absolute `selected`, never
+re-adding scroll. The GPUI completion rows slice `[scroll..end]`
+*before* enumerating, so their `scroll + i` is right too. Both were
+checked; neither was touched.
+
+### Tests
+
+`render::tests::pane_listing_cursor_highlight_and_caret_share_a_row_when_scrolled`
+asserts the invariant on the painted frame — the reverse-video row is
+exactly the caret's row — for **oil and the file tree together**, in a
+horizontal split, scrolled. Verified to fail on each defect
+independently by restoring one fix at a time.
+
+Testing them together is the point: the report named only oil, and the
+file tree had the identical bug with nothing to announce it. Same
+failure mode as `magit-diff-mode`'s missing `x` — a gap in a copied set
+does not report itself (see `prefer-minor-modes-over-duplication`).
+
+## CV.6 — oil and the file tree paint through bespoke renderers 📝
+
+CV.5 was a one-line arithmetic error, but it was only *possible*
+because `draw_oil_pane` / `draw_file_tree_pane` (and their GPUI twins)
+are hand-written paint paths that duplicate what `compose_pane_lines`
+already does for every other buffer — scroll windowing, cursor-row
+resolution, per-row styling. Four copies of the same walk meant one
+mistake in four places, and the standing rule is explicit that the
+right move for a kind-specific helper is to *remove* the special path,
+not to keep its parity in step.
+
+Not folded into CV.5 deliberately. The reported defect is an off-by-
+`scroll` in the row index; routing oil and the file tree through the
+shared compose path is a rewrite that has to carry per-entry icons and
+styling across, and it risks new *visual* regressions in the panes it
+touches. UX is the higher court: taking that risk as the vehicle for
+fixing a highlight offset is the wrong trade. Fix the arithmetic, land
+it, then do the convergence on its own with its own tests.
+
+Note it composes with CV.2: these paths window by source line with no
+fold or wrap accounting at all, so they are the one place where the
+rope/content distinction genuinely does not arise today — and would,
+the moment they join the shared path.
+
 ## Cross-renderer
 
 Per the standing parity rule, CV.2 lands in the same patch for both
 renderers. GPUI has only **2** `line_count()` call sites against the
 TUI's 11, so verifying it is cheap once the helpers exist. (CV.1 needed
 no GPUI change — the clamp it fixed is host-side.)
+
+CV.5 landed in both peers in one patch: GPUI carried the identical
+defect in both its oil and file-tree paint paths. It has no test —
+`lattice-ui-gpui` has no frame-level harness — so the TUI test is the
+guard and the GPUI fix is verified by inspection plus
+`cargo build -p lattice-ui-gpui --features window`.

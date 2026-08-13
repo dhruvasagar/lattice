@@ -8,12 +8,9 @@ pub use lattice_keymap::{
     KeymapCapability, KeymapError, KeymapHandle, KeymapRegistry, LayerId, PushLayerKind,
 };
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use lattice_completion::{KeybindingSource, KeymapReverseLookup};
-use lattice_grammar::CommandId;
 use lattice_keymap::KeymapLayer;
 use lattice_protocol::KeyChord;
 
@@ -34,7 +31,11 @@ use lattice_protocol::KeyChord;
 /// mode-aware filtering + provenance column.
 pub struct KeymapReverseLookupHandle {
     // MARG.3: the reverse cache carries `KeymapLayer` provenance per chord.
-    reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>>,
+    /// (C′) The handle, not a raw `ArcSwap` clone: reads must go
+    /// through `reverse_entries`, which freshens the lazily-rebuilt
+    /// derived state first. Holding the `ArcSwap` directly would read
+    /// a cache a pending `bind` has already invalidated.
+    keymap: KeymapHandle,
     // B3b: the `ArcSwap` handle so a plugin command's keybinding annotation
     // resolves against runtime registrations too; `.load()` per lookup.
     command_registry: lattice_grammar::CommandRegistryHandle,
@@ -49,7 +50,7 @@ impl KeymapReverseLookupHandle {
         command_registry: lattice_grammar::CommandRegistryHandle,
     ) -> Arc<Self> {
         Arc::new(Self {
-            reverse_cache: handle.reverse_cache_arc(),
+            keymap: handle.clone(),
             command_registry,
         })
     }
@@ -60,20 +61,19 @@ impl KeymapReverseLookup for KeymapReverseLookupHandle {
         let Some(id) = self.command_registry.load().id_by_name(command_name) else {
             return Vec::new();
         };
-        let cache = self.reverse_cache.load();
-        cache
-            .get(&id)
-            .map(|entries| entries.iter().map(|(c, _)| *c).collect())
-            .unwrap_or_default()
+        self.keymap
+            .reverse_entries(id)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
     }
 
     fn chords_with_source(&self, command_name: &str) -> Vec<(KeyChord, KeybindingSource)> {
         let Some(id) = self.command_registry.load().id_by_name(command_name) else {
             return Vec::new();
         };
-        let cache = self.reverse_cache.load();
-        cache
-            .get(&id)
+        let entries = self.keymap.reverse_entries(id);
+        Some(&entries)
             .map(|entries| {
                 entries
                     .iter()

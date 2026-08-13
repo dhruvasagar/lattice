@@ -298,6 +298,10 @@ pub struct KeymapRegistry {
     /// [`KeymapHandle::lookup_with_context`]. Rebuilt by
     /// writers alongside `merged`.
     gated_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
+    /// (C′) Set by a write that only touched its own layer's trie,
+    /// cleared by [`Self::ensure_derived_fresh`] on the next read.
+    /// See that method for the measurement that motivated it.
+    derived_dirty: std::sync::atomic::AtomicBool,
     /// MARG.2 (2026-06-03): reverse cache for the keybinding
     /// annotator surface. Indexes Normal-mode bindings by
     /// [`CommandId`] so `:` line command completion can show
@@ -337,6 +341,7 @@ impl KeymapRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
+            derived_dirty: std::sync::atomic::AtomicBool::new(false),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -354,6 +359,42 @@ impl KeymapRegistry {
     /// `KeymapLayer::MinorMode(emacs-keys-mode)` and would
     /// otherwise be invisible to the completion margin's
     /// `KeybindingAnnotator`.
+    /// (C′) Rebuild the derived state IF a write marked it stale.
+    ///
+    /// `merged`, `gated_mode_tries` and `reverse_cache` are all pure
+    /// functions of the layer set. Rebuilding them on every `bind` made
+    /// a burst of N bindings O(N²) — three full rebuilds per binding —
+    /// which measured at **734.8 ms for `register_normal_bindings`
+    /// alone** and ~1.1 s of a 1.4 s `Editor::boot`, paid at every real
+    /// editor start, not just in tests.
+    ///
+    /// So writes now only touch their own layer's trie and set the
+    /// flag; the rebuild happens once, here, on the next read. Boot's
+    /// ~1000 bindings become ~1000 cheap inserts and ONE rebuild.
+    ///
+    /// `push_layer` / `pop_layer` still rebuild eagerly, so activating
+    /// a mode never leaves a keystroke to pay for it — the residual
+    /// exposure is a keystroke immediately after a direct `bind()`,
+    /// which is `:map` and plugin binds only.
+    fn ensure_derived_fresh(&self) {
+        if !self
+            .derived_dirty
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let (merged, minors) = {
+            let inner = self.inner.lock().expect("registry mutex");
+            (
+                inner.build_always_on_merged(),
+                inner.build_gated_mode_tries(),
+            )
+        };
+        self.merged.store(Arc::new(merged));
+        self.gated_mode_tries.store(Arc::new(minors));
+        self.rebuild_reverse_cache();
+    }
+
     fn rebuild_reverse_cache(&self) {
         let merged = self.merged.load();
         let mut cache = build_reverse_cache_from_merged(&merged);
@@ -399,6 +440,7 @@ impl Default for KeymapRegistry {
         // through `KeymapHandle`.
         Self {
             inner: Mutex::new(RegistryInner::new()),
+            derived_dirty: std::sync::atomic::AtomicBool::new(false),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -480,6 +522,27 @@ impl KeymapHandle {
     /// cannot depend on `lattice-completion` (circular dep risk), so
     /// the `KeymapReverseLookupHandle` type lives in `lattice-host`
     /// and obtains the cache via this accessor.
+    /// Reverse-lookup entries for `id`, freshening the derived state
+    /// first.
+    ///
+    /// (C′) Prefer this over [`Self::reverse_cache_arc`]: a raw handle
+    /// on the `ArcSwap` bypasses [`ensure_derived_fresh`] and can read
+    /// a cache that a pending `bind` has invalidated. Cold path (the
+    /// command palette and the completion margin's keybinding column),
+    /// so paying a rebuild here is free where paying it per write was
+    /// not.
+    ///
+    /// [`ensure_derived_fresh`]: KeymapRegistry::ensure_derived_fresh
+    pub fn reverse_entries(&self, id: CommandId) -> Vec<(KeyChord, KeymapLayer)> {
+        self.registry.ensure_derived_fresh();
+        self.registry
+            .reverse_cache
+            .load()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn reverse_cache_arc(
         &self,
     ) -> Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>> {
@@ -506,6 +569,7 @@ impl KeymapHandle {
     /// `active_modes`. D.5 wires diff-mode through that
     /// path; other modes migrate as their consumers care.
     pub fn lookup(&self, mode: BindingMode, chords: &[KeyChord]) -> LookupResult {
+        self.registry.ensure_derived_fresh();
         let minors = self.registry.gated_mode_tries.load();
         let mut sorted: Vec<ModeId> = minors.keys().copied().collect();
         sorted.sort();
@@ -547,6 +611,7 @@ impl KeymapHandle {
         chords: &[KeyChord],
         active_modes: &[ModeId],
     ) -> LookupResult {
+        self.registry.ensure_derived_fresh();
         let always_on = self.registry.merged.load();
         // Fast path: no gated modes active → use the cached
         // always-on trie directly, no per-tick allocation.
@@ -651,23 +716,21 @@ impl KeymapHandle {
         bound: Arc<BoundCommand>,
     ) {
         let label = default_label(layer);
-        let (merged, minors) = {
+        {
             let mut inner = self.registry.inner.lock().expect("registry mutex");
             let layer_ref = inner.layer_mut(layer, &label);
             layer_ref.modes.entry(mode).or_default().insert(path, bound);
-            (
-                inner.build_always_on_merged(),
-                inner.build_gated_mode_tries(),
-            )
-        };
-        self.registry.merged.store(Arc::new(merged));
-        self.registry.gated_mode_tries.store(Arc::new(minors));
-        // MARG.2: keep the reverse-cache in lockstep with the
-        // merged trie. Every site that stores `merged` /
-        // `gated_mode_tries` must also rebuild the reverse
-        // cache or the keybinding annotator will surface
-        // stale chord text.
-        self.registry.rebuild_reverse_cache();
+        }
+        // (C′) Touch only this layer's trie and mark the derived state
+        // stale; `ensure_derived_fresh` rebuilds once on the next read.
+        // Rebuilding all three here made a burst of N bindings O(N²) —
+        // 734.8 ms in `register_normal_bindings` alone. The reverse
+        // cache is still rebuilt wholesale (never incrementally), so
+        // its `or_insert_with` first-in-walk-order semantics are
+        // bit-identical to before; only WHEN it happens changed.
+        self.registry
+            .derived_dirty
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Remove the binding at `(layer, mode, path)`. No-op if

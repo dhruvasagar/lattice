@@ -109,10 +109,10 @@ provider, because the gaps turned out to be mostly substrate.
 | Plan | Slices | Outcome |
 |---|---|---|
 | [`refreshable-views.md`](slice-plans/refreshable-views.md) | RV.1–3 ✅ | `gr` is ONE shared chord over `Mode::refresh_action()`. Five modes had copied it; `*problems*` and narrow had none. |
-| [`error-list-producers.md`](slice-plans/error-list-producers.md) | EP.1–6 ✅ | Per-source slices; the language server and references both feed the error list, each opt-in-gated. |
+| [`error-list-producers.md`](slice-plans/archive/error-list-producers.md) | EP.1–6 ✅ | Per-source slices; the language server and references both feed the error list, each opt-in-gated. |
 | [`lsp-references-view.md`](slice-plans/lsp-references-view.md) | LR.1–3, LR.5 ✅ | `:lsp-references` opens an **editable** references multibuffer (catalogue A.3); `<C-q>` sends any picker's filtered results to the error list. |
-| [`multibuffer-stale-sources.md`](slice-plans/multibuffer-stale-sources.md) | SS.1–3 ✅ | **Data-loss fix:** `:w` on a multibuffer silently overwrote source files that had changed on disk. |
-| [`diff-refinement.md`](slice-plans/diff-refinement.md) | DR.1–4 ✅ | Word-level intra-line diff highlighting — which *part* of a changed line changed. |
+| [`multibuffer-stale-sources.md`](slice-plans/archive/multibuffer-stale-sources.md) | SS.1–3 ✅ | **Data-loss fix:** `:w` on a multibuffer silently overwrote source files that had changed on disk. |
+| [`diff-refinement.md`](slice-plans/archive/diff-refinement.md) | DR.1–4 ✅ | Word-level intra-line diff highlighting — which *part* of a changed line changed. |
 
 Two catalogue entries were **struck rather than built**: **A.4
 `DiagnosticsProvider`** (making the language server an `ErrorList`
@@ -134,7 +134,7 @@ binaries; cached `cargo test -p lattice-host` went 445s → 185s.
 `G` on a 219-line file puts the cursor on 219 while the last drawn row
 is 218, and the same file renders a phantom empty line 220. **Two
 separate defects**, tracked apart in
-[`cursor-visibility.md`](slice-plans/cursor-visibility.md) precisely
+[`cursor-visibility.md`](slice-plans/archive/cursor-visibility.md) precisely
 because fixing the second can mask the first. The phantom line is a
 coordinate-space leak — `Buffer::line_count` returns ropey's raw count
 by design and 123 call sites each re-derive the correction, which is

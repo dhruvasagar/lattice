@@ -1,5 +1,9 @@
 # Cursor visibility + line-count spaces — slice plan
 
+> **ARCHIVED 2026-08-15.** CV.1–CV.6 complete (CV.6 delivered as DL.0–DL.7). Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > **Status: Active.** Opened 2026-08-13 from a live report. Nothing
 > implemented yet; this records a diagnosis so the work can start
 > without re-deriving it.
@@ -16,7 +20,7 @@ conflating them is how the second one keeps getting "fixed".
 | CV.3 | Name the line-count coordinate spaces so CV.2 cannot recur | ✅ |
 | CV.4 | The other readers of the matrix's stamped `wrap_width` | ✅ |
 | CV.5 | Oil / file-tree cursor highlight trails the caret by `scroll` | ✅ |
-| CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | 📝 (own plan) |
+| CV.6 | Oil and the file tree paint through bespoke, kind-specific renderers | ✅ (own plan) |
 
 ---
 
@@ -366,7 +370,7 @@ file tree had the identical bug with nothing to announce it. Same
 failure mode as `magit-diff-mode`'s missing `x` — a gap in a copied set
 does not report itself (see `prefer-minor-modes-over-duplication`).
 
-## CV.6 — oil and the file tree paint through bespoke renderers 📝
+## CV.6 — oil and the file tree paint through bespoke renderers ✅
 
 CV.5 was a one-line arithmetic error, but it was only *possible*
 because `draw_oil_pane` / `draw_file_tree_pane` (and their GPUI twins)
@@ -390,12 +394,14 @@ fold or wrap accounting at all, so they are the one place where the
 rope/content distinction genuinely does not arise today — and would,
 the moment they join the shared path.
 
-**Design + sequencing now live on their own**, because the fix turned
-out to be a storage migration plus a shared minor mode rather than a
-renderer change:
+**Completed 2026-08-15 as DL.0–DL.7.** Both listing kinds are
+`DocumentEntry`-backed and paint through the shared compose path; all
+four bespoke painters are deleted. Design + sequencing live on their
+own, because the fix turned out to be a storage migration plus a shared
+minor mode rather than a renderer change:
 
 - design — `docs/dev/architecture/directory-listing-mode.md`
-- slices — `docs/dev/operations/slice-plans/directory-listing-mode.md`
+- slices — `docs/dev/operations/slice-plans/archive/directory-listing-mode.md`
   (DL.1–DL.6)
 
 ## Cross-renderer

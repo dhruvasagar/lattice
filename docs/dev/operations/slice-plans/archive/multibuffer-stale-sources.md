@@ -1,5 +1,9 @@
 # Multibuffer stale sources — slice plan
 
+> **ARCHIVED 2026-08-15.** SS.1–SS.3 complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > **Status: Active.** Opened 2026-08-11. Implements
 > [`multibuffer-stale-sources.md`](../../architecture/multibuffer-stale-sources.md):
 > a multibuffer must not persist a source whose on-disk content changed

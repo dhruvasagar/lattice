@@ -6,7 +6,7 @@ extracts the text it spans, and triggers a **project search** for that literal.
 string; a Visual selection then `g/` searches the selection.
 
 Sequencing + status live in the slice plan
-[`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator.md).
+[`../operations/slice-plans/archive/search-operator.md`](../operations/slice-plans/archive/search-operator.md).
 Project-search internals it drives are in
 [`multibuffer-views.md`](multibuffer-views.md) §3.7 (the `SearchProvider`); the
 grammar/operator machinery is [design.md §5.2](design.md).
@@ -115,7 +115,7 @@ remain the province of `:search` and are out of scope for the operator.
   `project_search` path `g/` drives.
 - [`design.md §5.2`](design.md) — the modal-editing engine / unified grammar +
   command dispatch the operator plugs into.
-- [`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator.md)
+- [`../operations/slice-plans/archive/search-operator.md`](../operations/slice-plans/archive/search-operator.md)
   — slice plan (SO-series sequencing + status).
 - [`../../user/project-search.md`](../../user/project-search-mode.md) — user-facing
   docs (extended with the `g/` use-case table).

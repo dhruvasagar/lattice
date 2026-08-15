@@ -6,7 +6,7 @@ changed.
 Companion to [`span-layering.md`](span-layering.md) (the composition
 contract this builds on) and [`diff-system.md`](diff-system.md) (hunk
 computation). Sequencing:
-[`../operations/slice-plans/diff-refinement.md`](../operations/slice-plans/diff-refinement.md).
+[`../operations/slice-plans/archive/diff-refinement.md`](../operations/slice-plans/archive/diff-refinement.md).
 
 ## 1. The gap
 

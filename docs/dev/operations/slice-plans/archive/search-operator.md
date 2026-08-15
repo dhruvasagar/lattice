@@ -1,5 +1,9 @@
 # `g/` search operator — slice plan
 
+> **ARCHIVED 2026-08-15.** SO.1–SO.3 complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons. Design
 > fragment (contracts, rationale, rejected alternatives):
 > [`../../architecture/search-operator.md`](../../architecture/search-operator.md).

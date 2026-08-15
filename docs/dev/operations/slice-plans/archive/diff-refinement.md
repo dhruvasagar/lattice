@@ -1,5 +1,9 @@
 # Intra-line diff refinement — slice plan
 
+> **ARCHIVED 2026-08-15.** DR.1–DR.5 complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > **Status: Active.** Opened 2026-08-12. Implements
 > [`diff-refinement.md`](../../architecture/diff-refinement.md): show
 > *which part* of a changed line changed.
@@ -23,8 +27,8 @@ piece that does not exist yet.
 
 DR.1 and DR.2 are independent and can land in either order; both gate
 DR.3. DR.4 is a second consumer proving the mechanism generalised —
-slip it without blocking anything. DR.5 replaces DR.1's pairing rule
-and is the one remaining correctness gap.
+slip it without blocking anything. DR.5 replaced DR.1's pairing rule
+and closed the last correctness gap.
 
 ---
 

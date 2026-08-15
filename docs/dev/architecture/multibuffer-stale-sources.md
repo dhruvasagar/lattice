@@ -6,7 +6,7 @@ source file whose on-disk content changed after the view loaded it.
 Companion to [`multibuffer-views.md`](multibuffer-views.md) (the view
 model) and `autoread.md` (the same problem for ordinary buffers).
 Sequencing:
-[`../operations/slice-plans/multibuffer-stale-sources.md`](../operations/slice-plans/multibuffer-stale-sources.md).
+[`../operations/slice-plans/archive/multibuffer-stale-sources.md`](../operations/slice-plans/archive/multibuffer-stale-sources.md).
 
 ## 1. The bug
 

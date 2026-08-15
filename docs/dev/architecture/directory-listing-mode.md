@@ -1,7 +1,7 @@
 # `directory-listing-mode` — one minor mode owning entry icons and highlighting
 
 > **Status: design, not yet implemented.** Sequencing lives in the slice
-> plan (`docs/dev/operations/slice-plans/cursor-visibility.md`, CV.6).
+> plan (`docs/dev/operations/slice-plans/archive/cursor-visibility.md`, CV.6).
 >
 > Opened 2026-08-13 out of CV.5, where the same off-by-`scroll` bug was
 > found in four hand-written paint paths — oil and the file tree, in each

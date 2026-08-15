@@ -1,5 +1,9 @@
 # `directory-listing-mode` — slice plan (CV.6)
 
+> **ARCHIVED 2026-08-15.** DL.0–DL.7 complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > Sequencing for `docs/dev/architecture/directory-listing-mode.md`.
 > That fragment owns the *what* and *why*; this file owns the *when* and
 > *in what order*. Opened 2026-08-13 out of CV.5

@@ -1,5 +1,9 @@
 # MG.43 — closing MG.41 / MG.42
 
+> **ARCHIVED 2026-08-15.** MG.43a–MG.43h complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 **Status:** ✅ complete (2026-08-05), except the v1 exclusions below. Closes the open items in
 [`magit-transient-completeness.md`](archive/magit-transient-completeness.md)
 (MG.41d / MG.41e / MG.41f) and the deferred list in

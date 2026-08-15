@@ -1,5 +1,9 @@
 # Error-list producers — slice plan
 
+> **ARCHIVED 2026-08-15.** EP.1–EP.6 complete. Verified against source, not
+> status icons, before filing. The design fragment (if any) stays in
+> `docs/dev/architecture/` — only the slice plan moved.
+
 > **Status: Active.** Opened 2026-08-10. Implements
 > [`error-list.md`](../../architecture/error-list.md) §3.1–§3.3: the
 > tagged-source substrate and the language server as the error list's

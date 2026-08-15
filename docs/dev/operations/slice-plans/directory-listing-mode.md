@@ -16,7 +16,7 @@
 | DL.3b | The mode publishes entry icons as leading inlays | ✅ |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | ✅ |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | ✅ |
-| DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
+| DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 🚧 |
 
 ## Shape of the sequence
 
@@ -409,32 +409,55 @@ test.
 - `register_listing_document` generalised back to taking a
   `ListingKind`, now that both kinds are `DocumentEntry`.
 
-## DL.6 — retire the old palette; benches + parity 📝
+## DL.6 — retire the old palette; benches + parity 🚧
 
-**Depends on:** DL.5.
+**Partly landed 2026-08-15.** Depends on DL.5.
 
-- `ext_color` **moves into the mode crate outright**, along with the
-  rest of `lattice_core::ui::icons` and `lattice-ui-tui/src/icons.rs`.
-  Confirmed rather than assumed: those have exactly two production
-  callers per renderer — the oil pane and the file-tree pane — and none
-  elsewhere, so DL.4/DL.5 leave them with no consumer. `lattice-core`
-  sheds a domain table; the TUI's icon module goes away entirely.
-- **Converge what DL.0 deliberately left duplicated**: the two
-  directory readers (`read_dir_entries` / `initial_entries`), the two
-  entries→rope renderers (`render_to_buffer`), and the two entry models
-  now that `ListingEntries` (DL.2) is the shared shape. DL.0 moved them
-  into one crate without touching them so the move stayed reviewable;
-  this is where that debt is paid.
-- Benches per the four-artefact rule: first-paint and per-frame scroll
-  cost on a ~5k-entry directory, into
-  `docs/dev/operations/benchmarks.md`. The point is to prove the
-  per-row `ResolvedTheme::get` did not regress the frame, not to assume
-  it.
-- Parity audit:
-  `grep -rn "draw_oil_pane\|draw_file_tree_pane" crates/` must come back
-  empty in both renderers, and the acid test from the standing rules —
-  a new listing-shaped provider needing **zero** renderer additions —
-  should now hold.
+### Done
+
+- **The parity audit passes.** No `draw_oil_pane` /
+  `draw_file_tree_pane` / `build_oil_inner` / `build_file_tree_inner`
+  remain in either renderer. Both listing kinds paint through the
+  shared compose path, and the acid test from the standing rules holds:
+  a new listing-shaped provider needs **zero** renderer additions.
+- **`ext_color` has no consumers.** `listing_inlays` was still calling
+  `entry_visual` and discarding the colour it returned; it calls
+  `glyph_for_entry` now, so entry colour comes exclusively from the
+  registered `listing.*` theme elements.
+- **`lattice-ui-tui/src/icons.rs` deleted** — its only production
+  callers were the two painters DL.4/DL.5 removed.
+- The orphans those deletions left in GPUI (`VIEWPORT_ROWS_FALLBACK`,
+  `icon_color_to_rgb`, `entry_fg`, and the two tests covering deleted
+  code) are gone.
+
+### Deliberately not done, with reasons
+
+**`lattice_core::ui::icons` did NOT move into the listing crate**, and
+the plan was wrong to say it should. That was written from an audit of
+`entry_visual` / `icon_for_entry`, which missed `glyph_for_entry` —
+**`lattice-multibuffer` uses it** for excerpt-header file icons. The
+glyph table is genuinely shared infrastructure; moving it would make
+multibuffer depend on the listing crate. It stays in `lattice-core`.
+
+**`IconColor` / `ext_color` are dead-but-present.** They are only still
+reachable because the glyph and the colour come out of the same ~200-arm
+match, and splitting that is churn with no user-visible win and real
+transcription risk. `entry_visual` now carries a doc note saying so, and
+pointing new callers at `glyph_for_entry` plus a theme element.
+
+**DL.0's convergence debt is still open** — the two directory readers,
+the two entries→rope renderers, and the two entry models. `ListingEntry`
+(DL.2) is the shape they would converge onto. Left as its own slice
+rather than folded in here: it touches `:w`'s input on the oil side, and
+this slice was already carrying the palette retirement.
+
+**Benches are not written.** The four-artefact rule asks for them and
+this slice owes them: first-paint and per-frame scroll cost on a
+~5k-entry directory, to prove the per-row `ResolvedTheme::get` did not
+regress the frame rather than assume it. Recorded as owed rather than
+quietly skipped — the listings moved from an `O(viewport)` bespoke walk
+to the shared cells/`DisplayMatrix` build, which is exactly the kind of
+change that should not be taken on trust.
 
 ## Risks
 

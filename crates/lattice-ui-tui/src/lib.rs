@@ -54,7 +54,6 @@ pub use lattice_host::{
 // keep invoking it as `keymap_entry!` without a path prefix.
 pub use lattice_host::keymap_entry;
 pub mod chord;
-pub mod icons;
 pub mod input;
 pub mod keymap_insert;
 pub mod keymap_normal;

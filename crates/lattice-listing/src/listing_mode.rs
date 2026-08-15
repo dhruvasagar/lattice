@@ -242,7 +242,7 @@ pub fn listing_element_for(path: &std::path::Path, is_dir: bool) -> &'static str
 }
 
 /// Build one leading inlay per listing row: the glyph
-/// [`lattice_core::ui::icons::entry_visual`] picks, painted with the
+/// [`lattice_core::ui::icons::glyph_for_entry`] picks, painted with the
 /// element [`listing_element_for`] resolves.
 ///
 /// A pure function of the entries plus the theme's interned ids, so it
@@ -263,7 +263,11 @@ pub fn listing_inlays(
         .iter()
         .enumerate()
         .map(|(line, e)| {
-            let (glyph, _) = lattice_core::ui::icons::entry_visual(&e.path, e.is_dir, nerd_fonts);
+            // DL.6: `glyph_for_entry`, not `entry_visual` — the colour
+            // comes from the theme element below, so asking for the
+            // devicons RGB and discarding it was the last thing keeping
+            // `ext_color` alive.
+            let glyph = lattice_core::ui::icons::glyph_for_entry(&e.path, e.is_dir, nerd_fonts);
             let name = ElementName::from_static(listing_element_for(&e.path, e.is_dir));
             // The element is registered by `on_activate`; if a caller
             // somehow beat that, fall back to the plain-hint style

@@ -537,12 +537,11 @@ mod tests {
     #[test]
     fn a_refined_run_paints_the_refine_background() {
         let (resolved, ids) = theme_defaults();
-        let (plain, _) = display_run_to_synthetic_cell(&refined_run(None), &resolved, &ids, 0, 0);
+        let (plain, _) = display_run_to_synthetic_cell(&refined_run(None), &resolved, &ids, 0);
         let (refined, _) = display_run_to_synthetic_cell(
             &refined_run(Some(lattice_cells::RefineKind::Removed)),
             &resolved,
             &ids,
-            0,
             0,
         );
         assert_eq!(plain.bg, 0, "an unrefined run carries no background");
@@ -559,7 +558,7 @@ mod tests {
     fn the_two_refine_sides_paint_different_backgrounds() {
         let (resolved, ids) = theme_defaults();
         let paint = |kind| {
-            display_run_to_synthetic_cell(&refined_run(Some(kind)), &resolved, &ids, 0, 0)
+            display_run_to_synthetic_cell(&refined_run(Some(kind)), &resolved, &ids, 0)
                 .0
                 .bg
         };

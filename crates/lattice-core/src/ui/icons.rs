@@ -62,6 +62,13 @@ pub enum IconColor {
 /// geometric-shape marker), so directories there read as
 /// `▸ 󰉋 name` -- marker + folder picto + name -- which is the
 /// convention nvim-tree and VS Code follow.
+/// **DL.6: the colour half has no consumers left.** `directory-listing-mode`
+/// resolves entry colour through registered `listing.*` theme elements
+/// now, so a theme owns the palette; this table's `IconColor` is only
+/// still reachable because the glyph and the colour are produced by the
+/// same ~200-arm match and splitting them is churn without a user-visible
+/// win. New callers want [`glyph_for_entry`] plus a theme element — not
+/// this.
 pub fn entry_visual(path: &Path, is_dir: bool, nerd_fonts: bool) -> (&'static str, IconColor) {
     if is_dir {
         if nerd_fonts {

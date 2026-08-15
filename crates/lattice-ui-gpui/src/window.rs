@@ -5923,22 +5923,6 @@ mod modeline_tests {
         assert_eq!(super::terminal_row_start(50, 0), 0);
     }
 
-    #[test]
-    fn icon_color_to_rgb_maps_named_palette_and_passes_rgb_through() {
-        use lattice_core::ui::icons::IconColor;
-        assert_eq!(
-            super::icon_color_to_rgb(IconColor::Rgb(0xDEA584), 0x111111),
-            0xDEA584
-        );
-        assert_eq!(
-            super::icon_color_to_rgb(IconColor::Reset, 0x123456),
-            0x123456
-        );
-        assert_eq!(super::icon_color_to_rgb(IconColor::Blue, 0), 0x0089_b4fa);
-        assert_eq!(super::icon_color_to_rgb(IconColor::Green, 0), 0x00a6_e3a1);
-        assert_eq!(super::icon_color_to_rgb(IconColor::Yellow, 0), 0x00f9_e2af);
-    }
-
     /// The oil / file-tree builders colour directories and dotfiles from
     /// the shared `file_tree.dir` / `file_tree.hidden` theme roles (so
     /// built-in themes drive them and TUI/GPUI agree). This pins that the

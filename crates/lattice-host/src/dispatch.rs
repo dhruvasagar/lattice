@@ -14693,16 +14693,37 @@ impl Editor {
         snapshot: &lattice_runtime::DocumentSnapshot,
     ) -> (Arc<[crate::render_state::InlayHintRow]>, u64) {
         use crate::per_buffer_cache::PerBufferCacheExt;
-        let empty: Arc<[crate::render_state::InlayHintRow]> =
-            Arc::from(Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice());
+        // DL.3b: mode-published virtual text (listing icons today) is
+        // merged with the LSP hints here — one inlay list per buffer,
+        // so downstream (the splice, the byte↔column remap, the cursor
+        // column) has a single source and cannot disagree with itself.
+        //
+        // Read FIRST, and outside the LSP gates below: `ExtraInlays` is
+        // not LSP-owned, so returning early on "no LSP hints" would
+        // silently drop every icon in a listing pane.
+        let extra: Vec<crate::render_state::InlayHintRow> = self
+            .buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<crate::modes::ExtraInlays>())
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
+        let finish = |mut rows: Vec<crate::render_state::InlayHintRow>| {
+            rows.extend(extra.iter().cloned());
+            rows.sort_by_key(|r| (r.line, r.byte));
+            let version = crate::render_state::inlay_hints_version(&rows);
+            (
+                Arc::from(rows.into_boxed_slice()) as Arc<[crate::render_state::InlayHintRow]>,
+                version,
+            )
+        };
         if !self.lsp_inlay_hint_mode_enabled_for(buffer_id) {
-            return (empty, 0);
+            return finish(Vec::new());
         }
         let Some(cache) = self.lsp_inlay_hints_cache.get_for(buffer_id) else {
-            return (empty, 0);
+            return finish(Vec::new());
         };
         if cache.hints.is_empty() {
-            return (empty, 0);
+            return finish(Vec::new());
         }
         let total_lines: u32 = snapshot.buffer.content_line_count();
         let rows: Vec<crate::render_state::InlayHintRow> = cache
@@ -14729,8 +14750,7 @@ impl Editor {
                 crate::render_state::InlayHintRow::hint(line_idx, byte, text)
             })
             .collect();
-        let version = crate::render_state::inlay_hints_version(&rows);
-        (Arc::from(rows.into_boxed_slice()), version)
+        finish(rows)
     }
 
     /// 4.4.g: per-tick `inlayHint` pump. Fires when the mode is
@@ -15773,6 +15793,8 @@ impl Editor {
         // MG.2: drain pending synthetic-buffer highlights (magit status,
         // etc.) into buffer_locals. Written by async refresh tasks, read here.
         self.drain_pending_synthetic_highlights();
+        // DL.3b: same shape for mode-published inline virtual text.
+        self.drain_pending_inlays();
         signals.extend(self.drain_tick_callbacks());
         signals
     }
@@ -15848,6 +15870,43 @@ impl Editor {
                 Some((i as u32, kind))
             })
             .collect()
+    }
+
+    /// DL.3b: drain `PendingInlays` into each buffer's `ExtraInlays`
+    /// local, so mode-published virtual text reaches the next publish.
+    ///
+    /// The inlay peer of [`Self::drain_pending_synthetic_highlights`]
+    /// and deliberately its twin: producers push off-thread and wake,
+    /// the Editor moves the data into a buffer-local on the tick, and
+    /// `build_inlay_hints_for_buffer` merges it beside the LSP hints.
+    /// An empty published set clears the local rather than leaving the
+    /// previous rows painted.
+    fn drain_pending_inlays(&mut self) {
+        let Some(pending) = self.services.get::<lattice_mode::PendingInlays>() else {
+            return;
+        };
+        let entries: Vec<(lattice_core::BufferId, Vec<lattice_mode::InlayRow>)> = {
+            let mut map = match pending.map.lock() {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            map.drain().collect()
+        };
+        for (buffer_id, rows) in entries {
+            let converted: Vec<crate::render_state::InlayHintRow> = rows
+                .into_iter()
+                .map(|r| crate::render_state::InlayHintRow {
+                    line: r.line,
+                    byte: r.byte,
+                    text: r.text,
+                    style: r.style,
+                })
+                .collect();
+            self.buffer_locals
+                .entry(buffer_id)
+                .or_default()
+                .insert(crate::modes::ExtraInlays(converted));
+        }
     }
 
     fn drain_pending_synthetic_highlights(&mut self) {

@@ -106,6 +106,7 @@ pub mod modeline;
 // MG.2: pending synthetic-buffer highlights service, shared between
 // lattice-host (drain) and lattice-magit (async refresh tasks).
 pub mod modes;
+pub mod pending_inlays;
 pub mod pending_synthetic_highlights;
 pub mod plugin_meta_sink;
 // PV.1 (2026-08-12): the generic provider-view seam — one host primitive
@@ -192,6 +193,7 @@ pub use crate::modeline::{
     ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,
     ModelineSnapshot, Scope, Span, Zone,
 };
+pub use crate::pending_inlays::{InlayRow, PendingInlays, PendingInlaysHandle};
 pub use crate::pending_synthetic_highlights::{
     HighlightsOp, PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
 };

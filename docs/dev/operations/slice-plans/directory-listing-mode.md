@@ -13,7 +13,7 @@
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | ✅ |
 | DL.3a | Inlay runs carry a style (retires a hardcoded colour) | ✅ |
-| DL.3b | The mode publishes entry icons as leading inlays | 📝 |
+| DL.3b | The mode publishes entry icons as leading inlays | ✅ |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
@@ -251,21 +251,41 @@ comment was describing a wait for something that already existed.
 references), which also drops two functions below the
 `too_many_arguments` threshold.
 
-## DL.3b — the mode publishes entry icons 📝
+## DL.3b — the mode publishes entry icons ✅
 
-**Depends on:** DL.2, DL.3a.
+**Landed 2026-08-15. Depends on:** DL.2, DL.3a.
 
 The mode turns `ListingEntries` into one leading inlay per row: the
 glyph from `entry_visual`, and `Style::Element(id)` for the
 `listing.*` element the path resolves to.
 
-**The open piece is the publish path.** Buffer-locals are written
-host-side; a mode in another crate reaches them through a service the
-host drains — `PendingSyntheticHighlights` → `ExtraHighlights` is the
-worked precedent. The symmetric shape here is a pending-inlays service
-drained into a new generic `ExtraInlays` buffer-local, merged into
-`PaneCellsInputs.inlay_hints` beside the LSP hints, exactly as
-`extra_spans` merges beside the grammar spans.
+**The publish path, as built** — the shape the precedent predicted:
+
+- `lattice_mode::PendingInlays` (+ `InlayRow`) — the generic mode→host
+  channel, peer of `PendingSyntheticHighlights`. `store_and_wake` fires
+  the waker at the seam, so a producer landing off the actor thread
+  cannot forget it (`feedback_async_needs_wake`).
+- `ExtraInlays` buffer-local in the host, drained on the same tick as
+  the highlights.
+- `build_inlay_hints_for_buffer` merges it with the LSP hints into one
+  list, sorted by `(line, byte)`. **The merge reads `ExtraInlays`
+  first, before the LSP gates** — those gates return early on "no LSP
+  hints for this buffer", which would otherwise drop every icon in a
+  listing pane, where LSP is never involved.
+- `listing_element_for(path, is_dir)` + `listing_inlays(entries, reg,
+  nerd_fonts)` in the mode — pure functions, testable with no buffer,
+  editor, or frame.
+
+`listing_element_for` is what replaces `ext_color`'s runtime lookup:
+`ext_color` answers "what RGB is a `.rs` file" and a theme cannot touch
+the answer; this answers "which registered element is it", and the theme
+owns what that element looks like. Buckets are language *families*, not
+extensions, because the vocabulary a theme is asked to retune should be
+the one a person thinks in.
+
+Icons anchor at `byte: 0` — leading, so oil's rope stays bare filenames
+(design §6): the glyph renders, the buffer never contains it, and `:w`
+still diffs clean.
 
 Do **not** shortcut this by having the host derive icons from
 `ListingEntries` directly. It would work and it would put

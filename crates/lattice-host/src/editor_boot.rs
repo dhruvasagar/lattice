@@ -1649,6 +1649,10 @@ impl Editor {
         boot.register_service::<lattice_mode::PendingSyntheticHighlights>(
             lattice_mode::PendingSyntheticHighlights::new(),
         );
+        // DL.3b: the inlay peer — mode-published inline virtual text
+        // (listing icons). Drained into each buffer's `ExtraInlays`
+        // local in the same tick as the highlights above.
+        boot.register_service::<lattice_mode::PendingInlays>(lattice_mode::PendingInlays::new());
 
         // M.10.3 (2026-06-03): expose the CommandRegistry as a service so mode
         // handlers (registered via M.10.1.b ActionHandlerRegistry) can look up
@@ -2166,6 +2170,13 @@ impl Editor {
             .get::<lattice_mode::PendingSyntheticHighlights>()
         {
             *pending.waker.lock().expect("waker init") = Some(editor.async_landed.clone());
+        }
+        // DL.3b: same wiring for the inlay channel. Without the waker a
+        // producer's rows sit until the user happens to press a key —
+        // the `feedback_async_needs_wake` failure mode, which reads as a
+        // rendering bug rather than a missing wake.
+        if let Some(pending) = editor.services.get::<lattice_mode::PendingInlays>() {
+            pending.set_waker(editor.async_landed.clone());
         }
 
         // 2026-05-26: register the built-in invocation runners

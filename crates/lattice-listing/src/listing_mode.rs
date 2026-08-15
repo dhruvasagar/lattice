@@ -172,6 +172,107 @@ pub fn register_listing_theme_elements(
     }
 }
 
+/// Which `listing.*` element a row resolves to.
+///
+/// DL.3b: this is the replacement for `ext_color`'s runtime lookup.
+/// `ext_color` answers "what RGB is a `.rs` file" and a theme cannot
+/// touch the answer; this answers "which registered element is it",
+/// and the theme owns what that element looks like.
+///
+/// Buckets are language *families*, not extensions — the vocabulary a
+/// theme is asked to retune should be the one a person thinks in.
+pub fn listing_element_for(path: &std::path::Path, is_dir: bool) -> &'static str {
+    if is_dir {
+        return ELEM_LISTING_DIR;
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.starts_with('.') {
+        return ELEM_LISTING_HIDDEN;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match name {
+        "Makefile" | "makefile" | "GNUmakefile" | "CMakeLists.txt" | "Dockerfile"
+        | "dockerfile" | "Containerfile" => return "listing.file.config",
+        "LICENSE" | "LICENCE" => return "listing.file.markup",
+        _ => {}
+    }
+    match ext.as_str() {
+        "rs" => "listing.file.rust",
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" => "listing.file.c",
+        "cs" | "java" | "scala" => "listing.file.jvm",
+        "kt" | "kts" => "listing.file.kotlin",
+        "swift" => "listing.file.swift",
+        "go" => "listing.file.go",
+        "py" | "pyw" | "pyi" => "listing.file.python",
+        "rb" | "erb" => "listing.file.ruby",
+        "php" => "listing.file.php",
+        "lua" => "listing.file.lua",
+        "hs" | "lhs" => "listing.file.haskell",
+        "ex" | "exs" => "listing.file.elixir",
+        "erl" | "hrl" => "listing.file.erlang",
+        "clj" | "cljs" | "cljc" => "listing.file.clojure",
+        "js" | "mjs" | "cjs" | "coffee" => "listing.file.javascript",
+        "ts" | "tsx" | "jsx" => "listing.file.typescript",
+        "html" | "htm" => "listing.file.html",
+        "css" | "less" => "listing.file.css",
+        "scss" | "sass" => "listing.file.sass",
+        "vue" | "svelte" => "listing.file.web-component",
+        "toml" | "ini" | "cfg" | "conf" => "listing.file.config",
+        "json" | "jsonc" | "json5" => "listing.file.json",
+        "yaml" | "yml" => "listing.file.yaml",
+        "sh" | "bash" | "zsh" | "fish" | "ps1" | "psm1" | "vim" => "listing.file.shell",
+        "md" | "mdx" | "rst" | "txt" | "org" => "listing.file.markup",
+        "sql" => "listing.file.sql",
+        "graphql" | "gql" => "listing.file.graphql",
+        "tf" | "hcl" | "nix" => "listing.file.infra",
+        "lock" => "listing.file.lock",
+        _ => ELEM_LISTING_FILE,
+    }
+}
+
+/// Build one leading inlay per listing row: the glyph
+/// [`lattice_core::ui::icons::entry_visual`] picks, painted with the
+/// element [`listing_element_for`] resolves.
+///
+/// A pure function of the entries plus the theme's interned ids, so it
+/// is testable without a buffer, an editor, or a frame — the producer
+/// side of DL.3b is just "call this and publish the result".
+///
+/// `byte: 0` anchors each icon at the start of its row. That is what
+/// keeps oil's rope bare filenames (design §6): the glyph renders, the
+/// buffer never contains it, and `:w` still diffs clean.
+pub fn listing_inlays(
+    entries: &[ListingEntry],
+    reg: &dyn lattice_theme::ThemeRegistry,
+    nerd_fonts: bool,
+) -> Vec<lattice_mode::InlayRow> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(line, e)| {
+            let (glyph, _) = lattice_core::ui::icons::entry_visual(&e.path, e.is_dir, nerd_fonts);
+            let name = ElementName::from_static(listing_element_for(&e.path, e.is_dir));
+            // The element is registered by `on_activate`; if a caller
+            // somehow beat that, fall back to the plain-hint style
+            // rather than dropping the icon.
+            let style = reg
+                .id(&name)
+                .map(lattice_cells::Style::Element)
+                .unwrap_or(lattice_cells::Style::InlayHint);
+            lattice_mode::InlayRow {
+                line: line as u32,
+                byte: 0,
+                text: glyph.to_string(),
+                style,
+            }
+        })
+        .collect()
+}
+
 /// The shared presentation minor. See the module docs.
 pub struct DirectoryListingMode;
 
@@ -357,6 +458,75 @@ mod tests {
             "an element's id is stable across re-registration — that is what \
              a theme override addresses"
         );
+    }
+
+    /// DL.3b: every row gets one leading icon, coloured by the element
+    /// its path resolves to — the replacement for `ext_color`'s
+    /// untouchable RGB table.
+    #[test]
+    fn listing_inlays_anchor_one_icon_per_row_with_its_own_element() {
+        let reg = InMemoryThemeRegistry::with_defaults();
+        register_listing_theme_elements(&reg, owner());
+
+        let entries = vec![
+            ListingEntry {
+                path: PathBuf::from("src"),
+                is_dir: true,
+            },
+            ListingEntry {
+                path: PathBuf::from("main.rs"),
+                is_dir: false,
+            },
+            ListingEntry {
+                path: PathBuf::from("notes.md"),
+                is_dir: false,
+            },
+        ];
+        let rows = listing_inlays(&entries, &reg, true);
+        assert_eq!(rows.len(), entries.len(), "one icon per row");
+
+        for (i, r) in rows.iter().enumerate() {
+            assert_eq!(r.line, i as u32, "row {i} anchors to its own line");
+            assert_eq!(
+                r.byte, 0,
+                "the icon is LEADING — anchoring elsewhere would put it \
+                 inside the filename"
+            );
+            assert!(!r.text.is_empty(), "row {i} must carry a glyph");
+            assert!(
+                matches!(r.style, lattice_cells::Style::Element(_)),
+                "row {i} must name a registered element, not fall back to \
+                 the plain hint colour"
+            );
+        }
+
+        // The directory and the two file kinds resolve to three
+        // different elements — if they collapsed, the palette would be
+        // theme-rooted in name only.
+        let ids: Vec<_> = rows.iter().map(|r| r.style).collect();
+        assert_ne!(ids[0], ids[1], "a directory differs from a Rust file");
+        assert_ne!(ids[1], ids[2], "a Rust file differs from markup");
+    }
+
+    #[test]
+    fn listing_element_buckets_by_family_and_flags_dotfiles() {
+        let e = |p: &str, d: bool| listing_element_for(&PathBuf::from(p), d);
+        assert_eq!(e("src", true), ELEM_LISTING_DIR);
+        assert_eq!(e(".gitignore", false), ELEM_LISTING_HIDDEN);
+        assert_eq!(
+            e(".config", true),
+            ELEM_LISTING_DIR,
+            "a hidden DIRECTORY is still a directory — the dir check wins"
+        );
+        assert_eq!(e("main.rs", false), "listing.file.rust");
+        // Family bucketing: two extensions, one element.
+        assert_eq!(e("a.ts", false), e("b.tsx", false));
+        assert_eq!(e("Cargo.toml", false), "listing.file.config");
+        assert_eq!(e("Makefile", false), "listing.file.config");
+        // Unknown extensions fall back to the family root rather than
+        // vanishing.
+        assert_eq!(e("mystery.qqq", false), ELEM_LISTING_FILE);
+        assert_eq!(e("noext", false), ELEM_LISTING_FILE);
     }
 
     #[test]

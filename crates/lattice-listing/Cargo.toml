@@ -24,6 +24,8 @@ lattice-mode = { path = "../lattice-mode" }
 # DL.2: `directory-listing-mode` registers its own `listing.*` theme
 # elements, so a theme owns the entry palette instead of `lattice-core`.
 lattice-theme = { path = "../lattice-theme" }
+# DL.3b: `Style::Element` on the icon inlays.
+lattice-cells = { path = "../lattice-cells" }
 
 [lints]
 workspace = true

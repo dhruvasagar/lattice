@@ -83,6 +83,31 @@ impl BufferLocal for HelpAnchors {
 #[derive(Debug, Clone, Default)]
 pub struct ExtraHighlights(pub Vec<Vec<lattice_syntax::StyledSpan>>);
 
+/// DL.3b: generic per-buffer inline virtual text, merged beside the
+/// LSP inlay hints when the pane's cells inputs are built.
+///
+/// The inlay peer of [`ExtraHighlights`], and generic for the same
+/// reason: it is the home for virtual text the *grammar and the LSP
+/// cannot produce* — a listing's leading icons today, a plugin's
+/// trailing annotations tomorrow. Written by the Editor's drain of
+/// `lattice_mode::PendingInlays`, never by a renderer.
+///
+/// Empty is the universal default and renders byte-identically.
+#[derive(Debug, Clone, Default)]
+pub struct ExtraInlays(pub Vec<crate::render_state::InlayHintRow>);
+
+impl BufferLocal for ExtraInlays {
+    const NAME: &'static str = "text-mode.extra-inlays";
+    const DOC: &'static str = "Generic per-buffer inline virtual text (leading icons, trailing \
+         annotations) merged with the LSP inlay hints in the display matrix. \
+         Published by modes through the `PendingInlays` service. Empty is the \
+         universal default and renders byte-identically.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        format!("{} inlay row(s)", self.0.len())
+    }
+}
+
 impl BufferLocal for ExtraHighlights {
     const NAME: &'static str = "text-mode.extra-highlights";
     const DOC: &'static str = "Generic per-buffer static highlight spans merged on top of \

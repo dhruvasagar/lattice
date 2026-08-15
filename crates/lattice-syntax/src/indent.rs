@@ -75,6 +75,11 @@ const BASH_INDENTS_QUERY: &str = include_str!("../queries/bash/indents.scm");
 const LUA_INDENTS_QUERY: &str = include_str!("../queries/lua/indents.scm");
 const PYTHON_INDENTS_QUERY: &str = include_str!("../queries/python/indents.scm");
 const RUBY_INDENTS_QUERY: &str = include_str!("../queries/ruby/indents.scm");
+// IN.5 — data + markup. `sql` and `markdown` deliberately ship NO
+// query; see `indents_source` for why.
+const HTML_INDENTS_QUERY: &str = include_str!("../queries/html/indents.scm");
+const TOML_INDENTS_QUERY: &str = include_str!("../queries/toml/indents.scm");
+const YAML_INDENTS_QUERY: &str = include_str!("../queries/yaml/indents.scm");
 
 /// The `indents.scm` source for a registry language name, or `None`
 /// when that language does not ship one yet.
@@ -104,6 +109,28 @@ pub(crate) fn indents_source(name: &str) -> Option<&'static str> {
         "lua" => Some(LUA_INDENTS_QUERY),
         "python" => Some(PYTHON_INDENTS_QUERY),
         "ruby" => Some(RUBY_INDENTS_QUERY),
+        // IN.5 — data + markup.
+        "html" => Some(HTML_INDENTS_QUERY),
+        "toml" => Some(TOML_INDENTS_QUERY),
+        "yaml" => Some(YAML_INDENTS_QUERY),
+        // `markdown` and `sql` ship NO query, deliberately:
+        //
+        // - **markdown** nests by CONTENT WIDTH, not by a fixed unit.
+        //   A nested list item aligns under its parent's text, which
+        //   depends on the marker (`-` vs `10.`), so a fixed
+        //   `shiftwidth` step is the wrong model and would fight the
+        //   user. The lexical bridge's copy-the-previous-line is
+        //   closer to right, and markdown's `BracketSyntax::NONE`
+        //   already stops a stray brace from indenting prose.
+        // - **sql** is parsed by `tree-sitter-sequel`, a deliberately
+        //   permissive multi-dialect grammar, and SQL indentation
+        //   convention varies more between houses than between
+        //   dialects (leading vs trailing commas, `AND` alignment,
+        //   river style). There is no default worth imposing; `=`
+        //   plus an `equalprg` formatter is the honest answer.
+        //
+        // Both degrade to the lexical bridge, which is the cascade
+        // working as designed rather than a gap.
         _ => None,
     }
 }
@@ -542,16 +569,17 @@ mod tree_tests {
     #[test]
     fn a_language_without_a_query_yields_none() {
         // The signal the caller uses to fall back to the lexical
-        // bridge. TOML ships no `indents.scm` until IN.5 -- and when
-        // it does, this test moves to whatever is still uncovered
-        // rather than being deleted: "a language with no query
-        // degrades instead of failing" is the contract, not a
-        // statement about TOML.
-        let mut s = Syntax::for_language(Lang::Toml)
-            .expect("toml registered")
-            .expect("toml has a grammar");
-        s.parse("[a]\nb = 1\n");
-        assert_eq!(tree_levels_for_new_line(&s.snapshot_owned(), 6), None);
+        // bridge. The contract under test is "a language with no query
+        // degrades instead of failing", so this points at whatever is
+        // currently uncovered -- Python at IN.2, TOML at IN.4, SQL now.
+        // SQL is the stable home: it ships no query by DECISION rather
+        // than by not-yet (see `indents_source`), so this should not
+        // need moving again.
+        let mut s = Syntax::for_language(Lang::Sql)
+            .expect("sql registered")
+            .expect("sql has a grammar");
+        s.parse("select a\nfrom t;\n");
+        assert_eq!(tree_levels_for_new_line(&s.snapshot_owned(), 9), None);
     }
 
     #[test]
@@ -676,6 +704,11 @@ mod tree_tests {
             "lua",
             "python",
             "ruby",
+            // IN.5 — data + markup. `markdown` / `sql` absent by
+            // decision; see `markdown_and_sql_deliberately_ship_no_query`.
+            "html",
+            "toml",
+            "yaml",
         ];
         for name in shipped {
             assert!(
@@ -923,6 +956,115 @@ mod tree_tests {
         // simply disabling the engine.
         let code_at = src.find("\"\"\"doc").expect("fixture marker");
         assert!(tree_levels_for_new_line(&snap, code_at - 1).is_some());
+    }
+
+    // ---- IN.5: data + markup ----
+
+    #[test]
+    fn data_and_markup_indent_nested_structure() {
+        struct Case {
+            lang: Lang,
+            src: &'static str,
+            row: u32,
+            level: i32,
+        }
+        let cases = [
+            // TOML: a wrapped array indents; keys under a `[table]`
+            // header do NOT (that is the one judgement in the query).
+            Case {
+                lang: Lang::Toml,
+                src: "[t]\na = [\n  1,\n]\n",
+                row: 2,
+                level: 1,
+            },
+            Case {
+                lang: Lang::Toml,
+                src: "[t]\na = 1\n",
+                row: 1,
+                level: 0,
+            },
+            // YAML: a nested mapping indents.
+            Case {
+                lang: Lang::Yaml,
+                src: "a:\n  b: 1\n",
+                row: 1,
+                level: 1,
+            },
+            // HTML: children indent, the closing tag dedents.
+            Case {
+                lang: Lang::Html,
+                src: "<div>\n  <p>x</p>\n</div>\n",
+                row: 1,
+                level: 1,
+            },
+            Case {
+                lang: Lang::Html,
+                src: "<div>\n  <p>x</p>\n</div>\n",
+                row: 2,
+                level: 0,
+            },
+        ];
+        for case in &cases {
+            let snap = parsed(case.lang, case.src);
+            let lang = case.lang;
+            let src = case.src;
+            assert_eq!(
+                tree_levels_for_line(&snap, case.row),
+                Some(case.level),
+                "{lang:?} row {}\n{src}",
+                case.row
+            );
+        }
+    }
+
+    /// Indentation inside a heredoc or a YAML block scalar is the
+    /// VALUE. The engine must decline so the lexical bridge preserves
+    /// whatever the user typed.
+    ///
+    /// IN.4's query header and commit message claimed this protection
+    /// for heredocs before it existed — `cursor_in_string_scope`'s node
+    /// list covered neither `heredoc_body` nor `block_scalar`. This
+    /// test is what makes the claim true, and is written for both so a
+    /// future edit to that list cannot quietly drop one.
+    #[test]
+    fn literal_blocks_are_data_and_the_engine_declines() {
+        let bash = "cat <<EOF\n    indented data\nEOF\n";
+        let snap = parsed(Lang::Bash, bash);
+        let inside = bash.find("indented").expect("fixture marker");
+        assert_eq!(
+            tree_levels_for_new_line(&snap, inside),
+            None,
+            "a heredoc body's leading whitespace is data"
+        );
+
+        let yaml = "script: |\n  line one\n    line two\nnext: 1\n";
+        let snap = parsed(Lang::Yaml, yaml);
+        let inside = yaml.find("line two").expect("fixture marker");
+        assert_eq!(
+            tree_levels_for_new_line(&snap, inside),
+            None,
+            "a YAML block scalar's leading whitespace is the value"
+        );
+
+        // The guard must not swallow ordinary YAML: every plain scalar
+        // is wrapped in a `string_scalar`, so a too-eager node list
+        // would disable indentation for essentially all YAML.
+        let plain = "a:\n  b: 1\n";
+        let snap = parsed(Lang::Yaml, plain);
+        let at = plain.find("b: 1").expect("fixture marker");
+        assert!(
+            tree_levels_for_new_line(&snap, at).is_some(),
+            "plain scalars must NOT count as a string scope"
+        );
+    }
+
+    /// `markdown` and `sql` ship no query on purpose. Asserted so the
+    /// absence reads as a decision rather than an oversight, and so
+    /// adding one becomes a deliberate act that updates this test.
+    #[test]
+    fn markdown_and_sql_deliberately_ship_no_query() {
+        assert!(indents_source("markdown").is_none());
+        assert!(indents_source("sql").is_none());
     }
 
     /// A brace inside a string is not an opener — the property that

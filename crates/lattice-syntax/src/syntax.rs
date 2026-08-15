@@ -605,6 +605,25 @@ impl SyntaxSnapshot {
             "template_string",
             "string_fragment",
             "interpolated_string_literal",
+            // IN.5: literal blocks, whose CONTENT is indentation-
+            // bearing text. Added for the indent engine, which must
+            // refuse to answer inside them — applying a block's
+            // structural indent to a heredoc or a YAML block scalar
+            // edits the data, and for `<<-EOF` can break terminator
+            // recognition. IN.4 claimed this protection before it
+            // existed; this is where it actually lands.
+            //
+            // Second consumer: `gen:path` insert-completion also reads
+            // this, so path completion now triggers inside heredocs
+            // and block scalars too. That is a reasonable place to
+            // want it (heredocs are usually shell text full of paths),
+            // not a regression to work around.
+            "heredoc_body",
+            "block_scalar",
+            // NOT `string_scalar`: YAML wraps every *plain* scalar in
+            // one, so including it would put the engine "inside a
+            // string" for essentially all YAML and disable indentation
+            // wholesale.
         ];
         let Some(tree) = self.tree.as_ref() else {
             return false;

@@ -13,7 +13,7 @@
 | IN.2 | Query engine + `rust/indents.scm` + the staleness path + benches | ✅ |
 | IN.3 | `indents.scm` — brace family (9 languages) | ✅ |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | ✅ |
-| IN.5 | `indents.scm` — data + markup (5 languages) | 📝 |
+| IN.5 | `indents.scm` — data + markup (3 of 5; 2 declined) | ✅ |
 | IN.6 | Electric reindent | 📝 |
 | IN.7 | `=` — the reindent operator | 📝 |
 | IN.8 | `lattice-format` crate + `:format` cascade + minimal-edit application | 📝 |
@@ -402,23 +402,54 @@ time.
 
 ---
 
-## IN.5 — `indents.scm`, data + markup 📝
+## IN.5 — `indents.scm`, data + markup ✅
 
 **Depends on:** IN.2. Independent of IN.3/IN.4.
 
-`yaml`, `toml`, `html`, `sql`, `markdown`.
+Shipped: `yaml`, `toml`, `html`. **Declined: `sql`, `markdown`** — the plan
+allowed for this and it happened.
 
-This is where tree-sitter indentation is weakest and where the honest answer for
-some languages may be **"the lexical bridge is better here"** — YAML block
-scalars (`|`, `>`) carry indentation as *content*, and getting that wrong
-corrupts data rather than merely looking untidy. HTML has void elements and
-inline-vs-block distinctions the grammar does not draw for us. Markdown's
-indentation is list-structure, and lists nest by content width, not by a fixed
-unit.
+- **markdown** nests by CONTENT WIDTH, not by a fixed unit: a nested list item
+  aligns under its parent's *text*, which depends on the marker (`-` vs `10.`).
+  A `shiftwidth` step is the wrong model and would fight the user. Markdown's
+  `BracketSyntax::NONE` already stops a stray brace from indenting prose, so
+  the lexical copy is both simpler and closer to right.
+- **sql** is parsed by `tree-sitter-sequel`, a deliberately permissive
+  multi-dialect grammar, and SQL indentation convention varies more between
+  houses than between dialects (leading vs trailing commas, `AND` alignment,
+  river style). There is no default worth imposing; `=` plus an `equalprg`
+  formatter is the honest answer.
 
-**A language may legitimately ship no query out of this slice**, with the
-reason recorded in the design fragment's deferred list. That is a finding, not
-a failure — and it is the reason this group is sequenced last.
+Both are asserted in `markdown_and_sql_deliberately_ship_no_query` so the
+absence reads as a decision, and adding one later becomes an act that updates
+the test.
+
+### 🔍 Finding: IN.4's heredoc protection did not exist
+
+IN.4's query header and commit message both claimed the engine refused to
+answer inside a Bash heredoc. It did not. `cursor_in_string_scope` matches an
+**explicit node-kind list**, and that list covered neither `heredoc_body` nor
+YAML's `block_scalar` — so the protection was asserted, not implemented. Found
+while probing YAML for this slice; fixed here, with a test naming both so a
+future edit to that list cannot quietly drop one.
+
+`string_scalar` is deliberately NOT added: YAML wraps every *plain* scalar in
+one, so including it would put the engine "inside a string" for essentially all
+YAML and disable indentation wholesale. The test pins that too.
+
+Second consumer worth noting: `gen:path` insert-completion reads the same
+helper, so path completion now triggers inside heredocs and block scalars.
+That is a reasonable place to want it, not a regression.
+
+### Two hazards that turned out not to be hazards
+
+- **HTML void elements** (`<br>`, `<img>`) need no special handling. They parse
+  to one-row nodes, and the row rule (`start_row < row <= end_row`) can never
+  fire for a one-row node — the same structural exclusion that handles Ruby's
+  modifier `if`.
+- **TOML tables** were the real judgement call instead: `[table]` spans its
+  whole section, so capturing it would indent every key under a flush-left
+  header. Not captured; only `array` and `inline_table` are.
 
 ---
 

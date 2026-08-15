@@ -16,7 +16,8 @@
 | IN.5 | `indents.scm` — data + markup (3 of 5; 2 declined) | ✅ |
 | IN.6 | Electric reindent | ✅ |
 | IN.7 | `=` — the reindent operator | ✅ |
-| IN.8 | `lattice-format` crate + `:format` cascade + minimal-edit application | 📝 |
+| IN.8a | `lattice-format` crate — spec table, runner, minimal-edit application | ✅ |
+| IN.8b | `:format` cascade + async landing | 📝 |
 | IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
 | IN.10 | LSP `onTypeFormatting` — the additive layer | 📝 |
 | IN.11 | Per-language mode defaults; GPUI parity audit; docs + benchmarks | 📝 |
@@ -554,7 +555,15 @@ range; `=` in a language with no query falls back to lexical without error;
 
 ---
 
-## IN.8 — `lattice-format`; `:format`; minimal-edit application 📝
+## IN.8 — `lattice-format`; `:format`; minimal-edit application
+
+**Carved in two during execution.** IN.8a is the crate: pure substrate,
+17 tests, no consumer. IN.8b wires `:format` and the async landing. The split
+is along a real seam — everything in 8a is testable without a runtime, a host
+or an editor, and everything in 8b is host plumbing — and it keeps a large
+slice from sitting uncommitted while the second half is built.
+
+### IN.8a — the crate ✅
 
 **Depends on:** IN.0 (nothing else). Independent of the whole engine half —
 **this slice can run in parallel with IN.3–IN.7.**

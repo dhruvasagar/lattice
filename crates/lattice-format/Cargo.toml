@@ -1,0 +1,24 @@
+[package]
+name = "lattice-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The external-formatter side of auto-indent (IN.8). Earns its own
+# crate — unlike the indent engine, which folded into `lattice-syntax`
+# — because it does a genuinely different kind of work: it spawns
+# processes, owns a timeout and stderr policy, and turns a formatter's
+# whole-file output into a minimal edit set. None of that belongs
+# beside a pure tree walk.
+[dependencies]
+lattice-diff = { path = "../lattice-diff" }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-syntax = { path = "../lattice-syntax" }
+ropey = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

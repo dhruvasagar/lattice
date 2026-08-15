@@ -5292,6 +5292,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-format"
+version = "0.1.0"
+dependencies = [
+ "lattice-diff",
+ "lattice-protocol",
+ "lattice-syntax",
+ "ropey",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "lattice-grammar"
 version = "0.1.0"
 dependencies = [

@@ -24,6 +24,7 @@ members = [
 	"crates/lattice-multibuffer",
 	"crates/lattice-notify",
 	"crates/lattice-compilation",
+	"crates/lattice-format",
 	"crates/lattice-host",
 	"crates/lattice-ui-tui",
 	"crates/lattice-ui-gpui",

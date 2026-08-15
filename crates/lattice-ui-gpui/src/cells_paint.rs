@@ -175,14 +175,6 @@ pub fn display_line_to_text_runs(
         .fg
         .map(|c| c.to_rgb_u32(default_fg))
         .unwrap_or(default_fg);
-    // Inlay-hint fg: resolved the same way the worker's `inlay_hint_fg`
-    // does (host theme `DarkGray`), so inlays render at the colour the
-    // projected cells carried. Tracks the worker until the dedicated
-    // `inlay_hint_style` theme slot lands (then both read that slot).
-    let inlay_fg =
-        lattice_host::ui::theme::Color::Named(lattice_host::ui::theme::NamedColor::DarkGray)
-            .to_rgb_u32(0);
-
     let mut runs: Vec<TextRun> = Vec::new();
     // T.10: each run group carries the synthetic [`Cell`] (fg/bg/flags,
     // the same payload as pre-T.10) PLUS the resolved rich attributes
@@ -194,7 +186,7 @@ pub fn display_line_to_text_runs(
     let mut current: Option<(Cell, RichAttrs, usize)> = None;
     for run in line.runs.iter() {
         let run_len = run.len as usize;
-        let (cell, rich) = display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, inlay_fg);
+        let (cell, rich) = display_run_to_synthetic_cell(run, resolved, ids, trailing_fg);
         match &mut current {
             Some((sample, sample_rich, len))
                 if style_key(sample) == style_key(&cell)
@@ -305,7 +297,6 @@ fn display_run_to_synthetic_cell(
     resolved: &lattice_host::ui::theme::ResolvedTheme,
     ids: &lattice_host::ui::theme::BuiltinElementIds,
     trailing_fg: u32,
-    inlay_fg: u32,
 ) -> (Cell, RichAttrs) {
     let host = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, run.style);
     let style_fg = host.fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0);
@@ -353,10 +344,18 @@ fn display_run_to_synthetic_cell(
     let is_ws = run.flags & cell_flags::WS_MARKER != 0;
     let is_trailing = run.flags & cell_flags::WS_TRAILING != 0;
     if is_inlay {
-        // Inlay runs take the inlay fg with NO syntax modifiers — exactly
-        // what `display_line_to_cell_row` emits. No rich attrs either.
+        // Inlay runs take their OWN resolved fg with no syntax modifiers
+        // — exactly what `display_line_to_cell_row` emits.
+        //
+        // DL.3a: this was a hardcoded `DarkGray` mirroring the worker's
+        // `inlay_hint_fg`, with the run's style ignored on both sides.
+        // The run now carries a real style (`Style::InlayHint` for LSP
+        // hints, resolving through the registered `inlay.hint` element;
+        // `Style::Element` for a producer with its own vocabulary), so
+        // both peers resolve it the same way they resolve everything
+        // else.
         (
-            Cell::new(0, inlay_fg, 0, cell_flags::INLAY),
+            Cell::new(0, style_fg, 0, cell_flags::INLAY),
             RichAttrs::default(),
         )
     } else if is_ws {

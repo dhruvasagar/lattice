@@ -1963,6 +1963,28 @@ pub struct InlayHintRow {
     /// Pre-flattened label with `padding_left` / `padding_right`
     /// applied.
     pub text: String,
+    /// How to paint it.
+    ///
+    /// DL.3a: inlay runs used to be forced to a hardcoded
+    /// `Color::Named(DarkGray)` regardless of anything, so every
+    /// producer got one colour and the registered `inlay.hint` theme
+    /// element was bypassed. [`lattice_cells::Style::InlayHint`] is the
+    /// default and reproduces LSP hints' appearance through the theme;
+    /// a producer that owns its own vocabulary passes
+    /// [`lattice_cells::Style::Element`] instead.
+    pub style: lattice_cells::Style,
+}
+
+impl InlayHintRow {
+    /// An inlay painted as a plain hint — the LSP case.
+    pub fn hint(line: u32, byte: u32, text: String) -> Self {
+        Self {
+            line,
+            byte,
+            text,
+            style: lattice_cells::Style::InlayHint,
+        }
+    }
 }
 
 /// Active picker's render-side projection.
@@ -3242,11 +3264,7 @@ mod tests {
         assert!(Arc::ptr_eq(&active, &rs.syntax.inlay_hints));
 
         // An unknown buffer (no pane entry) routes to empty, never a panic.
-        let _ = InlayHintRow {
-            line: 0,
-            byte: 0,
-            text: String::new(),
-        };
+        let _ = InlayHintRow::hint(0, 0, String::new());
         let unknown = rs.inlay_hints_for_buffer(lattice_core::BufferId(999_999));
         assert!(unknown.is_empty());
     }

@@ -12,7 +12,7 @@
 | DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | ✅ |
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | ✅ |
-| DL.3a | Inlay runs carry a style (retires a hardcoded colour) | 📝 |
+| DL.3a | Inlay runs carry a style (retires a hardcoded colour) | ✅ |
 | DL.3b | The mode publishes entry icons as leading inlays | 📝 |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
@@ -215,9 +215,10 @@ element the theme already publishes" — it retires a hardcoded colour,
 which is a defect by the standing rule, and it makes LSP inlay hints
 themeable as a side effect.
 
-## DL.3a — inlay runs carry a style 📝
+## DL.3a — inlay runs carry a style ✅
 
-**Depends on:** DL.1. **Generic substrate; no listing code.**
+**Landed 2026-08-15. Depends on:** DL.1. **Generic substrate; no
+listing code.**
 
 - `Style::InlayHint` in `lattice-cells`, with a `syntax_element_id` arm
   to the existing `ids.inlay_hint`.
@@ -230,9 +231,25 @@ themeable as a side effect.
   projection carry the style — they are asserted byte-identical by the
   B1 parity test, so both move or the test fails.
 
-**Tests.** An inlay row with an explicit `Style::Element` resolves to
-that element's colour; a default row resolves to `inlay.hint`; retuning
-`inlay.hint` in the theme moves LSP hints (it could not before).
+**Tests.** `an_inlay_can_carry_its_own_theme_element` — an inlay naming
+a mode-registered element does not fall back to the plain hint colour,
+which is the capability DL.3b needs.
+`single_inlay_splices_into_row_and_sets_flags` previously pinned the
+literal `0x7f7f7f`; it now asserts against the resolved `inlay.hint`
+element, with an `assert_ne!` against the old grey so it would fail on
+the pre-fix path. **Pinning the literal is what let a hardcoded colour
+sit past a themed element unnoticed** — the replacement assertion moves
+with the palette.
+
+**As landed.** Both peers, one patch: GPUI's `cells_paint` carried its
+own copy of the same hardcoded grey, with a comment explaining it was
+tracking the worker "until the dedicated `inlay_hint_style` theme slot
+lands". That slot was `inlay.hint`, and it had already landed — so the
+comment was describing a wait for something that already existed.
+
+`inlay_hint_fg()` and the `inlay_fg` parameter are deleted (~27
+references), which also drops two functions below the
+`too_many_arguments` threshold.
 
 ## DL.3b — the mode publishes entry icons 📝
 

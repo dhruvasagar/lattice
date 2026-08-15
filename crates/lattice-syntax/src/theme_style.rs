@@ -73,6 +73,9 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::HelpCommand => ids.help_command,
         S::HelpAction => ids.help_action,
         S::HelpLiteral => ids.help_literal,
+        // DL.3a: inline virtual text. The element already existed;
+        // the worker was painting a hardcoded DarkGray past it.
+        S::InlayHint => ids.inlay_hint,
         // DL.1: already an element id — a mode- or plugin-registered
         // one that has no builtin slot, which is the whole point.
         // Resolution downstream is identical to every arm above.

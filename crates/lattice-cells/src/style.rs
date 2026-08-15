@@ -114,6 +114,18 @@ pub enum Style {
     HelpAction,
     /// Any other inline literal — a path, a filename, a git argument.
     HelpLiteral,
+    /// Inline virtual text — an LSP inlay hint, or any other leading /
+    /// trailing text a producer splices into a row without it being in
+    /// the buffer.
+    ///
+    /// DL.3a: inlay runs used to be painted with a hardcoded
+    /// `Color::Named(DarkGray)` in the cells worker, with the run's
+    /// style discarded — while `inlay.hint` had been a registered theme
+    /// element the whole time. Giving inlays a real style variant is
+    /// what routes them through the theme like everything else, and it
+    /// is what lets a producer override the colour per inlay (the
+    /// listing icons use [`Style::Element`]).
+    InlayHint,
     // ---- The open end of the vocabulary (DL.1) ----
     /// A span styled by a **registered theme element**, named directly.
     ///

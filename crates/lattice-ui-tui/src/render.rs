@@ -9251,11 +9251,11 @@ mod tests {
         // at or before `cursor.byte`. Mirrors GPUI's
         // `byte_to_combined_col` semantics.
         let app = app_with("let x = 42\n", 5);
-        let inlays = [lattice_host::render_state::InlayHintRow {
-            line: 0,
-            byte: 5, // after `let x`, before ` =`
-            text: ": i32".to_string(),
-        }];
+        let inlays = [lattice_host::render_state::InlayHintRow::hint(
+            0,
+            5, // after `let x`, before ` =`
+            ": i32".to_string(),
+        )];
         // Cursor before the inlay anchor: no shift.
         let before = display_col_for_byte(
             &app.ad().snapshot.buffer,

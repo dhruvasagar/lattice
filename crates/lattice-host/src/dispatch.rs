@@ -14726,11 +14726,7 @@ impl Editor {
                 if h.padding_right.unwrap_or(false) {
                     text.push(' ');
                 }
-                crate::render_state::InlayHintRow {
-                    line: line_idx,
-                    byte,
-                    text,
-                }
+                crate::render_state::InlayHintRow::hint(line_idx, byte, text)
             })
             .collect();
         let version = crate::render_state::inlay_hints_version(&rows);

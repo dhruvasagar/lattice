@@ -726,7 +726,6 @@ fn try_incremental_build(
     let net = edit.net_delta();
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-    let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
     // H.1 (2026-06-04): highlight only the line range a rebuild actually
@@ -778,7 +777,6 @@ fn try_incremental_build(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: &[],
             };
@@ -819,7 +817,6 @@ fn try_incremental_build(
             ct,
             default_fg,
             default_flags,
-            inlay_fg,
             whitespace,
             refine_by_line: &[],
         };
@@ -915,7 +912,6 @@ fn try_incremental_build(
         ct,
         default_fg,
         default_flags,
-        inlay_fg,
         whitespace,
         refine_by_line: &[],
     };
@@ -997,7 +993,6 @@ fn build_matrix(
     }
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-    let inlay_fg = inlay_hint_fg();
 
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
@@ -1036,7 +1031,6 @@ fn build_matrix(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: &[],
             };
@@ -1064,7 +1058,6 @@ fn build_matrix(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: &[],
             };
@@ -1196,7 +1189,7 @@ struct ChunkInputs<'a> {
     per_line_spans: Option<&'a Vec<Vec<lattice_syntax::StyledSpan>>>,
     /// Absolute source line that `per_line_spans[0]` corresponds to.
     spans_base: u32,
-    inlays_by_line: &'a std::collections::HashMap<u32, Vec<(u32, &'a str)>>,
+    inlays_by_line: &'a std::collections::HashMap<u32, Vec<(u32, &'a str, lattice_syntax::Style)>>,
     fold_index: &'a crate::folds::FoldIndex,
     ct: CellTheme<'a>,
     default_fg: u32,
@@ -1204,7 +1197,6 @@ struct ChunkInputs<'a> {
     /// cells outside any styled span pick up the theme's default
     /// modifiers (typically none, but cheaply propagated).
     default_flags: u16,
-    inlay_fg: u32,
     /// 2026-05-27: passed through to `build_row_cells` for the
     /// whitespace-marker substitution. Empty (`show: false`) when
     /// the user hasn't enabled `display.show_whitespace`.
@@ -1249,7 +1241,6 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
             inputs.ct,
             inputs.default_fg,
             inputs.default_flags,
-            inputs.inlay_fg,
             inputs.whitespace,
         );
         rows.push(CellRow::new(cells, line_idx, inlay_offsets));
@@ -1275,16 +1266,15 @@ fn build_chunk_rows(inputs: &ChunkInputs, start_line: u32, end_line: u32) -> Vec
 fn build_row_cells(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
-    line_inlays: &[(u32, &str)],
+    line_inlays: &[(u32, &str, lattice_syntax::Style)],
     ct: CellTheme<'_>,
     default_fg: u32,
     default_flags: u16,
-    inlay_fg: u32,
     ws: &WhitespaceConfig,
 ) -> (Vec<Cell>, Vec<lattice_cells::row::InlayOffset>) {
     // Capacity: source chars + sum of inlay char widths. Slight
     // over-estimate is fine.
-    let inlay_total_chars: usize = line_inlays.iter().map(|(_, t)| t.chars().count()).sum();
+    let inlay_total_chars: usize = line_inlays.iter().map(|(_, t, _)| t.chars().count()).sum();
     let mut cells: Vec<Cell> = Vec::with_capacity(text.len() + inlay_total_chars);
     let mut inlay_offsets: Vec<lattice_cells::row::InlayOffset> =
         Vec::with_capacity(line_inlays.len());
@@ -1337,13 +1327,18 @@ fn build_row_cells(
         // char position. Order-of-arrival ties at the same byte
         // resolve in input order.
         while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
-            let (orig_byte, t) = line_inlays[inlay_idx];
+            let (orig_byte, t, istyle) = line_inlays[inlay_idx];
             let char_width = t.chars().count() as u32;
             inlay_offsets.push((orig_byte, char_width));
+            // DL.3a: the inlay's OWN style, resolved through the theme.
+            // This was `inlay_fg` — one hardcoded DarkGray for every
+            // inlay in the editor, past the registered `inlay.hint`
+            // element.
+            let (ifg, _) = resolve(istyle);
             for ic in t.chars() {
                 cells.push(Cell::new(
                     ic as u32,
-                    inlay_fg,
+                    ifg,
                     0,
                     lattice_cells::cell_flags::INLAY,
                 ));
@@ -1426,13 +1421,14 @@ fn build_row_cells(
     }
     // Trailing inlays at/past EOL.
     while inlay_idx < line_inlays.len() {
-        let (orig_byte, t) = line_inlays[inlay_idx];
+        let (orig_byte, t, istyle) = line_inlays[inlay_idx];
         let char_width = t.chars().count() as u32;
         inlay_offsets.push((orig_byte, char_width));
+        let (ifg, _) = resolve(istyle);
         for ic in t.chars() {
             cells.push(Cell::new(
                 ic as u32,
-                inlay_fg,
+                ifg,
                 0,
                 lattice_cells::cell_flags::INLAY,
             ));
@@ -1477,7 +1473,7 @@ fn refine_at_byte(
 fn build_display_row(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
-    line_inlays: &[(u32, &str)],
+    line_inlays: &[(u32, &str, lattice_syntax::Style)],
     ws: &WhitespaceConfig,
     // DR.2: byte ranges whose background differs from the row's. Empty
     // for every buffer that publishes none, which is all of them until
@@ -1533,7 +1529,7 @@ fn build_display_row(
         }
     }
 
-    let inlay_total: usize = line_inlays.iter().map(|(_, t)| t.len()).sum();
+    let inlay_total: usize = line_inlays.iter().map(|(_, t, _)| t.len()).sum();
     let mut out = String::with_capacity(text.len() + inlay_total);
     let mut runs: Vec<DisplayRun> = Vec::new();
     let mut col_map: Vec<(u32, u32)> = Vec::with_capacity(line_inlays.len());
@@ -1563,15 +1559,12 @@ fn build_display_row(
     let mut inlay_idx = 0usize;
     for (byte, ch) in text.char_indices() {
         while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
-            let (orig_byte, t) = line_inlays[inlay_idx];
+            let (orig_byte, t, istyle) = line_inlays[inlay_idx];
             col_map.push((orig_byte, t.chars().count() as u32));
-            push(
-                &mut out,
-                &mut runs,
-                t,
-                lattice_syntax::Style::Default,
-                cell_flags::INLAY,
-            );
+            // DL.3a: the run carries the inlay's real style, so the
+            // projection below can resolve it instead of forcing one
+            // hardcoded colour on every inlay.
+            push(&mut out, &mut runs, t, istyle, cell_flags::INLAY);
             col += t.chars().count() as u32;
             inlay_idx += 1;
         }
@@ -1647,15 +1640,9 @@ fn build_display_row(
         }
     }
     while inlay_idx < line_inlays.len() {
-        let (orig_byte, t) = line_inlays[inlay_idx];
+        let (orig_byte, t, istyle) = line_inlays[inlay_idx];
         col_map.push((orig_byte, t.chars().count() as u32));
-        push(
-            &mut out,
-            &mut runs,
-            t,
-            lattice_syntax::Style::Default,
-            cell_flags::INLAY,
-        );
+        push(&mut out, &mut runs, t, istyle, cell_flags::INLAY);
         col += t.chars().count() as u32;
         inlay_idx += 1;
     }
@@ -1807,11 +1794,10 @@ fn build_display_matrix(
         return DisplayMatrix::empty();
     }
 
-    // `default_*` / `inlay_fg` are required to construct `ChunkInputs`
+    // `default_*` is required to construct `ChunkInputs`
     // (shared with the cell path) even though `build_display_rows` reads
     // only the snapshot / spans / inlays / folds / whitespace fields.
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-    let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
 
@@ -1866,7 +1852,6 @@ fn build_display_matrix(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: extra_refine,
             };
@@ -1886,7 +1871,6 @@ fn build_display_matrix(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: extra_refine,
             };
@@ -2007,7 +1991,6 @@ fn try_incremental_display_build(
     let net = edit.net_delta();
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-    let inlay_fg = inlay_hint_fg();
     let inlays_by_line = bucket_inlays_by_line(&pane.inlay_hints, new_line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(&pane.folds, pane.foldenable);
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
@@ -2044,7 +2027,6 @@ fn try_incremental_display_build(
                 ct,
                 default_fg,
                 default_flags,
-                inlay_fg,
                 whitespace,
                 refine_by_line: &[],
             };
@@ -2077,7 +2059,6 @@ fn try_incremental_display_build(
             ct,
             default_fg,
             default_flags,
-            inlay_fg,
             whitespace,
             refine_by_line: &[],
         };
@@ -2185,7 +2166,6 @@ fn try_incremental_display_build(
         ct,
         default_fg,
         default_flags,
-        inlay_fg,
         whitespace,
         refine_by_line: &[],
     };
@@ -2242,7 +2222,7 @@ fn try_incremental_display_build(
 /// over renderers (GPU until B3) painting off the cell grid while the
 /// `DisplayMatrix` is canonical. Reproduces [`build_row_cells`]
 /// byte-for-byte: per run, resolve `style → (fg, mods)` (inlay runs
-/// take `inlay_fg` + `INLAY` only; trailing markers take the theme's
+/// take their own resolved fg + `INLAY`; trailing markers take the theme's
 /// trailing-whitespace fg via the `WS_TRAILING` provenance bit); emit
 /// one cell per char. `col_map` IS the cell path's `inlay_offsets`
 /// (the B1 parity test pins this), so it transfers verbatim. The
@@ -2255,7 +2235,6 @@ fn display_line_to_cell_row(
     ct: CellTheme<'_>,
     default_fg: u32,
     default_flags: u16,
-    inlay_fg: u32,
 ) -> CellRow {
     use lattice_cells::cell_flags;
     let trailing_fg = ct
@@ -2279,7 +2258,9 @@ fn display_line_to_cell_row(
             resolve_style(ct, run.style)
         };
         let (fg, flags) = if is_inlay {
-            (inlay_fg, cell_flags::INLAY)
+            // DL.3a: `style_fg` here is the inlay's own resolved
+            // colour; it used to be a hardcoded `inlay_fg`.
+            (style_fg, cell_flags::INLAY)
         } else if is_ws_marker {
             let f = if is_trailing { trailing_fg } else { style_fg };
             (f, mods | cell_flags::WS_MARKER)
@@ -2302,7 +2283,6 @@ fn display_matrix_to_cell_matrix(
     ct: CellTheme<'_>,
 ) -> CellMatrix {
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-    let inlay_fg = inlay_hint_fg();
     if dm.chunks.is_empty() {
         return CellMatrix::empty();
     }
@@ -2313,7 +2293,7 @@ fn display_matrix_to_cell_matrix(
             let rows: Vec<CellRow> = dc
                 .rows
                 .iter()
-                .map(|dl| display_line_to_cell_row(dl, ct, default_fg, default_flags, inlay_fg))
+                .map(|dl| display_line_to_cell_row(dl, ct, default_fg, default_flags))
                 .collect();
             Arc::new(CellChunk::new(dc.start_source_line, rows, dc.version))
         })
@@ -2336,7 +2316,7 @@ fn display_matrix_to_cell_matrix(
 fn bucket_inlays_by_line<'a>(
     inlay_hints: &'a [crate::render_state::InlayHintRow],
     line_count: u32,
-) -> std::collections::HashMap<u32, Vec<(u32, &'a str)>> {
+) -> std::collections::HashMap<u32, Vec<(u32, &'a str, lattice_syntax::Style)>> {
     // H.3 (2026-06-04): keyed by absolute source line rather than a
     // dense `Vec<Vec<_>>` of length `line_count`. The dense form was
     // O(file) — it allocated and zeroed one slot per *document* line
@@ -2347,29 +2327,20 @@ fn bucket_inlays_by_line<'a>(
     // inlay mode is off, and base-agnostic so the whole-doc, windowed,
     // and incremental builds all share one lookup without threading a
     // window offset.
-    let mut buckets: std::collections::HashMap<u32, Vec<(u32, &'a str)>> =
+    let mut buckets: std::collections::HashMap<u32, Vec<(u32, &'a str, lattice_syntax::Style)>> =
         std::collections::HashMap::new();
     for h in inlay_hints {
         if h.line < line_count {
             buckets
                 .entry(h.line)
                 .or_default()
-                .push((h.byte, h.text.as_str()));
+                .push((h.byte, h.text.as_str(), h.style));
         }
     }
     for b in buckets.values_mut() {
-        b.sort_by_key(|(off, _)| *off);
+        b.sort_by_key(|(off, _, _)| *off);
     }
     buckets
-}
-
-/// Hard-coded `0x7f7f7f` foreground for inlay-hint cells —
-/// mirrors the TUI's existing `DarkGray` inlay style. A dedicated
-/// `inlay_hint_style` theme slot is a follow-up alongside the
-/// match / selection bg slots tracked in the polish backlog
-/// (#19).
-fn inlay_hint_fg() -> u32 {
-    crate::ui::theme::Color::Named(crate::ui::theme::NamedColor::DarkGray).to_rgb_u32(0)
 }
 
 /// Resolve a syntax style to its `0xRRGGBB` foreground colour via
@@ -3023,11 +2994,7 @@ mod tests {
     // ---- S2.3.b — inlay-hint splicing ----
 
     fn inlay(line: u32, byte: u32, text: &str) -> crate::render_state::InlayHintRow {
-        crate::render_state::InlayHintRow {
-            line,
-            byte,
-            text: text.to_string(),
-        }
+        crate::render_state::InlayHintRow::hint(line, byte, text.to_string())
     }
 
     fn row_text(r: &CellRow) -> String {
@@ -3035,6 +3002,57 @@ mod tests {
             .iter()
             .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
             .collect()
+    }
+
+    /// DL.3a: an inlay may name its OWN theme element, and the spliced
+    /// cells take that element's colour.
+    ///
+    /// This is what the listing icons need (DL.3b): one leading inlay
+    /// per row, coloured by the `listing.*` element its path resolves
+    /// to. It was impossible before — every inlay in the editor was
+    /// painted with one hardcoded grey and `run.style` was discarded at
+    /// projection.
+    #[test]
+    fn an_inlay_can_carry_its_own_theme_element() {
+        use lattice_theme::ThemeRegistry as _;
+        let theme = lattice_theme::InMemoryThemeRegistry::with_defaults();
+        let element = theme.register(
+            lattice_theme::ElementName::from_static("listing.file.rust"),
+            lattice_theme::ElementOwner::Mode("directory-listing-mode".into()),
+            lattice_theme::StyleSpec::new().fg(lattice_theme::ColorRef::Literal(
+                lattice_theme::Color::Rgb(0xDE, 0xA5, 0x84),
+            )),
+            "test element",
+        );
+
+        let snap = snap_of_versioned("hello", 1);
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let mut icon = inlay(0, 0, "R ");
+        icon.style = lattice_syntax::Style::Element(element);
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), None, vec![icon]);
+        assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
+
+        let m = matrix_cell.load();
+        let row = m.slice(0, 1).iter().next().cloned().unwrap();
+        assert!(row.cells[0].is_inlay(), "the icon must be an inlay cell");
+
+        // The worker resolves against its own theme, so compare against
+        // the same element resolved there rather than the literal — the
+        // point is that the ELEMENT drives the colour, not that this
+        // particular RGB survives.
+        let (resolved, ids) = test_cell_theme();
+        let hint_fg = resolve_fg(
+            CellTheme {
+                resolved: &resolved,
+                ids: &ids,
+            },
+            lattice_syntax::Style::InlayHint,
+        );
+        assert_ne!(
+            row.cells[0].fg, hint_fg,
+            "an element-styled inlay must NOT fall back to the plain hint \
+             colour — that fallback is exactly the bug this slice fixes"
+        );
     }
 
     /// Single inlay spliced mid-line: combined text reflects the
@@ -3060,8 +3078,25 @@ mod tests {
         assert!(!row.cells[0].is_inlay());
         assert!(!row.cells[1].is_inlay());
         assert!(!row.cells[4].is_inlay());
-        // Inlay foreground is the hardcoded DarkGray (0x7f7f7f).
-        assert_eq!(row.cells[2].fg, 0x7f7f7f);
+        // DL.3a: the inlay foreground comes from the registered
+        // `inlay.hint` theme element, not a hardcoded grey. Asserted
+        // against the element rather than a literal so a palette change
+        // moves the expectation with it — pinning the literal is what
+        // let a hardcoded colour sit past a themed element unnoticed.
+        let (resolved, ids) = test_cell_theme();
+        let want = resolve_fg(
+            CellTheme {
+                resolved: &resolved,
+                ids: &ids,
+            },
+            lattice_syntax::Style::InlayHint,
+        );
+        assert_eq!(row.cells[2].fg, want);
+        assert_ne!(
+            want, 0x7f7f7f,
+            "precondition: the element differs from the grey that was \
+             hardcoded, so this test would fail on the old path"
+        );
         // Offsets: one entry, (2, 2) for `(orig_byte, char_width)`.
         assert_eq!(row.inlay_offsets.as_ref(), &[(2u32, 2u32)] as &[_]);
         // byte_to_combined_col round-trip: source byte 2 sits at
@@ -3547,7 +3582,6 @@ mod tests {
             ids: &ids,
         };
         let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
-        let inlay_fg = inlay_hint_fg();
         let ws = WhitespaceConfig::default(); // show: false
 
         // "let\tx" — `let` styled as Keyword, a tab (expands), and an
@@ -3558,18 +3592,11 @@ mod tests {
             end: 3,
             style: lattice_syntax::Style::Keyword,
         }];
-        let inlays: Vec<(u32, &str)> = vec![(5, ": T")];
+        let inlays: Vec<(u32, &str, lattice_syntax::Style)> =
+            vec![(5, ": T", lattice_syntax::Style::InlayHint)];
 
-        let (cells, inlay_offsets) = build_row_cells(
-            text,
-            &spans,
-            &inlays,
-            ct,
-            default_fg,
-            default_flags,
-            inlay_fg,
-            &ws,
-        );
+        let (cells, inlay_offsets) =
+            build_row_cells(text, &spans, &inlays, ct, default_fg, default_flags, &ws);
         let (dtext, runs, col_map, col_count) = build_display_row(text, &spans, &inlays, &ws, &[]);
 
         // Project display runs → cells (the ws-off resolution path).
@@ -3579,7 +3606,7 @@ mod tests {
             let s = &dtext[byte..byte + run.len as usize];
             for ch in s.chars() {
                 let (fg, flags) = if run.flags & cell_flags::INLAY != 0 {
-                    (inlay_fg, cell_flags::INLAY)
+                    (resolve_style(ct, run.style).0, cell_flags::INLAY)
                 } else if matches!(run.style, lattice_syntax::Style::Default) {
                     (default_fg, default_flags)
                 } else {

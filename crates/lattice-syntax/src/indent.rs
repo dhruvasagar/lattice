@@ -58,6 +58,16 @@ use crate::syntax::SyntaxSnapshot;
 // `folds` / `symbols` / `textobjects` siblings; shipped in the binary
 // via `include_str!` with no runtime path lookup.
 const RUST_INDENTS_QUERY: &str = include_str!("../queries/rust/indents.scm");
+// IN.3 — the brace family. One query shape, node names swapped.
+const C_INDENTS_QUERY: &str = include_str!("../queries/c/indents.scm");
+const CPP_INDENTS_QUERY: &str = include_str!("../queries/cpp/indents.scm");
+const CSS_INDENTS_QUERY: &str = include_str!("../queries/css/indents.scm");
+const GO_INDENTS_QUERY: &str = include_str!("../queries/go/indents.scm");
+const JAVA_INDENTS_QUERY: &str = include_str!("../queries/java/indents.scm");
+const JAVASCRIPT_INDENTS_QUERY: &str = include_str!("../queries/javascript/indents.scm");
+const JSON_INDENTS_QUERY: &str = include_str!("../queries/json/indents.scm");
+const TSX_INDENTS_QUERY: &str = include_str!("../queries/tsx/indents.scm");
+const TYPESCRIPT_INDENTS_QUERY: &str = include_str!("../queries/typescript/indents.scm");
 
 /// The `indents.scm` source for a registry language name, or `None`
 /// when that language does not ship one yet.
@@ -72,6 +82,16 @@ const RUST_INDENTS_QUERY: &str = include_str!("../queries/rust/indents.scm");
 pub(crate) fn indents_source(name: &str) -> Option<&'static str> {
     match name {
         "rust" => Some(RUST_INDENTS_QUERY),
+        // IN.3 — the brace family.
+        "c" => Some(C_INDENTS_QUERY),
+        "cpp" => Some(CPP_INDENTS_QUERY),
+        "css" => Some(CSS_INDENTS_QUERY),
+        "go" => Some(GO_INDENTS_QUERY),
+        "java" => Some(JAVA_INDENTS_QUERY),
+        "javascript" => Some(JAVASCRIPT_INDENTS_QUERY),
+        "json" => Some(JSON_INDENTS_QUERY),
+        "tsx" => Some(TSX_INDENTS_QUERY),
+        "typescript" => Some(TYPESCRIPT_INDENTS_QUERY),
         _ => None,
     }
 }
@@ -590,6 +610,209 @@ mod tree_tests {
     #[test]
     fn a_row_past_the_end_yields_none() {
         assert_eq!(tree_levels_for_line(&rust("fn f() {}\n"), 99), None);
+    }
+
+    // ---- IN.3: the brace family ----
+
+    /// Parse `src` as `lang` and return the owned snapshot.
+    fn parsed(lang: Lang, src: &str) -> crate::syntax::SyntaxSnapshot {
+        let mut s = Syntax::for_language(lang)
+            .unwrap_or_else(|e| panic!("{lang:?} registry error: {e}"))
+            .unwrap_or_else(|| panic!("{lang:?} has no grammar"));
+        s.parse(src);
+        s.snapshot_owned()
+    }
+
+    /// Every language whose `indents_source` returns a query must
+    /// compile it. An invalid node kind does not degrade — `Query::new`
+    /// rejects it and the whole registry build fails for that language,
+    /// so this is the difference between "no indent for Go" and "Go
+    /// buffers do not parse".
+    #[test]
+    fn every_shipped_indents_query_compiles() {
+        let registry = crate::LangRegistry::standard().expect("registry builds");
+        let shipped = [
+            "rust",
+            "c",
+            "cpp",
+            "css",
+            "go",
+            "java",
+            "javascript",
+            "json",
+            "tsx",
+            "typescript",
+        ];
+        for name in shipped {
+            assert!(
+                indents_source(name).is_some(),
+                "{name} listed here but absent from indents_source"
+            );
+            assert!(
+                registry.indents_query(name).is_some(),
+                "{name} ships indents.scm but the registry has no compiled query"
+            );
+        }
+    }
+
+    /// One nesting case per language: a body line indents, and the
+    /// closing delimiter dedents back. This is the whole contract the
+    /// brace-family queries exist to satisfy, and it fails loudly if a
+    /// node name is right for the grammar but wrong for the construct.
+    #[test]
+    fn brace_family_indents_bodies_and_dedents_closers() {
+        /// One language's nesting fixture.
+        ///
+        /// A named struct rather than a 4-tuple of pairs: the tuple
+        /// tripped `type_complexity`, and `case.body_level` reads
+        /// better than `case.2.1` at the assertion site regardless.
+        struct Case {
+            lang: Lang,
+            src: &'static str,
+            body_row: u32,
+            body_level: i32,
+            closer_row: u32,
+            closer_level: i32,
+        }
+
+        // Levels are stated rather than assumed 1/0: Java's fixture
+        // nests a method inside a class, so its body sits at two and
+        // its inner closer at one. An assertion that hardcoded 1/0
+        // would have been wrong for the right reason and taught
+        // nothing.
+        let cases = [
+            Case {
+                lang: Lang::C,
+                src: "int f(void) {\n    g();\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Cpp,
+                src: "int f() {\n    g();\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Java,
+                src: "class A {\n    void f() {\n        g();\n    }\n}\n",
+                body_row: 2,
+                body_level: 2,
+                closer_row: 3,
+                closer_level: 1,
+            },
+            Case {
+                lang: Lang::JavaScript,
+                src: "function f() {\n    g();\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::TypeScript,
+                src: "function f(): void {\n    g();\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Tsx,
+                src: "function f() {\n    g();\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Go,
+                src: "func f() {\n    g()\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Css,
+                src: "a {\n    color: red;\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+            Case {
+                lang: Lang::Json,
+                src: "{\n    \"a\": 1\n}\n",
+                body_row: 1,
+                body_level: 1,
+                closer_row: 2,
+                closer_level: 0,
+            },
+        ];
+        for case in &cases {
+            let snap = parsed(case.lang, case.src);
+            let lang = case.lang;
+            assert_eq!(
+                tree_levels_for_line(&snap, case.body_row),
+                Some(case.body_level),
+                "{lang:?}: body line level"
+            );
+            assert_eq!(
+                tree_levels_for_line(&snap, case.closer_row),
+                Some(case.closer_level),
+                "{lang:?}: closing delimiter should dedent one level"
+            );
+        }
+    }
+
+    /// Argument / parameter lists indent their continuations. This is
+    /// the case the *lexical* bridge also gets right, so it is not
+    /// proof of much on its own — but a query that captured only block
+    /// bodies would fail it, and every language in the family lists its
+    /// delimited-list nodes for exactly this.
+    #[test]
+    fn brace_family_indents_wrapped_argument_lists() {
+        let cases: &[(Lang, &str)] = &[
+            (Lang::C, "int f(void) {\n    g(\n        1);\n}\n"),
+            (Lang::JavaScript, "function f() {\n    g(\n        1);\n}\n"),
+            (Lang::Go, "func f() {\n    g(\n        1)\n}\n"),
+        ];
+        for (lang, src) in cases {
+            let snap = parsed(*lang, src);
+            assert_eq!(
+                tree_levels_for_line(&snap, 2),
+                Some(2),
+                "{lang:?}: wrapped argument should sit under the call"
+            );
+        }
+    }
+
+    /// A brace inside a string is not an opener — the property that
+    /// distinguishes the tree path from the lexical bridge, checked
+    /// once per language family rather than only for Rust.
+    #[test]
+    fn brace_family_ignores_braces_inside_strings() {
+        let cases: &[(Lang, &str)] = &[
+            (Lang::C, "int f(void) {\n    g(\"{\");\n    h();\n}\n"),
+            (
+                Lang::JavaScript,
+                "function f() {\n    g(\"{\");\n    h();\n}\n",
+            ),
+            (Lang::Go, "func f() {\n    g(\"{\")\n    h()\n}\n"),
+        ];
+        for (lang, src) in cases {
+            let snap = parsed(*lang, src);
+            assert_eq!(
+                tree_levels_for_line(&snap, 2),
+                Some(1),
+                "{lang:?}: a brace in a string must not open a level"
+            );
+        }
     }
 }
 

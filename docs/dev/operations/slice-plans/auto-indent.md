@@ -11,7 +11,7 @@
 | IN.0 | Indent-unit options; retire the hardcoded `INDENT_UNIT` | ✅ |
 | IN.1 | `lattice-syntax::indent` lexical bridge; `indentmethod=none\|keep` | ✅ |
 | IN.2 | Query engine + `rust/indents.scm` + the staleness path + benches | ✅ |
-| IN.3 | `indents.scm` — brace family (9 languages) | 📝 |
+| IN.3 | `indents.scm` — brace family (9 languages) | ✅ |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | 📝 |
 | IN.5 | `indents.scm` — data + markup (5 languages) | 📝 |
 | IN.6 | Electric reindent | 📝 |
@@ -314,18 +314,40 @@ deliberately malformed `indents.scm` warns once and falls back.
 
 ---
 
-## IN.3 — `indents.scm`, brace family 📝
+## IN.3 — `indents.scm`, brace family ✅
 
 **Depends on:** IN.2.
 
 `c`, `cpp`, `java`, `javascript`, `typescript`, `tsx`, `go`, `css`, `json`.
-One query shape reused with node-name swaps. Golden fixtures per language,
-same harness as IN.2's.
+One query shape reused with node-name swaps. All nine compiled against their
+real grammars on the first attempt — no invalid node kinds — which the
+`every_shipped_indents_query_compiles` test now guards. That guard is not
+ceremony: an unknown kind does not degrade to "no indent for Go", it fails
+`Query::new` and takes the whole registry build for that language down, so
+Go buffers would stop parsing entirely.
 
-Watch: `switch`/`case` (a language-by-language convention call — state the
-choice per language in the query's header comment); Go's tab convention (the
-mode default is IN.11, not here); TSX's JSX children; `json`'s trivial but
-worth-having-for-free case.
+Three shared tests rather than nine bespoke ones, each sweeping the family:
+bodies indent and closers dedent; wrapped argument lists indent their
+continuations; a brace inside a string is not an opener (the property that
+distinguishes the tree path from the lexical bridge, now checked beyond Rust).
+
+Decisions recorded in the query headers rather than here, since that is where
+the next reader will be: `case`/`default` labels are left uncaptured across the
+C family, Java and Go (aligning labels with the braces, which is what gofmt
+does); `>` is not an `@outdent` in C++ because it is also the greater-than
+operator; `template_string` and `jsx_self_closing_element` are deliberately
+absent.
+
+**Go's tab convention is not expressed here.** This file says *where* the
+levels are; `expandtab` / `shiftwidth` say what one level is made of, and the
+per-language contribution lands in IN.11. Keeping those apart is the whole
+reason `tabstop` and `shiftwidth` are separate options (design §3).
+
+One test expectation was wrong on the first run — the Java fixture nests a
+method inside a class, so its body is at level 2 and its inner closer at 1, not
+1 and 0. Fixed by making every expected level explicit in the case table
+instead of assuming 1/0; an assertion that hardcoded the common shape would
+have been wrong for the right reason and taught nothing.
 
 ---
 

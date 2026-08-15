@@ -153,10 +153,30 @@ indent_for_line(snapshot, rope, line, unit) -> Option<IndentLevel>
 ```
 
 Find the node covering the target position; walk the ancestor chain to the
-root; accumulate each ancestor's capture contribution, scoped by whether the
-target line falls inside that node's line span. A pure function of
-`(tree, rope, line, IndentUnit)` — no host state, no async, no I/O, trivially
-unit-testable against a hand-built tree.
+root; accumulate each ancestor's capture contribution. A pure function of
+`(tree, source, position)` — no host state, no async, no I/O, trivially
+unit-testable against a real parse.
+
+**Two rules, because predictive and reindent ask different questions:**
+
+| | rule |
+|---|---|
+| new line at byte `at` | count `@indent` ancestors with `start_byte < at < end_byte` |
+| existing line `row` | count `@indent` ancestors with `start_row < row ≤ end_row`, minus `@outdent` starting on `row` |
+
+Both bounds in the first rule are strict, and the upper one earns its keep: with
+`at ≤ end_byte`, a cursor sitting just past `fn f() {}` still counts the block
+and indents the following line for no reason. The second is row-based because a
+block *starting* on the line must not indent it and a closer *starting* on it
+must dedent it.
+
+**The query is scoped to one top-level item, and that is a hard requirement.**
+Running `indents.scm` over the whole file benched at 623 µs on 800 lines and
+2.57 ms on 3200 — linear in file size, on the keystroke path, which puts a
+36k-line file around 30 ms per `<CR>`, four frames. Scoping to the root child
+containing the position drops that to 8.8 / 13.4 / 29.7 µs and is *sound*
+rather than a trade: every consulted node is an ancestor of the position, and
+every ancestor but the root lies inside that child. The root is never captured.
 
 ## 5. Staleness — the bounded reparse
 
@@ -174,21 +194,46 @@ Helix does not have this problem because it parses synchronously. lattice
 deliberately does not, and that is not negotiable.
 
 Indent computation runs on the **editor actor thread**, not the UI thread, so a
-parse there is not a "no UI-thread work" violation. It is still inside the
-keystroke→glyph budget, so it needs a ceiling:
+parse there would not be a "no UI-thread work" violation. It would still be
+inside the keystroke→glyph budget.
+
+This section originally specified three branches, the middle one being "stale
+but under a byte budget ⇒ re-parse synchronously, seeded from the cached tree".
+**It was built, benched, and deleted.** What ships is two:
 
 ```
-snapshot.text_version == buffer.text_version   → query directly
-buffer len <= indent-reparse budget            → synchronous incremental reparse
-                                                 on the actor thread, seeded
-                                                 from the cached tree, then query
-otherwise                                      → lexical bridge; debug! once
+snapshot reflects the buffer  → query the tree
+otherwise                     → lexical bridge; debug! once
 ```
 
-The budget is a **measured** number, set from the IN.2 bench and recorded in
-`benchmarks.md`, not a guessed constant. Both branches carry tests, including
-one that pins the budget to `0` so the lexical path is exercised
-deterministically rather than only on someone's large file.
+Staleness is detected on **`reparsed_from_version`**, not `text_version` — the
+latter advances on `try_apply_intermediate`'s range-shift even though no
+reparse happened, so it would report fresh when the tree structure is stale.
+
+Two measurements killed the middle branch, and both are in `benches/indent.rs`:
+
+1. **A synchronous re-parse cannot sit on the keystroke path.** The sweep
+   measured 1.9 ms at 16 KB, 7.6 ms at 64 KB and 15.4 ms at 129 KB — on an
+   Apple-silicon dev box, where `benchmarks.md` warns typical user hardware
+   runs 2–5× slower. A budget generous enough to be useful misses frames; one
+   tight enough to be safe covers only files small enough for the question not
+   to matter.
+2. **It would buy almost nothing even if it were free.** The snapshot is stale
+   precisely *just after an edit*, which is exactly when the code is half-typed
+   — and a fresh parse of half-typed code yields an `ERROR` node with no block
+   structure (see below), so the engine declines and the bridge answers anyway.
+   The expensive branch would usually spend milliseconds to return `None`.
+
+Human typing is ~100 ms between keystrokes and the off-thread reparse lands in
+single-digit milliseconds for ordinary files, so the stale window is narrow to
+begin with. The cost of falling straight through is a wrong-by-one indent in a
+rare window, recoverable with the next keystroke or `=`. The cost of the
+reparse was a dropped frame. Paramount #1 decides it.
+
+`choose_indent_source` is a pure function so the policy is testable without
+racing the reparse worker, and a test asserts the absence of a parsing branch
+— re-adding one is an easy-looking "fix" for a stale-indent report, and that
+test is where it gets caught.
 
 The lexical bridge is the previous line's indent plus an opener/closer scan.
 
@@ -221,6 +266,41 @@ The lexical bridge is the previous line's indent plus an opener/closer scan.
 > is strictly easier to write. It was rejected because its failure mode is
 > invisible until a large file is opened, which is the worst kind of latency
 > bug to ship.
+
+### Staleness is not the only reason the tree has no answer
+
+Found at IN.2 by probing the parser rather than reasoning about it, and it
+changes what the tree path is *for*.
+
+Tree-sitter does not represent incomplete code as "a block that happens to be
+unclosed". It collapses the region into an `ERROR` node with no structure
+inside. Parsing
+
+```rust
+fn f() {
+    x();
+                    ← cursor here, closing brace not typed yet
+```
+
+yields exactly one `ERROR [0..17]` node and **no `block` node at all**. The
+`@indent` capture matches nothing, and a naive engine answers **zero** — for a
+cursor plainly inside a function body.
+
+Answering zero is worse than declining to answer. While the user is typing,
+incomplete code is the *normal* state, not the exceptional one, so this is the
+common path rather than an edge case. The engine therefore checks for a parse
+error at or before the query position and returns `None`, handing off to the
+lexical bridge — which handles an unclosed opener correctly by construction,
+because a bracket scan does not need the block to be finished. The check is
+bounded to errors *before* the position so a syntax error near the bottom of a
+file does not disable indentation at the top.
+
+**Consequence worth stating plainly: the tree-sitter path does not win while
+typing new code.** It wins on *complete* code — `=` and electric reindent
+(§6, §7), `<CR>` inside already-written code, and the string/comment awareness
+the lexical scan cannot have. The lexical bridge is not a degraded mode that
+rarely runs; it is the primary answer during active authoring, and the two are
+genuinely complementary rather than ranked.
 
 ## 6. Electric reindent
 

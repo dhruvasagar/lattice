@@ -81,6 +81,53 @@ use crate::state::{
 /// [`Editor::push_position_history`].
 pub const POSITION_HISTORY_CAP: usize = 100;
 
+/// IN.2: where predictive indent gets its answer for one keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentSource {
+    /// The published snapshot already reflects the buffer: query it.
+    FreshTree,
+    /// The snapshot is behind. The lexical bridge answers.
+    Lexical,
+}
+
+/// The staleness decision (design §5), as a pure function so the policy
+/// is testable without racing the reparse worker.
+///
+/// ## Why there is no synchronous-reparse branch
+///
+/// The design specified three branches, the middle one being "stale but
+/// under a byte budget ⇒ re-parse synchronously, then query". It was
+/// built, benched, and **deleted on the evidence**:
+///
+/// 1. **It is far too slow to sit on the keystroke path.** The
+///    `indent_reparse` sweep measured 1.9 ms at 16 KB, 7.6 ms at 64 KB
+///    and 15.4 ms at 129 KB — on an Apple-silicon dev box, where
+///    `benchmarks.md` warns typical user hardware runs 2–5× slower. A
+///    budget generous enough to be useful is a budget that misses
+///    frames; one tight enough to be safe covers only files small
+///    enough for the question not to matter.
+///
+/// 2. **It buys almost nothing even when affordable.** The snapshot is
+///    stale precisely *just after an edit* — which is exactly when the
+///    code is half-typed, and a fresh parse of half-typed code yields
+///    an `ERROR` node with no block structure, so the engine declines
+///    and the lexical bridge answers anyway. The expensive branch would
+///    usually spend milliseconds to return `None`.
+///
+/// Human typing is ~100 ms between keystrokes and the off-thread
+/// reparse lands in single-digit milliseconds for ordinary files, so
+/// the stale window is narrow to begin with. Falling straight to the
+/// lexical bridge costs a wrong-by-one indent in a rare window,
+/// recoverable with the next keystroke or `=`; the reparse cost a
+/// dropped frame. Paramount #1 decides it.
+pub fn choose_indent_source(fresh: bool) -> IndentSource {
+    if fresh {
+        IndentSource::FreshTree
+    } else {
+        IndentSource::Lexical
+    }
+}
+
 /// Result of [`Editor::dispatch`]. Carries the renderer-side
 /// side-effects the caller must surface after the host-side state
 /// mutation completes.
@@ -31042,7 +31089,15 @@ impl Editor {
             }
             probe = line.checked_sub(1);
         };
-        self.auto_indent_from(prev.as_deref(), moved_tail)
+        // The new line is created at the end of `after_line`.
+        let at = self
+            .active_text()
+            .position_to_byte(lattice_protocol::position::Position::new(
+                after_line,
+                self.active_text().line_byte_len(after_line),
+            ))
+            .ok();
+        self.auto_indent_from(prev.as_deref(), moved_tail, at)
     }
 
     /// IN.1: the indent for the lower half of a line split by `<CR>`.
@@ -31059,26 +31114,103 @@ impl Editor {
     /// vim's behaviour — the tail keeps whatever indent it already
     /// had).
     pub fn auto_indent_for_split(&self, head: &str, tail: &str) -> String {
-        self.auto_indent_from(Some(head), Some(tail))
+        let at = self.active_text().position_to_byte(self.cursor).ok();
+        self.auto_indent_from(Some(head), Some(tail), at)
     }
 
     /// Shared body: resolve `indentmethod` + the unit + the language's
-    /// bracket set, and hand off to the engine.
-    fn auto_indent_from(&self, prev: Option<&str>, moved_tail: Option<&str>) -> String {
+    /// bracket set, try the tree, fall back to the lexical bridge.
+    ///
+    /// `tree_at` is the byte offset the new line is created at, used
+    /// only by the tree path. `None` means "no usable offset" and goes
+    /// straight to lexical.
+    fn auto_indent_from(
+        &self,
+        prev: Option<&str>,
+        moved_tail: Option<&str>,
+        tree_at: Option<usize>,
+    ) -> String {
         let buffer = self.active_buffer_id();
         let method =
             *self.resolved_option::<lattice_config::core_options::IndentMethodOption>(buffer);
         if matches!(method, lattice_core::IndentMethod::None) {
             return String::new();
         }
-        let lang = lattice_syntax::Lang::detect_from_path(self.document.path().as_deref());
+        let unit = self.indent_unit(buffer);
+
+        // IN.2: `syntax` asks the tree first. `None` back from
+        // `tree_levels_for_new_line` covers every reason the tree is
+        // unusable -- no parse, no `indents.scm` for this language, a
+        // snapshot too stale to trust and too large to re-parse
+        // within budget -- and each of those falls through to the
+        // lexical bridge rather than to nothing.
+        if matches!(method, lattice_core::IndentMethod::Syntax)
+            && let Some(at) = tree_at
+            && let Some(levels) = self.tree_levels_for_new_line(at)
+        {
+            let mut columns = unit.shift(0, levels);
+            // The tree cannot see the closer that is about to move
+            // down with the cursor -- at query time it is still on
+            // the line above. Applying it here keeps `{|}` landing
+            // the `}` back at the opener's level.
+            let brackets = lattice_syntax::BracketSyntax::for_lang(self.active_lang());
+            if moved_tail.is_some_and(|t| brackets.starts_with_closer(t)) {
+                columns = unit.shift(columns, -1);
+            }
+            return unit.render(columns);
+        }
+
         lattice_syntax::indent_for_new_line(
             method,
             prev,
             moved_tail,
-            self.indent_unit(buffer),
-            lattice_syntax::BracketSyntax::for_lang(lang),
+            unit,
+            lattice_syntax::BracketSyntax::for_lang(self.active_lang()),
         )
+    }
+
+    /// The active buffer's language, from its path.
+    fn active_lang(&self) -> lattice_syntax::Lang {
+        lattice_syntax::Lang::detect_from_path(self.document.path().as_deref())
+    }
+
+    /// IN.2: indent level from the parse tree for a new line created
+    /// at byte `at`, or `None` when the tree cannot answer.
+    ///
+    /// ## The staleness problem
+    ///
+    /// `lattice-syntax` publishes snapshots through `ArcSwap`; on an
+    /// edit, `try_apply_intermediate` shifts the cached tree's byte
+    /// ranges cheaply and the real reparse runs off-thread. So the
+    /// tree here reflects the last **completed** parse:
+    /// `reparsed_from_version` is the honest signal, not
+    /// `text_version`, which advances on the range-shift alone.
+    ///
+    /// Type `fn f() {` and press Enter and the tree has no block node
+    /// yet -- the one node whose existence decides the answer.
+    ///
+    /// Three-way, per design §5:
+    ///
+    /// - fresh snapshot        → query it
+    /// - stale, under budget   → re-parse synchronously, then query
+    /// - stale, over budget    → `None`, and the caller uses lexical
+    ///
+    /// The re-parse runs on the **editor actor thread**, not the UI
+    /// thread, so it is not a "no UI-thread work" violation -- but it
+    /// is inside the keystroke→glyph budget, which is why it is
+    /// bounded and benched rather than merely bounded.
+    fn tree_levels_for_new_line(&self, at: usize) -> Option<i32> {
+        let handle = self.syntax.as_ref()?;
+        let snapshot = handle.snapshot();
+        let fresh = snapshot.reparsed_from_version() == self.document.text_version();
+
+        match choose_indent_source(fresh) {
+            IndentSource::FreshTree => lattice_syntax::tree_levels_for_new_line(&snapshot, at),
+            IndentSource::Lexical => {
+                tracing::debug!("indent: snapshot stale; using the lexical bridge");
+                None
+            }
+        }
     }
 
     /// Record that `line` was given `indent` automatically and nothing
@@ -46116,6 +46248,46 @@ mod tests {
         press_enter(&mut editor);
         assert_eq!(line_at(&editor, 0), "    abc");
         assert_eq!(line_at(&editor, 1), "    def");
+    }
+
+    // ---- IN.2: the tree path and the staleness policy ----
+
+    #[test]
+    fn the_tree_beats_the_lexical_bridge_on_a_brace_in_a_string() {
+        // The distinguishing case, end to end. The lexical scan counts
+        // the `{` inside the string literal and would indent to 8
+        // (asserted directly in lattice-syntax's
+        // `a_brace_inside_a_string_is_a_known_wrong_answer`); the tree
+        // knows it is a string and stays at 4. Landing on 4 proves the
+        // tree path actually ran rather than silently falling through.
+        let mut editor = rust_editor("fn f() {\n    println!(\"{\");\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 2), "    ");
+    }
+
+    #[test]
+    fn a_stale_snapshot_never_reparses_on_the_keystroke_path() {
+        // The `indent_reparse` bench measured 7.6 ms at 64 KB and
+        // 15.4 ms at 129 KB, so there is no branch here that parses.
+        // Asserted rather than merely absent: re-adding one would be
+        // an easy "fix" for a stale-indent report, and this is where
+        // that gets caught.
+        assert_eq!(choose_indent_source(true), IndentSource::FreshTree);
+        assert_eq!(choose_indent_source(false), IndentSource::Lexical);
+    }
+
+    #[test]
+    fn incomplete_code_falls_back_rather_than_answering_zero() {
+        // An unclosed brace parses to a bare ERROR node with no block
+        // inside, so the tree has nothing to say. Answering 0 there
+        // would un-indent the body of the function the user is
+        // actively typing; the lexical bridge sees the open brace and
+        // gets it right.
+        let mut editor = rust_editor("fn f() {\n    x();\n\n");
+        editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 3), "    ");
     }
 
     #[test]

@@ -246,6 +246,64 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ---
 
+## IN.2 — predictive indent on the keystroke path (2026-08-15)
+
+`<CR>`, `o` and `O` consult the tree-sitter `indents.scm` query before
+inserting a newline (`auto-indent.md` §4). New work on the path paramount
+goal #1 governs, so it is benched rather than reasoned about.
+
+> ⚠️ **Measured on Apple silicon (macOS), NOT the Ryzen/WSL2 box every other
+> row in this document used.** Not directly comparable to the tables above or
+> below. Bench: `crates/lattice-host/benches/indent.rs`. Corpus: generated Rust,
+> ~8 lines per function, queried at the file midpoint.
+
+| Measure | 80 lines | 800 lines | 3200 lines |
+|---|---|---|---|
+| `indent_query` — the per-`<CR>` cost | **8.39 µs** | **8.82 µs** | **9.49 µs** |
+
+| `indent_method` (100-fn file) | Value | Notes |
+|---|---|---|
+| `syntax` | **8.72 µs** | Tree path: scope lookup, bounded query, ancestor walk. |
+| `keep` | **609 ns** | Lexical copy — vim `autoindent`. |
+| `none` | **434 ns** | Floor: resolve the option, return empty. |
+
+The feature costs ~8.1 µs over `keep` on the keystroke path — ~0.1% of a
+120 Hz frame — and is **flat in file size**, which is the property that
+matters and the one that had to be earned twice.
+
+**Two bugs this bench caught, both invisible without it:**
+
+1. **The query ran over the whole file.** A doc comment claimed it was bounded
+   to the target line; the code passed `source.len()`. Measured **64 µs /
+   623 µs / 2.57 ms** across the three sizes — linear, which puts a 36k-line
+   file (`dispatch.rs`) near 30 ms per `<CR>`, four dropped frames. Scoping the
+   query to the root child containing the cursor is sound rather than a
+   trade — every node consulted is an ancestor of the position, and every
+   ancestor but the root lies inside that child.
+2. **Then the scope lookup was itself a linear sibling scan**, leaving 29.7 µs
+   at 3200 lines and still growing. **This is the same bug TS.1 records one
+   section above** — a linear `0..child_count` walk at the root of a large
+   file — reintroduced in a different function eight weeks later. Binary search
+   over the byte-ordered children flattened it to the 9.49 µs above. The
+   recurrence is the argument for keeping both rows: the shape is easy to write
+   and invisible without a size sweep.
+
+| `indent_reparse` (kept as a **negative** result) | 1.6 KB | 16 KB | 64 KB | 129 KB |
+|---|---|---|---|---|
+| Full re-parse + query | 188 µs | 1.9 ms | **7.6 ms** | **15.4 ms** |
+
+This row exists to justify an absence. The design specified a
+"stale snapshot ⇒ synchronous re-parse under a byte budget" branch; these
+numbers deleted it. 64 KB already exceeds half a 120 Hz frame here, and this
+hardware is the fast case. It would also have bought nearly nothing: the
+snapshot is stale precisely just after an edit, when the code is half-typed,
+and tree-sitter renders half-typed code as a bare `ERROR` node with no block
+structure — so the engine declines and the lexical bridge answers regardless.
+The branch would have spent milliseconds to return `None`. Anyone proposing to
+add it back to fix a stale-indent report should start here.
+
+---
+
 ## PO.3 — the hot-path grammar-trace gate (design §4, 2026-07-18)
 
 The load-bearing artefact of PO.3: does instrumenting the sync grammar seam cost

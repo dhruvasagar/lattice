@@ -167,6 +167,20 @@ pub(crate) struct LangConfig {
     /// `None` for languages that don't ship one (markdown family);
     /// `scope_at_cursor` returns `None` for those buffers.
     pub(crate) textobjects: Option<Query>,
+    /// IN.2: compiled `indents.scm` query, when the language ships
+    /// one. `None` means predictive indent falls back to the lexical
+    /// bridge for buffers in this language -- a graceful degradation
+    /// to vim's `smartindent`, not a failure.
+    ///
+    /// Unlike its siblings above, the SOURCE is not threaded through
+    /// `build_config`'s parameter list; it is looked up by language
+    /// name from `crate::indent::indents_source`. `build_config`
+    /// already carries eight positional arguments and a
+    /// `too_many_arguments` lint to match, so a ninth `Option<&str>`
+    /// repeated across twenty call sites is the wrong direction. The
+    /// name-keyed table also keeps the `include_str!` beside the
+    /// engine that consumes it.
+    pub(crate) indents: Option<Query>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -541,6 +555,12 @@ impl LangRegistry {
         self.lookup(name).map(|c| c.highlight_priorities.as_slice())
     }
 
+    /// IN.2: the compiled `indents.scm` query for `name`, when the
+    /// language ships one. Consumed by `crate::indent`.
+    pub fn indents_query(&self, name: &str) -> Option<&Query> {
+        self.lookup(name).and_then(|c| c.indents.as_ref())
+    }
+
     /// Compiled `injections.scm` query, when one is registered.
     pub fn injections_query(&self, name: &str) -> Option<&Query> {
         self.lookup(name).and_then(|c| c.injections.as_ref())
@@ -662,6 +682,15 @@ fn build_config(
             })?),
             None => None,
         };
+    // IN.2: resolved by name rather than passed in -- see the
+    // `indents` field's doc on `LangConfig`.
+    let indents = match crate::indent::indents_source(name) {
+        Some(src) => Some(
+            Query::new(&language, src)
+                .map_err(|e| SyntaxError::Language(format!("compile {name} indents.scm: {e}")))?,
+        ),
+        None => None,
+    };
     let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,
@@ -672,6 +701,7 @@ fn build_config(
         injections,
         symbols,
         textobjects,
+        indents,
     })
 }
 

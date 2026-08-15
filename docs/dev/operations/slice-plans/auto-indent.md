@@ -10,7 +10,7 @@
 |---|---|---|
 | IN.0 | Indent-unit options; retire the hardcoded `INDENT_UNIT` | ✅ |
 | IN.1 | `lattice-syntax::indent` lexical bridge; `indentmethod=none\|keep` | ✅ |
-| IN.2 | Query engine + `rust/indents.scm` + the bounded-reparse staleness path | 📝 |
+| IN.2 | Query engine + `rust/indents.scm` + the staleness path + benches | ✅ |
 | IN.3 | `indents.scm` — brace family (9 languages) | 📝 |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | 📝 |
 | IN.5 | `indents.scm` — data + markup (5 languages) | 📝 |
@@ -39,10 +39,12 @@ before the tree-sitter engine is introduced in IN.2. If IN.2's engine has a
 bug, it is isolated to the engine, because the call-site wiring already landed
 and already has tests.
 
-**IN.2 carries the staleness decision and its bench**, and sets the reparse
-budget from measurement. This is the slice with genuine unknowns. It ships one
-language (rust) precisely so the engine's semantics settle against real code
-before eighteen more query files are written against them.
+**IN.2 carries the staleness decision and its bench.** This is the slice with
+genuine unknowns, and it ships one language (rust) precisely so the engine's
+semantics settle against real code before eighteen more query files are
+written against them. In the event the bench did more than validate: it caught
+two perf bugs and **deleted** the reparse branch the plan had specified,
+budget constant and all. See the findings under IN.2.
 
 **IN.3–IN.5 are the query files, grouped by shared shape**, not alphabetically.
 The brace family (IN.3) is one query shape reused with node-name swaps, so it
@@ -203,34 +205,105 @@ leaving Insert and on a subsequent `<CR>`.
 
 ---
 
-## IN.2 — query engine; `rust/indents.scm`; the staleness path 📝
+## IN.2 — query engine; `rust/indents.scm`; the staleness path ✅
 
 **Depends on:** IN.1. The largest slice, and the one with real unknowns.
 
-`query.rs` — compile and cache `indents.scm` per `Lang`, following
-`registry.rs`'s existing `include_str!` pattern. `engine.rs` — the ancestor-walk
-evaluator for `@indent`, `@indent.always`, `@outdent`, `@outdent.always`,
-`@extend`, `@extend.prevent-once`, and `#set! "scope"`. No `@align` (design §4.1).
+The ancestor-walk evaluator for `@indent`, `@indent.always`, `@outdent`,
+`@outdent.always` lands in `lattice-syntax::indent` beside the IN.1 bridge.
+`@extend` / `@extend.prevent-once` / `@align` are parsed-and-ignored, so a
+query written against the fuller vocabulary loads and simply contributes less
+(design §4.1).
 
 `queries/rust/indents.scm` — one language, so the dialect's semantics settle
 against real code before eighteen more files are written against them.
 
-**The staleness path** (design §5), in `lattice-host`:
+The query **source** is resolved by language name from
+`indent::indents_source` rather than threaded through `build_config`'s
+parameter list: that function already carries eight positional arguments and a
+`too_many_arguments` lint to match, so a ninth `Option<&str>` repeated across
+twenty call sites is the wrong direction. It also keeps the `include_str!`
+beside the engine that consumes it.
+
+### Two rules, not one
+
+Predictive and reindent ask different questions and need different bounds:
+
+- **new line at byte `at`** — count `@indent` ancestors with
+  `start_byte < at < end_byte`. Both bounds strict; the upper one matters,
+  since `at <= end_byte` makes a cursor just past `fn f() {}` indent the next
+  line for no reason.
+- **existing line `row`** — count `@indent` ancestors with
+  `start_row < row <= end_row`, minus `@outdent` nodes starting on `row`. Row-
+  based because a block *starting* on the line must not indent it and a closer
+  *starting* on it must dedent it.
+
+### 🔍 Finding: the bench deleted the middle branch
+
+The plan specified three branches — fresh / stale-under-budget-reparse /
+stale-over-budget-lexical — and a budget constant "set from the bench". Built,
+benched, and cut to two:
 
 ```
-snapshot fresh                → query
-stale, under the byte budget  → sync incremental reparse on the actor thread
-stale, over budget            → lexical bridge, debug! once
+snapshot fresh  → query the tree
+otherwise       → lexical bridge, debug! once
 ```
 
-**Benches (`benchmarks.md`):**
+`indent_reparse` measured **1.9 ms at 16 KB, 7.6 ms at 64 KB, 15.4 ms at
+129 KB** on Apple silicon, where `benchmarks.md` warns user hardware runs 2–5×
+slower. Any budget generous enough to be useful misses frames. And the branch
+would buy nothing anyway: the snapshot is stale exactly *just after an edit*,
+when the code is half-typed, and a fresh parse of half-typed code yields an
+`ERROR` node and declines — so it would spend milliseconds to return `None`.
 
-1. `indent_for_line` p50/p99 on a 2300-line Rust file — must be far under one
-   frame
-2. the bounded sync reparse, swept over file size — **this bench sets the
-   budget constant**; the number in the code cites this bench
-3. `<CR>` keystroke→glyph with `indentmethod=syntax` vs `none` — the regression
-   guard
+Staleness is read from **`reparsed_from_version`**, not `text_version`: the
+latter advances on `try_apply_intermediate`'s range-shift with no reparse, so
+it reports fresh while the structure is stale.
+
+`choose_indent_source(fresh) -> IndentSource` stays a pure function, and a test
+asserts there is no parsing branch — re-adding one is a plausible-looking fix
+for a future stale-indent report.
+
+### 🔍 Finding: the query must be scoped, or it is O(file) per keystroke
+
+`indent_query` first benched at 64 µs / 623 µs / 2.57 ms for 80 / 800 / 3200
+lines — linear, on the keystroke path, ~30 ms for a 36k-line file. Cause: the
+capture map ran over the whole file while only a handful of ancestor nodes are
+ever consulted. Scoping to the root child containing the position (found by
+binary search, since children are byte-ordered) gives **8.8 / 13.4 / 29.7 µs**
+— 87× at 3200 lines — and is sound rather than a trade, because every consulted
+node is an ancestor and every ancestor but the root lies inside that child.
+
+### 🔍 Finding: incomplete code defeats the tree entirely
+
+Probed rather than assumed. Parsing `fn f() {\n    x();\n\n` yields exactly one
+`ERROR [0..17]` node and **no `block` node at all** — so `@indent` matches
+nothing and the engine confidently answers **zero** for a cursor plainly inside
+a function body. Answering zero is worse than declining: while typing,
+incomplete code is the normal state, not the exceptional one.
+
+Hence `has_error_at_or_before(root, at)`: a parse error at or before the cursor
+means the tree has no answer, and the lexical bridge — which handles unclosed
+openers correctly by construction — takes over. Bounded to errors *before* the
+cursor so a syntax error at the bottom of a file does not disable indentation
+at the top.
+
+**This reframes what the tree path is for.** It does not win while typing new
+code; it wins on *complete* code — `=` and electric reindent (IN.6/IN.7),
+`<CR>` inside already-written code, and string/comment awareness. The
+`the_tree_beats_the_lexical_bridge_on_a_brace_in_a_string` test exists so that
+value cannot silently disappear.
+
+**Benches (`benchmarks.md` §IN.2):** `indent_query` swept over file size (the
+flatness guard — it caught both perf bugs above), `indent_reparse` swept over
+size (retained as the negative result that deleted the reparse branch), and
+`indent_method` comparing `syntax` / `keep` / `none` on the same call.
+
+The planned third bench — end-to-end `<CR>` keystroke→glyph — was **built and
+discarded**: constructing an `Editor` in the setup closure dominated, and it
+reported `none` as 3.5× *slower* than `syntax` with 70% spread. A benchmark
+whose ranking is backwards is worse than none, because it gets quoted.
+`indent_method` measures the one call that differs and is stable.
 
 **Tests:** golden `(source, cursor, expected column)` fixtures for Rust —
 nested blocks, match arms, closures, method chains, `where` clauses, string

@@ -68,7 +68,10 @@ pub mod text_objects;
 pub mod theme_style;
 
 pub use crate::handle::SyntaxHandle;
-pub use crate::indent::{BracketSyntax, indent_columns_for_new_line, indent_for_new_line};
+pub use crate::indent::{
+    BracketSyntax, indent_columns_for_new_line, indent_for_new_line, tree_levels_for_line,
+    tree_levels_for_new_line,
+};
 pub use crate::lang::Lang;
 pub use crate::modes::{
     JavascriptMode, MarkdownMode, PythonMode, RustMode, TREE_SITTER_COMPLETION_SOURCE_ID,

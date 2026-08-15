@@ -247,6 +247,12 @@ harness = false
 name = "listing"
 harness = false
 
+# IN.2: predictive-indent cost on the keystroke path. The
+# `indent_reparse` sweep is what sets INDENT_REPARSE_BUDGET_BYTES.
+[[bench]]
+name = "indent"
+harness = false
+
 # S5 (2026-05-27): cells_worker hot-path bench. Times
 # `recompute` across three workloads — full rebuild (cache miss),
 # incremental single-line edit, cache hit — at varying line

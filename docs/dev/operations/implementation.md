@@ -95,6 +95,30 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
+**Auto-indent (2026-08-15, design landed; branch `dhruva/auto-indent`).**
+Nothing indents today: `o` / `O` / `<CR>` splice a bare newline at column
+0, `>` / `<` / `<C-t>` / `<C-d>` indent by a hardcoded four spaces
+(`dispatch.rs:19411`), `shiftwidth` / `expandtab` do not exist, there is
+no `=` operator, and `lattice-lsp`'s already-implemented `formatting` /
+`rangeFormatting` / `onTypeFormatting` are reachable only through
+`:lsp-format`. The design
+([`../architecture/auto-indent.md`](../architecture/auto-indent.md), slice
+plan [`slice-plans/auto-indent.md`](slice-plans/auto-indent.md), IN.0–IN.11)
+splits the feature into **three surfaces with three latency budgets**:
+predictive indent (`<CR>`/`o`/`O`) and electric reindent sit on the
+keystroke path and can only be tree-sitter-sourced, while reindenting
+existing text (`=`, `:format`, format-on-save) is user-initiated and is
+where LSP and external formatters belong. Two new crates —
+`lattice-indent` (pure, synchronous: a Helix-dialect `indents.scm`
+evaluator plus a lexical fallback) and `lattice-format` (the PATH-probed
+external-formatter runner, applying results as a **minimal** edit set via
+`lattice-diff` rather than a whole-buffer replace). `=` stays vim's
+indent-only operator and is deliberately *not* backed by a formatter.
+The open risk is snapshot staleness on the keystroke path — the tree
+reflects the last completed reparse, so a budgeted synchronous
+incremental reparse (budget set from the IN.2 bench, not guessed) sits
+between the fresh-tree and lexical-fallback paths.
+
 **Multibuffer-provider review + follow-on work (2026-08-10 → 08-12).**
 A review of the pending provider catalogue
 ([`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md))

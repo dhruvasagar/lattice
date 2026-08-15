@@ -68,6 +68,13 @@ const JAVASCRIPT_INDENTS_QUERY: &str = include_str!("../queries/javascript/inden
 const JSON_INDENTS_QUERY: &str = include_str!("../queries/json/indents.scm");
 const TSX_INDENTS_QUERY: &str = include_str!("../queries/tsx/indents.scm");
 const TYPESCRIPT_INDENTS_QUERY: &str = include_str!("../queries/typescript/indents.scm");
+// IN.4 — indent-sensitive + scripting. These close with WORDS (`end`,
+// `fi`, `done`, `esac`) as often as with punctuation, and two of them
+// carry indentation as data inside heredocs / docstrings.
+const BASH_INDENTS_QUERY: &str = include_str!("../queries/bash/indents.scm");
+const LUA_INDENTS_QUERY: &str = include_str!("../queries/lua/indents.scm");
+const PYTHON_INDENTS_QUERY: &str = include_str!("../queries/python/indents.scm");
+const RUBY_INDENTS_QUERY: &str = include_str!("../queries/ruby/indents.scm");
 
 /// The `indents.scm` source for a registry language name, or `None`
 /// when that language does not ship one yet.
@@ -92,6 +99,11 @@ pub(crate) fn indents_source(name: &str) -> Option<&'static str> {
         "json" => Some(JSON_INDENTS_QUERY),
         "tsx" => Some(TSX_INDENTS_QUERY),
         "typescript" => Some(TYPESCRIPT_INDENTS_QUERY),
+        // IN.4 — indent-sensitive + scripting.
+        "bash" => Some(BASH_INDENTS_QUERY),
+        "lua" => Some(LUA_INDENTS_QUERY),
+        "python" => Some(PYTHON_INDENTS_QUERY),
+        "ruby" => Some(RUBY_INDENTS_QUERY),
         _ => None,
     }
 }
@@ -257,6 +269,18 @@ fn ancestor_chain(snapshot: &SyntaxSnapshot, at: usize) -> Option<Vec<tree_sitte
 /// which is the caller's signal to use the lexical bridge.
 pub fn tree_levels_for_new_line(snapshot: &SyntaxSnapshot, at: usize) -> Option<i32> {
     let at = at.min(snapshot.source().len());
+    // IN.4: inside a string, indentation is CONTENT. A Python
+    // docstring, a Bash heredoc, a Rust raw string or a JS template
+    // literal all carry their leading whitespace as data, so applying
+    // the enclosing block's structural indent would silently edit the
+    // string's value -- a correctness bug, not a cosmetic one.
+    //
+    // Declining hands off to the lexical bridge, which copies the
+    // previous line's indent. That is also what vim does inside a
+    // string, so the behaviour is both safer and unsurprising.
+    if snapshot.cursor_in_string_scope(at) {
+        return None;
+    }
     let scope = governing_scope(snapshot.tree()?.root_node(), at)?;
     let chain = ancestor_chain(snapshot, at)?;
     let map = capture_map(snapshot, scope)?;
@@ -518,12 +542,16 @@ mod tree_tests {
     #[test]
     fn a_language_without_a_query_yields_none() {
         // The signal the caller uses to fall back to the lexical
-        // bridge. Python ships no `indents.scm` until IN.4.
-        let mut s = Syntax::for_language(Lang::Python)
-            .expect("python registered")
-            .expect("python has a grammar");
-        s.parse("def f():\n    pass\n");
-        assert_eq!(tree_levels_for_new_line(&s.snapshot_owned(), 8), None);
+        // bridge. TOML ships no `indents.scm` until IN.5 -- and when
+        // it does, this test moves to whatever is still uncovered
+        // rather than being deleted: "a language with no query
+        // degrades instead of failing" is the contract, not a
+        // statement about TOML.
+        let mut s = Syntax::for_language(Lang::Toml)
+            .expect("toml registered")
+            .expect("toml has a grammar");
+        s.parse("[a]\nb = 1\n");
+        assert_eq!(tree_levels_for_new_line(&s.snapshot_owned(), 6), None);
     }
 
     #[test]
@@ -633,6 +661,7 @@ mod tree_tests {
         let registry = crate::LangRegistry::standard().expect("registry builds");
         let shipped = [
             "rust",
+            // IN.3 — brace family.
             "c",
             "cpp",
             "css",
@@ -642,6 +671,11 @@ mod tree_tests {
             "json",
             "tsx",
             "typescript",
+            // IN.4 — indent-sensitive + scripting.
+            "bash",
+            "lua",
+            "python",
+            "ruby",
         ];
         for name in shipped {
             assert!(
@@ -790,6 +824,105 @@ mod tree_tests {
                 "{lang:?}: wrapped argument should sit under the call"
             );
         }
+    }
+
+    // ---- IN.4: indent-sensitive + scripting ----
+
+    /// Word closers (`end`, `fi`, `done`, `esac`) dedent exactly as `}`
+    /// does. This is the whole difference between the IN.4 group and
+    /// the brace family, and a query that captured only the block
+    /// nodes would leave every `end` hanging one level too deep.
+    #[test]
+    fn word_closers_dedent() {
+        struct Case {
+            lang: Lang,
+            src: &'static str,
+            body_row: u32,
+            closer_row: u32,
+        }
+        let cases = [
+            Case {
+                lang: Lang::Lua,
+                src: "if x then\n    y()\nend\n",
+                body_row: 1,
+                closer_row: 2,
+            },
+            Case {
+                lang: Lang::Lua,
+                src: "while x do\n    y()\nend\n",
+                body_row: 1,
+                closer_row: 2,
+            },
+            Case {
+                lang: Lang::Ruby,
+                src: "def f\n  g\nend\n",
+                body_row: 1,
+                closer_row: 2,
+            },
+            Case {
+                lang: Lang::Bash,
+                src: "if x; then\n    y\nfi\n",
+                body_row: 1,
+                closer_row: 2,
+            },
+            Case {
+                lang: Lang::Bash,
+                src: "for i in a; do\n    y\ndone\n",
+                body_row: 1,
+                closer_row: 2,
+            },
+        ];
+        for case in &cases {
+            let snap = parsed(case.lang, case.src);
+            let lang = case.lang;
+            let src = case.src;
+            assert_eq!(
+                tree_levels_for_line(&snap, case.body_row),
+                Some(1),
+                "{lang:?}: body should indent\n{src}"
+            );
+            assert_eq!(
+                tree_levels_for_line(&snap, case.closer_row),
+                Some(0),
+                "{lang:?}: word closer should dedent\n{src}"
+            );
+        }
+    }
+
+    /// Python's colon-suite indents, and the block has no closing token
+    /// -- so the line *after* the suite returns to zero because the
+    /// block node ended, not because a delimiter dedented it.
+    #[test]
+    fn python_suite_indents_and_ends_without_a_closer() {
+        let snap = parsed(Lang::Python, "def f():\n    g()\n\nh()\n");
+        assert_eq!(tree_levels_for_line(&snap, 1), Some(1), "suite body");
+        assert_eq!(
+            tree_levels_for_line(&snap, 3),
+            Some(0),
+            "after the suite, with no closing token involved"
+        );
+    }
+
+    /// Indentation inside a string is CONTENT. Applying the enclosing
+    /// block's structural indent there would edit the string's value --
+    /// a correctness bug, not a cosmetic one. The engine declines and
+    /// the lexical bridge copies the previous line instead.
+    #[test]
+    fn the_engine_refuses_to_answer_inside_a_string() {
+        // Python docstring: byte offset inside the triple-quoted body.
+        let src = "def f():\n    \"\"\"doc\n    more\n    \"\"\"\n";
+        let snap = parsed(Lang::Python, src);
+        let inside = src.find("more").expect("fixture contains the marker");
+        assert_eq!(
+            tree_levels_for_new_line(&snap, inside),
+            None,
+            "a docstring's leading whitespace is data, not structure"
+        );
+
+        // And the ordinary case still answers, so the guard is not
+        // simply disabling the engine.
+        let code_at = src.find("\"\"\"doc").expect("fixture marker");
+        assert!(tree_levels_for_new_line(&snap, code_at - 1).is_some());
     }
 
     /// A brace inside a string is not an opener — the property that

@@ -12,7 +12,7 @@
 | IN.1 | `lattice-syntax::indent` lexical bridge; `indentmethod=none\|keep` | ✅ |
 | IN.2 | Query engine + `rust/indents.scm` + the staleness path + benches | ✅ |
 | IN.3 | `indents.scm` — brace family (9 languages) | ✅ |
-| IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | 📝 |
+| IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | ✅ |
 | IN.5 | `indents.scm` — data + markup (5 languages) | 📝 |
 | IN.6 | Electric reindent | 📝 |
 | IN.7 | `=` — the reindent operator | 📝 |
@@ -351,17 +351,54 @@ have been wrong for the right reason and taught nothing.
 
 ---
 
-## IN.4 — `indents.scm`, indent-sensitive + scripting 📝
+## IN.4 — `indents.scm`, indent-sensitive + scripting ✅
 
 **Depends on:** IN.2. Independent of IN.3.
 
-`python`, `ruby`, `lua`, `bash`. Each needs real per-language study: Python's
-colon-block plus continuation lines and bracket continuations; Ruby's
-`do`/`end`, `if`/`end` and modifier forms; Lua's `then`/`do`/`end`; Bash's
-`case`/`esac`, heredocs, `if`/`fi`.
+`python`, `ruby`, `lua`, `bash`.
 
-Heredocs and multi-line strings are the shared hazard: indentation inside them
-must be left alone entirely, not merely computed differently.
+### 🔍 Finding: capture the CONSTRUCT, not the block
+
+Three of the four needed their queries rewritten after the first run, for one
+shared structural reason that the brace family does not have. In Lua, Python
+and Ruby the block node **excludes the opener**:
+
+```
+if_statement [rows 0..2]
+  then       [row 0]
+  block      [rows 1..1]   ← starts on the BODY row
+  end        [row 2]
+```
+
+The engine indents a row when an `@indent` ancestor satisfies
+`start_row < row <= end_row`. Capturing `block` therefore indents **nothing** —
+its start row *is* the body row. Capturing the enclosing construct
+(`if_statement`, rows 0..2) is what makes the body indent and lets the `end`
+dedent it back. The brace family is unaffected because `{` sits inside its
+block node, so the block starts on the opener's row.
+
+This is a real difference between grammars, not a style choice, and it is the
+kind of thing only a per-language test catches — the queries compiled fine.
+
+**Ruby's modifier forms need no special handling**, which was a pleasant
+surprise: `return if x` parses to a one-row `if` node, and a one-row construct
+can never satisfy `start_row < row <= end_row`. The row rule excludes it
+structurally rather than by a rule written for the case, so `if` / `while` can
+be captured directly.
+
+### 🔍 The engine now refuses to answer inside a string
+
+Not a query change but a correctness fix the group forced. A Python docstring,
+a Bash heredoc, a Rust raw string and a JS template literal all carry leading
+whitespace as **data**; applying the enclosing block's structural indent there
+edits the string's value, and for `<<-EOF` can change whether the terminator is
+recognised. `tree_levels_for_new_line` checks `cursor_in_string_scope` (which
+already existed in this crate) and declines, handing off to the lexical bridge,
+which copies the previous line — also what vim does inside a string.
+
+Bash needed no rewrite: it has no block node at all (commands are direct
+children of `if_statement`), so capturing the statement was right the first
+time.
 
 ---
 

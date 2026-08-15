@@ -1835,18 +1835,13 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
 
-        let oil_id = a.active_pane_buffer_id();
+        // DL.5: oil is a writable Document — edit it like one.
         a.editor
-            .buffers
-            .with_oil_mut(oil_id, |oil| {
-                oil.content
-                    .apply_edit(&lattice_protocol::edit::Edit::insert(
-                        lattice_protocol::position::Position::ZERO,
-                        "newfile.txt\n".to_string(),
-                    ))
-                    .expect("insert edit");
-            })
-            .expect("oil");
+            .apply_edit_batch_blocking(vec![lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::ZERO,
+                "newfile.txt\n".to_string(),
+            )])
+            .expect("insert edit");
 
         // Save. Should run OilBuffer::apply and create the file.
         a.do_write(None);
@@ -2041,6 +2036,91 @@ mod tests {
         }
     }
 
+    /// DL.5: `:w` still derives the right filesystem operations after
+    /// oil became a Document and its icons became virtual text.
+    ///
+    /// This is the one thing in the listing convergence that can lose
+    /// user data, so it is asserted against the **filesystem**, not
+    /// against the rope. The specific hazard: `:w` diffs the buffer's
+    /// text against the snapshot to decide what to rename, create and
+    /// delete — so anything decorative leaking into the rope would be
+    /// read as a filename. Icons are virtual text precisely to keep
+    /// that from being possible, and this is the test that would
+    /// notice if they stopped being.
+    #[tokio::test]
+    async fn oil_write_round_trips_rename_create_and_delete() {
+        let tmp = unique_tempdir();
+        std::fs::write(tmp.join("old.txt"), "keep").unwrap();
+        std::fs::write(tmp.join("doomed.txt"), "bye").unwrap();
+
+        let mut a = app_with("hi", 10);
+        a.do_open_oil(Some(tmp.clone()));
+        let oil_id = a.active_pane_buffer_id();
+
+        // Let the listing mode (and its icons) come up, so the write
+        // happens in the state a user's would.
+        let _ = crate::app::test_helpers::settle_mode(&mut a, "directory-listing-mode").await;
+
+        let listing = a
+            .editor
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string())
+            .expect("oil document");
+        assert!(
+            listing.contains("old.txt") && listing.contains("doomed.txt"),
+            "precondition: both files listed, got {listing:?}"
+        );
+        // The rope is BARE names — no glyph, no marker. If this ever
+        // fails, `:w` is about to treat a decoration as a filename.
+        for line in listing.lines() {
+            assert!(
+                line == "old.txt" || line == "doomed.txt",
+                "oil's rope must hold bare filenames only, got {line:?}"
+            );
+        }
+
+        // Rename, on its own. Oil's rename heuristic is documented as
+        // *exactly* one delete plus one create — bundling other changes
+        // into the same write is a delete-and-create by contract, so
+        // the two are exercised as separate writes rather than one.
+        a.editor.replace_owned_buffer(oil_id, "new.txt\ndoomed.txt");
+        a.mutate_editor(|e| {
+            e.do_write(None);
+        });
+        assert!(tmp.join("new.txt").exists(), "rename: new.txt must exist");
+        assert!(
+            !tmp.join("old.txt").exists(),
+            "rename: old.txt must be gone"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("new.txt")).unwrap(),
+            "keep",
+            "a rename must move the CONTENT, not create an empty file"
+        );
+
+        // Delete + create, against the snapshot the write above
+        // refreshed — a stale snapshot here would derive nonsense.
+        a.editor.replace_owned_buffer(oil_id, "new.txt\nfresh.txt");
+        a.mutate_editor(|e| {
+            e.do_write(None);
+        });
+        assert!(
+            !tmp.join("doomed.txt").exists(),
+            "delete: doomed.txt must be gone"
+        );
+        assert!(
+            tmp.join("fresh.txt").exists(),
+            "create: fresh.txt must exist"
+        );
+        assert!(
+            tmp.join("new.txt").exists(),
+            "the untouched row must survive the second write"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn oil_keystroke_pipeline_inserts_into_oil_rope() {
         // Regression: before the run_oil_invocation rewrite,
@@ -2061,7 +2141,11 @@ mod tests {
         a.do_open_oil(Some(tmp.clone()));
         let oil_id = a.active_pane_buffer_id();
         // Initial rope has one row: `existing.txt`.
-        let initial = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let initial = a
+            .editor
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string());
         assert!(
             initial
                 .as_ref()
@@ -2074,7 +2158,11 @@ mod tests {
         // this should land in the oil rope, not the document.
         a.editor.modal = lattice_grammar::ModalState::Insert;
         a.apply(crate::app::Action::Insert("foo".into()));
-        let after = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let after = a
+            .editor
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string());
         assert!(
             after.as_ref().map(|s| s.contains("foo")).unwrap_or(false),
             "expected `foo` to land in oil rope: {:?}",
@@ -2136,9 +2224,9 @@ mod tests {
         // Find a.txt's row (dirs come first; "sub" is dir, then "a.txt").
         let names: Vec<String> = a
             .editor
-            .buffers
-            .with_oil(oil_id, |o| {
-                o.snapshot_entries()
+            .oil_snapshot_for(oil_id)
+            .map(|s| {
+                s.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
                     .collect::<Vec<String>>()
@@ -2243,9 +2331,9 @@ mod tests {
         // Find `sub` (dirs first; should be row 0).
         let names: Vec<String> = a
             .editor
-            .buffers
-            .with_oil(oil_id, |o| {
-                o.snapshot_entries()
+            .oil_snapshot_for(oil_id)
+            .map(|s| {
+                s.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
                     .collect::<Vec<String>>()
@@ -2265,9 +2353,9 @@ mod tests {
         // Listing should show `inside.txt` at row 0.
         let names_after: Vec<String> = a
             .editor
-            .buffers
-            .with_oil(oil_id, |o| {
-                o.snapshot_entries()
+            .oil_snapshot_for(oil_id)
+            .map(|s| {
+                s.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
                     .collect()
@@ -2313,9 +2401,9 @@ mod tests {
         // Snapshot order: alpha, beta, gamma.
         let names: Vec<String> = a
             .editor
-            .buffers
-            .with_oil(oil_id, |o| {
-                o.snapshot_entries()
+            .oil_snapshot_for(oil_id)
+            .map(|s| {
+                s.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
                     .collect::<Vec<String>>()
@@ -2362,7 +2450,11 @@ mod tests {
         let oil_id = a.active_pane_buffer_id();
 
         // The rope content lists `subdir` (and `..`).
-        let listing_before = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let listing_before = a
+            .editor
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string());
         assert!(
             listing_before
                 .as_ref()
@@ -2377,9 +2469,9 @@ mod tests {
         // if `..` is included). Let's find it.
         let snap: Vec<String> = a
             .editor
-            .buffers
-            .with_oil(oil_id, |o| {
-                o.snapshot_entries()
+            .oil_snapshot_for(oil_id)
+            .map(|s| {
+                s.snapshot_entries()
                     .iter()
                     .map(|e| e.name.clone())
                     .collect()
@@ -2394,7 +2486,11 @@ mod tests {
         a.do_oil_follow();
 
         // Listing now shows subdir's contents (`inner.txt`).
-        let listing_after = a.editor.buffers.with_oil(oil_id, |o| o.content.as_string());
+        let listing_after = a
+            .editor
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string());
         assert!(
             listing_after
                 .as_ref()
@@ -2442,8 +2538,14 @@ mod tests {
             .iter()
             .filter(|d| d.owner_mode == "oil-mode")
             .collect();
-        assert_eq!(oil_descriptors.len(), 1);
-        assert_eq!(oil_descriptors[0].name, "oil-mode.dir");
+        // DL.5: oil owns TWO locals now — the directory it points at,
+        // and the snapshot `:w` diffs the buffer's text against (which
+        // moved off the deleted `OilBuffer` struct). Asserted by name
+        // rather than by count, so a future local has to be named here
+        // rather than just bumping a number.
+        let mut oil_names: Vec<&str> = oil_descriptors.iter().map(|d| d.name).collect();
+        oil_names.sort_unstable();
+        assert_eq!(oil_names, vec!["oil-mode.dir", "oil-mode.snapshot"]);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -6758,9 +6758,11 @@ impl Editor {
                 .document_handle(self.active_pane_buffer_id())
                 .map(|h| h.snapshot().buffer.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            // DL.5: oil is a Document — read it through the handle.
             BufferKind::Oil => self
                 .buffers
-                .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
+                .document_handle(self.active_pane_buffer_id())
+                .map(|h| h.snapshot().buffer.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             // T-grammar-1 (2026-05-28): Terminal-in-Normal mode
             // operates on the SyntheticDoc rope built by
@@ -6810,10 +6812,8 @@ impl Editor {
             // DL.4: no kind-specific cursor field survives — the tree
             // uses the hot-path cursor like Document does.
             BufferKind::FileTree => self.cursor,
-            BufferKind::Oil => self
-                .buffers
-                .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
-                .unwrap_or(self.cursor),
+            // DL.5: the hot-path cursor, like Document.
+            BufferKind::Oil => self.cursor,
             // Terminal: T1 has no scrollback cursor yet. T3 will
             // introduce scrollback-view position; until then,
             // return self.cursor so motion code has a sane value.
@@ -17839,9 +17839,8 @@ impl Editor {
         &mut self,
         edit: lattice_protocol::edit::Edit,
     ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
-        if matches!(self.active_buffer, BufferKind::Oil) {
-            return self.apply_edit_to_oil(edit);
-        }
+        // DL.5: no oil branch — oil is a writable Document, so its
+        // edits take the ordinary path below.
         // AU‑3: read-only edit gate with editable-tail exception. Only
         // keystroke-originated edits reach `apply_edit_blocking`; owner
         // projections write through the runtime document handle directly and
@@ -17907,13 +17906,9 @@ impl Editor {
         &mut self,
         edits: Vec<lattice_protocol::edit::Edit>,
     ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
-        if matches!(self.active_buffer, BufferKind::Oil) {
-            let mut applied = Vec::with_capacity(edits.len());
-            for edit in edits {
-                applied.push(self.apply_edit_to_oil(edit)?);
-            }
-            return Ok(applied);
-        }
+        // DL.5: no oil branch. Oil is a Document now and writable, so
+        // its edits go through the ordinary path below — the bespoke
+        // rope-mutation detour is gone.
         // AU‑3: read-only edit gate — reject the whole batch if ANY edit
         // lands outside the editable tail (keystroke path only; owner
         // projections bypass via the runtime handle).
@@ -18039,27 +18034,6 @@ impl Editor {
             Some(other) => handle_effect(self, other, out),
             None => {}
         }
-    }
-
-    /// 5.5.E.7.3: apply a single [`Edit`] to the active oil
-    /// buffer's rope (`oil.content`). Returns the `AppliedEdit` with
-    /// the inserted-range / removed-text fields populated, same
-    /// shape as the document path.
-    fn apply_edit_to_oil(
-        &mut self,
-        edit: lattice_protocol::edit::Edit,
-    ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
-        let oil_id = self.active_pane_buffer_id();
-        // Use the callback variant so the registry lock is held
-        // only for the apply_edit call. The closure runs the
-        // mutation; the outer Option unwraps to either the inner
-        // Result or the "no oil entry" Cancelled error.
-        self.buffers
-            .with_oil_mut(oil_id, |oil| oil.content.apply_edit(&edit))
-            .ok_or(lattice_runtime::RuntimeError::Core(
-                lattice_core::CoreError::Cancelled,
-            ))?
-            .map_err(lattice_runtime::RuntimeError::Core)
     }
 
     /// 5.5.E.7.3: undo one step on the document actor; publishes a
@@ -20299,7 +20273,7 @@ impl Editor {
             );
             return Vec::new();
         }
-        let oil = match lattice_listing::oil::OilBuffer::open(&dir) {
+        let oil = match lattice_listing::oil::OilSnapshot::open(&dir) {
             Ok(o) => o,
             Err(e) => {
                 self.set_message(
@@ -20316,25 +20290,22 @@ impl Editor {
             let cur = self.cursor;
             self.push_position_history(cur, crate::state::PositionSource::AutoJump);
         }
-        let new_id = oil.id;
+        // DL.5: an actor-backed Document, like every other kind.
+        let new_id = self.register_listing_document(
+            crate::buffers::BufferFlags::default(),
+            crate::buffer_registry::ListingKind::Oil,
+        );
         self.set_oil_dir(new_id, dir.clone());
-        self.buffers.insert(crate::buffer_registry::BufferEntry {
-            id: new_id,
-            flags: crate::buffers::BufferFlags::default(),
-            data: crate::buffer_registry::BufferData::Oil(oil),
-            name: None,
-        });
+        self.write_oil_listing(new_id, oil);
         let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Oil;
-        pane.buffer_id = new_id;
-        pane.cursor = lattice_protocol::Position::ZERO;
-        pane.scroll = 0;
+        self.activate_document(new_id);
         self.cursor = lattice_protocol::Position::ZERO;
         self.scroll = 0;
+        {
+            let pane = self.pane_tree.active_mut();
+            pane.cursor = lattice_protocol::Position::ZERO;
+            pane.scroll = 0;
+        }
         self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
         signals
     }
@@ -20345,9 +20316,8 @@ impl Editor {
         let active_id = self.active_pane_buffer_id();
         let idx = self.cursor.line as usize;
         let Some(entry) = self
-            .buffers
-            .with_oil(active_id, |o| o.snapshot_entries().get(idx).cloned())
-            .flatten()
+            .oil_snapshot_for(active_id)
+            .and_then(|s| s.snapshot_entries().get(idx).cloned())
         else {
             return Vec::new();
         };
@@ -20356,19 +20326,17 @@ impl Editor {
         };
         if entry.is_dir {
             let new_dir = dir.join(&entry.name);
-            let reload_result = self
-                .buffers
-                .with_oil_mut(active_id, |oil| oil.reload(&new_dir));
-            match reload_result {
-                Some(Err(e)) => {
+            let mut snapshot = self.oil_snapshot_for(active_id).unwrap_or_default();
+            match snapshot.reload(&new_dir) {
+                Err(e) => {
                     self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
                 }
-                Some(Ok(_)) => {
+                Ok(()) => {
                     self.set_oil_dir(active_id, new_dir);
+                    self.write_oil_listing(active_id, snapshot);
                     self.cursor = lattice_protocol::Position::ZERO;
                     self.scroll = 0;
                 }
-                None => {}
             }
             Vec::new()
         } else {
@@ -20406,20 +20374,20 @@ impl Editor {
                 let came_from = current_dir
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned());
-                let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
-                match reload_result {
-                    Some(Err(e)) => {
+                let mut snapshot = self.oil_snapshot_for(id).unwrap_or_default();
+                match snapshot.reload(&parent) {
+                    Err(e) => {
                         self.set_message(EchoLevel::Error, format!("oil navigate up: {e}"));
                     }
-                    Some(Ok(_)) => {
+                    Ok(()) => {
                         self.set_oil_dir(id, parent);
+                        self.write_oil_listing(id, snapshot);
                         self.cursor = lattice_protocol::Position::ZERO;
                         self.scroll = 0;
                         if let Some(name) = came_from {
                             self.focus_oil_entry(&name);
                         }
                     }
-                    None => {}
                 }
                 Vec::new()
             }
@@ -20484,16 +20452,12 @@ impl Editor {
     /// being focused; scroll is reconciled so the row is visible.
     fn focus_oil_entry(&mut self, name: &str) {
         let id = self.active_pane_buffer_id();
-        let Some(line) = self
-            .buffers
-            .with_oil(id, |o| {
-                o.snapshot_entries()
-                    .iter()
-                    .position(|e| e.name == name)
-                    .map(|i| i as u32)
-            })
-            .flatten()
-        else {
+        let Some(line) = self.oil_snapshot_for(id).and_then(|s| {
+            s.snapshot_entries()
+                .iter()
+                .position(|e| e.name == name)
+                .map(|i| i as u32)
+        }) else {
             return;
         };
         let pos = lattice_protocol::Position::new(line, 0);
@@ -20501,6 +20465,52 @@ impl Editor {
         self.pane_tree.active_mut().cursor = pos;
         self.ensure_cursor_visible();
         self.pane_tree.active_mut().scroll = self.scroll;
+    }
+
+    /// DL.5: write oil's listing text to its Document AND store the
+    /// snapshot it was rendered from, in one step.
+    ///
+    /// The oil peer of `set_file_tree_entries`. Text and snapshot move
+    /// together because `:w` diffs one against the other — publishing
+    /// them separately is how a stale snapshot would silently derive
+    /// the wrong renames.
+    fn write_oil_listing(
+        &mut self,
+        buffer_id: BufferId,
+        snapshot: lattice_listing::oil::OilSnapshot,
+    ) {
+        let text = lattice_listing::oil::render_to_text(snapshot.snapshot_entries());
+        self.set_oil_snapshot(buffer_id, snapshot);
+        self.replace_owned_buffer(buffer_id, &text);
+    }
+
+    /// DL.5: read the oil snapshot for `buffer_id`.
+    pub fn oil_snapshot_for(
+        &self,
+        buffer_id: BufferId,
+    ) -> Option<lattice_listing::oil::OilSnapshot> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|l| l.get::<lattice_listing::oil::modes::OilSnapshotLocal>())
+            .map(|s| s.0.clone())
+    }
+
+    /// Write the oil snapshot AND publish the listing's icons. Single
+    /// chokepoint, so the two cannot drift (the file tree's
+    /// `set_file_tree_entries` is the peer).
+    pub fn set_oil_snapshot(
+        &mut self,
+        buffer_id: BufferId,
+        snapshot: lattice_listing::oil::OilSnapshot,
+    ) {
+        if let Some(dir) = self.oil_dir_for(buffer_id) {
+            let listing = lattice_listing::oil::listing_entries(&dir, snapshot.snapshot_entries());
+            self.publish_listing_icons_for(buffer_id, listing);
+        }
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_listing::oil::modes::OilSnapshotLocal(snapshot));
     }
 
     /// Write `FileTreeRoot`. Single chokepoint (M.3.2.c.5).
@@ -20543,8 +20553,24 @@ impl Editor {
         buffer_id: BufferId,
         entries: &[lattice_listing::file_tree::FileTreeEntry],
     ) {
-        let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
         let listing = lattice_listing::file_tree::listing_entries(entries);
+        self.publish_listing_icons_for(buffer_id, listing);
+    }
+
+    /// Publish icons for an already-projected listing. Shared by both
+    /// majors — the projection differs (the tree anchors after its
+    /// indent, oil at column 0), the publishing does not.
+    fn publish_listing_icons_for(
+        &mut self,
+        buffer_id: BufferId,
+        listing: Vec<lattice_listing::listing_mode::ListingEntry>,
+    ) {
+        let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or_else(|| {
+            self.config
+                .get_typed::<crate::ui::theme_options::UiNerdFonts>()
+                .map(|v| *v)
+                .unwrap_or(false)
+        });
         let rows = self
             .services
             .get::<lattice_theme::ThemeRegistryHandle>()
@@ -20666,7 +20692,10 @@ impl Editor {
         // through the same seam `Help` uses since PU.1a. `new_id` must
         // exist in the registry BEFORE the entries chokepoint runs —
         // that is what writes the rope and publishes the icons.
-        let new_id = self.register_file_tree_document(crate::buffers::BufferFlags::default());
+        let new_id = self.register_listing_document(
+            crate::buffers::BufferFlags::default(),
+            crate::buffer_registry::ListingKind::FileTree,
+        );
         self.set_file_tree_root(new_id, root.clone());
         self.set_file_tree_nerd_fonts(new_id, nerd_fonts);
         self.set_file_tree_entries(new_id, entries);
@@ -24583,13 +24612,27 @@ impl Editor {
                 return;
             };
             let dir_display = dir.display().to_string();
-            let result = self.buffers.with_oil_mut(oil_id, |oil| oil.apply(&dir));
-            if let Some(r) = result {
-                match r {
-                    Ok(()) => self.set_message(
-                        EchoLevel::Info,
-                        format!("oil: applied changes in {dir_display}"),
-                    ),
+            // DL.5: the diff reads the user's text from the Document
+            // and the baseline from the snapshot local. Both re-read
+            // here so a `:w` can never run against a stale pair.
+            let current_text = self
+                .buffers
+                .document_handle(oil_id)
+                .map(|h| h.snapshot().buffer.as_string())
+                .unwrap_or_default();
+            let mut snapshot = self.oil_snapshot_for(oil_id).unwrap_or_default();
+            let result = snapshot.apply(&dir, &current_text);
+            {
+                match result {
+                    Ok(()) => {
+                        // Re-render from the refreshed snapshot so the
+                        // listing shows what is on disk now.
+                        self.write_oil_listing(oil_id, snapshot);
+                        self.set_message(
+                            EchoLevel::Info,
+                            format!("oil: applied changes in {dir_display}"),
+                        )
+                    }
                     Err(e) => self.set_message(EchoLevel::Error, format!("oil apply error: {e}")),
                 }
             }
@@ -32806,12 +32849,6 @@ impl Editor {
                     self.popup_scroll = scroll;
                 }
             }
-            BufferKind::Oil => {
-                self.buffers.with_oil_mut(pane_id, |o| {
-                    o.cursor = cursor;
-                    o.scroll = scroll as usize;
-                });
-            }
             // Document + Messages + Dashboard + FileTree share the same
             // hot-path stash (cursor/scroll captured on the active pane
             // below). DL.4 moved FileTree here by deleting its
@@ -32821,6 +32858,8 @@ impl Editor {
             | BufferKind::Messages
             | BufferKind::Multibuffer
             | BufferKind::FileTree
+            // DL.5: oil joined too — its cursor / scroll fields are gone.
+            | BufferKind::Oil
             | BufferKind::Dashboard => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
@@ -33435,20 +33474,15 @@ impl Editor {
         self.activate_document(id);
     }
 
-    /// 5.5.F.4.2: switch the active pane to the oil buffer with `id`.
+    /// Switch the active pane to the oil buffer with `id`.
+    ///
+    /// DL.5: a delegation to [`Self::activate_document`], for the same
+    /// reason `activate_file_tree` became one — oil **is** a document.
     pub fn activate_oil(&mut self, id: BufferId) {
-        let Some((oil_cursor, oil_scroll)) = self.buffers.with_oil(id, |o| (o.cursor, o.scroll))
-        else {
+        if !self.buffers.contains_oil(id) {
             return;
-        };
-        self.active_buffer = BufferKind::Oil;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::Oil;
-        pane.buffer_id = id;
-        pane.cursor = oil_cursor;
-        pane.scroll = oil_scroll as u32;
-        self.cursor = oil_cursor;
-        self.scroll = oil_scroll as u32;
+        }
+        self.activate_document(id);
     }
 
     /// 5.5.F.4.2: switch the active pane to an existing help
@@ -36023,7 +36057,11 @@ impl Editor {
             return false;
         }
         let oil_id = self.active_pane_buffer_id();
-        let Some(oil_text) = self.buffers.with_oil(oil_id, |o| o.content.as_string()) else {
+        let Some(oil_text) = self
+            .buffers
+            .document_handle(oil_id)
+            .map(|h| h.snapshot().buffer.as_string())
+        else {
             return true;
         };
         let mut inv = inv;
@@ -36054,9 +36092,11 @@ impl Editor {
         let Ok(effect) = result else {
             return true;
         };
-        self.buffers.with_oil_mut(oil_id, |oil| {
-            oil.content = temp_doc.buffer().clone();
-        });
+        // DL.5: the grammar ran against a temp Document; write the
+        // result back through the buffer's own actor rather than
+        // assigning a rope on a bespoke struct.
+        let new_text = temp_doc.buffer().as_string();
+        self.replace_owned_buffer(oil_id, &new_text);
         let mut should_exit_visual = false;
         match &effect {
             Effect::Edits(edits) => {

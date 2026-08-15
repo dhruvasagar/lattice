@@ -85,6 +85,26 @@ impl Mode for OilMode {
 #[derive(Debug, Clone)]
 pub struct OilDir(pub PathBuf);
 
+/// DL.5: the directory state `:w` diffs against.
+///
+/// It used to live on `OilBuffer` alongside the rope. The rope is an
+/// actor-backed Document now, so the snapshot moves here — the same
+/// place `OilDir` already lived, and the same shape the file tree has
+/// used for its entries all along.
+#[derive(Debug, Clone, Default)]
+pub struct OilSnapshotLocal(pub super::OilSnapshot);
+
+impl BufferLocal for OilSnapshotLocal {
+    const NAME: &'static str = "oil-mode.snapshot";
+    const DOC: &'static str = "Directory entries as of open or the last successful `:w`. \
+         `:w` diffs the buffer's text against this to derive the renames, \
+         deletes and creates to execute.";
+    const OWNER_MODE: &'static str = "oil-mode";
+    fn describe(&self) -> String {
+        format!("{} entries", self.0.snapshot_entries().len())
+    }
+}
+
 impl BufferLocal for OilDir {
     const NAME: &'static str = "oil-mode.dir";
     const DOC: &'static str = "Directory the oil buffer's editable listing represents. \

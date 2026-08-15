@@ -15,7 +15,7 @@
 | DL.3a | Inlay runs carry a style (retires a hardcoded colour) | ✅ |
 | DL.3b | The mode publishes entry icons as leading inlays | ✅ |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | ✅ |
-| DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
+| DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | ✅ |
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
 
 ## Shape of the sequence
@@ -360,9 +360,9 @@ unsettled frame was measuring the gap rather than the invariant.
   has to be visible, and on the shared path that is an option any
   buffer can carry rather than a kind the renderer knows about.
 
-## DL.5 — oil onto the shared path 📝
+## DL.5 — oil onto the shared path ✅
 
-**Depends on:** DL.4. **The risky one.**
+**Landed 2026-08-15. Depends on:** DL.4. **The risky one.**
 
 Same migration, plus `OilBuffer::snapshot` → buffer-local beside
 `OilDir`, and `is_dirty()` / the `:w` rename derivation reading it from
@@ -375,9 +375,39 @@ whole reason icons are virtual (design §6). The regression to fear is a
 Delete `draw_oil_pane` and its GPUI twin, and with them the
 `let icon_width = 2;` cursor fudge in both peers.
 
-**Tests.** `:w` round-trip: rename, delete, create, and a no-op write,
-each asserted against the filesystem, with icons active. Plus the oil
-sibling of the regular-buffer audit, and CV.5's invariant.
+**Tests.** `oil_write_round_trips_rename_create_and_delete` asserts
+against the **filesystem**, with the listing mode settled so icons are
+live. It also pins that every rope line is a bare filename — if that
+ever fails, `:w` is about to treat a decoration as a filename, which is
+the one way this plan could lose user data.
+
+Written as two writes rather than one: oil's rename heuristic is
+documented as *exactly* one delete plus one create, so bundling a
+rename with an unrelated delete is a delete-and-create by contract. The
+first draft bundled them and caught itself — the rename produced an
+empty file, which is correct behaviour for the input and the wrong
+test.
+
+**As landed.**
+
+- `OilBuffer` is gone. What survives is `OilSnapshot` — just the
+  entries `:w` diffs against — in an `OilSnapshotLocal` buffer-local
+  beside `OilDir`. Its rope moved to the Document; its `cursor` /
+  `scroll` were archival duplicates whose own doc comment said reading
+  them was unsafe.
+- **`apply_edit_to_oil` deleted.** Oil is a *writable* Document, so its
+  edits take the ordinary path — the bespoke rope-mutation detour and
+  the `if matches!(active_buffer, Oil)` branches in front of it are
+  gone. That is the clearest evidence the convergence was the right
+  shape: the special case did not need replacing, it needed removing.
+- `activate_oil` is a delegation to `activate_document`, like
+  `activate_file_tree`.
+- `write_oil_listing` is the single chokepoint that writes the text and
+  stores the snapshot it was rendered from. They move together because
+  `:w` diffs one against the other, and publishing them separately is
+  how a stale snapshot would silently derive the wrong renames.
+- `register_listing_document` generalised back to taking a
+  `ListingKind`, now that both kinds are `DocumentEntry`.
 
 ## DL.6 — retire the old palette; benches + parity 📝
 

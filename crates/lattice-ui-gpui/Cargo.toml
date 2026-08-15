@@ -70,13 +70,11 @@ lattice-config = { path = "../lattice-config" }
 # pattern-matched by `build_terminal_inner` to translate the
 # alacritty-published snapshot to gpui `Rgba` + text styling.
 lattice-terminal = { path = "../lattice-terminal" }
-# Oil + file-tree pane rendering (parity with the TUI's `draw_oil_pane`
-# / `draw_file_tree_pane`). Oil content + entries come through the host
-# registry's `with_oil` accessor (no type dep needed); the file-tree
-# per-entry path/kind lives in the `FileTreeEntries` buffer-local, so the
-# renderer names `lattice_file_tree::modes::FileTreeEntries` +
-# `FileTreeEntry` / `FileTreeEntryKind` to read them from the shared
-# `buffer_locals` typemap.
+# Listing buffer-locals. DL.4/DL.5 deleted this crate's oil + file-tree
+# pane builders (both kinds are Documents now and paint through the
+# shared path), but the dep remains for the mode ids and the
+# `FileTreeEntries` / `OilSnapshotLocal` local types the render state
+# still names.
 lattice-listing = { path = "../lattice-listing" }
 # PU.6: `Effect::Confirm` opens a y/n transient via
 # `lattice_picker::confirm_transient_spec` — same dep the TUI peer

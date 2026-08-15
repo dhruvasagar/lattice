@@ -47,7 +47,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
 use crate::help::HelpBuffer;
-use crate::oil::OilBuffer;
 use lattice_terminal::buffer::TerminalBuffer;
 
 /// Per-document registry payload. Each entry carries the actor
@@ -138,6 +137,7 @@ impl BufferEntry {
             | BufferData::Multibuffer(d)
             | BufferData::Help(d)
             | BufferData::FileTree(d)
+            | BufferData::Oil(d)
             | BufferData::Dashboard(d) => Some(d),
             _ => None,
         }
@@ -150,21 +150,8 @@ impl BufferEntry {
             | BufferData::Multibuffer(d)
             | BufferData::Help(d)
             | BufferData::FileTree(d)
+            | BufferData::Oil(d)
             | BufferData::Dashboard(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub fn oil(&self) -> Option<&OilBuffer> {
-        match &self.data {
-            BufferData::Oil(o) => Some(o),
-            _ => None,
-        }
-    }
-
-    pub fn oil_mut(&mut self) -> Option<&mut OilBuffer> {
-        match &mut self.data {
-            BufferData::Oil(o) => Some(o),
             _ => None,
         }
     }
@@ -182,6 +169,15 @@ impl BufferEntry {
             _ => None,
         }
     }
+}
+
+/// DL.4/DL.5: which listing kind a new listing Document is filed
+/// under. Both are `DocumentEntry`-backed; only the discriminator
+/// differs, which is exactly the PU.1a shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingKind {
+    FileTree,
+    Oil,
 }
 
 #[derive(Debug)]
@@ -220,7 +216,14 @@ pub enum BufferData {
     /// `buffer_locals`.
     Help(DocumentEntry),
     /// Flat editable directory listing (oil.nvim-style).
-    Oil(OilBuffer),
+    ///
+    /// DL.5: storage is a `DocumentEntry` like every other kind — the
+    /// last one to converge. Its rope is an actor-backed Document, and
+    /// the directory snapshot `:w` diffs against lives in the
+    /// `OilSnapshotLocal` buffer-local. Oil is **writable**, so it
+    /// needs no owner-write bypass: edits go through the ordinary
+    /// document path.
+    Oil(DocumentEntry),
     Terminal(TerminalBuffer),
     /// The editor's `*messages*` audit transcript. Storage is
     /// identical to [`BufferData::Document`] (same
@@ -820,22 +823,6 @@ impl BufferRegistry {
             scroll: 0,
             cursor: lattice_protocol::position::Position::ZERO,
         })
-    }
-
-    pub fn with_oil<R>(&self, id: BufferId, f: impl FnOnce(&OilBuffer) -> R) -> Option<R> {
-        let inner = lock_inner(&self.inner);
-        inner.by_id.get(&id).and_then(|e| e.oil()).map(f)
-    }
-
-    pub fn with_oil_mut<R>(&self, id: BufferId, f: impl FnOnce(&mut OilBuffer) -> R) -> Option<R> {
-        let result = {
-            let mut inner = lock_inner(&self.inner);
-            inner.by_id.get_mut(&id).and_then(|e| e.oil_mut()).map(f)
-        };
-        if result.is_some() {
-            self.bump_version();
-        }
-        result
     }
 
     pub fn with_terminal<R>(

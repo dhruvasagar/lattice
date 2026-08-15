@@ -262,7 +262,8 @@ impl Editor {
         )
     }
 
-    /// DL.4: mint an empty actor-backed Document filed as a file tree.
+    /// DL.4/DL.5: mint an empty actor-backed Document filed under a
+    /// listing kind.
     ///
     /// The listing peer of [`Self::register_help_document`] — same
     /// PU.1a shape (a `DocumentEntry` behind a kind discriminator),
@@ -270,8 +271,12 @@ impl Editor {
     /// entries chokepoint, which also publishes the icons, so the rope
     /// and the virtual text cannot drift apart.
     ///
-    /// DL.5 generalises this to oil once that kind converges too.
-    pub fn register_file_tree_document(&mut self, flags: BufferFlags) -> BufferId {
+    /// DL.5 generalised it to oil once that kind converged too.
+    pub fn register_listing_document(
+        &mut self,
+        flags: BufferFlags,
+        kind: crate::buffer_registry::ListingKind,
+    ) -> BufferId {
         let id = BufferId::next();
         let document = Document::empty();
         let handle = spawn_document(id, document, self.registry.clone());
@@ -280,7 +285,10 @@ impl Editor {
         self.buffers.insert(BufferEntry {
             id,
             flags,
-            data: BufferData::FileTree(entry),
+            data: match kind {
+                crate::buffer_registry::ListingKind::FileTree => BufferData::FileTree(entry),
+                crate::buffer_registry::ListingKind::Oil => BufferData::Oil(entry),
+            },
             name: None,
         });
         self.seed_empty_document_locals(id);

@@ -3339,18 +3339,6 @@ fn help_pane_render(
     }
 }
 
-fn oil_pane_render(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    _snap: &DocumentSnapshot,
-    pane: &crate::pane::PaneState,
-    is_active: bool,
-    _idx: usize,
-) {
-    draw_oil_pane(frame, area, app, pane, is_active);
-}
-
 fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
     app.popup_help()
         .map(|h| format!("[help] {}", h.title))
@@ -3375,7 +3363,15 @@ fn oil_pane_status(app: &App, pane: &crate::pane::PaneState) -> String {
     let dirty_opt = app
         .buffers()
         .registry
-        .with_oil(pane.buffer_id, |o| o.is_dirty());
+        .document_handle(pane.buffer_id)
+        .map(|h| h.snapshot().buffer.as_string())
+        .and_then(|text| {
+            app.buffer_locals()
+                .map
+                .get(&pane.buffer_id)
+                .and_then(|l| l.get::<lattice_listing::oil::modes::OilSnapshotLocal>())
+                .map(|s| s.0.is_dirty(&text))
+        });
     let Some(is_dirty) = dirty_opt else {
         return "[oil]".to_string();
     };
@@ -3416,13 +3412,10 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
         lattice_listing::file_tree::FileTreeMode.id(),
         file_tree_pane_status,
     );
-    registry.register(
-        lattice_listing::oil::OilMode.id(),
-        PaneRenderProvider {
-            render: Some(oil_pane_render),
-            status: oil_pane_status,
-        },
-    );
+    // DL.5: oil has NO `render` provider either — the last bespoke
+    // listing painter is gone, so both listing kinds paint through the
+    // shared compose path. Only the status label is mode-owned.
+    registry.register_status_only(lattice_listing::oil::OilMode.id(), oil_pane_status);
     registry
 }
 
@@ -3786,80 +3779,6 @@ fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate
 /// information (root path) lives in the per-pane status line, so
 /// the content area is purely the tree text -- consistent with
 /// how a Document pane looks.
-fn draw_oil_pane(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    pane: &crate::pane::PaneState,
-    is_active: bool,
-) {
-    // Slice 3c.final.B (group 1): oil view via `app.buffers()`.
-    let Some((raw_text, snapshot)) = app.buffers().registry.with_oil(pane.buffer_id, |o| {
-        (o.content.as_string(), o.snapshot_entries().to_vec())
-    }) else {
-        return;
-    };
-    let (cursor_line, scroll) = if is_active {
-        (app.ad().cursor.line as usize, app.ad().scroll as usize)
-    } else {
-        (pane.cursor.line as usize, pane.scroll as usize)
-    };
-    let viewport = area.height as usize;
-    let nerd_fonts = app.theme.nerd_fonts;
-    let theme = &app.theme;
-    // M.3.2.c.5: dir lives exclusively in the OilDir
-    // buffer-local. No struct fallback; nothing to drift.
-    // Slice 3c.final.B.9: OilDir buffer-local via published map.
-    let locals_map = app.buffer_locals();
-    let dir: std::path::PathBuf = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::OilDir>())
-        .map(|d| d.0.clone())
-        .unwrap_or_default();
-    let lines: Vec<Line> = raw_text
-        .split('\n')
-        // CV.5: `enumerate` runs BEFORE `skip`, so its index is
-        // already the absolute source line — the first row surviving
-        // the skip is `(scroll, …)`. Adding `scroll` to it counted the
-        // scroll twice, which put the cursor highlight `scroll` rows
-        // above the caret and read every row's icon from the wrong
-        // entry. Both were invisible until a pane was short enough to
-        // scroll, which is why the report came from a split.
-        .enumerate()
-        .skip(scroll)
-        .take(viewport)
-        .map(|(line_idx, name_str)| {
-            let is_cursor = is_active && line_idx == cursor_line;
-            let entry = snapshot.get(line_idx);
-            let is_dir = entry.map(|e| e.is_dir).unwrap_or(false);
-            let entry_name = entry.map(|e| e.name.as_str()).unwrap_or("");
-            let path = dir.join(entry_name);
-            let (icon, entry_style) =
-                crate::icons::icon_for_entry(&path, is_dir, nerd_fonts, theme);
-            let cursor_mod = if is_cursor {
-                Modifier::REVERSED
-            } else {
-                Modifier::empty()
-            };
-            let icon_span = Span::styled(icon.to_string(), entry_style.add_modifier(cursor_mod));
-            let name_span =
-                Span::styled(name_str.to_string(), entry_style.add_modifier(cursor_mod));
-            Line::from(vec![icon_span, name_span])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-    if is_active && area.height > 0 && area.width > 0 {
-        let row_off = (app.ad().cursor.line as usize).saturating_sub(app.ad().scroll as usize);
-        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        // Both nerd-font and BMP fallback glyphs occupy 2 cells.
-        let icon_width = 2;
-        let col_off =
-            (app.ad().cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
-    }
-}
-
 fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
     let lines = compose_visible_lines(app, snap, area.height as u32, area.width as u32);
     frame.render_widget(Paragraph::new(lines), area);

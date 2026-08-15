@@ -12,7 +12,8 @@
 | DL.0 | Merge `lattice-oil` + `lattice-file-tree` into one crate | ✅ |
 | DL.1 | `Style::Element(ElementId)` — spans can name a registered element | ✅ |
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | ✅ |
-| DL.3 | Entry icons as leading virtual text | 📝 |
+| DL.3a | Inlay runs carry a style (retires a hardcoded colour) | 📝 |
+| DL.3b | The mode publishes entry icons as leading inlays | 📝 |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
@@ -25,9 +26,11 @@ question disappear and lets DL.4/DL.5 converge the two duplicated
 directory readers and rope renderers *inside* one crate instead of
 across a boundary.
 
-DL.1–DL.3 are **invisible**: they add substrate and a mode that nothing
-consumes yet. Nothing about the painted frame changes, which is what
-makes them safe to land ahead of the risky part.
+DL.1–DL.3b are **invisible**: they add substrate and a mode that
+nothing consumes yet. Nothing about the painted frame changes, which is
+what makes them safe to land ahead of the risky part. (DL.3a is the one
+exception in spirit — it makes LSP inlay hints resolve through the
+theme instead of a hardcoded colour, which is a fix, not a no-op.)
 
 DL.4 and DL.5 are each **atomic per kind**. A buffer cannot be
 half-rendered, so one kind's storage migration, its switch to the shared
@@ -180,21 +183,79 @@ both fail *quietly*:
 `ReadOnly` is deliberately **not** contributed: the tree is read-only
 and oil is not, so it stays per-major.
 
-## DL.3 — icons as leading virtual text 📝
+## DL.3 — icons as leading virtual text
 
-**Depends on:** DL.2.
+**Re-sliced into DL.3a / DL.3b after investigation** (2026-08-15). The
+original slice bundled a generic substrate change with a mode-specific
+producer; they have different blast radii and only one of them is
+testable on its own.
 
-The mode publishes a per-row leading inlay carrying the glyph from
-`entry_visual` and a `Style::Element` for its colour. Uses the existing
-inlay mechanism (`InlayOffset` + `splice_virtual_text_into_spans`), the
-same one LSP hints ride.
+### What the investigation settled
 
-Confirm at implementation whether an inlay can carry a per-inlay style
-today or resolves through a single `inlay_hint_fg()`. If the latter,
-extending it to carry a style is part of this slice — and is the same
-generalisation as DL.1, one axis over.
+**The gutter is not the vehicle.** `Mode::gutter_decorations` exists and
+is genuinely mode-contributed, which made it look like the cheaper
+route. It is not: `GutterDecoration` is a closed two-variant enum
+(`Diff`, `Severity`) where each variant *is* a fixed physical gutter
+column. An entry icon has to sit immediately left of the name, in the
+text flow — and this mode contributes `SignColumn::No`, so those columns
+are not even reserved. Adding a third variant would put the icon in the
+wrong place by construction. The design's inlay reasoning (§6) stands.
 
-Still invisible: the bespoke paths do not read inlays, so nothing
+**Inlays cannot carry a style today**, which the original slice
+suspected. `InlayHintRow` is `{ line, byte, text }`, and every inlay run
+in the worker takes `inlay_fg()` — a hardcoded
+`Color::Named(DarkGray)` — with `run.style` discarded at
+`display_line_to_cell_row`.
+
+**And a themed element for it already exists**: `inlay.hint` is
+registered in `register_builtins` and captured as
+`BuiltinElementIds::inlay_hint`. The worker has been bypassing it. So
+DL.3a is not "add a feature to inlays" so much as "stop ignoring the
+element the theme already publishes" — it retires a hardcoded colour,
+which is a defect by the standing rule, and it makes LSP inlay hints
+themeable as a side effect.
+
+## DL.3a — inlay runs carry a style 📝
+
+**Depends on:** DL.1. **Generic substrate; no listing code.**
+
+- `Style::InlayHint` in `lattice-cells`, with a `syntax_element_id` arm
+  to the existing `ids.inlay_hint`.
+- `InlayHintRow` gains `style: Style`, defaulting to `Style::InlayHint`
+  so LSP hints are unchanged in appearance but now resolve through the
+  theme.
+- Inlay runs resolve via `resolve_style` instead of the hardcoded
+  `inlay_fg`; delete `inlay_hint_fg()`.
+- Both the `DisplayMatrix` build and the `display_line_to_cell_row`
+  projection carry the style — they are asserted byte-identical by the
+  B1 parity test, so both move or the test fails.
+
+**Tests.** An inlay row with an explicit `Style::Element` resolves to
+that element's colour; a default row resolves to `inlay.hint`; retuning
+`inlay.hint` in the theme moves LSP hints (it could not before).
+
+## DL.3b — the mode publishes entry icons 📝
+
+**Depends on:** DL.2, DL.3a.
+
+The mode turns `ListingEntries` into one leading inlay per row: the
+glyph from `entry_visual`, and `Style::Element(id)` for the
+`listing.*` element the path resolves to.
+
+**The open piece is the publish path.** Buffer-locals are written
+host-side; a mode in another crate reaches them through a service the
+host drains — `PendingSyntheticHighlights` → `ExtraHighlights` is the
+worked precedent. The symmetric shape here is a pending-inlays service
+drained into a new generic `ExtraInlays` buffer-local, merged into
+`PaneCellsInputs.inlay_hints` beside the LSP hints, exactly as
+`extra_spans` merges beside the grammar spans.
+
+Do **not** shortcut this by having the host derive icons from
+`ListingEntries` directly. It would work and it would put
+listing-specific knowledge in the host, which is the rule this whole
+plan exists to uphold.
+
+Still invisible: the bespoke paint paths do not read inlays, so nothing
 changes on screen until DL.4/DL.5.
 
 ## DL.4 — file tree onto the shared path 📝

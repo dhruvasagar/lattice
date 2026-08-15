@@ -22,7 +22,7 @@ use lattice_core::buffer::Buffer;
 use lattice_core::buffers::BufferId;
 use lattice_grammar::command::{CommandInvocation, Count};
 use lattice_grammar::dispatcher::execute_motion_only;
-use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+use lattice_grammar::registry::{CommandRegistry, GrammarEnv};
 use lattice_grammar::source::SourceLayer;
 use lattice_grammar::{CancellationToken, CommandRegistryHandle};
 use lattice_mode::PluginMetaSink;
@@ -160,7 +160,7 @@ async fn discovered_grammar_plugin_registers_and_dispatches_through_the_registry
         Position { line: 1, byte: 0 },
         CommandInvocation::of(motion_id).with_count(Count(3)),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect("plugin motion dispatches through the sync trampoline");
     assert_eq!(target, Position { line: 4, byte: 0 });

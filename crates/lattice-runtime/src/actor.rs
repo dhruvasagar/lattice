@@ -238,7 +238,7 @@ impl DocumentActor {
                 reply,
             } => {
                 // N.1.4b / N.1.6 (2026-06-10): borrow the owned env's Arc
-                // handles into the grammar's `TextObjectEnv`, dropping the
+                // handles into the grammar's `GrammarEnv`, dropping the
                 // `+ Send + Sync` auto traits the channel required. Empty
                 // fields when the buffer has no syntax / no comment leader
                 // -- the structural + comment objects then resolve nothing;
@@ -248,7 +248,7 @@ impl DocumentActor {
                         Some(r) => Some(r),
                         None => None,
                     };
-                let to_env = lattice_grammar::TextObjectEnv {
+                let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
                     // TS.1: the actor path carries no raw tree snapshot — its

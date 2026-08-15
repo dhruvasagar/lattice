@@ -1743,7 +1743,7 @@ const MAX: i32 = 10;\n\
         // apply with the `SyntaxSnapshot` as `scope_resolver`; the
         // resolved byte span feeds the delete operator.
         use lattice_grammar::{
-            Args, CancellationToken, CommandInvocation, Target, TextObjectEnv, execute_with_env,
+            Args, CancellationToken, CommandInvocation, GrammarEnv, Target, execute_with_env,
         };
 
         let src = "fn keep() {}\nfn drop_me() {\n    let x = 1;\n}\nfn also_keep() {}\n";
@@ -1766,7 +1766,7 @@ const MAX: i32 = 10;\n\
             cursor,
             inv,
             &CancellationToken::never(),
-            TextObjectEnv {
+            GrammarEnv {
                 // `&s.inner` is the SyntaxSnapshot; coerces to &dyn ScopeResolver.
                 scope_resolver: Some(&s.inner),
                 comment_syntax: None,

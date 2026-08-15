@@ -21,7 +21,7 @@ use lattice_core::Document;
 use lattice_core::buffers::BufferId;
 use lattice_grammar::command::CommandInvocation;
 use lattice_grammar::dispatcher::{execute, execute_with_env};
-use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+use lattice_grammar::registry::{CommandRegistry, GrammarEnv};
 use lattice_grammar::{CancellationToken, CommandRegistryHandle, Effect};
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle};
@@ -116,7 +116,7 @@ async fn manual_close_key_closes_the_nearest_unmatched_opener_in_scope() {
     let src = "fn m() {\n    foo(\n}\n";
     let snapshot = rust_snapshot(src);
     let mut doc = Document::from_text(src);
-    let env = TextObjectEnv {
+    let env = GrammarEnv {
         syntax: Some(&snapshot),
         ..Default::default()
     };

@@ -242,21 +242,28 @@ pub struct CommentSyntax {
     pub block: Option<(String, String)>,
 }
 
-/// N.1.6 (2026-06-10): the per-dispatch environment threaded to text
-/// objects. Bundles the inputs a text object's `apply` may read — the
-/// tree-sitter `scope_resolver` (`af`/`ac`, N.1.4) and the
-/// `comment_syntax` (`aC`/`iC`) — into ONE value so the dispatch seam
-/// carries a single env rather than a widening parameter list (the
-/// long-term-fit choice over parallel params). `Copy` (all fields are
-/// borrows); `default()` is the no-input case — the classic objects
-/// (`iw`/`ap`/`i{`) ignore the env entirely.
+/// The per-dispatch environment: everything the host knows that a
+/// command's `apply` may need but the grammar layer cannot derive for
+/// itself. Bundled into ONE value so the dispatch seam carries a single
+/// env rather than a widening parameter list (the long-term-fit choice
+/// over parallel params). `Copy`; `default()` is the no-input case, and
+/// commands that read nothing from the env (`iw`, `ap`, `i{`) are
+/// unaffected by what it carries.
 ///
-/// TS.1 widened this from a text-object-only env to the general per-dispatch
-/// env: it now also carries the tree-sitter `syntax` snapshot for **actions**
-/// (borrowed `Arc<dyn Any>` so `execute_action` can `Arc::clone` it into the
-/// owned `ActionContext::syntax` — a `&dyn Any` alone can't recover the `Arc`).
+/// It has widened twice, and the name followed on the second:
+///
+/// - **N.1.6 (2026-06-10)** introduced it as a text-object-only env —
+///   the tree-sitter `scope_resolver` (`af`/`ac`, N.1.4) and the
+///   `comment_syntax` (`aC`/`iC`).
+/// - **TS.1** added the tree-sitter `syntax` snapshot for **actions**
+///   (borrowed `Arc<dyn Any>` so `execute_action` can `Arc::clone` it
+///   into the owned `ActionContext::syntax` — a `&dyn Any` alone can't
+///   recover the `Arc`), which already made `TextObjectEnv` a misnomer.
+/// - **IN.0** renamed it to `GrammarEnv` on adding a field read by
+///   **operators** (`>` / `<`), which would have made the old name
+///   actively misleading rather than merely stale.
 #[derive(Clone, Copy, Default)]
-pub struct TextObjectEnv<'a> {
+pub struct GrammarEnv<'a> {
     pub scope_resolver: Option<&'a dyn ScopeResolver>,
     pub comment_syntax: Option<&'a CommentSyntax>,
     /// TS.1: the per-dispatch tree-sitter snapshot, type-erased and borrowed so

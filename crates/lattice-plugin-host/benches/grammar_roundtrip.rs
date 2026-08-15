@@ -18,7 +18,7 @@ use lattice_core::buffers::BufferId;
 use lattice_grammar::CancellationToken;
 use lattice_grammar::command::{CommandInvocation, Count};
 use lattice_grammar::dispatcher::execute_motion_only;
-use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+use lattice_grammar::registry::{CommandRegistry, GrammarEnv};
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginHost, PluginManifest, TrustTier};
 use lattice_protocol::position::Position;
@@ -67,7 +67,7 @@ fn grammar_round_trip(c: &mut Criterion) {
                 cursor,
                 black_box(invocation.clone()),
                 &cancel,
-                TextObjectEnv::default(),
+                GrammarEnv::default(),
             )
             .expect("plugin motion dispatches");
             black_box(out);

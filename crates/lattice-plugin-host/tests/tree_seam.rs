@@ -19,7 +19,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use lattice_core::BufferId;
-use lattice_grammar::{CommandInvocation, CommandRegistry, TextObjectEnv};
+use lattice_grammar::{CommandInvocation, CommandRegistry, GrammarEnv};
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginHost, PluginManifest, TrustTier};
 use lattice_protocol::CancellationToken;
@@ -78,7 +78,7 @@ fn a_granted_plugin_queries_the_enclosing_scope_through_the_seam() {
     let snapshot = rust_snapshot(SRC);
     let mut document = lattice_core::Document::from_text(SRC);
     let cancel = CancellationToken::never();
-    let env = TextObjectEnv {
+    let env = GrammarEnv {
         syntax: Some(&snapshot),
         ..Default::default()
     };
@@ -120,7 +120,7 @@ fn a_granted_plugin_runs_a_query_through_the_seam() {
     let snapshot = rust_snapshot(SRC);
     let mut document = lattice_core::Document::from_text(SRC);
     let cancel = CancellationToken::never();
-    let env = TextObjectEnv {
+    let env = GrammarEnv {
         syntax: Some(&snapshot),
         ..Default::default()
     };
@@ -156,7 +156,7 @@ fn a_granted_plugin_walks_the_tree_with_a_cursor() {
     let snapshot = rust_snapshot(SRC);
     let mut document = lattice_core::Document::from_text(SRC);
     let cancel = CancellationToken::never();
-    let env = TextObjectEnv {
+    let env = GrammarEnv {
         syntax: Some(&snapshot),
         ..Default::default()
     };
@@ -193,7 +193,7 @@ fn a_plugin_without_the_grant_gets_no_tree_handle() {
     let snapshot = rust_snapshot(SRC);
     let mut document = lattice_core::Document::from_text(SRC);
     let cancel = CancellationToken::never();
-    let env = TextObjectEnv {
+    let env = GrammarEnv {
         syntax: Some(&snapshot),
         ..Default::default()
     };
@@ -233,7 +233,7 @@ fn a_buffer_with_no_parse_gets_no_tree_handle() {
         cursor_on_x(),
         CommandInvocation::of(id),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect_err("no snapshot → the guest's tree query is a typed CommandError");
     assert!(matches!(err, lattice_grammar::CommandError::Plugin(_)));

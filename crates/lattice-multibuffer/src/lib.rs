@@ -1814,7 +1814,7 @@ impl Document for MultibufferDocumentHandle {
             cursor,
             invocation,
             &cancel,
-            lattice_grammar::TextObjectEnv {
+            lattice_grammar::GrammarEnv {
                 scope_resolver: composed_resolver
                     .as_ref()
                     .map(|r| r as &dyn lattice_grammar::ScopeResolver),

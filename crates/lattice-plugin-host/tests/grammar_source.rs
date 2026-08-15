@@ -25,7 +25,7 @@ use lattice_grammar::CancellationToken;
 use lattice_grammar::command::{CommandInvocation, Count};
 use lattice_grammar::dispatcher::execute_motion_only;
 use lattice_grammar::error::CommandError;
-use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+use lattice_grammar::registry::{CommandRegistry, GrammarEnv};
 use lattice_grammar::source::SourceLayer;
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{
@@ -115,7 +115,7 @@ fn dispatch_down_n(registry: &CommandRegistry) {
         Position { line: 1, byte: 0 },
         CommandInvocation::of(motion_id).with_count(Count(3)),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect("plugin motion dispatches");
     assert_eq!(target, Position { line: 4, byte: 0 });
@@ -180,7 +180,7 @@ fn traced_guest_err_records_a_warn_even_at_the_default_gate() {
         Position { line: 0, byte: 0 },
         CommandInvocation::of(fails_id),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect_err("the guest err is a typed CommandError");
 
@@ -234,7 +234,7 @@ fn plugin_motion_dispatches_through_the_sync_trampoline() {
         Position { line: 1, byte: 0 },
         CommandInvocation::of(motion_id).with_count(Count(3)),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect("plugin motion dispatches through the sync trampoline");
     assert_eq!(target, Position { line: 4, byte: 0 });
@@ -330,7 +330,7 @@ fn plugin_motion_guest_err_degrades_to_a_graceful_no_op() {
         Position { line: 0, byte: 0 },
         CommandInvocation::of(fails_id),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect_err("a guest err is a typed CommandError, not a success");
     assert!(
@@ -361,7 +361,7 @@ fn a_trapping_motion_quarantines_and_short_circuits() {
         Position { line: 0, byte: 0 },
         CommandInvocation::of(traps_id),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect_err("a trapping motion is a typed CommandError, not a success/panic");
     assert!(matches!(err1, CommandError::Plugin(_)), "got {err1:?}");
@@ -375,7 +375,7 @@ fn a_trapping_motion_quarantines_and_short_circuits() {
         Position { line: 0, byte: 0 },
         CommandInvocation::of(traps_id),
         &cancel,
-        TextObjectEnv::default(),
+        GrammarEnv::default(),
     )
     .expect_err("a quarantined plugin short-circuits to a no-op");
     assert!(matches!(err2, CommandError::Plugin(_)), "got {err2:?}");

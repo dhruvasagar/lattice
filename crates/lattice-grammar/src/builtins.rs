@@ -2498,7 +2498,7 @@ mod tests {
     #[test]
     fn comment_object_around_keeps_markers_inner_strips_leader() {
         use crate::dispatcher::execute_with_env;
-        use crate::registry::{CommentSyntax, TextObjectEnv};
+        use crate::registry::{CommentSyntax, GrammarEnv};
         // line 1 `    // first`, line 2 `    // second` form one block.
         let src = "fn f() {\n    // first\n    // second\n    let x = 1;\n}\n";
         let (registry, b, mut doc) = fixture(src);
@@ -2536,7 +2536,7 @@ mod tests {
             cursor,
             inv,
             &cancel,
-            TextObjectEnv {
+            GrammarEnv {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
                 syntax: None,
@@ -2559,7 +2559,7 @@ mod tests {
             cursor,
             inv,
             &cancel,
-            TextObjectEnv {
+            GrammarEnv {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
                 syntax: None,
@@ -2578,7 +2578,7 @@ mod tests {
         // No comment_syntax in the env -> empty range -> the operator
         // no-ops (vim's `daC` with no comment does nothing).
         use crate::dispatcher::execute_with_env;
-        use crate::registry::TextObjectEnv;
+        use crate::registry::GrammarEnv;
         let src = "// a comment\n";
         let (registry, b, mut doc) = fixture(src);
         let cancel = CancellationToken::never();
@@ -2593,7 +2593,7 @@ mod tests {
             Position::new(0, 3),
             inv,
             &cancel,
-            TextObjectEnv::default(),
+            GrammarEnv::default(),
         )
         .unwrap();
         assert!(matches!(eff, Effect::None), "no leader -> no-op");

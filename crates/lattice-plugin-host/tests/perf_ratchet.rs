@@ -153,7 +153,7 @@ fn grammar_round_trip_stays_within_ceiling() {
     use lattice_grammar::CancellationToken;
     use lattice_grammar::command::{CommandInvocation, Count};
     use lattice_grammar::dispatcher::execute_motion_only;
-    use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+    use lattice_grammar::registry::{CommandRegistry, GrammarEnv};
     use lattice_protocol::position::Position as GrammarPos;
 
     let path = env!("GRAMMAR_GUEST_WASM");
@@ -200,7 +200,7 @@ fn grammar_round_trip_stays_within_ceiling() {
             cursor,
             invocation.clone(),
             &cancel,
-            TextObjectEnv::default(),
+            GrammarEnv::default(),
         )
         .unwrap();
     }
@@ -215,7 +215,7 @@ fn grammar_round_trip_stays_within_ceiling() {
             cursor,
             invocation.clone(),
             &cancel,
-            TextObjectEnv::default(),
+            GrammarEnv::default(),
         )
         .unwrap();
         samples.push(t.elapsed());

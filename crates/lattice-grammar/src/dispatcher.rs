@@ -60,12 +60,12 @@ pub fn execute(
         cursor,
         invocation,
         cancel,
-        crate::registry::TextObjectEnv::default(),
+        crate::registry::GrammarEnv::default(),
     )
 }
 
 /// N.1.4a / N.1.6 (2026-06-10): `execute` plus the per-dispatch
-/// [`TextObjectEnv`](crate::registry::TextObjectEnv) — the tree-sitter
+/// [`GrammarEnv`](crate::registry::GrammarEnv) — the tree-sitter
 /// `scope_resolver` (`af`/`ac`) and the `comment_syntax` (`aC`/`iC`).
 /// The host builds the env (N.1.4b / N.1.6) and threads it down to the
 /// `TextObjectContext`; the classic objects (`iw`, `ap`, `i{`) ignore it.
@@ -76,7 +76,7 @@ pub fn execute_with_env(
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     // Honor any pre-existing cancellation request before we start.
     cancel.check()?;
@@ -116,7 +116,7 @@ fn execute_action(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let spec = require_action(entry)?;
     let ctx = ActionContext {
@@ -162,7 +162,7 @@ pub fn execute_motion_only(
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Position> {
     cancel.check()?;
     let entry = registry
@@ -212,7 +212,7 @@ fn execute_motion(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let motion = require_motion(entry)?;
     let ctx = MotionContext {
@@ -240,7 +240,7 @@ fn execute_text_object(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let tobj = require_text_object(entry)?;
     let ctx = TextObjectContext {
@@ -287,7 +287,7 @@ fn execute_operator(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let operator = require_operator(entry)?;
 
@@ -618,7 +618,7 @@ fn resolve_target(
     target: &Target,
     count: crate::command::Count,
     cancel: &CancellationToken,
-    env: crate::registry::TextObjectEnv<'_>,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<ProtoRange> {
     match target {
         Target::Motion(motion_id, args) => {
@@ -993,7 +993,7 @@ mod tests {
 
         let mut doc = lattice_core::Document::from_text("fn a() {}\n");
         let resolver = FixedResolver;
-        let env = crate::registry::TextObjectEnv {
+        let env = crate::registry::GrammarEnv {
             scope_resolver: Some(&resolver),
             comment_syntax: None,
             syntax: None,

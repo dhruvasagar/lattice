@@ -72,7 +72,7 @@ pub type ScopeResolverHandle = Arc<dyn lattice_grammar::ScopeResolver + Send + S
 /// `scope_resolver` (`af`/`ac`, N.1.4) and the `comment_syntax`
 /// (`aC`/`iC`, N.1.6) — so the dispatch seam threads ONE value instead
 /// of a widening parameter list (the long-term-fit choice over parallel
-/// params). The actor borrows these into a `lattice_grammar::TextObjectEnv`
+/// params). The actor borrows these into a `lattice_grammar::GrammarEnv`
 /// at the `execute_with_env` call. `Default` is the no-input case.
 #[derive(Clone, Default)]
 pub struct DispatchEnv {

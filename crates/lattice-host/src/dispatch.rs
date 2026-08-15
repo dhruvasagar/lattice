@@ -36423,7 +36423,7 @@ impl Editor {
                 .syntax
                 .as_ref()
                 .map(|h| h.snapshot() as std::sync::Arc<dyn std::any::Any + Send + Sync>);
-            let env = lattice_grammar::TextObjectEnv {
+            let env = lattice_grammar::GrammarEnv {
                 syntax: syntax_any.as_ref(),
                 ..Default::default()
             };
@@ -36640,7 +36640,7 @@ impl Editor {
                     self.cursor,
                     motion_inv,
                     &cancel,
-                    lattice_grammar::TextObjectEnv::default(),
+                    lattice_grammar::GrammarEnv::default(),
                 ) {
                     self.cursor = new_pos;
                     self.pane_tree.active_mut().cursor = new_pos;
@@ -36807,7 +36807,7 @@ impl Editor {
                 self.cursor,
                 motion_inv,
                 &cancel,
-                lattice_grammar::TextObjectEnv::default(),
+                lattice_grammar::GrammarEnv::default(),
             ) {
                 Ok(new_pos) => {
                     self.cursor = new_pos;
@@ -36997,7 +36997,7 @@ impl Editor {
             self.cursor,
             inv,
             &cancel,
-            lattice_grammar::TextObjectEnv::default(),
+            lattice_grammar::GrammarEnv::default(),
         ) {
             self.cursor = target;
         }

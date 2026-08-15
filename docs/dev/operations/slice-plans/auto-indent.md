@@ -9,14 +9,14 @@
 | Slice | Title | Status |
 |---|---|---|
 | IN.0 | Indent-unit options; retire the hardcoded `INDENT_UNIT` | ✅ |
-| IN.1 | `lattice-indent` crate — lexical bridge; `indentmethod=none\|keep` | 📝 |
+| IN.1 | `lattice-syntax::indent` lexical bridge; `indentmethod=none\|keep` | ✅ |
 | IN.2 | Query engine + `rust/indents.scm` + the bounded-reparse staleness path | 📝 |
 | IN.3 | `indents.scm` — brace family (9 languages) | 📝 |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | 📝 |
 | IN.5 | `indents.scm` — data + markup (5 languages) | 📝 |
 | IN.6 | Electric reindent | 📝 |
 | IN.7 | `=` — the reindent operator | 📝 |
-| IN.8 | `lattice-format` + `:format` cascade + minimal-edit application | 📝 |
+| IN.8 | `lattice-format` crate + `:format` cascade + minimal-edit application | 📝 |
 | IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
 | IN.10 | LSP `onTypeFormatting` — the additive layer | 📝 |
 | IN.11 | Per-language mode defaults; GPUI parity audit; docs + benchmarks | 📝 |
@@ -112,8 +112,8 @@ in `lattice-grammar` consume is a dependency **cycle**, not a move commit.
 
 `lattice-core` is the floor both sides already stand on, and where the sibling
 `FoldMethod` lives for exactly the same reason — `lattice-config` needs it and
-cannot depend upward. `lattice-indent` is created in IN.1 and holds the
-*engine*; `lattice-core::indent` holds the *value*.
+cannot depend upward. The *engine* went to `lattice-syntax::indent` at IN.1
+(see the note there); `lattice-core::indent` holds the *value*.
 
 Shape as built: `IndentUnit { width, expand_tabs, tabstop }` with
 `columns_of` / `render` / `shift` / `reindented_prefix`, plus the
@@ -135,24 +135,49 @@ this slice makes that true rather than adding a claim.
 
 ---
 
-## IN.1 — `lattice-indent`; lexical bridge; `indentmethod=keep` 📝
+## IN.1 — the lexical bridge; `indentmethod=keep` ✅
 
-**Depends on:** IN.0. **New crate:** `lattice-indent`, created here (IN.0 put
-the `IndentUnit` *value* in `lattice-core` instead — see the cycle note there).
+**Depends on:** IN.0. **New crates: none.**
 
-Contents: `lexical.rs`.
+The engine goes in **`lattice-syntax::indent`**, beside `text_objects.rs` and
+`motions.rs` — the same shape (computation over the parse tree, driven by
+`.scm` files that crate already owns and embeds).
 
-`lexical.rs` computes the previous non-blank line's indent, plus one level if
+> **Corrected during execution.** The plan originally specified a dedicated
+> `lattice-indent` crate. It was built, then collapsed: the stated
+> justification was "`syntax.rs` is already 119 KB", which describes one file
+> rather than the crate, and `lattice-syntax` already carries eleven modules. A
+> dedicated crate needs a stronger reason than module count. Not
+> `lattice-grammar` either — it "stays tree-sitter-agnostic" by its own
+> manifest, and IN.2's engine needs the tree.
+>
+> `lattice-format` (IN.8) still earns its own crate: it spawns processes and
+> owns a timeout/stderr policy, which is a genuinely different concern from a
+> pure tree walk.
+
+`indent.rs` computes the previous non-blank line's indent, plus one level if
 that line ends in an unclosed opener, minus one if the target line begins with
 a closer. Language-agnostic core plus a tiny per-language opener/closer table.
 **This is the same function that becomes `syntax`'s fallback in IN.2** — it is
 not scaffolding.
 
-Wire the three predictive call sites through one helper:
+`keep` and the `syntax` fallback are **two policies over one mechanism**, not
+the same behaviour: `keep` is a pure copy (vim's `autoindent`) and does NOT
+scan, because the bracket rule misfires in a language where `{` is not a block
+opener. The design fragment §5 originally conflated them; corrected there.
+
+Wire the predictive call sites through **two** helpers, not one — the create-a-
+line case and the split-a-line case do not share a "previous line":
 
 ```rust
-Editor::indent_for_new_line(after_line: u32) -> String
+Editor::auto_indent_for_new_line(after_line: u32, moved_tail: Option<&str>)  // o / O
+Editor::auto_indent_for_split(head: &str, tail: &str)                        // <CR>
 ```
+
+`<CR>` derives its indent from the **head** (the text before the cursor), not
+the whole line. In `foo(a, |b)` the whole line is bracket-balanced while the
+head leaves `(` open, so passing the whole line silently fails to indent the
+continuation. Found by a test during IN.1; both helpers share one private body.
 
 - `do_open_line_below` (`dispatch.rs:19283`)
 - `do_open_line_above` (`dispatch.rs:19305`)

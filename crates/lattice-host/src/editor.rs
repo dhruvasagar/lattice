@@ -601,6 +601,13 @@ pub struct Editor {
     /// deleting). Cleared on entry, pushed on each
     /// `OverwriteChar`, popped on `ReplaceUndoLast`.
     pub replace_history: Vec<ReplaceEntry>,
+    /// IN.1: line that was auto-indented and has gained nothing
+    /// since. Vim strips such indent when the line is left, so
+    /// `o<Esc>` leaves no trailing whitespace on a line the user
+    /// never typed into. Set by `note_auto_indent`, cleared by the
+    /// first content typed into the line, consumed by
+    /// `strip_pending_auto_indent` on leaving Insert.
+    pub auto_indent_line: Option<u32>,
     /// Text inserted during the most recently completed
     /// Insert session. Captured on Esc out of Insert;
     /// replayed by dot-repeat after the operator part. `None`

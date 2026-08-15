@@ -8478,7 +8478,38 @@ impl Editor {
             AppEffect::FindRepeat { reverse } => {
                 out.next_actions.push(Action::FindRepeat { reverse })
             }
-            AppEffect::InsertNewline => out.next_actions.push(Action::Insert("\n".to_string())),
+            // IN.1: `<CR>` carries its auto-indent in the SAME
+            // `Action::Insert`, so the newline and the indent are one
+            // edit and one dot-repeat record.
+            //
+            // Computed here rather than in `do_insert_text` because
+            // this arm is where `<CR>` is unambiguously `<CR>`: by the
+            // time it reaches `do_insert_text` it is an
+            // indistinguishable `Insert("\n")`, and special-casing the
+            // string there would auto-indent a pasted newline too.
+            // Also avoids a new `Action` variant and its GPUI arm.
+            AppEffect::InsertNewline => {
+                // Split the current line at the cursor: the head stays
+                // above and is what the indent is derived from; the
+                // tail moves down, so a `}` sitting there dedents.
+                let line = self
+                    .active_text()
+                    .line(self.cursor.line)
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                let at = (self.cursor.byte as usize).min(line.len());
+                // The cursor can land mid-codepoint after some edits;
+                // walk back to a boundary rather than panicking on the
+                // slice.
+                let at = (0..=at)
+                    .rev()
+                    .find(|i| line.is_char_boundary(*i))
+                    .unwrap_or(0);
+                let indent = self.auto_indent_for_split(&line[..at], &line[at..]);
+                let landing = self.cursor.line + 1;
+                out.next_actions.push(Action::Insert(format!("\n{indent}")));
+                self.note_auto_indent(landing, &indent);
+            }
             AppEffect::InsertTab => out.next_actions.push(Action::Insert("\t".to_string())),
             AppEffect::OverwriteChar(c) => out.next_actions.push(Action::OverwriteChar(c)),
             AppEffect::SetMark(c) => out.next_actions.push(Action::SetMark(c)),
@@ -10050,6 +10081,14 @@ impl Editor {
             return;
         };
         self.cursor = applied.inserted_range.end;
+        // IN.1: the line has gained content, so its auto-indent is no
+        // longer the only thing on it and must not be stripped on
+        // Esc. Whitespace does not count -- typing a space into an
+        // auto-indented line and leaving still leaves a blank line.
+        if self.auto_indent_line == Some(self.cursor.line) && !lattice_core::IndentUnit::is_blank(s)
+        {
+            self.auto_indent_line = None;
+        }
         // Capture into the in-flight Insert recording for dot-repeat.
         if let Some(rec) = self.recording_insert.as_mut() {
             rec.push_str(s);
@@ -19294,11 +19333,22 @@ impl Editor {
         let buf = self.active_text();
         let len = buf.line_byte_len(self.cursor.line);
         let eol = lattice_protocol::position::Position::new(self.cursor.line, len);
+        // IN.1: the newline and its indent are ONE edit, not two.
+        // Two would be two entries on the render path and a second
+        // chance for the undo grouping to split the indent off from
+        // the newline -- the exact bug the group-before-newline
+        // ordering above exists to prevent.
+        let indent = self.auto_indent_for_new_line(self.cursor.line, None);
+        let inserted = format!("\n{indent}");
         if self
-            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(eol, "\n"))
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(eol, &inserted))
             .is_ok()
         {
-            self.cursor = lattice_protocol::position::Position::new(self.cursor.line + 1, 0);
+            self.cursor = lattice_protocol::position::Position::new(
+                self.cursor.line + 1,
+                indent.len() as u32,
+            );
+            self.note_auto_indent(self.cursor.line, &indent);
         }
         self.modal = ModalState::Insert;
     }
@@ -19311,11 +19361,17 @@ impl Editor {
         // the whole `O` session is one undo unit.
         self.document.begin_undo_group();
         let bol = lattice_protocol::position::Position::new(self.cursor.line, 0);
+        // IN.1: `O` takes its indent from the line it pushes down --
+        // the line the cursor is on -- which is vim's behaviour and
+        // the same source `o` uses.
+        let indent = self.auto_indent_for_new_line(self.cursor.line, None);
+        let inserted = format!("{indent}\n");
         if self
-            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(bol, "\n"))
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(bol, &inserted))
             .is_ok()
         {
-            self.cursor = bol;
+            self.cursor = lattice_protocol::position::Position::new(bol.line, indent.len() as u32);
+            self.note_auto_indent(bol.line, &indent);
         }
         self.modal = ModalState::Insert;
     }
@@ -20792,6 +20848,12 @@ impl Editor {
             self.document.begin_undo_group();
         }
         if was_insert_like && !entering_insert_like {
+            // IN.1: drop auto-inserted indent the user never typed
+            // into, BEFORE closing the undo group. Inside the group,
+            // `o<Esc>u` restores exactly the original buffer; outside
+            // it, the strip would be its own undo unit and the first
+            // `u` would put the trailing whitespace back.
+            self.strip_pending_auto_indent();
             // Close the coalescing group FIRST, before any block-insert
             // commit: `replicate_block_insert` rewinds the (now single)
             // coalesced top-row entry and re-applies all rows as its own
@@ -30952,6 +31014,113 @@ impl Editor {
         let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
         let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
         lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
+    }
+
+    /// IN.1: the whitespace a line created after `after_line` should
+    /// start with, per `indentmethod`.
+    ///
+    /// `moved_tail` is the text that will follow the cursor onto the
+    /// new line (`<CR>` pressed mid-line); `None` for `o` / `O`, which
+    /// create an empty line. It only affects the closer check -- a
+    /// `}` moving down with the cursor should dedent.
+    ///
+    /// The single entry point for predictive indent. `o`, `O` and
+    /// `<CR>` all route here so they cannot disagree, in the same way
+    /// [`Self::indent_unit`] keeps `>>` and `<C-t>` aligned.
+    pub fn auto_indent_for_new_line(&self, after_line: u32, moved_tail: Option<&str>) -> String {
+        let text = self.active_text();
+        // Vim copies from the previous NON-BLANK line: `o` on a blank
+        // line inside an indented block should keep the block's
+        // indent, not reset to column 0.
+        let mut probe = Some(after_line);
+        let prev = loop {
+            let Some(line) = probe else { break None };
+            let s = text.line(line).unwrap_or_default();
+            let s = s.trim_end_matches('\n').to_string();
+            if !lattice_core::IndentUnit::is_blank(&s) {
+                break Some(s);
+            }
+            probe = line.checked_sub(1);
+        };
+        self.auto_indent_from(prev.as_deref(), moved_tail)
+    }
+
+    /// IN.1: the indent for the lower half of a line split by `<CR>`.
+    ///
+    /// The upper half is `head` — the text BEFORE the cursor, which is
+    /// what actually stays on the line above. Passing the whole line
+    /// instead is wrong in a way that only shows up mid-line: in
+    /// `foo(a, |b)` the whole line is bracket-balanced while the head
+    /// leaves `(` open, so the continuation would fail to indent.
+    ///
+    /// No blank-line walk-back here: when `<CR>` splits a line, the
+    /// text above the cursor is the previous line by construction,
+    /// even when it is empty (cursor at column 0 ⇒ no indent, which is
+    /// vim's behaviour — the tail keeps whatever indent it already
+    /// had).
+    pub fn auto_indent_for_split(&self, head: &str, tail: &str) -> String {
+        self.auto_indent_from(Some(head), Some(tail))
+    }
+
+    /// Shared body: resolve `indentmethod` + the unit + the language's
+    /// bracket set, and hand off to the engine.
+    fn auto_indent_from(&self, prev: Option<&str>, moved_tail: Option<&str>) -> String {
+        let buffer = self.active_buffer_id();
+        let method =
+            *self.resolved_option::<lattice_config::core_options::IndentMethodOption>(buffer);
+        if matches!(method, lattice_core::IndentMethod::None) {
+            return String::new();
+        }
+        let lang = lattice_syntax::Lang::detect_from_path(self.document.path().as_deref());
+        lattice_syntax::indent_for_new_line(
+            method,
+            prev,
+            moved_tail,
+            self.indent_unit(buffer),
+            lattice_syntax::BracketSyntax::for_lang(lang),
+        )
+    }
+
+    /// Record that `line` was given `indent` automatically and nothing
+    /// has been typed into it yet.
+    ///
+    /// Vim strips auto-inserted indent when the line is left without
+    /// gaining content, so `o<Esc>` does not park trailing whitespace
+    /// on a line the user never typed into. Empty indent records
+    /// nothing -- there is nothing to strip.
+    fn note_auto_indent(&mut self, line: u32, indent: &str) {
+        self.auto_indent_line = (!indent.is_empty()).then_some(line);
+    }
+
+    /// Drop auto-inserted indent if the line still holds nothing else.
+    ///
+    /// Called on leaving Insert. Re-checks that the line is genuinely
+    /// all-whitespace rather than trusting the flag alone: the flag
+    /// says "we put indent here", the buffer says whether it is still
+    /// the only thing there, and the buffer is the authority (a
+    /// completion, a snippet or a plugin edit may have added content
+    /// without going through the typing path).
+    pub fn strip_pending_auto_indent(&mut self) {
+        let Some(line) = self.auto_indent_line.take() else {
+            return;
+        };
+        let text = self.active_text();
+        let Some(raw) = text.line(line) else { return };
+        let content = raw.trim_end_matches('\n');
+        if content.is_empty() || !lattice_core::IndentUnit::is_blank(content) {
+            return;
+        }
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(line, 0),
+            lattice_protocol::position::Position::new(line, content.len() as u32),
+        );
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+            .is_ok()
+            && self.cursor.line == line
+        {
+            self.cursor.byte = 0;
+        }
     }
 
     /// Body of `:set foo=bar`. Parses + applies the spec via the
@@ -45716,6 +45885,252 @@ mod tests {
         // The cursor moved by the BYTE delta (1), not the column
         // delta (4) -- the distinction tabs make.
         assert_eq!(editor.cursor.byte, 1);
+    }
+
+    // ---- IN.1: predictive indent on o / O / <CR> ----
+
+    /// A rust-pathed editor, so `BracketSyntax::for_lang` gives the
+    /// brace set rather than the prose no-op.
+    fn rust_editor(text: &str) -> Editor {
+        Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path("t.rs")
+                .with_text(text)
+                .build(),
+        )
+    }
+
+    fn line_at(editor: &Editor, line: u32) -> String {
+        editor
+            .active_text()
+            .line(line)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    #[test]
+    fn open_line_below_copies_the_previous_indent() {
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 2), "    ");
+        assert_eq!(editor.cursor.byte, 4, "cursor sits after the indent");
+    }
+
+    #[test]
+    fn open_line_below_adds_a_level_after_an_unclosed_brace() {
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 1), "    ");
+    }
+
+    #[test]
+    fn open_line_above_takes_the_indent_of_the_line_it_pushes_down() {
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        editor.do_open_line_above();
+        assert_eq!(line_at(&editor, 1), "    ");
+        assert_eq!(line_at(&editor, 2), "    x();", "old line moved down");
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.byte, 4);
+    }
+
+    #[test]
+    fn open_line_skips_blank_lines_to_find_the_indent() {
+        // `o` on a blank line inside an indented block keeps the
+        // block's indent rather than resetting to column 0.
+        let mut editor = rust_editor("fn f() {\n    x();\n\n");
+        editor.cursor = lattice_protocol::position::Position::new(2, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 3), "    ");
+    }
+
+    #[test]
+    fn indentmethod_none_restores_column_zero_behaviour() {
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        editor.do_set("indentmethod=none");
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 2), "");
+        assert_eq!(editor.cursor.byte, 0);
+    }
+
+    #[test]
+    fn indentmethod_keep_does_not_add_a_level_after_a_brace() {
+        // The `keep` vs `syntax`-fallback distinction, end to end:
+        // `keep` is a pure copy (vim autoindent), so an unclosed
+        // brace must NOT deepen the indent.
+        let mut editor = rust_editor("    fn f() {\n}\n");
+        editor.do_set("indentmethod=keep");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 1), "    ");
+    }
+
+    #[test]
+    fn auto_indent_is_stripped_when_the_line_gains_nothing() {
+        // `o<Esc>` must not park trailing whitespace on a line the
+        // user never typed into.
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 1), "    ", "indent present while editing");
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+        assert_eq!(line_at(&editor, 1), "", "stripped on leaving Insert");
+    }
+
+    #[test]
+    fn auto_indent_survives_when_the_line_gains_content() {
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        let mut out = DispatchOutcome::default();
+        editor.do_insert_text("y", &mut out);
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+        assert_eq!(line_at(&editor, 1), "    y");
+    }
+
+    #[test]
+    fn typing_only_whitespace_still_strips() {
+        // A space is not content: leaving still leaves a blank line.
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        let mut out = DispatchOutcome::default();
+        editor.do_insert_text(" ", &mut out);
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+        assert_eq!(line_at(&editor, 1), "");
+    }
+
+    #[test]
+    fn open_line_and_its_indent_undo_as_one_unit() {
+        // The single-edit requirement, tested the way it fails: if
+        // the newline and the indent were two edits, or the strip
+        // landed outside the undo group, one `u` would leave a
+        // half-state behind.
+        let before = "fn f() {\n}\n";
+        let mut editor = rust_editor(before);
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+        let _ = editor.undo_blocking();
+        assert_eq!(
+            editor.active_text().as_string(),
+            before,
+            "one undo must restore the original buffer exactly"
+        );
+    }
+
+    #[test]
+    fn auto_indent_honours_expandtab_and_shiftwidth() {
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.do_set("expandtab=false");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        // shiftwidth 4 == tabstop 4, so one level is one tab byte.
+        assert_eq!(line_at(&editor, 1), "\t");
+        assert_eq!(editor.cursor.byte, 1);
+    }
+
+    /// Drive `<CR>` the way Insert mode does: through the effect arm,
+    /// then the `Action::Insert` it queues. `do_open_line_below` is a
+    /// different code path, so the `o` tests above would pass even if
+    /// `<CR>` auto-indented nothing at all.
+    fn press_enter(editor: &mut Editor) {
+        let mut out = DispatchOutcome::default();
+        editor.apply_app_effect(lattice_grammar::AppEffect::InsertNewline, &mut out);
+        for action in std::mem::take(&mut out.next_actions) {
+            if let Action::Insert(s) = action {
+                editor.do_insert_text(&s, &mut out);
+            }
+        }
+    }
+
+    #[test]
+    fn enter_carries_the_indent_of_the_line_it_splits() {
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        // End of `    x();`.
+        editor.cursor = lattice_protocol::position::Position::new(1, 8);
+        press_enter(&mut editor);
+        assert_eq!(line_at(&editor, 2), "    ");
+        assert_eq!(editor.cursor.line, 2);
+        assert_eq!(editor.cursor.byte, 4);
+    }
+
+    #[test]
+    fn enter_after_an_open_brace_adds_a_level() {
+        let mut editor = rust_editor("fn f() {\n}\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(0, 8);
+        press_enter(&mut editor);
+        assert_eq!(line_at(&editor, 1), "    ");
+    }
+
+    #[test]
+    fn enter_before_a_closing_brace_dedents_the_moved_tail() {
+        // `{|}` -- the tail `}` moves down with the cursor, so the
+        // new line dedents rather than inheriting the opener's level.
+        let mut editor = rust_editor("fn f() {}\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(0, 8);
+        press_enter(&mut editor);
+        // The tail `}` moved down and must sit at column 0 -- the
+        // head's open brace and the tail's closer cancel.
+        assert_eq!(line_at(&editor, 1), "}");
+    }
+
+    #[test]
+    fn enter_derives_indent_from_the_head_not_the_whole_line() {
+        // `foo(a, |b)` — the whole line is bracket-balanced, but the
+        // HEAD leaves `(` open, so the continuation must indent. This
+        // is the case that distinguishes the two, and the one an
+        // earlier revision got wrong by passing the whole line.
+        let mut editor = rust_editor("foo(a, b)\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(0, 7);
+        press_enter(&mut editor);
+        assert_eq!(line_at(&editor, 0), "foo(a, ");
+        assert_eq!(line_at(&editor, 1), "    b)");
+    }
+
+    #[test]
+    fn enter_at_column_zero_leaves_the_tail_indent_alone() {
+        // Head is empty ⇒ no indent added, and the tail keeps the
+        // whitespace it already had rather than doubling it.
+        let mut editor = rust_editor("    x();\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        press_enter(&mut editor);
+        assert_eq!(line_at(&editor, 0), "");
+        assert_eq!(line_at(&editor, 1), "    x();");
+    }
+
+    #[test]
+    fn enter_splits_the_line_mid_word_without_losing_the_tail() {
+        let mut editor = rust_editor("    abcdef\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(0, 7);
+        press_enter(&mut editor);
+        assert_eq!(line_at(&editor, 0), "    abc");
+        assert_eq!(line_at(&editor, 1), "    def");
+    }
+
+    #[test]
+    fn prose_buffers_do_not_brace_indent() {
+        // A brace in a sentence must not indent the next line --
+        // `BracketSyntax::for_lang` gives markdown the empty set.
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path("t.md")
+                .with_text("  a { in prose\n")
+                .build(),
+        );
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        assert_eq!(line_at(&editor, 1), "  ");
     }
 
     #[test]

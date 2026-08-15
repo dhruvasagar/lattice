@@ -51,6 +51,10 @@
 //! described in §5.6 style mappings.
 
 pub mod handle;
+// IN.1: the indent engine. Beside `motions` / `text_objects` --
+// same shape (computation over the tree, driven by this crate's
+// `.scm` files). IN.2 adds the `indents.scm` evaluator here.
+pub mod indent;
 pub mod lang;
 pub mod modes;
 pub mod motions;
@@ -64,6 +68,7 @@ pub mod text_objects;
 pub mod theme_style;
 
 pub use crate::handle::SyntaxHandle;
+pub use crate::indent::{BracketSyntax, indent_columns_for_new_line, indent_for_new_line};
 pub use crate::lang::Lang;
 pub use crate::modes::{
     JavascriptMode, MarkdownMode, PythonMode, RustMode, TREE_SITTER_COMPLETION_SOURCE_ID,

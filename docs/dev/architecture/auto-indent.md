@@ -190,10 +190,26 @@ The budget is a **measured** number, set from the IN.2 bench and recorded in
 one that pins the budget to `0` so the lexical path is exercised
 deterministically rather than only on someone's large file.
 
-The lexical bridge is the previous line's indent plus an opener/closer scan —
-which is exactly what `indentmethod=keep` promises. **It is shared code, not
-dead weight**: the fallback for `syntax` and the implementation of `keep` are
-the same function.
+The lexical bridge is the previous line's indent plus an opener/closer scan.
+
+> **Corrected at IN.1.** An earlier revision of this section claimed the bridge
+> was "exactly what `indentmethod=keep` promises". It is not, and §3 said
+> otherwise — `keep` is documented there as vim's `autoindent`, a **pure
+> copy**. Vim separates `autoindent` from `smartindent` for a real reason: the
+> brace rule misfires in a language where `{` is not a block opener, and `keep`
+> is what a user picks when they want the dumbest predictable thing. The two
+> are now distinct:
+>
+> - **`keep`** — copy the previous non-blank line's indent. No scan.
+> - **`syntax`'s fallback** — copy, plus one level if the previous line leaves
+>   a bracket unclosed, minus one if the target line opens with a closer. The
+>   opener/closer sets are **per-language**, and languages with no bracket
+>   notion (plain text, markdown) have empty sets, at which point the bridge
+>   degrades to `keep` on its own rather than by special case.
+>
+> They still share `lattice-indent`'s `lexical.rs` and the same
+> previous-line-scan primitive, so neither is dead weight; they are two
+> policies over one mechanism.
 
 > **UX (higher court):** the degraded path lands one level off after typing an
 > opener on a very large file; the next keystroke or `=` corrects it. No
@@ -324,28 +340,39 @@ action.
 
 ## 9. Crate placement
 
-The **value** in `lattice-core`, the **engine** and the **external-tool
-runner** in two new narrow crates.
+**One new crate, not two.** The indent value goes in `lattice-core`, the
+engine into the existing `lattice-syntax`, and only the external-tool runner
+earns a crate of its own.
 
 **`lattice-core::indent`** (IN.0, landed) — `IndentUnit { width,
 expand_tabs, tabstop }` with `columns_of` / `render` / `shift` /
 `reindented_prefix`, plus the `IndentMethod` enum.
 
-Not in `lattice-indent`, and this is load-bearing rather than tidiness:
-`lattice-syntax` depends on `lattice-grammar`, so a value type owned by
-`lattice-indent` (which depends on `lattice-syntax`) and consumed by the `>` /
-`<` operators in `lattice-grammar` is a **dependency cycle**. `lattice-core` is
-the floor both sides already stand on, and where the sibling `FoldMethod` lives
-for exactly the same reason.
+The placement is load-bearing rather than tidiness: `lattice-syntax` depends on
+`lattice-grammar`, so a value type owned above `lattice-syntax` and consumed by
+the `>` / `<` operators *in* `lattice-grammar` is a **dependency cycle**.
+`lattice-core` is the floor both sides already stand on, and where the sibling
+`FoldMethod` lives for exactly the same reason.
 
-**`lattice-indent`** (IN.1+) — pure, synchronous, no I/O, no async, no host
-deps. The *engine* over the value:
+**`lattice-syntax::indent`** (IN.1+) — pure, synchronous, no I/O, no async, no
+host state. The engine over that value: the lexical bridge (IN.1), then the
+`indents.scm` evaluator (IN.2).
 
-```
-query.rs     compile + cache indents.scm per Lang
-engine.rs    indent_for_line(&SyntaxSnapshot, &Rope, line, unit)
-lexical.rs   the fallback bridge / indentmethod=keep
-```
+> **Corrected during IN.1.** This section originally specified a dedicated
+> `lattice-indent` crate, justified by "`syntax.rs` is already 119 KB". That
+> was a bad argument — it describes one *file*, not the crate, and
+> `lattice-syntax` already has eleven modules. `indent` belongs beside
+> `text_objects.rs` and `motions.rs`, which are the same shape: computation
+> over the parse tree, driven by `.scm` files this crate already owns and
+> embeds. A separate crate needs a stronger reason than module count, and there
+> wasn't one.
+>
+> Not `lattice-grammar` either, despite `>` / `<` living there: its
+> `Cargo.toml` states that it "stays tree-sitter-agnostic", and IN.2's engine
+> needs the tree — so the engine would have to move out again one slice later.
+> `lattice-core` is out for the same reason (it must not depend on
+> `lattice-syntax`), which is exactly why the *value* and the *engine* are
+> split across the two.
 
 **`lattice-format`** — the external-tool side.
 

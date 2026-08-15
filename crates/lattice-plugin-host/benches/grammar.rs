@@ -104,6 +104,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         args,
         cancel: &cancel,
         indent: Default::default(),
+        indent_resolver: None,
     };
     c.bench_function("grammar_project_operator_context", |b| {
         b.iter(|| {

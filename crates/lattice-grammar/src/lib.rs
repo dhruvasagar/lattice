@@ -60,8 +60,8 @@ pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
     ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax,
-    ExCommandContext, ExCommandSpec, GrammarEnv, MotionSpec, NavBoundary, NavDir, OperatorContext,
-    OperatorSpec, ScopeResolver, SurfaceForm, TextObjectSpec,
+    ExCommandContext, ExCommandSpec, GrammarEnv, IndentResolver, MotionSpec, NavBoundary, NavDir,
+    OperatorContext, OperatorSpec, ScopeResolver, SurfaceForm, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

@@ -342,6 +342,7 @@ fn execute_operator(
         args: invocation.args.clone(),
         cancel,
         indent: env.indent,
+        indent_resolver: env.indent_resolver,
     };
     (operator.apply)(&mut ctx)
 }
@@ -429,6 +430,7 @@ fn execute_operator_blockwise(
             args: args.clone(),
             cancel,
             indent: env.indent,
+            indent_resolver: env.indent_resolver,
         };
         let eff = (operator.apply)(&mut ctx)?;
         per_row_effects.push(eff);

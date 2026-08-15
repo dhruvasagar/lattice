@@ -66,6 +66,11 @@ use crate::snapshot::{DocumentSnapshot, SnapshotCache};
 /// convention (cf. `CommandRegistryHandle`).
 pub type ScopeResolverHandle = Arc<dyn lattice_grammar::ScopeResolver + Send + Sync>;
 
+/// IN.7: the same handle convention for the `=` operator's per-line
+/// indent source. Owned + `Send + Sync` so it can cross the actor
+/// channel; the grammar side sees a bare `&dyn IndentResolver`.
+pub type IndentResolverHandle = Arc<dyn lattice_grammar::IndentResolver + Send + Sync>;
+
 /// N.1.6 (2026-06-10): the owned, thread-safe per-dispatch environment
 /// for text objects, carried across the actor channel. Bundles the
 /// inputs a text object's `apply` may read — the tree-sitter
@@ -83,6 +88,10 @@ pub struct DispatchEnv {
     /// `Default` is the registered option defaults, so the actor path
     /// indents like an unconfigured buffer rather than not at all.
     pub indent: lattice_core::IndentUnit,
+    /// IN.7: per-line indent depth for `=`. `None` means no
+    /// structural source, and `=` reindents nothing rather than
+    /// guessing.
+    pub indent_resolver: Option<IndentResolverHandle>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

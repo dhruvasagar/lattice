@@ -81,6 +81,28 @@ use crate::state::{
 /// [`Editor::push_position_history`].
 pub const POSITION_HISTORY_CAP: usize = 100;
 
+/// IN.7: answers "how deep should line N sit" for the `=` operator,
+/// over a syntax snapshot captured at dispatch time.
+///
+/// Holds an `Arc<SyntaxSnapshot>` rather than borrowing, because the
+/// handle crosses the actor channel. The Arc bump is O(1) and the
+/// snapshot is immutable, so this costs nothing per dispatch.
+///
+/// Unlike predictive indent, `=` is **user-initiated on complete
+/// code** — which is precisely the case the tree-sitter engine was
+/// built for and the one where it beats the lexical bridge outright.
+/// Every other surface runs mid-typing, where incomplete code means the
+/// bridge does most of the work.
+pub struct SnapshotIndentResolver {
+    snapshot: std::sync::Arc<lattice_syntax::SyntaxSnapshot>,
+}
+
+impl lattice_grammar::IndentResolver for SnapshotIndentResolver {
+    fn levels_for_line(&self, line: u32) -> Option<i32> {
+        lattice_syntax::tree_levels_for_line(&self.snapshot, line)
+    }
+}
+
 /// IN.2: where predictive indent gets its answer for one keystroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndentSource {
@@ -17866,6 +17888,17 @@ impl Editor {
                 .comment_syntax();
             cs.line.is_some().then(|| std::sync::Arc::new(cs))
         };
+        // IN.7: the `=` operator's per-line indent source. Built only
+        // from a snapshot that matches the buffer; see the field's
+        // comment below.
+        let indent_resolver: Option<lattice_runtime::IndentResolverHandle> =
+            self.syntax.as_ref().and_then(|h| {
+                let snapshot = h.snapshot();
+                (snapshot.reparsed_from_version() == self.document.text_version()).then(|| {
+                    std::sync::Arc::new(SnapshotIndentResolver { snapshot })
+                        as lattice_runtime::IndentResolverHandle
+                })
+            });
         lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
             self.cursor,
@@ -17877,6 +17910,14 @@ impl Editor {
                 // `:setlocal shiftwidth=2` and a major mode's
                 // contribution both apply.
                 indent: self.indent_unit(self.active_buffer_id()),
+                // IN.7: `=` reads this. Only supplied when the
+                // published snapshot actually reflects the buffer --
+                // reindenting an existing range against a stale tree
+                // would move lines to where they belonged one edit
+                // ago, which is worse than leaving them alone. `=` is
+                // user-initiated, so "press it again" is a real
+                // recovery; a silently wrong reindent is not.
+                indent_resolver,
             },
         ))
     }
@@ -46382,6 +46423,112 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
         editor.do_open_line_below();
         assert_eq!(line_at(&editor, 3), "    ");
+    }
+
+    // ---- IN.7: the `=` reindent operator ----
+
+    /// Run `=` over the whole buffer.
+    fn reindent_all(editor: &mut Editor) {
+        let b = editor.builtins;
+        let inv = lattice_grammar::CommandInvocation::of(b.reindent.0)
+            .with_range(lattice_grammar::range::Range::Whole);
+        let _ = editor.dispatch_blocking(inv);
+    }
+
+    #[test]
+    fn equals_fixes_a_scrambled_file() {
+        // The case the whole tree-sitter engine exists for: complete
+        // code, wrong indentation, user asks for it to be fixed.
+        let mut editor = rust_editor("fn f() {\nx();\n        y();\n}\n");
+        reindent_all(&mut editor);
+        assert_eq!(
+            editor.active_text().as_string(),
+            "fn f() {\n    x();\n    y();\n}\n"
+        );
+    }
+
+    #[test]
+    fn equals_changes_no_non_whitespace_byte() {
+        // `=` is indent-only. Asserted directly rather than trusted:
+        // stripping every line's leading whitespace from both sides
+        // must leave the two identical.
+        let before = "fn f() {\nlet x = Foo { a: 1 };\n        y(x);\n}\n";
+        let mut editor = rust_editor(before);
+        reindent_all(&mut editor);
+        let after = editor.active_text().as_string();
+        let strip = |s: &str| {
+            s.lines()
+                .map(|l| l.trim_start())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip(&after), strip(before), "content must be untouched");
+        assert_ne!(after, before, "but indentation should have changed");
+    }
+
+    #[test]
+    fn equals_is_one_undo_unit_for_the_whole_range() {
+        let before = "fn f() {\nx();\n        y();\n}\n";
+        let mut editor = rust_editor(before);
+        reindent_all(&mut editor);
+        assert_ne!(editor.active_text().as_string(), before);
+        let _ = editor.undo_blocking();
+        assert_eq!(
+            editor.active_text().as_string(),
+            before,
+            "one `u` must undo the whole range, not one line"
+        );
+    }
+
+    #[test]
+    fn equals_composes_with_a_text_object() {
+        // `=` is a real operator, so it takes a motion / text object.
+        // Reindent just the inner block, leaving the rest alone.
+        let mut editor = rust_editor("fn f() {\nx();\n}\n\nfn g() {\nY();\n}\n");
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        let b = editor.builtins;
+        let inv = lattice_grammar::CommandInvocation::of(b.reindent.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine);
+        let _ = editor.dispatch_blocking(inv);
+        assert_eq!(line_at(&editor, 1), "    x();", "targeted line fixed");
+        assert_eq!(line_at(&editor, 5), "Y();", "untargeted line untouched");
+    }
+
+    #[test]
+    fn equals_honours_shiftwidth_and_expandtab() {
+        let mut editor = rust_editor("fn f() {\nx();\n}\n");
+        editor.do_set("shiftwidth=2");
+        reindent_all(&mut editor);
+        assert_eq!(line_at(&editor, 1), "  x();");
+
+        let mut editor = rust_editor("fn f() {\nx();\n}\n");
+        editor.do_set("expandtab=false");
+        reindent_all(&mut editor);
+        assert_eq!(line_at(&editor, 1), "\tx();");
+    }
+
+    #[test]
+    fn equals_leaves_blank_lines_alone() {
+        let mut editor = rust_editor("fn f() {\nx();\n\n}\n");
+        reindent_all(&mut editor);
+        assert_eq!(line_at(&editor, 2), "", "no trailing whitespace added");
+    }
+
+    #[test]
+    fn equals_without_a_structural_source_is_a_no_op() {
+        // SQL ships no `indents.scm` by decision, so the resolver has
+        // no answer for any line. `=` must leave the buffer alone
+        // rather than fall back to a rule that answers a different
+        // question ("where would a NEW line go") and drift the range.
+        let before = "select a\n        from t;\n";
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path("q.sql")
+                .with_text(before)
+                .build(),
+        );
+        reindent_all(&mut editor);
+        assert_eq!(editor.active_text().as_string(), before);
     }
 
     // ---- IN.6: electric reindent ----

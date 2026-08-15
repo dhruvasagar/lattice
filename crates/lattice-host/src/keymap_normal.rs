@@ -924,6 +924,19 @@ pub fn register_normal_bindings(
         syntax_motions,
         false,
     );
+    // IN.7: vim's `=` -- reindent. Registered exactly like `>` / `<`
+    // so it composes with every motion and text object, and picks up
+    // the doubled `==` current-line form from the same helper.
+    register_operator_bindings(
+        handle,
+        &[lit_char('=')],
+        builtins.reindent,
+        ChordPattern::Literal(KeyChord::char('=')),
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+        false,
+    );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
     // operate on the current line.
@@ -1139,6 +1152,13 @@ pub fn register_normal_bindings(
         mode,
         &[lit_char('<')],
         CommandInvocation::of(actions.absorb_operator_indent_left),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('=')],
+        CommandInvocation::of(actions.absorb_operator_reindent),
         source(),
     );
 
@@ -2018,6 +2038,8 @@ pub fn operator_prefix(
         vec![KeyChord::char('>')]
     } else if op == builtins.indent_left {
         vec![KeyChord::char('<')]
+    } else if op == builtins.reindent {
+        vec![KeyChord::char('=')]
     } else if op == builtins.upper {
         vec![KeyChord::char('g'), KeyChord::char('U')]
     } else if op == builtins.lower {

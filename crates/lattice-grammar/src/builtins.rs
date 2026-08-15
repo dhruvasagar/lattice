@@ -13,6 +13,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 use std::sync::Arc;
 
+use crate::cancel::CheckCancelled;
 use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
 use crate::registry::{
@@ -313,6 +314,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             args_schema: vec![],
             // Linewise effect -- one batched edit covers every line
             // in the visual span, regardless of charwise / blockwise.
+            blockwise_per_row: false,
+            post_motion_char: false,
+        },
+    );
+    let reindent = registry.register_operator(
+        "operator:reindent",
+        "Reindent each line in the range to the depth the syntax tree implies, \
+         adjusting leading whitespace only (vim's `=`).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Arc::new(operator_reindent),
+            args_schema: vec![],
+            // Linewise: a blockwise visual collapses to one contiguous
+            // range, matching `>` / `<`. Reindenting a rectangle makes
+            // no sense -- indentation is a property of whole lines.
             blockwise_per_row: false,
             post_motion_char: false,
         },
@@ -632,6 +648,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         change,
         yank,
         indent_left,
+        reindent,
         indent_right,
         upper,
         lower,
@@ -697,6 +714,8 @@ pub struct Builtins {
     pub yank: OperatorId,
     pub indent_left: OperatorId,
     pub indent_right: OperatorId,
+    /// IN.7: vim's `=` — reindent, leading whitespace only.
+    pub reindent: OperatorId,
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
@@ -2340,6 +2359,79 @@ fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandErr
 /// clamped at column 0.
 fn operator_indent_left(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
     shift_indent(ctx, -1)
+}
+
+/// Vim's `=` -- reindent each line in the range to the depth the
+/// structure says it should have.
+///
+/// **Indent-only, and that is the whole design decision** (auto-indent.md
+/// §7). `=` adjusts leading whitespace and touches nothing else. It is
+/// deliberately NOT wired to a formatter: LSP `rangeFormatting`, rustfmt
+/// and prettier all *reformat* — they move line breaks and rewrite
+/// spacing — so `=ap` would mean "rewrite this paragraph" rather than
+/// "reindent it". An operator whose effect is unbounded rewriting cannot
+/// be composed with motions safely, which is what makes the vim grammar
+/// work at all. Full reformatting lives on `:format`.
+///
+/// Lines the resolver has no answer for are **left untouched** rather
+/// than guessed at, so `=` over a range containing a syntax error or a
+/// heredoc reindents what it understands and does not mangle the rest.
+///
+/// One undo unit for the whole range, like its `>` / `<` siblings.
+fn operator_reindent(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let Some(resolver) = ctx.indent_resolver else {
+        // No structural source: `=` is a no-op rather than a guess.
+        // Falling back to the lexical bridge here would be wrong --
+        // that bridge answers "where would a NEW line go", which is a
+        // different question from "where does this EXISTING line
+        // belong", and using it would drift a whole range toward
+        // whatever the first line happened to have.
+        return Ok(Effect::None);
+    };
+    let first_line = ctx.range.start.line;
+    let last_line = ctx.range.end.line;
+    let buffer_text = ctx.document.text();
+    let lines: Vec<&str> = buffer_text.split_inclusive('\n').collect();
+
+    // Bottom-up so earlier edits do not shift later positions when the
+    // batch applies in order.
+    let mut edits: Vec<Edit> = Vec::new();
+    for line in (first_line..=last_line).rev() {
+        ctx.cancel.check()?;
+        let line_text = lines
+            .get(line as usize)
+            .map(|l| l.trim_end_matches('\n'))
+            .unwrap_or("");
+        // Blank lines carry no structure to align; reindenting them
+        // would only add trailing whitespace.
+        if lattice_core::IndentUnit::is_blank(line_text) {
+            continue;
+        }
+        let Some(levels) = resolver.levels_for_line(line) else {
+            continue;
+        };
+        let target = ctx.indent.shift(0, levels);
+        let rendered = ctx.indent.render(target);
+        let old_len = lattice_core::IndentUnit::indent_len(line_text);
+        if rendered.as_bytes() == &line_text.as_bytes()[..old_len] {
+            continue;
+        }
+        let range = lattice_protocol::position::Range::new(
+            Position::new(line, 0),
+            Position::new(line, old_len as u32),
+        );
+        edits.push(Edit::replace(range, rendered));
+    }
+    if edits.is_empty() {
+        return Ok(Effect::None);
+    }
+    let applied = ctx.document.apply_edit_batch(edits)?;
+    let mut applied = applied;
+    applied.reverse();
+    Ok(Effect::Edits(applied))
 }
 
 // ---- Case operators (gU, gu, g~) ----

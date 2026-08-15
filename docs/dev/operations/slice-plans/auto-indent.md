@@ -15,7 +15,7 @@
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | ✅ |
 | IN.5 | `indents.scm` — data + markup (3 of 5; 2 declined) | ✅ |
 | IN.6 | Electric reindent | ✅ |
-| IN.7 | `=` — the reindent operator | 📝 |
+| IN.7 | `=` — the reindent operator | ✅ |
 | IN.8 | `lattice-format` crate + `:format` cascade + minimal-edit application | 📝 |
 | IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
 | IN.10 | LSP `onTypeFormatting` — the additive layer | 📝 |
@@ -500,7 +500,7 @@ the reindent undo as one unit.
 
 ---
 
-## IN.7 — `=`, the reindent operator 📝
+## IN.7 — `=`, the reindent operator ✅
 
 **Depends on:** IN.2.
 
@@ -518,6 +518,34 @@ spawn/timeout/stderr machinery and `apply.rs`'s minimal-edit application, both
 of which land in IN.8 — building a second, smaller subprocess path here and
 retiring it two slices later is exactly the churn the sequencing exists to
 avoid.
+
+### How the level reaches a tree-sitter-agnostic crate
+
+`=` needs a per-line indent depth, which only the tree can supply, and
+`lattice-grammar` must not know about tree-sitter (its own manifest says so).
+Solved with the **`ScopeResolver` pattern already in the crate** rather than a
+new mechanism: a `trait IndentResolver { fn levels_for_line(&self, u32) ->
+Option<i32> }` declared in `lattice-grammar`, implemented host-side over an
+`Arc<SyntaxSnapshot>`, injected through `GrammarEnv` / `DispatchEnv`. Nothing
+tree-shaped crosses the boundary; the grammar asks a question and the host
+answers it.
+
+**The resolver is supplied only when the snapshot matches the buffer.**
+Reindenting existing lines against a stale tree would move them to where they
+belonged one edit ago — worse than leaving them alone, because it looks like it
+worked. `=` is user-initiated, so "press it again" is real recovery; a silently
+wrong reindent is not.
+
+**Lines with no answer are skipped, not guessed.** A range spanning a syntax
+error, a heredoc or an unsupported language reindents what it understands and
+leaves the rest byte-identical. Falling back to the lexical bridge here would
+be wrong on purpose: that bridge answers "where would a NEW line go", which is
+a different question from "where does this EXISTING line belong", and using it
+would drift a whole range toward whatever the first line happened to have.
+`equals_without_a_structural_source_is_a_no_op` pins this against SQL.
+
+**`=` in a multibuffer is a no-op**, pending a composed→source resolver of the
+shape N.1.5 built for text objects. Recorded rather than silently absent.
 
 **Tests:** `=ap` over a scrambled function restores expected indentation; `=`
 changes no non-whitespace byte (assert directly); one `u` undoes the whole

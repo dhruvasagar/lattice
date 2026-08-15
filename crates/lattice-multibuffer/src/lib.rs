@@ -1866,6 +1866,11 @@ impl MultibufferDocumentHandle {
                 // grammar actions; no tree-snapshot handle needed.
                 syntax: None,
                 indent,
+                // IN.7: `=` inside a multibuffer view would need a
+                // composed->source indent resolver, the same shape
+                // N.1.5 built for text objects. Deferred; `=` is a
+                // no-op there rather than wrong.
+                indent_resolver: None,
             },
         )
         .map_err(RuntimeError::Grammar);

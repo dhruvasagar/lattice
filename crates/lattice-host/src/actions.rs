@@ -221,6 +221,8 @@ pub struct ActionIds {
     pub absorb_operator_yank: CommandId,
     pub absorb_operator_indent_right: CommandId,
     pub absorb_operator_indent_left: CommandId,
+    /// IN.7: vim's `=` operator-pending prefix.
+    pub absorb_operator_reindent: CommandId,
     pub absorb_operator_upper: CommandId,
     pub absorb_operator_lower: CommandId,
     pub absorb_operator_toggle_case: CommandId,
@@ -1265,6 +1267,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `<`: arm operator-pending for indent-left.",
             builtins.indent_left,
         ),
+        absorb_operator_reindent: register_operator_prefix(
+            registry,
+            "action:absorb-operator-reindent",
+            "Vim's `=`: arm operator-pending for reindent.",
+            builtins.reindent,
+        ),
         absorb_operator_upper: register_operator_prefix(
             registry,
             "action:absorb-operator-upper",
@@ -1914,6 +1922,10 @@ mod tests {
             (
                 ids.absorb_operator_indent_left,
                 "action:absorb-operator-indent-left",
+            ),
+            (
+                ids.absorb_operator_reindent,
+                "action:absorb-operator-reindent",
             ),
             (ids.absorb_operator_upper, "action:absorb-operator-upper"),
             (ids.absorb_operator_lower, "action:absorb-operator-lower"),

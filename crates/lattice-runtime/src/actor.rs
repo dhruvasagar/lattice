@@ -248,6 +248,10 @@ impl DocumentActor {
                         Some(r) => Some(r),
                         None => None,
                     };
+                // IN.7: deref the owned handle to the borrowed form
+                // the grammar sees, mirroring `scope_resolver` above.
+                let indent_resolver: Option<&dyn lattice_grammar::IndentResolver> =
+                    env.indent_resolver.as_deref().map(|r| r as _);
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
@@ -260,6 +264,7 @@ impl DocumentActor {
                     // host's Action gate, which carries the concrete snapshot.
                     syntax: None,
                     indent: env.indent,
+                    indent_resolver,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

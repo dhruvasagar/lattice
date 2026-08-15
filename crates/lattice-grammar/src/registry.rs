@@ -142,6 +142,11 @@ pub struct OperatorContext<'a> {
     /// IN.0: one level of indentation, resolved by the host. Only the
     /// indent operators (`>` / `<`) read it.
     pub indent: lattice_core::IndentUnit,
+    /// IN.7: per-line indent depth for the `=` operator, injected by
+    /// the host. `None` (the default) means `=` has no structural
+    /// source and leaves lines alone -- the same graceful-degradation
+    /// contract every other env field carries.
+    pub indent_resolver: Option<&'a dyn IndentResolver>,
 }
 
 /// An operator's evaluator returns the full `Effect` it produced. Most
@@ -195,6 +200,25 @@ impl std::fmt::Debug for OperatorSpec {
 /// so intra-line objects like `aa`/`ia` are charwise-accurate), or
 /// `None` when there's no parse / no match. End is exclusive, matching
 /// tree-sitter node ranges and the operator slice convention.
+/// IN.7: how deep should this line sit?
+///
+/// The `=` operator needs a per-line indent level, which only the
+/// tree-sitter engine can compute — and this crate is deliberately
+/// tree-sitter-agnostic (see its `Cargo.toml`). Same shape and same
+/// reason as [`ScopeResolver`] above: the grammar declares the
+/// question, the host injects something that can answer it, and
+/// nothing tree-shaped crosses the boundary.
+///
+/// `None` from `levels_for_line` means "no answer for this row" — no
+/// tree, no `indents.scm` for the language, a parse error, or a
+/// position inside a string. The operator leaves such lines untouched
+/// rather than guessing, so `=` over a range containing a broken
+/// region reindents what it understands and does not mangle the rest.
+pub trait IndentResolver {
+    /// Indent depth in levels (not columns) for `line`.
+    fn levels_for_line(&self, line: u32) -> Option<i32>;
+}
+
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
 
@@ -285,6 +309,11 @@ pub struct GrammarEnv<'a> {
     /// plugin call sites that build a `default()` env working without
     /// each having to care about indentation.
     pub indent: lattice_core::IndentUnit,
+    /// IN.7: per-line indent depth for the `=` operator, injected by
+    /// the host. `None` (the default) means `=` has no structural
+    /// source and reindents nothing -- the same graceful-degradation
+    /// contract every other env field carries.
+    pub indent_resolver: Option<&'a dyn IndentResolver>,
 }
 
 /// Context passed to a text-object's evaluator.

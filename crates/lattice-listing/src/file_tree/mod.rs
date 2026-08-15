@@ -236,19 +236,14 @@ fn collapse(entries: &mut Vec<FileTreeEntry>, index: usize) {
 /// and sorted by name. Hidden files (those starting with `.`) are
 /// included so the user can navigate config dirs.
 fn read_dir_sorted(root: &Path) -> std::io::Result<Vec<(PathBuf, bool)>> {
-    let mut out: Vec<(PathBuf, bool)> = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        let is_dir = entry.file_type()?.is_dir();
-        out.push((path, is_dir));
-    }
-    out.sort_by(|a, b| match (a.1, b.1) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.0.cmp(&b.0),
-    });
-    Ok(out)
+    // DL.7: one shared read + ordering rule
+    // (`dir::read_dir_sorted`). The tree keeps the path — rows and
+    // icons are keyed off it, and depth comes from the walk, not the
+    // read.
+    Ok(crate::dir::read_dir_sorted(root)?
+        .into_iter()
+        .map(|e| (e.path, e.is_dir))
+        .collect())
 }
 
 /// Serialise the entry list to a [`Buffer`]. Each row is

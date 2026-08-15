@@ -170,19 +170,16 @@ impl OilSnapshot {
 
 /// Read a directory's entries sorted dirs-first then alpha.
 fn read_dir_entries(dir: &Path) -> std::io::Result<Vec<OilEntry>> {
-    let mut entries: Vec<OilEntry> = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let is_dir = entry.file_type()?.is_dir();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        entries.push(OilEntry { name, is_dir });
-    }
-    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.cmp(&b.name),
-    });
-    Ok(entries)
+    // DL.7: one shared read + ordering rule (`dir::read_dir_sorted`).
+    // Oil keeps only the name — its rope is bare filenames, because
+    // `:w` diffs that text back into renames.
+    Ok(crate::dir::read_dir_sorted(dir)?
+        .into_iter()
+        .map(|e| OilEntry {
+            name: e.name,
+            is_dir: e.is_dir,
+        })
+        .collect())
 }
 
 /// Render snapshot entries to a rope — one bare name per line, no icons.

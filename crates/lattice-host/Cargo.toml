@@ -241,6 +241,12 @@ harness = false
 name = "dispatch_publish"
 harness = false
 
+# DL.6: listing open + scroll cost after oil and the file tree moved
+# onto the shared cells/DisplayMatrix build.
+[[bench]]
+name = "listing"
+harness = false
+
 # S5 (2026-05-27): cells_worker hot-path bench. Times
 # `recompute` across three workloads — full rebuild (cache miss),
 # incremental single-line edit, cache hit — at varying line

@@ -2771,6 +2771,37 @@ handler — each lands its ratchet with its seam.
 
 ---
 
+## Directory listings — open + scroll (`crates/lattice-host/benches/listing.rs`, DL.6)
+
+DL.4/DL.5 moved oil and the file tree off bespoke paint paths that walked
+`O(viewport)` rows by hand and onto the shared cells/`DisplayMatrix` build;
+DL.3b gave every row a leading inlay whose colour resolves through
+`ResolvedTheme::get`. Both were *expected* to be free — an indexed table read
+per row, and a build the editor already runs for every document — which is
+exactly the kind of expectation that should not be taken on trust.
+
+⚠️ **Provisional — off-box.** Captured on a developer machine, not the §8.2
+reference hardware. Order-of-magnitude, and the **comparison** below is the
+result that matters, not the absolute numbers.
+
+| Workload | Provisional | Notes |
+| --- | --- | --- |
+| `listing_open_oil` (5,000 entries) | ~5.9 ms | Cold `:Oil`: read the directory, render the listing text, seed the Document, publish 5,000 icons. One-shot, scales with the directory. |
+| `listing_open_file_tree` (5,000 entries) | ~7.8 ms | Cold `:Tree`; the extra over oil is the root row plus per-row indent/marker construction. |
+| `listing_scroll_publish/500` | ~6.6 µs | Scroll one viewport in an open listing, then republish. |
+| `listing_scroll_publish/5000` | ~7.5 µs | **The assertion is the ratio.** A 10× larger directory costs ~1.15× per frame, with overlapping confidence intervals — per-frame work is flat in directory size, so nothing on the frame path scales with the listing (§8.2). |
+
+The per-frame number sits ~1000× under a 120 Hz frame (8.3 ms), so the
+convergence did not put listings anywhere near the budget. The open cost is
+one-shot and user-initiated; it is the number to watch if directory sizes grow
+much beyond this, and it is dominated by the filesystem read rather than by
+anything the editor added.
+
+**Why the scroll bench is swept rather than single-point:** a path that scales
+with the *listing* instead of the *viewport* looks perfectly fast at any one
+size. Only the comparison across sizes can catch it, so the sweep is the test
+and either number alone would be decoration.
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

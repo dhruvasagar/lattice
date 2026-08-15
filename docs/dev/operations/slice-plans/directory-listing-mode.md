@@ -16,7 +16,8 @@
 | DL.3b | The mode publishes entry icons as leading inlays | ✅ |
 | DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | ✅ |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | ✅ |
-| DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 🚧 |
+| DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | ✅ |
+| DL.7 | One directory read for both listings (DL.0's debt) | ✅ |
 
 ## Shape of the sequence
 
@@ -409,9 +410,9 @@ test.
 - `register_listing_document` generalised back to taking a
   `ListingKind`, now that both kinds are `DocumentEntry`.
 
-## DL.6 — retire the old palette; benches + parity 🚧
+## DL.6 — retire the old palette; benches + parity ✅
 
-**Partly landed 2026-08-15.** Depends on DL.5.
+**Landed 2026-08-15.** Depends on DL.5.
 
 ### Done
 
@@ -445,19 +446,61 @@ match, and splitting that is churn with no user-visible win and real
 transcription risk. `entry_visual` now carries a doc note saying so, and
 pointing new callers at `glyph_for_entry` plus a theme element.
 
-**DL.0's convergence debt is still open** — the two directory readers,
-the two entries→rope renderers, and the two entry models. `ListingEntry`
-(DL.2) is the shape they would converge onto. Left as its own slice
-rather than folded in here: it touches `:w`'s input on the oil side, and
-this slice was already carrying the palette retirement.
+**DL.0's convergence debt** moved to its own slice, **DL.7** below —
+and turned out to be one duplication, not three.
 
-**Benches are not written.** The four-artefact rule asks for them and
-this slice owes them: first-paint and per-frame scroll cost on a
-~5k-entry directory, to prove the per-row `ResolvedTheme::get` did not
-regress the frame rather than assume it. Recorded as owed rather than
-quietly skipped — the listings moved from an `O(viewport)` bespoke walk
-to the shared cells/`DisplayMatrix` build, which is exactly the kind of
-change that should not be taken on trust.
+### Benches — done
+
+`crates/lattice-host/benches/listing.rs`, recorded in
+`benchmarks.md`. Provisional / off-box, and the **comparison** is the
+result rather than the absolute numbers:
+
+| workload | provisional |
+|---|---|
+| `listing_open_oil` (5k entries) | ~5.9 ms |
+| `listing_open_file_tree` (5k entries) | ~7.8 ms |
+| `listing_scroll_publish/500` | ~6.6 µs |
+| `listing_scroll_publish/5000` | ~7.5 µs |
+
+**The scroll bench is swept over two directory sizes on purpose.** A
+per-frame path that scales with the *listing* rather than the
+*viewport* looks perfectly fast at any single size; only the comparison
+catches it. A 10× directory costs ~1.15× per frame with overlapping
+confidence intervals, so per-frame work is flat in directory size
+(§8.2), and sits ~1000× under a 120 Hz frame.
+
+## DL.7 — one directory read for both listings ✅
+
+**Landed 2026-08-15.** DL.0 deliberately left its duplication in place
+so the crate merge could stay a pure move. Paying it down showed the
+debt was **one** duplication, not the three the plan listed.
+
+**Converged.** `read_dir_entries` (oil) and `read_dir_sorted` (tree)
+were the same syscall, the same dirs-first-then-alphabetical ordering
+and the same error handling, differing only in whether they yielded a
+`String` name or a `PathBuf`. The ordering is user-visible, so a change
+to one would have silently disagreed with the other. Both call
+`dir::read_dir_sorted` now, which returns both halves so neither caller
+re-derives what the other needed.
+
+**Not converged, and not debt:**
+
+- *Entry models.* `FileTreeEntry` carries `depth` and expansion state
+  because a tree has both; `OilEntry` is a flat editable row and has
+  neither. Merging them either bloats oil with meaningless fields or
+  drops the tree's state — and the shape they both project into
+  already exists (`ListingEntry`), which is what the presentation layer
+  consumes.
+- *Rope renderers.* Oil's is bare names joined by newlines because `:w`
+  diffs that text into filesystem operations; the tree's is indent +
+  marker + name. Two formats on purpose. What actually mattered — that
+  neither embeds icons — is already true, and is what let both move to
+  the shared paint path.
+
+Per heuristic #1, forcing those two would be rewriting for its own sake:
+no merit win, and on the oil side it would put churn on the one input
+path that can lose user data. Recorded in the crate docs so "three
+duplications" does not read as unfinished work later.
 
 ## Risks
 

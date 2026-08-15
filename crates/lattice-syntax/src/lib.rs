@@ -69,8 +69,8 @@ pub mod theme_style;
 
 pub use crate::handle::SyntaxHandle;
 pub use crate::indent::{
-    BracketSyntax, indent_columns_for_new_line, indent_for_new_line, tree_levels_for_line,
-    tree_levels_for_new_line,
+    BracketSyntax, electric_columns, indent_columns_for_new_line, indent_for_new_line,
+    is_electric_trigger, tree_levels_for_line, tree_levels_for_new_line,
 };
 pub use crate::lang::Lang;
 pub use crate::modes::{

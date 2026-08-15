@@ -14,7 +14,7 @@
 | IN.3 | `indents.scm` — brace family (9 languages) | ✅ |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | ✅ |
 | IN.5 | `indents.scm` — data + markup (3 of 5; 2 declined) | ✅ |
-| IN.6 | Electric reindent | 📝 |
+| IN.6 | Electric reindent | ✅ |
 | IN.7 | `=` — the reindent operator | 📝 |
 | IN.8 | `lattice-format` crate + `:format` cascade + minimal-edit application | 📝 |
 | IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
@@ -453,7 +453,7 @@ That is a reasonable place to want it, not a regression.
 
 ---
 
-## IN.6 — electric reindent 📝
+## IN.6 — electric reindent ✅
 
 **Depends on:** IN.2.
 
@@ -462,8 +462,35 @@ recompute the line's indent and rewrite **only its leading whitespace**, only
 when it differs, inside the same undo group as the typed character. Gated on
 `electricindent`, registered in IN.0 and honoured from here.
 
-Electric set = the language's `@outdent` captures + a small keyword table
-(`end`, `else`, `elif`, `when`, `esac`).
+Electric set = bracket closers from `BracketSyntax` + a per-language dedent
+keyword table (`end`, `until`, `fi`, `done`, `esac`, `else`, `elif`, `elsif`,
+`when`, `rescue`, `ensure`, `except`, `finally`). Read from the same knowledge
+the queries encode rather than extracted from the compiled query's literals —
+the extraction would be fiddly and would not survive a query that captures a
+node rather than a token.
+
+Two triggers, both narrower than "the character is a closer":
+
+- a bracket closer typed when **nothing but whitespace precedes it** on the
+  line. Without that guard, the `}` in `let x = Foo { a };` re-indents a line
+  the user is in the middle of writing.
+- a keystroke that **completes a dedent keyword forming the whole line so
+  far** — so `end` fires and `bend`, `append`, `x = end` do not.
+
+### 🔍 Finding: electric reindent must be lexical, and that is forced
+
+The plan assumed the tree would answer this. It cannot, and the reason is
+IN.2's finding rather than a new one. At the instant the closer lands, **two**
+things are true at once: the published snapshot has not caught up with the
+edit, *and* the surrounding code is half-written. So even a fresh synchronous
+parse would yield an `ERROR` node with no block structure and the engine would
+decline. Asking the tree would cost a parse to learn nothing.
+
+No second algorithm was needed: `electric_columns` reuses IN.1's
+`indent_columns_for_new_line` with the **current line passed as `next`** —
+"what indent would a new line here get, given what this line starts with" is
+exactly the question — plus one extra step down for word closers, which the
+bracket scan cannot see.
 
 **Tests:** typing `}` in an over-indented Rust line snaps it back; **only the
 current line's bytes change** (assert the rest of the rope is byte-identical —

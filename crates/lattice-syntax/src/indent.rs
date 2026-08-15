@@ -544,6 +544,180 @@ pub fn indent_columns_for_new_line(
     columns
 }
 
+// ──────────────────────────────────────────────────────────────
+// IN.6 — electric reindent
+// ──────────────────────────────────────────────────────────────
+
+/// Words that, when they *begin* a line, put it one level shallower.
+///
+/// The punctuation closers (`}`, `)`, `]`) are already handled by
+/// [`BracketSyntax::starts_with_closer`]; this covers the languages
+/// that close with words instead, plus the continuation keywords
+/// (`else`, `elif`) that sit back at the construct's level while the
+/// body carries on.
+fn dedent_keywords(lang: Lang) -> &'static [&'static str] {
+    match lang {
+        Lang::Lua => &["end", "until", "else", "elseif"],
+        Lang::Ruby => &["end", "else", "elsif", "when", "rescue", "ensure"],
+        Lang::Bash => &["fi", "done", "esac", "else", "elif"],
+        // Python's suite has no closer, but these continuation
+        // keywords do step back out of the preceding block.
+        Lang::Python => &["else", "elif", "except", "finally"],
+        _ => &[],
+    }
+}
+
+/// The first whitespace-delimited word of `line`, if any.
+fn leading_word(line: &str) -> &str {
+    let t = line.trim_start();
+    let end = t
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(t.len());
+    &t[..end]
+}
+
+/// Whether typing `typed` at the end of `line_head` should re-indent
+/// the current line.
+///
+/// Two triggers, matching the two ways a language closes a block:
+///
+/// - `typed` is a bracket closer and nothing but whitespace precedes
+///   it on the line. The "nothing but whitespace" part matters — a `}`
+///   at the end of `let x = Foo { a };` must not re-indent the line.
+/// - `line_head + typed` completes a dedent keyword that begins the
+///   line. Checked as a whole word so `end` fires but `append` and
+///   `defenders` do not.
+pub fn is_electric_trigger(lang: Lang, line_head: &str, typed: char) -> bool {
+    let brackets = BracketSyntax::for_lang(lang);
+    let mut buf = [0u8; 4];
+    let typed_str = typed.encode_utf8(&mut buf);
+
+    if brackets.closers.contains(&(typed as u32 as u8)) && line_head.trim().is_empty() {
+        return true;
+    }
+
+    let words = dedent_keywords(lang);
+    if words.is_empty() {
+        return false;
+    }
+    // The keyword must be the whole of the line's content so far --
+    // otherwise `x = end` or a trailing `else` in a comment would fire.
+    let candidate = format!("{}{}", line_head.trim_start(), typed_str);
+    words.contains(&candidate.as_str())
+        && line_head.trim_start() == &candidate[..candidate.len() - typed_str.len()]
+}
+
+/// The indent, in columns, for a line being electrically re-indented.
+///
+/// **Deliberately lexical, not tree-driven**, and that follows from
+/// IN.2's finding rather than being a shortcut. At the instant the
+/// closer is typed, two things are true at once: the published snapshot
+/// has not caught up with the edit, and the code around the cursor is
+/// half-written — so a *fresh* parse would produce an `ERROR` node with
+/// no block structure and the engine would decline anyway. There is no
+/// version of this that the tree can answer, so asking it would cost a
+/// parse to learn nothing.
+///
+/// It reuses [`indent_columns_for_new_line`] with the current line
+/// passed as `next`: "the indent a new line here would get, given what
+/// this line starts with" is exactly the question, so no second
+/// algorithm is needed. Word closers subtract the extra level the
+/// bracket scan cannot see.
+pub fn electric_columns(
+    lang: Lang,
+    prev_nonblank: Option<&str>,
+    line: &str,
+    unit: IndentUnit,
+) -> u16 {
+    let brackets = BracketSyntax::for_lang(lang);
+    let mut columns = indent_columns_for_new_line(
+        IndentMethod::Syntax,
+        prev_nonblank,
+        Some(line),
+        unit,
+        brackets,
+    );
+    if !brackets.starts_with_closer(line) && dedent_keywords(lang).contains(&leading_word(line)) {
+        columns = unit.shift(columns, -1);
+    }
+    columns
+}
+
+#[cfg(test)]
+mod electric_tests {
+    use super::*;
+
+    fn unit() -> IndentUnit {
+        IndentUnit::new(4, true, 4)
+    }
+
+    #[test]
+    fn a_closer_typed_alone_on_a_line_triggers() {
+        assert!(is_electric_trigger(Lang::Rust, "        ", '}'));
+        assert!(is_electric_trigger(Lang::Rust, "", ')'));
+    }
+
+    #[test]
+    fn a_closer_after_content_does_not_trigger() {
+        // `let x = Foo { a };` — the `}` closes an inline literal and
+        // must not re-indent the line the user is writing.
+        assert!(!is_electric_trigger(
+            Lang::Rust,
+            "    let x = Foo { a ",
+            '}'
+        ));
+    }
+
+    #[test]
+    fn word_closers_trigger_only_as_whole_words() {
+        assert!(is_electric_trigger(Lang::Lua, "  en", 'd'));
+        assert!(is_electric_trigger(Lang::Ruby, "  en", 'd'));
+        assert!(is_electric_trigger(Lang::Bash, "  f", 'i'));
+        // `append` must not fire on its final `d`... it does not even
+        // end in one, so use a real near-miss: `bend`.
+        assert!(!is_electric_trigger(Lang::Lua, "  ben", 'd'));
+        // Nor mid-expression.
+        assert!(!is_electric_trigger(Lang::Lua, "  x = en", 'd'));
+    }
+
+    #[test]
+    fn languages_without_word_closers_only_trigger_on_brackets() {
+        assert!(!is_electric_trigger(Lang::Rust, "  en", 'd'));
+        assert!(is_electric_trigger(Lang::Rust, "  ", '}'));
+    }
+
+    #[test]
+    fn a_closing_brace_lands_at_the_openers_level() {
+        // The canonical case: `}` typed under an over-indented body
+        // snaps back to the `if`'s level.
+        let cols = electric_columns(Lang::Rust, Some("        y();"), "        }", unit());
+        assert_eq!(cols, 4);
+    }
+
+    #[test]
+    fn a_closer_directly_under_its_opener_lands_at_the_openers_level() {
+        let cols = electric_columns(Lang::Rust, Some("fn f() {"), "}", unit());
+        assert_eq!(cols, 0);
+    }
+
+    #[test]
+    fn word_closers_dedent_from_the_body() {
+        let cols = electric_columns(Lang::Lua, Some("    y()"), "    end", unit());
+        assert_eq!(cols, 0);
+        let cols = electric_columns(Lang::Bash, Some("    y"), "    fi", unit());
+        assert_eq!(cols, 0);
+    }
+
+    #[test]
+    fn a_word_closer_is_not_double_counted_with_a_bracket() {
+        // `}` is a bracket closer AND some languages have word
+        // closers; a line starting with `}` must lose exactly one
+        // level, not two.
+        let cols = electric_columns(Lang::Ruby, Some("    y"), "    }", unit());
+        assert_eq!(cols, 0);
+    }
+}
+
 #[cfg(test)]
 mod tree_tests {
     use super::*;

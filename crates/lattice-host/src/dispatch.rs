@@ -10136,6 +10136,11 @@ impl Editor {
         {
             self.auto_indent_line = None;
         }
+        // IN.6: electric reindent. Runs before the dot-repeat capture
+        // below so the recorded text is what the user typed, not the
+        // whitespace fixup -- replaying `}` should re-derive the indent
+        // for wherever it lands, not paste the old one.
+        self.maybe_electric_reindent(s);
         // Capture into the in-flight Insert recording for dot-repeat.
         if let Some(rec) = self.recording_insert.as_mut() {
             rec.push_str(s);
@@ -31213,6 +31218,95 @@ impl Editor {
         }
     }
 
+    /// IN.6: re-indent the current line when a closing token is typed.
+    ///
+    /// Fires on `}` / `)` / `]` typed as the first thing on a line, and
+    /// on completing a dedent keyword (`end`, `fi`, `done`, `else`,
+    /// ...). Rewrites **only the leading whitespace of the current
+    /// line**, and only when it differs — the UX contract permits the
+    /// edited line to change and nothing else.
+    ///
+    /// Runs inside the Insert session's undo group, so the typed
+    /// character and the fixup undo together rather than needing two
+    /// `u` presses.
+    ///
+    /// **Lexical, not tree-driven**, and that is forced rather than
+    /// chosen: at the instant the closer lands, the published snapshot
+    /// has not caught up AND the surrounding code is half-written, so
+    /// a fresh parse would yield an `ERROR` node and decline (IN.2).
+    /// There is no version of this question the tree can answer, so
+    /// asking it would cost a parse to learn nothing.
+    fn maybe_electric_reindent(&mut self, typed: &str) {
+        if !matches!(self.modal, ModalState::Insert) {
+            return;
+        }
+        let buffer = self.active_buffer_id();
+        if !*self.resolved_option::<lattice_config::core_options::ElectricIndent>(buffer) {
+            return;
+        }
+        // Single typed characters only. A paste or a completion insert
+        // is not someone closing a block by hand, and re-indenting the
+        // landing line of a multi-char insert would be surprising.
+        let mut chars = typed.chars();
+        let (Some(ch), None) = (chars.next(), chars.next()) else {
+            return;
+        };
+
+        let row = self.cursor.line;
+        let text = self.active_text();
+        let line = text
+            .line(row)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string();
+        let at = (self.cursor.byte as usize).min(line.len());
+        // The character has already landed, so the head is everything
+        // before it.
+        let head_end = at.saturating_sub(ch.len_utf8());
+        let head = line.get(..head_end).unwrap_or("");
+        let lang = self.active_lang();
+        if !lattice_syntax::is_electric_trigger(lang, head, ch) {
+            return;
+        }
+
+        // Nearest non-blank line above, the same anchor predictive
+        // indent uses.
+        let mut probe = row.checked_sub(1);
+        let prev = loop {
+            let Some(l) = probe else { break None };
+            let s = text.line(l).unwrap_or_default();
+            let s = s.trim_end_matches('\n').to_string();
+            if !lattice_core::IndentUnit::is_blank(&s) {
+                break Some(s);
+            }
+            probe = l.checked_sub(1);
+        };
+
+        let unit = self.indent_unit(buffer);
+        let columns = lattice_syntax::electric_columns(lang, prev.as_deref(), &line, unit);
+        let rendered = unit.render(columns);
+        let old_len = lattice_core::IndentUnit::indent_len(&line);
+        if rendered.as_bytes() == &line.as_bytes()[..old_len] {
+            return;
+        }
+
+        let cursor_byte = self.cursor.byte;
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(row, 0),
+            lattice_protocol::position::Position::new(row, old_len as u32),
+        );
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::replace(
+                range,
+                rendered.clone(),
+            ))
+            .is_ok()
+        {
+            let delta = rendered.len() as i64 - old_len as i64;
+            self.cursor.byte = (cursor_byte as i64 + delta).max(0) as u32;
+        }
+    }
+
     /// Record that `line` was given `indent` automatically and nothing
     /// has been typed into it yet.
     ///
@@ -46288,6 +46382,98 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
         editor.do_open_line_below();
         assert_eq!(line_at(&editor, 3), "    ");
+    }
+
+    // ---- IN.6: electric reindent ----
+
+    /// Type `s` at the cursor the way Insert mode does.
+    fn type_text(editor: &mut Editor, s: &str) {
+        let mut out = DispatchOutcome::default();
+        editor.do_insert_text(s, &mut out);
+    }
+
+    #[test]
+    fn typing_a_closing_brace_snaps_the_line_back() {
+        let mut editor = rust_editor("fn f() {\n    if x {\n        y();\n        \n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(3, 8);
+        type_text(&mut editor, "}");
+        assert_eq!(line_at(&editor, 3), "    }", "snaps to the `if`'s level");
+        assert_eq!(editor.cursor.byte, 5, "cursor follows the shrunk indent");
+    }
+
+    #[test]
+    fn electric_reindent_changes_only_the_edited_line() {
+        // The UX contract, asserted directly rather than inferred:
+        // every byte outside the current line must be identical.
+        let before = "fn f() {\n    if x {\n        y();\n        \n}\n";
+        let mut editor = rust_editor(before);
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(3, 8);
+        type_text(&mut editor, "}");
+
+        let after = editor.active_text().as_string();
+        let before_lines: Vec<&str> = before.split('\n').collect();
+        let after_lines: Vec<&str> = after.split('\n').collect();
+        assert_eq!(
+            before_lines.len(),
+            after_lines.len(),
+            "no lines added/removed"
+        );
+        for (i, (b, a)) in before_lines.iter().zip(after_lines.iter()).enumerate() {
+            if i == 3 {
+                continue;
+            }
+            assert_eq!(b, a, "line {i} must be byte-identical");
+        }
+    }
+
+    #[test]
+    fn electric_reindent_is_one_undo_unit_with_the_typed_char() {
+        let before = "fn f() {\n    if x {\n        y();\n        \n}\n";
+        let mut editor = rust_editor(before);
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(3, 8);
+        type_text(&mut editor, "}");
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+        let _ = editor.undo_blocking();
+        assert_eq!(
+            editor.active_text().as_string(),
+            before,
+            "one `u` restores the buffer -- the fixup must not be its own unit"
+        );
+    }
+
+    #[test]
+    fn a_closer_after_content_does_not_reindent() {
+        // `let x = Foo { a }` — the `}` closes an inline literal, not a
+        // block, and the line must be left alone.
+        let mut editor = rust_editor("fn f() {\n        let x = Foo { a \n}\n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(1, 24);
+        type_text(&mut editor, "}");
+        assert_eq!(line_at(&editor, 1), "        let x = Foo { a }");
+    }
+
+    #[test]
+    fn electricindent_off_disables_it() {
+        let mut editor = rust_editor("fn f() {\n    if x {\n        y();\n        \n");
+        editor.do_set("electricindent=false");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(3, 8);
+        type_text(&mut editor, "}");
+        assert_eq!(line_at(&editor, 3), "        }", "left where it was typed");
+    }
+
+    #[test]
+    fn a_multi_character_insert_does_not_reindent() {
+        // A paste or completion insert is not someone closing a block
+        // by hand.
+        let mut editor = rust_editor("fn f() {\n    if x {\n        y();\n        \n");
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.cursor = lattice_protocol::position::Position::new(3, 8);
+        type_text(&mut editor, "z()}");
+        assert_eq!(line_at(&editor, 3), "        z()}");
     }
 
     #[test]

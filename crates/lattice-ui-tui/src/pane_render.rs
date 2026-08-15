@@ -45,7 +45,16 @@ pub type PaneStatusFn = fn(&App, &PaneState) -> String;
 /// almost always defined together (a help pane wants `[help]` in
 /// the status; a file-tree pane wants `[tree] /path/to/root`).
 pub struct PaneRenderProvider {
-    pub render: PaneRenderFn,
+    /// How to paint the pane's content, or `None` when the mode's
+    /// buffers paint through the **shared document compose path**.
+    ///
+    /// DL.4: `None` is the goal state, not a special case. A mode that
+    /// supplies its own painter re-implements scroll windowing, the
+    /// cursor row and per-row styling — which is how one arithmetic
+    /// slip came to live in four places (CV.5). The file tree became
+    /// `None` when it converged to a `DocumentEntry`; oil follows in
+    /// DL.5.
+    pub render: Option<PaneRenderFn>,
     pub status: PaneStatusFn,
 }
 
@@ -64,6 +73,18 @@ impl PaneRenderRegistry {
     /// registration for the same id.
     pub fn register(&mut self, mode: ModeId, provider: PaneRenderProvider) {
         self.map.insert(mode, provider);
+    }
+
+    /// Register a mode that owns only its status label and paints
+    /// through the shared document path (DL.4).
+    pub fn register_status_only(&mut self, mode: ModeId, status: PaneStatusFn) {
+        self.map.insert(
+            mode,
+            PaneRenderProvider {
+                render: None,
+                status,
+            },
+        );
     }
 
     /// Look up a provider by mode id. `None` if no mode has

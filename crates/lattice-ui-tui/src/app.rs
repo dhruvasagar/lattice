@@ -4321,13 +4321,16 @@ mod tests {
     }
 
     #[test]
-    fn set_ui_nerd_fonts_rerenders_open_file_tree() {
-        // Regression for the bug where toggling `ui.nerd_fonts`
-        // updated the theme but left existing file-tree ropes
-        // rendering the old palette. The rope embeds the icon
-        // glyphs, so a palette flip must re-render every open
-        // tree -- otherwise the user keeps seeing `?` boxes (or
-        // BMP fallbacks) until they reopen the tree.
+    fn set_ui_nerd_fonts_reissues_open_file_tree_icons() {
+        // Regression for the bug where toggling `ui.nerd_fonts` updated
+        // the theme but left open trees showing the old palette.
+        //
+        // DL.4 moved WHERE that shows. The glyph used to be baked into
+        // the rope, so the test asserted on the buffer text; icons are
+        // virtual text now, so the rope holds names and the palette
+        // flip has to re-publish the ICONS instead. The regression the
+        // test guards is unchanged — flip the option, an open tree must
+        // follow — only the surface it reads moved.
         let tmp =
             std::env::temp_dir().join(format!("lattice-tree-nerd-rerender-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
@@ -4337,36 +4340,47 @@ mod tests {
         a.do_open_file_tree(Some(tmp.clone()));
         let tree_id = a.active_pane_buffer_id();
 
-        // Default is BMP fallback -- the rope should contain
-        // the source-code middle-dot, not the nerd-font rust
-        // glyph.
+        // The rope is names — no glyph, either palette.
         let body = a
             .editor
             .buffers
-            .with_file_tree(tree_id, |t| t.content.as_string())
+            .document_handle(tree_id)
+            .map(|h| h.snapshot().buffer.as_string())
             .unwrap();
+        assert!(body.contains("main.rs"), "rope must hold the name: {body}");
+        for glyph in ["\u{f1617} ", "· "] {
+            assert!(
+                !body.contains(glyph),
+                "glyph {glyph:?} leaked into the rope: {body}"
+            );
+        }
+
+        // Icons publish through `PendingInlays` and land in the local on
+        // the next tick, exactly as in production.
+        let icons = |a: &mut App| -> Vec<String> {
+            let _ = a.editor.run_tick_pending();
+            a.editor
+                .buffer_locals
+                .get(&tree_id)
+                .and_then(|l| l.get::<lattice_host::modes::ExtraInlays>())
+                .map(|e| e.0.iter().map(|r| r.text.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        let before = icons(&mut a);
         assert!(
-            body.contains("· main.rs"),
-            "expected BMP fallback in rope, got: {body}"
-        );
-        assert!(
-            !body.contains("󱘗 "),
-            "nerd-font glyph leaked into default rope: {body}"
+            !before.is_empty(),
+            "the tree must publish one icon per row before the toggle"
         );
 
         // Flip the typed option via the same path `:set` takes.
-        // The change handler must re-render every open tree
-        // against the new palette.
         submit_ex(&mut a, "set ui.nerd_fonts=on");
 
-        let body = a
-            .editor
-            .buffers
-            .with_file_tree(tree_id, |t| t.content.as_string())
-            .unwrap();
-        assert!(
-            body.contains("󱘗 main.rs"),
-            "expected nerd-font glyph post-toggle, got: {body}"
+        let after = icons(&mut a);
+        assert_ne!(
+            before, after,
+            "flipping ui.nerd_fonts must re-publish the tree's icons — an \
+             open tree that keeps the old palette is the reported bug"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

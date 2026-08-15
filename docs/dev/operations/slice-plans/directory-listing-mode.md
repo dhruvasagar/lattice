@@ -14,7 +14,7 @@
 | DL.2 | `directory-listing-mode` skeleton + `listing.*` theme vocabulary | ✅ |
 | DL.3a | Inlay runs carry a style (retires a hardcoded colour) | ✅ |
 | DL.3b | The mode publishes entry icons as leading inlays | ✅ |
-| DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | 📝 |
+| DL.4 | File tree → `DocumentEntry`, both bespoke renderers deleted | ✅ |
 | DL.5 | Oil → `DocumentEntry`, both bespoke renderers deleted | 📝 |
 | DL.6 | Retire `ext_color`'s runtime lookup; benches + parity audit | 📝 |
 
@@ -295,9 +295,9 @@ plan exists to uphold.
 Still invisible: the bespoke paint paths do not read inlays, so nothing
 changes on screen until DL.4/DL.5.
 
-## DL.4 — file tree onto the shared path 📝
+## DL.4 — file tree onto the shared path ✅
 
-**Depends on:** DL.3. **First visible slice.**
+**Landed 2026-08-15. Depends on:** DL.3b. **First visible slice.**
 
 - `BufferData::FileTree(FileTreeBuffer)` → `FileTree(DocumentEntry)`;
   kind discriminator stays.
@@ -310,9 +310,55 @@ changes on screen until DL.4/DL.5.
   `PaneRenderProvider.render` entry. The `status` entry stays — that is
   legitimately mode-owned.
 
-**Tests.** CV.5's invariant must still pass. A tree-shaped sibling of
-`multibuffer_is_a_regular_buffer.rs`. `<CR>` follow and directory
-expansion against a rope that no longer contains glyphs.
+**Tests.** CV.5's invariant still passes, but its assertion had to
+change shape — see below. `rope_holds_names_not_glyphs` and
+`listing_entries_anchor_icons_after_indent_and_marker` replace the two
+tests that asserted the glyph *was* in the rope.
+`set_ui_nerd_fonts_reissues_open_file_tree_icons` guards the same
+regression as before (flip the option, an open tree must follow) on the
+surface that now carries it.
+
+### The bug this uncovered
+
+`contains_document` was a **hand-maintained list of variants** that had
+drifted from `document()` — it predated `Multibuffer` joining that
+method and then silently excluded `FileTree`. So `activate_document`
+refused a buffer whose handle the registry would happily hand out: the
+tree opened, the shared path painted *the buffer behind it*, and the
+caret sat on row 0. It is derived from `document()` now, with `Help`
+named as the one deliberate exception (document-backed since PU.1a, but
+activated through the popup / in-pane path).
+
+That is the "aligned-by-silence" failure the standing rule warns about,
+in the registry rather than the renderer.
+
+### CV.5's assertion had to stop pinning a mechanism
+
+It asserted the cursor row was **reverse-videoed**. That is how the
+bespoke painters marked it; the shared path tints the cursorline
+instead, so the assertion would have had to be rewritten per path and
+would only ever have guarded one of them.
+
+It now asserts what the report was actually about: **the caret sits on
+the row showing the cursor's own entry**, matched by text. That holds
+on both paths and needs no change when oil converges in DL.5. The test
+also had to start settling — the cursorline comes from the minor's
+`CursorLine` contribution, and mode activation is async, so an
+unsettled frame was measuring the gap rather than the invariant.
+
+### Also landed
+
+- `activate_file_tree` is a delegation to `activate_document` — a tree
+  **is** a document now. The hand-rolled body it replaces stashed and
+  restored the tree's own cursor / scroll fields, archival duplicates
+  the hot path never read; they are deleted.
+- `PaneRenderProvider.render` became `Option`. `None` means "paint me
+  through the shared document path" and is the goal state, not a
+  special case: the file tree is `None`, help and oil still supply
+  painters, and oil's goes in DL.5.
+- The mode contributes `CursorLine = true`. A listing's selected row
+  has to be visible, and on the shared path that is an option any
+  buffer can carry rather than a kind the renderer knows about.
 
 ## DL.5 — oil onto the shared path 📝
 

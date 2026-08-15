@@ -259,40 +259,73 @@ fn read_dir_sorted(root: &Path) -> std::io::Result<Vec<(PathBuf, bool)>> {
 /// `nerd_fonts` is true, the BMP-block fallback palette otherwise.
 /// Both palettes occupy two cells, so column geometry is the same
 /// either way.
-pub fn render_to_buffer(entries: &[FileTreeEntry], nerd_fonts: bool) -> Buffer {
-    use lattice_core::ui::icons::glyph_for_entry;
-    let mut text = String::new();
-    for (i, entry) in entries.iter().enumerate() {
-        let indent = "  ".repeat(entry.depth as usize);
-        let marker = match entry.kind {
-            FileTreeEntryKind::Directory { expanded: true } => "▾ ",
-            FileTreeEntryKind::Directory { expanded: false } => "▸ ",
-            FileTreeEntryKind::File => "  ",
-        };
-        let is_dir = matches!(entry.kind, FileTreeEntryKind::Directory { .. });
-        let icon = glyph_for_entry(&entry.path, is_dir, nerd_fonts);
-        let name = if entry.depth == 0 {
-            entry.path.display().to_string()
-        } else {
-            entry
-                .path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        };
-        text.push_str(&indent);
-        text.push_str(marker);
-        text.push_str(icon);
-        text.push_str(&name);
-        if i + 1 < entries.len() {
-            text.push('\n');
-        }
-    }
+pub fn render_to_buffer(entries: &[FileTreeEntry], _nerd_fonts: bool) -> Buffer {
     let mut buffer = Buffer::empty();
+    let text = render_to_text(entries);
     if !text.is_empty() {
         let _ = buffer.apply_edit(&Edit::insert(Position::ZERO, text));
     }
     buffer
+}
+
+/// The tree's rope text: indent, expand marker, name — and **no
+/// icon**.
+///
+/// DL.4: the glyph used to be baked in here. It is virtual text now
+/// (`directory-listing-mode` publishes it as a leading inlay), which
+/// makes the rope the entry NAMES: searchable, yankable, and not a
+/// rendering artefact. It also makes the tree symmetric with oil,
+/// whose rope never contained glyphs because `:w` diffs it.
+pub fn render_to_text(entries: &[FileTreeEntry]) -> String {
+    let mut text = String::new();
+    for (i, entry) in entries.iter().enumerate() {
+        text.push_str(&row_prefix(entry));
+        text.push_str(&row_name(entry));
+        if i + 1 < entries.len() {
+            text.push('\n');
+        }
+    }
+    text
+}
+
+/// Indent + expand marker — everything before the icon anchor.
+fn row_prefix(entry: &FileTreeEntry) -> String {
+    let indent = "  ".repeat(entry.depth as usize);
+    let marker = match entry.kind {
+        FileTreeEntryKind::Directory { expanded: true } => "▾ ",
+        FileTreeEntryKind::Directory { expanded: false } => "▸ ",
+        FileTreeEntryKind::File => "  ",
+    };
+    format!("{indent}{marker}")
+}
+
+fn row_name(entry: &FileTreeEntry) -> String {
+    if entry.depth == 0 {
+        entry.path.display().to_string()
+    } else {
+        entry
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+/// Project the tree's entries into the shape
+/// `directory-listing-mode` reads (DL.2's shared local).
+///
+/// `icon_byte` is the byte length of the indent + marker, so the icon
+/// splices between the tree structure and the name rather than at the
+/// far left.
+pub fn listing_entries(entries: &[FileTreeEntry]) -> Vec<crate::listing_mode::ListingEntry> {
+    entries
+        .iter()
+        .map(|e| crate::listing_mode::ListingEntry {
+            path: e.path.clone(),
+            is_dir: matches!(e.kind, FileTreeEntryKind::Directory { .. }),
+            icon_byte: row_prefix(e).len() as u32,
+        })
+        .collect()
 }
 
 fn line_byte_len(buf: &Buffer, line: u32) -> u32 {
@@ -428,34 +461,68 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// DL.4: the rope is entry NAMES. The glyph used to be baked in;
+    /// it is virtual text now, published by `directory-listing-mode`
+    /// as a leading inlay.
+    ///
+    /// This test is the inverse of the two it replaces (which asserted
+    /// the nerd glyph and the BMP fallback were *in* the body). Text a
+    /// user can search and yank should not contain rendering artefacts,
+    /// and keeping it out is what makes the tree symmetric with oil,
+    /// whose rope never held glyphs because `:w` diffs it.
     #[test]
-    fn render_embeds_nerd_icon_in_rope_when_enabled() {
+    fn rope_holds_names_not_glyphs() {
         let dir = temp_dir();
         std::fs::write(dir.join("main.rs"), "x").unwrap();
-        let (buf, _) = FileTreeBuffer::open(&dir, true).unwrap();
-        let body = buf.content.as_string();
+        let (_buf, entries) = FileTreeBuffer::open(&dir, true).unwrap();
+        let body = render_to_text(&entries);
         assert!(
-            body.contains("󱘗 "),
-            "expected rust glyph in rope, got: {body}"
+            body.contains("main.rs"),
+            "the name must be in the rope: {body}"
         );
+        for glyph in ["\u{f1617} ", "· ", "◆ "] {
+            assert!(
+                !body.contains(glyph),
+                "glyph {glyph:?} leaked into the rope: {body}"
+            );
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The icon anchors between the tree structure and the name — at
+    /// byte 0 it would render left of the indent and the tree's shape
+    /// would collapse.
     #[test]
-    fn render_uses_bmp_fallback_when_nerd_fonts_disabled() {
+    fn listing_entries_anchor_icons_after_indent_and_marker() {
         let dir = temp_dir();
-        std::fs::write(dir.join("main.rs"), "x").unwrap();
-        let (buf, _) = FileTreeBuffer::open(&dir, false).unwrap();
-        let body = buf.content.as_string();
-        assert!(
-            !body.contains("󱘗 "),
-            "nerd-font glyph leaked into nerd_fonts=false body: {body}"
-        );
-        // Source-code default bucket = middle-dot.
-        assert!(
-            body.contains("· main.rs"),
-            "expected BMP fallback for main.rs, got: {body}"
-        );
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("main.rs"), "x").unwrap();
+        let (_buf, mut entries) = FileTreeBuffer::open(&dir, false).unwrap();
+        // Expand `sub` so there is a depth-1 row to check.
+        let sub = entries
+            .iter()
+            .position(|e| matches!(e.kind, FileTreeEntryKind::Directory { .. }) && e.depth == 1)
+            .expect("a child directory row");
+        toggle_entries_at(&mut entries, sub).unwrap();
+
+        let listing = listing_entries(&entries);
+        assert_eq!(listing.len(), entries.len(), "one per row");
+
+        let text = render_to_text(&entries);
+        for (row, (le, line)) in listing.iter().zip(text.split('\n')).enumerate() {
+            let anchor = le.icon_byte as usize;
+            assert!(
+                line.is_char_boundary(anchor),
+                "row {row}: icon_byte {anchor} must be a char boundary in {line:?}"
+            );
+            // Everything before the anchor is structure (indent +
+            // marker); nothing of the name may precede it.
+            let prefix = &line[..anchor];
+            assert!(
+                prefix.chars().all(|c| c == ' ' || c == '▾' || c == '▸'),
+                "row {row}: prefix {prefix:?} must be indent + marker only"
+            );
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 }

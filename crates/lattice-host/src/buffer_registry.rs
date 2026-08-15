@@ -46,7 +46,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::buffers::{BufferFlags, BufferId, BufferKind};
-use crate::file_tree::FileTreeBuffer;
 use crate::help::HelpBuffer;
 use crate::oil::OilBuffer;
 use lattice_terminal::buffer::TerminalBuffer;
@@ -138,6 +137,7 @@ impl BufferEntry {
             | BufferData::Messages(d)
             | BufferData::Multibuffer(d)
             | BufferData::Help(d)
+            | BufferData::FileTree(d)
             | BufferData::Dashboard(d) => Some(d),
             _ => None,
         }
@@ -149,21 +149,8 @@ impl BufferEntry {
             | BufferData::Messages(d)
             | BufferData::Multibuffer(d)
             | BufferData::Help(d)
+            | BufferData::FileTree(d)
             | BufferData::Dashboard(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub fn file_tree(&self) -> Option<&FileTreeBuffer> {
-        match &self.data {
-            BufferData::FileTree(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    pub fn file_tree_mut(&mut self) -> Option<&mut FileTreeBuffer> {
-        match &mut self.data {
-            BufferData::FileTree(t) => Some(t),
             _ => None,
         }
     }
@@ -200,7 +187,18 @@ impl BufferEntry {
 #[derive(Debug)]
 pub enum BufferData {
     Document(DocumentEntry),
-    FileTree(FileTreeBuffer),
+    /// Hierarchical filesystem tree.
+    ///
+    /// DL.4: storage is now identical to [`BufferData::Document`] — an
+    /// actor-backed synthetic Document — exactly as `Help` converged at
+    /// PU.1a. The discriminator stays so `:ls`, mode lookup and
+    /// `BufferKind::is_read_only` can still tell a tree from a file.
+    ///
+    /// It was its own struct with its own rope, which is why
+    /// `document_handle()` returned `None` for it and the generic pane
+    /// path could not render it at all — the reason four bespoke paint
+    /// functions existed (CV.5, CV.6).
+    FileTree(DocumentEntry),
     /// Help / log / picker-listing buffers placed into a pane
     /// (DESIGN.md §5.9, §5.11). The transient overlay path
     /// (`App.popup_buffer`) remains for popup-style displays
@@ -475,17 +473,19 @@ impl BufferRegistry {
         lock_inner(&self.inner)
             .by_id
             .get(&id)
-            .map(|e| {
-                matches!(
-                    e.data,
-                    BufferData::Document(_)
-                        | BufferData::Messages(_)
-                        | BufferData::Multibuffer(_)
-                        // DB.2: Dashboard is document-backed and activates
-                        // through the same pipeline (dashboard.md §9.2).
-                        | BufferData::Dashboard(_)
-                )
-            })
+            // DL.4: DERIVED from `document()` rather than re-listing the
+            // variants. The hand-maintained list had already drifted —
+            // it predated `Multibuffer` being added to `document()` and
+            // then silently excluded `FileTree` when that converged, so
+            // `activate_document` refused a buffer whose handle the
+            // registry would happily hand out. A tree opened, painted
+            // the buffer behind it, and put its caret on row 0.
+            //
+            // Help is the one deliberate exception: it is
+            // document-backed (PU.1a) but activates through the popup /
+            // in-pane help path, not this one. Named here rather than
+            // omitted, so the exclusion is a decision and not a gap.
+            .map(|e| e.document().is_some() && !matches!(e.data, BufferData::Help(_)))
             .unwrap_or(false)
     }
 
@@ -822,34 +822,6 @@ impl BufferRegistry {
         })
     }
 
-    pub fn with_file_tree<R>(
-        &self,
-        id: BufferId,
-        f: impl FnOnce(&FileTreeBuffer) -> R,
-    ) -> Option<R> {
-        let inner = lock_inner(&self.inner);
-        inner.by_id.get(&id).and_then(|e| e.file_tree()).map(f)
-    }
-
-    pub fn with_file_tree_mut<R>(
-        &self,
-        id: BufferId,
-        f: impl FnOnce(&mut FileTreeBuffer) -> R,
-    ) -> Option<R> {
-        let result = {
-            let mut inner = lock_inner(&self.inner);
-            inner
-                .by_id
-                .get_mut(&id)
-                .and_then(|e| e.file_tree_mut())
-                .map(f)
-        };
-        if result.is_some() {
-            self.bump_version();
-        }
-        result
-    }
-
     pub fn with_oil<R>(&self, id: BufferId, f: impl FnOnce(&OilBuffer) -> R) -> Option<R> {
         let inner = lock_inner(&self.inner);
         inner.by_id.get(&id).and_then(|e| e.oil()).map(f)
@@ -1026,11 +998,16 @@ mod tests {
                 hidden: false,
                 ephemeral: false,
             },
-            data: BufferData::FileTree(FileTreeBuffer {
+            // DL.4: a file tree is a `DocumentEntry` now, like Help.
+            data: BufferData::FileTree(DocumentEntry {
                 id,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
+                handle: std::sync::Arc::new(lattice_runtime::spawn_document(
+                    id,
+                    lattice_core::Document::empty(),
+                    std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                        lattice_grammar::registry::CommandRegistry::default(),
+                    )),
+                )),
             }),
             name,
         }

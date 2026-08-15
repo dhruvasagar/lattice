@@ -55,6 +55,13 @@ pub struct ListingEntry {
     /// icon lookup (it inspects only the file name and extension).
     pub path: PathBuf,
     pub is_dir: bool,
+    /// Byte offset within the row where the icon is spliced.
+    ///
+    /// `0` for a flat listing (oil), whose rows are bare filenames.
+    /// The file tree indents and prefixes an expand marker, so its
+    /// icon anchors *after* those — at byte 0 the glyph would land to
+    /// the left of the indent and the tree's shape would collapse.
+    pub icon_byte: u32,
 }
 
 /// Per-row entry data for a listing buffer, written by whichever major
@@ -242,9 +249,11 @@ pub fn listing_element_for(path: &std::path::Path, is_dir: bool) -> &'static str
 /// is testable without a buffer, an editor, or a frame — the producer
 /// side of DL.3b is just "call this and publish the result".
 ///
-/// `byte: 0` anchors each icon at the start of its row. That is what
-/// keeps oil's rope bare filenames (design §6): the glyph renders, the
-/// buffer never contains it, and `:w` still diffs clean.
+/// Each icon anchors at its entry's `icon_byte` — 0 for oil's flat
+/// rows, after the indent and expand marker for the tree. Keeping the
+/// glyph out of the rope is what lets oil's text stay bare filenames
+/// (design §6): it renders, the buffer never contains it, and `:w`
+/// still diffs clean.
 pub fn listing_inlays(
     entries: &[ListingEntry],
     reg: &dyn lattice_theme::ThemeRegistry,
@@ -265,7 +274,7 @@ pub fn listing_inlays(
                 .unwrap_or(lattice_cells::Style::InlayHint);
             lattice_mode::InlayRow {
                 line: line as u32,
-                byte: 0,
+                byte: e.icon_byte,
                 text: glyph.to_string(),
                 style,
             }
@@ -316,6 +325,12 @@ impl Mode for DirectoryListingMode {
             lattice_config::Number = false,
             lattice_config::Wrap = false,
             lattice_config::SignColumnOption = lattice_config::SignColumn::No,
+            // DL.4: a listing's selected row must be visible. The
+            // bespoke painters reverse-videoed it; on the shared path
+            // that is the cursorline, which is an option any buffer
+            // can carry — so the listing asks for it rather than the
+            // renderer special-casing the kind.
+            lattice_config::CursorLine = true,
         }
     }
 
@@ -472,14 +487,17 @@ mod tests {
             ListingEntry {
                 path: PathBuf::from("src"),
                 is_dir: true,
+                icon_byte: 0,
             },
             ListingEntry {
                 path: PathBuf::from("main.rs"),
                 is_dir: false,
+                icon_byte: 0,
             },
             ListingEntry {
                 path: PathBuf::from("notes.md"),
                 is_dir: false,
+                icon_byte: 4,
             },
         ];
         let rows = listing_inlays(&entries, &reg, true);
@@ -488,9 +506,9 @@ mod tests {
         for (i, r) in rows.iter().enumerate() {
             assert_eq!(r.line, i as u32, "row {i} anchors to its own line");
             assert_eq!(
-                r.byte, 0,
-                "the icon is LEADING — anchoring elsewhere would put it \
-                 inside the filename"
+                r.byte, entries[i].icon_byte,
+                "the icon anchors where its entry says — 0 for a flat row, \
+                 after the indent + marker for a tree row"
             );
             assert!(!r.text.is_empty(), "row {i} must carry a glyph");
             assert!(
@@ -547,6 +565,10 @@ mod tests {
             (
                 TypeId::of::<lattice_config::SignColumnOption>(),
                 "listings reserve no sign column",
+            ),
+            (
+                TypeId::of::<lattice_config::CursorLine>(),
+                "the selected row must be visible",
             ),
         ] {
             assert!(ids.contains(&want), "{why}");

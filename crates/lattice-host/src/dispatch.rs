@@ -6751,9 +6751,12 @@ impl Editor {
             | BufferKind::Messages
             | BufferKind::Multibuffer
             | BufferKind::Dashboard => self.document.snapshot().buffer.clone(),
+            // DL.4: the tree is a Document now — read it through the
+            // registry handle like every other synthetic kind.
             BufferKind::FileTree => self
                 .buffers
-                .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
+                .document_handle(self.active_pane_buffer_id())
+                .map(|h| h.snapshot().buffer.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             BufferKind::Oil => self
                 .buffers
@@ -6804,10 +6807,9 @@ impl Editor {
             | BufferKind::Messages
             | BufferKind::Multibuffer
             | BufferKind::Dashboard => self.cursor,
-            BufferKind::FileTree => self
-                .buffers
-                .with_file_tree(self.active_pane_buffer_id(), |t| t.cursor)
-                .unwrap_or(self.cursor),
+            // DL.4: no kind-specific cursor field survives — the tree
+            // uses the hot-path cursor like Document does.
+            BufferKind::FileTree => self.cursor,
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.cursor)
@@ -20516,14 +20518,47 @@ impl Editor {
         buffer_id: BufferId,
         entries: Vec<lattice_listing::file_tree::FileTreeEntry>,
     ) {
-        let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
-        let content = lattice_listing::file_tree::render_to_buffer(&entries, nerd_fonts);
+        let text = lattice_listing::file_tree::render_to_text(&entries);
+        self.publish_listing_icons(buffer_id, &entries);
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(lattice_listing::file_tree::modes::FileTreeEntries(entries));
-        self.buffers
-            .with_file_tree_mut(buffer_id, |tree| tree.content = content);
+        // DL.4: the tree's text lives in its Document now, written
+        // through the owner-write seam every other synthetic buffer
+        // uses. It used to be a rope hanging off a bespoke struct,
+        // which is what kept it off the shared render path.
+        self.replace_owned_buffer(buffer_id, &text);
+    }
+
+    /// DL.4: publish this listing's entry icons as leading virtual
+    /// text, and mirror the entries into the shared `ListingEntries`
+    /// local `directory-listing-mode` reads.
+    ///
+    /// Called from the entries chokepoint, so an expand / collapse
+    /// re-publishes icons in the same step that re-renders the rope —
+    /// the two cannot drift.
+    fn publish_listing_icons(
+        &mut self,
+        buffer_id: BufferId,
+        entries: &[lattice_listing::file_tree::FileTreeEntry],
+    ) {
+        let nerd_fonts = self.file_tree_nerd_fonts_for(buffer_id).unwrap_or(false);
+        let listing = lattice_listing::file_tree::listing_entries(entries);
+        let rows = self
+            .services
+            .get::<lattice_theme::ThemeRegistryHandle>()
+            .map(|theme| {
+                lattice_listing::listing_mode::listing_inlays(&listing, &**theme, nerd_fonts)
+            })
+            .unwrap_or_default();
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_listing::listing_mode::ListingEntries(listing));
+        if let Some(pending) = self.services.get::<lattice_mode::PendingInlays>() {
+            pending.store_and_wake(buffer_id, rows);
+        }
     }
 
     /// Write `FileTreeNerdFonts` and re-render the rope.
@@ -20532,9 +20567,9 @@ impl Editor {
             lattice_listing::file_tree::modes::FileTreeNerdFonts(nerd_fonts),
         );
         if let Some(entries) = self.file_tree_entries_for(buffer_id) {
-            let content = lattice_listing::file_tree::render_to_buffer(&entries, nerd_fonts);
-            self.buffers
-                .with_file_tree_mut(buffer_id, |tree| tree.content = content);
+            // The glyph palette changed, not the text — DL.4 took icons
+            // out of the rope, so only the published icons move.
+            self.publish_listing_icons(buffer_id, &entries);
         }
     }
 
@@ -20610,17 +20645,16 @@ impl Editor {
             .get_typed::<crate::ui::theme_options::UiNerdFonts>()
             .map(|v| *v)
             .unwrap_or(false);
-        let (tree, entries) =
-            match lattice_listing::file_tree::FileTreeBuffer::open(&root, nerd_fonts) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.set_message(
-                        EchoLevel::Error,
-                        format!("tree open error: {}: {e}", root.display()),
-                    );
-                    return Vec::new();
-                }
-            };
+        let entries = match lattice_listing::file_tree::initial_entries(&root) {
+            Ok(e) => e,
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("tree open error: {}: {e}", root.display()),
+                );
+                return Vec::new();
+            }
+        };
         if matches!(
             self.active_buffer,
             BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
@@ -20628,25 +20662,29 @@ impl Editor {
             let cur = self.cursor;
             self.push_position_history(cur, crate::state::PositionSource::AutoJump);
         }
-        let new_id = tree.id;
+        // DL.4: the tree is an actor-backed synthetic Document, built
+        // through the same seam `Help` uses since PU.1a. `new_id` must
+        // exist in the registry BEFORE the entries chokepoint runs —
+        // that is what writes the rope and publishes the icons.
+        let new_id = self.register_file_tree_document(crate::buffers::BufferFlags::default());
         self.set_file_tree_root(new_id, root.clone());
         self.set_file_tree_nerd_fonts(new_id, nerd_fonts);
-        self.buffers.insert(crate::buffer_registry::BufferEntry {
-            id: new_id,
-            flags: crate::buffers::BufferFlags::default(),
-            data: crate::buffer_registry::BufferData::FileTree(tree),
-            name: None,
-        });
         self.set_file_tree_entries(new_id, entries);
         let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::FileTree);
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        self.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::FileTree;
-        pane.buffer_id = new_id;
-        pane.cursor = lattice_protocol::Position::ZERO;
-        pane.scroll = 0;
+        // DL.4: activate it the way every other document-backed kind is
+        // activated. The hand-rolled tail this replaces set
+        // `active_buffer` and the pane fields but never swapped
+        // `self.document`, so the shared compose path — which the tree
+        // now uses — painted the buffer *behind* it and put the caret
+        // on row 0.
+        self.activate_document(new_id);
+        self.cursor = lattice_protocol::Position::ZERO;
+        self.scroll = 0;
+        {
+            let pane = self.pane_tree.active_mut();
+            pane.cursor = lattice_protocol::Position::ZERO;
+            pane.scroll = 0;
+        }
         self.set_message(EchoLevel::Info, format!("tree: {}", root.display()));
         signals
     }
@@ -32768,23 +32806,21 @@ impl Editor {
                     self.popup_scroll = scroll;
                 }
             }
-            BufferKind::FileTree => {
-                self.buffers.with_file_tree_mut(pane_id, |t| {
-                    t.cursor = cursor;
-                    t.scroll = scroll as usize;
-                });
-            }
             BufferKind::Oil => {
                 self.buffers.with_oil_mut(pane_id, |o| {
                     o.cursor = cursor;
                     o.scroll = scroll as usize;
                 });
             }
-            // Document + Messages + Dashboard share the same hot-path
-            // stash (cursor/scroll captured on the active pane below).
+            // Document + Messages + Dashboard + FileTree share the same
+            // hot-path stash (cursor/scroll captured on the active pane
+            // below). DL.4 moved FileTree here by deleting its
+            // kind-specific cursor/scroll fields, which were archival
+            // duplicates of the pane's.
             BufferKind::Document
             | BufferKind::Messages
             | BufferKind::Multibuffer
+            | BufferKind::FileTree
             | BufferKind::Dashboard => {}
             // Terminal: nothing to stash beyond the pane state
             // captured below (cursor/scroll on pane). T3
@@ -33377,34 +33413,26 @@ impl Editor {
         ran_full
     }
 
-    /// 5.5.F.4.2: switch the active pane to the file-tree buffer
-    /// with `id`. Snapshots the current active state first; the
-    /// pane's stashed cursor / scroll load into the tree's hot
-    /// fields. No `activate_buffer_state` tail — tree buffers don't
-    /// have document/syntax/options state to re-resolve.
+    /// Switch the active pane to the file-tree buffer with `id`.
+    ///
+    /// DL.4: a thin delegation to [`Self::activate_document`], because
+    /// a tree **is** a document now. That is the whole convergence in
+    /// one line — the swap into the active-document slot is what makes
+    /// the shared compose path paint it, place its caret, and give it
+    /// the cursorline, wrap, folds and gutter the bespoke painter never
+    /// had. `activate_document` reads the kind back out of the registry
+    /// (`kind_of`), so `active_buffer` still lands on `FileTree` and
+    /// every kind-tagged behaviour downstream is unchanged.
+    ///
+    /// The hand-rolled body this replaces stashed and restored the
+    /// tree's own cursor / scroll fields — archival duplicates of the
+    /// pane's that the hot path never read.
     pub fn activate_file_tree(&mut self, id: BufferId) {
         if !self.buffers.contains_file_tree(id) {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a tree", id.0));
             return;
         }
-        if id == self.active_pane_buffer_id() && matches!(self.active_buffer, BufferKind::FileTree)
-        {
-            return;
-        }
-        self.snapshot_active_pane();
-        self.snapshot_active_document();
-        let (stash_cursor, stash_scroll) = self
-            .buffers
-            .with_file_tree(id, |t| (t.cursor, t.scroll as u32))
-            .unwrap_or((lattice_protocol::position::Position::ZERO, 0));
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
-        self.active_buffer = BufferKind::FileTree;
-        let pane = self.pane_tree.active_mut();
-        pane.buffer = BufferKind::FileTree;
-        pane.buffer_id = id;
-        pane.cursor = stash_cursor;
-        pane.scroll = stash_scroll;
+        self.activate_document(id);
     }
 
     /// 5.5.F.4.2: switch the active pane to the oil buffer with `id`.

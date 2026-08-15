@@ -1618,27 +1618,18 @@ impl EditorView {
                 inactive_pane_opacity(&self.app),
             );
         }
-        // Oil + file-tree are non-`Document` buffer kinds: their content
-        // lives in `BufferData::Oil` / `BufferData::FileTree`, not behind
-        // `document_handle`, so they need their own inner builders (the
-        // TUI peer renders them via the M.4 pane-render providers
-        // `oil_pane_render` / `file_tree_pane_render`). Handled inline here
-        // for the same reason Terminal is — the GPUI M.4 provider registry
-        // is a later slice (see `pane_chrome` doc). Both flow through the
-        // shared `pane_chrome` wrapper so the modeline row is reserved
-        // uniformly [[feedback_buffers_no_special_case]].
+        // Oil is still a non-`Document` kind: its content lives in
+        // `BufferData::Oil` rather than behind `document_handle`, so it
+        // needs its own inner builder. DL.5 converges it, at which
+        // point this arm goes the way of the file tree's.
+        //
+        // DL.4: the file tree USED to have an arm here for the same
+        // reason. It is a `DocumentEntry` now, so it falls through to
+        // the shared document path below and gets cursorline, wrap,
+        // folds, the gutter and hlsearch that this bespoke builder
+        // never implemented.
         if matches!(pane.buffer, lattice_core::BufferKind::Oil) {
             let inner = self.build_oil_inner(pane, &rs_guard, theme, is_active);
-            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
-            return Self::pane_chrome(
-                inner,
-                status_row,
-                is_active,
-                inactive_pane_opacity(&self.app),
-            );
-        }
-        if matches!(pane.buffer, lattice_core::BufferKind::FileTree) {
-            let inner = self.build_file_tree_inner(pane, &rs_guard, theme, is_active);
             let status_row = Self::modeline_row(pane, is_active, &rs_guard);
             return Self::pane_chrome(
                 inner,
@@ -2859,118 +2850,6 @@ impl EditorView {
             .into_any_element()
     }
 
-    /// Build the inner content of a **file-tree** pane. Parity with the
-    /// TUI peer's `draw_file_tree_pane`: the rope content already carries
-    /// the indentation + `▾`/`▸` expansion markers, so each visible line
-    /// is rendered verbatim and only *colour-tinted* per entry (the icon
-    /// glyph is not prepended — the tree markers already convey kind). The
-    /// per-entry path/kind comes from the `FileTreeEntries` buffer-local
-    /// (host-populated); the colour resolves through the shared
-    /// `entry_visual`. Bounded to `viewport_height` like the oil builder.
-    fn build_file_tree_inner(
-        &self,
-        pane: &PaneState,
-        rs_guard: &lattice_host::render_state::RenderState,
-        theme: &GpuiTheme,
-        is_active: bool,
-    ) -> AnyElement {
-        let raw_text = rs_guard
-            .buffers
-            .registry
-            .with_file_tree(pane.buffer_id, |t| t.content.as_string());
-        let Some(raw_text) = raw_text else {
-            return div()
-                .bg(rgb(theme.background))
-                .text_color(rgb(theme.foreground))
-                .child(format!(
-                    "(file-tree buffer {:?} unavailable)",
-                    pane.buffer_id
-                ))
-                .into_any_element();
-        };
-        let entries: Vec<lattice_listing::file_tree::FileTreeEntry> = rs_guard
-            .buffer_locals
-            .map
-            .get(&pane.buffer_id)
-            .and_then(|locals| locals.get::<lattice_listing::file_tree::modes::FileTreeEntries>())
-            .map(|e| e.0.clone())
-            .unwrap_or_default();
-        let (cursor_line, scroll) = if is_active {
-            let ad = rs_guard.active_document.load();
-            (ad.cursor.line as usize, ad.scroll as usize)
-        } else {
-            (pane.cursor.line as usize, pane.scroll as usize)
-        };
-        let nerd_fonts = rs_guard
-            .options
-            .config
-            .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
-            .map(|v| *v)
-            .unwrap_or(false);
-        let viewport = if pane.viewport_height > 0 {
-            pane.viewport_height as usize
-        } else {
-            VIEWPORT_ROWS_FALLBACK
-        };
-        let rows: Vec<gpui::Div> = raw_text
-            .split('\n')
-            // CV.5: absolute index — `enumerate` precedes `skip`. See
-            // the note in the oil pane above; the entry pairing is
-            // unaffected (the `zip` also precedes the `skip`), but the
-            // cursor highlight landed `scroll` rows above the caret.
-            .enumerate()
-            .zip(entries.iter())
-            .skip(scroll)
-            .take(viewport)
-            .map(|((line_idx, raw_line), entry)| {
-                let is_cursor = is_active && line_idx == cursor_line;
-                let is_dir = matches!(
-                    entry.kind,
-                    lattice_listing::file_tree::FileTreeEntryKind::Directory { .. }
-                );
-                let (_glyph, icol) =
-                    lattice_core::ui::icons::entry_visual(&entry.path, is_dir, nerd_fonts);
-                let is_hidden = entry
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with('.'));
-                let fg = if is_cursor {
-                    theme.cursor_foreground
-                } else {
-                    entry_fg(rs_guard, is_dir, is_hidden, icol, theme.foreground)
-                };
-                let mut row = div().text_color(rgb(fg)).child(raw_line.to_string());
-                if is_cursor {
-                    row = row.bg(rgb(theme.cursor_background));
-                }
-                row
-            })
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme.background))
-            .children(rows)
-            .into_any_element()
-    }
-
-    /// Issue #40 / Terminal-mode T1: build the inner content of a
-    /// terminal-kind pane from the `TerminalSnapshot` published
-    /// by the PTY reader task. T1 renders monochrome cell text
-    /// only; T2 layers SGR colors + cursor-shape + alt-screen
-    /// handling once alacritty_terminal is wired into
-    /// `lattice-terminal::reader`.
-    ///
-    /// Returns the inner pane content + a status-bar label. The
-    /// caller wraps both via [`Self::pane_chrome`] so the
-    /// terminal's vertical extent is bounded by the standard
-    /// pane chrome and can never render past the modeline
-    /// [[feedback_buffers_no_special_case]].
-    ///
-    /// The substrate stays decoupled: this helper touches only
-    /// `TerminalSnapshot`'s public accessors (`rows`, `cols`,
-    /// `cell_at`) — no reader / grid internals.
     fn build_terminal_inner(
         &self,
         pane: &PaneState,

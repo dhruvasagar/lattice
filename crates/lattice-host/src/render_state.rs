@@ -2917,7 +2917,6 @@ mod tests {
     fn buffers_substate_survives_registry_only_mutation_but_tabs_invalidates() {
         use crate::buffer_registry::{BufferData, BufferEntry};
         use crate::buffers::BufferFlags;
-        use crate::file_tree::FileTreeBuffer;
         use lattice_core::BufferId;
         let mut editor = Editor::default();
         editor.publish_render_state();
@@ -2928,11 +2927,15 @@ mod tests {
             id,
             name: Some("*scratch-versioned-test*".to_string()),
             flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
+            data: BufferData::FileTree(crate::buffer_registry::DocumentEntry {
                 id,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
+                handle: std::sync::Arc::new(lattice_runtime::spawn_document(
+                    id,
+                    lattice_core::Document::empty(),
+                    std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                        lattice_grammar::registry::CommandRegistry::default(),
+                    )),
+                )),
             }),
         });
         editor.publish_render_state();
@@ -3029,7 +3032,6 @@ mod tests {
     fn buffers_substate_registry_clone_observes_editor_writes() {
         use crate::buffer_registry::{BufferData, BufferEntry};
         use crate::buffers::BufferFlags;
-        use crate::file_tree::FileTreeBuffer;
         use lattice_core::{BufferId, BufferKind};
         let mut editor = Editor::default();
         editor.publish_render_state();
@@ -3041,11 +3043,15 @@ mod tests {
             id: inserted_id,
             name: Some("*scratch-test*".to_string()),
             flags: BufferFlags::default(),
-            data: BufferData::FileTree(FileTreeBuffer {
+            data: BufferData::FileTree(crate::buffer_registry::DocumentEntry {
                 id: inserted_id,
-                content: lattice_core::Buffer::empty(),
-                cursor: lattice_protocol::position::Position::ZERO,
-                scroll: 0,
+                handle: std::sync::Arc::new(lattice_runtime::spawn_document(
+                    inserted_id,
+                    lattice_core::Document::empty(),
+                    std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                        lattice_grammar::registry::CommandRegistry::default(),
+                    )),
+                )),
             }),
         });
         let rs = editor.render_state.load_full();

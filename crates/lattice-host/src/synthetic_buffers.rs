@@ -262,6 +262,31 @@ impl Editor {
         )
     }
 
+    /// DL.4: mint an empty actor-backed Document filed as a file tree.
+    ///
+    /// The listing peer of [`Self::register_help_document`] — same
+    /// PU.1a shape (a `DocumentEntry` behind a kind discriminator),
+    /// minus the help metadata. The caller seeds the text through the
+    /// entries chokepoint, which also publishes the icons, so the rope
+    /// and the virtual text cannot drift apart.
+    ///
+    /// DL.5 generalises this to oil once that kind converges too.
+    pub fn register_file_tree_document(&mut self, flags: BufferFlags) -> BufferId {
+        let id = BufferId::next();
+        let document = Document::empty();
+        let handle = spawn_document(id, document, self.registry.clone());
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        let entry = DocumentEntry { id, handle };
+        self.buffers.insert(BufferEntry {
+            id,
+            flags,
+            data: BufferData::FileTree(entry),
+            name: None,
+        });
+        self.seed_empty_document_locals(id);
+        id
+    }
+
     /// PU.1a: register a freshly-built [`lattice_help::HelpContent`]
     /// as an actor-backed synthetic Document ([`BufferData::Help`]),
     /// seeded with the content's text + parsed metadata. Returns the

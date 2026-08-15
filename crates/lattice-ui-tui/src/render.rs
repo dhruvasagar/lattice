@@ -2930,8 +2930,13 @@ fn draw_pane_content(
     is_active: bool,
     idx: usize,
 ) {
-    if let Some(provider) = app.pane_render_provider(pane.buffer_id) {
-        (provider.render)(frame, content_rect, app, snap, pane, is_active, idx);
+    // DL.4: a provider may own only its status label. A `None` render
+    // means "paint me through the shared document path" — which is
+    // where every converged kind ends up.
+    if let Some(provider) = app.pane_render_provider(pane.buffer_id)
+        && let Some(render) = provider.render
+    {
+        render(frame, content_rect, app, snap, pane, is_active, idx);
         return;
     }
     // Issue #40 / Terminal-mode T1: paint the terminal cell
@@ -3334,18 +3339,6 @@ fn help_pane_render(
     }
 }
 
-fn file_tree_pane_render(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    _snap: &DocumentSnapshot,
-    pane: &crate::pane::PaneState,
-    is_active: bool,
-    _idx: usize,
-) {
-    draw_file_tree_pane(frame, area, app, pane, is_active);
-}
-
 fn oil_pane_render(
     frame: &mut Frame,
     area: Rect,
@@ -3412,21 +3405,21 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
     registry.register(
         lattice_mode::modes::HelpMode.id(),
         PaneRenderProvider {
-            render: help_pane_render,
+            render: Some(help_pane_render),
             status: help_pane_status,
         },
     );
-    registry.register(
+    // DL.4: the file tree has NO `render` provider — it is a Document
+    // now and paints through the shared compose path like every other
+    // buffer. Only the status label stays mode-owned.
+    registry.register_status_only(
         lattice_listing::file_tree::FileTreeMode.id(),
-        PaneRenderProvider {
-            render: file_tree_pane_render,
-            status: file_tree_pane_status,
-        },
+        file_tree_pane_status,
     );
     registry.register(
         lattice_listing::oil::OilMode.id(),
         PaneRenderProvider {
-            render: oil_pane_render,
+            render: Some(oil_pane_render),
             status: oil_pane_status,
         },
     );
@@ -3793,80 +3786,6 @@ fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate
 /// information (root path) lives in the per-pane status line, so
 /// the content area is purely the tree text -- consistent with
 /// how a Document pane looks.
-fn draw_file_tree_pane(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    pane: &crate::pane::PaneState,
-    is_active: bool,
-) {
-    // Slice 3c.final.E.5j: file-tree content via published
-    // `buffers()` sub-state.
-    let Some(raw_text) = app
-        .buffers()
-        .registry
-        .with_file_tree(pane.buffer_id, |t| t.content.as_string())
-    else {
-        return;
-    };
-    // Active pane's live cursor / scroll live on `app.editor.cursor` /
-    // `app.editor.scroll` (unified across buffer kinds). Inactive panes
-    // use the pane's stashed cursor / scroll; the tree's own
-    // `cursor` / `scroll` fields are archival save-state.
-    let (cursor_line, scroll) = if is_active {
-        (app.ad().cursor.line as usize, app.ad().scroll as usize)
-    } else {
-        (pane.cursor.line as usize, pane.scroll as usize)
-    };
-    let viewport = area.height as usize;
-    let nerd_fonts = app.theme.nerd_fonts;
-    let theme = &app.theme;
-    // M.3.2.c.5: entries live exclusively in the
-    // FileTreeEntries buffer-local. Nothing to drift.
-    // Slice 3c.final.B.9: file-tree entries via published map.
-    let locals_map = app.buffer_locals();
-    let entries: Vec<crate::file_tree::FileTreeEntry> = locals_map
-        .map
-        .get(&pane.buffer_id)
-        .and_then(|locals| locals.get::<crate::modes::FileTreeEntries>())
-        .map(|en| en.0.clone())
-        .unwrap_or_default();
-    let lines: Vec<Line> = raw_text
-        .split('\n')
-        // CV.5: absolute index — `enumerate` precedes `skip`. See the
-        // note in `draw_oil_pane`; the entry pairing is unaffected
-        // (the `zip` also precedes the `skip`), but the cursor
-        // highlight landed `scroll` rows above the caret.
-        .enumerate()
-        .zip(entries.iter())
-        .skip(scroll)
-        .take(viewport)
-        .map(|((line_idx, raw_line), entry)| {
-            let is_cursor = is_active && line_idx == cursor_line;
-            let is_dir = matches!(
-                entry.kind,
-                crate::file_tree::FileTreeEntryKind::Directory { .. }
-            );
-            let (_glyph, entry_style) =
-                crate::icons::icon_for_entry(&entry.path, is_dir, nerd_fonts, theme);
-            let cursor_mod = if is_cursor {
-                Modifier::REVERSED
-            } else {
-                Modifier::empty()
-            };
-            let span_style = entry_style.add_modifier(cursor_mod);
-            Line::from(Span::styled(raw_line.to_string(), span_style))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-    if is_active && area.height > 0 && area.width > 0 {
-        let row_off = (app.ad().cursor.line as usize).saturating_sub(app.ad().scroll as usize);
-        let row_off = row_off.min(area.height.saturating_sub(1) as usize);
-        let col_off = (app.ad().cursor.byte as usize).min(area.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
-    }
-}
-
 fn draw_oil_pane(
     frame: &mut Frame,
     area: Rect,
@@ -7690,8 +7609,8 @@ mod tests {
     /// other, so they carried the same defect; the report named only
     /// oil, and testing only oil would have left the twin broken with
     /// nothing to announce it.
-    #[test]
-    fn pane_listing_cursor_highlight_and_caret_share_a_row_when_scrolled() {
+    #[tokio::test]
+    async fn pane_listing_cursor_highlight_and_caret_share_a_row_when_scrolled() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -7734,6 +7653,34 @@ mod tests {
                 a.handle_renderer_signal(s);
             }
 
+            // DL.4: the converged tree marks its cursor row with the
+            // cursorline, which `directory-listing-mode` contributes —
+            // so the mode has to be ACTIVE before the frame means
+            // anything. Mode activation is async; without settling, the
+            // first frame has no mark and the assertion below would be
+            // measuring the gap rather than the invariant.
+            {
+                let mode = lattice_listing::listing_mode::DirectoryListingMode::mode_id();
+                let bid = a.editor.active_pane_buffer_id();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while std::time::Instant::now() < deadline {
+                    let active = a
+                        .editor
+                        .active_modes
+                        .get(&bid)
+                        .map(|m| m.is_active(mode))
+                        .unwrap_or(false);
+                    if active {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    let signals = a.editor.run_tick_pending();
+                    for sig in signals {
+                        a.handle_renderer_signal(sig);
+                    }
+                }
+            }
+
             let chrome = chrome_rows(&a);
             let buffer_height = th
                 .saturating_sub(1)
@@ -7769,25 +7716,60 @@ mod tests {
 
             let caret_row = terminal.get_cursor_position().unwrap().y;
             let buf = terminal.backend().buffer().clone();
-            let highlighted: Vec<u16> = (0..th)
-                .filter(|&y| {
-                    (0..tw).any(|x| {
-                        buf[(x, y)]
-                            .style()
-                            .add_modifier
-                            .contains(Modifier::REVERSED)
-                    })
+            let screen: Vec<String> = (0..th)
+                .map(|y| {
+                    (0..tw)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
                 })
+                .collect();
+
+            // The cursor's own row, identified by its TEXT rather than
+            // by how the pane marks it.
+            //
+            // DL.4 moved the file tree between paint paths — the
+            // bespoke painter reverse-videoed the cursor row, the
+            // shared compose path tints it with the cursorline — so an
+            // assertion on either mechanism would have had to be
+            // rewritten and would only ever guard one of them. What the
+            // report was actually about survives both: the caret must
+            // sit on the row showing the cursor's entry. Oil moves to
+            // the shared path in DL.5 and this needs no change.
+            // `active_text` resolves per kind, so this reads the pane's
+            // OWN buffer for both — `ad()` is the background document
+            // for oil, which is not converged until DL.5.
+            //
+            // Matched on the entry name rather than the whole row: the
+            // tree's row carries an indent and an expand marker, and
+            // both kinds now splice a leading icon that is virtual text
+            // and therefore not in the rope. The filenames in the
+            // fixture are unique, so one row matches.
+            let cursor_text = a
+                .editor
+                .active_text()
+                .line(a.editor.cursor.line)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            assert!(
+                !cursor_text.is_empty(),
+                "{kind}: precondition — the cursor's line has text to find"
+            );
+            let rows_with_cursor_text: Vec<u16> = (0..th)
+                .filter(|&y| screen[y as usize].contains(&cursor_text))
                 .collect();
 
             let (scroll, cursor_line) = (a.editor.scroll, a.editor.cursor.line);
             let _ = std::fs::remove_dir_all(&dir);
 
             assert_eq!(
-                highlighted,
+                rows_with_cursor_text,
                 vec![caret_row],
-                "{kind}: the reverse-video cursor row must be exactly the caret's \
-                 row (caret_row={caret_row}, scroll={scroll}, cursor.line={cursor_line})",
+                "{kind}: the caret must sit on the row showing the cursor's own \
+                 entry ({cursor_text:?}) — caret_row={caret_row}, scroll={scroll}, \
+                 cursor.line={cursor_line}",
             );
         }
     }

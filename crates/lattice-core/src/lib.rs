@@ -17,6 +17,11 @@ pub mod clipboard;
 pub mod document;
 pub mod error;
 pub mod folding;
+// IN.0: `IndentUnit` / `IndentMethod` — the resolved indent value the
+// `>` / `<` operators consume. Here rather than in `lattice-indent`
+// because `lattice-syntax` → `lattice-grammar` makes an engine-side
+// home a dependency cycle; see `indent.rs`'s module doc.
+pub mod indent;
 // SS.1: the shared on-disk fingerprint (autoread + multibuffer sources).
 pub mod on_disk;
 pub mod search;
@@ -32,6 +37,7 @@ pub use crate::folding::{
     Fold, FoldMethod, FoldOverlayService, FoldOverlayServiceHandle, FoldSource, ProviderId,
     ProviderKind,
 };
+pub use crate::indent::{IndentMethod, IndentUnit};
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
 

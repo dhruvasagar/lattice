@@ -1771,6 +1771,7 @@ const MAX: i32 = 10;\n\
                 scope_resolver: Some(&s.inner),
                 comment_syntax: None,
                 syntax: None,
+                ..Default::default()
             },
         )
         .expect("daf dispatch ok");

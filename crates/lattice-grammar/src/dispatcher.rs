@@ -304,7 +304,7 @@ fn execute_operator(
         )
         && operator.blockwise_per_row
     {
-        return execute_operator_blockwise(operator, document, invocation, cancel);
+        return execute_operator_blockwise(operator, document, invocation, cancel, env);
     }
 
     let motion_count = invocation.count_or_default();
@@ -341,6 +341,7 @@ fn execute_operator(
         count: invocation.count_or_default(),
         args: invocation.args.clone(),
         cancel,
+        indent: env.indent,
     };
     (operator.apply)(&mut ctx)
 }
@@ -363,6 +364,7 @@ fn execute_operator_blockwise(
     document: &mut Document,
     invocation: &CommandInvocation,
     cancel: &CancellationToken,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let sel = document.selections().primary();
     let (top_line, bottom_line) = (
@@ -426,6 +428,7 @@ fn execute_operator_blockwise(
             count,
             args: args.clone(),
             cancel,
+            indent: env.indent,
         };
         let eff = (operator.apply)(&mut ctx)?;
         per_row_effects.push(eff);
@@ -997,6 +1000,7 @@ mod tests {
             scope_resolver: Some(&resolver),
             comment_syntax: None,
             syntax: None,
+            ..Default::default()
         };
         let eff = execute_with_env(
             &registry,

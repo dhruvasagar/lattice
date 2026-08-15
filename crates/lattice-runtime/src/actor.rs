@@ -259,6 +259,7 @@ impl DocumentActor {
                     // (the only tree-snapshot consumer) dispatch through the
                     // host's Action gate, which carries the concrete snapshot.
                     syntax: None,
+                    indent: env.indent,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the
@@ -558,6 +559,7 @@ mod tests {
                 crate::document::DispatchEnv {
                     scope_resolver: Some(resolver),
                     comment_syntax: None,
+                    ..Default::default()
                 },
             )
             .await

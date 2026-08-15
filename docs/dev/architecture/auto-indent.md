@@ -77,7 +77,8 @@ for options that were never registered. This makes the docs true.
 
 ### `tabstop` is not the indent unit
 
-`tabstop` (default 8) stays precisely what it is: **the display width of a
+`tabstop` (already registered, default 4 — lattice house style; vim's
+historical default is 8) stays precisely what it is: **the display width of a
 literal tab byte**. It is a rendering property. `shiftwidth` is an editing
 property. Conflating them is a common editor bug — it makes "change my indent
 size" silently reflow every file that contains a hard tab, including files the
@@ -323,13 +324,24 @@ action.
 
 ## 9. Crate placement
 
-Two new crates, both narrow.
+The **value** in `lattice-core`, the **engine** and the **external-tool
+runner** in two new narrow crates.
 
-**`lattice-indent`** — pure, synchronous, no I/O, no async, no host deps.
+**`lattice-core::indent`** (IN.0, landed) — `IndentUnit { width,
+expand_tabs, tabstop }` with `columns_of` / `render` / `shift` /
+`reindented_prefix`, plus the `IndentMethod` enum.
+
+Not in `lattice-indent`, and this is load-bearing rather than tidiness:
+`lattice-syntax` depends on `lattice-grammar`, so a value type owned by
+`lattice-indent` (which depends on `lattice-syntax`) and consumed by the `>` /
+`<` operators in `lattice-grammar` is a **dependency cycle**. `lattice-core` is
+the floor both sides already stand on, and where the sibling `FoldMethod` lives
+for exactly the same reason.
+
+**`lattice-indent`** (IN.1+) — pure, synchronous, no I/O, no async, no host
+deps. The *engine* over the value:
 
 ```
-unit.rs      IndentUnit { style: Spaces(n) | Tabs, tabstop }
-             render(level) -> String, measure(&str) -> level
 query.rs     compile + cache indents.scm per Lang
 engine.rs    indent_for_line(&SyntaxSnapshot, &Rope, line, unit)
 lexical.rs   the fallback bridge / indentmethod=keep

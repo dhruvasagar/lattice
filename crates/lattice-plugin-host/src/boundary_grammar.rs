@@ -259,6 +259,7 @@ mod tests {
             count: Count(1),
             args: Args::None,
             cancel: &CancellationToken::never(),
+            indent: Default::default(),
         };
         let wit = project_operator_context(&ctx).unwrap();
         assert_eq!(wit.range.start.byte, 0);

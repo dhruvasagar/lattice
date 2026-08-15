@@ -17782,6 +17782,10 @@ impl Editor {
             lattice_runtime::DispatchEnv {
                 scope_resolver,
                 comment_syntax,
+                // IN.0: `>` / `<` read this. Resolved per-buffer so
+                // `:setlocal shiftwidth=2` and a major mode's
+                // contribution both apply.
+                indent: self.indent_unit(self.active_buffer_id()),
             },
         ))
     }
@@ -19405,10 +19409,11 @@ impl Editor {
     /// within the current line and use Insert semantics (`<C-e>` lands *past*
     /// the last byte). Deletes route through `apply_edit_blocking`, so the
     /// read-only / editable-tail gate still applies (e.g. the agent prompt).
-    /// Indent/dedent mirror the `>`/`<` operators' `INDENT_UNIT` (4 spaces).
+    /// Indent/dedent share [`Self::indent_unit`] with the `>` / `<`
+    /// operators, so `<C-t>` and `>>` cannot disagree about what one
+    /// indent level is.
     pub fn do_insert_line_edit(&mut self, kind: lattice_grammar::InsertLineEdit) {
         use lattice_grammar::InsertLineEdit as K;
-        const INDENT_UNIT: &str = "    ";
         let line = self.cursor.line;
         let text = self
             .document
@@ -19448,37 +19453,30 @@ impl Editor {
             }
             K::DeleteToLineStart => self.delete_on_current_line(0, cur),
             K::KillToLineEnd => self.delete_on_current_line(cur, len),
-            K::IndentLine => {
-                let at = lattice_protocol::position::Position::new(line, 0);
-                if self
-                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, INDENT_UNIT))
-                    .is_ok()
-                {
-                    self.cursor.byte = self.cursor.byte.saturating_add(INDENT_UNIT.len() as u32);
-                }
-            }
-            K::DedentLine => {
-                let bytes = text.as_bytes();
-                let strip = if bytes.first() == Some(&b'\t') {
-                    1
-                } else {
-                    let mut s = 0usize;
-                    while s < INDENT_UNIT.len() && bytes.get(s) == Some(&b' ') {
-                        s += 1;
-                    }
-                    s
-                };
-                if strip > 0 {
+            // IN.0: both route through the same `reindented_prefix`
+            // the `>` / `<` operators use, so `<C-t>` and `>>` cannot
+            // drift apart in what they consider one indent level.
+            // The cursor shifts by the byte-length delta of the
+            // rewritten prefix -- which is not the same as the column
+            // delta once tabs are involved.
+            K::IndentLine | K::DedentLine => {
+                let levels = if matches!(kind, K::IndentLine) { 1 } else { -1 };
+                let unit = self.indent_unit(self.active_buffer_id());
+                if let Some((old_len, rendered)) = unit.reindented_prefix(&text, levels) {
                     let cursor_byte = self.cursor.byte;
                     let range = lattice_protocol::position::Range::new(
                         lattice_protocol::position::Position::new(line, 0),
-                        lattice_protocol::position::Position::new(line, strip as u32),
+                        lattice_protocol::position::Position::new(line, old_len as u32),
                     );
                     if self
-                        .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::replace(
+                            range,
+                            rendered.clone(),
+                        ))
                         .is_ok()
                     {
-                        self.cursor.byte = cursor_byte.saturating_sub(strip as u32);
+                        let delta = rendered.len() as i64 - old_len as i64;
+                        self.cursor.byte = (cursor_byte as i64 + delta).max(0) as u32;
                     }
                 }
             }
@@ -30933,6 +30931,27 @@ impl Editor {
             return v;
         }
         self.config.get_typed::<D>().expect("option not registered")
+    }
+
+    /// IN.0: one level of indentation for `buffer`, resolved from
+    /// `shiftwidth` / `expandtab` / `tabstop` through the buffer-local
+    /// stack (so `:setlocal shiftwidth=2` and a major mode's
+    /// `Mode::options()` contribution both land here).
+    ///
+    /// The single place these three options become one value. Every
+    /// indent consumer -- the `>` / `<` operators via `GrammarEnv`,
+    /// `<C-t>` / `<C-d>`, and the auto-indent surfaces from IN.1 --
+    /// reads it here rather than resolving the options itself, which is
+    /// what keeps them from drifting apart.
+    pub fn indent_unit(&self, buffer: BufferId) -> lattice_core::IndentUnit {
+        use lattice_config::core_options::{ExpandTab, Shiftwidth, Tabstop};
+        // The options validate to 1..=32, so the casts cannot lose a
+        // legal value; `clamp` covers a hypothetical out-of-band write
+        // rather than trusting the validator from a distance.
+        let width = (*self.resolved_option::<Shiftwidth>(buffer)).clamp(1, 32) as u8;
+        let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
+        let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
+        lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
     }
 
     /// Body of `:set foo=bar`. Parses + applies the spec via the
@@ -45652,7 +45671,8 @@ mod tests {
         assert_eq!(editor.cursor.byte, 0);
     }
 
-    /// `<C-t>`/`<C-d>` indent / dedent the current line by one `INDENT_UNIT`.
+    /// `<C-t>`/`<C-d>` indent / dedent the current line by one
+    /// `shiftwidth`.
     #[test]
     fn insert_line_edit_indent_and_dedent() {
         let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
@@ -45662,6 +45682,64 @@ mod tests {
         assert_eq!(editor.cursor.byte, 4);
         editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DedentLine);
         assert_eq!(line0(&editor), "x");
+    }
+
+    // ---- IN.0: the indent unit is resolved from config ----
+
+    #[test]
+    fn indent_unit_defaults_match_the_registered_options() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let u = editor.indent_unit(editor.active_buffer_id());
+        assert_eq!(u.width, 4, "shiftwidth default");
+        assert!(u.expand_tabs, "expandtab default");
+        assert_eq!(u.tabstop, 4, "tabstop default");
+    }
+
+    #[test]
+    fn insert_line_edit_indent_honours_shiftwidth() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.do_set("shiftwidth=2");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::IndentLine);
+        assert_eq!(line0(&editor), "  x");
+        assert_eq!(editor.cursor.byte, 2);
+    }
+
+    #[test]
+    fn insert_line_edit_indent_honours_noexpandtab() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.do_set("expandtab=false");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::IndentLine);
+        // shiftwidth 4 == tabstop 4, so one level is exactly one tab.
+        assert_eq!(line0(&editor), "\tx");
+        // The cursor moved by the BYTE delta (1), not the column
+        // delta (4) -- the distinction tabs make.
+        assert_eq!(editor.cursor.byte, 1);
+    }
+
+    #[test]
+    fn shiftwidth_rejects_out_of_range_and_leaves_the_unit_alone() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.do_set("shiftwidth=99");
+        let u = editor.indent_unit(editor.active_buffer_id());
+        assert_eq!(u.width, 4, "rejected set must not have applied");
+    }
+
+    #[test]
+    fn indent_operator_reads_the_resolved_shiftwidth() {
+        // End-to-end through the real dispatch path: `:set` writes
+        // config, `>>` reads it via GrammarEnv. The grammar-side tests
+        // inject the unit directly; this one proves the wiring between
+        // them exists.
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.do_set("shiftwidth=2");
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        let b = editor.builtins;
+        let inv = lattice_grammar::CommandInvocation::of(b.indent_right.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine);
+        let _ = editor.dispatch_blocking(inv);
+        assert_eq!(line0(&editor), "  x");
     }
 
     #[test]

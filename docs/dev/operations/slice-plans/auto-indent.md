@@ -8,8 +8,8 @@
 
 | Slice | Title | Status |
 |---|---|---|
-| IN.0 | Indent-unit options; retire the hardcoded `INDENT_UNIT` | 📝 |
-| IN.1 | `lattice-indent` crate — `IndentUnit` + lexical bridge; `indentmethod=none\|keep` | 📝 |
+| IN.0 | Indent-unit options; retire the hardcoded `INDENT_UNIT` | ✅ |
+| IN.1 | `lattice-indent` crate — lexical bridge; `indentmethod=none\|keep` | 📝 |
 | IN.2 | Query engine + `rust/indents.scm` + the bounded-reparse staleness path | 📝 |
 | IN.3 | `indents.scm` — brace family (9 languages) | 📝 |
 | IN.4 | `indents.scm` — indent-sensitive + scripting (4 languages) | 📝 |
@@ -76,7 +76,7 @@ introduced, and the docs/benchmark wrap-up.
 
 ---
 
-## IN.0 — indent-unit options; retire `INDENT_UNIT` 📝
+## IN.0 — indent-unit options; retire `INDENT_UNIT` ✅
 
 **Depends on:** nothing. **New crates:** none.
 
@@ -102,10 +102,22 @@ An option whose honoured-from slice has not landed is inert, and
 `indentmethod=syntax` degrades to `none` until IN.1/IN.2 light up the lower
 rungs — which is the cascade behaving exactly as designed, not a stub.
 
-**`lattice-indent` is created in this slice**, containing only `unit.rs`
-(`IndentUnit { style: Spaces(n) | Tabs, tabstop }`, `render`, `measure`).
-Creating it here rather than putting `IndentUnit` in `lattice-core` and moving
-it at IN.1 avoids a move commit for no gain.
+**`IndentUnit` lands in `lattice-core`, not in `lattice-indent`.**
+
+The plan originally said the opposite — create `lattice-indent` here holding
+only `unit.rs`, "to avoid a move commit". That was a **planning error caught at
+execution**: `lattice-syntax` depends on `lattice-grammar`, so a value type in
+`lattice-indent` (which depends on `lattice-syntax` from IN.2) that `>` / `<`
+in `lattice-grammar` consume is a dependency **cycle**, not a move commit.
+
+`lattice-core` is the floor both sides already stand on, and where the sibling
+`FoldMethod` lives for exactly the same reason — `lattice-config` needs it and
+cannot depend upward. `lattice-indent` is created in IN.1 and holds the
+*engine*; `lattice-core::indent` holds the *value*.
+
+Shape as built: `IndentUnit { width, expand_tabs, tabstop }` with
+`columns_of` / `render` / `shift` / `reindented_prefix`, plus the
+`IndentMethod` `labeled_enum!`.
 
 Route through it, deleting `const INDENT_UNIT: &str = "    "`:
 
@@ -125,10 +137,10 @@ this slice makes that true rather than adding a claim.
 
 ## IN.1 — `lattice-indent`; lexical bridge; `indentmethod=keep` 📝
 
-**Depends on:** IN.0. **New crate:** `lattice-indent` (or fills out the shell
-IN.0 created).
+**Depends on:** IN.0. **New crate:** `lattice-indent`, created here (IN.0 put
+the `IndentUnit` *value* in `lattice-core` instead — see the cycle note there).
 
-Contents: `unit.rs` (from IN.0), `lexical.rs`.
+Contents: `lexical.rs`.
 
 `lexical.rs` computes the previous non-blank line's indent, plus one level if
 that line ends in an unclosed opener, minus one if the target line begins with

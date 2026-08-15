@@ -1755,6 +1755,46 @@ impl Document for MultibufferDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
+        self.dispatch_composed(
+            invocation,
+            cursor,
+            cancel,
+            lattice_core::IndentUnit::default(),
+        )
+    }
+
+    /// IN.0: the multibuffer overrides this too, purely to forward
+    /// `env.indent` to `>` / `<`.
+    ///
+    /// It still ignores `env.scope_resolver` -- it builds its own
+    /// composed↔source resolver in `dispatch_composed` (N.1.5), which
+    /// is why the env was ignored wholesale before. But `indent` is a
+    /// plain resolved value with nothing multibuffer-specific about it,
+    /// and dropping it would mean `>` obeys `:setlocal shiftwidth=2` in
+    /// a document buffer and silently ignores it in a multibuffer --
+    /// kind-specific behaviour in a buffer, which is the thing
+    /// `multibuffer_is_a_regular_buffer.rs` exists to prevent.
+    fn dispatch_with_env(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        env: lattice_runtime::DispatchEnv,
+    ) -> Pending<Effect> {
+        self.dispatch_composed(invocation, cursor, cancel, env.indent)
+    }
+}
+
+impl MultibufferDocumentHandle {
+    /// Body shared by [`Document::dispatch_with_cancel`] and
+    /// [`Document::dispatch_with_env`].
+    fn dispatch_composed(
+        &self,
+        invocation: CommandInvocation,
+        cursor: Position,
+        cancel: CancellationToken,
+        indent: lattice_core::IndentUnit,
+    ) -> Pending<Effect> {
         // K.4.11 (2026-06-02): the multibuffer now owns grammar
         // dispatch directly. Pre-K.4.11 this returned
         // Err(ReadOnly), and `Editor::dispatch_blocking`
@@ -1825,6 +1865,7 @@ impl Document for MultibufferDocumentHandle {
                 // TS.1: multibuffer dispatch resolves motions/text-objects, not
                 // grammar actions; no tree-snapshot handle needed.
                 syntax: None,
+                indent,
             },
         )
         .map_err(RuntimeError::Grammar);

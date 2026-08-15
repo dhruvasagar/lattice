@@ -139,6 +139,9 @@ pub struct OperatorContext<'a> {
     /// block) should poll `cancel.check()?` between rows; on a
     /// flipped token return [`crate::CommandError::Cancelled`].
     pub cancel: &'a crate::CancellationToken,
+    /// IN.0: one level of indentation, resolved by the host. Only the
+    /// indent operators (`>` / `<`) read it.
+    pub indent: lattice_core::IndentUnit,
 }
 
 /// An operator's evaluator returns the full `Effect` it produced. Most
@@ -271,6 +274,17 @@ pub struct GrammarEnv<'a> {
     /// motions / text-objects / operators ignore it (they read
     /// `scope_resolver`). `None` = no parse.
     pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
+    /// IN.0: one level of indentation, resolved by the host from
+    /// `shiftwidth` / `expandtab` / `tabstop` (including any
+    /// `:setlocal` override). Read by the `>` / `<` operators.
+    ///
+    /// Not an `Option`: there is always a defensible answer, and
+    /// `IndentUnit::default()` is the registered option defaults, so a
+    /// caller that never resolved config indents like an unconfigured
+    /// buffer instead of like nothing. That keeps the ~40 test and
+    /// plugin call sites that build a `default()` env working without
+    /// each having to care about indentation.
+    pub indent: lattice_core::IndentUnit,
 }
 
 /// Context passed to a text-object's evaluator.

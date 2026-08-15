@@ -78,6 +78,11 @@ pub type ScopeResolverHandle = Arc<dyn lattice_grammar::ScopeResolver + Send + S
 pub struct DispatchEnv {
     pub scope_resolver: Option<ScopeResolverHandle>,
     pub comment_syntax: Option<Arc<lattice_grammar::CommentSyntax>>,
+    /// IN.0: one level of indentation, resolved by the host from
+    /// `shiftwidth` / `expandtab` / `tabstop`. Read by `>` / `<`.
+    /// `Default` is the registered option defaults, so the actor path
+    /// indents like an unconfigured buffer rather than not at all.
+    pub indent: lattice_core::IndentUnit,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

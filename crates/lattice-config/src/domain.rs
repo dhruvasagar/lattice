@@ -12,6 +12,7 @@
 //! are foreign — local-trait-on-foreign-type is permitted.
 
 use lattice_core::FoldMethod;
+use lattice_core::IndentMethod;
 use lattice_core::ui::display::BufferDisplayPreference;
 
 use crate::option_type::{EnumeratedValue, OptionType};
@@ -87,6 +88,42 @@ impl OptionType for FoldMethod {
         // this method picks the docs up automatically.
         Some(
             FoldMethod::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
+    }
+}
+
+// IN.0: `:set indentmethod=none|keep|syntax`.
+impl OptionType for IndentMethod {
+    fn parse(s: &str) -> Result<Self, String> {
+        IndentMethod::parse_label(s)
+    }
+
+    fn format(&self) -> String {
+        self.label().to_string()
+    }
+
+    fn type_label() -> &'static str {
+        "indentmethod"
+    }
+
+    fn enumerate() -> Option<Vec<&'static str>> {
+        // Derived from `all()` rather than hand-listed. `FoldMethod`
+        // above hardcodes its list to preserve a legacy completion
+        // order; a new option has no such constraint, so deriving is
+        // strictly better -- adding a variant cannot leave the
+        // completion list behind.
+        Some(IndentMethod::all().iter().map(|v| v.label()).collect())
+    }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        Some(
+            IndentMethod::all()
                 .iter()
                 .map(|v| EnumeratedValue {
                     form: v.label(),

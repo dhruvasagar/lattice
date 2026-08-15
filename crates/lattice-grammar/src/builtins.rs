@@ -2268,26 +2268,60 @@ fn operator_yank(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
 
 // ---- Indent operators (>, <) ----
 
-const INDENT_UNIT: &str = "    ";
-
-/// Vim's `>` -- prepend INDENT_UNIT to each line in the range.
+/// Shared body of `>` and `<`: shift every line in the range by
+/// `levels` indent steps.
 ///
-/// The whole indent operation lands as a single undo unit -- we
-/// build the per-line edits up front and commit via
-/// `apply_edit_batch` so `2>>` / visual-`>` over N lines is one
-/// `u` away from being undone, not N.
-fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+/// IN.0 replaced a hardcoded `"    "` with `ctx.indent`, which changes
+/// the model as well as the width. Indentation is now measured in
+/// **display columns** and the whole leading-whitespace run is
+/// re-rendered, rather than bytes being spliced on or off the front:
+///
+/// - a tab and `tabstop` spaces are the same indent and must shift
+///   identically -- a byte splice cannot see that;
+/// - `expandtab` decides what the *result* is made of, so a shifted
+///   line has to be re-rendered, not patched;
+/// - a `shiftwidth` that is not a multiple of `tabstop` is only
+///   representable if the prefix can be rebuilt as tabs-plus-remainder.
+///
+/// Vim behaves the same way -- `>>` normalises the indent it touches.
+///
+/// The whole operation lands as a single undo unit: the per-line edits
+/// are built up front and committed via `apply_edit_batch`, so `2>>` or
+/// a visual `>` over N lines is one `u` away from undone, not N.
+fn shift_indent(ctx: &mut OperatorContext, levels: i32) -> Result<Effect, CommandError> {
     if ctx.range.is_empty() {
         return Ok(Effect::None);
     }
     let first_line = ctx.range.start.line;
     let last_line = ctx.range.end.line;
-    // Bottom-up edit construction so earlier inserts don't shift
-    // later positions when the buffer applies the batch in order.
-    let edits: Vec<Edit> = (first_line..=last_line)
-        .rev()
-        .map(|line| Edit::insert(Position::new(line, 0), INDENT_UNIT))
-        .collect();
+    let buffer_text = ctx.document.text();
+    let lines: Vec<&str> = buffer_text.split_inclusive('\n').collect();
+
+    // Bottom-up so earlier edits don't shift later positions when the
+    // buffer applies the batch in order.
+    let mut edits: Vec<Edit> = Vec::new();
+    for line in (first_line..=last_line).rev() {
+        let line_text = lines
+            .get(line as usize)
+            .map(|l| l.trim_end_matches('\n'))
+            .unwrap_or("");
+        // `None` covers a blank line (vim leaves those alone rather
+        // than parking trailing whitespace on a line the user never
+        // typed into) and a shift whose rendering is byte-identical to
+        // what is already there (a no-op edit still costs an undo entry
+        // and a render invalidation).
+        let Some((old_len, rendered)) = ctx.indent.reindented_prefix(line_text, levels) else {
+            continue;
+        };
+        let range = lattice_protocol::position::Range::new(
+            Position::new(line, 0),
+            Position::new(line, old_len as u32),
+        );
+        edits.push(Edit::replace(range, rendered));
+    }
+    if edits.is_empty() {
+        return Ok(Effect::None);
+    }
     let applied = ctx.document.apply_edit_batch(edits)?;
     // Restore top-down ordering for the returned AppliedEdits so
     // downstream `handle_edits` lands the cursor on the topmost
@@ -2297,51 +2331,15 @@ fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandErr
     Ok(Effect::Edits(applied))
 }
 
-/// Vim's `<` -- strip up to INDENT_UNIT bytes of leading whitespace from
-/// each line in the range. A leading tab also counts as one indent unit
-/// for v1. Whole operation lands as one undo unit (see
-/// [`operator_indent_right`]).
+/// Vim's `>` -- add one indent level to each line in the range.
+fn operator_indent_right(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    shift_indent(ctx, 1)
+}
+
+/// Vim's `<` -- remove one indent level from each line in the range,
+/// clamped at column 0.
 fn operator_indent_left(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
-    if ctx.range.is_empty() {
-        return Ok(Effect::None);
-    }
-    let first_line = ctx.range.start.line;
-    let last_line = ctx.range.end.line;
-    let buffer_text = ctx.document.text();
-    let lines: Vec<&str> = buffer_text.split_inclusive('\n').collect();
-    let mut edits: Vec<Edit> = Vec::new();
-    // Bottom-up so earlier deletes don't shift later positions
-    // when the batch applies in order.
-    for line in (first_line..=last_line).rev() {
-        let line_text = lines
-            .get(line as usize)
-            .map(|l| l.trim_end_matches('\n'))
-            .unwrap_or("");
-        let bytes = line_text.as_bytes();
-        let mut strip = 0usize;
-        if !bytes.is_empty() && bytes[0] == b'\t' {
-            strip = 1;
-        } else {
-            while strip < INDENT_UNIT.len() && strip < bytes.len() && bytes[strip] == b' ' {
-                strip += 1;
-            }
-        }
-        if strip == 0 {
-            continue;
-        }
-        let range = lattice_protocol::position::Range::new(
-            Position::new(line, 0),
-            Position::new(line, strip as u32),
-        );
-        edits.push(Edit::delete(range));
-    }
-    if edits.is_empty() {
-        return Ok(Effect::None);
-    }
-    let applied = ctx.document.apply_edit_batch(edits)?;
-    let mut applied = applied;
-    applied.reverse();
-    Ok(Effect::Edits(applied))
+    shift_indent(ctx, -1)
 }
 
 // ---- Case operators (gU, gu, g~) ----
@@ -2540,6 +2538,7 @@ mod tests {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
                 syntax: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -2563,6 +2562,7 @@ mod tests {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
                 syntax: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3617,6 +3617,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc.text(), "    a\n    b\n    c");
+    }
+
+    // IN.0: the indent unit is resolved by the host and injected via
+    // the env. These drive `>` / `<` at non-default units, which is the
+    // whole point of the slice -- the tests above all run at the
+    // registered defaults (shiftwidth=4, expandtab) and would pass
+    // against the old hardcoded `"    "` too.
+    fn indent_shift(text: &str, unit: lattice_core::IndentUnit, right: bool) -> String {
+        let (registry, b, mut doc) = fixture(text);
+        let op = if right { b.indent_right } else { b.indent_left };
+        let inv = CommandInvocation::of(op.0).with_range(crate::range::Range::Whole);
+        crate::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+            crate::registry::GrammarEnv {
+                indent: unit,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        doc.text()
+    }
+
+    #[test]
+    fn indent_right_honours_shiftwidth() {
+        let sw2 = lattice_core::IndentUnit::new(2, true, 4);
+        assert_eq!(indent_shift("a", sw2, true), "  a");
+        let sw8 = lattice_core::IndentUnit::new(8, true, 4);
+        assert_eq!(indent_shift("a", sw8, true), "        a");
+    }
+
+    #[test]
+    fn indent_right_honours_noexpandtab() {
+        // shiftwidth 4, tabstop 4, tabs: one level is one tab.
+        let tabs = lattice_core::IndentUnit::new(4, false, 4);
+        assert_eq!(indent_shift("a", tabs, true), "\ta");
+        // Two levels of 4 at tabstop 8 is one tab, not two.
+        let tabs8 = lattice_core::IndentUnit::new(4, false, 8);
+        assert_eq!(indent_shift("    a", tabs8, true), "\ta");
+    }
+
+    #[test]
+    fn a_tab_and_tabstop_spaces_dedent_identically() {
+        // The defect the byte-splice model had: `<` stripped a whole
+        // tab but only `shiftwidth` spaces, so these two visually
+        // identical lines dedented by different amounts.
+        let u = lattice_core::IndentUnit::new(2, true, 4);
+        assert_eq!(indent_shift("\ta", u, false), "  a");
+        assert_eq!(indent_shift("    a", u, false), "  a");
+    }
+
+    #[test]
+    fn indent_right_leaves_blank_lines_alone() {
+        // Vim does not indent blank lines, and doing so parks trailing
+        // whitespace on lines the user never typed into.
+        let u = lattice_core::IndentUnit::default();
+        assert_eq!(indent_shift("a\n\nb", u, true), "    a\n\n    b");
+        assert_eq!(indent_shift("a\n   \nb", u, true), "    a\n   \n    b");
+    }
+
+    #[test]
+    fn dedent_at_column_zero_emits_no_edit() {
+        // Not merely "no visible change" -- no edit at all, so `<` on
+        // an unindented block costs no undo entry.
+        let (registry, b, mut doc) = fixture("a\nb");
+        let inv = CommandInvocation::of(b.indent_left.0).with_range(crate::range::Range::Whole);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None), "expected no edit, got {eff:?}");
+        assert_eq!(doc.text(), "a\nb");
     }
 
     #[test]

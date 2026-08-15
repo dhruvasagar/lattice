@@ -29,6 +29,7 @@
 use crate::expand_height::ExpandHeight;
 use crate::signcolumn::SignColumn;
 use lattice_core::FoldMethod;
+use lattice_core::IndentMethod;
 
 // Validators referenced by `#[validate(...)]` on the options
 // below. Plain Rust functions; the macro just records the path.
@@ -90,6 +91,18 @@ fn validate_tabstop(i: &i64) -> Result<(), String> {
         // pre-typed-options setter (test
         // `tabstop_validate_rejects_out_of_range_with_legacy_message`).
         Err(format!("tabstop out of range [1, 32]: {i}"))
+    }
+}
+
+/// IN.0: `shiftwidth` shares `tabstop`'s range but not its meaning —
+/// this is columns per *indent level*, not the display width of a tab
+/// byte. Separate validator so `:set shiftwidth=99` names the option
+/// the user actually typed.
+fn validate_shiftwidth(i: &i64) -> Result<(), String> {
+    if (1..=32).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("shiftwidth out of range [1, 32]: {i}"))
     }
 }
 
@@ -234,6 +247,68 @@ crate::options! {
     #[aliases("ts")]
     #[validate(validate_tabstop)]
     pub Tabstop: i64 = 4;
+
+    // ---- Indentation (IN.0; docs/dev/architecture/auto-indent.md §3) ----
+    //
+    // This block declares the WHOLE indent option surface at once, even
+    // though later slices light up what honours it. Splitting the
+    // declaration across four slices would be four chances for the
+    // names, defaults and validators to drift, and `:describe-option`
+    // metadata written four times. The honoured set grows; the declared
+    // set lands once.
+
+    /// Columns added or removed per indent level -- by `>` / `<`,
+    /// `<C-t>` / `<C-d>`, `=`, and auto-indent. Distinct from
+    /// `tabstop`, which is the display width of a literal tab byte:
+    /// conflating them makes "change my indent size" silently reflow
+    /// every file containing a hard tab.
+    #[aliases("sw")]
+    #[validate(validate_shiftwidth)]
+    pub Shiftwidth: i64 = 4;
+
+    /// Render indentation as spaces rather than tab bytes.
+    #[aliases("et")]
+    #[name("expandtab")]
+    pub ExpandTab: bool = true;
+
+    /// Where a newly created line's indent comes from: `none`
+    /// (column 0), `keep` (copy the previous line -- vim's
+    /// `autoindent`), or `syntax` (tree-sitter `indents.scm`,
+    /// falling back to `keep`). A cascade with a named floor, so a
+    /// language with no query degrades to documented vim behaviour
+    /// rather than to a silent wrong answer.
+    ///
+    /// Honoured progressively: `none` from IN.0, `keep` from IN.1,
+    /// `syntax` from IN.2. Until then `syntax` degrades to the
+    /// highest rung that exists -- the cascade behaving as designed.
+    #[aliases("im")]
+    #[name("indentmethod")]
+    pub IndentMethodOption: IndentMethod = IndentMethod::Syntax;
+
+    /// Re-indent the current line when a closing token is typed
+    /// (`}`, `)`, `end`, `else`). Honoured from IN.6.
+    #[aliases("ei")]
+    #[name("electricindent")]
+    pub ElectricIndent: bool = true;
+
+    /// External *indent* filter for `=` (vim's `equalprg`). Empty
+    /// (the default) uses the tree-sitter indent engine. An indent
+    /// filter adjusts leading whitespace only -- a reformatter
+    /// belongs on `formatprg`, not here. Honoured from IN.9.
+    #[name("equalprg")]
+    pub EqualPrg: String = String::new();
+
+    /// External formatter for `:format` (vim's `formatprg`). Empty
+    /// (the default) falls back to the built-in per-language table.
+    /// Honoured from IN.9.
+    #[name("formatprg")]
+    pub FormatPrg: String = String::new();
+
+    /// Run the `:format` cascade before `:w`. A formatter that
+    /// fails, exits non-zero, or times out never blocks the write --
+    /// the buffer is saved unformatted. Honoured from IN.9.
+    #[name("formatonsave")]
+    pub FormatOnSave: bool = false;
 
     /// Whether the buffer is read-only (mutating operators
     /// reject; `:w` still permits explicit writes if a path

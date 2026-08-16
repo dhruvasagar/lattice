@@ -46,16 +46,30 @@ pub enum IconColor {
 /// glyph (◆ ≡ ◇ ■ ♪ ▶ · -- one per file family) with the colour
 /// still resolved per type.
 ///
-/// **Directories in BMP-fallback mode return two spaces, not a
-/// glyph.** The file-tree renderer already emits `▾ ` / `▸ ` as
-/// the expansion-state marker; the only BMP-block glyph that
-/// reads as "folder" is the same right-pointing triangle `▸`, so
-/// a collapsed directory row would render as `▸ ▸ name` -- two
-/// identical arrows back-to-back. The marker already signals
-/// "directory + state"; in BMP mode there's nothing useful to
-/// add. We return `"  "` instead of `""` so column geometry
-/// matches files (which always emit a 2-cell file-type icon),
-/// keeping the file/dir name column aligned.
+/// **Directories in BMP-fallback mode get `▤ `** (U+25A4, Geometric
+/// Shapes -- present in every modern monospace font, and a drawer
+/// of files is what it reads as).
+///
+/// This returned two blank spaces until 2026-08-16. The reasoning
+/// was that the file tree already emits `▾ ` / `▸ ` as its
+/// expansion-state marker, so a folder glyph would be redundant --
+/// and that the one BMP glyph that obviously reads as "folder" is
+/// the same right-pointing triangle `▸`, which would render a
+/// collapsed row as `▸ ▸ name`, two identical arrows back to back.
+///
+/// Both points are true of the TREE and neither is true of **oil**,
+/// whose rows are bare filenames with no marker at all (its
+/// `icon_byte` is 0). So in BMP mode -- the DEFAULT, since
+/// `ui.nerd_fonts` is opt-in -- an oil directory was the only entry
+/// in the listing with no glyph, while every file had one. The
+/// collision constraint is real; the conclusion "therefore nothing"
+/// was drawn from the tree alone and applied to both.
+///
+/// `▤` satisfies the constraint properly: it collides with neither
+/// expansion marker nor any file-family glyph, so the tree reads
+/// `▸ ▤ name` -- state + kind + name, the nvim-tree / VS Code
+/// convention -- and oil reads `▤ name`. Two cells wide like every
+/// file glyph, so the name column never shifts between row kinds.
 ///
 /// Nerd-fonts mode keeps the distinct folder glyph (`󰉋 ` is a
 /// private-use codepoint that doesn't collide with the
@@ -74,10 +88,10 @@ pub fn entry_visual(path: &Path, is_dir: bool, nerd_fonts: bool) -> (&'static st
         if nerd_fonts {
             return ("󰉋 ", IconColor::Blue);
         }
-        // BMP fallback: no glyph (collides with the `▸` marker).
-        // 2-cell padding keeps the name column aligned with file
-        // rows. `Reset` colour because there's nothing to colour.
-        return ("  ", IconColor::Reset);
+        // BMP fallback: a drawer, not blank padding. Collides with
+        // neither the tree's `▸`/`▾` marker nor any file-family
+        // glyph, and stays 2 cells so the name column is stable.
+        return ("▤ ", IconColor::Blue);
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -495,14 +509,42 @@ mod tests {
     }
 
     #[test]
-    fn nerd_fonts_false_returns_padding_not_glyph_for_dir() {
-        // BMP fallback has no folder glyph that doesn't collide
-        // with the file-tree's `▸` expansion marker -- the marker
-        // already says "directory". Two-cell padding keeps name-
-        // column alignment with file rows.
-        let (glyph, color) = entry_visual(&PathBuf::from("src"), true, false);
-        assert_eq!(glyph, "  ");
-        assert_eq!(color, IconColor::Reset);
+    fn nerd_fonts_false_gives_directories_a_glyph_of_their_own() {
+        // 2026-08-16: this used to assert two blank spaces. The
+        // rationale was the file tree's `▸` / `▾` marker already
+        // saying "directory" -- true of the TREE, and never true of
+        // oil, whose rows are bare names with no marker at all. In
+        // BMP mode an oil directory was therefore the one entry with
+        // no glyph while every file had one.
+        let (glyph, _) = entry_visual(&PathBuf::from("src"), true, false);
+        assert_eq!(glyph, "▤ ");
+    }
+
+    /// The constraint that ruled out the obvious BMP folder glyph: `▸`
+    /// is the tree's collapsed-directory marker, so reusing it would
+    /// render `▸ ▸ name` -- two identical arrows back to back. Pin that
+    /// the chosen glyph collides with neither marker nor any file
+    /// family, since "it looks like something else" is the only way
+    /// this choice can be wrong.
+    #[test]
+    fn the_bmp_directory_glyph_collides_with_nothing() {
+        let dir = entry_visual(&PathBuf::from("src"), true, false).0;
+
+        for marker in ["▸ ", "▾ "] {
+            assert_ne!(
+                dir, marker,
+                "must not duplicate the file-tree expansion marker"
+            );
+        }
+        for family in ["· ", "≡ ", "■ ", "▶ ", "◆ ", "◇ ", "♪ "] {
+            assert_ne!(dir, family, "must not read as a file family");
+        }
+        assert_eq!(
+            dir.chars().count(),
+            2,
+            "same 2-cell width as every file glyph, so the name column \
+             does not shift between file and directory rows"
+        );
     }
 
     #[test]

@@ -1542,3 +1542,38 @@ fn prune_dry_run_reports_without_removing() {
         "a dry run must not remove a reachable commit's note"
     );
 }
+
+/// Reported 2026-08-16: an untracked file staged from magit-status shows
+/// up as BOTH staged and modified. `git status` agrees, so the question
+/// is what our staging leaves the index in — a plain `git add` of an
+/// untracked file must yield `A ` (added, worktree clean), never `AM`.
+#[test]
+fn staging_an_untracked_file_leaves_nothing_unstaged() {
+    let (dir, repo) = init_temp_repo();
+    std::fs::write(dir.path().join("fresh.txt"), "hello\n").unwrap();
+
+    let before = WorkingTree::path_status(&repo, "fresh.txt").unwrap();
+    assert_eq!(before.unstaged, Some(PathStatus::Untracked));
+    assert_eq!(before.staged, None);
+
+    Index::stage_path(&repo, "fresh.txt").unwrap();
+
+    let after = WorkingTree::path_status(&repo, "fresh.txt").unwrap();
+    assert_eq!(
+        after.staged,
+        Some(PathStatus::Added),
+        "staged as a new file"
+    );
+    assert_eq!(
+        after.unstaged, None,
+        "and NOTHING left unstaged — `AM` here would mean the index holds \
+         different content than the worktree, which a plain `git add` of an \
+         unchanging file cannot produce"
+    );
+    // Belt and braces: the raw porcelain, so a parser change cannot make
+    // this test agree with a broken index.
+    assert_eq!(
+        git(&repo, &["status", "--porcelain=v1"]).trim(),
+        "A  fresh.txt"
+    );
+}

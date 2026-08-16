@@ -17952,10 +17952,22 @@ impl Editor {
         let indent_resolver: Option<lattice_runtime::IndentResolverHandle> =
             self.syntax.as_ref().and_then(|h| {
                 let snapshot = h.snapshot();
-                (snapshot.reparsed_from_version() == self.document.text_version()).then(|| {
-                    std::sync::Arc::new(SnapshotIndentResolver { snapshot })
-                        as lattice_runtime::IndentResolverHandle
-                })
+                // 2026-08-16: `tree_reflects`, NOT
+                // `reparsed_from_version() == text_version()`. That comparison
+                // asked a delta baseline whether it was a freshness signal,
+                // and after any INCREMENTAL reparse the baseline is by
+                // construction the version the parse started FROM — so it
+                // could never be equal, and `=` silently reindented nothing
+                // after every edit. Reported as "`>>` then `==` does nothing
+                // unless I redraw first"; redraw happened to force a FULL
+                // reparse, which is the one path that made the old comparison
+                // true. See `SyntaxSnapshot::parsed_text_version`.
+                snapshot
+                    .tree_reflects(self.document.text_version())
+                    .then(|| {
+                        std::sync::Arc::new(SnapshotIndentResolver { snapshot })
+                            as lattice_runtime::IndentResolverHandle
+                    })
             });
         lattice_runtime::block_on(self.document.dispatch_with_env(
             invocation,
@@ -47135,6 +47147,87 @@ mod tests {
         let inv = lattice_grammar::CommandInvocation::of(b.reindent.0)
             .with_range(lattice_grammar::range::Range::Whole);
         let _ = editor.dispatch_blocking(inv);
+    }
+
+    /// Poll until this editor's syntax worker has finished parsing the
+    /// document's current text — the state a real editor reaches within
+    /// milliseconds of any edit.
+    ///
+    /// Polls the snapshot rather than dispatching an action, because the
+    /// bug under test is precisely that an *extra action* is what used to
+    /// make `=` work. A helper that pressed a key would pass on the broken
+    /// version too.
+    fn settle_reparse(editor: &mut Editor) {
+        editor.maybe_reparse_syntax();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let tv = editor.document.text_version();
+            if let Some(h) = editor.syntax.as_ref()
+                && h.snapshot().text_version() == tv
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("syntax worker never caught up with the document");
+    }
+
+    /// Regression for the 2026-08-16 report: `>>` then immediately `==` did
+    /// nothing, and only an unrelated action (save, redraw) made `=` work.
+    ///
+    /// The cause was not timing — waiting did not help. `=`'s gate asked
+    /// `reparsed_from_version() == text_version()`, and after an INCREMENTAL
+    /// reparse the baseline is by construction the version the parse started
+    /// from, so the gate was false forever. Redraw "fixed" it only because it
+    /// forces a FULL reparse, the one path where those two are equal.
+    ///
+    /// The parse is settled here precisely so the test cannot pass for the
+    /// wrong reason: the tree genuinely reflects the post-`>>` text, so a
+    /// still-refusing `=` can only be the gate.
+    #[test]
+    fn reindent_works_immediately_after_shift_with_no_action_between() {
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        settle_reparse(&mut editor);
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        let b = editor.builtins;
+
+        // `>>` — indent the line one level past where it belongs.
+        let shift = lattice_grammar::CommandInvocation::of(b.indent_right.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine);
+        // Route the effect exactly as `handle_effect` does in production.
+        // Without this the edit deltas never reach `pending_syntax_edits`,
+        // the worker takes its FULL-reparse branch, and the test passes on
+        // the broken build — the incremental path is the one with the bug.
+        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(shift) {
+            editor.handle_edits(&applied);
+        }
+        assert_eq!(line_at(&editor, 1), "        x();", ">> indented");
+
+        settle_reparse(&mut editor);
+        let snap = editor.syntax.as_ref().map(|h| h.snapshot()).unwrap();
+        assert!(
+            snap.tree_reflects(editor.document.text_version()),
+            "precondition: the tree is a completed parse of the post->> text"
+        );
+        assert_ne!(
+            snap.reparsed_from_version(),
+            editor.document.text_version(),
+            "precondition: the worker took the INCREMENTAL path — the one \
+             whose baseline can never equal the version it produced, and \
+             therefore the one the old gate could never accept"
+        );
+
+        // `==` — with NO action in between.
+        let eq = lattice_grammar::CommandInvocation::of(b.reindent.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine);
+        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(eq) {
+            editor.handle_edits(&applied);
+        }
+        assert_eq!(
+            line_at(&editor, 1),
+            "    x();",
+            "== must reindent immediately after >>"
+        );
     }
 
     #[test]

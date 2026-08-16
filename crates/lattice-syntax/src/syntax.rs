@@ -143,6 +143,28 @@ pub struct SyntaxSnapshot {
     /// the version `changed_lines` is the delta against. Meaningful only
     /// when `changed_lines` is `Some`.
     reparsed_from_version: u64,
+    /// The `text_version` a **completed parse** produced — i.e. the
+    /// version this snapshot's `tree` genuinely reflects.
+    ///
+    /// Distinct from all three of its neighbours, and the distinction is
+    /// the point:
+    ///
+    /// - [`Self::text_version`] is the version of the *source text*, which
+    ///   `try_apply_intermediate` advances after merely byte-shifting the
+    ///   cached tree. A snapshot can carry the newest text with a tree that
+    ///   was never parsed against it.
+    /// - [`Self::reparsed_from_version`] is a delta *baseline* for
+    ///   `changed_lines`, so after an incremental reparse it holds the
+    ///   version the parse started from — by construction never the one it
+    ///   produced.
+    ///
+    /// So neither answers "is this tree a real parse of this exact text",
+    /// and two callers in `lattice-host` used to ask it of
+    /// `reparsed_from_version`, which cannot say yes after any incremental
+    /// reparse. `=` therefore silently reindented nothing after any edit
+    /// (reported 2026-08-16) and predictive indent silently fell to the
+    /// lexical bridge. Ask [`Self::tree_reflects`] instead.
+    parsed_text_version: u64,
 }
 
 impl std::fmt::Debug for SyntaxSnapshot {
@@ -221,6 +243,7 @@ impl Syntax {
                 text_version: 0,
                 changed_lines: None,
                 reparsed_from_version: 0,
+                parsed_text_version: 0,
             },
         }))
     }
@@ -350,6 +373,7 @@ impl Syntax {
         // whole file is considered dirty (`None` ⇒ consumers full-rebuild).
         self.inner.changed_lines = None;
         self.inner.reparsed_from_version = text_version;
+        self.inner.parsed_text_version = text_version;
     }
 
     /// Incremental reparse: apply `edits` to the cached tree (sync
@@ -476,6 +500,11 @@ impl Syntax {
             _ => None,
         };
         self.inner.reparsed_from_version = reparsed_from;
+        // The parse ran against `inner.source` / `inner.text_version`, which
+        // `try_apply_intermediate` already advanced to the target version. So
+        // THIS is the point where the tree becomes a genuine parse of that
+        // text, and the only place besides `parse_at` that may say so.
+        self.inner.parsed_text_version = self.inner.text_version;
         self.inner.tree = new_tree;
     }
 }
@@ -574,6 +603,24 @@ impl SyntaxSnapshot {
     /// only when `changed_lines()` is `Some`.
     pub fn reparsed_from_version(&self) -> u64 {
         self.reparsed_from_version
+    }
+
+    /// The `text_version` this snapshot's tree is a completed parse of.
+    /// See [`Self::parsed_text_version`] for why this is not any of the
+    /// other three version fields.
+    pub fn parsed_text_version(&self) -> u64 {
+        self.parsed_text_version
+    }
+
+    /// Whether this snapshot's tree is a completed parse of `text_version`.
+    ///
+    /// The question every consumer that wants to *trust the tree's structure*
+    /// is actually asking. A byte-shifted intermediate snapshot answers
+    /// `false` here even though it carries the right `text_version`, which is
+    /// the whole reason this predicate exists rather than a bare comparison
+    /// at each call site.
+    pub fn tree_reflects(&self, text_version: u64) -> bool {
+        self.parsed_text_version == text_version
     }
 
     /// True when the byte position `cursor_byte` falls inside a
@@ -1453,6 +1500,95 @@ mod tests {
         let root = tree.root_node();
         assert_eq!(root.kind(), "source_file");
         assert!(root.child_count() > 0, "root has at least one child");
+    }
+
+    /// Root-cause pin for the 2026-08-16 report: `>>` then immediately `==`
+    /// silently does nothing.
+    ///
+    /// `reparsed_from_version` is a **delta baseline** — the version
+    /// `changed_lines` is measured against — and its own doc says it is
+    /// "meaningful only when `changed_lines()` is `Some`". After a completed
+    /// INCREMENTAL reparse it holds the version the parse started from, which
+    /// by construction is never the version it produced. Two callers in
+    /// `lattice-host::dispatch` read it as "the version this tree reflects":
+    /// `=`'s `indent_resolver` gate and `tree_levels_for_new_line`. Both
+    /// therefore see a fresh tree as permanently stale.
+    #[test]
+    fn incremental_reparse_leaves_reparsed_from_behind_text_version() {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        let v0 = "fn f() {\n    x();\n}\n";
+        s.parse_at(v0, 1);
+        assert_eq!(s.snapshot_owned().text_version(), 1);
+        assert_eq!(
+            s.snapshot_owned().reparsed_from_version(),
+            1,
+            "a FULL parse sets the baseline to the version it produced"
+        );
+
+        // `>>` on line 1: leading whitespace only, complete code either way.
+        let v1 = "fn f() {\n        x();\n}\n";
+        use lattice_protocol::edit::EditDelta;
+        use lattice_protocol::position::Position;
+        let edit = EditDelta {
+            start_byte: 9,
+            old_end_byte: 9,
+            new_end_byte: 13,
+            start_position: Position::new(1, 0),
+            old_end_position: Position::new(1, 0),
+            new_end_position: Position::new(1, 4),
+        };
+        assert!(
+            s.try_apply_intermediate(v1, 2, 1, &[edit]).is_ok(),
+            "the incremental path is the one that runs for an ordinary edit"
+        );
+        s.reparse_with_cached_tree(1);
+
+        let snap = s.snapshot_owned();
+        assert_eq!(snap.text_version(), 2, "the tree is a real parse of v1");
+        assert_eq!(
+            snap.reparsed_from_version(),
+            1,
+            "but the baseline still points at the version it came FROM"
+        );
+        assert_ne!(
+            snap.reparsed_from_version(),
+            snap.text_version(),
+            "so a freshness gate written as `reparsed_from == text_version` \
+             cannot ever pass after an incremental reparse — this was the bug"
+        );
+
+        // The signal that does answer the question the gates were asking.
+        assert_eq!(snap.parsed_text_version(), 2);
+        assert!(snap.tree_reflects(2), "the tree IS a completed parse of v1");
+        assert!(!snap.tree_reflects(1));
+    }
+
+    /// The intermediate snapshot is the reason `text_version` alone cannot
+    /// be the freshness signal either: it carries the newest text with a
+    /// tree that has only been byte-shifted, never parsed against it.
+    #[test]
+    fn intermediate_snapshot_does_not_claim_its_tree_is_current() {
+        use lattice_protocol::edit::EditDelta;
+        use lattice_protocol::position::Position;
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn f() {\n    x();\n}\n", 1);
+        let edit = EditDelta {
+            start_byte: 9,
+            old_end_byte: 9,
+            new_end_byte: 13,
+            start_position: Position::new(1, 0),
+            old_end_position: Position::new(1, 0),
+            new_end_position: Position::new(1, 4),
+        };
+        s.try_apply_intermediate("fn f() {\n        x();\n}\n", 2, 1, &[edit])
+            .unwrap();
+
+        let snap = s.snapshot_owned();
+        assert_eq!(snap.text_version(), 2, "newest text");
+        assert!(
+            !snap.tree_reflects(2),
+            "but no parse has run against it yet"
+        );
     }
 
     #[test]

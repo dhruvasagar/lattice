@@ -1093,46 +1093,6 @@ pub(crate) fn distinct_files(lines: impl Iterator<Item = Option<StatusLine>>) ->
     paths
 }
 
-/// Run `mutate` (a blocking git call) on `spawn_blocking`, off the
-/// actor thread entirely, then refresh.
-///
-/// MG.13: lifted to module scope (was nested in
-/// `register_action_handlers`) so [`StatusView`]'s `stage`/`unstage`
-/// can reach it from the boot-registered path.
-/// Run `op` over every item and fold the outcomes into one report.
-///
-/// A batch keeps going after a failure — stopping halfway would leave
-/// the user to work out which half ran — but "keeps going" is not the
-/// same as "says nothing". The previous code logged each error and
-/// returned `()`, so a selection where four of five files staged looked
-/// identical to one where all five did.
-///
-/// Success is `Ok("")` when everything worked, because
-/// [`finish_task`](crate::magit_global_mode::finish_task) renders an
-/// empty summary as a plain "<label> finished" — there is nothing to
-/// add. A partial batch is an `Err` naming the count and the first
-/// failure: it is the case worth interrupting for, and the count is
-/// what tells the user to go and look.
-fn batch_result<T>(
-    items: impl Iterator<Item = T>,
-    mut op: impl FnMut(T) -> lattice_vcs::Result<()>,
-) -> Result<String, String> {
-    let mut failed = 0usize;
-    let mut total = 0usize;
-    let mut first: Option<String> = None;
-    for item in items {
-        total += 1;
-        if let Err(e) = op(item) {
-            failed += 1;
-            first.get_or_insert_with(|| e.to_string());
-        }
-    }
-    match first {
-        None => Ok(String::new()),
-        Some(err) => Err(format!("{failed} of {total} failed — first: {err}")),
-    }
-}
-
 /// Run a repository mutation off-thread, report it, then refresh.
 ///
 /// **`mutate` returns a `Result` and that is not incidental.** It used
@@ -1563,13 +1523,36 @@ impl crate::buffer_state::MagitView for StatusView {
         spawn_mutation_and_refresh(s, format!("stage {} files", paths.len()), move || {
             let repo =
                 Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
-            // One failure does not abandon the rest: a batch that
-            // stopped halfway would leave the user to work out which
-            // half. It is still REPORTED though — the batch's result is
-            // "3 of 5 staged", not silence, because a partial batch is
-            // exactly the outcome a user needs to know about.
-            batch_result(paths.iter(), |path| Index::stage_path(&repo, path))
+            // ONE `git add` with every path, not one per file. N commands
+            // meant N process spawns and N `.git/index.lock` cycles — and
+            // a partial batch, which is why this used to report "3 of 5
+            // staged". One command is atomic: it stages all of them or
+            // none, and there is no half-outcome left to describe.
+            Index::stage_paths(&repo, paths.iter())
+                .map(|()| String::new())
+                .map_err(|e| e.to_string())
         })
+        // `Some` because the work was HANDLED, even though there is no
+        // synchronous effect to return.
+        //
+        // `spawn_mutation_and_refresh` always returns `None` — it spawns
+        // and has nothing to hand back — and the caller reads `None` as
+        // "this did not apply, try the fallback":
+        //
+        //     rows.and_then(|r| view.stage_rows(r))
+        //         .or_else(|| view.stage(ctx.cursor))
+        //
+        // so a visual-mode stage span the batch AND a second `git add`
+        // for the cursor's file, concurrently. They raced on
+        // `.git/index.lock` and the single one lost, which is how a
+        // selection that staged correctly still reported
+        // "stage <file> failed: Unable to create index.lock"
+        // (2026-08-16).
+        //
+        // The `?` on `files_in_rows` above keeps `None` meaning the one
+        // thing the fallback should react to: the selection covers no
+        // files.
+        .or(Some(Effect::None))
     }
 
     fn unstage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<Effect> {
@@ -1578,8 +1561,13 @@ impl crate::buffer_state::MagitView for StatusView {
         spawn_mutation_and_refresh(s, format!("unstage {} files", paths.len()), move || {
             let repo =
                 Repository::discover(&workdir).map_err(|e| format!("not a git repository: {e}"))?;
-            batch_result(paths.iter(), |path| Index::unstage_path(&repo, path))
+            // One `git reset` with every path — see `stage_rows`.
+            Index::unstage_paths(&repo, paths.iter())
+                .map(|()| String::new())
+                .map_err(|e| e.to_string())
         })
+        // Handled — see `stage_rows` for why this is `Some`.
+        .or(Some(Effect::None))
     }
 
     fn unstage(&self, cursor: Position) -> Option<Effect> {

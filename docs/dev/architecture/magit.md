@@ -1067,6 +1067,38 @@ unselected removals become context, with both counts recounted. `s` /
 `u` / `x` are bound in Visual mode in the views that offer them, and
 `ActionContext::selection` is how the handler sees the region.
 
+**A region over FILE rows is one git command, not one per file**
+(2026-08-16). `stage_rows` / `unstage_rows` pass the whole path list to
+`Index::stage_paths` / `unstage_paths`, which build a single
+`git add -- p1 p2 …` / `git reset HEAD -- p1 p2 …`.
+
+Two reasons, and the second is the one that produced a bug report.
+Every git invocation holds `.git/index.lock` for its lifetime, so N
+files staged as N commands is N lock cycles — each a window in which
+the refresh this very action schedules, or the user's next chord, fails
+with `Unable to create '.git/index.lock': File exists`. And one command
+is atomic: the loop it replaced could fail partway, which is why the
+layer used to model a partial batch (`3 of 5 staged`) as a reportable
+outcome at all. There is no half-outcome to describe now, and
+`batch_result` is deleted rather than left unused.
+
+**A ranged handler must return `Some` when it spawns.**
+`spawn_mutation_and_refresh` returns `None` — it hands work to a task
+and has no `Effect` — but the dispatch site reads `None` as "did not
+apply, try the fallback":
+
+```rust
+rows.and_then(|r| view.stage_rows(r))
+    .or_else(|| view.stage(ctx.cursor))
+```
+
+so a ranged stage spawned the batch AND a second single-file `git add`
+for the cursor's row, concurrently, and the two raced on the index
+lock. `stage_rows` / `unstage_rows` therefore end in
+`.or(Some(Effect::None))`: `None` is reserved for the one condition the
+fallback should react to — the selection covers no files — and
+"spawned" is `Some`.
+
 `git add -p`-equivalent *interactive* staging remains unsupported
 (§12.2's `p` chord explains why: it's genuinely interactive over
 stdin, which the TUI's raw-mode input loop already owns — running it

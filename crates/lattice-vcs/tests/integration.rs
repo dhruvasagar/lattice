@@ -79,6 +79,53 @@ fn git_commit(repo: &Repository, msg: &str) {
 }
 
 #[test]
+fn stage_paths_stages_every_path_in_one_command() {
+    // Reported 2026-08-16: staging a visual-mode selection reported
+    // "Unable to create '.git/index.lock': File exists". Each `git add`
+    // takes that lock for the duration of its process, so N files staged
+    // as N commands is N lock cycles — a window per file in which any
+    // other git operation in the editor fails.
+    let (dir, repo) = init_temp_repo();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(dir.path().join(name), "x\n").unwrap();
+    }
+    Index::stage_paths(&repo, ["a.txt", "b.txt", "c.txt"]).unwrap();
+    let staged = git(&repo, &["diff", "--cached", "--name-only"]);
+    let mut names: Vec<&str> = staged.lines().collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
+}
+
+#[test]
+fn stage_paths_is_atomic_across_the_selection() {
+    // One command means all-or-nothing. The loop it replaced could fail
+    // partway and leave half a selection staged, which is why the magit
+    // layer had to describe "3 of 5 staged" as an outcome at all.
+    let (dir, repo) = init_temp_repo();
+    std::fs::write(dir.path().join("real.txt"), "x\n").unwrap();
+    // A path that does not exist makes `git add` reject the WHOLE
+    // invocation, so the real file must not be staged either.
+    let err = Index::stage_paths(&repo, ["real.txt", "missing.txt"]);
+    assert!(err.is_err(), "git rejects the batch");
+    let staged = git(&repo, &["diff", "--cached", "--name-only"]);
+    assert!(
+        staged.trim().is_empty(),
+        "a rejected batch stages nothing, got {staged:?}"
+    );
+}
+
+#[test]
+fn stage_path_is_the_single_path_case_of_stage_paths() {
+    let (dir, repo) = init_temp_repo();
+    std::fs::write(dir.path().join("solo.txt"), "x\n").unwrap();
+    Index::stage_path(&repo, "solo.txt").unwrap();
+    assert_eq!(
+        git(&repo, &["diff", "--cached", "--name-only"]).trim(),
+        "solo.txt"
+    );
+}
+
+#[test]
 fn repository_discovery() {
     let (_dir, repo) = init_temp_repo();
     assert!(repo.workdir().is_some());

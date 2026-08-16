@@ -303,6 +303,15 @@ file level.
 Select a run of file entries and press `s` or `u` — every file in the
 selection is staged or unstaged, in one go.
 
+**One git command, all-or-nothing.** The whole selection goes to a
+single `git add` / `git reset`, not one invocation per file. That
+matters for more than speed: every git invocation takes
+`.git/index.lock` for its lifetime, so staging N files as N commands is
+N chances for a background refresh — or your own next keystroke — to
+collide with it and fail. It also makes the operation atomic. Either
+the selection stages or none of it does; there is no half-applied
+outcome to untangle, and correspondingly no "3 of 5 staged" report.
+
 The same keys inside an *expanded diff* still act on the selected
 **lines**, which is the finer-grained thing you want there. Which one
 you get depends on what the selection covers, not on a different key.

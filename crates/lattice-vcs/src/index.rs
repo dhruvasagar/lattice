@@ -8,10 +8,44 @@ pub struct Index;
 impl Index {
     /// Stage a file path (equivalent to `git add <path>`).
     pub fn stage_path(repo: &Repository, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        repo.run_git(["add", "--", path.to_string_lossy().as_ref()])
+        Self::stage_paths(repo, [path.as_ref()])
+    }
+
+    /// Stage every path in ONE `git add`.
+    ///
+    /// Not a convenience wrapper over [`Self::stage_path`] — the number
+    /// of git invocations is the point. Each one spawns a process and
+    /// takes `.git/index.lock` for the duration, so staging N files as N
+    /// commands is N process spawns and N lock cycles, every one of them
+    /// a window in which any other git operation in the editor fails
+    /// with "Unable to create index.lock: File exists" (reported
+    /// 2026-08-16 while staging a visual-mode selection).
+    ///
+    /// One command is also ATOMIC where the loop was not: a loop can
+    /// fail partway and leave half the selection staged, which is why
+    /// the magit layer had to model "3 of 5 staged" as an outcome at
+    /// all.
+    ///
+    /// Mirrors [`Self::unstage_paths`], which has always been one
+    /// command — it had to be, because a staged rename occupies two
+    /// index entries that must reset together.
+    pub fn stage_paths<I, P>(repo: &Repository, paths: I) -> Result<()>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let owned: Vec<String> = paths
+            .into_iter()
+            .map(|p| p.as_ref().to_string_lossy().into_owned())
+            .collect();
+        if owned.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(owned.iter().map(String::as_str));
+        repo.run_git(args)
             .map(|_| ())
-            .map_err(|e| VcsError::Index(format!("stage_path {}: {}", path.display(), e)))
+            .map_err(|e| VcsError::Index(format!("stage_paths {}: {}", owned.join(" "), e)))
     }
 
     /// Unstage a file path (equivalent to `git reset HEAD -- <path>`).

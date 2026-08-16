@@ -6373,6 +6373,14 @@ impl Editor {
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
         let sticky_count = vrows.sticky_rows().count() as u32;
         let effective_height = height.saturating_sub(sticky_count).max(1);
+        // 2026-08-16 diagnostic: the scroll clamp's inputs, captured on entry.
+        // This runs on the KEYSTROKE path only — the actor's `async_landed`
+        // arm republishes without re-clamping — so when an async result
+        // changes the geometry (folds, virtual rows), the first keystroke
+        // afterwards is where the viewport moves. That is the shape of the
+        // "pressing `:` makes the buffer jump" report, and this is the log
+        // that shows whether it is what is happening.
+        let scroll_before = self.scroll;
 
         // `scrolloff`: keep this many DOCUMENT lines of context
         // above and below the cursor. Clamped to half the effective
@@ -6414,6 +6422,20 @@ impl Editor {
         // as the vertical clamp — every `ensure_cursor_visible`
         // caller gets both axes for free.
         self.ensure_cursor_horizontally_visible();
+        if self.scroll != scroll_before {
+            tracing::debug!(
+                target: "lattice_host::scroll",
+                from = scroll_before,
+                to = self.scroll,
+                cursor_line = self.cursor.line,
+                viewport_height = height,
+                sticky_rows = sticky_count,
+                folds = self.folds.len(),
+                foldenable = self.foldenable(),
+                text_version = self.document.text_version(),
+                "ensure_cursor_visible moved the viewport"
+            );
+        }
     }
 
     /// Horizontal analog of [`Self::ensure_cursor_visible`]: with

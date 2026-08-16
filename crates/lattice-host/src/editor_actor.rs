@@ -643,6 +643,19 @@ async fn run_actor(
                 // whether `paint_revision` moved; fire `paint_request`
                 // when it did. Gated so a no-op publish doesn't spin the
                 // GPUI paint bridge.
+                // 2026-08-16 diagnostic: this arm republishes and repaints
+                // but deliberately does NOT re-clamp scroll
+                // (`ensure_cursor_visible` is on the keystroke path). So an
+                // async result that changes row geometry is absorbed by the
+                // NEXT keystroke's clamp — pair this line with
+                // `lattice_host::scroll` to see that happen.
+                tracing::debug!(
+                    target: "lattice_host::async_publish",
+                    text_version = editor.document.text_version(),
+                    scroll = editor.scroll,
+                    folds = editor.folds.len(),
+                    "async result landed; republishing without a scroll clamp"
+                );
                 let painted = editor.publish_render_state();
                 if painted {
                     editor.paint_request.notify_one();

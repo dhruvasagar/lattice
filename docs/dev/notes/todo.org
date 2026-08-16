@@ -68,7 +68,7 @@
 - [X] Refresh buffer if updated outside. vim's `autoread`.
 - [X] GPUI: Maximise window after init
 - [X] `:opencode` support, similar to `:claude`
-- [ ] indent guide
+- [X] indent guide
 
 * Plugins
 - [X] plugin manager

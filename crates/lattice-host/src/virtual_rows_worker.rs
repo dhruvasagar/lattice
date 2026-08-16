@@ -390,6 +390,14 @@ pub async fn run(
     );
     let mut state = VirtualRowsWorkerState::new();
     let mut tick: u64 = 0;
+    // 2026-08-16: aggregated for the same reason as the cells worker's —
+    // `*messages*` is a rendered buffer fed by the log pipeline, so a log
+    // per tick closes a render→log→edit→publish→wake→render cycle. See
+    // the comment there; this worker spun ~500 times/second on the same
+    // loop because its ticks are cheap (~20 µs), so it went round faster.
+    let mut window_start = std::time::Instant::now();
+    let mut window_ticks: u64 = 0;
+    let mut window_changed: u64 = 0;
     loop {
         wake.0.notified().await;
         let t0 = std::time::Instant::now();
@@ -399,13 +407,24 @@ pub async fn run(
         if matches!(decision, WorkerDecision::Recomputed | WorkerDecision::Clear) {
             paint_request.notify_one();
         }
-        debug!(
-            target: "lattice_host::virtual_rows_worker",
-            tick,
-            ?decision,
-            elapsed_us,
-            "virtual-rows worker tick"
-        );
+        window_ticks += 1;
+        if !matches!(decision, WorkerDecision::CacheHit) {
+            window_changed += 1;
+        }
+        if window_start.elapsed() >= std::time::Duration::from_secs(1) {
+            debug!(
+                target: "lattice_host::virtual_rows_worker",
+                tick,
+                ticks_per_sec = window_ticks,
+                rebuilds = window_changed,
+                last_us = elapsed_us,
+                last = ?decision,
+                "virtual-rows worker (1s summary)"
+            );
+            window_start = std::time::Instant::now();
+            window_ticks = 0;
+            window_changed = 0;
+        }
     }
 }
 

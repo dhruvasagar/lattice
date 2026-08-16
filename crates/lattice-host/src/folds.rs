@@ -964,6 +964,115 @@ mod tests {
     /// its space-indented twin's and the two folded at different boundaries.
     /// Measuring in display columns makes them identical, which is also what
     /// keeps `zc` and the indentation guides agreeing about a block.
+    /// IG.5 equivalence check against REAL content, which I did not do
+    /// when I replaced the walk.
+    ///
+    /// IG.5 swapped `compute_indent_folds` from a scan-forward walk to a
+    /// stack walk AND changed depth from whitespace characters to display
+    /// columns. I tested hand-written fixtures and the tab case; I never
+    /// checked that a real space-indented file folds identically, which
+    /// is the one property a rewrite of a landed feature owes.
+    ///
+    /// `todo.org` is the file from the 2026-08-16 report — 219 lines,
+    /// no tabs, indents of 0/2/4 — so the column and character measures
+    /// agree and ONLY the algorithm change is under test.
+    #[test]
+    fn indent_folds_match_the_pre_ig5_walk_on_real_content() {
+        mod pre_ig5 {
+            fn leading_indent(line: &str) -> usize {
+                line.chars().take_while(|c| c.is_whitespace()).count()
+            }
+            fn is_closer_line(line: &str) -> bool {
+                let t = line.trim();
+                !t.is_empty()
+                    && t.chars()
+                        .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
+            }
+            fn next_non_blank(indents: &[Option<usize>], from: usize) -> Option<usize> {
+                indents
+                    .iter()
+                    .enumerate()
+                    .skip(from)
+                    .find_map(|(i, x)| x.is_some().then_some(i))
+            }
+            pub fn old_folds(text: &str) -> Vec<(u32, u32)> {
+                let lines: Vec<&str> = text.split('\n').collect();
+                let n = lines.len();
+                if n <= 1 {
+                    return vec![];
+                }
+                let indents: Vec<Option<usize>> = lines
+                    .iter()
+                    .map(|l| {
+                        if l.trim().is_empty() {
+                            None
+                        } else {
+                            Some(leading_indent(l))
+                        }
+                    })
+                    .collect();
+                let mut next_nb = vec![n; n];
+                {
+                    let mut nx = n;
+                    for i in (0..n).rev() {
+                        next_nb[i] = nx;
+                        if indents[i].is_some() {
+                            nx = i;
+                        }
+                    }
+                }
+                let mut out = vec![];
+                for i in 0..n {
+                    if out.len() >= 5000 {
+                        break;
+                    }
+                    let Some(start_indent) = indents[i] else {
+                        continue;
+                    };
+                    let j = next_nb[i];
+                    if j >= n {
+                        continue;
+                    }
+                    let Some(next_indent) = indents[j] else {
+                        continue;
+                    };
+                    if next_indent <= start_indent {
+                        continue;
+                    }
+                    let mut end = j;
+                    for (k, ind) in indents.iter().enumerate().skip(j + 1) {
+                        match ind {
+                            Some(x) if *x > start_indent => end = k,
+                            Some(_) => break,
+                            None => continue,
+                        }
+                    }
+                    if let Some(c) = next_non_blank(&indents, end + 1)
+                        && let Some(ind) = indents[c]
+                        && ind == start_indent
+                        && is_closer_line(lines[c])
+                    {
+                        end = c;
+                    }
+                    out.push((i as u32, end as u32));
+                }
+                out
+            }
+        }
+
+        let text = include_str!("../../../docs/dev/notes/todo.org");
+        let b = buf(text);
+        let new: Vec<(u32, u32)> = compute_indent_folds(&b, &IndentUnit::new(4, true, 4))
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        let old = pre_ig5::old_folds(text);
+        assert_eq!(
+            new, old,
+            "IG.5 must not have changed the fold set on a space-indented file"
+        );
+    }
+
     #[test]
     fn tab_indented_file_folds_like_its_space_indented_twin() {
         let unit = IndentUnit::new(4, false, 4);

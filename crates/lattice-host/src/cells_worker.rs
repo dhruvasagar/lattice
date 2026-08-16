@@ -192,6 +192,25 @@ pub async fn run(
         "cells worker spawned"
     );
     let mut tick_count: u64 = 0;
+    // 2026-08-16: per-tick logging is SELF-FEEDING and must be coalesced.
+    //
+    // `*messages*` is a rendered buffer fed by the log pipeline, so a log
+    // emitted once per tick closes a cycle: tick → log → `*messages*` edit
+    // → text_version bump → publish → `AsyncRenderStatePublished` → this
+    // worker wakes → tick. Measured at ~110 rebuilds/second — exactly this
+    // worker's own 8.8 ms rebuild time, because the loop runs as fast as
+    // one rebuild takes — and it never stops.
+    //
+    // The rule this encodes: **the render cycle must not emit a log per
+    // render.** Not a level question (a `trace!` would loop just as hard
+    // when trace is enabled); a frequency one. So the tick log is
+    // aggregated to at most one line per second, carrying the counts that
+    // make a storm visible in a single line rather than 500. One line per
+    // second still costs one cycle per second, which is self-limiting.
+    let mut window_start = std::time::Instant::now();
+    let mut window_ticks: u64 = 0;
+    let mut window_changed: u64 = 0;
+    let mut window_us: u128 = 0;
     loop {
         wake.0.notified().await;
         let t0 = std::time::Instant::now();
@@ -209,13 +228,26 @@ pub async fn run(
         ) {
             paint_request.notify_one();
         }
-        debug!(
-            target: "lattice_host::cells_worker",
-            tick = tick_count,
-            ?decision,
-            elapsed_us,
-            "cells worker tick"
-        );
+        window_ticks += 1;
+        window_us += elapsed_us;
+        if !matches!(decision, WorkerDecision::CacheHit) {
+            window_changed += 1;
+        }
+        if window_start.elapsed() >= std::time::Duration::from_secs(1) {
+            debug!(
+                target: "lattice_host::cells_worker",
+                tick = tick_count,
+                ticks_per_sec = window_ticks,
+                rebuilds = window_changed,
+                busy_us = window_us,
+                last = ?decision,
+                "cells worker (1s summary)"
+            );
+            window_start = std::time::Instant::now();
+            window_ticks = 0;
+            window_changed = 0;
+            window_us = 0;
+        }
     }
 }
 

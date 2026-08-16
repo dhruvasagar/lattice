@@ -6440,12 +6440,27 @@ impl Editor {
         // caller gets both axes for free.
         self.ensure_cursor_horizontally_visible();
         if self.scroll != scroll_before {
+            // `rows_to_cursor` is the whole question when the cursor ends
+            // up off screen: it is how many DISPLAY rows the host believes
+            // `scroll..=cursor` occupies. If it is <= viewport_height the
+            // host thinks the cursor is visible, so a cursor painted below
+            // the last row means the RENDERER produced more rows than this
+            // for the same lines — a per-line cost disagreement (wrap
+            // segments / virtual rows), not a scroll-arithmetic bug.
+            // Reported 2026-08-16: `G` on a 219-line file left the cursor
+            // one row below the last painted line.
+            let rows_to_cursor = self
+                .display_rows_between(self.scroll, self.cursor.line)
+                .saturating_add(1);
             tracing::debug!(
                 target: "lattice_host::scroll",
                 from = scroll_before,
                 to = self.scroll,
                 cursor_line = self.cursor.line,
                 viewport_height = height,
+                effective_height,
+                rows_to_cursor,
+                wrap_width = self.scroll_wrap_width(),
                 sticky_rows = sticky_count,
                 folds = self.folds.len(),
                 foldenable = self.foldenable(),
@@ -6722,6 +6737,45 @@ impl Editor {
     /// strictly shrinks the window — `doc_rows` drops by the
     /// overflow while the virtual-row count can only stay equal or
     /// shrink — so the second pass is guaranteed within budget.
+    /// Display rows the host believes `from ..= to` occupies, under the
+    /// same cost model [`Self::bottom_anchored_scroll`] budgets against:
+    /// wrap segments plus virtual rows per visible line, with closed-fold
+    /// bodies skipped.
+    ///
+    /// Exists for the scroll diagnostic. When a cursor lands off screen,
+    /// this is what separates "the host's arithmetic is wrong" from "the
+    /// host and the renderer disagree about what a line costs" — and only
+    /// the second is consistent with a scroll the host thinks is correct.
+    fn display_rows_between(&self, from: u32, to: u32) -> u32 {
+        if to < from {
+            return 0;
+        }
+        let buffer_id = self.active_buffer_id();
+        let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
+        let wrap_width = self.scroll_wrap_width();
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        let mut rows = 0u32;
+        let mut line = from;
+        while line < to {
+            // Skip a closed fold's body: it collapses onto its head row.
+            if let Some((_, end)) = fold_idx.enclosing_closed_fold(line) {
+                rows = rows.saturating_add(1);
+                line = end.saturating_add(1);
+                continue;
+            }
+            let segments = if wrap_width == 0 {
+                1
+            } else {
+                lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
+            };
+            rows = rows
+                .saturating_add(segments)
+                .saturating_add(vrows.virtual_rows_in_line_range(line, line));
+            line = line.saturating_add(1);
+        }
+        rows
+    }
+
     fn bottom_anchored_scroll(&self, target_line: u32, budget: u32) -> u32 {
         let budget = budget.max(1);
         let buffer_id = self.active_buffer_id();

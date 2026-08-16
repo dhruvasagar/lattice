@@ -100,7 +100,7 @@ core plugins, and repackaging the built-in modes as WASM components.
 of indentation, with the block enclosing the cursor drawn brighter, in both
 renderer peers. Design:
 [`../architecture/indent-guides.md`](../architecture/indent-guides.md); slice
-plan [`slice-plans/indent-guides.md`](slice-plans/indent-guides.md).
+plan [`slice-plans/archive/indent-guides.md`](slice-plans/archive/indent-guides.md).
 
 **The load-bearing choice is where the layer is produced.** It is built per
 pane, beside that pane's `DisplayMatrix`, in the same `cells_worker` pass —

@@ -1,7 +1,7 @@
 # Indentation guides
 
 Status: design fragment (2026-08-16). Slice plan:
-`../operations/slice-plans/indent-guides.md`.
+`../operations/slice-plans/archive/indent-guides.md`.
 
 Anchors: `cell-grid-renderer.md` (decoration bucketing, per-pane matrices),
 `display-line.md` (the canonical `DisplayLine` substrate), `auto-indent.md` §3

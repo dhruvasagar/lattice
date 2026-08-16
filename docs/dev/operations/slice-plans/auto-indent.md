@@ -18,7 +18,7 @@
 | IN.7 | `=` — the reindent operator | ✅ |
 | IN.8a | `lattice-format` crate — spec table, runner, minimal-edit application | ✅ |
 | IN.8b | `:format` cascade + async landing | ✅ |
-| IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
+| IN.9 | Format-on-save; `formatprg` (`equalprg` ⛔ deferred) | ✅ |
 | IN.10 | LSP `onTypeFormatting` — the additive layer | ⛔ dropped |
 | IN.11 | Per-language mode defaults; GPUI parity audit; docs + benchmarks | 📝 |
 
@@ -591,12 +591,40 @@ action** (the inbound-primitive assertion).
 
 ---
 
-## IN.9 — format-on-save; `formatprg` / `equalprg` 📝
+## IN.9 — format-on-save; `formatprg` ✅
 
 **Depends on:** IN.8.
 
-`formatonsave` sequences format → apply → write in `:w`. `formatprg` and
-`equalprg` as buffer-local string overrides.
+`formatonsave` sequences format → apply → write in `:w`. `formatprg` was
+already honoured by `:format` (IN.8b) and is reused here unchanged.
+
+**Synchronous, deliberately**, and the second reason is decisive:
+
+1. The save path already blocks on an LSP round-trip
+   (`run_will_save_wait_until_blocking`), so this is not a new kind of stall,
+   and `:w` is an explicit ex-command rather than the keystroke path.
+2. An async format-then-write lets `:wq` quit **before the write lands**. That
+   is data loss, and no amount of responsiveness pays for it.
+
+**LSP is not a rung here**, unlike `:format`'s cascade. Servers already get
+their chance through `textDocument/willSaveWaitUntil`, which `save_blocking`
+fires and waits on — that IS the LSP format-on-save mechanism and predates this
+plan. Running `textDocument/formatting` as well would apply two servers'
+opinions to one save.
+
+### ⛔ `equalprg` deferred
+
+`=` dispatches inside `lattice-grammar`, which cannot spawn processes, and the
+operator's range is resolved *inside* that dispatch — so piping the range
+through an external filter needs a range-filter seam that does not exist. The
+`IndentResolver` trait added at IN.7 is the wrong shape for it: it answers
+"how deep is line N", not "rewrite this text".
+
+Inventing that seam at the tail of a long slice is how bad abstractions get
+built, and the payoff is narrow: tree-sitter covers 17 of 19 languages, so
+`equalprg` would serve mainly the two that ship no query (sql, markdown) — for
+which `:format` with a `formatprg` already works today. Deferred with the seam
+named rather than half-built.
 
 **The rule with its own tests: a failing formatter must never lose a save.**
 Formatter fails, exits non-zero, or times out ⇒ log and write unformatted.

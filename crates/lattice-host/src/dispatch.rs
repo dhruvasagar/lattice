@@ -24813,6 +24813,9 @@ impl Editor {
             }
             return;
         }
+        // IN.9: format before writing, best-effort. Cannot fail the
+        // write — see the method's doc.
+        self.format_before_write_blocking();
         let result: Result<String, lattice_runtime::RuntimeError> = match path {
             Some(p) => self
                 .save_as_blocking(p.clone())
@@ -25258,6 +25261,87 @@ impl Editor {
             .servers_for(uri)
             .iter()
             .any(|h| h.capabilities().supports_formatting())
+    }
+
+    /// IN.9: run the external formatter before `:w`, if
+    /// `formatonsave` is on.
+    ///
+    /// **This function cannot fail the write.** It returns `()`, and
+    /// every failure path — no formatter configured, tool not
+    /// installed, non-zero exit, timeout, invalid UTF-8, edits that
+    /// will not apply — leaves the buffer as it was and lets the
+    /// caller write anyway. A save that silently did not happen
+    /// because a formatter hung is a far worse failure than an
+    /// unformatted save, and it is the failure users never forgive.
+    ///
+    /// **Synchronous, deliberately.** Two reasons, and the second is
+    /// the decisive one:
+    ///
+    /// 1. The save path already blocks on an LSP round-trip
+    ///    (`run_will_save_wait_until_blocking`), so this is not a new
+    ///    kind of stall — and `:w` is an explicit user action on the
+    ///    ex-command path, not the keystroke path.
+    /// 2. An async format-then-write would let `:wq` quit before the
+    ///    write landed. That is data loss, and no amount of
+    ///    responsiveness pays for it.
+    ///
+    /// **LSP is not a rung here**, unlike `:format`. Servers already
+    /// get their chance through `textDocument/willSaveWaitUntil`,
+    /// which `save_blocking` fires and waits on — that IS the LSP
+    /// format-on-save mechanism, and it was wired long before this.
+    /// Running `textDocument/formatting` as well would apply two
+    /// servers' opinions to one save.
+    fn format_before_write_blocking(&mut self) {
+        let buffer = self.active_buffer_id();
+        if !*self.resolved_option::<lattice_config::core_options::FormatOnSave>(buffer) {
+            return;
+        }
+        let formatprg = self.resolved_option::<lattice_config::core_options::FormatPrg>(buffer);
+        let Some(spec) = lattice_format::FormatterSpec::parse(&formatprg)
+            .or_else(|| lattice_format::FormatterSpec::for_lang(self.active_lang()))
+        else {
+            return;
+        };
+
+        let text = self.active_text().as_string();
+        let path = self.document.path();
+        let formatted = match lattice_format::run(&spec, &text, path.as_deref()) {
+            Ok(f) => f,
+            Err(e) => {
+                // Noteworthy failures are worth a line in the echo
+                // area; a missing tool is not. Either way the write
+                // proceeds.
+                if e.is_noteworthy() {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("format-on-save: {} — saving unformatted", e.message()),
+                    );
+                } else {
+                    tracing::debug!(msg = %e.message(), "format-on-save skipped");
+                }
+                return;
+            }
+        };
+
+        let edits = lattice_format::minimal_edits(&text, &formatted);
+        if edits.is_empty() {
+            return;
+        }
+        self.document.begin_undo_group();
+        for edit in edits {
+            if let Err(e) = self.apply_edit_blocking(edit) {
+                // Partial application is possible here. The buffer is
+                // still coherent (each edit is atomic) and the write
+                // still happens — leaving a half-formatted buffer
+                // unsaved would be the worse outcome.
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!("format-on-save: apply failed ({e}) — saving as-is"),
+                );
+                break;
+            }
+        }
+        self.document.end_undo_group();
     }
 
     /// IN.8b: apply an external formatter's result once it lands.
@@ -46733,6 +46817,119 @@ mod tests {
         assert!(
             editor.pending_external_format_rx.is_none(),
             "nothing should have been spawned"
+        );
+    }
+
+    // ---- IN.9: format-on-save ----
+    //
+    // Every test here asserts the ON-DISK file, not the buffer. The
+    // rule is that a formatter must never cost the user their write,
+    // and only the file proves it.
+
+    /// An editor over a real file in `dir`, with `formatonsave` on.
+    fn editor_on_disk(
+        dir: &std::path::Path,
+        text: &str,
+        prg: &str,
+    ) -> (Editor, std::path::PathBuf) {
+        let file = dir.join("t.rs");
+        std::fs::write(&file, text).expect("seed file");
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(file.clone())
+                .with_text(text)
+                .build(),
+        );
+        editor.do_set("formatonsave=true");
+        editor.do_set(&format!("formatprg={prg}"));
+        (editor, file)
+    }
+
+    #[test]
+    fn format_on_save_writes_formatted_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "fmt", "sed 's/^ *//; s/^/    /'");
+        let (mut editor, file) = editor_on_disk(dir.path(), "fn f() {\nx();\n}\n", &prg);
+        editor.do_write(None);
+        let on_disk = std::fs::read_to_string(&file).expect("read back");
+        assert!(
+            on_disk.contains("    x();"),
+            "expected formatted content, got: {on_disk:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_formatter_still_writes_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "bad", "echo boom >&2; exit 1");
+        let before = "fn f() {\nx();\n}\n";
+        let (mut editor, file) = editor_on_disk(dir.path(), before, &prg);
+        // Make the buffer dirty so the write has something to do.
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        let mut out = DispatchOutcome::default();
+        editor.enter_mode(lattice_grammar::ModalState::Insert);
+        editor.do_insert_text("y", &mut out);
+        editor.enter_mode(lattice_grammar::ModalState::Normal);
+
+        editor.do_write(None);
+        let on_disk = std::fs::read_to_string(&file).expect("file must still exist");
+        assert!(
+            on_disk.contains("yx();"),
+            "the write must happen even though the formatter failed, got: {on_disk:?}"
+        );
+    }
+
+    #[test]
+    fn a_hanging_formatter_still_writes_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Longer than FORMAT_TIMEOUT, so the run is killed.
+        let prg = fake_formatter(dir.path(), "hang", "sleep 30");
+        let (mut editor, file) = editor_on_disk(dir.path(), "fn f() {\nx();\n}\n", &prg);
+        let started = std::time::Instant::now();
+        editor.do_write(None);
+        assert!(
+            started.elapsed() < lattice_format::FORMAT_TIMEOUT + std::time::Duration::from_secs(3),
+            "the save must not wait for a hung formatter to finish on its own"
+        );
+        assert!(
+            std::fs::read_to_string(&file).is_ok(),
+            "the file must exist after a formatter timeout"
+        );
+    }
+
+    #[test]
+    fn a_missing_formatter_still_writes_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (mut editor, file) = editor_on_disk(
+            dir.path(),
+            "fn f() {\n}\n",
+            "definitely-not-a-real-formatter-xyz",
+        );
+        editor.do_write(None);
+        assert!(std::fs::read_to_string(&file).is_ok());
+    }
+
+    #[test]
+    fn formatonsave_off_spawns_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A formatter that would corrupt the file if it ever ran.
+        let prg = fake_formatter(dir.path(), "wrecker", "echo WRECKED");
+        let before = "fn f() {\n}\n";
+        let file = dir.path().join("t.rs");
+        std::fs::write(&file, before).expect("seed");
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(file.clone())
+                .with_text(before)
+                .build(),
+        );
+        editor.do_set(&format!("formatprg={prg}"));
+        // formatonsave defaults to false; do not enable it.
+        editor.do_write(None);
+        let on_disk = std::fs::read_to_string(&file).expect("read back");
+        assert_eq!(
+            on_disk, before,
+            "the default must not run a formatter on save"
         );
     }
 

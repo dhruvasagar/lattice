@@ -40,12 +40,19 @@ use crate::lang::Lang;
 /// (via `Lang` detection) and `Help` (via H.2's kind dispatch).
 macro_rules! lang_mode {
     ($struct_name:ident, $mode_name:literal) => {
-        lang_mode!(@inner $struct_name, $mode_name, None);
+        lang_mode!(@impl $struct_name, $mode_name, None, {});
     };
     ($struct_name:ident, $mode_name:literal, target_kind = $kind:expr) => {
-        lang_mode!(@inner $struct_name, $mode_name, Some($kind));
+        lang_mode!(@impl $struct_name, $mode_name, Some($kind), {});
     };
-    (@inner $struct_name:ident, $mode_name:literal, $target_kind:expr) => {
+    // IN.11: a language whose tooling assumes different indent
+    // conventions from the global defaults states them here. No new
+    // mechanism -- `Mode::options()` is layer 4 of the buffer-local
+    // resolution stack and had simply never been used for indentation.
+    ($struct_name:ident, $mode_name:literal, options = { $($opt:tt)* }) => {
+        lang_mode!(@impl $struct_name, $mode_name, None, { $($opt)* });
+    };
+    (@impl $struct_name:ident, $mode_name:literal, $target_kind:expr, { $($opt:tt)* }) => {
         pub struct $struct_name;
 
         impl $struct_name {
@@ -65,6 +72,9 @@ macro_rules! lang_mode {
             fn target_buffer_kind(&self) -> Option<BufferKind> {
                 $target_kind
             }
+            fn options(&self) -> lattice_config::OptionOverrideSet {
+                lattice_config::overrides! { $($opt)* }
+            }
             fn required_capabilities(&self) -> CapabilitySet {
                 CapabilitySet::empty()
             }
@@ -77,22 +87,114 @@ macro_rules! lang_mode {
 
 lang_mode!(RustMode, "rust-mode");
 lang_mode!(PythonMode, "python-mode");
-lang_mode!(JavascriptMode, "javascript-mode");
+lang_mode!(
+    JavascriptMode,
+    "javascript-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
 lang_mode!(BashMode, "bash-mode");
 lang_mode!(CMode, "c-mode");
 lang_mode!(CppMode, "cpp-mode");
-lang_mode!(CssMode, "css-mode");
-lang_mode!(GoMode, "go-mode");
-lang_mode!(HtmlMode, "html-mode");
+lang_mode!(
+    CssMode,
+    "css-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
+lang_mode!(
+    GoMode,
+    "go-mode",
+    options = {
+        // gofmt indents with TABS, unconditionally and without a
+        // configuration knob. Typing spaces here means every `:format`
+        // or format-on-save silently converts them, so the editor
+        // would be fighting the language's own tool on every write.
+        lattice_config::ExpandTab = false,
+    }
+);
+lang_mode!(
+    HtmlMode,
+    "html-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
 lang_mode!(JavaMode, "java-mode");
-lang_mode!(JsonMode, "json-mode");
+lang_mode!(
+    JsonMode,
+    "json-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
 lang_mode!(LuaMode, "lua-mode");
-lang_mode!(RubyMode, "ruby-mode");
+lang_mode!(
+    RubyMode,
+    "ruby-mode",
+    options = {
+        // Two spaces is the rubocop default and close to unanimous
+        // across the ecosystem. Ruby ships no bundled formatter here
+        // (no consensus between rubocop and standardrb), so nothing
+        // downstream would correct a 4-space habit.
+        lattice_config::Shiftwidth = 2,
+    }
+);
 lang_mode!(SqlMode, "sql-mode");
 lang_mode!(TomlMode, "toml-mode");
-lang_mode!(TypeScriptMode, "typescript-mode");
-lang_mode!(TsxMode, "tsx-mode");
-lang_mode!(YamlMode, "yaml-mode");
+lang_mode!(
+    TypeScriptMode,
+    "typescript-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
+lang_mode!(
+    TsxMode,
+    "tsx-mode",
+    options = {
+        // prettier is this language's bundled formatter (spec.rs) and
+        // its default is two spaces. Matching it is the same argument
+        // as Go's tabs: typing at one width and formatting at another
+        // means the tool rewrites the file on every save.
+        lattice_config::Shiftwidth = 2,
+    }
+);
+lang_mode!(
+    YamlMode,
+    "yaml-mode",
+    options = {
+        // A CORRECTNESS override, not a style one: the YAML spec
+        // forbids tab characters in indentation outright, so
+        // `noexpandtab` in a YAML buffer produces a file that will not
+        // parse. Two spaces is also what essentially every YAML
+        // document in the wild uses.
+        lattice_config::ExpandTab = true,
+        lattice_config::Shiftwidth = 2,
+    }
+);
 // H.2 (2026-05-31): `markdown-mode` is the default major for two
 // dispatch paths — `Document + Lang::Markdown` (via language
 // detection) and `BufferKind::Help` (via the registry's kind
@@ -310,6 +412,98 @@ impl Mode for TreeSitterCompletionMode {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    // ---- IN.11: per-language indent conventions ----
+
+    /// Read one option out of a mode's contribution.
+    ///
+    /// The set is `TypeId`-keyed with a type-erased value (the
+    /// resolver downcasts at resolution time), so a test reading it
+    /// back does the same.
+    fn override_of<D>(set: &lattice_config::OptionOverrideSet) -> Option<D::Value>
+    where
+        D: lattice_config::OptionDecl,
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        set.iter()
+            .find(|o| o.option_type_id == std::any::TypeId::of::<D>())
+            .and_then(|o| o.value.downcast_ref::<D::Value>())
+            .cloned()
+    }
+
+    #[test]
+    fn go_indents_with_tabs_because_gofmt_does() {
+        // Not a style preference: gofmt emits tabs unconditionally and
+        // has no knob, so spaces here would be rewritten on every
+        // `:format` or save.
+        assert_eq!(
+            override_of::<lattice_config::ExpandTab>(&GoMode.options()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn yaml_forbids_tabs_as_a_correctness_matter() {
+        // The YAML spec disallows tab characters in indentation, so
+        // `noexpandtab` in a YAML buffer produces a file that will not
+        // parse. This override is not about taste.
+        assert_eq!(
+            override_of::<lattice_config::ExpandTab>(&YamlMode.options()),
+            Some(true)
+        );
+        assert_eq!(
+            override_of::<lattice_config::Shiftwidth>(&YamlMode.options()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn the_prettier_family_matches_its_formatter() {
+        // Same argument as Go: prettier is the bundled formatter for
+        // these languages and defaults to two spaces, so typing at
+        // four means the tool rewrites the file on every save.
+        for set in [
+            JavascriptMode.options(),
+            TypeScriptMode.options(),
+            TsxMode.options(),
+            CssMode.options(),
+            HtmlMode.options(),
+            JsonMode.options(),
+        ] {
+            assert_eq!(override_of::<lattice_config::Shiftwidth>(&set), Some(2));
+        }
+    }
+
+    #[test]
+    fn languages_whose_convention_matches_the_default_contribute_nothing() {
+        // Rust (rustfmt) and Python (black, PEP 8) both indent four
+        // spaces, which IS the global default. Contributing a
+        // redundant override would be noise that later reads as
+        // intent.
+        assert!(override_of::<lattice_config::Shiftwidth>(&RustMode.options()).is_none());
+        assert!(override_of::<lattice_config::ExpandTab>(&RustMode.options()).is_none());
+        assert!(override_of::<lattice_config::Shiftwidth>(&PythonMode.options()).is_none());
+    }
+
+    #[test]
+    fn contested_conventions_are_left_to_the_user() {
+        // C / C++ / Java / Lua / Bash / TOML have no dominant
+        // convention (clang-format's LLVM default is 2 while most C
+        // projects use 4; stylua and shfmt both default to tabs).
+        // Picking a side would be imposing taste rather than matching
+        // a tool the editor actually runs.
+        for set in [
+            CMode.options(),
+            CppMode.options(),
+            JavaMode.options(),
+            LuaMode.options(),
+            BashMode.options(),
+            TomlMode.options(),
+        ] {
+            assert!(override_of::<lattice_config::Shiftwidth>(&set).is_none());
+            assert!(override_of::<lattice_config::ExpandTab>(&set).is_none());
+        }
+    }
 
     fn all_lang_mode_ids() -> Vec<ModeId> {
         vec![

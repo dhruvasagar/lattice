@@ -3,6 +3,11 @@
 > Sequencing for [`docs/dev/architecture/auto-indent.md`](../../architecture/auto-indent.md).
 > That fragment owns the *what* and *why*; this file owns the *when* and *in
 > what order*. Opened 2026-08-15.
+>
+> **NOT ARCHIVABLE.** IN.0–IN.9 and IN.11 are complete, but `equalprg` is ⛔
+> deferred (IN.9) and IN.10 is ⛔ dropped. A plan with open work stays active —
+> deferred is not complete, and archiving on "only the deferred bits are left"
+> is precisely what buries the remaining work.
 
 ## Status
 
@@ -20,7 +25,7 @@
 | IN.8b | `:format` cascade + async landing | ✅ |
 | IN.9 | Format-on-save; `formatprg` (`equalprg` ⛔ deferred) | ✅ |
 | IN.10 | LSP `onTypeFormatting` — the additive layer | ⛔ dropped |
-| IN.11 | Per-language mode defaults; GPUI parity audit; docs + benchmarks | 📝 |
+| IN.11 | Per-language mode defaults; GPUI parity audit; docs | ✅ |
 
 ## Shape of the sequence
 
@@ -677,13 +682,39 @@ the option defaults to off and no request is sent.
 
 ---
 
-## IN.11 — mode defaults; GPUI parity; docs + benchmarks 📝
+## IN.11 — mode defaults; GPUI parity; docs ✅
 
 **Depends on:** everything.
 
-- Per-language option contributions through `Mode::options() -> OptionOverrideSet`:
-  `go` → `expandtab=false`; confirm `python`; any language whose community
-  convention differs from 4/spaces.
+### Per-language conventions, and the rule for adding one
+
+Contributed through `Mode::options()` — layer 4 of the buffer-local stack, a
+seam that already existed and had never been used for indentation. The
+`lang_mode!` macro grew an `options = { … }` arm so a language states its
+conventions beside its declaration.
+
+**The rule: override only where the global default is WRONG, not merely
+unfashionable.** Two grounds qualify:
+
+- **Correctness.** `yaml` → `expandtab`, because the YAML spec forbids tab
+  characters in indentation; `noexpandtab` there produces a file that will not
+  parse.
+- **The formatter this editor will actually run.** `go` → tabs (gofmt has no
+  knob); the prettier family (`javascript`, `typescript`, `tsx`, `css`, `html`,
+  `json`) → 2. Typing at one width while the bundled formatter emits another
+  means the tool rewrites the file on every save — the editor fighting its own
+  toolchain.
+
+`ruby` → 2 on the strength of rubocop's near-unanimous convention, despite
+shipping no bundled formatter.
+
+**Deliberately left alone:** `rust` and `python`, whose conventions ARE the
+default (a redundant override later reads as intent); and `c` / `cpp` / `java` /
+`lua` / `bash` / `toml`, where convention is genuinely contested —
+clang-format's LLVM default is 2 while most C projects use 4; stylua and shfmt
+both default to tabs. Picking a side there would be imposing taste rather than
+matching a tool. Both categories are asserted by tests, so the absence is a
+decision rather than an omission.
 - **GPUI parity audit.** IN.8/IN.9 may add `Effect::` variants; every one needs
   its arm in `lattice-ui-gpui`'s effect classifier. Shortcut:
   `grep -rn "Effect::Format" crates/lattice-ui-gpui/ --include="*.rs"` —

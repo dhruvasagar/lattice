@@ -5720,6 +5720,7 @@ dependencies = [
  "criterion",
  "lattice-cells",
  "lattice-completion",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-mode",

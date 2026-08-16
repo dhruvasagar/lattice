@@ -95,29 +95,55 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
-**Auto-indent (2026-08-15, design landed; branch `dhruva/auto-indent`).**
-Nothing indents today: `o` / `O` / `<CR>` splice a bare newline at column
-0, `>` / `<` / `<C-t>` / `<C-d>` indent by a hardcoded four spaces
-(`dispatch.rs:19411`), `shiftwidth` / `expandtab` do not exist, there is
-no `=` operator, and `lattice-lsp`'s already-implemented `formatting` /
-`rangeFormatting` / `onTypeFormatting` are reachable only through
-`:lsp-format`. The design
-([`../architecture/auto-indent.md`](../architecture/auto-indent.md), slice
-plan [`slice-plans/auto-indent.md`](slice-plans/auto-indent.md), IN.0–IN.11)
-splits the feature into **three surfaces with three latency budgets**:
-predictive indent (`<CR>`/`o`/`O`) and electric reindent sit on the
-keystroke path and can only be tree-sitter-sourced, while reindenting
-existing text (`=`, `:format`, format-on-save) is user-initiated and is
-where LSP and external formatters belong. Two new crates —
-`lattice-indent` (pure, synchronous: a Helix-dialect `indents.scm`
-evaluator plus a lexical fallback) and `lattice-format` (the PATH-probed
-external-formatter runner, applying results as a **minimal** edit set via
-`lattice-diff` rather than a whole-buffer replace). `=` stays vim's
-indent-only operator and is deliberately *not* backed by a formatter.
-The open risk is snapshot staleness on the keystroke path — the tree
-reflects the last completed reparse, so a budgeted synchronous
-incremental reparse (budget set from the IN.2 bench, not guessed) sits
-between the fresh-tree and lexical-fallback paths.
+**Auto-indent (2026-08-15/16, IN.0–IN.11 landed; branch
+`dhruva/auto-indent`).** Nothing indented before this: `o` / `O` / `<CR>`
+spliced a bare newline at column 0, `>` / `<` / `<C-t>` / `<C-d>` used a
+hardcoded four spaces, `shiftwidth` / `expandtab` did not exist, there was no
+`=` operator, and lattice-lsp's implemented `formatting` / `rangeFormatting`
+were reachable only through `:lsp-format`. Design:
+[`../architecture/auto-indent.md`](../architecture/auto-indent.md); slice plan
+[`slice-plans/auto-indent.md`](slice-plans/auto-indent.md).
+
+**What shipped.** Seven typed options (`shiftwidth`, `expandtab`,
+`indentmethod`, `electricindent`, `equalprg`, `formatprg`, `formatonsave`) with
+`IndentUnit` in `lattice-core`; a `lattice-syntax::indent` engine — Helix-dialect
+`indents.scm` evaluator plus a lexical bridge — with queries for **17 of 19**
+bundled languages; predictive indent on `<CR>` / `o` / `O`; electric reindent on
+closing tokens; the `=` operator; and the `lattice-format` crate behind
+`:format` and format-on-save. Per-language conventions (Go's tabs, YAML's
+spaces, the prettier family's 2) ride `Mode::options()`.
+
+**The design's load-bearing claim** is that "auto-indent" is three features with
+three latency budgets, and the budget dictates the source. Predictive and
+electric indent sit on the keystroke path, so neither an LSP round-trip nor a
+process spawn is available; reindenting existing text is user-initiated, and
+that is where external tools belong. `=` therefore stays vim's indent-only
+operator and is deliberately NOT formatter-backed — an operator whose effect is
+unbounded rewriting cannot compose with motions.
+
+**Three findings changed the design mid-build**, each recorded in the fragment:
+
+1. **Incomplete code defeats the tree entirely.** Tree-sitter renders half-typed
+   code as a bare `ERROR` node with no block structure, so the engine answers
+   *zero* for a cursor plainly inside a function. It now declines and the
+   lexical bridge answers. Consequence: the tree path does **not** win while
+   typing — it wins on complete code (`=`, `<CR>` inside written code,
+   string/comment awareness).
+2. **The bench deleted a branch.** A synchronous "catch-up" reparse for stale
+   snapshots measured 7.6 ms at 64 KB / 15.4 ms at 129 KB and would have
+   returned `None` anyway (see 1). Removed; `benchmarks.md` §IN.2 keeps the
+   numbers as a *negative* result so it is not re-added.
+3. **A perf bug of a shape this repo has hit before.** The indent query first
+   ran over the whole file (2.57 ms at 3200 lines), then its scope lookup used a
+   linear sibling scan — the same `0..child_count` walk `benchmarks.md` records
+   under TS.1. Now flat at ~9.5 µs.
+
+**Open, so the plan is NOT archived:** `equalprg` (⛔ needs a range-filter seam
+that does not exist; `IndentResolver` answers "how deep is line N", not
+"rewrite this text") and **IN.10 LSP `onTypeFormatting` (⛔ dropped**, not
+deferred — same wall as electric reindent plus an async round-trip and a
+protocol that permits document-wide edits). `sql` and `markdown` ship no
+`indents.scm` by decision.
 
 **Multibuffer-provider review + follow-on work (2026-08-10 → 08-12).**
 A review of the pending provider catalogue

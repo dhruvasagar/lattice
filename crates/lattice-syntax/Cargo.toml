@@ -17,6 +17,7 @@ doctest = false
 [dependencies]
 arc-swap = { workspace = true }
 lattice-cells = { path = "../lattice-cells" }
+lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }
 # N.1.4b (2026-06-10): `impl lattice_grammar::ScopeResolver for
 # SyntaxSnapshot` bridges the syntax tree into the grammar

@@ -128,14 +128,15 @@ pub use core_options::{
     CompletionExtraCommitChars, CompletionGhostText, CompletionSourceBufferWordsPriority,
     CompletionSourceLspPriority, CompletionSourcePathPriority, CompletionSourceSnippetPriority,
     CompletionSourceTreeSitterPriority, CursorLine, DiagnosticsInlineOption,
-    DiagnosticsMinSeverityOption, FoldEnable, FoldMethodOption, HelpAproposDisplay,
-    HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay, HoverDisplay, IgnoreCase,
-    LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
+    DiagnosticsMinSeverityOption, ElectricIndent, EqualPrg, ExpandTab, FoldEnable,
+    FoldMethodOption, FormatOnSave, FormatPrg, HelpAproposDisplay, HelpDescribeDisplay,
+    HelpListDisplay, HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
+    LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
     ModelinePadding, ModelineRight, ModelineSeparator, NoFile, Number, PickerResultDisplay,
-    ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff, SignColumnOption,
-    SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines,
-    TransientMaxRows, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab,
-    WhitespaceTrailing, Wrap,
+    ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
+    SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits,
+    TerminalScrollbackLines, TransientMaxRows, Whitespace, WhitespaceEol, WhitespaceLeading,
+    WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

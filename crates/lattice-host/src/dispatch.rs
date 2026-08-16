@@ -31218,6 +31218,7 @@ impl Editor {
     }
 
     pub fn rebuild_option_cache(&mut self) {
+        use lattice_config::core_options::{IndentGuidesActive, IndentGuidesChar};
         use lattice_config::{
             CompletionAutoInsertSingle, CursorLine, FoldEnable, FoldMethodOption, IgnoreCase,
             Number, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff,
@@ -31262,6 +31263,8 @@ impl Editor {
             whitespace_leading: glyph(&self.resolved_option::<WhitespaceLeading>(buffer)),
             whitespace_space: glyph(&self.resolved_option::<WhitespaceSpace>(buffer)),
             whitespace_eol: glyph(&self.resolved_option::<WhitespaceEol>(buffer)),
+            indent_guide_char: glyph(&self.resolved_option::<IndentGuidesChar>(buffer)),
+            indent_guide_active: *self.resolved_option::<IndentGuidesActive>(buffer),
             terminal_esc_exits: *self.resolved_option::<TerminalEscExits>(buffer),
             scrollbind: *self.resolved_option::<Scrollbind>(buffer),
         };

@@ -20,9 +20,9 @@
 //! `docs/dev/architecture/theme-system.md`.
 
 pub use lattice_theme::{
-    BuiltinElementIds, Color, ColorRef, ElementInfo, ElementName, ElementOwner, FamilyId,
-    FontScale, InMemoryThemeRegistry, Modifiers, NamedColor, NamedTheme, ResolvedTheme, Style,
-    StyleSpec, ThemeRegistry, ThemeRegistryHandle, Weight, builtin_themes, parse_color,
+    BuiltinElementIds, Color, ColorRef, ElementId, ElementInfo, ElementName, ElementOwner,
+    FamilyId, FontScale, InMemoryThemeRegistry, Modifiers, NamedColor, NamedTheme, ResolvedTheme,
+    Style, StyleSpec, ThemeRegistry, ThemeRegistryHandle, Weight, builtin_themes, parse_color,
 };
 
 // DX.2 (BC.6 diff extraction): the syntax->theme-element style bridge

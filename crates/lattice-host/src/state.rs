@@ -140,6 +140,15 @@ pub struct OptionCache {
     pub whitespace_leading: Option<char>,
     pub whitespace_space: Option<char>,
     pub whitespace_eol: Option<char>,
+    /// IG.3: `display.indent-guides.char`, the glyph the TUI substitutes
+    /// into a guide column. `None` (empty string) ⇒ the TUI draws no
+    /// guides. The GPU peer paints a rule and ignores this.
+    pub indent_guide_char: Option<char>,
+    /// IG.3: `display.indent-guides.active` — draw the block enclosing
+    /// the cursor in its own style. Whether guides exist at all is
+    /// `display.indent-guides`, which is resolved by the worker (it
+    /// changes what gets built, not how it is painted).
+    pub indent_guide_active: bool,
     /// Terminal-mode T2.b.0 (2026-05-25): cached
     /// `terminal.esc-exits`. Default `true` so test fixtures
     /// using `Editor::default()` (no `init_from_linkme`) get
@@ -180,6 +189,8 @@ impl Default for OptionCache {
             whitespace_leading: Some('·'),
             whitespace_space: None,
             whitespace_eol: None,
+            indent_guide_char: Some('\u{2502}'),
+            indent_guide_active: true,
             terminal_esc_exits: true,
             scrollbind: false,
             content_left_pad: 0,

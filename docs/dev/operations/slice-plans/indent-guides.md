@@ -11,7 +11,7 @@
 | IG.0 | Design fragment + this plan | ✅ |
 | IG.1 | `lattice-core::indent_blocks` — the shared block walk | ✅ |
 | IG.2 | `IndentGuides` substrate; per-pane publish; options; theme | ✅ |
-| IG.3 | TUI paint pre-pass | 📝 |
+| IG.3 | TUI paint pre-pass | ✅ |
 | IG.4 | GPUI quad pass | 📝 |
 | IG.5 | Migrate `compute_indent_folds` onto the shared walk | 📝 |
 | IG.6 | Bench, ledger, user docs, mode opt-outs | 📝 |
@@ -116,12 +116,23 @@ action dispatched); covered-window indexing at a non-zero `covered_start`;
 every published mark lands on a blank column (the invariant, asserted against
 the built `DisplayLine`).
 
-### IG.3 — TUI 📝
+### IG.3 — TUI ✅
 
-`crates/lattice-ui-tui/src/render.rs`: `apply_indent_guides(spans, marks,
-active, glyph, styles)` in the `apply_whitespace_decoration` position, before
-`clip_spans_horizontally`. Padding past EOL for blank rows; background
-preserved.
+`crates/lattice-ui-tui/src/render.rs`: `apply_indent_guides` +
+`IndentGuideStyle`, in the `apply_whitespace_decoration` position — but
+**after** `clip_spans_horizontally`, not before as planned.
+
+The clip and `truncate_spans_to_width` measure in BYTES (their own comment
+calls the display-width model a punt). A guide glyph is three bytes, so
+substituting ahead of the clip shortens every indented line by two columns per
+guide. Running after means the pass sees the columns the user sees; marks are
+translated by `leftcol` and dropped outside the body width, so guides pan with
+the text. A test pins the non-shortening.
+
+The gate is `body_is_display_row`, not the existing `body_from_cells`. The
+latter is `!spans.is_empty()` and so is false for a blank line whose display
+row was built perfectly well — which is exactly the row a guide has to carry
+through.
 
 Tests: glyph at the expected columns for a nested fixture; never over text
 (assert the character replaced was blank); blank-line pass-through; active

@@ -172,7 +172,7 @@ fn display_run_to_style(
 /// Convert a packed `0xRRGGBB` `u32` colour to a ratatui
 /// `Color::Rgb`. Centralised so the bit layout is one place to
 /// update if the cell-grid ever extends to RGBA.
-fn rgb_u32_to_color(rgb: u32) -> Color {
+pub(crate) fn rgb_u32_to_color(rgb: u32) -> Color {
     let r = ((rgb >> 16) & 0xff) as u8;
     let g = ((rgb >> 8) & 0xff) as u8;
     let b = (rgb & 0xff) as u8;

@@ -4387,6 +4387,26 @@ pub(crate) fn compose_pane_lines(
         .unwrap_or_else(|| {
             std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
         });
+    // IG.3: this pane's indentation guides, loaded once per frame beside
+    // its `DisplayMatrix` and for the same reason — one HashMap probe
+    // per pane, not one per line (paramount #1). The layer is published
+    // in the same worker pass as the matrix above, so it needs no
+    // staleness check of its own: if the matrix is current, so is this.
+    let indent_guides = cells_rs
+        .indent_guides_for_pane(ctx.pane_id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| std::sync::Arc::new(lattice_host::indent_guides::IndentGuides::empty()));
+    // The guide glyph and the two styles, resolved once. The active
+    // block is picked per frame from the cursor row the pane already
+    // holds — that is what keeps a cursor move off the worker entirely
+    // and the highlight free of lag.
+    let indent_guide_style = IndentGuideStyle::resolve(
+        view.app,
+        &indent_guides,
+        ctx.cursor_line,
+        &cells_rs.resolved_theme,
+        &cells_rs.theme_ids,
+    );
     // T.5.b: the body-compose path resolves syntax styles through
     // `cells_rs.resolved_theme` + `cells_rs.theme_ids` (the resolved
     // table) rather than the retired `Theme::syntax_style`.
@@ -4597,6 +4617,14 @@ pub(crate) fn compose_pane_lines(
         // spaces and desyncs (cell spans no longer align 1:1 with
         // source bytes once tabs/markers expand).
         let mut body_from_cells = false;
+        // IG.3: whether this row's body came from a display row at all.
+        //
+        // Distinct from `body_from_cells`, which is `!spans.is_empty()` and
+        // therefore ALSO false for a blank line whose display row was built
+        // perfectly well. Guides need the wider predicate: a blank line
+        // inside a block is exactly the row a guide has to carry through,
+        // and gating on emptiness would drop it.
+        let mut body_is_display_row = false;
         let mut body = if is_messages_buffer {
             messages_line_spans(&line_text, &app.theme, buffer_w)
         } else {
@@ -4691,6 +4719,8 @@ pub(crate) fn compose_pane_lines(
                 )
             } else {
                 body_from_cells = !spans.is_empty();
+                body_is_display_row =
+                    !display_stale && display_matrix.row_at_source_line(line_idx).is_some();
                 clip_spans_horizontally(spans, leftcol_off, body_trunc_w)
             }
         };
@@ -4708,6 +4738,35 @@ pub(crate) fn compose_pane_lines(
         if app.ad().option_cache.show_whitespace && !body_from_cells {
             let decoration = WhitespaceDecoration::from_app(app);
             body = apply_whitespace_decoration(body, &line_text, &decoration);
+        }
+        // IG.3: indentation guides, AFTER the horizontal clip.
+        //
+        // After, not before, because `clip_spans_horizontally` and
+        // `truncate_spans_to_width` measure in BYTES (their own comment
+        // calls the display-width model a punt). A guide glyph is three
+        // bytes, so substituting it ahead of the clip would shorten every
+        // indented line by two columns per guide — a visible regression
+        // bought for nothing, since the glyph occupies one column either
+        // way. Running after means the pass sees the same columns the
+        // user sees, and `leftcol` pans the guides with the text.
+        //
+        // Still before the overlay remap below: that maps source byte →
+        // body COLUMN → body byte, and guides change no column, exactly
+        // as whitespace markers change none.
+        //
+        // Cell-derived bodies only. The plain-text fallback has not
+        // expanded tabs, so a display column does not index it and a
+        // guide would land wrong on every tab-indented line. A fallback
+        // frame therefore shows no guides — the same degradation it
+        // already makes for syntax colour, lasting exactly as long.
+        if body_is_display_row {
+            body = apply_indent_guides(
+                body,
+                indent_guides.marks_for_line(line_idx),
+                &indent_guide_style,
+                leftcol_off,
+                body_trunc_w,
+            );
         }
         let line_len = line_text.len();
         // W.4.t.1: the overlay ranges below carry SOURCE-byte offsets,
@@ -6396,6 +6455,154 @@ pub(crate) fn apply_whitespace_decoration(
         let mut g = String::new();
         g.push(eol_glyph);
         out.push(Span::styled(g, d.style_normal));
+    }
+    out
+}
+
+/// IG.3: the resolved indentation-guide paint state for one pane, for one
+/// frame.
+///
+/// Built once per pane per frame — the glyph and both styles are constant
+/// across the viewport, and the active block is picked from the cursor row
+/// the pane already holds. That pick is the reason the worker publishes block
+/// *extents* rather than a precomputed "is active" flag: moving the cursor
+/// restyles one column here, and costs the worker nothing.
+pub(crate) struct IndentGuideStyle {
+    /// `None` ⇒ paint nothing (guides off, or the glyph set to empty).
+    glyph: Option<char>,
+    normal: TuiStyle,
+    active: TuiStyle,
+    /// Index into the layer's `blocks`, or `None` when the cursor is at
+    /// top level or `display.indent-guides.active` is off.
+    active_block: Option<u16>,
+}
+
+impl IndentGuideStyle {
+    pub(crate) fn resolve(
+        app: &crate::app::App,
+        guides: &lattice_host::indent_guides::IndentGuides,
+        cursor_line: u32,
+        resolved: &lattice_host::ui::theme::ResolvedTheme,
+        ids: &lattice_host::ui::theme::BuiltinElementIds,
+    ) -> Self {
+        let oc = &app.ad().option_cache;
+        let to_style = |e: lattice_host::ui::theme::ElementId| {
+            let st = resolved.get(e);
+            let mut out = TuiStyle::default();
+            if let Some(fg) = st.fg {
+                out = out.fg(crate::cells_render::rgb_u32_to_color(fg.to_rgb_u32(0)));
+            }
+            if st.modifiers.dim {
+                out = out.add_modifier(Modifier::DIM);
+            }
+            out
+        };
+        Self {
+            glyph: oc.indent_guide_char,
+            normal: to_style(ids.indent_guide),
+            active: to_style(ids.indent_guide_active),
+            active_block: if oc.indent_guide_active {
+                guides.active_block(cursor_line)
+            } else {
+                None
+            },
+        }
+    }
+
+    fn style_for(&self, block: u16) -> TuiStyle {
+        if self.active_block == Some(block) {
+            self.active
+        } else {
+            self.normal
+        }
+    }
+}
+
+/// Substitute the guide glyph into every column the worker marked.
+///
+/// Runs AFTER the horizontal clip, so `marks` (absolute display columns) are
+/// translated by `leftcol` and dropped outside `[leftcol, leftcol + width)`.
+/// The clip measures in bytes — see the call site — so substituting a
+/// three-byte glyph before it would shorten the line; doing it after means the
+/// pass and the user see the same columns.
+///
+/// No "is this column blank" check: the worker applies
+/// [`lattice_core::indent_blocks::IndentBlock::paints_on`] before publishing,
+/// so a mark is only ever emitted for a column that holds a space.
+/// Re-deriving that here would be a second implementation of the rule, and
+/// the one that disagreed would be the one painting over code.
+///
+/// Where a guide and a `:set list` leading-whitespace marker want the same
+/// cell, the guide wins — it carries structure, the marker only says "space".
+pub(crate) fn apply_indent_guides(
+    spans: Vec<Span<'static>>,
+    marks: &[lattice_host::indent_guides::GuideMark],
+    style: &IndentGuideStyle,
+    leftcol: u32,
+    width: u32,
+) -> Vec<Span<'static>> {
+    let Some(glyph) = style.glyph else {
+        return spans;
+    };
+    if marks.is_empty() {
+        return spans;
+    }
+    // Body-local columns. `width` is `u32::MAX` under soft wrap, where the
+    // body is deliberately left unclipped for the segmenter.
+    let visible = |m: &lattice_host::indent_guides::GuideMark| -> Option<u32> {
+        let col = (m.col as u32).checked_sub(leftcol)?;
+        (col < width).then_some(col)
+    };
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + marks.len() * 2);
+    let mut col: u32 = 0;
+    let mut next = 0usize;
+    for span in spans {
+        let span_style = span.style;
+        let content = span.content.into_owned();
+        let mut accum = String::new();
+        for ch in content.chars() {
+            // Marks arrive in ascending column order per row, so one forward
+            // cursor covers the walk. Marks scrolled off the left are skipped
+            // by the same step.
+            while next < marks.len() && visible(&marks[next]).is_none_or(|c| c < col) {
+                next += 1;
+            }
+            if next < marks.len() && visible(&marks[next]) == Some(col) {
+                if !accum.is_empty() {
+                    out.push(Span::styled(std::mem::take(&mut accum), span_style));
+                }
+                out.push(Span::styled(
+                    glyph.to_string(),
+                    style.style_for(marks[next].block),
+                ));
+                next += 1;
+            } else {
+                accum.push(ch);
+            }
+            col = col.saturating_add(1);
+        }
+        if !accum.is_empty() {
+            out.push(Span::styled(accum, span_style));
+        }
+    }
+    // Guides past the end of the rendered body. Only a blank row can reach
+    // here: `paints_on` requires the column to be left of where the line's
+    // text starts, so a line with content is always long enough to hold its
+    // own guides. Padding a blank row is what carries a guide through the
+    // blank lines inside a block.
+    for mark in &marks[next..] {
+        let Some(target) = visible(mark) else {
+            continue;
+        };
+        if target < col {
+            continue;
+        }
+        if target > col {
+            out.push(Span::raw(" ".repeat((target - col) as usize)));
+            col = target;
+        }
+        out.push(Span::styled(glyph.to_string(), style.style_for(mark.block)));
+        col = col.saturating_add(1);
     }
     out
 }
@@ -8591,6 +8798,165 @@ mod tests {
         assert_eq!(segs.len(), lattice_cells::wrap_segments(10, 4) as usize);
     }
 
+    // ---- IG.3: indentation-guide pre-pass ----
+
+    fn guide_style() -> IndentGuideStyle {
+        IndentGuideStyle {
+            glyph: Some('\u{2502}'),
+            normal: TuiStyle::default().fg(Color::DarkGray),
+            active: TuiStyle::default().fg(Color::White),
+            active_block: None,
+        }
+    }
+
+    fn marks(cols: &[u16]) -> Vec<lattice_host::indent_guides::GuideMark> {
+        cols.iter()
+            .enumerate()
+            .map(|(i, c)| lattice_host::indent_guides::GuideMark {
+                col: *c,
+                block: i as u16,
+            })
+            .collect()
+    }
+
+    /// Apply guides the way the compose loop does with no horizontal scroll.
+    fn guides_on(body: &str, cols: &[u16], style: &IndentGuideStyle) -> Vec<Span<'static>> {
+        let spans = if body.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::raw(body.to_string())]
+        };
+        apply_indent_guides(spans, &marks(cols), style, 0, u32::MAX)
+    }
+
+    #[test]
+    fn indent_guides_noop_without_marks_or_glyph() {
+        let input = vec![Span::raw("        work();".to_string())];
+        let out = apply_indent_guides(input.clone(), &[], &guide_style(), 0, u32::MAX);
+        assert_eq!(spans_text(&out), spans_text(&input));
+
+        let mut off = guide_style();
+        off.glyph = None;
+        let out = apply_indent_guides(input.clone(), &marks(&[0, 4]), &off, 0, u32::MAX);
+        assert_eq!(spans_text(&out), spans_text(&input), "empty glyph disables");
+    }
+
+    #[test]
+    fn indent_guides_substitute_at_marked_columns() {
+        let out = guides_on("        work();", &[0, 4], &guide_style());
+        let rendered = spans_text(&out);
+        assert_eq!(rendered, "\u{2502}   \u{2502}   work();");
+        // Width is preserved: one char in, one char out. A guide that
+        // widened the row would shift every column right of it, and the
+        // overlay remap downstream indexes by column.
+        assert_eq!(rendered.chars().count(), "        work();".chars().count());
+    }
+
+    #[test]
+    fn indent_guides_never_replace_a_non_blank_character() {
+        // The producer only marks blank columns, so this asserts the
+        // renderer honours that rather than re-deriving it: every char the
+        // pass replaced must have been a space.
+        let line = "        work();";
+        let out = guides_on(line, &[0, 4], &guide_style());
+        for (i, ch) in spans_text(&out).chars().enumerate() {
+            if ch == '\u{2502}' {
+                assert_eq!(
+                    line.chars().nth(i),
+                    Some(' '),
+                    "guide at col {i} replaced a non-blank"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indent_guides_pad_a_blank_row() {
+        // The blank-line-inside-a-block case: nothing to substitute into,
+        // so the pass pads out to each marked column.
+        let out = guides_on("", &[0, 4], &guide_style());
+        assert_eq!(spans_text(&out), "\u{2502}   \u{2502}");
+    }
+
+    #[test]
+    fn indent_guides_pad_from_a_short_body() {
+        // A body shorter than its marks: substitute what exists, pad the
+        // rest out to the absolute column each guide belongs at.
+        let out = guides_on("  ", &[0, 4], &guide_style());
+        assert_eq!(spans_text(&out), "\u{2502}   \u{2502}");
+    }
+
+    #[test]
+    fn indent_guides_style_the_active_block_apart() {
+        let mut style = guide_style();
+        style.active_block = Some(1); // marks(&[0, 4]) gives block 1 col 4
+        let out = guides_on("        work();", &[0, 4], &style);
+        let guides: Vec<TuiStyle> = out
+            .iter()
+            .filter(|s| s.content.as_ref() == "\u{2502}")
+            .map(|s| s.style)
+            .collect();
+        assert_eq!(guides.len(), 2);
+        assert_eq!(guides[0], style.normal, "outer guide stays normal");
+        assert_eq!(guides[1], style.active, "enclosing block is highlighted");
+    }
+
+    #[test]
+    fn indent_guides_survive_a_multi_span_body() {
+        // Syntax colouring splits the leading whitespace across runs; the
+        // walk is by column, not by span, so the guide still lands.
+        let body = vec![
+            Span::styled("    ".to_string(), TuiStyle::default()),
+            Span::styled("    ".to_string(), TuiStyle::default().fg(Color::Blue)),
+            Span::styled("work();".to_string(), TuiStyle::default().fg(Color::Red)),
+        ];
+        let out = apply_indent_guides(body, &marks(&[0, 4]), &guide_style(), 0, u32::MAX);
+        assert_eq!(spans_text(&out), "\u{2502}   \u{2502}   work();");
+    }
+
+    #[test]
+    fn indent_guides_replace_whitespace_markers_at_their_column() {
+        // `:set list` has already decorated the indentation. A guide and a
+        // leading-whitespace marker want the same cell; the guide wins,
+        // because it carries structure and the marker only says "space".
+        let out = guides_on("\u{b7}\u{b7}\u{b7}\u{b7}work();", &[0], &guide_style());
+        assert_eq!(spans_text(&out), "\u{2502}\u{b7}\u{b7}\u{b7}work();");
+    }
+
+    #[test]
+    fn indent_guides_pan_with_leftcol() {
+        // Guides run after the clip, so a horizontally scrolled body gets
+        // its marks translated: the column-4 guide lands at body column 0
+        // and the column-0 guide has scrolled off.
+        let clipped =
+            clip_spans_horizontally(vec![Span::raw("        work();".to_string())], 4, 40);
+        let out = apply_indent_guides(clipped, &marks(&[0, 4]), &guide_style(), 4, 40);
+        assert_eq!(spans_text(&out), "\u{2502}   work();");
+    }
+
+    #[test]
+    fn indent_guides_do_not_shorten_the_clipped_body() {
+        // The regression this ordering exists to prevent: the clip measures
+        // in BYTES, so substituting three-byte glyphs ahead of it would eat
+        // two columns of real text per guide.
+        let line = "        work();  tail";
+        let clipped = clip_spans_horizontally(vec![Span::raw(line.to_string())], 0, 21);
+        let out = apply_indent_guides(clipped, &marks(&[0, 4]), &guide_style(), 0, 21);
+        assert_eq!(
+            spans_text(&out).chars().count(),
+            21,
+            "every column the clip kept survives the guide pass"
+        );
+        assert!(spans_text(&out).ends_with("tail"));
+    }
+
+    #[test]
+    fn indent_guides_outside_the_viewport_are_dropped() {
+        // A guide past the right edge must not pad the row out past it.
+        let out = apply_indent_guides(Vec::new(), &marks(&[0, 40]), &guide_style(), 0, 8);
+        assert_eq!(spans_text(&out), "\u{2502}");
+    }
+
     // ---- M.7.3.b: whitespace decoration pre-pass ----
 
     fn ws_decoration_default() -> WhitespaceDecoration {
@@ -9976,6 +10342,12 @@ mod tests {
         // carry a fifth NUMBERED row — the phantom line ropey reports
         // for the terminating `\n`. It is now the second `~` filler,
         // which is what vim shows and what the buffer actually has.
+        // IG.3: lines 2 and 3 now open with an indentation guide — the
+        // `\u{2502}` span in `indent.guide`'s resolved fg, followed by the
+        // remaining three columns of their indent. This is the pin doing
+        // its job: guides are on by default, so every indented line in
+        // every buffer gains one, and that change had to be looked at
+        // rather than absorbed.
         let mut app = app_with("fn main() {\n    let x = 1;\n    foo();\n}\n", 6);
         app.toggle_mode_by_name("current-line-highlight-mode");
         // Visual selection on line 1 (cols 4..=6), hlsearch + current
@@ -9994,7 +10366,7 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 6, 40);
         let fp = compose_fingerprint(&lines);
-        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"    \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
+        let expected = "\" \"/None/None/NONE|\" \"/None/None/NONE|\" 1   \"/Some(DarkGray)/None/NONE|\"fn main() {\"/Some(Rgb(205, 214, 244))/Some(Indexed(236))/NONE|\"                      \"/None/Some(Indexed(236))/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 2   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"let\"/None/Some(Rgb(69, 71, 90))/NONE|\" x = 1;\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 3   \"/Some(DarkGray)/None/NONE|\"\u{2502}\"/Some(Rgb(108, 112, 134))/None/NONE|\"   \"/Some(Rgb(205, 214, 244))/None/NONE|\"foo\"/None/Some(Rgb(108, 90, 30))/NONE|\"();\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" \"/None/None/NONE|\" 4   \"/Some(DarkGray)/None/NONE|\"}\"/Some(Rgb(205, 214, 244))/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE\n\" \"/None/None/NONE|\" ~   \"/Some(DarkGray)/None/NONE";
         assert_eq!(fp, expected, "active-pane compose output changed");
     }
 

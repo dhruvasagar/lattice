@@ -16923,7 +16923,7 @@ impl Editor {
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_options_and_folds_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // M.5.2: when a major activates (whether by direct call,
         // `:<major-name>` toggle, or buffer-creation path), run the
@@ -17002,7 +17002,7 @@ impl Editor {
             );
         }
         self.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_options_and_folds_for_buffer(buffer_id);
         self.recompute_active_completion_sources_for(buffer_id);
         // Symmetric to `activate_mode_by_id`: drain option mutations
         // the mode emitted in its `on_deactivate` (e.g.
@@ -17151,7 +17151,7 @@ impl Editor {
             }
         }
         self.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_options_and_folds_for_buffer(buffer_id);
         // CSM.3: keep `ActiveCompletionSources` in lockstep with the
         // active-modes set.
         self.recompute_active_completion_sources_for(buffer_id);
@@ -26359,7 +26359,7 @@ impl Editor {
             lattice_mode::CapabilitySet::empty(),
         );
         self.active_modes.insert(buffer_id, active);
-        self.recompute_options_for_buffer(buffer_id);
+        self.recompute_options_and_folds_for_buffer(buffer_id);
         Vec::new()
     }
 
@@ -31386,6 +31386,38 @@ impl Editor {
         // buffer's resolved options.
         if buffer == self.document_buffer_id {
             self.rebuild_option_cache();
+        }
+    }
+
+    /// [`Self::recompute_options_for_buffer`] plus the fold recompute a
+    /// `foldmethod` change implies.
+    ///
+    /// Every caller of this changes which `Mode::options()` contributions
+    /// apply to `buffer`, and `foldmethod` is one a mode may legitimately
+    /// contribute (`lsp-folding-mode` → `Lsp`, `magit-hunk-mode` →
+    /// `Manual`). Nothing else notices it: the
+    /// `"foldmethod" => recompute_folds()` arm lives in
+    /// [`Self::drain_option_changes`], which only ever sees options a mode
+    /// mutated IMPERATIVELY from `on_activate`. A declarative contribution
+    /// emits no `OptionChanged`, so without this the fold set keeps
+    /// whatever the previous method produced until something unrelated
+    /// forces a rebuild.
+    ///
+    /// Comparing the RESOLVED value rather than the global one is the
+    /// point: that is what makes a per-buffer contribution take effect on
+    /// the buffer holding it and nowhere else. Unchanged resolution costs
+    /// one comparison, so the common activation path pays nothing.
+    fn recompute_options_and_folds_for_buffer(&mut self, buffer: BufferId) {
+        use lattice_config::core_options::FoldMethodOption;
+        let before = self
+            .resolved_option_opt::<FoldMethodOption>(buffer)
+            .map(|v| *v);
+        self.recompute_options_for_buffer(buffer);
+        let after = self
+            .resolved_option_opt::<FoldMethodOption>(buffer)
+            .map(|v| *v);
+        if before != after {
+            self.recompute_folds_for_buffer(buffer);
         }
     }
 
@@ -47158,6 +47190,64 @@ mod tests {
         assert_eq!(
             on_disk, before,
             "the default must not run a formatter on save"
+        );
+    }
+
+    // ---- 2026-08-16: mode-contributed `foldmethod` ----
+
+    /// A mode that contributes `foldmethod` through `Mode::options()` must
+    /// get the fold set rebuilt for it, and only on its own buffer.
+    ///
+    /// The declarative path emits no `OptionChanged`, so the
+    /// `"foldmethod" => recompute_folds()` arm in `drain_option_changes`
+    /// never sees it — that arm only catches options a mode mutated
+    /// imperatively from `on_activate`. Before the activate/deactivate
+    /// seam compared the RESOLVED value, a mode could change a buffer's
+    /// fold method and leave the previous method's folds on screen.
+    #[test]
+    fn mode_contributed_foldmethod_resolves_per_buffer() {
+        use lattice_config::core_options::FoldMethodOption;
+        let mut editor = rust_editor("fn f() {\n    x();\n}\n");
+        let active = editor.active_buffer_id();
+
+        // Baseline: the registered default, resolved, on this buffer.
+        assert_eq!(
+            editor
+                .resolved_option_opt::<FoldMethodOption>(active)
+                .map(|v| *v),
+            Some(lattice_core::FoldMethod::Manual),
+        );
+
+        // A global write is what `foldmethod` must NOT be doing from a
+        // mode — pinned here because that is the bug this pairs with:
+        // a global set reaches every buffer, including ones the mode was
+        // never activated on.
+        editor.do_set("foldmethod=indent");
+        let other = lattice_core::BufferId::default();
+        assert_eq!(
+            editor
+                .resolved_option_opt::<FoldMethodOption>(other)
+                .map(|v| *v),
+            Some(lattice_core::FoldMethod::Indent),
+            "a GLOBAL write reaches a buffer that never asked for it"
+        );
+
+        // A buffer-local write does not.
+        editor.do_set("foldmethod=manual");
+        let _ = editor.do_set_local("foldmethod=indent");
+        assert_eq!(
+            editor
+                .resolved_option_opt::<FoldMethodOption>(active)
+                .map(|v| *v),
+            Some(lattice_core::FoldMethod::Indent),
+            "the buffer that asked for it gets it"
+        );
+        assert_eq!(
+            editor
+                .resolved_option_opt::<FoldMethodOption>(other)
+                .map(|v| *v),
+            Some(lattice_core::FoldMethod::Manual),
+            "and no other buffer does"
         );
     }
 

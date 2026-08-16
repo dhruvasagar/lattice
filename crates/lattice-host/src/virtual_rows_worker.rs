@@ -705,6 +705,60 @@ mod tests {
         assert_eq!(decision, WorkerDecision::CacheHit);
     }
 
+    /// The worker must CONVERGE: repeated ticks with unchanged inputs
+    /// have to reach `CacheHit`.
+    ///
+    /// A non-CacheHit decision fires `paint_request`, which republishes
+    /// render state, which wakes this worker again. A decision that never
+    /// settles is a spin loop — reported 2026-08-16 as ~500 mutual
+    /// cells/virtual-rows ticks per second that never stopped after `G`.
+    ///
+    /// Covers the no-provider case deliberately: an ordinary buffer has no
+    /// virtual-row providers at all, so "nothing to do" is the path that
+    /// must be quietest.
+    #[test]
+    fn repeated_ticks_with_no_providers_converge_to_cache_hit() {
+        let mut state = VirtualRowsWorkerState::new();
+        let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+        let rs = rs_with_single_pane("a\nb\nc\n", cell);
+        let reg = VirtualRowProviderRegistry::new();
+        // Tick 1 legitimately publishes (an empty matrix) and seeds the
+        // fingerprint; it is every tick AFTER that which must be quiet.
+        let _ = recompute(&mut state, &rs, &reg);
+        for tick in 2..=5 {
+            let d = recompute(&mut state, &rs, &reg);
+            assert_eq!(
+                d,
+                WorkerDecision::CacheHit,
+                "tick {tick} with no providers must be quiet, got {d:?}"
+            );
+        }
+    }
+
+    /// Same requirement WITH a provider: the first tick builds, every
+    /// later one with an unchanged provider version is quiet.
+    #[test]
+    fn repeated_ticks_with_a_stable_provider_converge_to_cache_hit() {
+        let mut state = VirtualRowsWorkerState::new();
+        let cell = Arc::new(ArcSwap::from_pointee(VirtualRowMatrix::empty()));
+        let rs = rs_with_single_pane("a\nb\nc\n", cell);
+        let reg = VirtualRowProviderRegistry::new();
+        reg.register(
+            ACTIVE,
+            Arc::new(MockProvider::new(1, vec![row(0, AnchorPosition::Above)]))
+                as Arc<dyn VirtualRowProvider>,
+        );
+        let _ = recompute(&mut state, &rs, &reg);
+        for tick in 2..=5 {
+            let d = recompute(&mut state, &rs, &reg);
+            assert_eq!(
+                d,
+                WorkerDecision::CacheHit,
+                "tick {tick} with a stable provider must be quiet, got {d:?}"
+            );
+        }
+    }
+
     /// D.4.d.2.1.c: a pane whose `snapshot` is `None` clears
     /// that pane's matrix (transient buffer-close race
     /// behaviour). Aggregate decision is `Clear` since no

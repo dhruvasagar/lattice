@@ -5724,6 +5724,72 @@ mod tests {
         );
     }
 
+    /// The worker must CONVERGE: repeated ticks with unchanged inputs
+    /// have to reach `CacheHit`, because a non-CacheHit decision fires
+    /// `paint_request`, which republishes, which wakes the worker again.
+    /// A decision that never settles is a spin loop that burns a core for
+    /// as long as the editor is open.
+    ///
+    /// Reported 2026-08-16: `G` to the end of a file put the cells and
+    /// virtual-rows workers into ~500 mutual ticks/second that never
+    /// stopped. Scrolled to the END is the interesting position — that is
+    /// where the windowed build's coverage arithmetic is most likely to
+    /// disagree with the viewport it is checked against.
+    #[test]
+    fn repeated_ticks_at_end_of_buffer_converge_to_cache_hit() {
+        let snap = big_snap(5000);
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+
+        // `G`: cursor + scroll at the last screenful of a 5000-line file.
+        let mut pane = pane_inputs(matrix_cell, Some(snap), v(1), 50);
+        pane.scroll = 4950;
+
+        let first = recompute_pane(&pane, ct, &ws);
+        assert!(
+            !matches!(first, WorkerDecision::CacheHit),
+            "the first tick builds"
+        );
+        for tick in 2..=5 {
+            let d = recompute_pane(&pane, ct, &ws);
+            assert!(
+                matches!(d, WorkerDecision::CacheHit),
+                "tick {tick} with unchanged inputs must be a CacheHit, got \
+                 {d:?} — a worker that never settles spins forever"
+            );
+        }
+    }
+
+    /// The same convergence requirement mid-buffer, as the control: if
+    /// this one also fails the problem is not end-of-buffer arithmetic.
+    #[test]
+    fn repeated_ticks_mid_buffer_converge_to_cache_hit() {
+        let snap = big_snap(5000);
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut pane = pane_inputs(matrix_cell, Some(snap), v(1), 50);
+        pane.scroll = 2000;
+
+        let _ = recompute_pane(&pane, ct, &ws);
+        for tick in 2..=5 {
+            let d = recompute_pane(&pane, ct, &ws);
+            assert!(
+                matches!(d, WorkerDecision::CacheHit),
+                "tick {tick} mid-buffer must be a CacheHit, got {d:?}"
+            );
+        }
+    }
+
     // ---- IG.2 indentation guides ----
 
     /// Every guide the worker publishes lands on a blank column of the

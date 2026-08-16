@@ -47581,14 +47581,24 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             let tv = editor.document.text_version();
+            // `tree_reflects`, NOT `text_version() == tv`. The worker
+            // publishes an INTERMEDIATE snapshot first, which carries the
+            // new text version with a tree that has only been byte-shifted
+            // — so polling `text_version` can return before any parse has
+            // run against it. Waiting on the wrong field made this helper
+            // flake under a loaded workspace run, where the intermediate
+            // and the completed parse are further apart: the poll exited
+            // early and the caller's own precondition caught it. That
+            // distinction is the entire subject of the fix these tests
+            // cover, which is a fair place to have got it wrong once.
             if let Some(h) = editor.syntax.as_ref()
-                && h.snapshot().text_version() == tv
+                && h.snapshot().tree_reflects(tv)
             {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("syntax worker never caught up with the document");
+        panic!("syntax worker never completed a parse of the current text");
     }
 
     /// Regression for the 2026-08-16 report: `>>` then immediately `==` did

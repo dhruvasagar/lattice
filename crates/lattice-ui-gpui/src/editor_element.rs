@@ -913,8 +913,22 @@ impl Element for EditorElement {
                 // reservation (`gutter_width + 3 + sign_cells`). If it
                 // undercounts, the code's first column lands inside the
                 // gutter and the line number runs flush against the code.
+                // 2026-08-16: `+ 1` is the LEADING pad. The TUI's
+                // `gutter_width` is `digits + 1 + trailing`, and the host
+                // reserves the same through `cells_worker::gutter_cols`;
+                // this peer had `digits + trailing` and so painted a
+                // gutter one column narrower than the other two. It was
+                // self-consistent while the host under-reserved by the
+                // same column, and stopped being so the moment the host
+                // was corrected — GPUI would have wrapped one column
+                // narrower than its own body. `gutter_cols_matches_the_
+                // gpui_gutter` pins all three together now.
+                // The leading pad exists only alongside the digits —
+                // `gutter_width` is 0 exactly when `number` is off, which
+                // is the same gate the TUI and `gutter_cols` use.
+                let num_pad = usize::from(self.gutter_width > 0);
                 let sign_cells = if self.sign_column { 2 } else { 0 };
-                sign_cells + self.gutter_width + 3
+                sign_cells + self.gutter_width + num_pad + 3
             };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
@@ -3472,7 +3486,8 @@ fn format_gutter_text(
         // [1 (sev) + 1 (diff) when reserved] + gutter_width + 3 (the
         // separator space + fold-marker slot + trailing gap).
         let sign_cells = if sign_column { 2 } else { 0 };
-        return " ".repeat(gutter_width + 3 + sign_cells);
+        let num_pad = usize::from(gutter_width > 0);
+        return " ".repeat(gutter_width + num_pad + 3 + sign_cells);
     }
     // Fold marker now sits AFTER the line number (a separator space,
     // the glyph, then a trailing gap: `… 99 ▸ code`), mirroring the
@@ -3481,7 +3496,8 @@ fn format_gutter_text(
     let fold = meta.fold_marker.map(|(g, _)| g).unwrap_or(' ');
     if !sign_column {
         return format!(
-            "{num:>width$} {fold} ",
+            "{pad}{num:>width$} {fold} ",
+            pad = if show_line_numbers { " " } else { "" },
             num = num,
             width = gutter_width,
             fold = fold,
@@ -3498,9 +3514,10 @@ fn format_gutter_text(
     // :diffoff.
     let diff = meta.diff_sign.map(|(g, _)| g).unwrap_or(' ');
     format!(
-        "{sev}{diff}{num:>width$} {fold} ",
+        "{sev}{diff}{pad}{num:>width$} {fold} ",
         sev = sev,
         diff = diff,
+        pad = if show_line_numbers { " " } else { "" },
         num = num,
         width = gutter_width,
         fold = fold,

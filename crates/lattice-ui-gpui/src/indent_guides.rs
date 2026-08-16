@@ -75,6 +75,48 @@ pub(crate) fn guide_width(active: bool) -> f32 {
 mod tests {
     use super::*;
 
+    /// The host's gutter reservation must equal what THIS peer paints,
+    /// for every combination of the two options that change it.
+    ///
+    /// Lives here rather than in `editor_element` because that module is
+    /// `#[cfg(feature = "window")]` and CI runs this crate's tests with
+    /// the feature off — a parity test that cannot run in the job that
+    /// runs tests is not a parity test. The formula is duplicated in the
+    /// assertion for the same reason, and that is exactly what it is
+    /// checking: if `gutter_chars` changes without this, they diverge.
+    ///
+    /// 2026-08-16: this peer painted `sign + digits + 3`, one column
+    /// narrower than the TUI's `digits + 1 + 3 + sign`. It was
+    /// self-consistent only because the host under-reserved by the same
+    /// column; correcting the host would have left GPUI wrapping one
+    /// column narrower than its own body.
+    #[test]
+    fn gutter_cols_matches_the_gpui_gutter() {
+        for lines in [1u32, 9, 10, 99, 100, 219, 1000, 12345] {
+            for numbers in [true, false] {
+                for signs in [true, false] {
+                    // Mirrors `EditorElement::prepaint`'s `gutter_chars`:
+                    // the digit slot is `to_string().len()`, blank when
+                    // `number` is off, plus the leading pad, the trailing
+                    // three, and the two sign cells when reserved.
+                    let digits = if numbers {
+                        lines.max(1).to_string().len() as u32
+                    } else {
+                        0
+                    };
+                    let num_pad = u32::from(digits > 0);
+                    let painted = digits + num_pad + 3 + if signs { 2 } else { 0 };
+                    let reserved = lattice_host::cells_worker::gutter_cols(lines, numbers, signs);
+                    assert_eq!(
+                        reserved, painted,
+                        "lines={lines} number={numbers} signcolumn={signs}: host \
+                         reserves {reserved}, this peer paints {painted}"
+                    );
+                }
+            }
+        }
+    }
+
     fn marks(cols: &[u16]) -> Vec<GuideMark> {
         cols.iter()
             .enumerate()

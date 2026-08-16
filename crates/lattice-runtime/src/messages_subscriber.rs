@@ -358,6 +358,21 @@ mod tests {
         assert_eq!(evt.record.level, lattice_grammar::EchoLevel::Info);
     }
 
+    /// `*messages*` captures EVERY level the `EnvFilter` admits.
+    ///
+    /// This is a product requirement, not an implementation detail:
+    /// `--log-level debug` exists so debug output can be read **inside
+    /// the editor**, and `--stderr-logs` only ADDS the fmt layer — it
+    /// never diverts events away from here (`install_messages_subscriber`
+    /// installs this layer in both branches).
+    ///
+    /// 2026-08-16: I briefly filtered this layer to INFO+ to break a
+    /// feedback loop (a `debug!` per render became an edit to the rendered
+    /// `*messages*` buffer, which republished, which re-woke the workers).
+    /// That fixed the loop by deleting the feature. The loop is now fixed
+    /// where it belongs — the render cycle no longer logs per render, see
+    /// the worker `run` loops — and this test exists so the shortcut is
+    /// not taken again.
     #[test]
     fn layer_translates_every_level() {
         let ring = Arc::new(Mutex::new(MessagesRing::default()));

@@ -367,14 +367,42 @@ fn highlight_range_multibuffer(
 /// Because the horizontal clamp already derives its body width the
 /// same way, keeping both on this one function is what prevents the
 /// two clamps from drifting again.
-pub(crate) fn gutter_cols(line_count: u32, show_line_numbers: bool) -> u32 {
-    if show_line_numbers {
+pub fn gutter_cols(line_count: u32, show_line_numbers: bool, sign_column: bool) -> u32 {
+    let numbers = if show_line_numbers {
+        // 1 leading pad + digits + trailing pad (separator, fold slot, gap).
         let digits = line_count.max(1).ilog10() + 1;
-        digits + 5
+        digits + 1 + GUTTER_TRAILING_COLS
     } else {
-        4
-    }
+        // `:set nonumber` still paints the trailing cells.
+        GUTTER_TRAILING_COLS
+    };
+    numbers + if sign_column { SIGN_COLS } else { 0 }
 }
+
+/// Cells the gutter always paints after the line number: separator,
+/// fold-glyph slot, trailing gap. Mirrors the TUI's
+/// `GUTTER_TRAILING_PAD`; `gutter_cols_matches_the_tui_gutter` pins them
+/// together from the renderer side, where both are visible.
+pub(crate) const GUTTER_TRAILING_COLS: u32 = 3;
+
+/// Cells the diagnostic-severity and diff-sign columns reserve when
+/// `signcolumn` is on. TWO, not one.
+///
+/// 2026-08-16: this is the whole of the `G`-tail-clip bug. `gutter_cols`
+/// hardcoded `digits + 5`, which accounted for the severity column but
+/// not the diff-sign column added later (D.3.d.1, "reserved
+/// unconditionally so the layout doesn't shift on `:diff`"). The host
+/// therefore computed a soft-wrap width ONE COLUMN WIDER than the
+/// renderer's, so a line whose length fell exactly between the two
+/// widths wrapped on screen but not in the scroll budget. One extra
+/// rendered row pushed the cursor below the last painted line — `G` on a
+/// 219-line file with a 173-char line at a 173-column host width, 172 in
+/// the renderer.
+///
+/// The bug survived a previous fix for the same symptom because that one
+/// made the host's two clamps share `gutter_cols` with each other. They
+/// agreed, and both disagreed with what was painted.
+pub(crate) const SIGN_COLS: u32 = 2;
 
 /// D.4.d.1.b (2026-05-29): per-pane recompute. Same algorithm
 /// the pre-d.1.b `recompute` ran against the top-level

@@ -6525,8 +6525,11 @@ impl Editor {
         // and vertical clamps can never drift on the gutter reservation
         // (the drift that produced the `G` tail-clip regression).
         let total_lines = self.document.snapshot().buffer.content_line_count().max(1);
-        let gutter =
-            crate::cells_worker::gutter_cols(total_lines, self.option_cache.show_line_numbers);
+        let gutter = crate::cells_worker::gutter_cols(
+            total_lines,
+            self.option_cache.show_line_numbers,
+            self.option_cache.sign_column,
+        );
         full.saturating_sub(gutter)
     }
 
@@ -14885,7 +14888,11 @@ impl Editor {
                 .as_ref()
                 .map(|s| s.buffer.content_line_count())
                 .unwrap_or(1);
-            crate::cells_worker::gutter_cols(line_count, self.option_cache.show_line_numbers)
+            crate::cells_worker::gutter_cols(
+                line_count,
+                self.option_cache.show_line_numbers,
+                self.option_cache.sign_column,
+            )
         } else {
             0
         };
@@ -42471,8 +42478,14 @@ mod tests {
         let mut editor =
             crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
-        editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
-        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.option_cache.show_line_numbers = false;
+        // Body width 76, with the pane sized from the LIVE gutter
+        // reservation rather than a literal — it changed on 2026-08-16
+        // when `gutter_cols` was corrected to count the diff-sign column,
+        // and every hardcoded pane width here silently re-tuned the body
+        // by a column instead of failing.
+        editor.pane_tree.active_mut().viewport_width = 76 + gutter_for(&editor);
+        assert_eq!(editor.body_text_width(), 76, "precondition: 76-column body");
         editor.leftcol = 0;
         editor.cursor = lattice_protocol::position::Position::new(0, 200);
         editor.ensure_cursor_horizontally_visible();
@@ -42780,8 +42793,14 @@ mod tests {
         let mut editor =
             crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
-        editor.option_cache.show_line_numbers = false; // body width = 80 - 4 = 76
-        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.option_cache.show_line_numbers = false;
+        // Body width 76, with the pane sized from the LIVE gutter
+        // reservation rather than a literal — it changed on 2026-08-16
+        // when `gutter_cols` was corrected to count the diff-sign column,
+        // and every hardcoded pane width here silently re-tuned the body
+        // by a column instead of failing.
+        editor.pane_tree.active_mut().viewport_width = 76 + gutter_for(&editor);
+        assert_eq!(editor.body_text_width(), 76, "precondition: 76-column body");
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
 
         // 5zl ⇒ leftcol 5; the cursor (col 0, now left of the window)
@@ -42814,8 +42833,10 @@ mod tests {
         let mut editor =
             crate::editor::Editor::boot(lattice_core::Document::from_text("x".repeat(300)));
         editor.option_cache.wrap_lines = false;
-        editor.option_cache.show_line_numbers = false; // body width = 76
-        editor.pane_tree.active_mut().viewport_width = 80;
+        editor.option_cache.show_line_numbers = false;
+        // Body width 76, derived — see the sibling test above.
+        editor.pane_tree.active_mut().viewport_width = 76 + gutter_for(&editor);
+        assert_eq!(editor.body_text_width(), 76, "precondition: 76-column body");
         editor.cursor = lattice_protocol::position::Position::new(0, 100);
 
         // zs: cursor column → left edge ⇒ leftcol = 100.
@@ -42914,10 +42935,13 @@ mod tests {
         editor.viewport_height = 10;
         editor.scroll = 0;
         // CV.1: wrap is live pane geometry, not the matrix's stamp —
-        // turn it on the way a user does and give the pane a width
-        // whose 7-column gutter leaves a 4-column body.
+        // turn it on the way a user does and give the pane a width whose
+        // gutter leaves a 4-column body. The gutter is DERIVED, not a
+        // literal: it changed on 2026-08-16 when `gutter_cols` was
+        // corrected to count the diff-sign column, and a hardcoded pane
+        // width silently re-tunes the body instead of failing.
         let _ = editor.do_set("wrap");
-        editor.pane_tree.active_mut().viewport_width = 11;
+        editor.pane_tree.active_mut().viewport_width = 4 + gutter_for(&editor);
         assert_eq!(editor.body_text_width(), 4, "precondition: 4-column body");
         // Seed a cells matrix: 12 source lines × 8 columns, wrapped
         // at width 4 ⇒ segment_count == 2 per line.
@@ -46140,6 +46164,7 @@ mod tests {
                 .content_line_count()
                 .max(1),
             editor.option_cache.show_line_numbers,
+            editor.option_cache.sign_column,
         );
         assert!(gutter > 0, "line-numbered pane reserves a gutter");
         assert_eq!(
@@ -46215,14 +46240,14 @@ mod tests {
     /// `bottom_anchored_scroll`.
     #[test]
     fn goto_last_line_keeps_last_line_visible_with_wrap_and_fold() {
-        // 12 source lines of 8 columns. `number` is on and the doc is
-        // 13 rope lines, so the gutter is 2 digits + 5 = 7 and an
-        // 11-column pane leaves a 4-column body ⇒ every visible line
-        // costs 2 display rows.
+        // 12 source lines of 8 columns in a 4-column body, so every
+        // visible line costs 2 display rows. The pane width is derived
+        // from the live gutter reservation rather than hardcoded — see
+        // `gutter_for`.
         let doc = lattice_core::Document::from_text("abcdefgh\n".repeat(12));
         let mut editor = Editor::boot(doc);
         let _ = editor.do_set("wrap");
-        editor.pane_tree.active_mut().viewport_width = 11;
+        editor.pane_tree.active_mut().viewport_width = 4 + gutter_for(&editor);
         assert_eq!(editor.body_text_width(), 4, "precondition: 4-column body");
         // Cache agrees with the live geometry here — this test covers
         // the built-matrix path; the sibling below covers the unbuilt
@@ -46274,13 +46299,13 @@ mod tests {
     /// vertical clamp still trusted the cache for it.
     #[test]
     fn goto_last_line_keeps_last_line_visible_with_wrap_and_an_unbuilt_matrix() {
-        // 12 lines of 8 columns. Gutter for a 13-rope-line doc with
-        // `number` on is 2 digits + 5 = 7, so a 11-column pane leaves a
-        // 4-column body: every line costs exactly 2 display rows.
+        // 12 lines of 8 columns, in a pane whose body is 4 columns wide,
+        // so every line costs exactly 2 display rows. The gutter is
+        // DERIVED (see `gutter_for`).
         let doc = lattice_core::Document::from_text("abcdefgh\n".repeat(12));
         let mut editor = Editor::boot(doc);
         let _ = editor.do_set("wrap");
-        editor.pane_tree.active_mut().viewport_width = 11;
+        editor.pane_tree.active_mut().viewport_width = 4 + gutter_for(&editor);
         assert_eq!(
             editor.body_text_width(),
             4,
@@ -46379,7 +46404,11 @@ mod tests {
             .buffer
             .content_line_count()
             .max(1);
-        let gutter = crate::cells_worker::gutter_cols(lines, editor.option_cache.show_line_numbers);
+        let gutter = crate::cells_worker::gutter_cols(
+            lines,
+            editor.option_cache.show_line_numbers,
+            editor.option_cache.sign_column,
+        );
         editor.pane_tree.active_mut().viewport_width = wrap_width + gutter;
         assert_eq!(
             editor.body_text_width(),
@@ -46763,6 +46792,27 @@ mod tests {
 
     /// A rust-pathed editor, so `BracketSyntax::for_lang` gives the
     /// brace set rather than the prose no-op.
+    /// The gutter columns `body_text_width` will subtract for `editor`.
+    ///
+    /// Fixtures that need a specific body width derive their pane width
+    /// from this instead of hardcoding one. The reservation changed on
+    /// 2026-08-16 (`gutter_cols` was not counting the diff-sign column),
+    /// and every hardcoded pane width silently re-tuned its body by a
+    /// column rather than failing — which is how a precondition stops
+    /// being one.
+    fn gutter_for(editor: &Editor) -> u32 {
+        crate::cells_worker::gutter_cols(
+            editor
+                .document
+                .snapshot()
+                .buffer
+                .content_line_count()
+                .max(1),
+            editor.option_cache.show_line_numbers,
+            editor.option_cache.sign_column,
+        )
+    }
+
     fn rust_editor(text: &str) -> Editor {
         Editor::boot(
             lattice_core::DocumentBuilder::default()

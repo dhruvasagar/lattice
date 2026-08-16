@@ -9271,6 +9271,47 @@ mod tests {
         assert_eq!(trailing.len(), 2);
     }
 
+    /// The host's gutter reservation must equal what this renderer
+    /// actually paints, for every combination of the two options that
+    /// change it.
+    ///
+    /// 2026-08-16: they differed by one column. `gutter_cols` accounted
+    /// for the severity column but not the diff-sign column added later,
+    /// so the host's soft-wrap width was one wider than the painted one.
+    /// A line whose length fell exactly between the two wrapped on screen
+    /// but not in the scroll budget, and the extra rendered row pushed
+    /// the cursor below the last painted line — `G` on a 219-line
+    /// todo.org with a 173-character line, host width 173, renderer 172.
+    ///
+    /// A previous fix for the same symptom made the host's two clamps
+    /// share `gutter_cols` with each other. They agreed, and both
+    /// disagreed with what was painted — which is why this test asserts
+    /// across the crate boundary rather than within the host.
+    #[test]
+    fn gutter_cols_matches_the_tui_gutter() {
+        for lines in [1u32, 9, 10, 99, 100, 219, 1000, 12345] {
+            for numbers in [true, false] {
+                for signs in [true, false] {
+                    let painted = (if numbers {
+                        gutter_width(lines)
+                    } else {
+                        GUTTER_TRAILING_PAD
+                    }) + if signs {
+                        DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH
+                    } else {
+                        0
+                    };
+                    let reserved = lattice_host::cells_worker::gutter_cols(lines, numbers, signs);
+                    assert_eq!(
+                        reserved, painted,
+                        "lines={lines} number={numbers} signcolumn={signs}: the host \
+                         reserves {reserved} columns, the renderer paints {painted}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn gutter_width_for_small_buffers() {
         // Layout: 1 leading pad + N digits + GUTTER_TRAILING_PAD (3)

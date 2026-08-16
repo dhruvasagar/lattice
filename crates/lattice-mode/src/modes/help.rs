@@ -140,11 +140,36 @@ mod tests {
         // open. PU.1b-1a adds Number = false + signcolumn = no so help
         // renders gutterless via the option-driven path.
         let opts = HelpMode.options();
-        assert_eq!(
-            opts.iter().count(),
-            5,
-            "expected ReadOnly + Wrap + NoFile + Number + SignColumn",
-        );
+        // Assert by IDENTITY, not by count. The count assertion that used
+        // to stand here went stale the moment IG.6 added the
+        // indent-guides opt-out, and a bare number could not say which
+        // option was missing or extra — the same failure mode the doc
+        // comment above already calls out for `Wrap`.
+        let ids: Vec<std::any::TypeId> = opts.iter().map(|o| o.option_type_id).collect();
+        for (want, why) in [
+            (
+                std::any::TypeId::of::<lattice_config::ReadOnly>(),
+                "help is read-only",
+            ),
+            (
+                std::any::TypeId::of::<lattice_config::Wrap>(),
+                "help does not wrap (HP.3)",
+            ),
+            (
+                std::any::TypeId::of::<lattice_config::NoFile>(),
+                "`:q` stays quiet on the last help pane",
+            ),
+            (
+                std::any::TypeId::of::<lattice_config::Number>(),
+                "help renders gutterless",
+            ),
+            (
+                std::any::TypeId::of::<lattice_config::SignColumnOption>(),
+                "help reserves no sign column",
+            ),
+        ] {
+            assert!(ids.contains(&want), "{why}");
+        }
         assert_eq!(value_of::<lattice_config::ReadOnly>(&opts), Some(true));
         assert_eq!(value_of::<lattice_config::NoFile>(&opts), Some(true));
         assert_eq!(value_of::<lattice_config::Number>(&opts), Some(false));

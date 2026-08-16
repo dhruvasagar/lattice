@@ -22,6 +22,7 @@ pub mod folding;
 // because `lattice-syntax` → `lattice-grammar` makes an engine-side
 // home a dependency cycle; see `indent.rs`'s module doc.
 pub mod indent;
+pub mod indent_blocks;
 // SS.1: the shared on-disk fingerprint (autoread + multibuffer sources).
 pub mod on_disk;
 pub mod search;

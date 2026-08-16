@@ -7883,6 +7883,23 @@ impl Editor {
             // Stash the prior document's hot-path mode-state
             // (syntax/folds); guarded to Document inside.
             self.snapshot_active_document();
+            // 2026-08-16: and the PANE's view state, for the same reason
+            // `focus_help_popup` does it — sync the stash before swapping
+            // `active_buffer` away.
+            //
+            // While a prompt is focused the renderer's `is_active` is
+            // false for the document pane (MB.1 routes it through the
+            // buffer-keyed path so it renders its own buffer rather than
+            // the command-line text), and that path reads the pane's
+            // stashed cursor/scroll. Without this the stash still held
+            // wherever the pane was when it was last synced, so pressing
+            // `:` after `G` snapped the view back to the top — reported
+            // as "the inactive buffer jumps to the beginning".
+            //
+            // Losing focus is a dimming change and nothing else; that is
+            // only true if the stash the unfocused path reads is the live
+            // state at the moment focus left.
+            self.snapshot_active_pane();
             self.minibuffer_focus = Some(crate::state::MinibufferFocus {
                 prior_buffer_id: self.document_buffer_id,
                 prior_active_buffer: self.active_buffer,
@@ -47390,6 +47407,59 @@ mod tests {
             on_disk, before,
             "the default must not run a formatter on save"
         );
+    }
+
+    // ---- 2026-08-16: opening a prompt must not move the pane ----
+
+    /// Opening the `:` line must not change what the pane shows.
+    ///
+    /// Reported: `G` to the end of a file, then `:`, and the pane jumps
+    /// back to the beginning. The renderer's `is_active` is `false` while
+    /// `command_line_active` (MB.1 routes the pane through the
+    /// buffer-keyed path so it renders its OWN buffer rather than the
+    /// command-line text), and that path reads the pane's STASHED
+    /// cursor/scroll. `focus_editing_buffer` stashed the document's
+    /// mode-state via `snapshot_active_document` but never the pane's
+    /// view state, so the stash still held wherever the pane was when it
+    /// was last synced — usually the top.
+    ///
+    /// The invariant this pins is the one that matters to a user:
+    /// losing focus is a DIMMING change and nothing else.
+    #[test]
+    fn opening_the_command_line_does_not_move_the_pane() {
+        let mut editor = rust_editor(&"fn f() {}\n".repeat(200));
+        editor.viewport_height = 20;
+        editor.cursor = lattice_protocol::position::Position::new(199, 0);
+        editor.ensure_cursor_visible();
+        let scrolled = editor.scroll;
+        assert!(scrolled > 0, "precondition: `G` scrolled away from the top");
+
+        editor.open_command_line("");
+
+        // The pane renders from its stash while the prompt is focused.
+        let pane = editor.pane_tree.active();
+        assert_eq!(
+            pane.scroll, scrolled,
+            "the pane must still be scrolled where the user left it"
+        );
+        assert_eq!(
+            pane.cursor.line, 199,
+            "and its cursor must still be on the line the user was on"
+        );
+    }
+
+    /// The same for `/` — MB.5 routes the search line through the
+    /// identical `is_active` gate, so it has the identical exposure.
+    #[test]
+    fn opening_the_search_line_does_not_move_the_pane() {
+        let mut editor = rust_editor(&"fn f() {}\n".repeat(200));
+        editor.viewport_height = 20;
+        editor.cursor = lattice_protocol::position::Position::new(199, 0);
+        editor.ensure_cursor_visible();
+        let scrolled = editor.scroll;
+
+        editor.open_search_line(lattice_grammar::SearchDirection::Forward);
+        assert_eq!(editor.pane_tree.active().scroll, scrolled);
     }
 
     // ---- 2026-08-16: mode-contributed `foldmethod` ----

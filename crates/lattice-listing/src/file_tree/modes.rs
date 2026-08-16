@@ -61,9 +61,17 @@ impl Mode for FileTreeMode {
     fn target_buffer_kind(&self) -> Option<BufferKind> {
         Some(BufferKind::FileTree)
     }
+    /// `Number = false` is per-major, not per-listing (2026-08-16): a
+    /// tree is a navigation surface and hides line numbers like every
+    /// other tree UI, while oil is an ordinary editable buffer that
+    /// keeps them. It used to sit on the shared
+    /// `directory-listing-mode`, which forced the tree's answer onto
+    /// oil. It lives here now, next to `ReadOnly`, which is per-major
+    /// for the same reason.
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::Number = false,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {
@@ -149,8 +157,23 @@ mod tests {
         assert_eq!(FileTreeMode.id(), FileTreeMode::mode_id());
         assert_eq!(FileTreeMode::mode_id().as_str(), "file-tree-mode");
         assert_eq!(FileTreeMode.kind(), ModeKind::Major);
-        let opts = FileTreeMode.options();
-        assert_eq!(opts.iter().count(), 1, "expected ReadOnly contribution");
+        // Assert by identity, not by count: a bare count says nothing
+        // about WHICH options are contributed and breaks every time the
+        // set legitimately grows (it did, when `Number` moved here off
+        // the shared minor).
+        let ids: Vec<std::any::TypeId> = FileTreeMode
+            .options()
+            .iter()
+            .map(|o| o.option_type_id)
+            .collect();
+        assert!(
+            ids.contains(&std::any::TypeId::of::<lattice_config::ReadOnly>()),
+            "the tree is read-only"
+        );
+        assert!(
+            ids.contains(&std::any::TypeId::of::<lattice_config::Number>()),
+            "the tree hides line numbers"
+        );
     }
 
     #[test]

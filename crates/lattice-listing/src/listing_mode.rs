@@ -324,9 +324,16 @@ impl Mode for DirectoryListingMode {
     ///
     /// `ReadOnly` is deliberately absent: it is per-major (the tree is
     /// read-only, oil is not), so it stays with the majors.
+    ///
+    /// `Number` is absent for exactly the same reason (2026-08-16). A
+    /// file tree is a navigation surface and hides line numbers, like
+    /// every tree UI; oil is an ordinary editable buffer where `3dd`
+    /// over three files genuinely wants a count, and it is the only
+    /// editable buffer in the editor that would otherwise have no
+    /// gutter. Sharing one answer forced the wrong one on one of them,
+    /// so the override moved to `file-tree-mode`.
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
-            lattice_config::Number = false,
             lattice_config::Wrap = false,
             lattice_config::SignColumnOption = lattice_config::SignColumn::No,
             // DL.4: a listing's selected row must be visible. The
@@ -559,10 +566,6 @@ mod tests {
 
         for (want, why) in [
             (
-                TypeId::of::<lattice_config::Number>(),
-                "listings show no line numbers",
-            ),
-            (
                 TypeId::of::<lattice_config::Wrap>(),
                 "listing rows do not wrap",
             ),
@@ -581,6 +584,41 @@ mod tests {
             !ids.contains(&TypeId::of::<lattice_config::ReadOnly>()),
             "read-only is per-major — the tree is, oil is not — so it must \
              stay with the majors"
+        );
+        assert!(
+            !ids.contains(&TypeId::of::<lattice_config::Number>()),
+            "line numbers are per-major for the same reason read-only is: a \
+             tree hides them, oil is an editable buffer and keeps them"
+        );
+    }
+
+    /// The split this replaced a shared override with. Asserting both
+    /// sides in one test is the point — the bug was that ONE answer was
+    /// forced on two majors that want different ones, so a test that
+    /// only checked the tree would have passed before the fix too.
+    #[test]
+    fn line_numbers_are_hidden_in_the_tree_and_kept_in_oil() {
+        use std::any::TypeId;
+        let tree: Vec<TypeId> = crate::file_tree::FileTreeMode
+            .options()
+            .iter()
+            .map(|o| o.option_type_id)
+            .collect();
+        assert!(
+            tree.contains(&TypeId::of::<lattice_config::Number>()),
+            "the file tree is a navigation surface — it hides line numbers"
+        );
+
+        let oil: Vec<TypeId> = crate::oil::OilMode
+            .options()
+            .iter()
+            .map(|o| o.option_type_id)
+            .collect();
+        assert!(
+            !oil.contains(&TypeId::of::<lattice_config::Number>()),
+            "oil is an ordinary editable buffer — it must not override \
+             `number`, so it inherits the global default and `3dd` over three \
+             files has a count to read"
         );
     }
 }

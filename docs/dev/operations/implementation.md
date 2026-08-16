@@ -95,6 +95,41 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
+**Indentation guides (2026-08-16, IG.0–IG.6 landed; branch
+`dhruva/indent-guides`).** A vertical rule down the whitespace at each level
+of indentation, with the block enclosing the cursor drawn brighter, in both
+renderer peers. Design:
+[`../architecture/indent-guides.md`](../architecture/indent-guides.md); slice
+plan [`slice-plans/indent-guides.md`](slice-plans/indent-guides.md).
+
+**The load-bearing choice is where the layer is produced.** It is built per
+pane, beside that pane's `DisplayMatrix`, in the same `cells_worker` pass —
+which is what buys every visible pane coverage (`overlay_worker` is
+active-pane only, so a split would have shown guides on one side), keeps the
+active-block highlight off the worker entirely (extents are published; each
+renderer picks the active one per frame from the cursor row it already holds,
+at **92 ns**), and leaves exactly one producer of the predicate deciding
+whether a column may be painted — so neither peer re-derives it and the two
+cannot drift. Baking guide glyphs into `DisplayLine.text`, the obvious move
+since whitespace markers work that way, is rejected in the fragment: it forces
+the terminal glyph onto the GPU peer, makes the active guide a cursor-coupled
+matrix rebuild, and breaks `with_source_line` reuse because a row's guides
+depend on its neighbours.
+
+**Two things fell out of the build.** The TUI pass had to move *after* the
+horizontal clip: `clip_spans_horizontally` measures in bytes (its own comment
+calls the display-width model a punt), so a three-byte glyph substituted ahead
+of it shortens every indented line by two columns per guide. And `IG.5`
+migrated `foldmethod=indent` onto the shared walk, which closed a real bug —
+`leading_indent` counted a tab as one column, so tab-indented files folded at
+different boundaries than their space-indented twins. That guarantee ("`zc`
+and the active guide agree about this block") was approximate before and is
+now exact.
+
+Worker cost is **flat at 30 µs** across a 16× file-size range — bounded by the
+covered window, not the file — see
+[`benchmarks.md`](benchmarks.md) § IG.6.
+
 **Auto-indent (2026-08-15/16, IN.0–IN.11 landed; branch
 `dhruva/auto-indent`).** Nothing indented before this: `o` / `O` / `<CR>`
 spliced a bare newline at column 0, `>` / `<` / `<C-t>` / `<C-d>` used a

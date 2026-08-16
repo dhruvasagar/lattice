@@ -246,6 +246,54 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ---
 
+## IG.6 — indentation guides (2026-08-16)
+
+Guides add work in two places under different constraints, so they are benched
+separately (`docs/dev/architecture/indent-guides.md`).
+
+> ⚠️ **Measured on Apple silicon (macOS), NOT the Ryzen/WSL2 box most rows in
+> this document used.** Not comparable to the tables below. Bench:
+> `crates/lattice-host/benches/indent_guides.rs`. Corpus: generated Rust, three
+> levels deep, blank lines inside every block so the walk cannot stop at the
+> first one.
+
+**The worker side** — `build_indent_guides`, run in the pass that builds each
+pane's `DisplayMatrix`, i.e. on every rebuild. The claim it has to keep is that
+it is bounded by the covered window, not by the file:
+
+| `guide_build` (250-row window) | 600 lines | 2400 lines | 9600 lines |
+|---|---|---|---|
+| build + per-row resolution | **30.1 µs** | **30.2 µs** | **30.0 µs** |
+
+Flat to within noise across a 16× file-size range. That is the property the
+bench exists for: a version that walked the whole rope would look fine on the
+600-line row and fall over on the last one.
+
+**The renderer side** — the active-block pick, run per frame per pane on the UI
+thread. This is the price of a zero-lag active guide: rather than publish an
+"is active" flag and rerun the worker on every cursor move, each renderer picks
+the enclosing block from the cursor row it already holds.
+
+| `guide_active_pick` | Value | Notes |
+|---|---|---|
+| `cursor_row` | **92 ns** | One pick — the whole cursor-move cost. |
+| `120_row_viewport` | **894 ns** | Pick plus a walk of every visible row's marks; the full per-frame cost, and an over-estimate (it hashes each mark to defeat the optimiser). |
+
+Sub-microsecond against an 8.3 ms frame — the trade is paid for.
+
+**The walk itself**, swept over file size, as the linearity guard:
+
+| `guide_walk` | 600 lines | 2400 lines | 9600 lines |
+|---|---|---|---|
+| `indent_blocks` | **3.40 µs** | **12.8 µs** | **55.1 µs** |
+
+4× lines → ~4× time. This is why the walk is a stack rather than the
+"scan forward to find the end" formulation `compute_indent_folds` used before
+IG.5: that one is quadratic on deeply nested input, and this shape is where the
+difference shows.
+
+---
+
 ## IN.2 — predictive indent on the keystroke path (2026-08-15)
 
 `<CR>`, `o` and `O` consult the tree-sitter `indents.scm` query before

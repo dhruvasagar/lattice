@@ -254,6 +254,13 @@ harness = false
 name = "indent"
 harness = false
 
+# IG.6: what indentation guides cost on the worker side (per rebuild,
+# bounded by the covered window) and on the renderer side (per frame,
+# the active-block pick that keeps cursor motion off the worker).
+[[bench]]
+name = "indent_guides"
+harness = false
+
 # S5 (2026-05-27): cells_worker hot-path bench. Times
 # `recompute` across three workloads — full rebuild (cache miss),
 # incremental single-line edit, cache hit — at varying line

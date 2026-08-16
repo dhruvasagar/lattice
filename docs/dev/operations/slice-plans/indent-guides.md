@@ -2,7 +2,9 @@
 
 > Sequencing for [`docs/dev/architecture/indent-guides.md`](../../architecture/indent-guides.md).
 > That fragment owns the *what* and *why*; this file owns the *when* and *in
-> what order*. Opened 2026-08-16.
+> what order*. Opened 2026-08-16, closed 2026-08-16.
+>
+> **COMPLETE — archivable.** IG.0–IG.6 all ✅, nothing deferred or dropped.
 
 ## Status
 
@@ -14,7 +16,7 @@
 | IG.3 | TUI paint pre-pass | ✅ |
 | IG.4 | GPUI quad pass | ✅ |
 | IG.5 | Migrate `compute_indent_folds` onto the shared walk | ✅ |
-| IG.6 | Bench, ledger, user docs, mode opt-outs | 📝 |
+| IG.6 | Bench, ledger, user docs, mode opt-outs | ✅ |
 
 ## Shape of the sequence
 
@@ -177,13 +179,20 @@ Tests: existing fold tests stay green; a tab-indented file now folds at the
 same boundaries as its space-indented twin (the bug), and a `tabstop` change
 restructures the folds (which the character-counting walk could not see).
 
-### IG.6 — bench, ledger, docs, opt-outs 📝
+### IG.6 — bench, ledger, docs, opt-outs ✅
 
 - `crates/lattice-host/benches/indent_guides.rs`: block walk over 1k and 10k
   covered lines; per-frame renderer resolution for a 120-row viewport.
 - Results into `docs/dev/operations/benchmarks.md`.
 - User documentation for the three options and the theme elements.
-- `Mode::options()` opt-outs for the buffers where guides are noise. Structural
-  exclusion already covers non-Document panes (no `DisplayMatrix`, no layer);
-  this is for document-backed modes that do not want them.
+- `Mode::options()` opt-outs: `magit-core-mode` (every magit body has leading
+  whitespace that is not indent structure — a diff line's ` `/`+`/`-` prefix,
+  a section's item indent) and `help-mode` (table cells, box-drawing mock-ups,
+  list continuation). Both are the minor/mode that spans the buffers, per
+  `prefer-minor-modes-over-duplication`.
+- **A parity bug the opt-out fixed.** IG.4 hardcoded the empty layer for the
+  GPUI popup pseudo-panes. But `PaneId::POPUP` *does* get a `PaneCellsInputs`
+  entry, so the TUI read the layer and painted guides there — the two peers
+  disagreed. The fix is the option, not the hardcode: help-mode turns guides
+  off, both peers read the published layer, and neither learns what help is.
 - `docs/dev/operations/implementation.md` ledger row.

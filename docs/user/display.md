@@ -1,6 +1,6 @@
 ---
-summary: "Display & layout: soft-wrap, tab width, scroll-off margin, and whitespace markers."
-related: [wrap, tabstop, scrolloff, whitespace]
+summary: "Display & layout: soft-wrap, tab width, scroll-off margin, indentation guides, and whitespace markers."
+related: [wrap, tabstop, scrolloff, whitespace, indent-guides]
 ---
 
 # Display & layout
@@ -60,6 +60,9 @@ that have no mode of their own (`tabstop`, `scrolloff`, `sidescroll`,
 | `:set display.whitespace.leading=·`  | `·` | Glyph for leading indentation                                  |
 | `:set display.whitespace.space=`  | *(off)* | Glyph for interior spaces (empty = don't decorate)             |
 | `:set display.whitespace.eol=`    | *(off)* | Glyph at end-of-line (e.g. `¬`; empty = don't decorate)        |
+| `:set display.indent-guides` / `noindent-guides` | on | Vertical rule at each level of indentation |
+| `:set display.indent-guides.char=│` | `│` | Guide glyph (terminal only; the GPUI peer draws a rule) |
+| `:set display.indent-guides.active` / `no…` | on | Highlight the block enclosing the cursor |
 
 ---
 
@@ -154,6 +157,67 @@ Setting any glyph to the empty string disables decoration for that
 category. The markers degrade gracefully: the defaults are
 plain-BMP glyphs that render in any terminal font, so you don't need
 a patched/Nerd font to use `:set list`.
+
+## Indentation guides (`display.indent-guides`)
+
+A vertical rule down the whitespace at each level of indentation, with
+the block enclosing the cursor drawn brighter. On by default.
+
+```
+fn f() {
+│                    blank line inside the block — the guide continues
+│   if c {
+│   │   work();
+│   │
+│   }
+}
+                     between blocks — nothing
+fn g() {
+```
+
+A guide is never drawn over a character. On `fn f() {` there is nothing
+to the left of `f`, so no guide appears there; the same goes for either
+closing brace. What a guide marks is the *whitespace* belonging to a
+block, which is why it continues through blank lines inside one and
+stops at the blank line after it.
+
+Guides are spaced by **`shiftwidth`** — one level of indent — not by
+`tabstop`, which is how wide a literal tab renders. If your file is
+indented with two spaces per level, `:set shiftwidth=2` puts a guide
+under every level; leaving it at 4 puts one under every second level.
+
+The block a guide belongs to is the same block `foldmethod=indent`
+folds, so `zc` and the highlighted guide always agree about where
+"this block" ends.
+
+### Options
+
+- **`display.indent-guides`** (on) — draw them at all. Buffer-local, so
+  `:setlocal noindent-guides` affects only the current buffer and a
+  major mode can turn them off for its own buffers.
+- **`display.indent-guides.char`** (`│`) — the glyph. **Terminal only**:
+  a terminal cell can hold a character but not a hairline, so the TUI
+  approximates the rule with a box-drawing glyph while the GPUI peer
+  draws an actual one-pixel line. Set it to `▏` for a thinner look, or
+  to the empty string to hide guides in the terminal while keeping them
+  in the GUI.
+- **`display.indent-guides.active`** (on) — draw the enclosing block in
+  `indent.guide.active` rather than `indent.guide`. Turn it off for a
+  uniform, quieter set of rules.
+
+### Theming
+
+Two elements, both themeable like any other:
+
+```
+:set theme.indent.guide.fg=#45475a
+:set theme.indent.guide.active.fg=#6c7086
+```
+
+The default pair is dim and less-dim rather than dim and bright: a
+guide legible enough to read directly is one that competes with the
+code it is measuring, and the contrast *between* the two is what
+carries the signal.
 
 ## Ligatures (`ui.ligatures`)
 

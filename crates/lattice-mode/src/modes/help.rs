@@ -74,12 +74,20 @@ impl Mode for HelpMode {
         // values: the renderer derives the gutter geometry from them
         // and never knows it is painting help (a regular buffer with
         // `:set nonu signcolumn=no` renders identically).
+        // IG.6: `IndentGuides = false`. A help page's leading whitespace is
+        // layout — table cells, box-drawing mock-ups, list continuation —
+        // not the indent structure of something being edited, so a rule
+        // down it claims a nesting that is not there. It is an option
+        // rather than a renderer check for the usual reason: a regular
+        // buffer with `:setlocal noindent-guides` renders identically, and
+        // neither peer learns what help is.
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
             lattice_config::Wrap = false,
             lattice_config::NoFile = true,
             lattice_config::Number = false,
             lattice_config::SignColumnOption = lattice_config::SignColumn::No,
+            lattice_config::core_options::IndentGuides = false,
         }
     }
     fn required_capabilities(&self) -> CapabilitySet {

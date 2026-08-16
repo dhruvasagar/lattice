@@ -46537,6 +46537,28 @@ mod tests {
         assert_eq!(before.version, after.version);
     }
 
+    /// IG.6: a mode's `Mode::options()` opt-out reaches the guide inputs.
+    ///
+    /// This is the whole opt-out mechanism: help and magit buffers turn
+    /// guides off by contributing the option, not by any renderer learning
+    /// what they are. A buffer with `:setlocal noindent-guides` renders
+    /// identically to either of them.
+    #[test]
+    fn a_mode_option_override_turns_guides_off() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let buffer = editor.active_buffer_id();
+        assert!(editor.indent_guide_inputs(buffer).enabled);
+        let _ = editor.do_set_local("display.indent-guides=false");
+        let off = editor.indent_guide_inputs(buffer);
+        assert!(!off.enabled);
+        // And the axis moved, so the worker rebuilds and publishes the
+        // empty layer rather than leaving the last build painted.
+        assert_ne!(
+            off.version,
+            crate::indent_guides::indent_axis_version(&off.unit, true)
+        );
+    }
+
     /// Guides are buffer-local, so a mode that turns them off through
     /// `Mode::options()` (or a `:setlocal`) affects only its own buffer.
     #[test]

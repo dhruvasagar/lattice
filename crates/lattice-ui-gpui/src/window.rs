@@ -3788,11 +3788,17 @@ impl Render for EditorView {
                         // `usize::MAX - 1`: distinct ElementId from the
                         // floating popup (`usize::MAX`) and every real pane.
                         pane_idx: usize::MAX - 1,
-                        // IG.4: no guides on the popup pseudo-panes. They
-                        // render help / preview prose, where indentation is
-                        // layout rather than structure — there is no block
-                        // for a rule to measure.
-                        indent_guides: Default::default(),
+                        // IG.4: this pseudo-pane's guide layer, read like
+                        // any other pane's. Whether it has guides is the
+                        // buffer's `display.indent-guides` — help-mode
+                        // turns them off — NOT a renderer branch on what
+                        // kind of thing is being painted. Hardcoding it
+                        // here is what made this peer disagree with the
+                        // TUI, which reads the layer and paints it.
+                        indent_guides: cells
+                            .indent_guides_for_pane(pane)
+                            .map(|c| c.load_full())
+                            .unwrap_or_default(),
                         indent_guide_active: None,
                         theme: theme.clone(),
                         text: std::sync::Arc::new(window_text),
@@ -4387,9 +4393,12 @@ impl Render for EditorView {
                 // real pane index (0, 1, 2, …) so GPUI tracks the popup
                 // element across frames without colliding.
                 pane_idx: usize::MAX,
-                // IG.4: see the sibling pseudo-pane above — help prose has
-                // no indent blocks to measure.
-                indent_guides: Default::default(),
+                // IG.4: see the sibling pseudo-pane above — the layer is
+                // read, and the mode's option decides whether it is empty.
+                indent_guides: cells
+                    .indent_guides_for_pane(popup_pane)
+                    .map(|c| c.load_full())
+                    .unwrap_or_default(),
                 indent_guide_active: None,
                 theme: theme.clone(),
                 text: std::sync::Arc::new(window_text),

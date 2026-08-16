@@ -1236,7 +1236,19 @@ impl Mode for MagitCoreMode {
     }
 
     fn options(&self) -> OptionOverrideSet {
-        OptionOverrideSet::new()
+        lattice_config::overrides! {
+            // IG.6: no indentation guides in a magit buffer.
+            //
+            // Every magit body has leading whitespace that is not indent
+            // structure: a diff line's ` ` / `+` / `-` prefix, a section's
+            // two-space item indent. Guides would draw rules down those and
+            // claim a nesting that does not exist.
+            //
+            // On the core minor rather than on each major, so a new magit
+            // buffer inherits it instead of being one more place to remember
+            // — the `prefer-minor-modes-over-duplication` rule.
+            lattice_config::core_options::IndentGuides = false,
+        }
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()

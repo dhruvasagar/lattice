@@ -14556,6 +14556,15 @@ impl Editor {
                 // must read the hot-path slot like the other document-backed
                 // active kinds (not re-fetch a registry snapshot).
                 | lattice_core::BufferKind::Dashboard
+                // DL.4/DL.5 (fixed 2026-08-16): both listings activate through
+                // `activate_document` — `activate_file_tree` / `activate_oil`
+                // are one-line delegations to it — so `self.document` holds the
+                // listing when one is active. Omitting them here made an ACTIVE
+                // listing pane read the stashed `leaf.scroll` instead of the
+                // live `self.scroll`, the same stale-view class as the
+                // `:`-moves-the-pane regression.
+                | lattice_core::BufferKind::FileTree
+                | lattice_core::BufferKind::Oil
         );
         let active_buffer_id = self.document_buffer_id;
         let active_pane_id = self.pane_tree.active().id;
@@ -14592,9 +14601,10 @@ impl Editor {
             // the rationale. The pipeline reads through
             // `buffers.document_handle(buffer_id)` below, which
             // returns `Some` for any of these three kinds via the
-            // post-K.4 `contains_document` predicate. Help / Oil
-            // / FileTree / Terminal have their own render paths
-            // and remain excluded here.
+            // post-K.4 `contains_document` predicate. Only Terminal
+            // still has its own render path and stays excluded — Help
+            // joined in PU.1b-2b, Dashboard in DB.2, and oil + the file
+            // tree in the DL.4/DL.5 fix below.
             // PU.1b-2b: in-pane help is a Document with a markdown
             // SyntaxHandle + link `ExtraHighlights`, so it gets a
             // `DisplayMatrix` like any document and renders through the
@@ -14622,6 +14632,18 @@ impl Editor {
                     // path. Omitting it here skips its DisplayMatrix and the
                     // pane falls back to uncoloured raw text.
                     | lattice_core::BufferKind::Dashboard
+                    // DL.4/DL.5 (fixed 2026-08-16): oil and the file tree are
+                    // rope-backed Documents rendered through this same generic
+                    // compose path. While they were excluded, a listing leaf got
+                    // no `cells.panes` entry, so
+                    // `RenderState::inlay_hints_for_buffer` — which routes
+                    // INACTIVE buffers through that entry — returned an empty
+                    // list and every icon disappeared the moment `:` took focus.
+                    | lattice_core::BufferKind::FileTree
+                    | lattice_core::BufferKind::Oil // Fallback branch, enumerated so this stays aligned-by-fallback
+                                                    // rather than aligned-by-silence: Terminal paints from an
+                                                    // alacritty cell grid rather than a rope and keeps its own path.
+                                                    // Every other kind above is document-backed and belongs here.
             ) {
                 continue;
             }
@@ -38242,6 +38264,85 @@ mod tests {
             "a .rs and a .py must not share a style — that is what 'the colour \
              coding disappeared' looks like from the user's side"
         );
+    }
+
+    /// DL.4/DL.5 moved oil and the file tree onto the shared document
+    /// render path, but `build_cells_panes` kept the pre-DL allow-list
+    /// that excluded them — so a listing leaf got no `PaneCellsInputs`
+    /// entry and therefore no `cells.panes` entry. The user-visible
+    /// result: `RenderState::inlay_hints_for_buffer` routes *inactive*
+    /// buffers through `cells.panes`, finds nothing, and returns an
+    /// empty list — every icon vanishes the moment `:` steals focus,
+    /// and comes back on `<Esc>` because the active route reads
+    /// `syntax.inlay_hints` instead.
+    ///
+    /// Terminal stays excluded on purpose: it paints from an alacritty
+    /// grid, not a rope, so it genuinely has its own path.
+    #[test]
+    fn listing_panes_get_cells_inputs_like_any_document_backed_kind() {
+        for kind in [
+            lattice_core::BufferKind::FileTree,
+            lattice_core::BufferKind::Oil,
+        ] {
+            let mut ed = Editor::default();
+            {
+                let pane = ed.pane_tree.active_mut();
+                pane.buffer = kind;
+                pane.buffer_id = ed.document_buffer_id;
+                pane.viewport_height = 20;
+                pane.viewport_width = 80;
+            }
+            ed.active_buffer = kind;
+
+            let panes = ed.build_cells_panes(None);
+
+            assert!(
+                panes.iter().any(|p| p.buffer_id == ed.document_buffer_id),
+                "{kind:?} leaf must get a PaneCellsInputs entry — without one it \
+                 has no cells.panes entry, and an inactive listing pane loses \
+                 its icons entirely"
+            );
+        }
+    }
+
+    /// The second half of the same staleness: both listings activate
+    /// through `activate_document` (`activate_file_tree` / `activate_oil`
+    /// are one-line delegations since DL.5), so when a listing is the
+    /// active buffer `self.document` holds it and `active_doc_active`
+    /// must say so. If it does not, an *active* listing pane is treated
+    /// as not-the-active-buffer and reads the stashed `leaf.scroll`
+    /// instead of the live `self.scroll` — the same stale-view class of
+    /// bug as the `:`-moves-the-pane regression.
+    #[test]
+    fn an_active_listing_pane_reads_the_live_scroll_not_the_stash() {
+        for kind in [
+            lattice_core::BufferKind::FileTree,
+            lattice_core::BufferKind::Oil,
+        ] {
+            let mut ed = Editor::default();
+            {
+                let pane = ed.pane_tree.active_mut();
+                pane.buffer = kind;
+                pane.buffer_id = ed.document_buffer_id;
+                pane.viewport_height = 20;
+                pane.viewport_width = 80;
+                pane.scroll = 0;
+            }
+            ed.active_buffer = kind;
+            ed.scroll = 7;
+
+            let panes = ed.build_cells_panes(None);
+            let entry = panes
+                .iter()
+                .find(|p| p.buffer_id == ed.document_buffer_id)
+                .expect("listing leaf has an entry");
+
+            assert_eq!(
+                entry.scroll, 7,
+                "{kind:?}: the active listing pane must build from the live \
+                 scroll, not the stale stash"
+            );
+        }
     }
 
     // ── CG.1: foreground cancellation primitives ──

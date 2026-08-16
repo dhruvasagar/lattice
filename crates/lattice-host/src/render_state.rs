@@ -3779,11 +3779,17 @@ mod tests {
         use lattice_core::ui::pane::SplitOrientation;
         let mut editor = Editor::default();
         editor.pane_tree.split_active(SplitOrientation::Vertical);
-        // Flip pane index 1 to a non-Document kind. The filter
-        // keys on `leaf.buffer` directly, so the buffer_id
-        // doesn't need to point at a real FileTreeBuffer for
-        // this assertion.
-        editor.pane_tree.leaves_mut()[1].buffer = BufferKind::FileTree;
+        // Flip pane index 1 to a kind that is NOT document-backed. The
+        // filter keys on `leaf.buffer` directly, so the buffer_id doesn't
+        // need to point at a real terminal for this assertion.
+        //
+        // 2026-08-16: this was `FileTree`, which stopped being a valid
+        // stand-in when DL.4/DL.5 moved both listings onto the shared
+        // document render path. Terminal is the only kind left that
+        // genuinely paints from something other than a rope (an alacritty
+        // cell grid), so it is the honest example of what this filter is
+        // for.
+        editor.pane_tree.leaves_mut()[1].buffer = BufferKind::Terminal;
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
         assert_eq!(
@@ -3909,7 +3915,9 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         let non_doc_pane_id = {
             let leaves = editor.pane_tree.leaves_mut();
-            leaves[1].buffer = BufferKind::FileTree;
+            // Terminal, not FileTree: DL.4/DL.5 made both listings
+            // document-backed, so only Terminal still exercises this filter.
+            leaves[1].buffer = BufferKind::Terminal;
             leaves[1].id
         };
         editor.publish_render_state();
@@ -3995,7 +4003,9 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         let non_doc_pane_id = {
             let leaves = editor.pane_tree.leaves_mut();
-            leaves[1].buffer = BufferKind::FileTree;
+            // Terminal, not FileTree: DL.4/DL.5 made both listings
+            // document-backed, so only Terminal still exercises this filter.
+            leaves[1].buffer = BufferKind::Terminal;
             leaves[1].id
         };
         editor.publish_render_state();

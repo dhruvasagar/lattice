@@ -20922,6 +20922,28 @@ impl Editor {
             .services
             .get::<lattice_theme::ThemeRegistryHandle>()
             .map(|theme| {
+                // DL.6 fix (2026-08-16): register the `listing.*` vocabulary
+                // HERE, not only in `on_activate`. Icons are published from
+                // the entries chokepoint, which runs BEFORE
+                // `activate_major_for_buffer_kind` starts the (async) mode
+                // cascade — so `listing_inlays`' `reg.id()` (a lookup, not an
+                // intern: `registry.rs`) found nothing and every row fell back
+                // to `Style::InlayHint`. One uniform colour, which is exactly
+                // what the element table's doc warns a typo would look like.
+                //
+                // Idempotent by name, so the `on_activate` call is still the
+                // declaration of ownership and this is just "make sure it has
+                // happened before we resolve ids" — the same shape
+                // `register_dashboard_branding` uses for the same race.
+                lattice_listing::listing_mode::register_listing_theme_elements(
+                    &**theme,
+                    lattice_theme::ElementOwner::Mode(
+                        lattice_listing::listing_mode::DirectoryListingMode::mode_id()
+                            .as_str()
+                            .to_string()
+                            .into(),
+                    ),
+                );
                 lattice_listing::listing_mode::listing_inlays(&listing, &**theme, nerd_fonts)
             })
             .unwrap_or_default();
@@ -38147,6 +38169,80 @@ fn project_transient_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── DL.6 regression: listing icons must resolve their theme element ──
+
+    /// Icons are published from the entries chokepoint, which runs BEFORE
+    /// `activate_major_for_buffer_kind` starts the mode cascade that
+    /// registers the `listing.*` vocabulary. `listing_inlays` resolves
+    /// style with `ThemeRegistry::id` — a LOOKUP, not an intern — so every
+    /// row used to fall back to `Style::InlayHint`: one uniform colour for
+    /// every file type, which is exactly what the element table's own doc
+    /// warns a typo would look like.
+    ///
+    /// The assertion is deliberately "a .rs and a .py differ" as well as
+    /// "the .rs row names the rust element". Checking only the latter would
+    /// still pass if every element resolved to the same id.
+    #[test]
+    fn listing_icons_resolve_their_element_before_the_mode_cascade_runs() {
+        use lattice_listing::listing_mode::ListingEntry;
+        use lattice_theme::{ElementName, ThemeRegistryHandle};
+
+        let mut ed = Editor::default();
+        let theme: ThemeRegistryHandle = std::sync::Arc::new(
+            lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+        );
+        let pending = lattice_mode::PendingInlays::new();
+        // `PendingInlays` is not `Clone`; its map is the shared Arc, so
+        // keep that and hand the service itself to the registry.
+        let published = pending.map.clone();
+        let mut services = lattice_mode::ServiceRegistry::new();
+        services.register(theme.clone());
+        services.register(pending);
+        ed.services = std::sync::Arc::new(services);
+
+        let buf = ed.document_buffer_id;
+        // No mode has activated on this buffer — the state the tree/oil
+        // open path is genuinely in when it publishes.
+        ed.publish_listing_icons_for(
+            buf,
+            vec![
+                ListingEntry {
+                    path: "src/main.rs".into(),
+                    is_dir: false,
+                    icon_byte: 0,
+                },
+                ListingEntry {
+                    path: "tool/build.py".into(),
+                    is_dir: false,
+                    icon_byte: 0,
+                },
+            ],
+        );
+
+        let rows = published
+            .lock()
+            .expect("pending inlays lock")
+            .get(&buf)
+            .cloned()
+            .expect("icons published for the listing buffer");
+        assert_eq!(rows.len(), 2, "one icon per row");
+
+        let rust = theme
+            .id(&ElementName::from_static("listing.file.rust"))
+            .expect("publishing registers the listing vocabulary");
+        assert_eq!(
+            rows[0].style,
+            lattice_cells::Style::Element(rust),
+            "the .rs row resolves the rust element, not the plain inlay-hint \
+             fallback that made every file one colour"
+        );
+        assert_ne!(
+            rows[0].style, rows[1].style,
+            "a .rs and a .py must not share a style — that is what 'the colour \
+             coding disappeared' looks like from the user's side"
+        );
+    }
 
     // ── CG.1: foreground cancellation primitives ──
     //

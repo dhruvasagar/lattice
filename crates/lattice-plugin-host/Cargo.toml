@@ -88,6 +88,12 @@ lattice-runtime = { path = "../lattice-runtime" }
 # (consumer side — `lattice-host` is the builder). `tree-sitter` is named
 # directly to operate on the snapshot's `Tree` / `Node` / `Point`.
 lattice-syntax = { path = "../lattice-syntax" }
+# TC.2: `ContextScope` — the native type the `context` seam's boundary converts
+# to. Already in the graph via `lattice-mode`; named directly because
+# `boundary_context.rs` implements `WitBoundary` for it (a foreign type would
+# make that impl illegal from here, and the native type belongs beside the
+# resolver that consumes it, not duplicated in the plugin host).
+lattice-cells = { path = "../lattice-cells" }
 tree-sitter = { workspace = true }
 # TS.2: tree-sitter 0.24's `QueryMatches` is a `StreamingIterator` (borrows the
 # cursor per step) — needed to iterate `run-query` matches host-side.

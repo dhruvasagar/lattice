@@ -58,6 +58,14 @@ fn main() {
         "decorations-guest",
         "DECORATIONS_GUEST_WASM",
     );
+    // TC.2: the sticky-context producer fixture. Walks the handed
+    // `tree-snapshot`, so it is what proves a `borrow<>` survives an async
+    // guest suspension (the repo's first).
+    build_guest(
+        &fixtures.join("context-guest"),
+        "context-guest",
+        "CONTEXT_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("config-guest"),
         "config-guest",

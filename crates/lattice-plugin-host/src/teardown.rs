@@ -30,7 +30,7 @@
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_keymap::{KeymapCapability, KeymapHandle, KeymapLayer, ModeId};
-use lattice_mode::{GutterDecorationSourceRegistry, ModeRegistry};
+use lattice_mode::{ContextSourceRegistry, GutterDecorationSourceRegistry, ModeRegistry};
 use lattice_picker::source::PickerRegistry;
 use lattice_protocol::event_registry::unregister_runtime_event;
 use lattice_runtime::{EventBus, SubscriptionId};
@@ -73,6 +73,10 @@ pub struct PluginTeardown {
     /// [`GutterDecorationSourceRegistry`] — each reversed via
     /// `GutterDecorationSourceRegistry::unregister`. Mirrors `picker_sources`.
     pub decoration_sources: Vec<u64>,
+    /// TC.2: context producer ids the plugin registered into the
+    /// [`ContextSourceRegistry`] — each reversed via
+    /// `ContextSourceRegistry::unregister`. Mirrors `decoration_sources`.
+    pub context_sources: Vec<u64>,
 }
 
 impl PluginTeardown {
@@ -87,6 +91,7 @@ impl PluginTeardown {
             subscriptions: Vec::new(),
             keymap_bindings: Vec::new(),
             decoration_sources: Vec::new(),
+            context_sources: Vec::new(),
         }
     }
 
@@ -154,6 +159,9 @@ impl PluginTeardown {
         for source_id in &self.decoration_sources {
             report.decoration_sources += reg.decorations.unregister(*source_id);
         }
+        for source_id in &self.context_sources {
+            report.context_sources += reg.contexts.unregister(*source_id);
+        }
 
         report
     }
@@ -175,6 +183,8 @@ pub struct TeardownRegistries<'a> {
     pub bus: &'a EventBus,
     /// PL8.E: the decoration-producer registry (`unregister` by producer id).
     pub decorations: &'a mut GutterDecorationSourceRegistry,
+    /// TC.2: the context-producer registry (`unregister` by producer id).
+    pub contexts: &'a mut ContextSourceRegistry,
 }
 
 /// Count of what an [`unload`](PluginTeardown::unload) actually removed, per
@@ -193,6 +203,8 @@ pub struct TeardownReport {
     pub keymap_bindings: usize,
     /// PL8.E: decoration producers unregistered.
     pub decoration_sources: usize,
+    /// TC.2: context producers unregistered.
+    pub context_sources: usize,
 }
 
 #[cfg(test)]
@@ -288,6 +300,7 @@ mod tests {
         teardown.subscriptions = vec![plugin_sub];
 
         let mut decorations = GutterDecorationSourceRegistry::new();
+        let mut contexts = ContextSourceRegistry::new();
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -297,6 +310,7 @@ mod tests {
                 config: &config,
                 bus: &bus,
                 decorations: &mut decorations,
+                contexts: &mut contexts,
             };
             teardown.unload(&mut reg)
         };
@@ -315,6 +329,7 @@ mod tests {
                 subscriptions: 1,
                 keymap_bindings: 0,
                 decoration_sources: 0,
+                context_sources: 0,
             }
         );
 
@@ -342,6 +357,7 @@ mod tests {
             config: &config,
             bus: &bus,
             decorations: &mut decorations,
+            contexts: &mut contexts,
         };
         assert_eq!(teardown.unload(&mut reg), TeardownReport::default());
     }

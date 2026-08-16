@@ -1331,6 +1331,43 @@ interface types {
         line-count: u32,
     }
 
+    // --- Sticky-context seam (TC.2, treesitter-context.md) ----------------------
+
+    /// One structural scope: the range it spans, plus the line span that NAMES
+    /// it. Mirrors `lattice_cells::context::ContextScope` exactly (TC.1).
+    ///
+    /// `header-start ..= header-end` is normally one line and spans several when
+    /// a signature wraps. All four are inclusive, 0-based source lines.
+    ///
+    /// A scope is a **pure function of the parse tree** — no viewport, no cursor,
+    /// no options. That is what lets the guest compute the set once per parse and
+    /// the host resolve it per pane afterwards without another guest call, which
+    /// is the whole reason this seam returns scopes rather than finished rows.
+    record context-scope {
+        scope-start: u32,
+        scope-end: u32,
+        header-start: u32,
+        header-end: u32,
+    }
+
+    /// The owned projection handed to a context producer (host→guest), same
+    /// shape rule as `decoration-context` (§4.2): owned scalars only, bulk text
+    /// and structure ride handles instead.
+    ///
+    /// Deliberately NOT reusing `decoration-context` even though the fields
+    /// coincide today: the two describe different things (a decoration trigger
+    /// vs a context request), and sharing the record would make a field one seam
+    /// needs into ABI churn for the other.
+    ///
+    /// No `language` and no `parse-version` field: the guest reads the language
+    /// off the `tree-snapshot` it is handed (so the two can never disagree), and
+    /// the parse version is host-side cache bookkeeping the guest has no use for.
+    record context-request {
+        buffer-id: u64,
+        path: option<string>,
+        line-count: u32,
+    }
+
     // --- UI-contribution seam (PH7.9, plugin-host.md §5 `ui`) — TYPE-MIRROR ----
     //
     // Sized for the ABI freeze (§14) but the guest→host EMIT producer is DEFERRED

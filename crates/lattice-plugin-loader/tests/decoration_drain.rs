@@ -97,6 +97,9 @@ fn rig(base: &std::path::Path) -> Rig {
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
             decoration_registry: Some(decorations.clone()),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             tracer: None,
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
         },
@@ -225,6 +228,7 @@ async fn decorations_plugin_without_a_wired_registry_is_skipped_not_fatal() {
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             decoration_registry: None,
+            context_registry: None,
             ..Default::default()
         },
     );

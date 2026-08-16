@@ -79,6 +79,9 @@ fn loader_with_ex_commands(base: &std::path::Path) -> (PluginLoaderHandle, Comma
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
             ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             tracer: None,
         },
     ));

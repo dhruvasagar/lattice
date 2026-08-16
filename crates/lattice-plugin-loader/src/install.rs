@@ -91,6 +91,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         decoration_registry: boot
             .service::<lattice_mode::GutterDecorationSourceRegistryHandle>()
             .map(|h| (*h).clone()),
+        context_registry: boot
+            .service::<lattice_mode::ContextSourceRegistryHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

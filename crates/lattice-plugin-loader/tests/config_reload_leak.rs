@@ -72,6 +72,9 @@ fn rig(base: &std::path::Path, config: Arc<ConfigRegistry>) -> PluginLoader {
             config_registry: Some(config),
             keymap: Some(KeymapHandle::new()),
             decoration_registry: Some(decorations),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             tracer: None,
             meta_sink: None,
         },

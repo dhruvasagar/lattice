@@ -5562,6 +5562,7 @@ dependencies = [
  "criterion",
  "dirs 5.0.1",
  "futures",
+ "lattice-cells",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

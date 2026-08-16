@@ -73,6 +73,9 @@ fn loader(base: &std::path::Path, keymap: KeymapHandle) -> PluginLoaderHandle {
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
             ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             tracer: None,
         },
     ))

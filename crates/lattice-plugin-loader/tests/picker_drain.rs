@@ -87,6 +87,9 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
             ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             ..Default::default()
         },
     );
@@ -156,6 +159,9 @@ async fn discovered_config_plugin_registers_its_options() {
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
             ))),
             ..Default::default()
         },

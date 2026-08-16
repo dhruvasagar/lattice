@@ -12,7 +12,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | Slice | Title | Status |
 |---|---|---|
 | TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | ✅ |
-| TC.2 | The `context` WIT seam + host quartet + fixture component | 📝 |
+| TC.2 | The `context` WIT seam + host quartet + fixture component | ✅ |
 | TC.3 | Pane-keyed sticky-context layer — worker, reservation, **both renderers** | 📝 |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | 📝 |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 📝 |
@@ -79,17 +79,17 @@ addition and should be re-sliced rather than silently widened.
 
 
 `ContextScope { scope_start, scope_end, header_start, header_end }` and
-`resolve_context(scopes, anchor, opts) -> SmallVec<[u32; 8]>` in
+`resolve_context(scopes, anchor, opts) -> Vec<u32>` in
 `lattice-cells`. Pure; no host types, no I/O.
 
 Placed in `lattice-cells` rather than `lattice-core` because both renderers and
 the cells worker already depend on it and none of them should reach further up
 for a geometry primitive.
 
-The algorithm is design §"The resolver, precisely" — enclosing scopes whose
-`header_end < anchor`, outermost first, headers expanded to
-`multiline-threshold` rows, truncated to `max-lines` rows from the
-`trim-scope` end, then the viewport-fraction guard.
+The algorithm is design §"The resolver, precisely" — scopes enclosing the
+anchor, filtered to those whose header is above `viewport_top`, outermost
+first, headers expanded to `multiline-threshold` rows, truncated to the row
+budget from the `trim-scope` end.
 
 **Tests.** Nesting depth; a scope whose header is still visible is excluded;
 trim `outer` and trim `inner`; a multi-line header consuming more than one row
@@ -101,17 +101,50 @@ panic); the viewport-fraction guard at pane heights 3, 10 and 100.
 of the feature on the keystroke path, so it gets a recorded number from the
 start — a later change that makes it `O(scopes)` must fail CI, not review.
 
-## TC.2 — The `context` seam 📝
+## TC.2 — The `context` seam ✅
+
+> **Landed 2026-08-16.** Four things worth recording:
+>
+> 1. **The tree crosses as a call-scoped `borrow<tree-snapshot>`, and it
+>    works.** This is the repo's FIRST `borrow<>` across an async export —
+>    every existing one is in the sync grammar world — so it was an open
+>    question whether wasmtime would keep a host resource lent across a guest
+>    suspension. It does. The alternative, had it not, was a host import
+>    handing the guest an *owned* snapshot by buffer id, which widens the
+>    `tree-sitter` capability from "the tree you were handed" to "any buffer's
+>    tree, any time". The fixture walks the tree for real (one scope per named
+>    child of the root, asserted by exact line range) so a dead borrow fails
+>    the test rather than silently returning constants.
+> 2. **The registry shipped with the seam, not with TC.3.** The plan put
+>    `ContextSourceRegistry` in the host slice, but the loader's seam match is
+>    deliberately exhaustive ("a new seam variant must add its drain here — the
+>    compiler enforces it rather than a silent skip"), and a drain needs
+>    somewhere to register. A seam that cannot be drained is not a seam, so the
+>    registry, the `drain_context`, the teardown surface, and the boot service
+>    registration all belong here. This is the documented one-slice exception:
+>    the neighbour was needed to compile.
+> 3. **`context-request` does not carry `language` or `parse-version`.** The
+>    guest reads the language off the snapshot it was handed (so the two cannot
+>    disagree), and the parse version is host-side cache bookkeeping the guest
+>    has no use for. It also does NOT reuse `decoration-context` despite the
+>    fields coinciding today — sharing would make a field one seam needs into
+>    ABI churn for the other.
+> 4. **`AsyncContextSource::produce` takes the snapshot type-erased** as
+>    `Option<Arc<dyn Any + Send + Sync>>`, the `ActionContext::syntax`
+>    precedent, so `lattice-mode` stays free of `lattice-syntax` and the
+>    plugin-host adapter does the downcast.
+
 
 `wit/context.wit` (`context` interface + `context-plugin` world),
 `context-request` / `context-scope` records in `wit/types.wit`, and the host
 quartet mirroring the decoration one:
 
-- `context_source.rs` — the native `ContextSource` trait the WASM wrapper
-  implements.
-- `context_task.rs` — the debounced off-thread driver; cancels in-flight work
-  for a superseded parse (`cancellation.md`).
-- `context_host.rs` — registry insert under `SourceLayer::Plugin(id)`.
+- `context_source.rs` — `WasmContextSource`, the adapter implementing the
+  native `AsyncContextSource` (which lives in `lattice-mode`).
+- `context_task.rs` — the per-plugin actor bridge; lends the tree as a
+  call-scoped borrow and reclaims the table entry on every path.
+- `context_host.rs` — the 7th `bindgen!`, reusing the grammar world's
+  `tree-sitter` module so the host resources are not minted twice.
 - `boundary_context.rs` — round-trip type mirror, reusing the `plugin` world's
   generated `types` via `with:` so crossed values are the same Rust types.
 

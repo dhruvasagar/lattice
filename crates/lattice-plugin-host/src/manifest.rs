@@ -120,7 +120,7 @@ fn parse_editor_capability(name: &str) -> Option<CapabilitySet> {
 ///
 /// Wire form (manifest `provides = [...]` + [`Display`]) is the dashed WIT
 /// interface name: `picker-source`, `completion-source`, `grammar`, `events`,
-/// `modes`, `config`, `decorations`.
+/// `modes`, `config`, `decorations`, `context`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginSeam {
     PickerSource,
@@ -130,6 +130,9 @@ pub enum PluginSeam {
     Modes,
     Config,
     Decorations,
+    /// TC.2 — the sticky-context producer (`context-plugin` world). Async,
+    /// host-cached per parse version; see `treesitter-context.md`.
+    Context,
     Keymap,
     /// The `wasi:logging`-shaped guest→host logging import (PO.5, Layer 2). Not a
     /// native trait seam — the guest's own narrative, host-captured into the same
@@ -148,6 +151,7 @@ impl PluginSeam {
             PluginSeam::Modes => "modes",
             PluginSeam::Config => "config",
             PluginSeam::Decorations => "decorations",
+            PluginSeam::Context => "context",
             PluginSeam::Keymap => "keymap",
             PluginSeam::Logging => "logging",
         }
@@ -172,6 +176,7 @@ impl FromStr for PluginSeam {
             "modes" => PluginSeam::Modes,
             "config" => PluginSeam::Config,
             "decorations" => PluginSeam::Decorations,
+            "context" => PluginSeam::Context,
             "keymap" => PluginSeam::Keymap,
             "logging" => PluginSeam::Logging,
             _ => return Err(()),

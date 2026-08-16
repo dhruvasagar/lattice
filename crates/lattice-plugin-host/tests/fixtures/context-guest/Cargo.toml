@@ -1,0 +1,27 @@
+# TC.2 context fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `context-plugin` world. Its `context-scopes` producer derives scopes by
+# WALKING THE TREE it is handed, which is the point: this fixture is what proves
+# a `borrow<tree-snapshot>` survives an ASYNC guest suspension, something no
+# other seam in the repo does (every existing `borrow<>` is in the sync grammar
+# world). Built to a component by the host crate's build.rs and loaded by
+# `tests/context_source.rs`. Standalone workspace (`[workspace]` below) so it is
+# NOT part of the parent workspace — it targets wasm32-wasip2 and must not
+# inherit the host toolchain's lints/target. Mirrors the sibling
+# `decorations-guest` fixture's setup exactly.
+[package]
+name = "context-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

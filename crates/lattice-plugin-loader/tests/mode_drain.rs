@@ -107,6 +107,9 @@ async fn discovered_mode_plugin_registers_its_minor_modes_and_gated_keymap() {
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
             ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             ..Default::default()
         },
     );

@@ -95,6 +95,9 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::GutterDecorationSourceRegistry::default(),
             ))),
+            context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::ContextSourceRegistry::new(),
+            ))),
             tracer: None,
         },
     );

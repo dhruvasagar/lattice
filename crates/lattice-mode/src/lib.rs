@@ -65,6 +65,9 @@ pub mod binding_mode;
 pub mod buffer_store;
 pub mod capability;
 pub mod context;
+// TC.2: the native seam a WASM sticky-context producer implements. Sibling of
+// `decoration_source` — async, host-driven off the render path, result cached.
+pub mod context_source;
 pub mod contributions;
 pub mod decoration_source;
 // BC.5: `emacs-keys-mode` — a default-on universal builtin minor mode (the
@@ -138,6 +141,9 @@ pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
+pub use crate::context_source::{
+    AsyncContextSource, ContextFuture, ContextSourceRegistry, ContextSourceRegistryHandle,
+};
 pub use crate::contributions::{
     CompilationSeverityData,
     DecorationCtx,

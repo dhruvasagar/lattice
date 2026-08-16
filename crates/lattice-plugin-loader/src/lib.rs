@@ -82,15 +82,15 @@ use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{
-    ActivationPolicy, AsyncGutterDecorationSource, CapabilitySet,
-    GutterDecorationSourceRegistryHandle, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    ModeRegistryHandle, PluginMetaSinkHandle,
+    ActivationPolicy, AsyncContextSource, AsyncGutterDecorationSource, CapabilitySet,
+    ContextSourceRegistryHandle, GutterDecorationSourceRegistryHandle, LifecycleFuture, Mode,
+    ModeContext, ModeId, ModeKind, ModeRegistryHandle, PluginMetaSinkHandle,
 };
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     Capability, LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
     PluginManifest, PluginSeam, PluginTeardown, TeardownRegistries, TeardownReport, TrustTier,
-    WasmCompletionSource, WasmDecorationSource, WasmPickerSource,
+    WasmCompletionSource, WasmContextSource, WasmDecorationSource, WasmPickerSource,
 };
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
@@ -190,6 +190,10 @@ pub struct LoaderServices {
     /// loaded decoration plugin's `WasmDecorationSource`). The host's per-tick
     /// `maybe_refresh_wasm_decorations` reads the same handle wait-free.
     pub decoration_registry: Option<GutterDecorationSourceRegistryHandle>,
+    /// TC.2: the runtime-mutable context-producer registry (RCU-register a
+    /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
+    /// refresh reads the same handle wait-free.
+    pub context_registry: Option<ContextSourceRegistryHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -212,6 +216,7 @@ pub struct WiredSeams {
     pub keymap: bool,
     pub meta_sink: bool,
     pub decoration_registry: bool,
+    pub context_registry: bool,
 }
 
 impl WiredSeams {
@@ -228,6 +233,7 @@ impl WiredSeams {
             && self.keymap
             && self.meta_sink
             && self.decoration_registry
+            && self.context_registry
     }
 }
 
@@ -385,6 +391,7 @@ impl PluginLoader {
             keymap: self.env.keymap.is_some(),
             meta_sink: self.env.meta_sink.is_some(),
             decoration_registry: self.env.decoration_registry.is_some(),
+            context_registry: self.env.context_registry.is_some(),
         }
     }
 
@@ -512,6 +519,12 @@ impl PluginLoader {
                     PluginSeam::Decorations => {
                         let id = self
                             .drain_decorations(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::Context => {
+                        let id = self
+                            .drain_context(&component, manifest, tier, &mut record)
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
@@ -919,6 +932,7 @@ impl PluginLoader {
             Some(keymap),
             Some(bus),
             Some(deco_h),
+            Some(ctx_h),
         ) = (
             self.env.command_registry.as_ref(),
             self.env.picker_registry.as_ref(),
@@ -927,6 +941,7 @@ impl PluginLoader {
             self.env.keymap.as_ref(),
             self.env.bus.as_ref(),
             self.env.decoration_registry.as_ref(),
+            self.env.context_registry.as_ref(),
         )
         else {
             tracing::warn!(
@@ -940,6 +955,7 @@ impl PluginLoader {
         let mut pickers = (**pick_h.load()).clone();
         let mut modes = (**mode_h.load()).clone();
         let mut decorations = (**deco_h.load()).clone();
+        let mut contexts = (**ctx_h.load()).clone();
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -949,6 +965,7 @@ impl PluginLoader {
                 config,
                 bus,
                 decorations: &mut decorations,
+                contexts: &mut contexts,
             };
             teardown.unload(&mut reg)
         };
@@ -957,6 +974,7 @@ impl PluginLoader {
         pick_h.store(Arc::new(pickers));
         mode_h.store(Arc::new(modes));
         deco_h.store(Arc::new(decorations));
+        ctx_h.store(Arc::new(contexts));
         report
     }
 
@@ -1445,6 +1463,67 @@ impl PluginLoader {
     /// keystroke path), mirroring the picker / completion actor seams — driven on
     /// the runtime, recorded on `record` for unload. A missing service degrades
     /// the seam to a logged skip (`NotWired`); a spawn trap maps to
+    /// TC.2 — drain the context seam: spawn the producer actor, register the
+    /// `WasmContextSource` into the context registry by copy-on-write RCU, and
+    /// spawn the actor's `run` loop on the runtime. Records the actor task +
+    /// source id on `record` for teardown. Mirror of [`Self::drain_decorations`]
+    /// — a context source, like a decoration source, carries no id/doc metadata,
+    /// so there is no `connect` spec round-trip.
+    async fn drain_context(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("context"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("context"))?;
+        let registry = self
+            .env
+            .context_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("context"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_context_source(component, manifest, tier, PluginBudget::context(), bus)
+            .await?;
+        // PO.2: attach the boundary tracer so the actor emits a trace record per
+        // guest call (a no-op when unwired).
+        let actor = actor.with_tracer(self.env.tracer.clone());
+        let task = runtime.spawn(actor.run());
+        let source = WasmContextSource::new(client);
+        let id = source.plugin_id();
+
+        // Copy-on-write RCU into the wait-free registry (load -> clone ->
+        // register -> store), like the decoration seam. Concurrent host
+        // refreshes keep reading the prior snapshot until the store lands.
+        let producer: Arc<dyn AsyncContextSource> = Arc::new(source);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(producer.clone());
+            Arc::new(next)
+        });
+
+        record.tasks.push(task);
+        // Teardown token: the context registry unregisters this producer by id.
+        record.teardown.context_sources.push(id.0 as u64);
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            "context plugin registered its context-scope producer"
+        );
+        Ok(id)
+    }
+
     /// `PluginLoaderError::Host` and skips only this plugin.
     async fn drain_decorations(
         &self,

@@ -982,6 +982,16 @@ impl Editor {
             decoration_registry.clone(),
         );
 
+        // TC.2: the sibling registry for async context-scope producers
+        // (`drain_context`). Same shape and the same reason — RCU-registered by
+        // the loader, read wait-free by the host's reparse-driven refresh.
+        // Registered here at boot so `wired_seams().all()` holds; the refresh
+        // that consumes it lands with the host layer (TC.3).
+        let context_registry: lattice_mode::ContextSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::ContextSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_mode::ContextSourceRegistryHandle>(context_registry);
+
         // MRU cache load. Honor `picker.mru.persist` at boot;
         // failure modes: no persist path (sandboxed), no file
         // (fresh install), or corrupt file (log + reset).

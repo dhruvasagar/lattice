@@ -53,6 +53,7 @@
 
 pub mod boundary;
 pub mod boundary_app_effect;
+pub mod boundary_context;
 pub mod boundary_decoration;
 pub mod boundary_effect;
 pub mod boundary_event;
@@ -64,6 +65,11 @@ pub mod completion_host;
 pub mod completion_source;
 pub mod completion_task;
 pub mod config_host;
+// TC.2 — the sticky-context producer seam. Trio mirroring `decoration_*`:
+// the bindgen world, the actor bridge, the native-trait adapter.
+pub mod context_host;
+pub mod context_source;
+pub mod context_task;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
@@ -89,6 +95,8 @@ pub use capability::{
 };
 pub use completion_source::WasmCompletionSource;
 pub use completion_task::{CompletionActor, CompletionClient};
+pub use context_source::WasmContextSource;
+pub use context_task::{ContextActor, ContextClient};
 pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest, PluginSeam};
@@ -235,6 +243,21 @@ impl PluginBudget {
     /// flicker). The §7 `< 50 µs p99` "segment update" gate is on the marshalling
     /// + dispatch overhead, distinct from this runaway guard.
     pub fn decoration() -> Self {
+        Self {
+            fuel: 100_000_000,
+            epoch_deadline: 1_000,
+        }
+    }
+
+    /// TC.2: budget for a `context-scopes` produce call. Deliberately the same
+    /// shape as [`Self::decoration`] and for the same reason — both are async
+    /// producers the host drives off the render path, so the guard is against a
+    /// runaway, not against latency. Context is the more expensive of the two
+    /// (a whole-buffer tree-sitter query rather than a per-line walk), and the
+    /// budget is generous enough that a legitimate query on a large file
+    /// finishes well inside it; `context.max-file-lines` is what bounds the
+    /// intended work, this is what bounds the unintended.
+    pub fn context() -> Self {
         Self {
             fuel: 100_000_000,
             epoch_deadline: 1_000,

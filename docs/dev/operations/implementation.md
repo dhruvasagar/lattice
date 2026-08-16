@@ -180,6 +180,36 @@ deferred — same wall as electric reindent plus an async round-trip and a
 protocol that permits document-wide edits). `sql` and `markdown` ship no
 `indents.scm` by decision.
 
+**Tree-sitter context (2026-08-16, 📝 designed, not built; branch
+`dhruva/treesitter-context`).** Sticky scope headers — the enclosing `impl` /
+`fn` pinned above the text after their own lines have scrolled away, the
+`nvim-treesitter-context` / sticky-scroll idea. Ships as a **core bundled
+plugin**, the second after `auto-pair`, consuming the ✅ tree-sitter seam
+(TS.1–TS.3). Design:
+[`../architecture/treesitter-context.md`](../architecture/treesitter-context.md);
+slice plan
+[`slice-plans/treesitter-context.md`](slice-plans/treesitter-context.md).
+
+**The design's load-bearing claim** is that a *scope* — a structural range plus
+its header span — is a pure function of the parse tree, so it is correct to
+compute once per parse in the guest and resolve against an anchor line
+afterwards in the host. A resolved *row* list is not: it is a function of the
+cursor and would thrash at keystroke rate. That split is what keeps WASM off
+the scroll path, makes the scroll model's reservation incapable of disagreeing
+with what is painted (the host produces the line list it reserves for), and
+preserves syntax colour by construction — the cells worker builds context rows
+through the same cell-builder as document rows, so there is one derivation
+rather than two that can drift.
+
+**Two host seams land with it**, and they are the real cost, the lighthouse
+shape: a `context` producer seam (the `decorations` async-producer pattern) and
+the `theme` element-registration seam, which closes the deferred WIT item in
+[`../architecture/theme-system.md`](../architecture/theme-system.md). Both are
+general — every later plugin gets them. The layer is keyed by **`pane_id`**,
+not `buffer_id`, which is a first: one buffer in two splits with cursors in
+different scopes must show different context, and no existing per-pane layer
+needed that.
+
 **Multibuffer-provider review + follow-on work (2026-08-10 → 08-12).**
 A review of the pending provider catalogue
 ([`slice-plans/multibuffer-providers.md`](slice-plans/multibuffer-providers.md))

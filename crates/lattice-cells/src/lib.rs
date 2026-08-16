@@ -54,6 +54,11 @@ pub mod virtual_rows;
 // row above line 0. Tutor, multibuffer search, LSP status, VCS branch all use
 // this. See `docs/dev/architecture/headerline.md`.
 pub mod headerline;
+// TC.1: structural context scopes + the resolver that picks which of them
+// a pane pins above its text. Pure — the scope set is a function of the
+// parse tree, the resolution a function of the anchor line. See
+// `docs/dev/architecture/treesitter-context.md`.
+pub mod context;
 
 pub use cell::{Cell, flags as cell_flags};
 pub use chunk::CellChunk;

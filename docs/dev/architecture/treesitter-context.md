@@ -117,9 +117,27 @@ scope.
 
 ### The host owns the resolution
 
-`resolve_context(scopes, anchor, opts) -> SmallVec<[u32; 8]>` lives in
-`lattice-cells`, called by the host on the actor thread when it publishes pane
-inputs. It is a binary search plus a walk: `O(log n + depth)`.
+`resolve_context(scopes, anchor, opts) -> Vec<u32>` lives in `lattice-cells`,
+called by the host on the actor thread when it publishes pane inputs.
+
+It is a **linear scan** over the scope list plus a sort of the (small)
+enclosing subset — `O(n + d log d)`, not the `O(log n + depth)` this document
+claimed before TC.1 was built. "Which intervals contain line L" is not a binary
+search: scopes nest, but the siblings before `L` still have to be rejected one
+by one, so pruning needs an augmented interval structure rather than an ordering
+trick.
+
+Measured (TC.1 bench, `context_resolve`): **204 ns** at 100 scopes / depth 5,
+**2.66 µs** at 5k / depth 20, **21.8 µs** at 50k / depth 20 — ~0.44 ns per
+scope. The pathological end is 0.26% of a 120 Hz frame; a 3k-line source file
+sits nearer 1 µs. The linear shape is therefore the right trade today, and the
+bench is the ratchet that says when it stops being: if a real file ever makes
+this hurt, the fix is an augmented interval tree, not a reordering.
+
+The return type is `Vec<u32>` rather than a `SmallVec` because `lattice-cells`
+is deliberately near-dep-free (its manifest documents the single exception),
+and a dependency is not worth saving one allocation of at most `max_lines`
+elements.
 
 The host puts the resulting line list into `PaneCellsInputs`. Two things follow
 that are worth stating as guarantees rather than intentions:
@@ -194,11 +212,15 @@ the top of the pane. That is the whole rule: appending after an existing
 producer rather than competing for row 0. No `sticky_rank` field, no ordering
 negotiation between providers, no kind-branch in the renderer.
 
-**Budget guard.** When `headerline_rows + context_rows` would exceed
-`context.max-viewport-fraction` of the pane height (default 33%), context rows
-are dropped from the **outermost inward** until it fits — the innermost scope
-is the one you are actually in, so it is the last to go. Headerline rows are
-never dropped; a pane too short for even one context row simply shows none.
+**Budget guard.** The strip may occupy at most
+`context.max-viewport-fraction` of the pane height (default 33%), and the
+headerline's rows come out of that same share — context stacks under it and
+never displaces it, so `ContextOptions::reserved_rows` carries what the
+headerline already holds. Over budget, context rows are dropped from the
+**outermost inward** — the innermost scope is the one you are actually in, so
+it is the last to go. Headerline rows are never dropped; a pane too short for
+even one context row simply shows none (a 3-row pane at 33% yields zero, which
+is the honest answer).
 This is the same intent as `nvim-treesitter-context`'s `min_window_height`,
 expressed as a fraction so it scales with the split rather than assuming one.
 
@@ -221,25 +243,35 @@ the keying regresses to `buffer_id`, and it should be written first.
 
 ## The resolver, precisely
 
-Given the anchor line `A`:
+Given the anchor line `A` and the pane's first visible line `T`:
 
-1. Collect every scope with `scope_start <= A <= scope_end` whose `header_end <
-   A` — the enclosing scopes whose header has scrolled past. A scope whose
-   header is still visible below the strip is not shown; duplicating a line the
-   user can already see wastes a row.
-2. Sort by `scope_start` ascending (outermost first). Nesting makes this a
+1. Collect every scope with `scope_start <= A <= scope_end` — the scopes the
+   anchor is inside. A scope encloses its own header line, which is what makes
+   `[u` terminate (see below).
+2. Keep only those with `header_end < T` — the ones that actually scrolled
+   away. A header still on screen is not pinned; duplicating a line the user
+   can already read spends a row, and on a short pane that is the row the
+   innermost scope needed.
+3. Sort by `scope_start` ascending (outermost first). Nesting makes this a
    total order in practice; ties break on `scope_end` descending.
-3. Expand each scope to its header span, capped at
+4. Expand each scope to its header span, capped at
    `context.multiline-threshold` lines (default 1). A three-line signature with
    the threshold at 1 shows its first line only.
-4. Truncate to `context.max-lines` (default 3) **rows**, not scopes — a
-   multi-line header consumes its rows from the same budget.
-   `context.trim-scope` picks the end: `outer` (default) drops outermost,
-   `inner` drops innermost.
-5. Apply the viewport-fraction guard.
+5. Truncate to **rows**, not scopes — a multi-line header consumes its rows
+   from the same budget. The budget is the tighter of `context.max-lines`
+   (default 3) and the viewport-fraction guard, minus the rows the headerline
+   already holds. `context.trim-scope` picks the end: `outer` (default) drops
+   outermost, `inner` drops innermost. A group that does not fit **stops** the
+   walk rather than being skipped: keeping a further-out scope after dropping a
+   nearer one renders a stack with a hole in it, which reads as simply wrong.
 
-Step 1's `header_end < A` clause is also what makes the jump command
-terminating rather than circular; see below.
+> **Corrected during TC.1.** This section previously folded steps 1 and 2 into
+> one predicate, `header_end < A`, glossed as "the enclosing scopes whose header
+> has scrolled past". Those are different things, and the gloss was the correct
+> one: with the cursor at line 30, an `impl` header at line 10 and the view
+> starting at line 5, `header_end < A` holds while the header is plainly on
+> screen. The resolver needs the viewport top, so `ContextOptions` carries
+> `viewport_top` and the two conditions are separate steps.
 
 ## Anchor: cursor, and why not topline
 

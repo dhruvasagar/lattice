@@ -41,5 +41,11 @@ criterion = { workspace = true }
 name = "virtual_rows"
 harness = false
 
+# TC.1 — the resolver is the only part of tree-sitter context on the
+# keystroke path, so it gets a recorded number from the start.
+[[bench]]
+name = "context"
+harness = false
+
 [lints]
 workspace = true

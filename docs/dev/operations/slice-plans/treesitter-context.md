@@ -11,7 +11,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 
 | Slice | Title | Status |
 |---|---|---|
-| TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | 📝 |
+| TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | ✅ |
 | TC.2 | The `context` WIT seam + host quartet + fixture component | 📝 |
 | TC.3 | Pane-keyed sticky-context layer — worker, reservation, **both renderers** | 📝 |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | 📝 |
@@ -49,7 +49,34 @@ addition and should be re-sliced rather than silently widened.
 
 ---
 
-## TC.1 — The resolver 📝
+## TC.1 — The resolver ✅
+
+> **Landed 2026-08-16.** Three things the design got wrong and the code
+> corrected (all three fixed in the design fragment):
+>
+> 1. **The resolver needs `viewport_top`, not just the anchor.** The design
+>    folded "is enclosing" and "has scrolled away" into one predicate,
+>    `header_end < anchor`, glossed as "whose header has scrolled past". The
+>    gloss was right and the predicate was not: cursor at 30, `impl` header at
+>    10, view starting at 5 — the predicate holds while the header is plainly
+>    on screen, and pinning it spends a row duplicating a visible line. Two
+>    separate steps now, and `ContextOptions` carries `viewport_top`.
+> 2. **`Vec<u32>`, not `SmallVec`.** `lattice-cells` is deliberately
+>    near-dep-free (its manifest documents the one exception). A dependency is
+>    not worth saving one allocation of at most `max_lines` elements.
+> 3. **`O(n + d log d)`, not `O(log n + depth)`.** "Which intervals contain
+>    line L" is not a binary search — scopes nest, but the siblings before `L`
+>    still have to be rejected one at a time. Measured 204 ns / 2.66 µs /
+>    21.8 µs at 100 / 5k / 50k scopes; the pathological end is 0.26% of a
+>    120 Hz frame. Linear is the right trade today and the bench is the
+>    ratchet that says when it stops being.
+>
+> One test also had to be corrected before it could go green: the
+> still-visible case originally asserted `viewport_top: 25` left the `fn`
+> header at 20 visible, which is false — 20 is above 25. The view has to start
+> *between* the two headers (15) for one to be off-screen and the other on.
+
+
 
 `ContextScope { scope_start, scope_end, header_start, header_end }` and
 `resolve_context(scopes, anchor, opts) -> SmallVec<[u32; 8]>` in

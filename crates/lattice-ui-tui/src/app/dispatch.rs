@@ -1180,6 +1180,7 @@ impl App {
             Effect::LspMoniker => self.do_lsp_moniker_request(),
             Effect::LspCodeLens => self.do_lsp_code_lens_picker(),
             Effect::LspColorPresentation => self.do_lsp_color_presentation(),
+            Effect::Format => self.do_format_request(),
             Effect::LspFormat => self.do_lsp_format_request(false),
             Effect::LspFormatRange => self.do_lsp_format_request(true),
             // 5.5.LSP.4: signature help + completion request now
@@ -1417,6 +1418,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspMoniker
         | Effect::LspCodeLens
         | Effect::LspColorPresentation
+        | Effect::Format
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -1563,6 +1565,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspMoniker
         | Effect::LspCodeLens
         | Effect::LspColorPresentation
+        | Effect::Format
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp

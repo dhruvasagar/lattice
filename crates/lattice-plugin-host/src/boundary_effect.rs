@@ -755,6 +755,14 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::LspMoniker => WitEffect::LspMoniker,
         NativeEffect::LspCodeLens => WitEffect::LspCodeLens,
         NativeEffect::LspColorPresentation => WitEffect::LspColorPresentation,
+        // IN.8b: `:format` has no WIT mirror yet -- the plugin
+        // effect surface is versioned, and adding a variant is an API
+        // change that belongs with the next WIT revision rather than
+        // smuggled into an editor slice. A plugin cannot request it
+        // until then; nothing existing regresses.
+        NativeEffect::Format => {
+            return Err("Effect::Format has no WIT mirror yet (IN.8b)".to_string());
+        }
         NativeEffect::LspFormat => WitEffect::LspFormat,
         NativeEffect::LspFormatRange => WitEffect::LspFormatRange,
         NativeEffect::LspSignatureHelp => WitEffect::LspSignatureHelp,

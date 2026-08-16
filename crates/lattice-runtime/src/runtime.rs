@@ -112,6 +112,22 @@ where
     lsp_runtime().spawn(future)
 }
 
+/// IN.8b: the blocking sibling of [`spawn_on_lsp_runtime`], for work
+/// that is genuinely synchronous rather than merely off-thread —
+/// spawning a formatter and waiting on its pipes.
+///
+/// `spawn_blocking` rather than `spawn` because a `Command` +
+/// `wait_with_output` would occupy a runtime worker for the whole run;
+/// on a `current_thread` runtime that is the actor thread, which is the
+/// no-UI-thread-work rule violated by a different route.
+pub fn spawn_blocking_on_lsp_runtime<F, R>(f: F) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    lsp_runtime().spawn_blocking(f)
+}
+
 /// Sync-to-async bridge. Forwards to the shared multi-thread
 /// runtime's `block_on`. Used by the TUI input loop and by App
 /// methods that need to wait on a [`crate::Pending`] from outside

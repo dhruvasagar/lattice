@@ -40,7 +40,11 @@ pub fn minimal_edits(old: &str, new: &str) -> Vec<Edit> {
     };
 
     let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
-    let old_line_count = old.split_inclusive('\n').count();
+    // Line count the way the DOCUMENT counts: a trailing newline
+    // opens a final empty line. `split_inclusive` does not produce
+    // that line, so counting its items undercounts by one for the
+    // common newline-terminated file.
+    let old_line_count = old.matches('\n').count() + 1;
 
     let mut edits: Vec<Edit> = Vec::new();
     for hunk in &index.hunks {
@@ -53,15 +57,21 @@ pub fn minimal_edits(old: &str, new: &str) -> Vec<Edit> {
             .collect();
 
         let start = Position::new(old_range.start, 0);
-        // A hunk's end is exclusive. Deleting through the start of the
-        // following line takes the trailing newline with it, which is
-        // what makes a pure deletion actually remove the line rather
+        // A hunk's end is exclusive, so the range runs to the START of
+        // the following line — which takes the preceding newline with
+        // it, and is what makes a pure deletion remove the line rather
         // than leave a blank one.
-        let end = if old_range.end as usize >= old_line_count {
-            Position::new(old_range.end.saturating_sub(1), u32::MAX)
-        } else {
-            Position::new(old_range.end, 0)
-        };
+        //
+        // Clamped to the document's last line index. An earlier
+        // revision used `Position::new(last, u32::MAX)` as a
+        // "to end of line" sentinel; that is NOT this codebase's
+        // convention and `position_to_byte` rejects it outright. The
+        // unit test below passed anyway because it special-cased the
+        // same invented sentinel — validating the code against itself
+        // rather than against the buffer. Only the host-level test
+        // caught it.
+        let last_line = old_line_count.saturating_sub(1) as u32;
+        let end = Position::new(old_range.end.min(last_line), 0);
         edits.push(Edit::replace(Range::new(start, end), replacement));
     }
     // Bottom-up.
@@ -98,12 +108,8 @@ mod tests {
             let r = edit.range;
             let start_line = (r.start.line as usize).min(rope.len_lines());
             let start = rope.line_to_char(start_line) + r.start.byte as usize;
-            let end = if r.end.byte == u32::MAX {
-                rope.len_chars()
-            } else {
-                let end_line = (r.end.line as usize).min(rope.len_lines());
-                rope.line_to_char(end_line) + r.end.byte as usize
-            };
+            let end_line = (r.end.line as usize).min(rope.len_lines());
+            let end = rope.line_to_char(end_line) + r.end.byte as usize;
             let start = start.min(rope.len_chars());
             let end = end.min(rope.len_chars()).max(start);
             rope.remove(start..end);

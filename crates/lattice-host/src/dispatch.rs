@@ -81,6 +81,27 @@ use crate::state::{
 /// [`Editor::push_position_history`].
 pub const POSITION_HISTORY_CAP: usize = 100;
 
+/// IN.8b: what an external formatter run produced, carried back to the
+/// editor thread.
+///
+/// Separate from `lattice_lsp::cache::FormatOutcome` because the two
+/// carry different things: LSP returns `TextEdit`s in protocol
+/// coordinates, while an external formatter returns a whole file that
+/// has already been diffed into `Edit`s. Squeezing one into the other
+/// would mean converting a diff back into LSP shape for no reason.
+#[derive(Debug)]
+pub enum ExternalFormatOutcome {
+    /// Minimal edits, bottom-up. Empty means the formatter agreed with
+    /// the buffer.
+    Edits(Vec<lattice_protocol::edit::Edit>),
+    /// The run failed in a way the user should see (non-zero exit,
+    /// timeout, invalid UTF-8).
+    Failed(String),
+    /// Nothing ran, and that is unremarkable -- no formatter is
+    /// configured for this language, or the tool is not installed.
+    Skipped(String),
+}
+
 /// IN.7: answers "how deep should line N sit" for the `=` operator,
 /// over a syntax snapshot captured at dispatch time.
 ///
@@ -15842,6 +15863,7 @@ impl Editor {
         // `drain_inbound_show_documents` host method is retired.
         signals.extend(self.drain_pending_rename());
         self.drain_pending_format();
+        self.drain_pending_external_format();
         signals.extend(self.drain_inbound_apply_edits());
         // I4 (Claude Code IDE peer, `openDiff`): drain programmatic side-by-side
         // diff requests, opening each on the actor thread (host-drained, same as
@@ -25155,6 +25177,150 @@ impl Editor {
     /// on the first server advertising the matching provider; the
     /// drain applies the returned `TextEdit`s as one undo unit.
     /// Phase 5.8.AD.2.
+    /// IN.8b: `:format` — format the buffer through the availability
+    /// cascade.
+    ///
+    /// ```text
+    /// an attached server advertises formatting  → textDocument/formatting
+    /// formatprg set, or a default-table entry   → external process
+    /// neither                                   → say what was tried
+    /// ```
+    ///
+    /// **Cascades on availability, not on failure.** "Try LSP, fall
+    /// back if it fails" needs an answer to "how long do we wait before
+    /// giving up", and every answer to that is arbitrary — too short
+    /// and a busy server loses to a formatter the user did not choose,
+    /// too long and `:format` hangs. Availability has no timing
+    /// question: if a server that formats is attached, it is the
+    /// formatter, and its failures are reported as its own.
+    ///
+    /// The generic name satisfies the dashed-and-namespaced
+    /// ex-command rule rather than violating it. That rule exists
+    /// because a generic name implies "works regardless of LSP" while
+    /// being hard-wired to an LSP-only path; `:format` **is** the
+    /// LSP-independent cascade, and `:lsp-format` remains the LSP-only
+    /// command, unchanged.
+    pub fn do_format_request(&mut self) {
+        let buffer = self.active_buffer_id();
+        let lang = self.active_lang();
+
+        // Rung 1: an attached server that advertises formatting.
+        if self.lsp_supports_formatting() {
+            self.do_lsp_format_request(false);
+            return;
+        }
+
+        // Rung 2: `formatprg`, else the built-in table.
+        let formatprg = self.resolved_option::<lattice_config::core_options::FormatPrg>(buffer);
+        let spec = lattice_format::FormatterSpec::parse(&formatprg)
+            .or_else(|| lattice_format::FormatterSpec::for_lang(lang));
+        let Some(spec) = spec else {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "no formatter for {}: no LSP formatting provider, no formatprg, \
+                     and no default for this language",
+                    lang.name()
+                ),
+            );
+            return;
+        };
+
+        let text = self.active_text().as_string();
+        let path = self.document.path();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ExternalFormatOutcome>();
+        self.pending_external_format_rx = Some(rx);
+        // The wake. Without it the result sits until the user happens
+        // to press a key, which reads as a rendering bug rather than a
+        // missing notify (boot-composition.md §3).
+        let async_landed = self.async_landed.clone();
+
+        lattice_runtime::runtime::spawn_blocking_on_lsp_runtime(move || {
+            let outcome = match lattice_format::run(&spec, &text, path.as_deref()) {
+                Ok(formatted) => {
+                    ExternalFormatOutcome::Edits(lattice_format::minimal_edits(&text, &formatted))
+                }
+                Err(e) if e.is_noteworthy() => ExternalFormatOutcome::Failed(e.message()),
+                Err(e) => ExternalFormatOutcome::Skipped(e.message()),
+            };
+            let _ = tx.send(outcome);
+            async_landed.notify_one();
+        });
+    }
+
+    /// Whether any server attached to the active buffer advertises
+    /// whole-document formatting. Rung 1 of [`Self::do_format_request`].
+    fn lsp_supports_formatting(&self) -> bool {
+        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+            return false;
+        };
+        self.lsp
+            .servers_for(uri)
+            .iter()
+            .any(|h| h.capabilities().supports_formatting())
+    }
+
+    /// IN.8b: apply an external formatter's result once it lands.
+    ///
+    /// Returns whether an outcome was consumed. The bool exists for
+    /// tests: without it there is no way to distinguish "the result
+    /// has not arrived yet" from "it arrived and changed nothing",
+    /// and a test that cannot tell those apart passes on a version
+    /// that never delivers.
+    pub fn drain_pending_external_format(&mut self) -> bool {
+        let Some(mut rx) = self.pending_external_format_rx.take() else {
+            return false;
+        };
+        let mut latest = None;
+        while let Ok(o) = rx.try_recv() {
+            latest = Some(o);
+        }
+        self.pending_external_format_rx = Some(rx);
+        let Some(outcome) = latest else {
+            return false;
+        };
+        match outcome {
+            ExternalFormatOutcome::Skipped(msg) => {
+                // Not installed / not configured. Informational, never
+                // an error: this is a state, not an event.
+                tracing::debug!(%msg, "format: skipped");
+                self.set_message(EchoLevel::Info, format!("format: {msg}"));
+            }
+            ExternalFormatOutcome::Failed(msg) => {
+                self.set_message(EchoLevel::Error, format!("format: {msg}"));
+            }
+            ExternalFormatOutcome::Edits(edits) => {
+                if edits.is_empty() {
+                    self.set_message(
+                        EchoLevel::Info,
+                        "format: no changes (already formatted)".to_string(),
+                    );
+                    return true;
+                }
+                let n = edits.len();
+                self.document.begin_undo_group();
+                let mut failed = None;
+                for edit in edits {
+                    if let Err(e) = self.apply_edit_blocking(edit) {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+                self.document.end_undo_group();
+                match failed {
+                    None => self.set_message(
+                        EchoLevel::Info,
+                        format!("format: applied {n} edit{}", if n == 1 { "" } else { "s" }),
+                    ),
+                    Some(e) => {
+                        self.set_message(EchoLevel::Error, format!("format: apply failed: {e}"))
+                    }
+                }
+            }
+        }
+        true
+    }
+
     pub fn do_lsp_format_request(&mut self, is_range: bool) {
         if let Some(token) = self.pending_format_token.take() {
             token.cancel();
@@ -35577,6 +35743,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspMoniker
         | Effect::LspCodeLens
         | Effect::LspColorPresentation
+        | Effect::Format
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -35723,6 +35890,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspMoniker
         | Effect::LspCodeLens
         | Effect::LspColorPresentation
+        | Effect::Format
         | Effect::LspFormat
         | Effect::LspFormatRange
         | Effect::LspSignatureHelp
@@ -46423,6 +46591,149 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(2, 0);
         editor.do_open_line_below();
         assert_eq!(line_at(&editor, 3), "    ");
+    }
+
+    // ---- IN.8b: the `:format` cascade ----
+
+    /// Write an executable fake formatter and return its path.
+    ///
+    /// Same reasoning as `lattice-format`'s runner tests: CI must not
+    /// depend on rustfmt or prettier existing, and a fake is the only
+    /// way to produce the failure modes (non-zero exit, hang) on
+    /// demand rather than hoping for them.
+    fn fake_formatter(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake formatter");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Run `:format` and block until the spawned formatter's result
+    /// has been drained, or the deadline passes.
+    ///
+    /// Polls `drain_pending_external_format` rather than dispatching
+    /// an action, so a missing `async_landed` wake would still be
+    /// caught by `format_result_is_visible_without_another_keystroke`
+    /// below — this helper only exists so the *other* assertions do
+    /// not race the subprocess.
+    fn settle_format(editor: &mut Editor) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if editor.drain_pending_external_format() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("formatter result never arrived");
+    }
+
+    fn editor_with_formatter(text: &str, prg: &str) -> Editor {
+        let mut editor = rust_editor(text);
+        editor.do_set(&format!("formatprg={prg}"));
+        editor
+    }
+
+    #[test]
+    fn formatprg_round_trips_through_do_set() {
+        // Diagnostic-first: if `:set formatprg=/tmp/x/fmt` does not
+        // store the path, every format test silently falls through to
+        // the built-in table and tests nothing.
+        let mut editor = rust_editor("x\n");
+        editor.do_set("formatprg=/tmp/some dir/fmt --stdin");
+        let got = editor
+            .resolved_option::<lattice_config::core_options::FormatPrg>(editor.active_buffer_id());
+        assert_eq!(&*got, "/tmp/some dir/fmt --stdin");
+    }
+
+    #[test]
+    fn format_applies_a_minimal_edit_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "fmt", "sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        settle_format(&mut editor);
+        let msg = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert_eq!(line_at(&editor, 1), "    x();", "outcome message: {msg}");
+    }
+
+    #[test]
+    fn format_result_is_visible_without_another_keystroke() {
+        // The standing rule's assertion: an async result must reach
+        // the screen through the wake, not because the user happened
+        // to press a key. Dispatching an action here would pass even
+        // on a version that forgot to notify.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "fmt", "sed 's/^ *//; s/^/    /'");
+        let mut editor = editor_with_formatter("fn f() {\nx();\n}\n", &prg);
+        editor.do_format_request();
+        settle_format(&mut editor);
+        assert_eq!(
+            line_at(&editor, 1),
+            "    x();",
+            "result must land without dispatching another action"
+        );
+    }
+
+    #[test]
+    fn formatting_an_already_formatted_buffer_applies_nothing() {
+        // The idempotence guard at the host level: a whole-buffer
+        // replace would still "work" visually but is never zero-edit.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "fmt", "cat");
+        let before = "fn f() {\n    x();\n}\n";
+        let mut editor = editor_with_formatter(before, &prg);
+        editor.do_format_request();
+        settle_format(&mut editor);
+        assert_eq!(editor.active_text().as_string(), before);
+    }
+
+    #[test]
+    fn a_failing_formatter_applies_nothing_and_reports() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prg = fake_formatter(dir.path(), "bad", "echo 'boom on line 2' >&2; exit 1");
+        let before = "fn f() {\nx();\n}\n";
+        let mut editor = editor_with_formatter(before, &prg);
+        editor.do_format_request();
+        settle_format(&mut editor);
+        assert_eq!(
+            editor.active_text().as_string(),
+            before,
+            "a rejected format must not touch the buffer"
+        );
+    }
+
+    #[test]
+    fn a_missing_formatter_leaves_the_buffer_alone() {
+        let before = "fn f() {\nx();\n}\n";
+        let mut editor = editor_with_formatter(before, "definitely-not-a-real-formatter-xyz");
+        editor.do_format_request();
+        settle_format(&mut editor);
+        assert_eq!(editor.active_text().as_string(), before);
+    }
+
+    #[test]
+    fn format_without_lsp_or_formatprg_or_a_default_says_so() {
+        // SQL has no default formatter (no consensus tool) and no LSP
+        // here, so `:format` must explain rather than silently no-op.
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path("q.sql")
+                .with_text("select 1;\n")
+                .build(),
+        );
+        editor.do_format_request();
+        assert!(
+            editor.pending_external_format_rx.is_none(),
+            "nothing should have been spawned"
+        );
     }
 
     // ---- IN.7: the `=` reindent operator ----

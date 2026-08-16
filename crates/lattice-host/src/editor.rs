@@ -1837,6 +1837,11 @@ pub struct Editor {
     pub pending_symbols_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SymbolsOutcome>>,
     pub pending_symbols_token: Option<CancellationToken>,
     pub pending_format_rx: Option<tokio::sync::mpsc::UnboundedReceiver<FormatOutcome>>,
+    /// IN.8b: results from an external formatter run. Separate channel
+    /// from the LSP one because the payloads differ -- see
+    /// `ExternalFormatOutcome`.
+    pub pending_external_format_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::dispatch::ExternalFormatOutcome>>,
     pub pending_format_token: Option<CancellationToken>,
     pub pending_signature_help_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SignatureHelpOutcome>>,

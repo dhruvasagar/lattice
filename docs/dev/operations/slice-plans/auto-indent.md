@@ -17,9 +17,9 @@
 | IN.6 | Electric reindent | ✅ |
 | IN.7 | `=` — the reindent operator | ✅ |
 | IN.8a | `lattice-format` crate — spec table, runner, minimal-edit application | ✅ |
-| IN.8b | `:format` cascade + async landing | 📝 |
+| IN.8b | `:format` cascade + async landing | ✅ |
 | IN.9 | Format-on-save; `formatprg` / `equalprg` | 📝 |
-| IN.10 | LSP `onTypeFormatting` — the additive layer | 📝 |
+| IN.10 | LSP `onTypeFormatting` — the additive layer | ⛔ dropped |
 | IN.11 | Per-language mode defaults; GPUI parity audit; docs + benchmarks | 📝 |
 
 ## Shape of the sequence
@@ -610,7 +610,27 @@ all.
 
 ---
 
-## IN.10 — LSP `onTypeFormatting`, additive 📝
+## IN.10 — LSP `onTypeFormatting`, additive ⛔ DROPPED
+
+**Dropped 2026-08-16 (Dhruva).** The plan already marked it optional; the
+evidence gathered since turned "optional" into "not worth it".
+
+IN.6 established that electric reindent has to be lexical, because at the
+instant a closer lands the snapshot is stale *and* the code is half-written, so
+no parse can answer. LSP on-type formatting faces that same wall and adds three
+problems of its own: an async round-trip on the typing path; uneven server
+coverage for the character that actually matters (`}`); and a protocol that
+permits the server to return edits **anywhere in the document**, which the UX
+contract vetoes outright and which would need filtering to the current line
+regardless.
+
+So it would be a second, slower, less reliable path to an answer the lexical
+bridge already gives synchronously. The one thing it could add — a server's
+opinion on trigger characters our electric set does not cover, such as
+rust-analyzer's `.` for method chains — is not worth the machinery.
+
+Not deferred, dropped. If it comes back it should be re-argued from scratch
+rather than resumed from this plan.
 
 **Depends on:** IN.6. Optional; droppable without affecting anything prior.
 

@@ -125,6 +125,8 @@ pub struct ExBuiltins {
     pub lsp_moniker: ExCommandId,
     pub lsp_code_lens: ExCommandId,
     pub lsp_color_presentation: ExCommandId,
+    /// IN.8b: `:format` — the LSP-independent cascade.
+    pub format: ExCommandId,
     pub lsp_format: ExCommandId,
     pub lsp_format_range: ExCommandId,
     pub lsp_signature_help: ExCommandId,
@@ -1887,6 +1889,25 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // IN.8b: the LSP-INDEPENDENT format command. Cascades on
+    // AVAILABILITY, not on failure: if an attached server advertises
+    // formatting it is used, otherwise `formatprg` or the built-in
+    // table. Failure-fallback would need a "how long do we wait before
+    // giving up" answer, and any number there is arbitrary.
+    let format = registry.register_ex_command(
+        "ex:format",
+        "Format the active buffer: LSP if a server advertises formatting, otherwise `formatprg` \
+         or the built-in per-language formatter table (`:format`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::Format)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let lsp_format = registry.register_ex_command(
         "ex:lsp-format",
         "Run `textDocument/formatting` on the active buffer's highest-priority LSP server; apply the returned edits as one undo unit (`:format`, Phase 4.3).",
@@ -2447,6 +2468,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_moniker,
         lsp_code_lens,
         lsp_color_presentation,
+        format,
         lsp_format,
         lsp_format_range,
         lsp_signature_help,

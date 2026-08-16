@@ -827,6 +827,16 @@ pub enum Effect {
     /// priority server with `documentFormattingProvider` and
     /// apply the returned edits as one undo unit. Phase 4.3.
     LspFormat,
+    /// IN.8b: `:format` -- format the whole buffer through the
+    /// availability cascade (LSP if a server advertises formatting,
+    /// otherwise `formatprg` or the built-in per-language table).
+    ///
+    /// Distinct from `LspFormat`, which is LSP-only by name and stays
+    /// that way. `:format` is the LSP-INDEPENDENT command, which is
+    /// why its generic name satisfies the ex-command naming rule
+    /// rather than violating it: that rule exists because a generic
+    /// name implies "works regardless of LSP", and this one does.
+    Format,
     /// `:format-range` -- run `textDocument/rangeFormatting`
     /// over the active Visual selection (when in Visual mode)
     /// or the supplied line range. Apply edits atomically.

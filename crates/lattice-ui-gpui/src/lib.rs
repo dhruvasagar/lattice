@@ -1293,6 +1293,9 @@ impl GpuiApp {
                 self.mutate_editor(move |e| e.do_lsp_log_clear(server_id.as_deref()));
             }
             Effect::LspCodeAction => self.mutate_editor(|e| e.do_lsp_code_action_request()),
+            // IN.8b: the LSP-independent cascade. Kept in lockstep
+            // with the TUI arm per the cross-renderer rule.
+            Effect::Format => self.mutate_editor(|e| e.do_format_request()),
             Effect::LspFormat => self.mutate_editor(|e| e.do_lsp_format_request(false)),
             Effect::LspFormatRange => self.mutate_editor(|e| e.do_lsp_format_request(true)),
             Effect::LspRename { new_name } => {

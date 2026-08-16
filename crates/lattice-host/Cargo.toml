@@ -84,6 +84,7 @@ lattice-config = { path = "../lattice-config" }
 arc-swap = { workspace = true }
 # Phase 5.2: folds.rs uses `tree_sitter::QueryCursor` for the
 # syntax-fold provider; modes.rs touches `lattice_syntax::Lang`.
+lattice-format = { path = "../lattice-format" }
 lattice-syntax = { path = "../lattice-syntax" }
 # T.1 (theme-system slice plan): renderer-neutral theme
 # primitives (`Color` / `Style` / `Modifiers` / `NamedColor` +

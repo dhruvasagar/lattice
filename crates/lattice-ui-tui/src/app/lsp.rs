@@ -967,6 +967,11 @@ impl App {
     ///
     /// Range source for `is_range`: active Visual selection (if
     /// in Visual mode), else the whole buffer.
+    /// IN.8b: `:format` -- the LSP-independent cascade.
+    pub(super) fn do_format_request(&mut self) {
+        self.mutate_editor(|e| e.do_format_request());
+    }
+
     pub(super) fn do_lsp_format_request(&mut self, is_range: bool) {
         // Phase 5.8.AD.2: body migrated.
         self.mutate_editor(move |e| e.do_lsp_format_request(is_range));

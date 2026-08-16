@@ -17746,11 +17746,10 @@ impl Editor {
     /// buffer's prior `DocumentFolds`; the result is stashed. Missing
     /// handle (buffer mid-close) just skips — no panic.
     ///
-    /// `foldmethod` is read from the active buffer's resolved option as a
-    /// proxy for this buffer's (they share the global default in
-    /// practice; a per-buffer override on a non-active diff buffer is not
-    /// a v1 concern, and the diff folds are overlays regardless of the
-    /// primary).
+    /// `foldmethod` is read from THIS buffer's resolved option. It used to
+    /// be the active buffer's, as a proxy — see the comment at the read
+    /// for why that stopped being safe once mode-contributed `foldmethod`
+    /// became buffer-scoped.
     pub fn recompute_folds_for_buffer(&mut self, buffer_id: lattice_core::BufferId) {
         if buffer_id == self.document_buffer_id
             && matches!(
@@ -17769,7 +17768,21 @@ impl Editor {
         let snapshot = handle.snapshot();
         let path_buf = handle.path();
         let syntax_snapshot = self.document_syntax_for(buffer_id).map(|h| h.snapshot());
-        let fm = self.foldmethod();
+        // 2026-08-16: THIS buffer's resolved `foldmethod`, not the active
+        // buffer's. It used to read `self.foldmethod()` (the active
+        // buffer's option cache) as a proxy, justified in this function's
+        // doc by "they share the global default in practice" — which was
+        // true only while the one mode that varied it, `lsp-folding-mode`,
+        // wrote the option GLOBALLY. Now that the contribution is
+        // buffer-scoped the proxy is wrong in exactly the case that
+        // matters: an LSP-attached active buffer would have had its `lsp`
+        // method applied to an inactive buffer with no server, which is
+        // the leak the scoping fix just closed, re-entering by another
+        // door.
+        let fm = self
+            .resolved_option_opt::<lattice_config::core_options::FoldMethodOption>(buffer_id)
+            .map(|v| *v)
+            .unwrap_or_else(|| self.foldmethod());
 
         let fold_reg = self.fold_registry.lock().expect("fold_registry poisoned");
         // Mirror `recompute_folds`'s Manual short-circuit: with no

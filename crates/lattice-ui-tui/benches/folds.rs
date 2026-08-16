@@ -13,7 +13,7 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use lattice_core::Buffer;
+use lattice_core::{Buffer, IndentUnit};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_syntax::{Lang, Syntax};
@@ -61,7 +61,9 @@ fn bench_indent(c: &mut Criterion) {
         let buf = make_buffer(&text);
         g.bench_with_input(BenchmarkId::from_parameter(size), &buf, |bencher, b| {
             bencher.iter(|| {
-                let folds = compute_indent_folds(black_box(b));
+                // IG.5: indent folds measure depth in display columns, so the
+                // walk needs the buffer's indent unit.
+                let folds = compute_indent_folds(black_box(b), &IndentUnit::default());
                 black_box(folds);
             });
         });

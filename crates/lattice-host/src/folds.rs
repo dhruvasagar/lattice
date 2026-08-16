@@ -34,6 +34,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use lattice_core::Buffer;
+use lattice_core::IndentUnit;
 use lattice_syntax::SyntaxSnapshot;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::QueryCursor;
@@ -65,155 +66,45 @@ fn syntax_fold_identity(node_kind: &str, start_line_text: &str) -> u64 {
     h.finish()
 }
 
-/// Run the indent-based fold algorithm against `buffer` and return
-/// every fold range it discovers. All produced folds are open
-/// (`closed = false`) by default -- vim's `foldlevelstart` would
-/// override that, but v1 doesn't model the level option yet.
+/// Run the indent-based fold algorithm against `buffer` and return every fold
+/// it discovers. All produced folds are open (`closed = false`) by default --
+/// vim's `foldlevelstart` would override that, but v1 doesn't model the level
+/// option yet.
 ///
-/// Algorithm:
+/// The walk itself lives in [`lattice_core::indent_blocks::indent_regions`],
+/// shared with indentation guides. A fold and a guide answer the same
+/// question -- *what block is this line in* -- and a user who folds a block
+/// and sees a different extent than the one just highlighted has been told two
+/// different things by the same editor.
 ///
-/// 1. For each non-blank line, compute its indent (count of
-///    leading ASCII whitespace, treating tabs as one cell).
-/// 2. Walk lines top-down; whenever line `i` has a non-blank
-///    successor `j` with strictly greater indent, open a fold
-///    starting at `i`. Walk forward to find the last line whose
-///    indent is greater than `i`'s; that's the fold end.
-/// 3. Skip blank lines when locating the fold end (they don't
-///    break a fold -- vim's behaviour).
+/// **IG.5: depth is display columns now, not leading whitespace characters.**
+/// The `leading_indent` this replaced counted a tab as one column, so a
+/// tab-indented file folded at different boundaries than its space-indented
+/// twin -- the refinement the old doc comment promised "when we honour
+/// `tabstop` / `shiftwidth`". `unit` supplies that, resolved through the
+/// buffer-local stack like every other indent consumer.
 ///
-/// The output is sorted by start_line; nested folds appear
-/// inside their parent's range.
-pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
+/// The output is sorted by start_line; nested folds appear inside their
+/// parent's range.
+pub fn compute_indent_folds(buffer: &Buffer, unit: &IndentUnit) -> Vec<Fold> {
     let text = buffer.as_string();
     let lines: Vec<&str> = text.split('\n').collect();
-    let line_count = lines.len();
-    if line_count <= 1 {
+    if lines.len() <= 1 {
         return Vec::new();
     }
-    let indents: Vec<Option<usize>> = lines
-        .iter()
-        .map(|l| {
-            if l.trim().is_empty() {
-                None
-            } else {
-                Some(leading_indent(l))
-            }
-        })
-        .collect();
-
-    // Precompute next_non_blank_idx[i] = the first j > i with a non-blank
-    // line, or line_count if none. Replaces the O(n) scan in the outer loop.
-    let mut next_non_blank_idx: Vec<usize> = vec![line_count; line_count];
-    {
-        let mut next = line_count;
-        for i in (0..line_count).rev() {
-            next_non_blank_idx[i] = next;
-            if indents[i].is_some() {
-                next = i;
-            }
-        }
-    }
-
-    let mut folds: Vec<Fold> = Vec::new();
-    // Perf guard: cap the number of indent folds to prevent O(folds²) walk
-    // inside providers downstream (folded_line_span chains, etc.) on
-    // pathological files (e.g. monotonically increasing whitespace).
-    const MAX_FOLDS: usize = 5000;
-    for i in 0..line_count {
-        if folds.len() >= MAX_FOLDS {
-            break;
-        }
-        let Some(start_indent) = indents[i] else {
-            continue;
-        };
-        let j = next_non_blank_idx[i];
-        if j >= line_count {
-            continue;
-        }
-        let Some(next_indent) = indents[j] else {
-            continue;
-        };
-        if next_indent <= start_indent {
-            continue;
-        }
-        // Walk forward to find the last line with indent > start_indent.
-        // For pathological files with monotonically increasing indent the
-        // inner loop can walk to end-of-file for every line, yielding
-        // O(n²) behaviour. The MAX_FOLDS cap bounds this: once the cap is
-        // reached the outer loop breaks, so at most MAX_FOLDS × n inner
-        // iterations run.
-        let mut end = j;
-        for (k, ind) in indents.iter().enumerate().skip(j + 1) {
-            match ind {
-                Some(i) if *i > start_indent => end = k,
-                Some(_) => break,
-                None => {
-                    // Blank line: keep looking but don't extend
-                    // the end past it unless a deeper line follows.
-                    continue;
-                }
-            }
-        }
-        // "Closer" inclusion: many languages dedent the closing
-        // delimiter back to the parent indent (Rust / C / JS `}`,
-        // Python triple-quote close, etc.). When the next non-blank
-        // line after `end` is a "closer" line at indent == start_indent
-        // and contains only close-brackets / whitespace, swallow it
-        // so the visible fold-summary line ends with the brace
-        // instead of leaving an orphan `}` below the fold.
-        if let Some(closer) = next_non_blank_line(&indents, end + 1)
-            && let Some(ind) = indents[closer]
-            && ind == start_indent
-            && is_closer_line(lines[closer])
-        {
-            end = closer;
-        }
-        let identity = fold_identity(lines[i], start_indent);
-        folds.push(Fold {
-            start_line: i as u32,
-            end_line: end as u32,
+    let indents = lattice_core::indent_blocks::line_indents(lines.iter().copied(), unit);
+    lattice_core::indent_blocks::indent_regions(&indents)
+        .into_iter()
+        .map(|region| Fold {
+            start_line: region.start_line,
+            end_line: region.end_line,
             closed: false,
-            identity: Some(identity),
-        });
-    }
-    folds
-}
-
-/// Count leading whitespace cells. Tabs and spaces both count as
-/// one cell -- vim's `foldmethod=indent` uses 'shiftwidth' instead
-/// of raw whitespace count; v1 keeps this simple and treats every
-/// leading whitespace byte as one indent unit. (Refinement when
-/// we honour `tabstop` / `shiftwidth` lands with the typed-options
-/// follow-up.)
-fn leading_indent(line: &str) -> usize {
-    line.chars().take_while(|c| c.is_whitespace()).count()
-}
-
-/// Find the next non-blank line in `indents` starting at `from`.
-/// Returns the index, or `None` if every line from `from` onward is
-/// blank.
-fn next_non_blank_line(indents: &[Option<usize>], from: usize) -> Option<usize> {
-    indents.iter().enumerate().skip(from).find_map(
-        |(i, ind)| {
-            if ind.is_some() { Some(i) } else { None }
-        },
-    )
-}
-
-/// True when `line` is a pure closing-bracket line (matched by the
-/// indent fold's "closer inclusion" heuristic). The line must
-/// consist only of whitespace plus one or more of `)`, `]`, `}`,
-/// optionally followed by `,` / `;` -- this catches the common Rust
-/// / C / JS / Go shapes (`}`, `};`, `})`, `})?;`, etc.) without
-/// pulling in the next statement.
-fn is_closer_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed
-        .chars()
-        .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
+            identity: Some(fold_identity(
+                lines[region.start_line as usize],
+                region.opener_depth as usize,
+            )),
+        })
+        .collect()
 }
 
 /// Markdown heading-based fold provider (DESIGN.md §15:18,
@@ -858,7 +749,7 @@ impl FoldProvider for IndentPrimary {
         ProviderKind::Primary
     }
     fn compute(&self, ctx: &FoldContext<'_>) -> Vec<Fold> {
-        compute_indent_folds(ctx.buffer)
+        compute_indent_folds(ctx.buffer, &ctx.indent)
     }
 }
 
@@ -902,7 +793,7 @@ impl FoldProvider for SyntaxPrimary {
         if is_md {
             compute_markdown_folds(ctx.buffer)
         } else {
-            compute_indent_folds(ctx.buffer)
+            compute_indent_folds(ctx.buffer, &ctx.indent)
         }
     }
 }
@@ -947,7 +838,7 @@ mod tests {
     #[test]
     fn empty_buffer_yields_no_folds() {
         let b = buf("");
-        assert!(compute_indent_folds(&b).is_empty());
+        assert!(compute_indent_folds(&b, &IndentUnit::default()).is_empty());
     }
 
     #[test]
@@ -1048,19 +939,19 @@ mod tests {
     #[test]
     fn single_line_yields_no_folds() {
         let b = buf("hello");
-        assert!(compute_indent_folds(&b).is_empty());
+        assert!(compute_indent_folds(&b, &IndentUnit::default()).is_empty());
     }
 
     #[test]
     fn flat_lines_yield_no_folds() {
         let b = buf("a\nb\nc\nd\n");
-        assert!(compute_indent_folds(&b).is_empty());
+        assert!(compute_indent_folds(&b, &IndentUnit::default()).is_empty());
     }
 
     #[test]
     fn one_block_produces_a_fold() {
         let b = buf("def f():\n    pass\n");
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         assert_eq!(folds.len(), 1);
         let f = &folds[0];
         assert_eq!(f.start_line, 0);
@@ -1068,10 +959,53 @@ mod tests {
         assert!(!f.closed);
     }
 
+    /// IG.5: the bug the shared walk fixed. `leading_indent` counted a tab
+    /// as ONE column, so a tab-indented file's nesting looked shallower than
+    /// its space-indented twin's and the two folded at different boundaries.
+    /// Measuring in display columns makes them identical, which is also what
+    /// keeps `zc` and the indentation guides agreeing about a block.
+    #[test]
+    fn tab_indented_file_folds_like_its_space_indented_twin() {
+        let unit = IndentUnit::new(4, false, 4);
+        let tabbed = buf("fn f() {\n\tif c {\n\t\twork();\n\t}\n}\n");
+        let spaced = buf("fn f() {\n    if c {\n        work();\n    }\n}\n");
+        let t: Vec<(u32, u32)> = compute_indent_folds(&tabbed, &unit)
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        let sp: Vec<(u32, u32)> = compute_indent_folds(&spaced, &unit)
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
+        assert_eq!(t, sp);
+        assert_eq!(
+            t,
+            vec![(0, 4), (1, 3)],
+            "each block swallows its closing brace"
+        );
+    }
+
+    /// A `tabstop` change moves where a tab lands, and therefore what counts
+    /// as deeper. The fold walk has to see that, which it could not when it
+    /// measured characters.
+    #[test]
+    fn tabstop_is_honoured_by_the_fold_walk() {
+        // Line 1 is one tab, line 2 is six spaces. At tabstop=4 the tab is
+        // four columns, so line 2 is DEEPER and opens a nested block; at
+        // tabstop=8 it is eight columns, so line 2 is shallower and nests
+        // nothing. Same bytes, different structure — which the walk could
+        // not see while it counted whitespace characters.
+        let b = buf("a\n\tb\n      c\n");
+        let at4 = compute_indent_folds(&b, &IndentUnit::new(4, false, 4));
+        let at8 = compute_indent_folds(&b, &IndentUnit::new(4, false, 8));
+        assert_eq!(at4.len(), 2, "tab == 4 cols: line 2 nests under line 1");
+        assert_eq!(at8.len(), 1, "tab == 8 cols: line 2 is shallower");
+    }
+
     #[test]
     fn nested_blocks_produce_nested_folds() {
         let b = buf("outer:\n    inner:\n        deep\n        deeper\n    after-inner\n");
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         // outer (0..4) and inner (1..3).
         assert!(folds.iter().any(|f| f.start_line == 0 && f.end_line == 4));
         assert!(folds.iter().any(|f| f.start_line == 1 && f.end_line == 3));
@@ -1080,7 +1014,7 @@ mod tests {
     #[test]
     fn blank_lines_inside_a_block_dont_break_it() {
         let b = buf("def f():\n    line1\n\n    line2\n");
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         assert_eq!(folds.len(), 1);
         // Fold extends to line 3 (last indented row); the blank
         // line on row 2 is skipped.
@@ -1091,7 +1025,7 @@ mod tests {
     fn blank_lines_at_top_dont_start_a_fold() {
         let b = buf("\n    indented\nfollowing\n");
         // Line 0 is blank; no fold should start there.
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         assert!(folds.iter().all(|f| f.start_line != 0));
     }
 
@@ -1106,7 +1040,7 @@ mod tests {
         let src =
             "fn outer() {\n    let x = 1;\n    if x > 0 {\n        println!(\"yes\");\n    }\n}\n";
         let b = buf(src);
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         let outer = folds
             .iter()
             .find(|f| f.start_line == 0)
@@ -1128,7 +1062,7 @@ mod tests {
     #[test]
     fn computed_folds_are_open_by_default() {
         let b = buf("a:\n    b\n");
-        let folds = compute_indent_folds(&b);
+        let folds = compute_indent_folds(&b, &IndentUnit::default());
         assert!(!folds[0].closed);
     }
 

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use lattice_core::{Buffer, BufferId, Fold, FoldMethod, ProviderId, ProviderKind};
+use lattice_core::{Buffer, BufferId, Fold, FoldMethod, IndentUnit, ProviderId, ProviderKind};
 use lattice_syntax::SyntaxSnapshot;
 
 /// D.3.f.0: per-recompute inputs passed to every provider.
@@ -40,6 +40,15 @@ use lattice_syntax::SyntaxSnapshot;
 /// `lattice-diff`.
 pub struct FoldContext<'a> {
     pub buffer: &'a Buffer,
+    /// IG.5: this buffer's resolved indent level.
+    ///
+    /// `foldmethod=indent` measures depth in DISPLAY COLUMNS, so it needs
+    /// `tabstop` to compare a tab-indented line against a space-indented one.
+    /// Before IG.5 it counted whitespace characters and folded tab-indented
+    /// files at the wrong boundaries; sharing the walk with indentation
+    /// guides (`lattice_core::indent_blocks`) is what made the omission
+    /// visible, since the two would otherwise disagree about the same block.
+    pub indent: IndentUnit,
     pub buffer_id: BufferId,
     pub path: Option<&'a Path>,
     pub syntax: Option<&'a SyntaxSnapshot>,

@@ -13,7 +13,7 @@
 | IG.2 | `IndentGuides` substrate; per-pane publish; options; theme | ✅ |
 | IG.3 | TUI paint pre-pass | ✅ |
 | IG.4 | GPUI quad pass | ✅ |
-| IG.5 | Migrate `compute_indent_folds` onto the shared walk | 📝 |
+| IG.5 | Migrate `compute_indent_folds` onto the shared walk | ✅ |
 | IG.6 | Bench, ledger, user docs, mode opt-outs | 📝 |
 
 ## Shape of the sequence
@@ -160,16 +160,22 @@ block or excerpt header belongs to no source line, so no guide passes through
 it. Popup pseudo-panes get the empty layer — help prose has no indent blocks
 to measure.
 
-### IG.5 — fold migration 📝
+### IG.5 — fold migration ✅
 
-`compute_indent_folds` calls `indent_blocks`, with depths from
-`IndentUnit::columns_of` instead of `leading_indent`. Delete `leading_indent`
-and the local `is_closer_line` / `next_non_blank_line` helpers superseded by the
-shared walk. Update the `folds.rs` doc comment that promises this refinement.
+`compute_indent_folds(buffer, unit)` calls `indent_regions`, with depths from
+`IndentUnit::columns_of` instead of `leading_indent`. `leading_indent`,
+`next_non_blank_line` and the local `is_closer_line` are deleted;
+`FoldContext` gained an `indent: IndentUnit`.
 
-Tests: existing fold tests stay green for space-indented fixtures; new tests
-cover a tab-indented file folding at the same boundaries as its space-indented
-twin, which is the bug being fixed.
+**The primitive grew a second level.** Folds want one entry per block; guides
+want one per grid column, and a double-indent jump makes those differ. Rather
+than dedupe on either side, `lattice-core::indent_blocks` now exposes
+`indent_regions` (the structural walk) with `indent_blocks` as a thin grid
+expansion over it. Both consumers get the shape they need from one walk.
+
+Tests: existing fold tests stay green; a tab-indented file now folds at the
+same boundaries as its space-indented twin (the bug), and a `tabstop` change
+restructures the folds (which the character-counting walk could not see).
 
 ### IG.6 — bench, ledger, docs, opt-outs 📝
 

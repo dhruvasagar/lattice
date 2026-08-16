@@ -38,9 +38,29 @@ pub struct LineIndent {
     pub closer: bool,
 }
 
+/// A contiguous region of indented lines: everything between an opener and
+/// its closer.
+///
+/// The structural unit. `foldmethod=indent` folds one of these; indentation
+/// guides draw one rule per grid column inside one of these
+/// ([`IndentBlock`]). Keeping them separate is what lets both consumers share
+/// the walk without either bending to the other's shape — a fold does not
+/// want two entries for a double-indent jump, and a guide does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndentRegion {
+    /// Display column of the line that opens the region.
+    pub opener_depth: u16,
+    /// Display column of its first deeper line.
+    pub body_depth: u16,
+    /// Opener line, inclusive.
+    pub start_line: u32,
+    /// Closer line, inclusive.
+    pub end_line: u32,
+}
+
 /// One indent guide: a display column, and the inclusive line range it spans.
 ///
-/// `start_line` is the block's **opener** and `end_line` its **closer**, both
+/// `start_line` is the region's **opener** and `end_line` its **closer**, both
 /// included. Neither is necessarily painted — [`IndentBlock::paints_on`] tests
 /// that — but both belong to the range because the *active* block under a
 /// cursor sitting on `if c {` is the block that line opens, and the block under
@@ -91,19 +111,19 @@ impl IndentBlock {
     }
 }
 
-/// Upper bound on emitted blocks.
+/// Upper bound on emitted regions.
 ///
-/// Mirrors `folds::MAX_FOLDS`. The walk itself is linear, so this is not a
-/// complexity guard — it bounds *memory* on a pathological file (one whose
-/// indentation increases on every line produces one block per line).
-const MAX_BLOCKS: usize = 5000;
+/// Mirrors the `MAX_FOLDS` this replaced. The walk itself is linear, so this
+/// is not a complexity guard — it bounds *memory* on a pathological file (one
+/// whose indentation increases on every line produces one region per line).
+const MAX_REGIONS: usize = 5000;
 
 /// Upper bound on grid columns emitted for a single indent jump.
 ///
 /// An opener at column 0 followed by a body at column 60 000 would otherwise
 /// emit thousands of guides from one line pair. Sixty-four levels is deeper
 /// than any code a guide would help with; past that the guides are the problem.
-const MAX_LEVELS_PER_BLOCK: u16 = 64;
+const MAX_LEVELS_PER_REGION: u16 = 64;
 
 /// Project lines to the walk's input.
 ///
@@ -148,31 +168,25 @@ pub fn is_closer_line(line: &str) -> bool {
         .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
 }
 
-/// Walk `lines` and emit every indent block, ordered by opener then column.
+/// Walk `lines` and emit every indent region, ordered by opener line.
 ///
-/// A block opens at line `p` when the next non-blank line is strictly deeper
+/// A region opens at line `p` when the next non-blank line is strictly deeper
 /// than `p`, and closes at the first non-blank line no deeper than `p` — with
 /// that line swallowed when it is a [closer](is_closer_line) at exactly `p`'s
-/// depth. Blank lines are transparent throughout.
+/// depth. Blank lines are transparent throughout: they neither break a region
+/// nor extend one past its last content line.
 ///
-/// An indent jump of more than one level emits one block per intervening grid
-/// column over the same range: there is no structure between those levels to
-/// give them different extents. Columns are laid on a grid anchored at the
-/// **opener's** column rather than at 0, so continuation-line indentation
-/// (an opener at column 7) still produces guides that line up with the code.
-///
-/// Linear in `lines.len()`: a stack of open blocks, popped when a line closes
+/// Linear in `lines.len()`: a stack of open regions, popped when a line closes
 /// them. The direct transcription of the "walk forward to find the end"
 /// formulation is quadratic on deeply nested files, and this runs on every
 /// publish.
-pub fn indent_blocks(lines: &[LineIndent], step: u16) -> Vec<IndentBlock> {
-    let step = step.max(1);
-    let mut blocks: Vec<IndentBlock> = Vec::new();
-    // (opener line, opener depth, body depth) for each block still open.
+pub fn indent_regions(lines: &[LineIndent]) -> Vec<IndentRegion> {
+    let mut regions: Vec<IndentRegion> = Vec::new();
+    // (opener line, opener depth, body depth) for each region still open.
     let mut open: Vec<(usize, u16, u16)> = Vec::new();
-    // Last non-blank line seen, and its depth. A block that closes at line `k`
-    // ends at this line, because every line between it and `k` was blank or
-    // deeper.
+    // Last non-blank line seen, and its depth. A region that closes at line
+    // `k` ends at this line, because every line between it and `k` was blank
+    // or deeper.
     let mut prev: Option<(usize, u16)> = None;
 
     for (k, line) in lines.iter().enumerate() {
@@ -185,17 +199,22 @@ pub fn indent_blocks(lines: &[LineIndent], step: u16) -> Vec<IndentBlock> {
                 break;
             }
             open.pop();
-            // Unwrap-free: a block can only be open if a non-blank line opened
-            // it, so `prev` is populated. `k - 1` would be wrong — the line
-            // before `k` may be blank, and a block does not extend into the
-            // trailing blank run that follows its last content line.
+            // `k - 1` would be wrong — the line before `k` may be blank, and
+            // a region does not extend into the trailing blank run that
+            // follows its last content line.
             let mut end = prev.map(|(line, _)| line).unwrap_or(opener);
             if depth == opener_depth && line.closer {
                 end = k;
             }
-            push_block_columns(&mut blocks, opener, end, opener_depth, body_depth, step);
-            if blocks.len() >= MAX_BLOCKS {
-                return blocks;
+            regions.push(IndentRegion {
+                opener_depth,
+                body_depth,
+                start_line: opener as u32,
+                end_line: end as u32,
+            });
+            if regions.len() >= MAX_REGIONS {
+                regions.sort_by_key(|r| r.start_line);
+                return regions;
             }
         }
 
@@ -210,36 +229,47 @@ pub fn indent_blocks(lines: &[LineIndent], step: u16) -> Vec<IndentBlock> {
     // End of input closes whatever is still open, at the last content line.
     let end = prev.map(|(line, _)| line).unwrap_or(0);
     while let Some((opener, opener_depth, body_depth)) = open.pop() {
-        push_block_columns(&mut blocks, opener, end, opener_depth, body_depth, step);
-        if blocks.len() >= MAX_BLOCKS {
+        regions.push(IndentRegion {
+            opener_depth,
+            body_depth,
+            start_line: opener as u32,
+            end_line: end as u32,
+        });
+        if regions.len() >= MAX_REGIONS {
             break;
         }
     }
 
-    blocks.sort_by_key(|b| (b.start_line, b.col));
-    blocks
+    regions.sort_by_key(|r| r.start_line);
+    regions
 }
 
-/// Emit one block per grid column in `opener_depth .. body_depth`.
-fn push_block_columns(
-    out: &mut Vec<IndentBlock>,
-    opener: usize,
-    end: usize,
-    opener_depth: u16,
-    body_depth: u16,
-    step: u16,
-) {
-    let mut col = opener_depth;
-    let mut levels = 0u16;
-    while col < body_depth && levels < MAX_LEVELS_PER_BLOCK {
-        out.push(IndentBlock {
-            col,
-            start_line: opener as u32,
-            end_line: end as u32,
-        });
-        col = col.saturating_add(step);
-        levels += 1;
+/// Expand every region into one guide per grid column it spans.
+///
+/// An indent jump of more than one level (opener at column 0, body at column
+/// 8, `step` 4) emits a guide at each intervening column over the same line
+/// range: there is no structure between those levels to give them different
+/// extents. Columns are laid on a grid anchored at the **opener's** column
+/// rather than at 0, so continuation-line indentation (an opener at column 7)
+/// still produces guides that line up with the code.
+pub fn indent_blocks(lines: &[LineIndent], step: u16) -> Vec<IndentBlock> {
+    let step = step.max(1);
+    let mut blocks: Vec<IndentBlock> = Vec::new();
+    for region in indent_regions(lines) {
+        let mut col = region.opener_depth;
+        let mut levels = 0u16;
+        while col < region.body_depth && levels < MAX_LEVELS_PER_REGION {
+            blocks.push(IndentBlock {
+                col,
+                start_line: region.start_line,
+                end_line: region.end_line,
+            });
+            col = col.saturating_add(step);
+            levels += 1;
+        }
     }
+    blocks.sort_by_key(|b| (b.start_line, b.col));
+    blocks
 }
 
 #[cfg(test)]
@@ -478,6 +508,27 @@ mod tests {
     }
 
     #[test]
+    fn regions_and_blocks_agree_on_extents() {
+        // The two views of one walk: a region is what a fold takes, a block is
+        // what a guide takes. A single-level region yields exactly one block
+        // over the same range; a double-level one yields two.
+        let unit = unit(4, 4);
+        let lines = line_indents("fn f() {\n    a\n}".split('\n'), &unit);
+        let regions = indent_regions(&lines);
+        let blocks = indent_blocks(&lines, unit.step());
+        assert_eq!(regions.len(), 1);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            (regions[0].start_line, regions[0].end_line),
+            (blocks[0].start_line, blocks[0].end_line)
+        );
+
+        let lines = line_indents("fn f() {\n        a\n}".split('\n'), &unit);
+        assert_eq!(indent_regions(&lines).len(), 1, "one region for a fold");
+        assert_eq!(indent_blocks(&lines, 4).len(), 2, "two guides for the grid");
+    }
+
+    #[test]
     fn block_count_is_capped() {
         // Every line deeper than the last: one block opens per line and none
         // close until EOF.
@@ -485,13 +536,13 @@ mod tests {
             .map(|i| format!("{}x", " ".repeat(i)))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(blocks_of(&src, 1, 1).len() <= MAX_BLOCKS);
+        assert!(blocks_of(&src, 1, 1).len() <= MAX_REGIONS);
     }
 
     #[test]
     fn single_jump_level_count_is_capped() {
         let src = format!("x:\n{}deep\ny", " ".repeat(10_000));
-        assert_eq!(blocks_of(&src, 1, 1).len(), MAX_LEVELS_PER_BLOCK as usize);
+        assert_eq!(blocks_of(&src, 1, 1).len(), MAX_LEVELS_PER_REGION as usize);
     }
 
     #[test]

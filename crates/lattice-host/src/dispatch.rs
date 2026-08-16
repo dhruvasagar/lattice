@@ -17657,6 +17657,9 @@ impl Editor {
         let ctx = crate::fold_provider::FoldContext {
             buffer: &snapshot.buffer,
             buffer_id: self.document_buffer_id,
+            // IG.5: `foldmethod=indent` measures depth in display columns,
+            // so it needs this buffer's tabstop / shiftwidth.
+            indent: self.indent_unit(self.document_buffer_id),
             path: path_buf.as_deref(),
             syntax: syntax_snapshot.as_deref(),
             lsp_folds: lsp_folds_vec.as_deref(),
@@ -17770,6 +17773,8 @@ impl Editor {
         let ctx = crate::fold_provider::FoldContext {
             buffer: &snapshot.buffer,
             buffer_id,
+            // IG.5: see the sibling site above.
+            indent: self.indent_unit(buffer_id),
             path: path_buf.as_deref(),
             syntax: syntax_snapshot.as_deref(),
             lsp_folds: None,

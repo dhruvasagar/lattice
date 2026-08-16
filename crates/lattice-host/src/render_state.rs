@@ -1256,6 +1256,16 @@ pub struct CellsRenderState {
             Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
         >,
     >,
+    /// IG.2 (2026-08-16): `PaneId → indentation guides`, the peer of
+    /// [`Self::display_pane_matrices`] and derived from the same
+    /// `panes` list at publish time. Read via
+    /// [`Self::indent_guides_for_pane`].
+    pub pane_indent_guides: Arc<
+        std::collections::HashMap<
+            lattice_core::ui::pane::PaneId,
+            Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
+        >,
+    >,
 }
 
 impl CellsRenderState {
@@ -1267,6 +1277,16 @@ impl CellsRenderState {
         pane_id: lattice_core::ui::pane::PaneId,
     ) -> Option<&Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>> {
         self.display_pane_matrices.get(&pane_id)
+    }
+
+    /// IG.2 (2026-08-16): the indentation-guide layer for `pane_id`.
+    /// `None` for a pane with no display matrix (non-Document leaves
+    /// skip the cells path), which is the correct "no guides" answer.
+    pub fn indent_guides_for_pane(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> Option<&Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>> {
+        self.pane_indent_guides.get(&pane_id)
     }
 
     /// D.4.d.1.c: look up the cell matrix for `pane_id`.
@@ -1419,6 +1439,22 @@ pub struct PaneCellsInputs {
     /// later `render_state.load_full()`. Active-pane entries share
     /// Arc identity with [`CellsRenderState::display_matrix`].
     pub display_matrix: Arc<arc_swap::ArcSwap<crate::display_matrix::DisplayMatrix>>,
+    /// IG.2 (2026-08-16): per-pane indentation-guide output cell.
+    /// Cloned from `Editor::indent_guides_for(buffer_id)`. Written in
+    /// the same worker pass that writes [`Self::display_matrix`], from
+    /// the same snapshot and with the same version stamp — the two are
+    /// two projections of one build, not two caches.
+    pub indent_guides: Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
+    /// IG.2: this buffer's resolved indent level. Guides are spaced by
+    /// `shiftwidth` (one level of indent), not by `tabstop` (the width
+    /// of a tab byte); `tabstop` is here too because measuring a
+    /// tab-indented line's depth in display columns needs it.
+    pub indent_unit: lattice_core::IndentUnit,
+    /// IG.2: `display.indent-guides` for this buffer. `false` publishes
+    /// the empty layer rather than skipping the write, so turning guides
+    /// off clears them on the next publish instead of leaving the last
+    /// build painted.
+    pub indent_guides_enabled: bool,
     /// D.4.d.2.1.b (2026-05-29): per-pane virtual-rows matrix
     /// output cell. Cloned from
     /// `Editor::virtual_rows_matrix_for(buffer_id)` so the
@@ -1544,6 +1580,7 @@ impl Default for CellsRenderState {
                 crate::display_matrix::DisplayMatrix::empty(),
             )),
             display_pane_matrices: Arc::new(std::collections::HashMap::new()),
+            pane_indent_guides: Arc::new(std::collections::HashMap::new()),
         }
     }
 }

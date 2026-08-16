@@ -490,6 +490,12 @@ mod tests {
     ) -> crate::render_state::PaneCellsInputs {
         use lattice_core::ui::pane::PaneId;
         crate::render_state::PaneCellsInputs {
+            // IG.2: default guide inputs — enabled with the default indent
+            // unit, which is the shape a test pane has unless it is
+            // exercising guides specifically.
+            indent_guides: Default::default(),
+            indent_unit: lattice_core::IndentUnit::default(),
+            indent_guides_enabled: true,
             pane_id: PaneId::next(),
             buffer_id,
             matrix: Arc::new(ArcSwap::from_pointee(lattice_cells::CellMatrix::empty())),

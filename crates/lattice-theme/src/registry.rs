@@ -740,6 +740,23 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Current-line background tint.",
     );
 
+    // ---- Indentation guides ----
+    //
+    // Dim by default: a guide is a peripheral cue, and one bright
+    // enough to read directly is one that competes with the code it
+    // is measuring. The active guide is the same colour undimmed,
+    // so the contrast between them is what carries the signal.
+    reg_one(
+        "indent.guide",
+        spec().fg("overlay").dim(),
+        "Indentation guide rule.",
+    );
+    reg_one(
+        "indent.guide.active",
+        spec().fg("overlay"),
+        "Indentation guide for the block enclosing the cursor.",
+    );
+
     // ---- *messages* buffer levels ----
     reg_one(
         "messages.timestamp",
@@ -1418,6 +1435,10 @@ pub struct BuiltinElementIds {
     pub syntax_markup: ElementId,
     pub whitespace: ElementId,
     pub whitespace_trailing: ElementId,
+    /// IG.2: indentation guides. Two ids so the block enclosing the
+    /// cursor can be drawn against the rest.
+    pub indent_guide: ElementId,
+    pub indent_guide_active: ElementId,
     // T.6 — search + selection + LSP overlays (BOTH renderers read
     // these; closes the TUI/GPUI parity drift). Search match/current
     // are bg tints in both peers now.
@@ -1561,6 +1582,8 @@ impl Default for BuiltinElementIds {
             syntax_markup: ElementId::INVALID,
             whitespace: ElementId::INVALID,
             whitespace_trailing: ElementId::INVALID,
+            indent_guide: ElementId::INVALID,
+            indent_guide_active: ElementId::INVALID,
             search_match: ElementId::INVALID,
             search_current: ElementId::INVALID,
             selection: ElementId::INVALID,
@@ -1759,6 +1782,8 @@ impl BuiltinElementIds {
             syntax_markup: id("syntax.markup"),
             whitespace: id("whitespace"),
             whitespace_trailing: id("whitespace.trailing"),
+            indent_guide: id("indent.guide"),
+            indent_guide_active: id("indent.guide.active"),
             search_match: id("search.match"),
             search_current: id("search.current"),
             selection: id("selection"),

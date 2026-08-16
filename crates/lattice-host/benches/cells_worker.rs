@@ -103,6 +103,9 @@ fn rs_for(
     let folds: Arc<[lattice_core::Fold]> =
         Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice());
     let pane_entry = PaneCellsInputs {
+        indent_guides: Default::default(),
+        indent_unit: lattice_core::IndentUnit::default(),
+        indent_guides_enabled: true,
         pane_id: PaneId::default(),
         buffer_id: BufferId::default(),
         matrix: matrix_cell.clone(),
@@ -146,6 +149,7 @@ fn rs_for(
         Arc::new(m)
     };
     let cells = CellsRenderState {
+        pane_indent_guides: Arc::new(std::collections::HashMap::new()),
         matrix: matrix_cell,
         version,
         snapshot: Some(snapshot),

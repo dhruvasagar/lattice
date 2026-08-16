@@ -10,7 +10,7 @@
 |---|---|---|
 | IG.0 | Design fragment + this plan | ✅ |
 | IG.1 | `lattice-core::indent_blocks` — the shared block walk | ✅ |
-| IG.2 | `IndentGuides` substrate; per-pane publish; options; theme | 📝 |
+| IG.2 | `IndentGuides` substrate; per-pane publish; options; theme | ✅ |
 | IG.3 | TUI paint pre-pass | 📝 |
 | IG.4 | GPUI quad pass | 📝 |
 | IG.5 | Migrate `compute_indent_folds` onto the shared walk | 📝 |
@@ -86,9 +86,12 @@ Tests for the *predicate* live here too, as a `paints_on(block, row, depth)`
 helper exercised against the design fragment's worked picture — the producer
 owns the rule, so the rule's tests belong beside it.
 
-### IG.2 — substrate + publish + surface 📝
+### IG.2 — substrate + publish + surface ✅
 
-- `lattice-cells`: `GuideMark`, `IndentGuides` (`indent_guides.rs`).
+- `lattice-host`: `GuideMark`, `IndentGuides`, `build_indent_guides`
+  (`src/indent_guides.rs`) — **not** `lattice-cells`, which is deliberately
+  near-dep-free and would have needed a new `lattice-core` edge to hold
+  `IndentBlock`. See the design fragment's IG.2 amendment.
 - `lattice-config`: `display.indent-guides`, `display.indent-guides.char`,
   `display.indent-guides.active`.
 - `lattice-theme`: `indent.guide`, `indent.guide.active` element ids +
@@ -96,10 +99,15 @@ owns the rule, so the rule's tests belong beside it.
 - `lattice-host`: `CellsRenderState::pane_indent_guides` (`PaneId →
   Arc<ArcSwap<IndentGuides>>`) + `indent_guides_for_pane`, populated by
   `cells_worker` in the pass that builds the pane's `DisplayMatrix`.
-- **The one new invalidation edge**: confirm which `MatrixVersion` axis carries
-  `tabstop` and add `shiftwidth` to it. Do not assume — read the axis and its
-  producer, then test that `:set shiftwidth=2` re-spaces guides without a
-  keystroke.
+- **The one new invalidation edge**: `tabstop` turned out to live on the
+  `whitespace` axis, which renderers gate *painting* on — so `shiftwidth` did
+  not go there. `MatrixVersion` gained an `indent` axis instead, gating the
+  rebuild only. See the design fragment.
+- **`resolved_option_opt`**: the publish path cannot use the panicking
+  `resolved_option`. Reading a buffer-local option in `publish_render_state`
+  aborts every test whose minimal config never registered it — the hazard the
+  `wrap_reserved_cols` comment already names. The degrading accessor is for
+  publish-path reads; command-path callers keep the loud one.
 
 Tests: guides published with a version stamp equal to the matrix built beside
 them; option off ⇒ empty layer; `shiftwidth` change ⇒ rebuild without a

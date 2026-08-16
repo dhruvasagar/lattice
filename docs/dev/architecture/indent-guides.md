@@ -174,8 +174,8 @@ depth slice rather than the lines themselves is what lets `compute_indent_folds`
 and the guide builder share the walk while resolving depth differently during
 the migration, and it makes the walk trivially testable without a `Buffer`.
 
-`lattice-cells` — the published layer, in the crate both renderers already
-depend on:
+`lattice-host` (`src/indent_guides.rs`) — the published layer, beside the
+`DisplayMatrix` it rides with:
 
 ```rust
 pub struct GuideMark { pub col: u16, pub block: u16 }
@@ -196,6 +196,35 @@ one column differently without a second lookup.
 Both representations come from one build, in one function, in one pass — they
 are two projections of a single computation rather than two caches that can
 disagree.
+
+> **Amendment (IG.2, 2026-08-16) — the layer lives in `lattice-host`, not
+> `lattice-cells`.** The original sketch put it in `lattice-cells` on the
+> grounds that both renderers depend on that crate. They also both depend on
+> `lattice-host` — `DisplayMatrix` itself lives there — and `lattice-cells` is
+> deliberately kept near-dep-free (its only edge is `lattice-theme`, and its
+> Cargo.toml says why). `IndentBlock` comes from `lattice-core`, so homing the
+> layer in `lattice-cells` would have added a `lattice-cells → lattice-core`
+> edge to buy nothing: the consumers reach `lattice-host` either way. The
+> exception is `MatrixVersion::indent`, which is an axis of a `lattice-cells`
+> type and belongs there.
+
+### Why `indent` is its own version axis
+
+`MatrixVersion` gained an `indent` axis rather than folding `shiftwidth` into
+the existing `whitespace` one. The two are not interchangeable: renderers gate
+*painting* on the whitespace axis — a mismatch drops the viewport to raw text
+for a frame, which is the correct trade for whitespace markers because they are
+baked into `DisplayLine.text`. Guides are not baked into anything, so paying a
+whole-viewport fallback frame to toggle them would be a regression bought for
+nothing. The `indent` axis gates the rebuild only, like `syntax`, `folds` and
+`theme`.
+
+The axis carries `shiftwidth` and whether guides are enabled — the two inputs
+that change the layer's geometry. `display.indent-guides.char` and `.active`
+are deliberately absent: each renderer resolves them at paint, so changing them
+needs a repaint, not a rebuild. `tabstop` is absent because it already bumps
+the `whitespace` axis and invalidates the same matrix; one input on two axes is
+one input that can drift.
 
 ## Per-frame renderer work
 

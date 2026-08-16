@@ -355,6 +355,42 @@ pub(crate) fn gutter_cols(line_count: u32, show_line_numbers: bool) -> u32 {
 /// two panes showing the same buffer share a single output cell
 /// and the second pane sees a `CacheHit` against the rebuild
 /// the first one already published.
+/// IG.2 (2026-08-16): publish this pane's indentation-guide layer for the
+/// range `matrix` covers.
+///
+/// Called from every site that stores `pane.display_matrix`, so the guide
+/// layer and the matrix are never a publish apart. That coupling is the point:
+/// both are projections of one snapshot under one version stamp, and a
+/// renderer that reads a matrix always finds guides built from the same text.
+///
+/// Guides disabled ⇒ the *empty* layer is published rather than the write
+/// skipped. Skipping would leave the previous build painted until something
+/// else forced a rebuild, which is how a `:set noindent-guides` appears not to
+/// work.
+fn publish_indent_guides(
+    pane: &crate::render_state::PaneCellsInputs,
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    matrix: &crate::display_matrix::DisplayMatrix,
+) {
+    if !pane.indent_guides_enabled {
+        let already_empty = pane.indent_guides.load().is_empty();
+        if !already_empty {
+            pane.indent_guides
+                .store(Arc::new(crate::indent_guides::IndentGuides::empty()));
+        }
+        return;
+    }
+    let guides = crate::indent_guides::build_indent_guides(
+        |line| snapshot.buffer.line(line),
+        snapshot.buffer.content_line_count(),
+        &pane.indent_unit,
+        matrix.covered_start_line(),
+        matrix.covered_end_line(),
+        matrix.version,
+    );
+    pane.indent_guides.store(Arc::new(guides));
+}
+
 pub fn recompute_pane(
     pane: &crate::render_state::PaneCellsInputs,
     ct: CellTheme<'_>,
@@ -383,6 +419,8 @@ pub fn recompute_pane(
         pane.display_matrix
             .store(Arc::new(crate::display_matrix::DisplayMatrix::empty()));
         pane.matrix.store(Arc::new(CellMatrix::empty()));
+        pane.indent_guides
+            .store(Arc::new(crate::indent_guides::IndentGuides::empty()));
         return WorkerDecision::Clear;
     };
 
@@ -541,6 +579,7 @@ pub fn recompute_pane(
     // `pane.display_matrix` never observes a stale cell grid.
     let cells = display_matrix_to_cell_matrix(&matrix, ct);
     pane.matrix.store(Arc::new(cells));
+    publish_indent_guides(pane, snapshot.as_ref(), &matrix);
     pane.display_matrix.store(Arc::new(matrix));
     decision
 }
@@ -614,6 +653,7 @@ pub fn sync_rebuild_pane_on_edit(
         // the recentred (windowed) full rebuild off-thread.
         return false;
     }
+    publish_indent_guides(pane, snapshot.as_ref(), &matrix);
     pane.display_matrix.store(Arc::new(matrix));
     true
 }
@@ -2675,6 +2715,13 @@ mod tests {
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
             display_matrix: display_cell.clone(),
+            // IG.2: guides on, default indent unit — the shape a test
+            // pane has unless it is exercising guides specifically.
+            indent_guides: Arc::new(ArcSwap::from_pointee(
+                crate::indent_guides::IndentGuides::empty(),
+            )),
+            indent_unit: lattice_core::IndentUnit::default(),
+            indent_guides_enabled: true,
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
             )),
@@ -2706,6 +2753,7 @@ mod tests {
         };
         let (resolved_theme, theme_ids) = test_cell_theme();
         let cells = CellsRenderState {
+            pane_indent_guides: Arc::new(std::collections::HashMap::new()),
             matrix: matrix_cell,
             version,
             snapshot,
@@ -2743,6 +2791,7 @@ mod tests {
             folds: 0,
             theme: 0,
             whitespace: 0,
+            indent: 0,
         }
     }
 
@@ -3191,6 +3240,7 @@ mod tests {
             folds: 0,
             theme: 0,
             whitespace: 0,
+            indent: 0,
         };
         let v_b = MatrixVersion {
             inlay_hints: 1,
@@ -3940,6 +3990,7 @@ mod tests {
             folds: 0,
             theme: 0xaa,
             whitespace: 0,
+            indent: 0,
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
@@ -5324,6 +5375,12 @@ mod tests {
                     ..MatrixVersion::ZERO
                 };
                 let inputs = crate::render_state::PaneCellsInputs {
+                    // IG.2: default guide inputs — enabled with the default indent
+                    // unit, which is the shape a test pane has unless it is
+                    // exercising guides specifically.
+                    indent_guides: Default::default(),
+                    indent_unit: lattice_core::IndentUnit::default(),
+                    indent_guides_enabled: true,
                     pane_id: lattice_core::ui::pane::PaneId::default(),
                     buffer_id: lattice_core::BufferId::default(),
                     matrix: matrix_cell.clone(),
@@ -5352,6 +5409,7 @@ mod tests {
                     extra_refine: Arc::from(Vec::new().into_boxed_slice()),
                 };
                 let cells = CellsRenderState {
+                    pane_indent_guides: Arc::new(std::collections::HashMap::new()),
                     matrix: matrix_cell.clone(),
                     version: v,
                     snapshot: Some(snap),
@@ -5476,6 +5534,12 @@ mod tests {
                 ..MatrixVersion::ZERO
             };
             let inputs = crate::render_state::PaneCellsInputs {
+                // IG.2: default guide inputs — enabled with the default indent
+                // unit, which is the shape a test pane has unless it is
+                // exercising guides specifically.
+                indent_guides: Default::default(),
+                indent_unit: lattice_core::IndentUnit::default(),
+                indent_guides_enabled: true,
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
                 matrix: matrix_cell.clone(),
@@ -5504,6 +5568,7 @@ mod tests {
                 extra_refine: Arc::from(Vec::new().into_boxed_slice()),
             };
             let cells = CellsRenderState {
+                pane_indent_guides: Arc::new(std::collections::HashMap::new()),
                 matrix: matrix_cell.clone(),
                 version: v,
                 snapshot: Some(snap),
@@ -5568,6 +5633,12 @@ mod tests {
         viewport_height: u32,
     ) -> crate::render_state::PaneCellsInputs {
         crate::render_state::PaneCellsInputs {
+            // IG.2: default guide inputs — enabled with the default indent
+            // unit, which is the shape a test pane has unless it is
+            // exercising guides specifically.
+            indent_guides: Default::default(),
+            indent_unit: lattice_core::IndentUnit::default(),
+            indent_guides_enabled: true,
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix,
@@ -5651,6 +5722,162 @@ mod tests {
             m.segment_count(0) > 1,
             "long line wraps into multiple segments"
         );
+    }
+
+    // ---- IG.2 indentation guides ----
+
+    /// Every guide the worker publishes lands on a blank column of the
+    /// display line built in the same pass.
+    ///
+    /// This is the invariant both renderers are built on: neither carries a
+    /// don't-overwrite-text guard, so a producer bug would surface as
+    /// corrupted text on screen rather than as a failure here. Asserting it
+    /// against the built `DisplayLine` (not against the source rope) is what
+    /// makes it hold after tab expansion.
+    #[test]
+    fn published_guides_land_only_on_blank_columns() {
+        let snap = snap_of("fn f() {\n    if c {\n        work();\n    }\n}\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let p = pane_inputs(matrix_cell, Some(snap), v(1), 10);
+        let _ = recompute_pane(&p, ct, &WhitespaceConfig::default());
+
+        let guides = p.indent_guides.load_full();
+        let matrix = p.display_matrix.load_full();
+        assert!(!guides.is_empty(), "guides published for a nested buffer");
+        let mut painted = 0;
+        for line in 0..5u32 {
+            let row = matrix.row_at_source_line(line).expect("row built");
+            let chars: Vec<char> = row.text.chars().collect();
+            for mark in guides.marks_for_line(line) {
+                painted += 1;
+                assert_eq!(
+                    chars.get(mark.col as usize).copied(),
+                    Some(' '),
+                    "line {line} col {} is not blank in {:?}",
+                    mark.col,
+                    row.text
+                );
+            }
+        }
+        assert!(painted >= 3, "nested fixture paints guides, got {painted}");
+    }
+
+    /// The guide layer carries the stamp of the matrix built beside it.
+    ///
+    /// Coherence by construction: a renderer that has decided a matrix is
+    /// current has, by the same comparison, decided its guides are.
+    #[test]
+    fn guides_carry_the_matrix_version() {
+        let snap = snap_of("fn f() {\n    body\n}\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let p = pane_inputs(matrix_cell, Some(snap), v(1), 10);
+        let _ = recompute_pane(&p, ct, &WhitespaceConfig::default());
+        assert_eq!(
+            p.indent_guides.load().version,
+            p.display_matrix.load().version
+        );
+    }
+
+    /// Guides off publishes the EMPTY layer rather than skipping the write.
+    ///
+    /// Skipping would leave the previous build painted until some unrelated
+    /// rebuild cleared it, which is how `:set noindent-guides` appears not to
+    /// work.
+    #[test]
+    fn disabling_guides_clears_the_published_layer() {
+        let snap = snap_of("fn f() {\n    body\n}\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut p = pane_inputs(matrix_cell, Some(snap), v(1), 10);
+        let _ = recompute_pane(&p, ct, &ws);
+        assert!(!p.indent_guides.load().is_empty());
+
+        // The axis moves with the option, which is what makes the worker
+        // rebuild rather than take the cache-hit branch.
+        p.indent_guides_enabled = false;
+        p.version.indent = crate::indent_guides::indent_axis_version(&p.indent_unit, false);
+        let _ = recompute_pane(&p, ct, &ws);
+        assert!(p.indent_guides.load().is_empty());
+    }
+
+    /// `shiftwidth` re-spaces the guides, and the axis bump is what gets the
+    /// worker to rebuild for it.
+    #[test]
+    fn shiftwidth_change_respaces_guides() {
+        // Body at column 8: at shiftwidth 4 that is two levels, at 8 one.
+        let snap = snap_of("fn f() {\n        deep();\n}\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut p = pane_inputs(matrix_cell, Some(snap), v(1), 10);
+        p.indent_unit = lattice_core::IndentUnit::new(4, true, 4);
+        p.version.indent = crate::indent_guides::indent_axis_version(&p.indent_unit, true);
+        let _ = recompute_pane(&p, ct, &ws);
+        let cols: Vec<u16> = p
+            .indent_guides
+            .load()
+            .marks_for_line(1)
+            .iter()
+            .map(|m| m.col)
+            .collect();
+        assert_eq!(cols, vec![0, 4]);
+
+        p.indent_unit = lattice_core::IndentUnit::new(8, true, 4);
+        p.version.indent = crate::indent_guides::indent_axis_version(&p.indent_unit, true);
+        let decision = recompute_pane(&p, ct, &ws);
+        assert!(
+            !matches!(decision, WorkerDecision::CacheHit),
+            "the indent axis must invalidate the cache, got {decision:?}"
+        );
+        let cols: Vec<u16> = p
+            .indent_guides
+            .load()
+            .marks_for_line(1)
+            .iter()
+            .map(|m| m.col)
+            .collect();
+        assert_eq!(cols, vec![0], "one level of 8 columns");
+    }
+
+    /// A pane whose snapshot vanishes mid-publish clears its guides with its
+    /// matrices, rather than leaving the last build painted over whatever
+    /// replaces the buffer.
+    #[test]
+    fn clearing_a_pane_clears_its_guides() {
+        let snap = snap_of("fn f() {\n    body\n}\n");
+        let matrix_cell = Arc::new(ArcSwap::from_pointee(CellMatrix::empty()));
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut p = pane_inputs(matrix_cell, Some(snap), v(1), 10);
+        let _ = recompute_pane(&p, ct, &ws);
+        assert!(!p.indent_guides.load().is_empty());
+
+        p.snapshot = None;
+        let _ = recompute_pane(&p, ct, &ws);
+        assert!(p.indent_guides.load().is_empty());
     }
 
     /// W.4.t: a hard tab expands to `tabstop` columns of cells, so

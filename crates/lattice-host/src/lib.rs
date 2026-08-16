@@ -116,6 +116,10 @@ pub mod cells_worker;
 // retires the per-character `CellMatrix`. See
 // docs/dev/architecture/display-line.md.
 pub mod display_matrix;
+// IG.2 (2026-08-16): the per-pane indentation-guide layer, built beside
+// the display matrix and consumed by both renderer peers. See
+// `docs/dev/architecture/indent-guides.md`.
+pub mod indent_guides;
 // D.0a.1 (2026-05-29): virtual-rows worker. Sibling of
 // `cells_worker`; owns the `VirtualRowMatrix` rebuild path,
 // polls registered `VirtualRowProvider`s on wake, publishes

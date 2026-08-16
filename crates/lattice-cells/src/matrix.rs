@@ -666,6 +666,7 @@ mod tests {
             folds: 0,
             theme: 0,
             whitespace: 0,
+            indent: 0,
         };
         let c1 = Arc::new(CellChunk::new(0, vec![row(0, b'a')], v));
         let c2 = Arc::new(CellChunk::new(1, vec![row(1, b'b')], v));

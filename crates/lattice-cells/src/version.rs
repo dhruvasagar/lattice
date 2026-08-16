@@ -53,6 +53,18 @@ pub struct MatrixVersion {
     /// in `Cell.ch` — folding the config into this axis
     /// invalidates the cached matrix when the user re-configures.
     pub whitespace: u64,
+    /// IG.2 (2026-08-16): `shiftwidth` + the `display.indent-guides.*`
+    /// snapshot hash. Indentation guides are built beside the display
+    /// matrix from the same snapshot, so they need an axis that makes
+    /// the worker rebuild when their inputs change.
+    ///
+    /// Deliberately NOT folded into [`Self::whitespace`], even though
+    /// both are display-config axes: renderers gate *painting* on the
+    /// whitespace axis (a mismatch drops the viewport to raw text for a
+    /// frame), and toggling guides must not cost a whole-viewport
+    /// fallback when the display text is not affected at all. This axis
+    /// gates the rebuild only — like `syntax`, `folds` and `theme`.
+    pub indent: u64,
 }
 
 impl MatrixVersion {
@@ -64,6 +76,7 @@ impl MatrixVersion {
         folds: 0,
         theme: 0,
         whitespace: 0,
+        indent: 0,
     };
 
     /// `true` when any component differs from `other`. Used by the
@@ -97,6 +110,7 @@ mod tests {
             },
             MatrixVersion { folds: 1, ..base },
             MatrixVersion { theme: 1, ..base },
+            MatrixVersion { indent: 1, ..base },
         ];
         for v in bumps {
             assert!(v.differs_from(&base), "expected differs: {v:?}");
@@ -113,6 +127,7 @@ mod tests {
             folds: 0,
             theme: 1,
             whitespace: 0,
+            indent: 0,
         };
         assert!(!v.differs_from(&v));
     }

@@ -1589,6 +1589,19 @@ pub struct Editor {
             >,
         >,
     >,
+    /// IG.2 (2026-08-16): per-document indentation-guide registry.
+    /// Exact peer of [`Self::display_matrices`] — the guide layer is
+    /// built in the same worker pass, from the same snapshot, and
+    /// carries the same `MatrixVersion`, so it is keyed and reached
+    /// the same way. Inserted lazily via [`Self::indent_guides_for`].
+    pub indent_guides: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                lattice_core::BufferId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
+            >,
+        >,
+    >,
     /// D.2.d (2026-05-29): diff subsystem instance. Holds the
     /// per-buffer `DiffSession` registry, the routing inverse
     /// index, and the per-session lazy debouncer. Reads through
@@ -2152,6 +2165,22 @@ impl Editor {
             .display_matrices
             .lock()
             .expect("display_matrices mutex poisoned");
+        map.entry(buffer_id).or_default().clone()
+    }
+
+    /// IG.2 (2026-08-16): lazy port into [`Self::indent_guides`].
+    /// Peer of [`Self::display_matrix_for`], with the same idempotence
+    /// contract: every call for the same `buffer_id` returns the same
+    /// `Arc` identity, so renderer reads and worker writes stay
+    /// coherent.
+    pub fn indent_guides_for(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> std::sync::Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>> {
+        let mut map = self
+            .indent_guides
+            .lock()
+            .expect("indent_guides mutex poisoned");
         map.entry(buffer_id).or_default().clone()
     }
 

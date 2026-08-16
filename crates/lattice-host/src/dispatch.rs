@@ -934,6 +934,20 @@ impl Editor {
                 .map(|p| (p.pane_id, p.display_matrix.clone()))
                 .collect(),
         );
+        // IG.2 (2026-08-16): PaneId → indentation-guide lookup, from the
+        // same `cells_panes` slice. Read via
+        // `CellsRenderState::indent_guides_for_pane`.
+        let pane_indent_guides: std::sync::Arc<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
+            >,
+        > = std::sync::Arc::new(
+            cells_panes
+                .iter()
+                .map(|p| (p.pane_id, p.indent_guides.clone()))
+                .collect(),
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1487,6 +1501,10 @@ impl Editor {
                         oc.tabstop.hash(&mut h);
                         h.finish()
                     },
+                    // IG.2: the active document's guide axis. Per-pane
+                    // entries resolve their own (guides are buffer-local);
+                    // this is the top-level aggregate.
+                    indent: self.indent_guide_inputs(self.document_buffer_id).version,
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -1533,6 +1551,7 @@ impl Editor {
                 // `display_matrix_cell`).
                 display_matrix: self.display_matrix_for(self.document_buffer_id),
                 display_pane_matrices,
+                pane_indent_guides,
             })),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session
@@ -14713,6 +14732,12 @@ impl Editor {
 
         let text_version = snapshot.as_ref().map(|s| s.text_version).unwrap_or(0);
 
+        // IG.2: guides are buffer-local, so they resolve per pane rather
+        // than from the publish-wide option cache.
+        let guides = self.indent_guide_inputs(buffer_id);
+        let indent_unit = guides.unit;
+        let indent_guides_enabled = guides.enabled;
+
         let version = lattice_cells::MatrixVersion {
             text: text_version,
             // 2026-06-03: syntax axis = this pane's syntax-snapshot
@@ -14749,6 +14774,7 @@ impl Editor {
             folds: if foldenable { folds_hash } else { !folds_hash },
             theme: theme_hash,
             whitespace: whitespace_hash,
+            indent: guides.version,
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so
@@ -14780,6 +14806,11 @@ impl Editor {
             // identity with `Editor::display_matrix_cell` (boot
             // seed). No-op until the B2.2 worker writes through it.
             display_matrix: self.display_matrix_for(buffer_id),
+            // IG.2 (2026-08-16): the guide layer rides the same build as
+            // the display matrix, so its cell is attached the same way.
+            indent_guides: self.indent_guides_for(buffer_id),
+            indent_unit,
+            indent_guides_enabled,
             // D.4.d.2.1.b (2026-05-29): pre-attach the
             // per-buffer virtual-rows cell at publish time.
             // Active-pane entry shares Arc identity with
@@ -31338,6 +31369,31 @@ impl Editor {
         self.config.get_typed::<D>().expect("option not registered")
     }
 
+    /// [`Self::resolved_option`] that degrades to `None` instead of panicking
+    /// when the option is not registered.
+    ///
+    /// For the **publish path** specifically. `publish_render_state` runs on
+    /// every keystroke and against the minimal configs `Editor::boot` builds
+    /// in tests, and an option that some later slice starts reading there must
+    /// not turn those into crashes — the same hazard the `wrap_reserved_cols`
+    /// comment above avoids by reading the option cache. Command-path callers
+    /// keep using [`Self::resolved_option`], where an unregistered option is a
+    /// programming error worth failing loudly on.
+    pub fn resolved_option_opt<D: lattice_config::OptionDecl>(
+        &self,
+        buffer: BufferId,
+    ) -> Option<std::sync::Arc<D::Value>>
+    where
+        D::Value: Clone + Send + Sync + 'static,
+    {
+        if let Some(cache) = self.resolved_options.get(&buffer)
+            && let Some(v) = cache.get::<D>()
+        {
+            return Some(v);
+        }
+        self.config.get_typed::<D>()
+    }
+
     /// IN.0: one level of indentation for `buffer`, resolved from
     /// `shiftwidth` / `expandtab` / `tabstop` through the buffer-local
     /// stack (so `:setlocal shiftwidth=2` and a major mode's
@@ -31357,6 +31413,52 @@ impl Editor {
         let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
         let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
         lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
+    }
+
+    /// IG.2: the indentation-guide inputs for `buffer`, resolved through
+    /// the same buffer-local stack as [`Self::indent_unit`].
+    ///
+    /// The version carries only what changes the guides' *geometry* --
+    /// `shiftwidth` (their spacing) and whether they exist at all.
+    /// `display.indent-guides.char` and `.active` are deliberately
+    /// absent: the glyph and the active-block highlight are resolved by
+    /// each renderer at paint, so changing them needs a repaint, not a
+    /// rebuild of the layer. `tabstop` is absent because it already
+    /// bumps the `whitespace` axis, and one input on two axes is one
+    /// input that can drift.
+    ///
+    /// Resolved through [`Self::resolved_option_opt`], not
+    /// [`Self::resolved_option`]: this runs on the publish path, where an
+    /// option a minimal test config never registered must degrade to its
+    /// default rather than abort the publish. That is the same hazard the
+    /// `wrap_reserved_cols` comment in `build_pane_cells_inputs` names, and
+    /// the fallbacks here are the values an unconfigured buffer resolves to
+    /// anyway.
+    pub fn indent_guide_inputs(&self, buffer: BufferId) -> crate::indent_guides::IndentGuideInputs {
+        use lattice_config::core_options::{ExpandTab, IndentGuides, Shiftwidth, Tabstop};
+        let default = lattice_core::IndentUnit::default();
+        let width = self
+            .resolved_option_opt::<Shiftwidth>(buffer)
+            .map(|v| (*v).clamp(1, 32) as u8)
+            .unwrap_or(default.width);
+        let tabstop = self
+            .resolved_option_opt::<Tabstop>(buffer)
+            .map(|v| (*v).clamp(1, 32) as u8)
+            .unwrap_or(default.tabstop);
+        let expand_tabs = self
+            .resolved_option_opt::<ExpandTab>(buffer)
+            .map(|v| *v)
+            .unwrap_or(default.expand_tabs);
+        let unit = lattice_core::IndentUnit::new(width, expand_tabs, tabstop);
+        let enabled = self
+            .resolved_option_opt::<IndentGuides>(buffer)
+            .map(|v| *v)
+            .unwrap_or(true);
+        crate::indent_guides::IndentGuideInputs {
+            version: crate::indent_guides::indent_axis_version(&unit, enabled),
+            unit,
+            enabled,
+        }
     }
 
     /// IN.1: the whitespace a line created after `after_line` should
@@ -46381,6 +46483,68 @@ mod tests {
         assert_eq!(u.width, 4, "shiftwidth default");
         assert!(u.expand_tabs, "expandtab default");
         assert_eq!(u.tabstop, 4, "tabstop default");
+    }
+
+    // ---- IG.2: the indentation-guide axis ----
+
+    /// `:set shiftwidth` moves the guide axis, which is what makes the cells
+    /// worker rebuild the layer. Without this the option would change the
+    /// operators' behaviour and leave the guides drawn at the old spacing
+    /// until an unrelated edit happened to invalidate the matrix.
+    #[test]
+    fn shiftwidth_moves_the_indent_guide_axis() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let before = editor.indent_guide_inputs(editor.active_buffer_id());
+        editor.do_set("shiftwidth=2");
+        let after = editor.indent_guide_inputs(editor.active_buffer_id());
+        assert_eq!(after.unit.width, 2);
+        assert_ne!(before.version, after.version, "the indent axis must move");
+    }
+
+    /// Turning guides off moves the axis too — the worker has to be told to
+    /// rebuild in order to publish the empty layer.
+    #[test]
+    fn toggling_indent_guides_moves_the_axis() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let before = editor.indent_guide_inputs(editor.active_buffer_id());
+        assert!(before.enabled, "guides default on");
+        editor.do_set("display.indent-guides=false");
+        let after = editor.indent_guide_inputs(editor.active_buffer_id());
+        assert!(!after.enabled);
+        assert_ne!(before.version, after.version);
+    }
+
+    /// The glyph and the active-block highlight are resolved by each renderer
+    /// at paint, so changing them must NOT invalidate the built layer — a
+    /// rebuild for a repaint-only change is wasted worker time on every
+    /// `:set`, and on the whitespace axis the same mistake costs a
+    /// whole-viewport fallback frame.
+    #[test]
+    fn guide_glyph_and_active_toggle_do_not_move_the_axis() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let before = editor.indent_guide_inputs(editor.active_buffer_id());
+        editor.do_set("display.indent-guides.char=|");
+        editor.do_set("display.indent-guides.active=false");
+        let after = editor.indent_guide_inputs(editor.active_buffer_id());
+        assert_eq!(before.version, after.version);
+    }
+
+    /// Guides are buffer-local, so a mode that turns them off through
+    /// `Mode::options()` (or a `:setlocal`) affects only its own buffer.
+    #[test]
+    fn indent_guides_resolve_per_buffer() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let _ = editor.do_set_local("display.indent-guides=false");
+        let active = editor.indent_guide_inputs(editor.active_buffer_id());
+        assert!(!active.enabled, "the local write took effect");
+        // The global default is untouched, so a buffer without the override
+        // still gets guides — which is what makes a mode opt-out local.
+        assert!(
+            *editor.resolved_option::<lattice_config::core_options::IndentGuides>(
+                lattice_core::BufferId::default()
+            ),
+            "global default unchanged"
+        );
     }
 
     #[test]

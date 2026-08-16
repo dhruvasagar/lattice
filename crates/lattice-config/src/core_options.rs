@@ -684,6 +684,36 @@ crate::options! {
     /// empty; `¬` is the conventional choice.
     #[name("display.whitespace.eol")]
     pub WhitespaceEol: String = String::new();
+
+    // ---- IG.2 indentation guides ----
+    //
+    // A vertical rule down the whitespace at each level of
+    // indentation, with the block enclosing the cursor drawn
+    // brighter. Spacing is `shiftwidth` (one level of indent),
+    // not `tabstop` (the width of a tab byte) -- see
+    // `docs/dev/architecture/indent-guides.md`.
+    //
+    // Buffer-local, so a mode whose buffers gain nothing from
+    // guides turns them off through `Mode::options()` rather
+    // than through a kind check in the renderer.
+
+    /// Draw a vertical rule at each level of indentation.
+    #[name("display.indent-guides")]
+    pub IndentGuides: bool = true;
+
+    /// Glyph the TUI substitutes into the guide column. The GPU
+    /// peer paints a one-pixel rule instead and ignores this --
+    /// a terminal cell cannot hold a hairline, so the two peers
+    /// approximate the same rule with the means they have.
+    /// Empty string ⇒ no guides in the TUI.
+    #[name("display.indent-guides.char")]
+    pub IndentGuidesChar: String = "│".into();
+
+    /// Draw the block enclosing the cursor in the
+    /// `indent.guide.active` style rather than `indent.guide`.
+    /// Off leaves every guide uniform.
+    #[name("display.indent-guides.active")]
+    pub IndentGuidesActive: bool = true;
 }
 
 // ---- Picker group: file finder / command palette / grep ----

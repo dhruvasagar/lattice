@@ -2653,6 +2653,36 @@ impl EditorView {
                             && m.version.folds == folds
                     })
             },
+            // IG.4 (2026-08-16): this pane's indentation guides. No stale
+            // guard here — the layer carries the stamp of the matrix built
+            // beside it, so the guards on `cell_matrix` / `display_matrix`
+            // above already cover it: a pane that falls back to `shape_row`
+            // paints no guides for that frame because the body it is
+            // painting is not the one they were computed against.
+            indent_guides: {
+                let cells = rs_guard.cells.load();
+                cells
+                    .indent_guides_for_pane(pane.id)
+                    .map(|cell| cell.load_full())
+                    .unwrap_or_default()
+            },
+            // IG.4: the active block, picked from THIS pane's cursor line —
+            // so a split highlights each pane's own enclosing block, and a
+            // cursor move restyles one column without waking the worker.
+            indent_guide_active: {
+                let cells = rs_guard.cells.load();
+                let guides = cells
+                    .indent_guides_for_pane(pane.id)
+                    .map(|cell| cell.load_full())
+                    .unwrap_or_default();
+                rs_guard
+                    .active_document
+                    .load()
+                    .option_cache
+                    .indent_guide_active
+                    .then(|| guides.active_block(pane.cursor.line))
+                    .flatten()
+            },
             // T.5.b: the resolved table + builtin ids the display-line
             // path resolves syntax styles through (`resolve_syntax_style`),
             // replacing the `host_theme.syntax_style` read. Reuses the
@@ -3758,6 +3788,12 @@ impl Render for EditorView {
                         // `usize::MAX - 1`: distinct ElementId from the
                         // floating popup (`usize::MAX`) and every real pane.
                         pane_idx: usize::MAX - 1,
+                        // IG.4: no guides on the popup pseudo-panes. They
+                        // render help / preview prose, where indentation is
+                        // layout rather than structure — there is no block
+                        // for a rule to measure.
+                        indent_guides: Default::default(),
+                        indent_guide_active: None,
                         theme: theme.clone(),
                         text: std::sync::Arc::new(window_text),
                         scroll,
@@ -4351,6 +4387,10 @@ impl Render for EditorView {
                 // real pane index (0, 1, 2, …) so GPUI tracks the popup
                 // element across frames without colliding.
                 pane_idx: usize::MAX,
+                // IG.4: see the sibling pseudo-pane above — help prose has
+                // no indent blocks to measure.
+                indent_guides: Default::default(),
+                indent_guide_active: None,
                 theme: theme.clone(),
                 text: std::sync::Arc::new(window_text),
                 scroll: popup_scroll,

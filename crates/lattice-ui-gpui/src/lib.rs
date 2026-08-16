@@ -140,6 +140,12 @@ pub mod paint_cells;
 // `window.rs`.
 #[cfg(feature = "window")]
 pub mod hit_test;
+// IG.4 (2026-08-16): indentation-guide paint geometry. NOT gated on
+// `window`: the column arithmetic is the part worth testing, and gating
+// it would put it out of reach of `cargo test -p lattice-ui-gpui`. The
+// paint itself lives in `editor_element`, which is gated.
+// Anchor: `docs/dev/architecture/indent-guides.md`.
+pub(crate) mod indent_guides;
 
 #[cfg(feature = "window")]
 pub use window::{document_from_path, run};
@@ -234,6 +240,14 @@ pub struct GpuiTheme {
     /// Mid-grey by default so it doesn't compete with the
     /// candidate text.
     pub picker_marginalia_fg: u32,
+    /// IG.4: indentation-guide rule colour, from the `indent.guide`
+    /// theme element. Dim by default — a guide bright enough to read
+    /// directly is one that competes with the code it measures.
+    pub indent_guide: u32,
+    /// IG.4: the guide for the block enclosing the cursor, from
+    /// `indent.guide.active`. Same hue undimmed; the contrast between
+    /// the two is what carries the signal.
+    pub indent_guide_active: u32,
 }
 
 impl Default for GpuiTheme {
@@ -275,6 +289,11 @@ impl Default for GpuiTheme {
             // `popup_border` (which doubles as the popup
             // accent) so kind glyphs don't dominate the row.
             picker_marginalia_fg: 0x7f849c,
+            // Catppuccin Mocha surface1 / overlay0 — the same pair the
+            // TUI resolves from `indent.guide{,.active}` when the theme
+            // leaves them at their registered defaults.
+            indent_guide: 0x45475a,
+            indent_guide_active: 0x6c7086,
         }
     }
 }
@@ -944,6 +963,15 @@ impl GpuiApp {
         }
         if let Some(fg) = resolved.get(ids.ui_popup_hint).fg {
             self.theme.popup_hint = fg.to_rgb_u32(defaults.popup_hint);
+        }
+        // IG.4: guide colours ↔ `indent.guide` / `indent.guide.active`,
+        // the same two elements the TUI peer resolves, so a
+        // `:colorscheme` recolours the rules in both renderers together.
+        if let Some(fg) = resolved.get(ids.indent_guide).fg {
+            self.theme.indent_guide = fg.to_rgb_u32(defaults.indent_guide);
+        }
+        if let Some(fg) = resolved.get(ids.indent_guide_active).fg {
+            self.theme.indent_guide_active = fg.to_rgb_u32(defaults.indent_guide_active);
         }
         // T.11.0b: source the canvas (window bg/fg, block-cursor
         // inversion, popup surface) from the resolved table so a

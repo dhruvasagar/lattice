@@ -397,6 +397,22 @@ pub(crate) struct EditorElement {
     /// `RowPrepaint`) retired in S4.3; display-line B4.2 then deleted
     /// the `RowPrepaint` / `visible_rows` prepaint cache entirely.
     pub(crate) cell_matrix: Option<Arc<CellMatrix>>,
+    /// IG.4 (2026-08-16): this pane's indentation-guide layer, published
+    /// by `cells_worker` in the same pass as the display matrix above.
+    ///
+    /// No stale guard of its own, unlike `cell_matrix` / `display_matrix`:
+    /// the layer carries the stamp of the matrix built beside it, so the
+    /// guard those two already apply covers this as well. If a matrix is
+    /// current enough to paint, its guides are too.
+    pub(crate) indent_guides: Arc<lattice_host::indent_guides::IndentGuides>,
+    /// IG.4: index into `indent_guides.blocks` of the block enclosing this
+    /// pane's cursor, or `None` at top level / with
+    /// `display.indent-guides.active` off.
+    ///
+    /// Picked per frame from the cursor row rather than published, which is
+    /// what keeps cursor motion off the worker entirely — see the design
+    /// fragment.
+    pub(crate) indent_guide_active: Option<u16>,
     /// B3 (2026-06-04): canonical `DisplayMatrix` snapshot — the GPU's
     /// primary shaping source. Populated from
     /// `render_state.cells.display_matrix` for the active pane (guarded on
@@ -2250,6 +2266,66 @@ impl Element for EditorElement {
                             );
                         }
                     }
+                }
+            }
+        }
+
+        // IG.4: indentation guides — a one-pixel rule down each marked
+        // column, two pixels for the block enclosing the cursor.
+        //
+        // After the body glyphs so the rule sits over the (blank) cell
+        // rather than under it, and before the diagnostic underlines so a
+        // squiggle still wins where the two meet.
+        //
+        // Which columns carry a guide is decided once, in the producer
+        // (`IndentBlock::paints_on`), so nothing here re-derives it and the
+        // two renderer peers cannot drift. What differs from the TUI is
+        // only the mechanism: a terminal cell can hold a box-drawing glyph,
+        // this can hold a hairline that joins across rows into one line.
+        if !self.indent_guides.is_empty() {
+            let guide_fg = rgb(self.theme.indent_guide);
+            let guide_fg_active = rgb(self.theme.indent_guide_active);
+            let pane_right = bounds.origin.x + bounds.size.width;
+            for (i, meta) in prepaint.row_meta.iter().enumerate() {
+                let line_y = row_top(i);
+                if line_y >= pane_bottom {
+                    break;
+                }
+                // `u32::MAX` is the virtual-row sentinel (diff deletion
+                // block, excerpt header). Such a row belongs to no source
+                // line, so no guide passes through it.
+                let (line_idx, _) = meta;
+                if *line_idx == u32::MAX {
+                    continue;
+                }
+                let marks = self.indent_guides.marks_for_line(*line_idx);
+                if marks.is_empty() {
+                    continue;
+                }
+                for guide in
+                    crate::indent_guides::visible_guides(marks, self.indent_guide_active, leftcol)
+                {
+                    // `col_x` re-applies the `leftcol` pan, so hand it the
+                    // absolute column the guide came from.
+                    let x = col_x(i, guide.col + leftcol);
+                    if x >= pane_right {
+                        continue;
+                    }
+                    let colour = if guide.active {
+                        guide_fg_active
+                    } else {
+                        guide_fg
+                    };
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(x, line_y),
+                            size(
+                                px(crate::indent_guides::guide_width(guide.active)),
+                                row_h(i),
+                            ),
+                        ),
+                        colour,
+                    ));
                 }
             }
         }

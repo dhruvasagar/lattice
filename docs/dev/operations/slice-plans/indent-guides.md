@@ -12,7 +12,7 @@
 | IG.1 | `lattice-core::indent_blocks` — the shared block walk | ✅ |
 | IG.2 | `IndentGuides` substrate; per-pane publish; options; theme | ✅ |
 | IG.3 | TUI paint pre-pass | ✅ |
-| IG.4 | GPUI quad pass | 📝 |
+| IG.4 | GPUI quad pass | ✅ |
 | IG.5 | Migrate `compute_indent_folds` onto the shared walk | 📝 |
 | IG.6 | Bench, ledger, user docs, mode opt-outs | 📝 |
 
@@ -140,15 +140,25 @@ column resolves to the active style and its siblings do not; `leftcol > 0`
 clipping; guides absent when the matrix is stale (no panic, no misplacement);
 `:set nolist` and `:set list` both correct at guide columns.
 
-### IG.4 — GPUI 📝
+### IG.4 — GPUI ✅
 
-`crates/lattice-ui-gpui/src/editor_element.rs`: quad pass after the body glyph
-emission, reusing the existing `col → x` formula. Widths 1px / 2px.
+`crates/lattice-ui-gpui/src/indent_guides.rs` (geometry) +
+`editor_element.rs`'s paint body (quads after the body glyphs, before the
+diagnostic underlines). Widths 1px / 2px; colours from `indent.guide{,.active}`
+through `GpuiTheme`, so `:colorscheme` recolours both peers together.
 
-Tests: the shared resolution (columns + active index) asserted at the same layer
-IG.3 asserts, so the peers are provably reading one source. Parity audit:
-`grep -rn "IndentGuides\|GuideMark" crates/lattice-ui-gpui/ --include="*.rs"`
-must be non-empty.
+The geometry module is **not** `#[cfg(feature = "window")]`, unlike its
+`paint_cells` / `hit_test` neighbours. CI runs this crate's tests with `window`
+**off** and only *builds* with it on, so gating the module would mean its tests
+never run in the job that runs tests. The cost is a
+`cfg_attr(not(window), allow(dead_code))` — scoped to exactly the configuration
+where the paint consumer is compiled out, so a genuinely dead item still warns
+in the `window` build.
+
+Virtual rows are skipped via the `u32::MAX` `row_meta` sentinel: a deletion
+block or excerpt header belongs to no source line, so no guide passes through
+it. Popup pseudo-panes get the empty layer — help prose has no indent blocks
+to measure.
 
 ### IG.5 — fold migration 📝
 

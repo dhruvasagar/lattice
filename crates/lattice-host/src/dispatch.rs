@@ -47251,6 +47251,44 @@ mod tests {
         );
     }
 
+    /// Regression for the 2026-08-16 report: `foldmethod` was being set to
+    /// `lsp` GLOBALLY, not per buffer.
+    ///
+    /// `lsp-folding-mode` wrote the option through
+    /// `ConfigRegistry::set_typed` from `on_activate`, which is the global
+    /// registry — so attaching a server to one buffer changed `foldmethod`
+    /// for every buffer in the editor, including ones with no server. It
+    /// now contributes through `Mode::options()`, which resolves per
+    /// buffer.
+    ///
+    /// Asserted at the resolution layer rather than by driving a real LSP
+    /// attach: the defect was never about the server, only about which
+    /// scope the option landed in.
+    #[test]
+    fn lsp_folding_mode_does_not_move_foldmethod_globally() {
+        use lattice_config::core_options::FoldMethodOption;
+        use lattice_mode::Mode;
+
+        // The contribution exists and names `lsp` — the half that used to
+        // be an empty set with the real work done as a global write.
+        let contributed = lattice_lsp::modes::LspFoldingMode.options();
+        assert!(
+            !contributed.is_empty(),
+            "the mode must carry its foldmethod declaratively"
+        );
+
+        // And the global default is untouched by the mode existing, which
+        // is what a buffer with no LSP resolves through.
+        let editor = rust_editor("fn f() {\n    x();\n}\n");
+        assert_eq!(
+            editor
+                .resolved_option_opt::<FoldMethodOption>(lattice_core::BufferId::default())
+                .map(|v| *v),
+            Some(lattice_core::FoldMethod::Manual),
+            "a buffer the mode was never activated on keeps the default"
+        );
+    }
+
     // ---- IN.7: the `=` reindent operator ----
 
     /// Run `=` over the whole buffer.

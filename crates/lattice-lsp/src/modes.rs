@@ -995,24 +995,27 @@ lsp_sub_mode!(LspSemanticTokensMode, "lsp-semantic-tokens-mode");
 /// `folding_sync::on_deactivate`. `None` prior means activation
 /// was a no-op (foldmethod was already `Lsp`), so Drop also
 /// does nothing.
-pub struct LspFoldingGuard {
-    prior: Option<lattice_core::FoldMethod>,
-    config: Arc<lattice_config::ConfigRegistry>,
-}
-
-impl Drop for LspFoldingGuard {
-    fn drop(&mut self) {
-        if let Some(p) = self.prior {
-            crate::folding_sync::on_deactivate(&self.config, p);
-        }
-    }
-}
-
 /// 4.4.f: `textDocument/foldingRange` feeding `FoldMethod::Lsp`.
-/// Coupled to the `foldmethod` option: activating the mode stashes
-/// the prior value (inside the Guard) and swaps `foldmethod` to
-/// `lsp`; dropping the Guard restores. Hand-written because the
-/// lifecycle does real work.
+///
+/// Coupled to the `foldmethod` option — declaratively, through
+/// [`Mode::options`]. Activation resolves `foldmethod = lsp` **on this
+/// mode's buffers**; deactivation drops the contribution and resolution
+/// falls back to whatever the buffer would otherwise have had.
+///
+/// **2026-08-16.** This used to be a hand-written lifecycle that wrote
+/// the option through `ConfigRegistry::set_typed` from `on_activate` and
+/// restored it from a `Drop` guard. `set_typed` is the GLOBAL registry:
+/// attaching a language server to one buffer set `foldmethod = lsp` for
+/// every buffer in the editor, including ones with no server, whose
+/// folds were then recomputed through the LSP provider's cascade. The
+/// module's own doc claimed it swapped "the buffer's `foldmethod`" — the
+/// buffer-scoped mechanism was `Mode::options()`, sitting right here
+/// returning an empty set.
+///
+/// The stash-and-restore machinery (`folding_sync`, `LspFoldingGuard`,
+/// the prior-value slot) existed only to undo a global write. A
+/// contribution is scoped and reverts itself, so all of it is gone
+/// rather than repaired.
 pub struct LspFoldingMode;
 
 impl LspFoldingMode {
@@ -1022,27 +1025,27 @@ impl LspFoldingMode {
 }
 
 impl Mode for LspFoldingMode {
-    type Guard = LspFoldingGuard;
+    type Guard = ();
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
     }
+    /// The whole of this mode's option coupling. Buffer-scoped by
+    /// construction, and reverted by deactivation without a guard —
+    /// see the type docs for what this replaced.
     fn options(&self) -> OptionOverrideSet {
-        OptionOverrideSet::default()
+        lattice_config::overrides! {
+            lattice_config::FoldMethodOption = lattice_core::FoldMethod::Lsp,
+        }
     }
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
-        Box::pin(async move {
-            let prior = crate::folding_sync::on_activate(ctx.config());
-            Ok(LspFoldingGuard {
-                prior,
-                config: ctx.config_handle(),
-            })
-        })
+    /// Nothing to do: the option contribution above IS the activation.
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 

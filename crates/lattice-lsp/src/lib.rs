@@ -68,7 +68,6 @@ pub mod events;
 pub mod fan_in;
 pub mod features;
 pub mod file_watcher;
-pub mod folding_sync;
 pub mod framing;
 pub mod help_views;
 pub mod install;

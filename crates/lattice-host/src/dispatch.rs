@@ -163,6 +163,23 @@ pub enum IndentSource {
 /// lexical bridge costs a wrong-by-one indent in a rare window,
 /// recoverable with the next keystroke or `=`; the reparse cost a
 /// dropped frame. Paramount #1 decides it.
+///
+/// ## 2026-08-16: that argument only became true today
+///
+/// The paragraph above rests on the stale window being RARE. It wasn't.
+/// `tree_levels_for_new_line`'s freshness check asked
+/// `reparsed_from_version() == text_version()`, and an incremental
+/// reparse can never satisfy that — so the window was not narrow, it was
+/// permanent: every keystroke after the first edit took the `Lexical`
+/// branch, for the rest of the session. The engine benched in IN.2 was
+/// running approximately never.
+///
+/// The check now asks [`lattice_syntax::SyntaxSnapshot::tree_reflects`],
+/// which puts the reasoning above on the footing it always claimed to
+/// have. The conclusion is unchanged and the sync-reparse branch stays
+/// deleted — but it is worth recording that the evidence for deleting it
+/// was gathered against a gate that was sending everything to the
+/// fallback anyway.
 pub fn choose_indent_source(fresh: bool) -> IndentSource {
     if fresh {
         IndentSource::FreshTree
@@ -31687,7 +31704,16 @@ impl Editor {
     fn tree_levels_for_new_line(&self, at: usize) -> Option<i32> {
         let handle = self.syntax.as_ref()?;
         let snapshot = handle.snapshot();
-        let fresh = snapshot.reparsed_from_version() == self.document.text_version();
+        // 2026-08-16: `tree_reflects`, NOT
+        // `reparsed_from_version() == text_version()`. That comparison
+        // asked a delta baseline whether it was a freshness signal, and an
+        // incremental reparse can never satisfy it — so after any edit
+        // this declined and the lexical bridge answered, leaving the
+        // `indents.scm` engine dormant on the keystroke path it exists
+        // for. Brace languages hid it: the bridge's bracket scan gives the
+        // same answer there, which is why the python fixture is the one
+        // that catches it. See `SyntaxSnapshot::parsed_text_version`.
+        let fresh = snapshot.tree_reflects(self.document.text_version());
 
         match choose_indent_source(fresh) {
             IndentSource::FreshTree => lattice_syntax::tree_levels_for_new_line(&snapshot, at),
@@ -46699,6 +46725,62 @@ mod tests {
             .unwrap_or_default()
             .trim_end_matches('\n')
             .to_string()
+    }
+
+    /// A python-pathed editor. Python is the discriminator for
+    /// tree-vs-bridge: `def f():` has BALANCED brackets, so the lexical
+    /// bridge's bracket scan finds no opener and copies the previous
+    /// indent, while the tree knows a block starts. In a brace language
+    /// the two agree by design — the bridge was built to approximate the
+    /// tree there — so a rust fixture cannot tell them apart.
+    fn python_editor(text: &str) -> Editor {
+        Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path("t.py")
+                .with_text(text)
+                .build(),
+        )
+    }
+
+    /// Predictive indent must keep consulting the tree after an edit.
+    ///
+    /// The freshness gate used to ask `reparsed_from_version() ==
+    /// text_version()`, which an incremental reparse can never satisfy,
+    /// so after any edit `<CR>` / `o` / `O` silently fell to the lexical
+    /// bridge — the `indents.scm` engine was dormant on the very path it
+    /// was built for. Brace languages hid it, because the bridge's
+    /// bracket scan gives the same answer there.
+    #[test]
+    fn predictive_indent_uses_the_tree_after_an_edit() {
+        let mut editor = python_editor("def f():\n    pass\n");
+        settle_reparse(&mut editor);
+
+        // An edit, routed as production routes it so the worker takes its
+        // INCREMENTAL path — the one whose baseline lags by construction.
+        editor.cursor = lattice_protocol::position::Position::new(1, 0);
+        let b = editor.builtins;
+        let shift = lattice_grammar::CommandInvocation::of(b.indent_right.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine);
+        if let Ok(lattice_grammar::Effect::Edits(applied)) = editor.dispatch_blocking(shift) {
+            editor.handle_edits(&applied);
+        }
+        settle_reparse(&mut editor);
+        let snap = editor.syntax.as_ref().map(|h| h.snapshot()).unwrap();
+        assert_ne!(
+            snap.reparsed_from_version(),
+            editor.document.text_version(),
+            "precondition: the worker took the INCREMENTAL path"
+        );
+
+        // `o` on `def f():` — the bridge would copy indent 0.
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_open_line_below();
+        assert_eq!(
+            line_at(&editor, 1),
+            "    ",
+            "the tree answers after an incremental reparse; the bracket \
+             scan cannot, because `def f():` is bracket-balanced"
+        );
     }
 
     #[test]

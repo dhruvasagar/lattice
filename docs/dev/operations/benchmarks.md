@@ -246,6 +246,48 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ---
 
+## Predictive indent, after the freshness-gate fix (2026-08-16)
+
+The gate deciding whether `<CR>` / `o` / `O` consult the tree asked
+`reparsed_from_version() == text_version()` — a delta baseline, which an
+incremental reparse can never satisfy. So after the first edit in a session
+every keystroke took the `Lexical` branch, permanently. The `indents.scm`
+engine IN.2 built and benched was running approximately never.
+
+**The bench could not have caught this, and that is the lesson.** It boots a
+fresh editor, where the initial full parse makes even the broken gate pass, so
+`indent_query` always measured the tree path. Production almost never had a
+freshly-parsed buffer. A bench that only measures the healthy path cannot tell
+you the path is unreachable.
+
+Re-measured after the fix (same Apple-silicon box as IN.2; not comparable to
+the Ryzen/WSL2 rows elsewhere):
+
+| Measure | 80 lines | 800 lines | 3200 lines |
+|---|---|---|---|
+| `indent_query` — the per-`<CR>` cost | **8.87 µs** | **9.34 µs** | **10.11 µs** |
+
+Against IN.2's 8.39 / 8.82 / 9.49 µs that is +6%, and criterion flags it as a
+regression. It is not one: the change swaps one `u64` comparison for another
+`u64` comparison, which cannot cost 6%. It is run-to-run variance on a warm
+machine, and it is recorded rather than quietly re-baselined.
+
+**What did change is what production pays.** Before the fix, every `<CR>` after
+the first edit cost `indent_method/keep` — **607 ns**, the bracket-scan bridge.
+Now it costs `indent_method/syntax` — **9.34 µs**. Predictive indent got ~15×
+more expensive per keystroke in exchange for being correct on the languages the
+bridge cannot serve (Python, YAML: `def f():` is bracket-balanced, so the scan
+finds nothing to indent from). 9 µs against an 8.3 ms frame is 0.1% of the
+budget, so the trade is not close.
+
+| `indent_method` (100-fn file) | Value | Notes |
+|---|---|---|
+| `syntax` | **9.34 µs** | Tree path — what a `<CR>` now actually costs. |
+| `keep` | **607 ns** | Lexical copy; what it silently cost before. |
+| `none` | **433 ns** | Column zero. |
+
+---
+
 ## IG.6 — indentation guides (2026-08-16)
 
 Guides add work in two places under different constraints, so they are benched

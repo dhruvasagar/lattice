@@ -85,6 +85,38 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let meta = event.metadata();
+        // 2026-08-16: INFO and above only. DEBUG/TRACE are stderr's.
+        //
+        // Without this the layer closes a feedback loop that pegs a core
+        // for as long as the editor is open:
+        //
+        //   a worker wakes → `debug!("… worker tick")`
+        //     → this layer queues it
+        //     → `run_tick_pending` drains it into the `*messages*` buffer,
+        //       which is a real edit, so its `text_version` bumps
+        //     → `publish_render_state` → `AsyncRenderStatePublished`
+        //     → the worker wakes again
+        //
+        // Every tick emits the log that causes the wake that produces the
+        // next tick. Measured at ~110 cells-worker rebuilds/second, which
+        // is exactly its own 8.8 ms rebuild time — and far worse with
+        // `*messages*` visible in a pane, because then each cycle also
+        // rebuilds and repaints that buffer. Reported as the editor
+        // becoming unusable after opening `*messages*` with
+        // `--log-level debug`.
+        //
+        // This is also the documented design (CLAUDE.md): `info!` is what
+        // fans out to both stderr and `*messages*`, and `--log-level
+        // debug` is an opt-in to *stderr*. A user-facing message log is
+        // not the place for per-frame diagnostics.
+        //
+        // Done here rather than in `Layer::enabled`, which participates in
+        // the subscriber-wide interest calculation — filtering there risks
+        // suppressing the event for the fmt layer too, which is precisely
+        // where these events must still go.
+        if *meta.level() > tracing::Level::INFO {
+            return;
+        }
         let level = lattice_grammar::EchoLevel::from(*meta.level());
 
         let mut visitor = MessageVisitor::default();
@@ -358,8 +390,21 @@ mod tests {
         assert_eq!(evt.record.level, lattice_grammar::EchoLevel::Info);
     }
 
+    /// INFO and above are captured and level-translated; DEBUG and TRACE
+    /// are dropped.
+    ///
+    /// The drop is not a preference — it breaks a feedback loop. A
+    /// `debug!` reaching this layer becomes an edit to the `*messages*`
+    /// buffer, which bumps its `text_version`, which republishes render
+    /// state, which wakes the workers, whose tick logs are themselves
+    /// `debug!`. Every tick emitted the log that caused the wake that
+    /// produced the next tick; measured at ~110 cells-worker rebuilds per
+    /// second, indefinitely. See the comment on `on_event`.
+    ///
+    /// This test previously asserted the opposite — that all five levels
+    /// land in the ring — which is what made the loop possible.
     #[test]
-    fn layer_translates_every_level() {
+    fn layer_captures_info_and_above_only() {
         let ring = Arc::new(Mutex::new(MessagesRing::default()));
         let bus = Arc::new(EventBus::new());
         let layer = MessagesLayer::new(ring.clone(), bus);
@@ -377,12 +422,37 @@ mod tests {
         assert_eq!(
             levels,
             vec![
-                lattice_grammar::EchoLevel::Trace,
-                lattice_grammar::EchoLevel::Debug,
                 lattice_grammar::EchoLevel::Info,
                 lattice_grammar::EchoLevel::Warn,
                 lattice_grammar::EchoLevel::Error,
-            ]
+            ],
+            "TRACE/DEBUG must not reach *messages* — they close a render loop"
+        );
+        let texts: Vec<&str> = ring.records().iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, vec!["i", "w", "e"]);
+    }
+
+    /// The specific shape that was looping: a worker's own per-tick
+    /// diagnostic must not become an edit to the buffer whose rebuild
+    /// emitted it.
+    #[test]
+    fn a_worker_tick_debug_does_not_reach_messages() {
+        let ring = Arc::new(Mutex::new(MessagesRing::default()));
+        let bus = Arc::new(EventBus::new());
+        let layer = MessagesLayer::new(ring.clone(), bus);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            for tick in 0..100 {
+                tracing::debug!(
+                    target: "lattice_host::cells_worker",
+                    tick,
+                    "cells worker tick"
+                );
+            }
+        });
+        assert!(
+            ring.lock().unwrap().records().is_empty(),
+            "100 worker ticks must produce zero *messages* edits"
         );
     }
 

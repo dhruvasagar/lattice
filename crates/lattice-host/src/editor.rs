@@ -1394,6 +1394,12 @@ pub struct Editor {
     /// path; renderers read `rs.wasm_gutter_decorations`. Inert in
     /// `Editor::default()` (no registry wired).
     pub wasm_decorations: crate::wasm_decorations::WasmDecorationState,
+    /// TC.3a: WASM sticky-context wiring (per-buffer scope cache + producer
+    /// registry handle + off-keystroke paint generation + single-flight
+    /// bookkeeping). The per-tick `maybe_refresh_wasm_context` drives the
+    /// producers off the render path; per-pane resolution reads the cache.
+    /// Inert in `Editor::default()` (no registry wired).
+    pub wasm_context: crate::wasm_context::WasmContextState,
     /// Per-buffer `documentLink` cache.
     /// Per-buffer `textDocument/documentLink` cache. Phase
     /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>` so the spawned

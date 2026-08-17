@@ -13,7 +13,8 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 |---|---|---|
 | TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | ✅ |
 | TC.2 | The `context` WIT seam + host quartet + fixture component | ✅ |
-| TC.3 | Pane-keyed sticky-context layer — worker, reservation, **both renderers** | 📝 |
+| TC.3a | Scope cache + reparse-driven refresh pump | ✅ |
+| TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | 📝 |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | 📝 |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 📝 |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-up`, `:context-toggle` | 📝 |
@@ -166,7 +167,31 @@ trapping guest leaves the previous scopes in place; the capability gate refuses
 a component without `tree-sitter`; **the async result lands with no intervening
 keypress**.
 
-## TC.3 — The layer + both renderers 📝
+## TC.3a — Scope cache + refresh pump ✅
+
+> **Landed 2026-08-17. Re-sliced:** TC.3 as planned bundled the producer
+> drive, the per-pane layer, the reservation and both renderers into one
+> commit. The drive is independently testable with no UI at all — a native stub
+> `AsyncContextSource` exercises the whole cache mechanism — so it lands first
+> and TC.3b keeps the renderer-lockstep bundle it actually needs.
+>
+> `wasm_context.rs` mirrors `wasm_decorations.rs` with **one deliberate
+> difference: the staleness key is the PARSE version, not the document
+> version.** Decorations are per-line marks tied to text; scopes describe the
+> tree. Keying scopes on the document version would re-drive the guest on every
+> keystroke — precisely the WASM-on-the-hot-path the scopes-not-rows split
+> exists to prevent — and would also blank the strip during the window between
+> an edit and its reparse.
+>
+> Five tests, including the async-landing one the standing rule requires
+> (scopes reach the screen with no intervening keypress). One test comment was
+> corrected after checking it: `a_second_refresh_…_does_not_re_drive_the_producer`
+> pins the OUTCOME, and TWO independent guards deliver it (parse-version and
+> single-flight), so it stays green with either one defeated. Verified by
+> defeating each in turn; the comment now says so, because a green run there is
+> not evidence that a guard someone just deleted was dead code.
+
+## TC.3b — The layer + both renderers 📝
 
 **One commit.** The TUI/GPUI lockstep rule is not negotiable here: a sticky
 strip that exists in one peer and not the other is a visible divergence in the

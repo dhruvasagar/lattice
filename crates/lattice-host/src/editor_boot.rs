@@ -990,7 +990,9 @@ impl Editor {
         let context_registry: lattice_mode::ContextSourceRegistryHandle = Arc::new(
             arc_swap::ArcSwap::from_pointee(lattice_mode::ContextSourceRegistry::new()),
         );
-        boot.register_service::<lattice_mode::ContextSourceRegistryHandle>(context_registry);
+        boot.register_service::<lattice_mode::ContextSourceRegistryHandle>(
+            context_registry.clone(),
+        );
 
         // MRU cache load. Honor `picker.mru.persist` at boot;
         // failure modes: no persist path (sandboxed), no file
@@ -1754,6 +1756,9 @@ impl Editor {
             // handle via the service registered above.
             wasm_decorations: crate::wasm_decorations::WasmDecorationState::with_registry(
                 decoration_registry.clone(),
+            ),
+            wasm_context: crate::wasm_context::WasmContextState::with_registry(
+                context_registry.clone(),
             ),
             picker_mru,
             picker_mru_path,

@@ -16084,6 +16084,9 @@ impl Editor {
         // PL8.E: WASM decoration refresh — same single-flight, cache-gated shape
         // as the LSP pumps. No-op with no decoration plugin loaded.
         self.maybe_refresh_wasm_decorations();
+        // TC.3a: the sibling pump. Parse-version gated, so it is a cheap
+        // early return on every tick that did not reparse.
+        self.maybe_refresh_wasm_context();
         // 5.8.AA.r: code-action apply chain folded host-side; the
         // drain emits `RendererSignal`s from the inline
         // workspace-edit + executeCommand path so both peers consume

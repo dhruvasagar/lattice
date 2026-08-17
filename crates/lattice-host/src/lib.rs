@@ -190,6 +190,10 @@ pub mod editor_actor;
 pub mod render_state;
 pub mod renderer;
 pub mod state;
+// TC.3a — WASM sticky-context wiring: producer -> per-buffer scope cache.
+// Sibling of `wasm_decorations`, keyed on the PARSE version rather than the
+// document version, because a scope is a function of the tree.
+pub mod wasm_context;
 pub mod wasm_decorations;
 // Phase 5.7.B.9: synthetic-buffer + messages helpers migrate
 // from `impl App` (TUI) to `impl Editor` (host) so both

@@ -221,6 +221,27 @@ mod tests {
     /// Depth is not noise: the outermost scope is the most stable line in the
     /// strip, and a hard cap of 3 would discard it exactly when nesting is
     /// deep enough to need it.
+    /// Regression probe: a realistic full-height pane must still yield rows
+    /// with the new `max_lines = 0` default. If the viewport share ever
+    /// computes to zero for an ordinary pane, the strip silently never shows.
+    #[test]
+    fn a_realistic_pane_still_yields_rows_with_the_unlimited_default() {
+        let scopes = [scope(10, 400), scope(100, 300)];
+        for viewport_height in [10u32, 24, 40, 50, 80] {
+            let opts = ContextOptions {
+                viewport_top: 150,
+                viewport_height,
+                ..ContextOptions::default()
+            };
+            let rows = resolve_context(&scopes, 200, &opts);
+            assert!(
+                !rows.is_empty(),
+                "height {viewport_height}: an ordinary pane must show context; \
+                 got nothing, which is the strip silently vanishing"
+            );
+        }
+    }
+
     #[test]
     fn depth_is_unlimited_by_default_and_bounded_by_the_pane() {
         // Six nested scopes around the cursor.

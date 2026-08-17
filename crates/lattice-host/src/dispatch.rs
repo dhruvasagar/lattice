@@ -14703,7 +14703,21 @@ impl Editor {
             // at cursor 0 / scroll 0, which is why the context strip vanished
             // the moment `:` opened. Losing focus is a DIMMING change and
             // nothing else.
-            let owns_live_view = is_active_pane && is_active_buffer;
+            // The pane owns the live view when it is the focused pane AND no
+            // prompt has taken the cursor.
+            //
+            // The first attempt at this used `is_active_pane &&
+            // is_active_buffer`, which was too strong: it made every pane
+            // depend on `leaf.buffer_id` tracking `document_buffer_id`
+            // exactly, and any path where the leaf lags dropped the pane to a
+            // stale `leaf.scroll` — which emptied the strip outright rather
+            // than only during a prompt. Asking about the PROMPT is the
+            // narrow condition actually wanted, and it is the same predicate
+            // the renderer already uses to decide whether the caret belongs to
+            // the document or the command line (`prompt_owns_cursor`).
+            let prompt_owns_cursor =
+                matches!(self.modal, ModalState::Command | ModalState::Search(_));
+            let owns_live_view = is_active_pane && !prompt_owns_cursor;
             let scroll = if owns_live_view {
                 self.scroll
             } else if let Some(ov) = preview {

@@ -78,6 +78,19 @@ pub struct WasmContextState {
     /// a just-loaded plugin's scopes appear without waiting for an edit, and an
     /// unloaded one's clear.
     last_registry_epoch: usize,
+    /// TC.8a: the plugin's `context.*` options, resolved once per refresh pump
+    /// rather than per pane per publish.
+    ///
+    /// `resolve_sticky_context_lines` runs at cursor rate, once for every pane,
+    /// and `ConfigRegistry` reads take a `Mutex` — so reading six options there
+    /// would put six uncontended lock acquisitions on the keystroke path for
+    /// values that change only when the user runs `:set` or a plugin loads.
+    /// Both of those already wake this pump, so caching here costs nothing in
+    /// freshness.
+    ///
+    /// The viewport fields are NOT cached: they are per-pane, and the resolver
+    /// overwrites them from the pane it is resolving for.
+    pub options: lattice_cells::context::ContextOptions,
 }
 
 impl WasmContextState {
@@ -112,6 +125,11 @@ impl Editor {
     /// answered — an all-error refresh keeps the prior scopes rather than
     /// clearing them. A failed refresh must not read as the feature breaking.
     pub fn maybe_refresh_wasm_context(&mut self) {
+        // Before the producer gate: the options are read even when no producer
+        // is registered yet, because a plugin registers its OPTIONS and its
+        // producer in the same load and the order between them is not ours to
+        // rely on.
+        self.refresh_context_options();
         let Some(registry) = self.wasm_context.registry.clone() else {
             return;
         };
@@ -247,16 +265,59 @@ impl Editor {
         if cached.scopes.is_empty() {
             return Arc::from([] as [u32; 0]);
         }
-        // TC.5 replaces these defaults with the plugin's registered
-        // `context.*` options once they exist; until then the shape is fixed
-        // and the feature is inert without a plugin anyway (no scopes → the
-        // early return above).
+        // The plugin's registered `context.*` options, cached by the refresh
+        // pump; only the per-pane viewport fields are filled in here.
         let opts = lattice_cells::context::ContextOptions {
             viewport_height,
             viewport_top: scroll,
-            ..Default::default()
+            ..self.wasm_context.options
         };
         let lines = lattice_cells::context::resolve_context(&cached.scopes, cursor_line, &opts);
         Arc::from(lines.into_boxed_slice())
+    }
+
+    /// Re-read the plugin's `treesitter-context.*` options into the cache.
+    ///
+    /// Every option is optional at every step: the plugin may not be loaded,
+    /// may not have registered that option, or may have registered it with a
+    /// type this cannot read. Each of those falls back to the compiled default
+    /// INDIVIDUALLY rather than abandoning the whole read — a plugin that
+    /// registers five of six options should get five honoured, not none.
+    ///
+    /// The names are the plugin id plus the option's own name, which is how
+    /// the config seam namespaces every plugin option. That coupling is the
+    /// cost of the host resolving a plugin's options natively (which is itself
+    /// the cost of keeping WASM off the scroll path); it is spelled out here
+    /// rather than spread across the reads.
+    fn refresh_context_options(&mut self) {
+        use lattice_cells::context::TrimScope;
+        const NS: &str = "treesitter-context";
+        let defaults = lattice_cells::context::ContextOptions::default();
+        let int = |name: &str, fallback: u32| -> u32 {
+            self.config
+                .get_int_by_name(&format!("{NS}.{name}"))
+                .and_then(|v| u32::try_from(v).ok())
+                .unwrap_or(fallback)
+        };
+        let trim = match self
+            .config
+            .get_string_by_name(&format!("{NS}.trim-scope"))
+            .as_deref()
+        {
+            Some("inner") => TrimScope::Inner,
+            Some("outer") => TrimScope::Outer,
+            // An unrecognised value keeps the default rather than erroring:
+            // the option is a plugin's free-form string, and a typo must not
+            // take the strip away.
+            _ => defaults.trim,
+        };
+        self.wasm_context.options = lattice_cells::context::ContextOptions {
+            max_lines: int("max-lines", defaults.max_lines),
+            trim,
+            multiline_threshold: int("multiline-threshold", defaults.multiline_threshold),
+            max_viewport_fraction: int("max-viewport-fraction", defaults.max_viewport_fraction),
+            // Per-pane; overwritten by the resolver.
+            ..defaults
+        };
     }
 }

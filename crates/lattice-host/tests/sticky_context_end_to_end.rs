@@ -174,3 +174,48 @@ async fn at_the_top_of_a_file_there_is_no_strip() {
         "nothing has scrolled off at the top of a file"
     );
 }
+
+/// TC.8a: a `treesitter-context.*` option the plugin registered must reach the
+/// resolver.
+///
+/// It did not. `resolve_sticky_context_lines` built `ContextOptions::default()`
+/// and never read the registry, so every knob the plugin advertised —
+/// `max-lines`, `trim-scope`, `multiline-threshold`, `max-viewport-fraction` —
+/// was inert: `:set treesitter-context.max-lines=1` changed the help text and
+/// nothing else. That is worse than the option not existing, because the
+/// editor answers `:set treesitter-context.max-lines?` with the value it is
+/// ignoring.
+#[tokio::test]
+async fn a_registered_context_option_reaches_the_resolver() {
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut editor = editor_with_producer(calls);
+    let buffer = editor.document_buffer_id;
+
+    editor.run_tick_pending();
+    wait_for_cache(&editor, buffer).await;
+
+    // Both scopes enclose line 120 and both headers have scrolled away.
+    let lines = editor.resolve_sticky_context_lines(buffer, 120, 110, 40);
+    assert_eq!(&*lines, &[10, 100], "unbounded: both pin");
+
+    // Cap the strip at one row, the way `:set` does.
+    editor
+        .config
+        .try_register(lattice_config::option::Option::<i64>::new(
+            "treesitter-context.max-lines".to_owned(),
+            1,
+            "Cap.".to_owned(),
+        ))
+        .expect("fresh name");
+    // The cache refreshes on the same pump that drives the producer, so the
+    // option lands without the user pressing anything.
+    editor.run_tick_pending();
+
+    let lines = editor.resolve_sticky_context_lines(buffer, 120, 110, 40);
+    assert_eq!(
+        &*lines,
+        &[100],
+        "capped at one row, and `trim-scope=outer` (the default) drops the \
+         OUTER scope — the innermost is the one you are in"
+    );
+}

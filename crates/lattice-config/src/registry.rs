@@ -482,6 +482,17 @@ impl ConfigRegistry {
         erased.downcast_ref::<i64>().copied()
     }
 
+    /// Read a `String`-typed option's current value by name. The downcast IS
+    /// the type check, as with [`Self::get_int_by_name`]. Used by subsystems
+    /// that read an enum-ish option by name without importing its decl type —
+    /// e.g. the host reading a plugin's `trim-scope`, which is registered
+    /// dynamically and therefore has no decl type to import.
+    pub fn get_string_by_name(&self, name: &str) -> std::option::Option<String> {
+        let spec = self.lookup(name)?;
+        let erased = spec.current_value_erased();
+        erased.downcast_ref::<String>().cloned()
+    }
+
     /// Iterate every registered option in registration order.
     /// Used by completion (`gen:options`) and the customize buffer
     /// view to enumerate.

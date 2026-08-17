@@ -10,15 +10,26 @@
 //!   - **config** — the ten `context.*` options.
 //!   - **theme** — the four `context.*` elements.
 //!
-//! ## Why the header span comes from the `body` field
+//! ## Why the header span comes from a `@context.end` capture
 //!
 //! A scope's header is everything before its body: `fn f(\n  a: u32,\n) {` is
-//! three lines of header, not one. Rather than a second `@context.end` capture
-//! (which every query would have to get right independently), the header is
-//! derived from the node's `body` field — present on every construct that has
-//! one, and absent exactly where the header IS the whole node. One rule, no
-//! per-language bookkeeping, and `context.multiline-threshold` caps how much of
-//! it a scope may actually spend.
+//! three lines of header, not one. The body's position therefore has to cross
+//! the boundary somehow.
+//!
+//! It was originally read guest-side via `node.child_by_field("body")`, which
+//! needs a NODE — and every node the host hands back is a resource-table entry
+//! with its own snapshot bump and its own drop call. `run-query` minted one per
+//! capture, so a whole-file structural query paid tens of thousands of boundary
+//! round trips and went superlinear; that cost, not the query, is what forced
+//! the `max-file-lines` guard down to 5 000 lines.
+//!
+//! TC.10 replaced it with `run-query-ranges` (extents, no resources) plus a
+//! `@context.end` capture in each query, paired to its `@context` by match
+//! index. The header derivation is unchanged; only where the body position
+//! comes from changed. The cost of the per-language bookkeeping this
+//! reintroduces — a field name to get right per construct — is paid by
+//! `treesitter_context_queries.rs`, which compiles every bundled query against
+//! its real grammar.
 
 wit_bindgen::generate!({
     world: "treesitter-context-plugin",
@@ -34,7 +45,7 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::config::{OptionType, get_option, register_option, set_option};
 use lattice::plugin_host::theme::{ColorRef, ModifierSet, StyleSpec, register_element};
-use lattice::plugin_host::tree_sitter::{Node, TreeSnapshot};
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, ContextRequest, ContextScope, Effect, ExCommandContext,
     ExCommandSpec, LatencyClass, Position, SurfaceForm,
@@ -62,24 +73,16 @@ fn query_for(language: &str) -> Option<&'static str> {
     })
 }
 
-/// Derive a scope from a captured node.
+/// Build a scope from one pattern match's captures.
 ///
-/// `scope_start ..= scope_end` is the node's own line span. The header runs
-/// from the node's first line to the line its `body` begins on — so a wrapped
-/// signature yields a multi-line header and a bodyless construct yields a
-/// single-line one, with no per-language special casing.
-fn scope_from(node: &Node) -> ContextScope {
-    let range = node.byte_range();
-    let scope_start = range.start.line;
-    let scope_end = range.end.line;
-    // `body` is the near-universal field name for the block a construct opens.
-    // Absent (a `struct` without one, a match arm) means the header is the
-    // node's first line and nothing more.
-    let header_end = node
-        .child_by_field("body")
-        .map(|body| body.byte_range().start.line)
+/// `scope` is the `@context` extent (the construct's own line span);
+/// `body_start` is the line the match's `@context.end` begins on, absent for
+/// constructs whose header IS their first line (`} else {`, a `case` label).
+fn scope_from(scope: (u32, u32), body_start: Option<u32>) -> ContextScope {
+    let (scope_start, scope_end) = scope;
+    let header_end = body_start
         .unwrap_or(scope_start)
-        // A body that starts before the node does is impossible from a real
+        // A body starting before the construct does is impossible from a real
         // tree, but clamping costs nothing and keeps a malformed grammar from
         // producing an inverted span the host would have to defend against.
         .max(scope_start);
@@ -104,12 +107,35 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     // A cache would be the right move only if the producer were re-driven more
     // often, and the whole scopes-not-rows split exists to ensure it is not.
     let query = tree.compile_query(source)?;
-    let mut scopes: Vec<ContextScope> = tree
-        .run_query(&query, None)
-        .into_iter()
-        .filter(|c| c.name == "context")
-        .map(|c| scope_from(&c.node))
-        .collect();
+    // `run_query_ranges`, not `run_query`: this is a WHOLE-FILE structural
+    // query, and the node-returning form pays a resource handle per capture.
+    // See the module doc — that difference is the file-size ceiling.
+    let captures = tree.run_query_ranges(&query, None);
+    let mut scopes: Vec<ContextScope> = Vec::new();
+    // Captures arrive grouped by match (the host pushes each match's captures
+    // together and stamps them with one index), so one linear scan pairs each
+    // `@context` with its `@context.end` — no containment test, which would be
+    // ambiguous for a construct nested directly inside another.
+    let mut i = 0;
+    while i < captures.len() {
+        let match_index = captures[i].match_index;
+        let mut extent: Option<(u32, u32)> = None;
+        let mut body_start: Option<u32> = None;
+        while i < captures.len() && captures[i].match_index == match_index {
+            let c = &captures[i];
+            match c.name.as_str() {
+                "context" => extent = Some((c.range.start.line, c.range.end.line)),
+                "context.end" => body_start = Some(c.range.start.line),
+                // A query may carry captures for its own predicates; anything
+                // unrecognised is ignored rather than treated as a scope.
+                _ => {}
+            }
+            i += 1;
+        }
+        if let Some(extent) = extent {
+            scopes.push(scope_from(extent, body_start));
+        }
+    }
     // A scope spanning a single line can never be a context: its header cannot
     // scroll away while the cursor is still inside it. Dropping them here keeps
     // the host's cache (and the resolver's scan) free of entries that can never
@@ -120,22 +146,33 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
 
 /// Fallback when `max-file-lines` cannot be read (no config wired).
 ///
-/// Measured cost of the whole-buffer query, Rust, release wasm:
+/// Measured cost of the whole-buffer query, Rust, release wasm, before and
+/// after TC.10 moved the producer onto `run-query-ranges`:
 ///
-/// |  lines | time   |
-/// |-------:|--------|
-/// |  1 000 |  25 ms |
-/// |  2 500 |  83 ms |
-/// |  5 000 | 287 ms |
-/// | 10 000 | 1.18 s |
-/// | 20 000 | TRAP   |
+/// |   lines | `run-query` | `run-query-ranges` |
+/// |--------:|------------:|-------------------:|
+/// |   1 000 |       25 ms |             4.6 ms |
+/// |   2 500 |       83 ms |             6.0 ms |
+/// |   5 000 |      287 ms |             9.0 ms |
+/// |  10 000 |      1.18 s |              15 ms |
+/// |  20 000 |        TRAP |              28 ms |
+/// | 100 000 |           — |             135 ms |
+/// | 400 000 |           — |             534 ms |
 ///
-/// Superlinear — roughly 4x the time for 2x the lines — because `run-query`
-/// materialises one capture (and one node resource) per match. Past ~20k lines
-/// it exceeds the producer's epoch deadline and TRAPS, which quarantines the
-/// plugin: after one oversized file it stops producing for every buffer until
-/// reload. Skipping is strictly better than that.
-const DEFAULT_MAX_FILE_LINES: u32 = 5_000;
+/// The old shape was superlinear — roughly 4x the time for 2x the lines —
+/// because `run-query` mints one node RESOURCE per capture, and a structural
+/// query over a large file has tens of thousands. Past ~20k lines it exceeded
+/// the producer's epoch deadline and TRAPPED, which quarantines the plugin:
+/// after one oversized file it stopped producing for every buffer until
+/// reload. That cliff is what the guard existed to keep users away from.
+///
+/// The ranges form is linear (~1.4 us/line) and measured to 400k lines without
+/// trapping, so the guard no longer protects against a cliff — it just bounds
+/// how long a background task may run per reparse. 100k lines is far above any
+/// realistic source file (this repo's largest is 36k) while keeping the worst
+/// case near a tenth of a second; `0` disables it, which is now a defensible
+/// setting rather than a foot-gun.
+const DEFAULT_MAX_FILE_LINES: u32 = 100_000;
 
 impl ContextGuest for Component {
     fn context_scopes(
@@ -365,12 +402,12 @@ impl Guest for Component {
             (
                 "max-file-lines",
                 OptionType::Integer,
-                "5000",
+                "100000",
                 "Skip the structural query above this line count; 0 disables \
-                 the guard. The whole-buffer query costs ~25 ms at 1k lines, \
-                 ~287 ms at 5k and over a second at 10k, and TRAPS past ~20k — \
-                 which quarantines the plugin for every buffer, not just the \
-                 big one. Raise it only if you are willing to pay that.",
+                 the guard. The query is linear (~1.4 us/line: ~9 ms at 5k \
+                 lines, ~135 ms at 100k) and runs off-thread once per reparse, \
+                 so this bounds background work rather than protecting against \
+                 a stall.",
             ),
         ];
         for (name, ty, default, doc) in opts {

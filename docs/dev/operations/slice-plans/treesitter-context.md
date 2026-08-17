@@ -1,7 +1,8 @@
 # Tree-sitter context — slice plan
 
 > **Status: Active.** Opened 2026-08-16, branch `dhruva/treesitter-context`.
-> TC.1–TC.7 ✅ — the feature works end to end. **NOT archivable:** TC.8 is ⛔
+> TC.1–TC.7 + TC.10 ✅ — the feature works end to end, including on large
+> files. **NOT archivable:** TC.8 is ⛔
 > deferred, and the completed-plans-only rule is explicit that deferred is open
 > work, not done. Archiving now is exactly the mistake that rule exists to
 > prevent.
@@ -25,6 +26,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.7 | Docs, benches, ratchet | ✅ |
 | TC.8 | `context.line-numbers` — source line numbers in the context gutter | ⛔ |
 | TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ⛔ |
+| TC.10 | `run-query-ranges` — the large-file fix, in the seam not the guard | ✅ |
 
 ## Sequencing
 
@@ -493,3 +495,69 @@ is inert, which is why this plan stays active.
   it.
 - Each slice runs `scripts/precommit.sh <touched-crate>...` to completion before
   committing — not a filtered subset, and not beside another cargo job.
+
+
+## TC.10 — `run-query-ranges`: the large-file fix ✅
+
+**The report.** The strip did not appear on `dispatch.rs` (36k lines). It was
+not a rendering bug: `max-file-lines` was skipping the query at 5 000 lines,
+because past ~20k the producer TRAPPED and a trap quarantines the plugin for
+every buffer until reload. The guard was correct given the cost; the cost was
+the defect.
+
+**Why the cost was where it was.** `run-query` mints one `node` RESOURCE per
+capture — a host table entry with its own snapshot bump and a guest-side drop —
+and the producer then made two further host calls per capture (`byte-range`,
+`child_by_field("body")`). A whole-file structural query has tens of thousands
+of captures, so the boundary traffic, not the traversal, dominated and the call
+went superlinear.
+
+**The fix, in the seam.** `run-query-ranges` returns `capture-range { name,
+match-index, range }` — extents, no resources — with the same host-side
+predicate evaluation and the same graceful-empty on a grammar mismatch.
+`match-index` groups captures from one pattern match, which is what lets a
+query capture a construct AND its body (`@context` + `@context.end`) and the
+guest pair them in one linear scan, with no containment test (ambiguous for
+directly-nested constructs) and no second query.
+
+The header derivation is unchanged; only where the body position comes from
+changed — from a guest-side field lookup to a query capture. That is a return
+to what the design fragment specified all along; the field lookup was a
+build-time shortcut that traded per-language query bookkeeping for per-capture
+boundary cost, and the trade was much worse than it looked.
+
+**Measured** (Rust, release wasm, `dispatch.rs` and multiples of it):
+
+|   lines | `run-query` | `run-query-ranges` |
+|--------:|------------:|-------------------:|
+|   1 000 |       25 ms |             4.6 ms |
+|   2 500 |       83 ms |             6.0 ms |
+|   5 000 |      287 ms |             9.0 ms |
+|  10 000 |      1.18 s |              15 ms |
+|  20 000 |        TRAP |              28 ms |
+|  36 000 |        TRAP |              52 ms |
+| 100 000 |           — |             135 ms |
+| 400 000 |           — |             534 ms |
+
+Linear (~1.4 us/line) with no cliff. `max-file-lines` accordingly moves 5 000 →
+100 000: it now bounds background work per reparse instead of keeping users
+away from a trap, and `0` (unlimited) becomes a defensible setting.
+
+**Tests.**
+
+- `tree_resource.rs` — the ranges API reports the SAME extents as the node API
+  (two derivations of "where is this capture" is drift the plugin would
+  silently inherit), and captures group by match.
+- `treesitter_context_queries.rs` — every bundled query compiles against its
+  REAL grammar. Load-bearing: `@context.end` is written against per-language
+  field names, tree-sitter compiles all-or-nothing, and a wrong field name
+  disables the strip for that language while looking exactly like "this
+  language has no query".
+- `treesitter_context_plugin.rs` — a wrapped signature still yields a
+  multi-line header (the behaviour the switch had to preserve), and the
+  large-file test INVERTS: `dispatch.rs` must now produce real context under
+  the guard rather than be skipped by it.
+
+**Files.** `wit/tree-sitter.wit`, `lattice-plugin-host/src/{tree_resource,lib}.rs`,
+`plugins/treesitter-context/{src/lib.rs,queries/*.scm}`,
+`docs/dev/architecture/treesitter-context.md`.

@@ -106,6 +106,22 @@ Navigation (each returns a fresh `node` handle, or `none`):
   `capture = { name: string, node: node }` — run over the whole tree or a byte
   range. **Predicates** (`#eq?`, `#match?`, `#any-of?`) are evaluated **host-side**
   so only surviving captures cross (the plugin never re-filters).
+- `run-query-ranges(query, within: option<range>) -> list<capture-range>` where
+  `capture-range = { name: string, match-index: u32, range: range }` — the same
+  query, returning EXTENTS instead of node handles.
+
+  Every `node` a query returns is a resource: a host table entry holding its own
+  snapshot bump, which the guest drops one at a time across the boundary. For a
+  whole-file structural query that is tens of thousands of round trips, and it
+  is what makes the node form superlinear — `treesitter-context` measured 287 ms
+  at 5k lines and a TRAP past 20k, versus 9 ms and 28 ms for the same query in
+  ranges form. `match-index` groups captures from one pattern match so a query
+  can capture a construct and its body and the guest can pair them without a
+  second query or a containment test.
+
+  **Choose by what you need:** `run-query` when a capture must be NAVIGATED
+  (parent, field, sibling); `run-query-ranges` when its extent is the answer. A
+  whole-file query almost always wants the latter.
 
 ### 3.4 The `tree-cursor` resource (walk)
 
@@ -137,6 +153,12 @@ gates it.
 - **Host-side execution.** Queries + walks run against the host's `Tree`; only
   results cross. A `run-query` returns a capture list (name + node handle), not
   the tree. Predicate filtering is host-side.
+- **Resources are the cost, not the traversal.** The dominant cost of a large
+  query is one resource handle per capture — table entry, snapshot bump, guest
+  drop — not tree-sitter's work. `run-query-ranges` exists for exactly this and
+  turned a superlinear-then-trapping call into a linear ~1.4 us/line one. When a
+  seam is slow at scale, count the resources crossing before optimising the
+  algorithm.
 - **O(1) snapshot acquire.** The handle is an `Arc<SyntaxSnapshot>` bump; no parse,
   no copy.
 - **Hot-path discipline.** Most structural queries are off-keystroke (motions,
@@ -201,6 +223,7 @@ interface tree-sitter {
         language: func() -> string;
         compile-query: func(source: string) -> result<query, string>;
         run-query: func(q: borrow<query>, within: option<range>) -> list<capture>;
+        run-query-ranges: func(q: borrow<query>, within: option<range>) -> list<capture-range>;
     }
     resource node {
         kind: func() -> string;

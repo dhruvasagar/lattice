@@ -252,6 +252,65 @@ async fn the_query_finds_the_real_nesting_in_real_source() {
     }
 }
 
+/// TC.10: a wrapped signature must still pin as many lines as it occupies.
+///
+/// This is the behaviour the `@context.end` switch had to preserve. The body
+/// position used to come from a guest-side `child_by_field("body")` call; it
+/// now comes from a query capture paired by match index. If the pairing is
+/// wrong — captures grouped across matches, or the `end` dropped — every
+/// header silently collapses to one line, and a wrapped signature pins `fn
+/// wrapped(` with its arguments cut off. That reads as a truncation bug, not
+/// as a missing capture, which is why it is asserted on real source rather
+/// than left to the query test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wrapped_signature_yields_a_multi_line_header() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let sources = rig.contexts.load().sources();
+
+    //   0  fn wrapped(
+    //   1      a: u32,
+    //   2      b: u32,
+    //   3  ) -> u32 {
+    //   4      a + b
+    //   5  }
+    const WRAPPED: &str = "fn wrapped(\n    a: u32,\n    b: u32,\n) -> u32 {\n    a + b\n}\n";
+    let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+    syn.parse(WRAPPED);
+    let snapshot: Arc<dyn std::any::Any + Send + Sync> = Arc::new(syn.snapshot_owned());
+
+    let scopes = sources[0]
+        .produce(
+            7,
+            Some(std::path::PathBuf::from("src/wrapped.rs")),
+            WRAPPED.lines().count() as u32,
+            Some(snapshot),
+        )
+        .await
+        .expect("the query runs");
+
+    let f = scopes
+        .iter()
+        .find(|s| s.scope_start == 0)
+        .expect("the fn is captured");
+    assert_eq!(f.header_start, 0);
+    assert_eq!(
+        f.header_end, 3,
+        "the header runs to the line the body opens on, so all four signature \
+         lines pin: {scopes:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_language_with_no_query_yields_no_scopes_rather_than_an_error() {
     let Some(wasm) = plugin_wasm() else {
@@ -459,15 +518,19 @@ fn the_staged_runtime_plugin_is_discoverable_and_complete() {
     }
 }
 
-/// A REAL large file, not a toy. `dispatch.rs` is ~48k lines, which is the
+/// A REAL large file, not a toy. `dispatch.rs` is ~36k lines, which is the
 /// file the strip was reported not to render on.
 ///
-/// The producer runs a WHOLE-BUFFER query and materialises one resource handle
-/// per capture, then makes two more host calls per capture (`byte_range`,
-/// `child_by_field`). On a file this size that is a very large number of
-/// boundary crossings inside one `context-scopes` call, bounded by
-/// `PluginBudget::context()`'s epoch deadline — and a trap there quarantines
-/// the plugin, so it never produces again for ANY buffer.
+/// It used to render nothing here: the producer minted a resource handle per
+/// capture plus two more host calls each, went superlinear, and past ~20k
+/// lines TRAPPED — which quarantines the plugin so it never produces again for
+/// ANY buffer. `max-file-lines` existed to keep users the far side of that
+/// cliff, and this file sat past it.
+///
+/// TC.10's ranges API removed the cliff, so the assertion inverts: a file this
+/// size must now produce REAL context, under the guard rather than skipped by
+/// it. The timing bound is deliberately loose (a debug-build CI box is slow);
+/// it is there to catch a return to superlinear cost, not to measure it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_very_large_real_file_still_produces_scopes() {
     let Some(wasm) = plugin_wasm() else {
@@ -513,12 +576,25 @@ async fn a_very_large_real_file_still_produces_scopes() {
         )
     });
     assert!(
-        scopes.is_empty(),
-        "past `max-file-lines` the guard skips the query and reports no \
-         context, rather than spending {elapsed:?} and trapping"
+        !scopes.is_empty(),
+        "a {lines}-line file is under the 100k guard and must produce real \
+         context — an empty set here means the guard is back to skipping the \
+         files that need the strip most"
     );
     assert!(
-        elapsed < std::time::Duration::from_millis(250),
-        "the guard must skip BEFORE the query runs; took {elapsed:?}"
+        scopes.iter().all(|s| s.scope_end > s.scope_start),
+        "every surviving scope spans more than one line"
+    );
+    assert!(
+        scopes.iter().any(|s| s.header_end > s.header_start),
+        "a file this size has wrapped signatures, so at least one header must \
+         span more than one line — all-single-line headers would mean the \
+         `@context.end` pairing silently degraded"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "{lines} lines took {elapsed:?} — measured at ~52 ms release / well \
+         under a second debug, so this bound only trips on a return to \
+         superlinear cost"
     );
 }

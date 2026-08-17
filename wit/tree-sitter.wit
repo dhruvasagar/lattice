@@ -52,6 +52,25 @@ interface tree-sitter {
         /// never re-filters. Empty when `q` was compiled for a different grammar
         /// than this snapshot's (graceful — never a trap).
         run-query: func(q: borrow<query>, within: option<range>) -> list<capture>;
+        /// TS.2b: the same query, returning RANGES instead of node handles.
+        ///
+        /// `run-query` mints one `node` resource per capture. A resource is a
+        /// table entry with a host-side snapshot bump and a guest-side drop, so
+        /// a whole-file structural query pays that per capture — and a
+        /// structural query over a large file has tens of thousands of them.
+        /// That cost is what forced `treesitter-context`'s `max-file-lines`
+        /// guard, and it is pure overhead for the (common) plugin that only
+        /// ever reads a capture's extent.
+        ///
+        /// Same predicates, same host-side filtering, same graceful-empty on a
+        /// grammar mismatch. `match-index` groups captures that came from ONE
+        /// pattern match, so a query can capture a construct and its body
+        /// (`@context` + `@context.end`) and the guest can pair them without a
+        /// second query or a containment test.
+        ///
+        /// Use `run-query` when the capture must be NAVIGATED (parent, field,
+        /// sibling); use this when its extent is the answer.
+        run-query-ranges: func(q: borrow<query>, within: option<range>) -> list<capture-range>;
     }
 
     /// An opaque, navigable handle into the snapshot's tree (design §3.2). Owned
@@ -94,6 +113,17 @@ interface tree-sitter {
     record capture {
         name: string,
         node: node,
+    }
+
+    /// TS.2b: a capture reduced to its extent — no resource, no drop.
+    ///
+    /// `match-index` is the ordinal of the pattern match this capture belongs
+    /// to WITHIN this call's results (not a stable tree id): captures sharing
+    /// one value came from one match of one pattern.
+    record capture-range {
+        name: string,
+        match-index: u32,
+        range: range,
     }
 
     /// TS.2: a stateful walk cursor over the snapshot's tree (design §3.4).

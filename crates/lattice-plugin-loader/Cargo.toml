@@ -108,3 +108,7 @@ lattice-protocol = { path = "../lattice-protocol" }
 # per-dispatch env (the tree-sitter seam's scope query), mirroring what the host's
 # Action gate does with the active buffer's `SyntaxHandle::snapshot()`.
 lattice-syntax = { path = "../lattice-syntax" }
+# TC.10: the bundled `@context` queries are compiled against the real grammars
+# so a bad field name fails a test rather than silently disabling the strip for
+# one language.
+tree-sitter = { workspace = true }

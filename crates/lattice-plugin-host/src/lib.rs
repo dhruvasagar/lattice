@@ -1135,6 +1135,34 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeS
             .collect()
     }
 
+    fn run_query_ranges(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        q: wasmtime::component::Resource<crate::tree_resource::QueryResource>,
+        within: Option<crate::lattice::plugin_host::types::Range>,
+    ) -> Vec<crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::CaptureRange> {
+        let within = within.and_then(|r| lattice_protocol::position::Range::from_wit(r).ok());
+        // No second pass over the table: a range is a value, so unlike
+        // `run_query` this never needs a mutable table borrow to mint handles.
+        let (Ok(ts), Ok(qr)) = (self.table.get(&self_), self.table.get(&q)) else {
+            return Vec::new();
+        };
+        ts.run_query_ranges(qr, within)
+            .into_iter()
+            // A range that will not convert is dropped rather than trapping:
+            // one unrepresentable capture must not fail the whole query.
+            .filter_map(|(name, match_index, range)| {
+                Some(
+                    crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::CaptureRange {
+                        name,
+                        match_index,
+                        range: range.to_wit().ok()?,
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn drop(
         &mut self,
         rep: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,

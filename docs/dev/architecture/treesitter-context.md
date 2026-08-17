@@ -179,8 +179,23 @@ one derivation.
 2. The context producer task (`lattice-plugin-host/src/context_task.rs`) wakes,
    debounces, and calls the guest's `context-scopes` export off-thread.
    In-flight work for a superseded parse is cancelled (`cancellation.md`).
-3. The guest runs `run-query` against the snapshot with its per-language
+3. The guest runs `run-query-ranges` against the snapshot with its per-language
    `context.scm` and returns `list<context-scope>`.
+
+   **Ranges, not nodes.** `run-query` returns a `node` resource per capture —
+   a host table entry holding its own snapshot bump, which the guest then drops
+   one at a time across the boundary. A whole-file structural query has tens of
+   thousands of captures, so the traversal is dwarfed by the per-capture round
+   trip and the whole call goes superlinear: 287 ms at 5k lines, 1.18 s at 10k,
+   and a TRAP past ~20k. `run-query-ranges` returns extents (values) with a
+   `match-index` grouping captures from one pattern match, which is what lets
+   `@context` pair with `@context.end` in one linear scan. Same query, same
+   host-side predicate evaluation, no resources: 9 ms at 5k, 135 ms at 100k,
+   linear to 400k with no trap.
+
+   The producer therefore makes exactly ONE host call per reparse. Use
+   `run-query` only when a capture must be navigated (parent, field, sibling);
+   when its extent is the answer, the resource is pure overhead.
 4. The host caches `Arc<ContextScopes>` per buffer, stamped with the parse
    version, publishes via `ArcSwap`, and wakes the actor through
    `SubsystemBoot::inbound` — **not** a bare `TickCallback`, so the result
@@ -387,9 +402,17 @@ non-empty default would have to satisfy the Nerd-Fonts-degrade rule, and a
 separator is a preference rather than an affordance. A user who sets one gets
 the BMP-safe treatment (`─`, Box Drawing, present in every terminal font).
 
-`context.max-file-lines` exists because a whole-buffer query is `O(file)`. On a
-generated or minified file past the cap the feature turns itself off and says
-so at `debug` — a missing strip, never a stall.
+`context.max-file-lines` exists because a whole-buffer query is `O(file)`. It
+originally guarded a CLIFF: the node-returning query form trapped past ~20k
+lines, and a trap quarantines the plugin — one oversized file and the strip
+stops working in every buffer until reload. With `run-query-ranges` the cost is
+linear (~1.4 us/line, measured to 400k lines) and there is no cliff, so the cap
+now bounds how long a background task may run per reparse rather than keeping
+users away from a failure. 100k is far above any realistic source file (this
+repo's largest is 36k) and puts the worst case near a tenth of a second; `0`
+disables it, which is a defensible setting now that it cannot trap. Past the
+cap the feature turns itself off and says so at `debug` — a missing strip,
+never a stall.
 
 ## Theme elements
 
@@ -488,6 +511,13 @@ with no query contributes nothing and logs at `debug` — most languages will no
 have one at first, and that is a normal state rather than a defect worth
 warning about.
 
+Because `@context.end` is written against per-language FIELD names, and because
+tree-sitter compiles a query all-or-nothing, one wrong field name silently
+disables the strip for that whole language — and "no query" is a legitimate
+state, so nothing looks broken. Every bundled query is therefore compiled
+against its real grammar in `treesitter_context_queries.rs`. That test is what
+makes the per-language bookkeeping affordable.
+
 ## Error handling
 
 - **Query compile failure** — `warn` once per (plugin, language), that language
@@ -573,9 +603,12 @@ rows and never to a flicker.
   effect mirror.** `boundary_effect.rs` is large and this has not been verified.
   If either arm is missing, the mode slice grows by a small effect-mirror
   addition. Verify before starting that slice, not during it.
-- **Whole-buffer query cost on large files.** Bounded by `max-file-lines` and
-  run off-thread, but the tail is real on generated code. The bench records it;
-  the cap is the mitigation.
+- **Whole-buffer query cost on large files.** ~~Bounded by `max-file-lines`~~ —
+  this landed as the real problem it was flagged as: the node-returning query
+  form was superlinear and trapped past ~20k lines, which put every large file
+  (the ones the strip helps most) on the wrong side of the guard. Resolved at
+  TC.10 by adding `run-query-ranges` to the tree-sitter seam; the cost is now
+  linear and the cap is a background-work bound rather than a cliff guard.
 - **Per-keystroke resolver cost.** Small by construction, but it is genuinely on
   the hot path and therefore genuinely ratchetable. It gets a bench so a later
   change that makes it `O(scopes)` fails CI rather than a review.

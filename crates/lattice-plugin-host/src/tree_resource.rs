@@ -260,6 +260,63 @@ impl TreeSnapshotResource {
         }
         out
     }
+
+    /// TS.2b: `run_query` reduced to extents — same traversal, same host-side
+    /// predicate filtering, but no `NodeResource` per capture.
+    ///
+    /// The saving is not the allocation: it is that every returned
+    /// `NodeResource` becomes a guest-visible resource-table entry holding its
+    /// own snapshot bump, which the guest must then drop one at a time across
+    /// the boundary. A structural query over a large file returns tens of
+    /// thousands of captures, and that per-capture round trip — not the query
+    /// itself — is what made whole-file structural queries too slow to run.
+    ///
+    /// The returned `u32` is the match ordinal within THIS call, so captures
+    /// from one pattern match stay groupable (`@context` with its
+    /// `@context.end`) without a containment test on the guest side.
+    pub fn run_query_ranges(
+        &self,
+        query: &QueryResource,
+        within: Option<NativeRange>,
+    ) -> Vec<(String, u32, NativeRange)> {
+        let Some(tree) = self.snapshot.tree() else {
+            return Vec::new();
+        };
+        if query.lang != self.snapshot.lang() {
+            return Vec::new();
+        }
+        let source = self.snapshot.source();
+        let names = query.query.capture_names();
+        let mut cursor = QueryCursor::new();
+        if let Some(r) = within {
+            cursor.set_point_range(point_of(r.start)..point_of(r.end));
+        }
+        let mut matches = cursor.matches(&query.query, tree.root_node(), source);
+        let mut out = Vec::new();
+        // Counted here rather than read from `m.id()`: tree-sitter's match id is
+        // not dense and is not stable across calls, and the guest only needs
+        // "same match or not" within one result list.
+        let mut match_index: u32 = 0;
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = names
+                    .get(cap.index as usize)
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string();
+                out.push((
+                    name,
+                    match_index,
+                    NativeRange {
+                        start: position_of(cap.node.start_position()),
+                        end: position_of(cap.node.end_position()),
+                    },
+                ));
+            }
+            match_index = match_index.saturating_add(1);
+        }
+        out
+    }
 }
 
 impl NodeResource {
@@ -650,6 +707,65 @@ mod tests {
         let caps = ts.run_query(&q, None);
         assert_eq!(caps.len(), 1, "the #eq? predicate is evaluated host-side");
         assert_eq!(caps[0].1.byte_range().start.line, 1);
+    }
+
+    /// TS.2b: the ranges API must report the SAME extents as the node API.
+    ///
+    /// Two derivations of "where is this capture" is exactly the drift the
+    /// plugin would silently inherit — a strip drawn from the wrong lines is
+    /// indistinguishable from a strip drawn from the wrong scopes.
+    #[test]
+    fn run_query_ranges_agrees_with_run_query_extents() {
+        let src = "fn alpha() {}\nfn beta() {}\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let q = ts
+            .compile_query("(function_item name: (identifier) @fname)")
+            .expect("valid query compiles");
+
+        let nodes = ts.run_query(&q, None);
+        let ranges = ts.run_query_ranges(&q, None);
+
+        assert_eq!(ranges.len(), nodes.len());
+        for ((nname, node), (rname, _, range)) in nodes.iter().zip(ranges.iter()) {
+            assert_eq!(nname, rname);
+            let nr = node.byte_range();
+            assert_eq!(
+                (range.start.line, range.start.byte),
+                (nr.start.line, nr.start.byte)
+            );
+            assert_eq!((range.end.line, range.end.byte), (nr.end.line, nr.end.byte));
+        }
+    }
+
+    /// Captures from one pattern match share a `match_index`; captures from
+    /// different matches do not. This is what lets a query pair a construct
+    /// with its body (`@context` + `@context.end`) in one pass — without it
+    /// the guest would need a containment test, which is ambiguous for nested
+    /// constructs.
+    #[test]
+    fn run_query_ranges_groups_captures_by_match() {
+        let src = "fn alpha() {\n  let x = 1;\n}\nfn beta() {}\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let q = ts
+            .compile_query("(function_item name: (identifier) @fname body: (_) @fbody)")
+            .expect("valid two-capture query compiles");
+
+        let caps = ts.run_query_ranges(&q, None);
+        assert_eq!(caps.len(), 4, "two functions x two captures");
+
+        // The name and the body of ONE function carry one index.
+        let alpha: Vec<&(String, u32, NativeRange)> =
+            caps.iter().filter(|c| c.1 == caps[0].1).collect();
+        assert_eq!(alpha.len(), 2);
+        let mut names: Vec<&str> = alpha.iter().map(|c| c.0.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["fbody", "fname"]);
+
+        // ... and the second function a different one.
+        assert!(
+            caps.iter().any(|c| c.1 != caps[0].1),
+            "the second match must not share the first match's index"
+        );
     }
 
     #[test]

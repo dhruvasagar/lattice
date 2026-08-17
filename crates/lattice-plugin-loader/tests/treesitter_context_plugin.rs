@@ -458,3 +458,67 @@ fn the_staged_runtime_plugin_is_discoverable_and_complete() {
         );
     }
 }
+
+/// A REAL large file, not a toy. `dispatch.rs` is ~48k lines, which is the
+/// file the strip was reported not to render on.
+///
+/// The producer runs a WHOLE-BUFFER query and materialises one resource handle
+/// per capture, then makes two more host calls per capture (`byte_range`,
+/// `child_by_field`). On a file this size that is a very large number of
+/// boundary crossings inside one `context-scopes` call, bounded by
+/// `PluginBudget::context()`'s epoch deadline — and a trap there quarantines
+/// the plugin, so it never produces again for ANY buffer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_very_large_real_file_still_produces_scopes() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let src = match std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../lattice-host/src/dispatch.rs"
+    )) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("skipping: dispatch.rs not readable");
+            return;
+        }
+    };
+    let lines = src.lines().count() as u32;
+
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let sources = rig.contexts.load().sources();
+
+    let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+    syn.parse(&src);
+    let snapshot: Arc<dyn std::any::Any + Send + Sync> = Arc::new(syn.snapshot_owned());
+
+    let started = std::time::Instant::now();
+    let result = sources[0].produce(7, None, lines, Some(snapshot)).await;
+    let elapsed = started.elapsed();
+
+    // The point is that it does NOT trap. A trap quarantines the plugin, so
+    // one oversized file kills the strip for every buffer until reload — far
+    // worse than this file simply having no context.
+    let scopes = result.unwrap_or_else(|e| {
+        panic!(
+            "a {lines}-line file must not trap the producer (that quarantines \
+             the plugin editor-wide); failed after {elapsed:?}: {e}"
+        )
+    });
+    assert!(
+        scopes.is_empty(),
+        "past `max-file-lines` the guard skips the query and reports no \
+         context, rather than spending {elapsed:?} and trapping"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "the guard must skip BEFORE the query runs; took {elapsed:?}"
+    );
+}

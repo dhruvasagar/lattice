@@ -118,12 +118,41 @@ fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     Ok(scopes)
 }
 
+/// Fallback when `max-file-lines` cannot be read (no config wired).
+///
+/// Measured cost of the whole-buffer query, Rust, release wasm:
+///
+/// |  lines | time   |
+/// |-------:|--------|
+/// |  1 000 |  25 ms |
+/// |  2 500 |  83 ms |
+/// |  5 000 | 287 ms |
+/// | 10 000 | 1.18 s |
+/// | 20 000 | TRAP   |
+///
+/// Superlinear — roughly 4x the time for 2x the lines — because `run-query`
+/// materialises one capture (and one node resource) per match. Past ~20k lines
+/// it exceeds the producer's epoch deadline and TRAPS, which quarantines the
+/// plugin: after one oversized file it stops producing for every buffer until
+/// reload. Skipping is strictly better than that.
+const DEFAULT_MAX_FILE_LINES: u32 = 5_000;
+
 impl ContextGuest for Component {
     fn context_scopes(
         req: ContextRequest,
         tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<ContextScope>, String> {
         if req.line_count == 0 {
+            return Ok(Vec::new());
+        }
+        // Bound the work BEFORE running the query. Returning empty (not `err`)
+        // is deliberate: the host caches an empty set, which is the truth —
+        // this file has no context — rather than keeping a stale set from
+        // whatever was open before.
+        let max_lines = get_option("max-file-lines")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_MAX_FILE_LINES);
+        if max_lines > 0 && req.line_count > max_lines {
             return Ok(Vec::new());
         }
         // No parse (plain text, or one still pending) is a normal state the
@@ -336,9 +365,12 @@ impl Guest for Component {
             (
                 "max-file-lines",
                 OptionType::Integer,
-                "100000",
-                "Skip the structural query above this line count; the feature \
-                 turns itself off rather than stalling on generated files.",
+                "5000",
+                "Skip the structural query above this line count; 0 disables \
+                 the guard. The whole-buffer query costs ~25 ms at 1k lines, \
+                 ~287 ms at 5k and over a second at 10k, and TRAPS past ~20k — \
+                 which quarantines the plugin for every buffer, not just the \
+                 big one. Raise it only if you are willing to pay that.",
             ),
         ];
         for (name, ty, default, doc) in opts {

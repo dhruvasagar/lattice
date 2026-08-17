@@ -183,7 +183,21 @@ All prefixed `treesitter-context.`:
 | `separator` | `""` | Glyph repeated as a rule under the block. Empty disables it. |
 | `line-numbers` | `true` | Show each context row's source line number in the gutter. |
 | `disabled-languages` | `""` | Comma-separated grammar ids to skip. |
-| `max-file-lines` | `100000` | Skip the structural query above this line count. |
+| `max-file-lines` | `5000` | Skip the structural query above this line count; `0` disables the guard. |
+
+### Large files
+
+The structural query runs over the **whole buffer** on each reparse, and its
+cost grows faster than the file does — about 25 ms at 1 000 lines, 287 ms at
+5 000, over a second at 10 000, and past roughly 20 000 it exceeds the plugin
+budget and traps. A trap quarantines the plugin, which stops the strip for
+*every* buffer until reload, so `max-file-lines` skips the query rather than
+risk that: above the limit a file simply shows no context.
+
+The default of 5 000 is set from those measurements. Raising it trades editor
+responsiveness on a background thread for context in big files; setting it to
+`0` removes the guard entirely and is not recommended until the whole-buffer
+query is replaced.
 
 ### Languages
 

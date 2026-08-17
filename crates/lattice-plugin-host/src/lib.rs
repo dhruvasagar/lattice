@@ -1922,6 +1922,18 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // TC.6: a multi-seam component that provides BOTH `grammar` and `theme`
+        // (treesitter-context) is instantiated against this sync linker for its
+        // grammar seam, and instantiation must satisfy EVERY import the world
+        // declares — not only the ones that seam uses. Registering an element
+        // touches the theme registry and nothing else, so it is safe on the
+        // sync path; leaving it out simply made the whole component fail to
+        // load, which is how this was found.
+        crate::theme_host::bindings::lattice::plugin_host::theme::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         crate::mode_host::bindings::lattice::plugin_host::modes::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
             |state: &mut PluginState| state,

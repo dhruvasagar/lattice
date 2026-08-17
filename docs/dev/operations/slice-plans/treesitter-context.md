@@ -17,7 +17,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | ✅ |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | ✅ |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | ✅ |
-| TC.6 | `treesitter-context-mode` — `[u`, `:context-up`, `:context-toggle` | 📝 |
+| TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
 | TC.7 | Docs, benches, ratchet | 📝 |
 
 ## Sequencing
@@ -363,7 +363,34 @@ numbers); a language with no query contributes nothing and logs at `debug`, not
 is honoured; `context.enabled = false` publishes an empty list rather than
 skipping the publish, so turning it off clears the strip instead of freezing it.
 
-## TC.6 — The mode, the chord, the commands 📝
+## TC.6 — The mode, the chord, the commands ✅
+
+> **Landed 2026-08-17.** The pre-flight check the plan mandated paid off in an
+> unexpected direction, and one designed command did not survive.
+>
+> - **The effect mirror was already sufficient.** The plan flagged
+>   `Effect::CursorMoveIn` + a position push as possibly missing. Neither is
+>   needed: `record-jump` and `cursor-move` both already cross, round-tripped
+>   and tested. `CursorMoveIn` is explicitly refused at the boundary and is the
+>   wrong tool anyway — it exists for ASYNC producers whose target buffer may
+>   no longer be focused, whereas `[u` resolves inline on the keystroke path
+>   where the active buffer IS the target.
+> - **`:context-up` was dropped.** `apply-ex-command` gets no tree handle (only
+>   `apply-action` does) and no `Effect` re-dispatches a command, so an
+>   ex-command cannot compute a jump target. Shipping one that silently did
+>   nothing would be worse than not having it. `:context-toggle` survives
+>   because it only reads and writes an option. Recorded in the design fragment
+>   with the fix if a second consumer ever appears.
+> - **How the bug surfaced is worth keeping.** Registering an action AND an
+>   ex-command both named `context-up` made `id_by_name` resolve the
+>   ex-command — whose body was a stub — so the chord silently did nothing. The
+>   name collision hid the seam gap behind a plausible no-op.
+> - **A multi-seam component must satisfy EVERY import on every linker it is
+>   instantiated against.** Adding `theme` to the world broke loading outright
+>   until `theme` was also added to the SYNC grammar linker, because the
+>   grammar seam instantiates the same component there.
+
+
 
 `treesitter-context-mode`, a **minor** mode with an `ActivationPolicy` spanning
 every major with a tree-sitter grammar. Keymap at

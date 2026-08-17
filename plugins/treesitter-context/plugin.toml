@@ -7,9 +7,16 @@
 # and returns an empty scope set, which degrades to "no strip" rather than an
 # error.
 #
-# `provides` order matters, as it does for auto-pair: `theme` and `config`
-# precede `context` so the elements and options exist before the first produce
-# call can reference them.
+# `provides` order matters, as it does for auto-pair: `grammar` MUST precede
+# `modes` (the mode's keymap binds to the plugin's OWN action by name, resolved
+# against the command registry at bind time), and `theme` / `config` precede
+# `context` so the elements and options exist before the first produce call.
+#
+# `default_mode` makes `treesitter-context-mode` enabled out of the box, and the
+# loader auto-registers `treesitter-context.enabled` to gate it — which is why
+# this plugin does NOT register an `enabled` option of its own: two switches for
+# one thing is one too many, and the loader's is the canonical one.
 id = "treesitter-context"
-provides = ["theme", "config", "context"]
+provides = ["theme", "config", "grammar", "modes", "context"]
 editor_capabilities = ["tree-sitter"]
+default_mode = "treesitter-context-mode"

@@ -442,10 +442,23 @@ existing behaviour changes; the context jump is just another entry in the ring.
 
 ### Ex-commands
 
-`:context-up` (the same handler, so the chord and the command cannot drift) and
-`:context-toggle` (flips `context.enabled` buffer-locally). Dashed and
-namespaced per the naming rule; no one- or two-letter shorts — those slots are
-scarce and reserved for vim-canonical commands.
+`:context-toggle` only — dashed and namespaced per the naming rule, with no one-
+or two-letter short (those slots are scarce and reserved for vim-canonical
+commands).
+
+> **`:context-up` was designed and then dropped (TC.6).** The plan was for it to
+> share the chord's handler so the two could not drift. The seam cannot deliver
+> that: `apply-ex-command` receives no `borrow<tree-snapshot>` — only
+> `apply-action` does — so an ex-command cannot compute a jump target, and no
+> `Effect` re-dispatches a command in a way that would borrow the action's tree
+> (`invoke-command` is a picker routing payload, not an effect). A `:context-up`
+> that silently did nothing would be worse than an absent one, so the chord is
+> the jump's only surface.
+>
+> `:context-toggle` survives because it needs no structure — it reads and writes
+> an option. If a second consumer ever wants structure from an ex-command, the
+> fix is a tree parameter on `apply-ex-command`: a seam change worth making for
+> two consumers and not for one.
 
 ## Language coverage
 

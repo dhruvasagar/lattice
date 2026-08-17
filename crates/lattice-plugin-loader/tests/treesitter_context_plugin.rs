@@ -13,6 +13,10 @@
 use std::sync::{Arc, Mutex};
 
 use lattice_config::ConfigRegistry;
+use lattice_grammar::command::CommandInvocation;
+use lattice_grammar::dispatcher::execute_with_env;
+use lattice_grammar::registry::GrammarEnv;
+use lattice_grammar::{CancellationToken, Effect};
 use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{
@@ -23,6 +27,7 @@ use lattice_picker::PickerRegistryHandle;
 use lattice_picker::source::PickerRegistry;
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
+use lattice_protocol::position::Position;
 use lattice_runtime::EventBus;
 use lattice_syntax::{Lang, Syntax};
 use lattice_theme::{ElementName, ThemeRegistryHandle};
@@ -68,6 +73,8 @@ struct Rig {
     contexts: ContextSourceRegistryHandle,
     theme: ThemeRegistryHandle,
     config: Arc<ConfigRegistry>,
+    commands: CommandRegistryHandle,
+    modes: ModeRegistryHandle,
 }
 
 fn rig(base: &std::path::Path) -> Rig {
@@ -79,10 +86,12 @@ fn rig(base: &std::path::Path) -> Rig {
     let config = Arc::new(ConfigRegistry::default());
     let commands: CommandRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+    let commands_for_rig = commands.clone();
     let pickers: PickerRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()));
     let modes: ModeRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()));
+    let modes_for_rig = modes.clone();
     let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
     let host = Arc::new(
         PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
@@ -111,6 +120,8 @@ fn rig(base: &std::path::Path) -> Rig {
         contexts,
         theme,
         config,
+        commands: commands_for_rig,
+        modes: modes_for_rig,
     }
 }
 
@@ -269,4 +280,127 @@ async fn a_language_with_no_query_yields_no_scopes_rather_than_an_error() {
         .await
         .expect("a language with no query is not an error");
     assert!(scopes.is_empty());
+}
+
+/// A file deep enough that the jump has somewhere to go. Line numbers 0-based:
+///
+///   0 impl Renderer for Tui {
+///   1     fn paint(&mut self) {
+///   2         if self.dirty {
+///   3             self.blit();
+///   4         }
+///   5     }
+///   6 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mode_and_its_chord_are_registered() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+
+    // The action the chord and the ex-command both resolve to.
+    assert!(
+        rig.commands.load().lookup_by_name("context-up").is_some(),
+        "the plugin's own action is registered, which is what `grammar` \
+         preceding `modes` in `provides` guarantees is true by bind time"
+    );
+    // `:context-toggle` exists; `:context-up` deliberately does NOT. An
+    // ex-command gets no tree handle from the seam, so it cannot compute a
+    // jump target — and a command that silently does nothing is worse than an
+    // absent one. The chord is the surface for the jump.
+    assert!(
+        rig.commands
+            .load()
+            .lookup_by_name("context-toggle")
+            .is_some()
+    );
+
+    // A MINOR mode — `[u` must never reach the builtin layer, where it would
+    // fire in buffers that have no tree at all.
+    let modes = rig.modes.load();
+    let id = lattice_mode::ModeId::new("treesitter-context-mode");
+    let mode = modes.get(id).expect("the minor mode is registered");
+    assert_eq!(mode.kind(), lattice_mode::ModeKind::Minor);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_up_walks_outward_and_terminates() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let commands = rig.commands.load();
+    let up = commands.id_by_name("context-up").unwrap();
+
+    let snapshot: Arc<dyn std::any::Any + Send + Sync> = {
+        let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        syn.parse(SRC);
+        Arc::new(syn.snapshot_owned())
+    };
+
+    // Fire from inside the `if` body (line 3). Each press should land on the
+    // next header out: 2 (the if), then 1 (the fn), then 0 (the impl), then
+    // nothing.
+    let expected = [Some(2u32), Some(1), Some(0), None];
+    let mut at = 3u32;
+    for (i, want) in expected.iter().enumerate() {
+        let mut doc = lattice_core::Document::from_text(SRC);
+        let env = GrammarEnv {
+            syntax: Some(&snapshot),
+            ..Default::default()
+        };
+        let effect = execute_with_env(
+            &commands,
+            &mut doc,
+            lattice_core::buffers::BufferId(1),
+            Position::new(at, 0),
+            CommandInvocation::of(up),
+            &CancellationToken::never(),
+            env,
+        )
+        .expect("context-up dispatches");
+
+        match (want, &effect) {
+            (Some(line), Effect::Many(effects)) => {
+                // `RecordJump` FIRST — the ring must capture where the cursor
+                // was BEFORE the move, which is what makes `<C-o>` return.
+                assert!(
+                    matches!(effects[0], Effect::RecordJump),
+                    "step {i}: the jump is recorded before the move, got {effects:?}"
+                );
+                assert!(
+                    matches!(effects[1], Effect::CursorMove(p) if p.line == *line),
+                    "step {i}: lands on header line {line}, got {effects:?}"
+                );
+                at = *line;
+            }
+            (None, e) => {
+                // At top level there is no enclosing header above the cursor.
+                // A no-op that CONSUMES the chord, not `Declined` — the user
+                // asked for the action and it simply had nowhere to go, so
+                // falling through to another binding would surprise them.
+                assert!(
+                    matches!(e, Effect::None),
+                    "step {i}: top level is a quiet no-op, got {e:?}"
+                );
+            }
+            (want, got) => panic!("step {i}: expected {want:?}, got {got:?}"),
+        }
+    }
 }

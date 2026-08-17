@@ -68,11 +68,21 @@ world context-plugin {
 /// own world declares.
 world treesitter-context-plugin {
     import tree-sitter;
+    import buffer;
+    import grammar;
+    import modes;
     import config;
     import theme;
-    import logging;
 
     export context;
     export register-options: func();
     export register-theme-elements: func();
+    export register-grammar: func();
+    export grammar-callbacks;
+    export register-modes: func();
 }
+
+// `logging` is intentionally NOT imported, for the reason `auto-pair` gives:
+// keeping it out of the combined world keeps `log` off the SYNC grammar linker,
+// preserving the "no logging reachable from the grammar hot path" invariant.
+// `[u` fires on a keystroke and resolves inline, so it is on that path.

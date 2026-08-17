@@ -26,10 +26,19 @@ wit_bindgen::generate!({
 });
 
 use exports::lattice::plugin_host::context::Guest as ContextGuest;
-use lattice::plugin_host::config::{OptionType, register_option};
+use exports::lattice::plugin_host::grammar_callbacks::Guest as CallbacksGuest;
+use lattice::plugin_host::grammar::{register_action, register_ex_command};
+use lattice::plugin_host::modes::{
+    ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
+    register_mode,
+};
+use lattice::plugin_host::config::{OptionType, get_option, register_option, set_option};
 use lattice::plugin_host::theme::{ColorRef, ModifierSet, StyleSpec, register_element};
 use lattice::plugin_host::tree_sitter::{Node, TreeSnapshot};
-use lattice::plugin_host::types::{ContextRequest, ContextScope};
+use lattice::plugin_host::types::{
+    ActionContext, ActionSpec, Args, ContextRequest, ContextScope, Effect, ExCommandContext,
+    ExCommandSpec, LatencyClass, Position, SurfaceForm,
+};
 
 struct Component;
 
@@ -127,19 +136,130 @@ impl ContextGuest for Component {
     }
 }
 
+
+// ── The jump: `[u` / `:context-up` ───────────────────────────────────────────
+
+/// Callback id for the `context-up` action. The guest picks these; the host
+/// hands the id back on dispatch (the trampoline pattern).
+const CB_CONTEXT_UP: u32 = 1;
+/// Callback ids for `:context-toggle` (arg parse + apply).
+const CB_PARSE_NOARGS: u32 = 2;
+const CB_EX_CONTEXT_TOGGLE: u32 = 4;
+
+/// Walk `count` levels up the context stack from `line`, returning the header
+/// line to land on.
+///
+/// The predicate is "innermost scope containing `line` whose header is STRICTLY
+/// above it". That strictness is what makes repeated `[u` terminate rather than
+/// stick: landing on a scope's header leaves the cursor inside that scope, but
+/// its header is no longer above the cursor, so the next press finds the parent.
+/// It is also why there is no `]u` — the inverse of walking up is `<C-o>`.
+fn context_up_target(scopes: &[ContextScope], line: u32, count: u32) -> Option<u32> {
+    let mut at = line;
+    let mut landed = None;
+    for _ in 0..count.max(1) {
+        let next = scopes
+            .iter()
+            .filter(|s| s.scope_start <= at && at <= s.scope_end && s.header_end < at)
+            .max_by_key(|s| s.header_start)?;
+        at = next.header_start;
+        landed = Some(at);
+    }
+    landed
+}
+
+fn jump_effects(tree: Option<&TreeSnapshot>, cursor: Position, count: u32) -> Vec<Effect> {
+    let Some(tree) = tree else {
+        return vec![Effect::None];
+    };
+    let Ok(scopes) = scopes_from_tree(tree) else {
+        return vec![Effect::None];
+    };
+    match context_up_target(&scopes, cursor.line, count) {
+        // `record-jump` FIRST: the position ring must capture where the cursor
+        // was before the move, which is what makes `<C-o>` walk back.
+        Some(line) => vec![
+            Effect::RecordJump,
+            Effect::CursorMove(Position { line, byte: 0 }),
+        ],
+        // Nothing enclosing with a header above — already at top level. A
+        // no-op that CONSUMES the chord rather than `declined`: falling
+        // through to another binding would be surprising, since the user did
+        // ask for this action and it simply had nowhere to go.
+        None => vec![Effect::None],
+    }
+}
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 /// Names are registered SHORT and the host namespaces them by plugin id, so
 /// `max-lines` becomes `treesitter-context.max-lines`.
+
+// ── Registration: the action, the ex-commands, the mode ──────────────────────
+
 impl Guest for Component {
+    fn register_grammar() {
+        register_action(
+            "context-up",
+            "Jump to the header of the enclosing scope. Repeat to walk further \
+             out; `<C-o>` returns.",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            CB_CONTEXT_UP,
+        );
+        // NO `:context-up` ex-command. The design called for one sharing the
+        // chord's handler, and the seam cannot deliver it: `apply-ex-command`
+        // receives no `borrow<tree-snapshot>` (only `apply-action` does), so an
+        // ex-command cannot compute a jump target, and no `Effect` re-dispatches
+        // a command to borrow the action's tree. Shipping a `:context-up` that
+        // silently does nothing would be worse than not having it; the chord is
+        // the real surface. If a second consumer ever needs structure from an
+        // ex-command, the fix is a tree parameter on `apply-ex-command` — a
+        // seam change worth making for two consumers and not for one.
+        //
+        // Dashed + namespaced per the naming rule, and no one- or two-letter
+        // short: those slots are scarce and reserved for vim-canonical commands.
+        register_ex_command(
+            "context-toggle",
+            "Toggle the sticky context strip for this buffer.",
+            &ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                args_schema: Vec::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+            CB_PARSE_NOARGS,
+            CB_EX_CONTEXT_TOGGLE,
+        );
+    }
+
+    fn register_modes() {
+        // A MINOR mode, activated on document buffers. `[u` is not universal
+        // vim grammar — binding it at the builtin layer would fire it in every
+        // buffer including ones with no tree — so it lives at
+        // `KeymapLayer::MinorMode(treesitter-context-mode)`, which the host
+        // scopes to buffers where this mode is active.
+        register_mode(&ModeDeclaration {
+            id: "treesitter-context-mode".to_string(),
+            kind: ModeKind::Minor,
+            // `global` = document buffers. A listing, help or terminal buffer
+            // has no tree and no use for the chord.
+            activation_policy: ActivationPolicy::Global,
+            capabilities: ModeCapabilities::TREE_SITTER,
+            keymap: vec![ModeKeymapBinding {
+                binding_mode: BindingMode::Normal,
+                chord: "[u".to_string(),
+                // Binds to this plugin's OWN action, which is why `grammar`
+                // precedes `modes` in the manifest's `provides`.
+                command: "context-up".to_string(),
+            }],
+        });
+    }
+
     fn register_options() {
         let opts: &[(&str, OptionType, &str, &str)] = &[
-            (
-                "enabled",
-                OptionType::Boolean,
-                "true",
-                "Show sticky scope headers above the text.",
-            ),
             (
                 "anchor",
                 OptionType::String,
@@ -273,6 +393,64 @@ impl Guest for Component {
                 scale: None,
             },
         );
+    }
+}
+
+
+impl CallbacksGuest for Component {
+    fn apply_action(
+        callback: u32,
+        ctx: ActionContext,
+        _doc: &lattice::plugin_host::buffer::Document,
+        tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            CB_CONTEXT_UP => Ok(jump_effects(tree, ctx.cursor, ctx.count)),
+            other => Err(format!("unknown action callback {other}")),
+        }
+    }
+
+    fn apply_ex_command(
+        callback: u32,
+        ctx: ExCommandContext,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            // Flip the loader-registered enablement switch. This one needs no
+            // tree — it only reads and writes an option — which is exactly why
+            // it survives where `:context-up` could not.
+            CB_EX_CONTEXT_TOGGLE => {
+                let _ = ctx;
+                let on = get_option("enabled").map(|v| v == "true").unwrap_or(true);
+                set_option("enabled", if on { "false" } else { "true" });
+                Ok(vec![Effect::None])
+            }
+            other => Err(format!("unknown ex-command callback {other}")),
+        }
+    }
+
+    fn parse_ex_args(_callback: u32, _rest: String, _bang: bool) -> Result<Args, String> {
+        Ok(Args::None)
+    }
+
+    fn apply_motion(
+        _callback: u32,
+        _ctx: lattice::plugin_host::types::MotionContext,
+    ) -> Result<lattice::plugin_host::types::MotionResult, String> {
+        Err("treesitter-context contributes no motions".to_string())
+    }
+
+    fn apply_operator(
+        _callback: u32,
+        _ctx: lattice::plugin_host::types::OperatorContext,
+    ) -> Result<Vec<Effect>, String> {
+        Err("treesitter-context contributes no operators".to_string())
+    }
+
+    fn apply_text_object(
+        _callback: u32,
+        _ctx: lattice::plugin_host::types::TextObjectContext,
+    ) -> Result<lattice::plugin_host::types::Range, String> {
+        Err("treesitter-context contributes no text objects".to_string())
     }
 }
 

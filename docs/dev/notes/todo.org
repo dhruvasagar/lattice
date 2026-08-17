@@ -48,7 +48,7 @@
     - [X] searches
     - [ ] yank
     - [ ] macros
-- [ ] auto indent
+- [X] auto indent
 - [ ] auto formatting
 - [ ] Spell Check
 - [X] buffer history within pane, <C-^> to go back and <C-&> to go forward

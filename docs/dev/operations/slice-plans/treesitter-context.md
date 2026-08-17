@@ -16,7 +16,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.3a | Scope cache + reparse-driven refresh pump | ✅ |
 | TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | ✅ |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | ✅ |
-| TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 📝 |
+| TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | ✅ |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-up`, `:context-toggle` | 📝 |
 | TC.7 | Docs, benches, ratchet | 📝 |
 
@@ -303,7 +303,32 @@ a theme file overrides it; `:customize` and `:describe-*` list it; unload
 removes it; a duplicate name from a second plugin is refused with a clear
 error; a malformed `style-spec` is refused without poisoning the registry.
 
-## TC.5 — The plugin 📝
+## TC.5 — The plugin ✅
+
+> **Landed 2026-08-17.** The slice where the feature stops being scaffolding:
+> a real tree-sitter query runs inside WASM against a real parse tree.
+>
+> - **The header span comes from the node's `body` field**, not a second
+>   `@context.end` capture. A scope's header is everything before its body, so
+>   `fn f(\n  a: u32,\n) {` is three header lines. Deriving it from `body`
+>   gives multi-line signatures for free and needs no per-language bookkeeping
+>   — every query would otherwise have to get its own end-capture right.
+> - **Branch arms are captured deliberately** (`if` / `else` / `match_arm` /
+>   `case`). Knowing which branch you are inside is exactly what a long
+>   function hides, and it is the case folds cannot serve because nobody folds
+>   an `if`. This is also why scopes are not folds.
+> - **Single-line scopes are dropped in the guest.** Their header can never
+>   scroll away while the cursor is inside them, so caching them would only
+>   lengthen the host's per-keystroke scan.
+> - **The query is compiled per call, not cached.** The guest has no per-language
+>   slot that survives a call, and this runs once per REPARSE — never per
+>   keystroke, scroll, or frame. A cache would matter only if the producer were
+>   re-driven more often, which the scopes-not-rows split exists to prevent.
+> - Seven languages: rust, python, go, javascript, typescript/tsx, c/cpp,
+>   markdown. Staged into `runtime/plugins` by `cargo xtask
+>   build-core-plugins`, which now names two core plugins.
+
+
 
 `plugins/treesitter-context/` — standalone workspace, `wasm32-wasip2`,
 `crate-type = ["cdylib"]`, the `auto-pair` shape. Built to a component by

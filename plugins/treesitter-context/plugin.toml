@@ -1,0 +1,15 @@
+# TC.5 — the `treesitter-context` plugin manifest. Bundled (pre-granted).
+#
+# It reaches no filesystem, network, or subprocess: it reads structure through
+# the call-scoped `borrow<tree-snapshot>` the `context` seam hands it, and
+# contributes config + theme registry entries. The `tree-sitter` editor
+# capability is what gates that handle — without the grant the guest gets `none`
+# and returns an empty scope set, which degrades to "no strip" rather than an
+# error.
+#
+# `provides` order matters, as it does for auto-pair: `theme` and `config`
+# precede `context` so the elements and options exist before the first produce
+# call can reference them.
+id = "treesitter-context"
+provides = ["theme", "config", "context"]
+editor_capabilities = ["tree-sitter"]

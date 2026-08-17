@@ -127,6 +127,17 @@ fn main() {
         "auto-pair",
         "AUTO_PAIR_WASM",
     );
+    // TC.5: the second bundled plugin — sticky scope headers. Multi-seam
+    // (context + config + theme) from one component, the `auto-pair` shape.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("treesitter-context"),
+        "treesitter-context",
+        "TREESITTER_CONTEXT_WASM",
+    );
 }
 
 /// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a

@@ -1,0 +1,27 @@
+# TC.5 — the `treesitter-context` bundled plugin. A real `wasm32-wasip2` guest
+# providing THREE seams from one component (context + config + theme): the
+# structural scope producer, the `context.*` options, and the `context.*` theme
+# elements. The second bundled plugin after `auto-pair`, and the first consumer
+# of both the `context` producer seam (TC.2) and the `theme` element seam (TC.4).
+#
+# Standalone workspace (`[workspace]` below): targets wasm32-wasip2, must not
+# inherit the host toolchain's lints/target, and must not be built by a plain
+# `cargo build --workspace`. Built to a component by
+# `crates/lattice-plugin-host/build.rs` → `TREESITTER_CONTEXT_WASM`.
+[package]
+name = "treesitter-context"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

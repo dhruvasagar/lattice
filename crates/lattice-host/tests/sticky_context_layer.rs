@@ -273,3 +273,47 @@ fn opening_the_command_line_does_not_empty_the_strip() {
         "the strip is unchanged by losing focus — dimming only"
     );
 }
+
+/// Does a NON-ACTIVE buffer's resolved option follow a later global change?
+///
+/// The reported symptom is `*messages*` in a split not wrapping while `wrap`
+/// is globally true — and the caret drifting as if it did. Compose reads
+/// `wrap_lines_for(buffer)` (the per-buffer resolve) while the caret's
+/// `FrameView::from_app` reads the ACTIVE buffer's option cache, so the two
+/// disagree exactly when a non-active buffer's resolve is stale.
+///
+/// The cascade used to re-resolve ONLY the active buffer, which is why the
+/// active one always looked right and every other one could be arbitrarily
+/// old.
+#[test]
+fn a_non_active_buffers_resolved_option_follows_a_later_global_change() {
+    let mut editor = Editor::boot(CoreDocument::from_text("x\ny\n"));
+    let active = editor.document_buffer_id;
+    // A second buffer with its own resolved entry, computed BEFORE the global
+    // change — the boot-order shape (`*messages*` resolving early).
+    let other = lattice_core::BufferId(4242);
+    editor.recompute_options_for_buffer(other);
+    assert!(
+        !*editor.resolved_option::<lattice_config::Wrap>(other),
+        "precondition: wrap starts off for the non-active buffer"
+    );
+
+    editor
+        .config
+        .parse_and_set_command("wrap=true")
+        .expect("wrap is settable");
+    // Drive the same cascade a `:set` drives.
+    editor.drain_option_changes();
+
+    assert!(
+        *editor.resolved_option::<lattice_config::Wrap>(active),
+        "the active buffer follows — it always did"
+    );
+    assert!(
+        *editor.resolved_option::<lattice_config::Wrap>(other),
+        "and so must every OTHER buffer with a resolved entry. Stale here means \
+         the body composes unwrapped while the caret (reading the active \
+         buffer's cache) still splits lines into wrap segments — one row of \
+         cursor/cursorline drift per wrapped line above the cursor"
+    );
+}

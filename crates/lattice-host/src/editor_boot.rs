@@ -731,6 +731,32 @@ impl Editor {
             lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::OptionChanged),
             lattice_runtime::SubscriptionTarget::Channel(option_tx),
         );
+        // A plugin finishing its load must WAKE the editor. Contributions land
+        // on a background task (the loader discovers + loads off the boot
+        // thread), and the producer pumps that consume them —
+        // `maybe_refresh_wasm_context`, `maybe_refresh_wasm_decorations` — run
+        // only inside `run_tick_pending`, which fires on a keystroke or on
+        // `async_landed`. Nothing else fires it when a producer registers, so
+        // the pumps sat until something UNRELATED woke the editor.
+        //
+        // In practice that was the LSP becoming ready, which is why the sticky
+        // context strip appeared only after the LSP scan finished despite
+        // having nothing to do with the LSP. Exactly the shape
+        // `boot-composition.md` §3 designs out: a result that reaches the
+        // screen only because something else happened to knock.
+        {
+            let (plugin_tx, mut plugin_rx) = tokio::sync::mpsc::unbounded_channel();
+            event_bus.subscribe(
+                lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::PluginLoaded),
+                lattice_runtime::SubscriptionTarget::Channel(plugin_tx),
+            );
+            let wake = Arc::clone(&async_landed);
+            boot.runtime_handle().spawn(async move {
+                while plugin_rx.recv().await.is_some() {
+                    wake.notify_one();
+                }
+            });
+        }
         // LSP log live-tail.
         let (lsp_log_tx, lsp_log_event_rx) =
             tokio::sync::mpsc::unbounded_channel::<lattice_lsp::LspLogPushed>();

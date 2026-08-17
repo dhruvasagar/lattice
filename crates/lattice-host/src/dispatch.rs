@@ -32291,6 +32291,32 @@ impl Editor {
         // resolved data.
         let active_id = self.document_buffer_id;
         self.recompute_options_for_buffer(active_id);
+        // 2026-08-17: and EVERY other buffer that has a resolved entry.
+        //
+        // Re-resolving only the active buffer left every other open buffer
+        // pinned to whatever the global value was when ITS options were last
+        // computed. `*messages*` resolved `wrap` before `lattice.toml` applied
+        // and kept `false` forever: its body composed unwrapped while the
+        // caret — which reads the ACTIVE buffer's option cache — still split
+        // lines into wrap segments, drifting the cursor one row per wrapped
+        // line above it.
+        //
+        // Recomputing (rather than clearing the map) is what preserves the
+        // mode and buffer-local layers: a cleared entry falls back to the bare
+        // registry value, which would transiently drop help's `number=false`
+        // and every other mode override until something recomputed it.
+        //
+        // O(open buffers) on a global `:set`, which is a rare, user-initiated
+        // event — not a per-keystroke cost.
+        let stale: Vec<BufferId> = self
+            .resolved_options
+            .keys()
+            .copied()
+            .filter(|id| *id != active_id)
+            .collect();
+        for id in stale {
+            self.recompute_options_for_buffer(id);
+        }
         // Refresh the hot-path cache so subsequent reads see the
         // new value. `recompute_options_for_buffer` already calls
         // `rebuild_option_cache` when `buffer == active`; this

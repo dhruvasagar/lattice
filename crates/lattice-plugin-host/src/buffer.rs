@@ -164,10 +164,24 @@ mod tests {
     #[test]
     fn metadata_readers_match_the_buffer() {
         let doc = DocumentResource::new(snapshot("a\nbb\nccc\n"));
-        assert_eq!(doc.line_count(), 4); // 3 lines + trailing empty
+        // Three lines. The trailing newline TERMINATES the third line rather
+        // than opening a fourth empty one — this asserted 4 until the buffer's
+        // line counting was corrected, and the stale expectation outlived the
+        // fix. A plugin addressing `line_count - 1` as "the last line" must
+        // land on `ccc`, not on a phantom line past the end.
+        assert_eq!(doc.line_count(), 3);
         assert_eq!(doc.byte_len(), 9);
         // `Buffer::line` strips the trailing newline.
         assert_eq!(doc.line_at(1).as_deref(), Some("bb"));
+        assert_eq!(doc.line_at(2).as_deref(), Some("ccc"));
+        // KNOWN INCONSISTENCY, pinned so it is visible rather than tolerated:
+        // `line_count()` says 3, yet index 3 still reads as an empty line. The
+        // two disagree about whether the trailing newline opens a line. A
+        // plugin that iterates `0..line_count()` is unaffected, which is why
+        // this has gone unnoticed; one that probes `line_at` directly sees a
+        // line the count denies. If this is ever reconciled, expect `None`
+        // here and delete this comment.
+        assert_eq!(doc.line_at(3).as_deref(), Some(""));
         assert_eq!(doc.line_at(99), None);
     }
 

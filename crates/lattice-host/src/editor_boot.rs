@@ -1695,6 +1695,20 @@ impl Editor {
         // plugin loading to a `NotWired` skip — the boot pin
         // `plugin_loader_captures_every_drain_service` guards against exactly
         // that. A host that fails to build degrades to no-plugin-support, logged,
+        // T.3/T.4 (theme-system): register the theme-element registry (created
+        // above) so modes + renderers look it up via
+        // `services().get::<ThemeRegistryHandle>()`. Register + look up the
+        // SAME `Arc<dyn ThemeRegistry>` per the ServiceRegistry Arc/TypeId rule
+        // (`feedback_servicesregistry_arc_typeid`). Renderers read the resolved
+        // table via the `RenderState` snapshot (T.4); modes intern their own
+        // `ElementId`s from `on_activate` (T.7).
+        //
+        // TC.4: registered BEFORE `lattice_plugin_loader::install` below,
+        // because the loader captures its drain services at install time — a
+        // `theme` plugin's elements have nowhere to land otherwise, and the
+        // `plugin_loader_captures_every_drain_service` boot pin is what caught
+        // the original ordering.
+        boot.register_service::<lattice_theme::ThemeRegistryHandle>(theme_registry);
         // never a failed boot — see `lattice_plugin_loader::install`.
         lattice_plugin_loader::install(&mut boot);
         // (BC.3b: the `ClaudeCodeServerHandle` service is registered by
@@ -1719,15 +1733,6 @@ impl Editor {
         // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
         // as the `Editor.snippet_session` field (set below).
         boot.register_service::<lattice_snippet::SnippetSessionHandle>(snippet_session.clone());
-        // T.3/T.4 (theme-system): register the theme-element registry (created
-        // above) so modes + renderers look it up via
-        // `services().get::<ThemeRegistryHandle>()`. Register + look up the
-        // SAME `Arc<dyn ThemeRegistry>` per the ServiceRegistry Arc/TypeId rule
-        // (`feedback_servicesregistry_arc_typeid`). Renderers read the resolved
-        // table via the `RenderState` snapshot (T.4); modes intern their own
-        // `ElementId`s from `on_activate` (T.7). Moves `theme_registry` (its
-        // last use — captured into `builtin_element_ids` above).
-        boot.register_service::<lattice_theme::ThemeRegistryHandle>(theme_registry);
         // MH.A3 / DB.5: `Arc<ConfigRegistry>` is registered as a Phase-A
         // service near `config`'s construction (above, next to `event_bus`)
         // rather than here — see the DB.5 hoist note there for why a

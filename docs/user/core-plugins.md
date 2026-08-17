@@ -15,6 +15,7 @@ local directory and which the editor builds on first boot — see
 | Plugin | Default mode | Enable option | What it does |
 |---|---|---|---|
 | **auto-pair** | `auto-pair-mode` | `auto-pair.enabled` (default `true`) | Auto-closes brackets/quotes; a `manual` style closes the nearest unmatched opener on one key. See [below](#auto-pair). |
+| **treesitter-context** | `treesitter-context-mode` | `treesitter-context.enabled` (default `true`) | Pins the enclosing `impl` / `fn` / `if` above the text once their headers scroll away. See [below](#treesitter-context). |
 
 More core plugins land over time (a git-gutter, a file-tree, …); each appears here
 with its mode, its `<id>.enabled` option, and its own options.
@@ -140,3 +141,59 @@ See the design fragment
 [`plugin-manager.md`](../dev/architecture/plugin-manager.md) for the two-roots
 model, the runtime search path, and how user plugins (git/local, build-on-boot)
 differ from core plugins.
+
+
+## treesitter-context
+
+Sticky scope headers. When the `impl` and the `fn` you are inside scroll off the
+top, their header lines stay pinned above the text, so you can always see what
+block you are in. The same idea as `nvim-treesitter-context`, or *sticky scroll*
+in VSCode and Zed.
+
+The pinned rows carry the buffer's own syntax colouring — they are built from
+the same cell builder as the document, not re-highlighted — and they sit
+**under** the headerline rather than replacing it, so a buffer showing LSP
+status or a scan progress row keeps it and the context starts below.
+
+### Jumping up the stack
+
+`[u` jumps to the header of the enclosing scope. Press it again to walk further
+out: each jump lands on a header, and the next press looks for a header strictly
+above the cursor, so it finds the parent rather than sticking. A count works
+(`3[u` goes three levels out), and at top level it does nothing.
+
+`<C-o>` walks back — the jump records a position-history entry before it moves,
+exactly like every other jump in the editor. There is deliberately no `]u`: the
+inverse of walking up is `<C-o>`.
+
+`:context-toggle` turns the strip off for the current buffer and back on.
+
+### Options
+
+All prefixed `treesitter-context.`:
+
+| Option | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | Master switch (registered by the plugin loader). |
+| `anchor` | `cursor` | Which line drives the context: `cursor` (where you are) or `topline` (what you are looking at). |
+| `max-lines` | `3` | Maximum context ROWS — a wrapped signature spends more than one. |
+| `trim-scope` | `outer` | Which end to drop when over budget: `outer` keeps the scopes you are innermost in. |
+| `multiline-threshold` | `1` | Maximum rows one scope's header may use. Raise it to see a whole wrapped signature. |
+| `max-viewport-fraction` | `33` | Percent of the pane the strip may occupy, headerline included. |
+| `separator` | `""` | Glyph repeated as a rule under the block. Empty disables it. |
+| `line-numbers` | `true` | Show each context row's source line number in the gutter. |
+| `disabled-languages` | `""` | Comma-separated grammar ids to skip. |
+| `max-file-lines` | `100000` | Skip the structural query above this line count. |
+
+### Languages
+
+Rust, Python, Go, JavaScript, TypeScript/TSX, C/C++, and Markdown ship with
+context queries. A language without one simply shows no strip — nothing breaks,
+and adding a query is how support grows.
+
+### Theme elements
+
+`treesitter-context.background`, `.separator`, `.line-number`, and `.active`
+(the innermost row). None of them colours the code itself: the rows keep the
+buffer's own syntax highlighting, and these style the backdrop and gutter around
+it. Restyle them like any builtin element.

@@ -180,7 +180,7 @@ deferred — same wall as electric reindent plus an async round-trip and a
 protocol that permits document-wide edits). `sql` and `markdown` ship no
 `indents.scm` by decision.
 
-**Tree-sitter context (2026-08-16, 📝 designed, not built; branch
+**Tree-sitter context (2026-08-16/17, ✅ TC.1–TC.7 landed; branch
 `dhruva/treesitter-context`).** Sticky scope headers — the enclosing `impl` /
 `fn` pinned above the text after their own lines have scrolled away, the
 `nvim-treesitter-context` / sticky-scroll idea. Ships as a **core bundled
@@ -201,7 +201,7 @@ preserves syntax colour by construction — the cells worker builds context rows
 through the same cell-builder as document rows, so there is one derivation
 rather than two that can drift.
 
-**Two host seams land with it**, and they are the real cost, the lighthouse
+**Two host seams landed with it**, and they were the real cost, the lighthouse
 shape: a `context` producer seam (the `decorations` async-producer pattern) and
 the `theme` element-registration seam, which closes the deferred WIT item in
 [`../architecture/theme-system.md`](../architecture/theme-system.md). Both are
@@ -209,6 +209,19 @@ general — every later plugin gets them. The layer is keyed by **`pane_id`**,
 not `buffer_id`, which is a first: one buffer in two splits with cursors in
 different scopes must show different context, and no existing per-pane layer
 needed that.
+
+**What building it corrected.** The design's resolver predicate was wrong
+(`header_end < anchor` is "above the cursor", not "scrolled off" — it needed
+`viewport_top`), its complexity claim was wrong (`O(n + d log d)`, measured
+204 ns / 2.66 µs / 21.8 µs at 100 / 5k / 50k scopes), and one designed
+ex-command could not be built: `apply-ex-command` gets no tree handle, so
+`:context-up` was dropped rather than shipped as a silent no-op — the chord is
+the jump's only surface. `treesitter-context` is also the first component to
+lend a host resource across an ASYNC guest suspension (`borrow<tree-snapshot>`),
+which was an open question until the fixture proved it; had it failed, the
+fallback was a host import handing out owned snapshots by buffer id, widening
+the `tree-sitter` capability from "the tree you were handed" to "any buffer's
+tree, any time".
 
 **Multibuffer-provider review + follow-on work (2026-08-10 → 08-12).**
 A review of the pending provider catalogue

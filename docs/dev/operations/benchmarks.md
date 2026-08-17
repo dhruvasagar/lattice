@@ -459,6 +459,33 @@ backstop because an event handler runs on the async linker and may legitimately
 
 ---
 
+## TC.1 — sticky-context resolution (2026-08-16)
+
+The one part of tree-sitter context that runs on the **keystroke path**:
+`resolve_context` answers "which scopes does this pane pin right now" from the
+cached scope set, and the host calls it per pane on every pane-inputs publish —
+which a cursor move is. Everything else in the feature is off-thread (the
+plugin's query, once per reparse) or version-gated (the worker's row build,
+skipped when the resolved list is unchanged).
+
+| corpus | time |
+|---|---|
+| 100 scopes, depth 5 | **204 ns** |
+| 5 000 scopes, depth 20 | **2.66 µs** |
+| 50 000 scopes, depth 20 | **21.8 µs** |
+
+Linear at ~0.44 ns/scope — the shape is a scan over the scope list plus a sort
+of the small enclosing subset (`O(n + d log d)`). The design fragment originally
+claimed `O(log n + depth)`; that was wrong, and the number is why the linear
+form is kept: 21.8 µs at the pathological end is **0.26% of a 120 Hz frame**,
+and a 3k-line source file sits nearer 1 µs.
+
+This is the ratchet. A change that makes the per-call cost superlinear in the
+scope count fails here rather than in review, and the fix at that point is an
+augmented interval structure, not a reordering.
+
+---
+
 ## PH7.9 — decoration production (the §7 "status/gutter segment update" gate, 2026-07-13)
 
 The **off-render-path** cost a decoration provider pays per trigger (edit /

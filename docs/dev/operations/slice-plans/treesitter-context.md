@@ -1,6 +1,10 @@
 # Tree-sitter context — slice plan
 
 > **Status: Active.** Opened 2026-08-16, branch `dhruva/treesitter-context`.
+> TC.1–TC.7 ✅ — the feature works end to end. **NOT archivable:** TC.8 is ⛔
+> deferred, and the completed-plans-only rule is explicit that deferred is open
+> work, not done. Archiving now is exactly the mistake that rule exists to
+> prevent.
 > Implements [`../../architecture/treesitter-context.md`](../../architecture/treesitter-context.md)
 > — sticky scope headers as a core bundled plugin, plus the two host seams it
 > forces.
@@ -18,7 +22,8 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.4 | The `theme` WIT seam — plugin-registered elements | ✅ |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | ✅ |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
-| TC.7 | Docs, benches, ratchet | 📝 |
+| TC.7 | Docs, benches, ratchet | ✅ |
+| TC.8 | `context.line-numbers` — source line numbers in the context gutter | ⛔ |
 
 ## Sequencing
 
@@ -413,7 +418,32 @@ active there; `:context-toggle` clears and restores the strip; the chord is
 absent from `KeymapLayer::Builtin` (the regression that matters — a `[u` firing
 in every buffer).
 
-## TC.7 — Docs, benches, ratchet 📝
+## TC.7 — Docs, benches, ratchet ✅
+
+> **Landed 2026-08-17.** `docs/user/core-plugins.md` gains the plugin's own
+> section (chord, options, languages, theme elements) and its row in the core
+> table; `benchmarks.md` gains the TC.1 resolver numbers as the ratchet, with
+> the linear shape stated so a later superlinear change fails there rather than
+> in review.
+>
+
+## TC.8 — `context.line-numbers` in the gutter ⛔
+
+**Deferred, not dropped.** The option is registered and documented, and the
+strip currently paints a BLANK gutter — the same as every other virtual row,
+because context rows are adapted to `VirtualRow` and painted by the shared
+pinned-row painter, which emits gutter padding rather than content.
+
+Wiring real line numbers needs a gutter-content hook that painter does not
+have, in both peers. That is a genuine (small) renderer change, and bundling it
+into TC.3b would have meant inventing the hook while also landing the layer —
+two unrelated risks in the commit the lockstep rule already makes the largest.
+
+`StickyContextRow::source_line` is carried for exactly this, so the data is
+already in place; what is missing is the paint path. Until it lands the option
+is inert, which is why this plan stays active.
+
+
 
 - `docs/user/` entry for the feature: what it shows, the options, `[u`,
   `<C-o>`.

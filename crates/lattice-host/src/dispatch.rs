@@ -14694,7 +14694,17 @@ impl Editor {
                 leaf.id == active_pane_id && active_doc_active && preview.is_none();
             let is_active_buffer =
                 buffer_id == active_buffer_id && active_doc_active && preview.is_none();
-            let scroll = if is_active_pane {
+            // The live `self.scroll` / `self.cursor` belong to
+            // `self.document_buffer_id`, so a pane may read them only when it
+            // is BOTH the focused pane and showing that buffer. While a prompt
+            // (`:` / `/`) is focused the document pane is still
+            // `pane_tree.active()`, but the live cursor/scroll have moved to
+            // the command-line buffer — reading them there resolved the pane
+            // at cursor 0 / scroll 0, which is why the context strip vanished
+            // the moment `:` opened. Losing focus is a DIMMING change and
+            // nothing else.
+            let owns_live_view = is_active_pane && is_active_buffer;
+            let scroll = if owns_live_view {
                 self.scroll
             } else if let Some(ov) = preview {
                 ov.scroll
@@ -14726,7 +14736,7 @@ impl Editor {
                 // the leaf's stash otherwise — the same split `scroll` takes,
                 // so an inactive pane keeps the context it had rather than
                 // borrowing the focused pane's.
-                if is_active_pane {
+                if owns_live_view {
                     self.cursor.line
                 } else {
                     leaf.cursor.line
@@ -35179,6 +35189,10 @@ impl Editor {
             }
         }
 
+        // Plugin namespaces are groups too — they just arrive at runtime
+        // rather than through the compile-time decl slice.
+        let plugin_groups = self.plugin_option_groups();
+
         let mut lines: Vec<String> = Vec::new();
         lines.push("# Customize".into());
         lines.push(String::new());
@@ -35190,10 +35204,19 @@ impl Editor {
         );
         lines.push(String::new());
 
-        lines.push(format!("## groups ({})", group_counts.len()));
+        lines.push(format!(
+            "## groups ({})",
+            group_counts.len() + plugin_groups.len()
+        ));
         lines.push(String::new());
         for (name, (count, doc)) in &group_counts {
             lines.push(format!("- [{name}](customize:{name}) ({count}) -- {doc}"));
+        }
+        for (name, opts) in &plugin_groups {
+            lines.push(format!(
+                "- [{name}](customize:{name}) ({}) -- options contributed by the `{name}` plugin",
+                opts.len()
+            ));
         }
         lines.push(String::new());
 
@@ -35215,13 +35238,21 @@ impl Editor {
         &mut self,
         group_name: &str,
     ) -> Option<lattice_help::HelpContent> {
+        let plugin_groups = self.plugin_option_groups();
+        let plugin_opts = plugin_groups.get(group_name);
         let group_doc = lattice_config::GROUP_DECLS
             .iter()
             .find(|g| g.name == group_name)
             .map(|g| g.doc);
-        let Some(doc) = group_doc else {
-            self.set_message(EchoLevel::Error, format!("no group named `{group_name}`"));
-            return None;
+        // A plugin namespace is a group even with no matching `GROUP_DECL` —
+        // the decl slice is compile-time and a plugin loads at runtime.
+        let doc = match (group_doc, plugin_opts.is_some()) {
+            (Some(d), _) => d.to_string(),
+            (None, true) => format!("Options contributed by the `{group_name}` plugin."),
+            (None, false) => {
+                self.set_message(EchoLevel::Error, format!("no group named `{group_name}`"));
+                return None;
+            }
         };
 
         let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> =
@@ -35235,15 +35266,21 @@ impl Editor {
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!("# customize :: {group_name}"));
         lines.push(String::new());
-        lines.push(doc.to_string());
+        lines.push(doc.clone());
         lines.push(String::new());
-        if entries.is_empty() {
+        let runtime: &[std::sync::Arc<dyn lattice_config::ErasedOption>] =
+            plugin_opts.map(Vec::as_slice).unwrap_or(&[]);
+        let total = entries.len() + runtime.len();
+        if total == 0 {
             lines.push("(no customizable options in this group)".into());
         } else {
-            lines.push(format!("{} option(s):", entries.len()));
+            lines.push(format!("{total} option(s):"));
             lines.push(String::new());
             for meta in &entries {
                 self.append_customize_row(&mut lines, meta);
+            }
+            for opt in runtime {
+                self.append_customize_row_runtime(&mut lines, opt);
             }
         }
         lines.push(String::new());
@@ -35459,6 +35496,91 @@ impl Editor {
     /// compatible shape. Wraps the option name in a
     /// `[NAME](customize-edit:NAME)` link so `<CR>` on the row
     /// prefills the cmdline with `:set NAME=current` for inline
+
+    /// Runtime-registered options that have no compile-time declaration —
+    /// i.e. plugin options (`ConfigRegistry::register_with_typeid`), grouped
+    /// by their dotted namespace.
+    ///
+    /// `:customize` was built entirely on the `linkme` decl slices
+    /// (`GROUP_DECLS` / `OPTION_DECLS`), which only native options join. A
+    /// plugin option reached `:set` and `:describe-option` (both read the live
+    /// registry) but could never appear here — so the "plugin options are
+    /// treated uniformly with core options" claim held everywhere except the
+    /// one surface built for browsing them.
+    ///
+    /// The namespace IS the group: the host prefixes every plugin option with
+    /// the plugin id (`treesitter-context.max-lines`), which is exactly the
+    /// shape native groups already have (`ai.log`, `ai.log_level` → `ai`). No
+    /// new declaration is needed, and a plugin cannot land in another plugin's
+    /// group because it does not choose its own prefix.
+    fn plugin_option_groups(
+        &self,
+    ) -> std::collections::BTreeMap<String, Vec<std::sync::Arc<dyn lattice_config::ErasedOption>>>
+    {
+        let declared: std::collections::HashSet<&'static str> = lattice_config::OPTION_DECLS
+            .iter()
+            .map(|d| d.name)
+            .collect();
+        let mut out: std::collections::BTreeMap<
+            String,
+            Vec<std::sync::Arc<dyn lattice_config::ErasedOption>>,
+        > = std::collections::BTreeMap::new();
+        for opt in self.config.iter() {
+            let name = opt.name().to_string();
+            if declared.contains(name.as_str()) {
+                continue;
+            }
+            let Some((ns, _)) = name.split_once('.') else {
+                // Un-namespaced runtime options are not plugin contributions
+                // (nothing registers one today); skip rather than invent a
+                // group for them.
+                continue;
+            };
+            out.entry(ns.to_string()).or_default().push(opt);
+        }
+        for opts in out.values_mut() {
+            opts.sort_by_key(|o| o.name().to_string());
+        }
+        out
+    }
+
+    /// `append_customize_row` for a runtime option, which has no
+    /// `OptionDeclMetadata` to read type/default from — the erased option
+    /// carries both.
+    fn append_customize_row_runtime(
+        &self,
+        lines: &mut Vec<String>,
+        opt: &std::sync::Arc<dyn lattice_config::ErasedOption>,
+    ) {
+        let aliases = if opt.aliases().is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", opt.aliases().join(", "))
+        };
+        let current = opt.get_formatted();
+        let default = opt.default_formatted();
+        let name_link = format!("[{0}](customize-edit:{0})", opt.name());
+        let header = if current == default {
+            format!(
+                "- **{name_link}**{aliases} : {} = {current}",
+                opt.type_label()
+            )
+        } else {
+            format!(
+                "- **{name_link}**{aliases} : {} = {current} (default: {default})",
+                opt.type_label()
+            )
+        };
+        lines.push(header);
+        for doc_line in opt.doc().lines() {
+            let trimmed = doc_line.trim();
+            if !trimmed.is_empty() {
+                lines.push(format!("    {trimmed}"));
+            }
+        }
+        lines.push(String::new());
+    }
+
     /// editing (M.9.2).
     fn append_customize_row(
         &self,

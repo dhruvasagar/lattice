@@ -4661,7 +4661,25 @@ pub(crate) fn compose_pane_lines(
         // and gating on emptiness would drop it.
         let mut body_is_display_row = false;
         let mut body = if is_messages_buffer {
-            messages_line_spans(&line_text, &app.theme, buffer_w)
+            // `body_trunc_w`, not `buffer_w`: with `wrap` on that is
+            // `u32::MAX`, so the line is NOT truncated and the shared
+            // wrap-segmentation below breaks it like every other buffer's
+            // body.
+            //
+            // Passing `buffer_w` here truncated every `*messages*` line to the
+            // pane width whatever `wrap` said, so the body emitted one display
+            // row per source line while the caret walk
+            // (`buffer_line_to_visible_row_with` + `own_segment`) computed
+            // segments from the UNtruncated line. The caret therefore counted
+            // rows the body never painted — one per wrapped line above the
+            // cursor — which is the cursor/cursorline drift on `*messages*`,
+            // and why `G` landed the caret several rows below the last line.
+            //
+            // The deeper issue is that this branch exists at all: a
+            // kind-specific body composer is what let the two geometries
+            // diverge silently. Removing it is the standing rule's answer
+            // (`feedback_buffers_no_special_case`); this makes it agree.
+            messages_line_spans(&line_text, &app.theme, body_trunc_w)
         } else {
             // S3.c.final (2026-05-26): cell-derived spans are the
             // ONLY source for document-buffer bodies. The
@@ -9964,6 +9982,39 @@ mod tests {
     /// msg-mode.3: a well-formed messages record produces a
     /// styled level token. Order: timestamp (dim), space,
     /// LEVEL (themed), space, body.
+
+    /// The `*messages*` body must honour `wrap` like every other buffer.
+    ///
+    /// It did not: `messages_line_spans` was handed `buffer_w` unconditionally
+    /// and truncated, so the body emitted ONE display row per source line
+    /// while the caret walk computed wrap segments from the untruncated line.
+    /// The caret counted rows the body never painted — one per wrapped line
+    /// above the cursor — which is the cursor/cursorline drift, and why `G`
+    /// put the caret several rows below the last line.
+    #[test]
+    fn messages_body_wraps_when_wrap_is_on() {
+        // A line far wider than the pane.
+        let long = "x".repeat(200);
+        // With wrap ON the generic path passes `u32::MAX`, so nothing is
+        // truncated and the shared segmenter breaks the line up.
+        let unwrapped = messages_line_spans(&long, &crate::theme::Theme::default(), u32::MAX);
+        let total: usize = unwrapped.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(
+            total, 200,
+            "with wrap on the body is handed the whole line; truncating here \
+             is what made the caret and the body disagree about how many rows \
+             the line occupies"
+        );
+
+        // With wrap OFF it still truncates to the pane width, as before.
+        let truncated = messages_line_spans(&long, &crate::theme::Theme::default(), 40);
+        let total: usize = truncated.iter().map(|s| s.content.chars().count()).sum();
+        assert!(
+            total <= 40,
+            "wrap off still truncates to the pane width, got {total}"
+        );
+    }
+
     #[test]
     fn messages_line_spans_styles_each_level() {
         let theme = crate::theme::Theme::default();

@@ -229,12 +229,24 @@ impl CandidateGenerator for LspServersGenerator {
 ///   `editor`, `display`, `lsp`.
 /// - Every registered mode -- names ending in `-mode` like
 ///   `lsp-completion-mode`, `text-mode`.
+/// - Every plugin option namespace in the live [`ConfigRegistry`]
+///   -- `treesitter-context`, and whatever else is loaded.
 ///
 /// The `:customize` parser routes on the `-mode` suffix, so a
 /// single candidate set covers both forms. Same [`Weak`] discipline
 /// as [`ModesGenerator`].
+///
+/// The third source exists because the first two are COMPILE-time
+/// slices. A plugin registers its options at runtime, so a
+/// decl-only candidate set silently omits every plugin group --
+/// `:customize <plugin>` works but is never offered, which reads as
+/// "the feature isn't there". The config handle is a strong `Arc`
+/// (matching `gen:options`, which holds the same registry) because
+/// the registry outlives the completion registry rather than the
+/// other way round.
 pub struct CustomizeNamesGenerator {
     pub registry: Weak<arc_swap::ArcSwap<lattice_mode::ModeRegistry>>,
+    pub config: std::sync::Arc<lattice_config::ConfigRegistry>,
 }
 
 impl CandidateGenerator for CustomizeNamesGenerator {
@@ -244,6 +256,18 @@ impl CandidateGenerator for CustomizeNamesGenerator {
             out.push(RawCandidate {
                 text: meta.name.to_string(),
                 display: meta.name.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            });
+        }
+        for ns in lattice_config::plugin_option_groups(&self.config).keys() {
+            out.push(RawCandidate {
+                text: ns.clone(),
+                display: ns.clone(),
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,
@@ -406,5 +430,69 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "candidates must be sorted");
+    }
+
+    /// A plugin's option namespace must be offered by `:customize <Tab>`.
+    ///
+    /// The regression this pins: the generator was built from
+    /// `GROUP_DECLS` + modes, both of which are populated at COMPILE time. A
+    /// plugin registers its options at RUNTIME, so `:customize
+    /// treesitter-context` worked while `<Tab>` never once mentioned it —
+    /// making a working group indistinguishable from an absent one, which is
+    /// the form the report arrived in.
+    #[test]
+    fn customize_completion_offers_runtime_plugin_namespaces() {
+        use lattice_config::ConfigRegistry;
+        use lattice_core::Document;
+        use lattice_grammar::CommandRegistry;
+
+        // Registered exactly the way the plugin config seam does it
+        // (`register_plugin_option` -> `try_register(ConfigOption::new(..))`),
+        // so the test cannot pass against a shape production never produces.
+        let config = std::sync::Arc::new(ConfigRegistry::default());
+        for (name, doc) in [
+            ("treesitter-context.enabled", "Enable it."),
+            ("treesitter-context.max-lines", "Cap the strip."),
+        ] {
+            config
+                .try_register(lattice_config::option::Option::<bool>::new(
+                    name.to_owned(),
+                    true,
+                    doc.to_owned(),
+                ))
+                .expect("fresh registry");
+        }
+
+        let modes = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            lattice_mode::ModeRegistry::new(),
+        ));
+        let g = CustomizeNamesGenerator {
+            registry: std::sync::Arc::downgrade(&modes),
+            config: config.clone(),
+        };
+
+        let doc = Document::from_text("");
+        let buf = doc.buffer();
+        let cmd_reg = CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "",
+            buffer: buf,
+            registry: &cmd_reg,
+            case_sensitive: false,
+        };
+
+        let names: Vec<String> = g.generate(&ctx).into_iter().map(|c| c.text).collect();
+
+        assert!(
+            names.contains(&"treesitter-context".to_string()),
+            "the plugin namespace must be offered; got {names:?}"
+        );
+        // The namespace is offered ONCE, not once per option in it.
+        assert_eq!(
+            names.iter().filter(|n| *n == "treesitter-context").count(),
+            1
+        );
+        // And the compile-time groups are still there — this is an addition.
+        assert!(names.contains(&"editor".to_string()));
     }
 }

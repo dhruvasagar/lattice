@@ -1036,3 +1036,38 @@ mod tests {
         assert!(captured.lock().unwrap().is_empty());
     }
 }
+
+/// Runtime-registered options that have no compile-time declaration — i.e.
+/// plugin options — grouped by their dotted namespace.
+///
+/// `:customize` and its completion are both built on the compile-time decl
+/// slices, which only native options join. A plugin option reaches `:set` and
+/// `:describe-option` (both read this registry) but would otherwise be absent
+/// from every browse surface. The namespace IS the group, which is what native
+/// groups already are (`ai.log` + `ai.log_level` -> `ai`); the host assigns the
+/// prefix from the plugin id, so a plugin can neither collide with another nor
+/// squat a native group.
+pub fn plugin_option_groups(
+    reg: &ConfigRegistry,
+) -> std::collections::BTreeMap<String, Vec<Arc<dyn ErasedOption>>> {
+    let declared: std::collections::HashSet<&'static str> =
+        crate::OPTION_DECLS.iter().map(|d| d.name).collect();
+    let mut out: std::collections::BTreeMap<String, Vec<Arc<dyn ErasedOption>>> =
+        std::collections::BTreeMap::new();
+    for opt in reg.iter() {
+        let name = opt.name().to_string();
+        if declared.contains(name.as_str()) {
+            continue;
+        }
+        // Un-namespaced runtime options are not plugin contributions; skip
+        // rather than invent a group for them.
+        let Some((ns, _)) = name.split_once('.') else {
+            continue;
+        };
+        out.entry(ns.to_string()).or_default().push(opt);
+    }
+    for opts in out.values_mut() {
+        opts.sort_by_key(|o| o.name().to_string());
+    }
+    out
+}

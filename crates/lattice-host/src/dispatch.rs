@@ -35557,31 +35557,7 @@ impl Editor {
         &self,
     ) -> std::collections::BTreeMap<String, Vec<std::sync::Arc<dyn lattice_config::ErasedOption>>>
     {
-        let declared: std::collections::HashSet<&'static str> = lattice_config::OPTION_DECLS
-            .iter()
-            .map(|d| d.name)
-            .collect();
-        let mut out: std::collections::BTreeMap<
-            String,
-            Vec<std::sync::Arc<dyn lattice_config::ErasedOption>>,
-        > = std::collections::BTreeMap::new();
-        for opt in self.config.iter() {
-            let name = opt.name().to_string();
-            if declared.contains(name.as_str()) {
-                continue;
-            }
-            let Some((ns, _)) = name.split_once('.') else {
-                // Un-namespaced runtime options are not plugin contributions
-                // (nothing registers one today); skip rather than invent a
-                // group for them.
-                continue;
-            };
-            out.entry(ns.to_string()).or_default().push(opt);
-        }
-        for opts in out.values_mut() {
-            opts.sort_by_key(|o| o.name().to_string());
-        }
-        out
+        lattice_config::plugin_option_groups(&self.config)
     }
 
     /// `append_customize_row` for a runtime option, which has no

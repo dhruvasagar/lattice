@@ -184,6 +184,6 @@ pub use option_type::OptionType;
 pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
-pub use registry::{ConfigError, ConfigRegistry, EventPublisher};
+pub use registry::{ConfigError, ConfigRegistry, EventPublisher, plugin_option_groups};
 pub use resolved::ResolvedOptions;
 pub use resolver::Resolver;

@@ -925,6 +925,7 @@ impl Editor {
             "Group names + mode names; used by `:customize <Tab>`.",
             crate::host_generators::CustomizeNamesGenerator {
                 registry: Arc::downgrade(&mode_registry),
+                config: config.clone(),
             },
         );
 

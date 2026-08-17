@@ -58,7 +58,7 @@ pub struct ContextScopeCache {
 /// The [`Editor`]'s cohesive WASM-context wiring. Bundled into one field so the
 /// boot struct literal grows by a single line. Every field defaults, so
 /// `Editor::default()` test fixtures get an inert context seam.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WasmContextState {
     /// Per-buffer scope cache the producer tasks write and the host reads.
     pub cache: PerBufferCache<ContextScopeCache>,
@@ -91,6 +91,28 @@ pub struct WasmContextState {
     /// The viewport fields are NOT cached: they are per-pane, and the resolver
     /// overwrites them from the pane it is resolving for.
     pub options: lattice_cells::context::ContextOptions,
+    /// TC.8: `context.line-numbers` — a PAINT option, not a resolution one, so
+    /// it rides beside [`Self::options`] rather than inside it
+    /// (`resolve_context` has no business knowing about gutters).
+    pub line_numbers: bool,
+}
+
+impl Default for WasmContextState {
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+            registry: None,
+            generation: Default::default(),
+            pending: None,
+            last_registry_epoch: 0,
+            options: Default::default(),
+            // The option's registered default, spelled out because a DERIVED
+            // `false` would mean a strip built before the first refresh
+            // silently drops its numbers — a difference visible only in the
+            // first frames, which is the hardest kind to notice.
+            line_numbers: true,
+        }
+    }
 }
 
 impl WasmContextState {
@@ -319,5 +341,12 @@ impl Editor {
             // Per-pane; overwritten by the resolver.
             ..defaults
         };
+        // Defaults to ON: a strip whose rows have no line numbers is harder to
+        // act on than one that does, and the plugin registers it `true`. The
+        // fallback matches, so an unloaded plugin and a loaded one agree.
+        self.wasm_context.line_numbers = self
+            .config
+            .get_bool_by_name(&format!("{NS}.line-numbers"))
+            .unwrap_or(true);
     }
 }

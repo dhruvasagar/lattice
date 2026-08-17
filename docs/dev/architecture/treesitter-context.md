@@ -394,6 +394,7 @@ Registered by the plugin through the ✅ `config` seam, so `:set`,
 | `context.max-viewport-fraction` | u32 | `33` | Percent of pane height the strip may occupy |
 | `context.separator` | string | `""` | Rule glyph below the block; empty = off |
 | `context.line-numbers` | bool | `true` | Show source line numbers in the context gutter |
+
 | `context.disabled-languages` | list | `[]` | Language ids to skip |
 | `context.max-file-lines` | u32 | `100000` | Skip the query above this; feature silently off |
 
@@ -401,6 +402,13 @@ Registered by the plugin through the ✅ `config` seam, so `:set`,
 non-empty default would have to satisfy the Nerd-Fonts-degrade rule, and a
 separator is a preference rather than an affordance. A user who sets one gets
 the BMP-safe treatment (`─`, Box Drawing, present in every terminal font).
+
+`context.line-numbers` is subordinate to the pane's own `number`: it asks for
+numbers, and `:set nonumber` says this pane shows none. The pane wins — a strip
+numbered above unnumbered code is a stray column, and there is no digit slot
+reserved to put it in. The numbers themselves are ABSOLUTE, not relative: the
+strip answers "where in the file is this scope", and a relative offset to a
+line that is off-screen above is not something the reader can act on.
 
 `context.max-file-lines` exists because a whole-buffer query is `O(file)`. It
 originally guarded a CLIFF: the node-returning query form trapped past ~20k

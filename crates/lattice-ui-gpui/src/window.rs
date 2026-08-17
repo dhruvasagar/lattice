@@ -3833,7 +3833,6 @@ impl Render for EditorView {
                         worker_static_overlay_quads: None,
                         virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
                         sticky_context: Default::default(),
-                        sticky_context: Default::default(),
                         diff_tint_per_row: Vec::new(),
                         compilation_location_tint_per_row: Vec::new(),
                         cursorline_bg: 0,
@@ -4436,6 +4435,9 @@ impl Render for EditorView {
                 doc_highlights: Vec::new(),
                 worker_static_overlay_quads: None,
                 virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
+                // The help popup is a pseudo-pane with no context producer, so
+                // an empty strip — the same shape the docs popup above uses.
+                sticky_context: Default::default(),
                 diff_tint_per_row: Vec::new(),
                 compilation_location_tint_per_row: Vec::new(),
                 cursorline_bg: 0,

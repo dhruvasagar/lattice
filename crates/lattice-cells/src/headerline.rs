@@ -204,6 +204,7 @@ impl VirtualRowProvider for HeaderlineProvider {
             kind: VirtualRowKind::Sticky,
             bg: row.bg,
             scales: None,
+            gutter_line: None,
         }]
     }
 }

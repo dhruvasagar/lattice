@@ -808,6 +808,7 @@ mod tests {
             kind: crate::VirtualRowKind::Generic,
             bg: None,
             scales: None,
+            gutter_line: None,
         }
     }
 

@@ -1,8 +1,7 @@
 # Tree-sitter context — slice plan
 
 > **Status: Active.** Opened 2026-08-16, branch `dhruva/treesitter-context`.
-> TC.1–TC.7 + TC.10 ✅ — the feature works end to end, including on large
-> files. **NOT archivable:** TC.8 is ⛔
+> TC.1–TC.8 + TC.10 ✅. **NOT archivable:** TC.9 is ⛔
 > deferred, and the completed-plans-only rule is explicit that deferred is open
 > work, not done. Archiving now is exactly the mistake that rule exists to
 > prevent.
@@ -24,7 +23,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | ✅ |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
 | TC.7 | Docs, benches, ratchet | ✅ |
-| TC.8 | `context.line-numbers` — source line numbers in the context gutter | ⛔ |
+| TC.8 | `context.line-numbers` — source line numbers in the context gutter | ✅ |
 | TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ⛔ |
 | TC.10 | `run-query-ranges` — the large-file fix, in the seam not the guard | ✅ |
 
@@ -460,21 +459,75 @@ which is why it is not folded into a context slice.
 **No test guards this beyond the plugin's own** `required_capabilities() ==
 empty()` assertion, which catches only a regression in this plugin.
 
-## TC.8 — `context.line-numbers` in the gutter ⛔
+## TC.8 — `context.line-numbers` in the gutter ✅
 
-**Deferred, not dropped.** The option is registered and documented, and the
-strip currently paints a BLANK gutter — the same as every other virtual row,
-because context rows are adapted to `VirtualRow` and painted by the shared
-pinned-row painter, which emits gutter padding rather than content.
+Landed in two commits, because the option could not reach the gutter until
+options reached the host at all.
 
-Wiring real line numbers needs a gutter-content hook that painter does not
-have, in both peers. That is a genuine (small) renderer change, and bundling it
-into TC.3b would have meant inventing the hook while also landing the layer —
-two unrelated risks in the commit the lockstep rule already makes the largest.
+### TC.8a — the options were inert
 
-`StickyContextRow::source_line` is carried for exactly this, so the data is
-already in place; what is missing is the paint path. Until it lands the option
-is inert, which is why this plan stays active.
+`resolve_sticky_context_lines` built `ContextOptions::default()` and never read
+the registry. Every knob the plugin registers — `max-lines`, `trim-scope`,
+`multiline-threshold`, `max-viewport-fraction` — showed up in `:customize`,
+answered `:set …?` with a value, and changed nothing. Worse than absent: the
+editor reported a setting it was ignoring.
+
+Found while wiring TC.8, which needs the same read for `line-numbers`.
+Shipping one option honoured while its four neighbours stayed inert would have
+been the odd state, so the read covers all of them.
+
+Cached on `WasmContextState`, not read at use: the resolver runs at cursor rate
+for every pane and `ConfigRegistry` reads take a `Mutex`. The refresh sits
+BEFORE the producer gate — a plugin registers its options and its producer in
+one load, and the order between them is not ours to rely on. Each option falls
+back individually (five of six registered → five honoured), and an
+unrecognised `trim-scope` keeps the default rather than erroring, because a
+typo must not take the strip away.
+
+Adds `ConfigRegistry::get_string_by_name`, the missing third of the by-name
+trio, for dynamically-registered options that have no decl type to import.
+
+### TC.8b — the gutter hook
+
+`VirtualRow` gains `gutter_line: Option<u32>` — a GENERIC field, not a
+sticky-row special case, so any producer that knows a real line number gets the
+document gutter for free and neither renderer branches on `kind`. It is
+deliberately separate from `anchor_line`: anchoring answers "where does this
+row sit", `gutter_line` answers "what number does it show", and for most
+virtual rows the honest answer is nothing (a deletion block has no current-side
+line; a filler row has no line at all). A sticky context row is the case where
+they differ the other way — anchored above the viewport, showing its own place
+in the file.
+
+`StickyContext` carries the resolved `line_numbers` flag beside `bg`, for the
+same reason `bg` is resolved host-side: the strip is host chrome, so neither
+renderer reads a plugin option. Both peers then reduce to one expression, which
+is hard to get differently wrong in two places. The worker's early-return
+comparison includes the flag, or toggling it would not repaint until the lines
+themselves changed.
+
+Two rules fell out of building it:
+
+- **The pane's `number` wins.** `context.line-numbers` asks for numbers;
+  `:set nonumber` says this pane shows none. A strip numbered above unnumbered
+  code is a stray column. Enforced at both adapters, plus a width guard in the
+  GPUI helper (`gutter_width == 0` is `nonumber` — there is no digit slot).
+- **A number wider than the gutter is not truncated.** It costs a column of
+  alignment for one frame (the gutter widens with the file's line count); a
+  truncated line number is simply wrong.
+
+The TUI gutter is built by calling `render_gutter` — the document formatter —
+rather than formatting digits locally, so the two cannot drift; the test
+asserts against `render_gutter`'s output, not a literal, because the property
+that matters is "occupies the same columns as the code beneath", not "shows a
+number". GPUI shapes a string, so its width invariance is asserted directly.
+
+Also fixed here: `window.rs` had `sticky_context` set TWICE on the docs-popup
+pseudo-pane and MISSING on the help-popup one, so `--features window` had not
+compiled since TC.3b. The default TUI build does not put `lattice-ui-gpui` in
+the dependency graph, which is exactly the blind spot the lockstep rule exists
+for — the parity edit landed, the build that would have caught the typo never
+ran.
 
 
 

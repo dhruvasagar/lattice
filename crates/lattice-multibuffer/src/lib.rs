@@ -2569,6 +2569,7 @@ pub fn compose_header_rows(
                 kind: VirtualRowKind::Generic,
                 bg: None,
                 scales: None,
+                gutter_line: None,
             });
             last_source = Some(excerpt.source);
         }

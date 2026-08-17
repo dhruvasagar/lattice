@@ -72,6 +72,15 @@ pub struct StickyContext {
     /// backdrop the strip is the same colour as the code beneath it and reads
     /// as ordinary text that will not scroll, which is what prompted this.
     pub bg: Option<u32>,
+    /// TC.8: whether the rows show their source line number in the gutter
+    /// (`context.line-numbers`).
+    ///
+    /// Resolved here, alongside the backdrop, for the same reason: the strip
+    /// is host chrome, so the host owns its presentation and neither renderer
+    /// reads a plugin option. Both peers then reduce to one expression —
+    /// `line_numbers.then_some(row.source_line)` — which is hard to get
+    /// differently wrong in two places.
+    pub line_numbers: bool,
 }
 
 impl StickyContext {

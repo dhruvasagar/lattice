@@ -4589,6 +4589,15 @@ pub(crate) fn compose_pane_lines(
             kind: lattice_cells::VirtualRowKind::Sticky,
             bg: sticky_context.bg,
             scales: None,
+            // TC.8: the header's real place in the file. The decision was made
+            // host-side (`context.line-numbers`), so the renderer never reads
+            // a plugin option — it only paints what the layer carries.
+            // ANDed with the pane's own `number`: `context.line-numbers` asks
+            // for numbers, `:set nonumber` says this pane shows none, and the
+            // pane wins — a strip numbered above unnumbered code reads as a
+            // stray column.
+            gutter_line: (sticky_context.line_numbers && view.show_line_numbers)
+                .then_some(row.source_line),
         };
         out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));
     }
@@ -6037,6 +6046,25 @@ fn virtual_rows_at<'a>(
 /// Empty `cells` (D.3.a's empty placeholder) still emit a
 /// row of the correct width so the deletion appears as a
 /// visible gap.
+/// TC.8: a virtual row's gutter — the document gutter when the row carries a
+/// source line, the blank one otherwise.
+///
+/// Built by `render_gutter` rather than formatted here so the two cannot
+/// drift: a context row whose digits sit one column off from the code beneath
+/// it reads as a layout bug, and the only way to be sure they agree is to run
+/// the same formatter. The blank branch is the same total width by
+/// construction (`format_gutter_cell` pads to `width`), so toggling
+/// `line-numbers` never shifts the strip.
+fn virtual_row_gutter_spans(gutter_line: Option<u32>, gutter_w: u32) -> Vec<Span<'static>> {
+    match gutter_line {
+        Some(line) => render_gutter(line, gutter_w, None),
+        None => vec![Span::styled(
+            " ".repeat(gutter_w as usize),
+            TuiStyle::default().fg(Color::DarkGray),
+        )],
+    }
+}
+
 fn render_virtual_row(
     view: &FrameView<'_>,
     vrow: &lattice_cells::VirtualRow,
@@ -6045,10 +6073,7 @@ fn render_virtual_row(
 ) -> Line<'static> {
     let severity_blank = Span::styled(" ".to_string(), TuiStyle::default());
     let diff_sign_blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let gutter_blank = Span::styled(
-        " ".repeat(gutter_w as usize),
-        TuiStyle::default().fg(Color::DarkGray),
-    );
+    let gutter = virtual_row_gutter_spans(vrow.gutter_line, gutter_w);
     // D.3.b.2 (2026-05-29): emit per-cell spans with run
     // coalescing — adjacent cells sharing the same `fg`
     // merge into a single styled Span so an 80-char
@@ -6138,7 +6163,7 @@ fn render_virtual_row(
     let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
     out.push(severity_blank);
     out.push(diff_sign_blank);
-    out.push(gutter_blank);
+    out.extend(gutter);
     out.extend(spans);
     Line::from(out)
 }
@@ -7311,6 +7336,50 @@ mod tests {
 
     use ratatui::style::{Color as RColor, Style as RStyle};
     use ratatui::text::Span as RSpan;
+
+    /// TC.8: a virtual row that carries a source line shows it in the gutter,
+    /// formatted EXACTLY like a document row's.
+    ///
+    /// Asserted against `render_gutter` rather than against a literal, because
+    /// the property that matters is not "shows a number" but "occupies the
+    /// same columns as the rows beneath it". A gutter one cell narrower puts
+    /// the whole context strip out of alignment with the code it heads, which
+    /// reads as a rendering bug rather than an off-by-one.
+    #[test]
+    fn a_virtual_row_with_a_source_line_paints_the_document_gutter() {
+        for width in [4u32, 6, 9] {
+            let mine = virtual_row_gutter_spans(Some(41), width);
+            let theirs = render_gutter(41, width, None);
+            let text = |v: &[RSpan<'static>]| -> String {
+                v.iter().map(|s| s.content.to_string()).collect()
+            };
+            assert_eq!(
+                text(&mine),
+                text(&theirs),
+                "width {width}: the context gutter must be the document gutter"
+            );
+            assert!(text(&mine).contains("42"), "1-based, like every gutter");
+        }
+    }
+
+    /// Without a source line the gutter is blank — and blank at exactly the
+    /// document width, which is what keeps deletion blocks and filler rows
+    /// aligned today.
+    #[test]
+    fn a_virtual_row_without_a_source_line_paints_a_blank_gutter() {
+        let spans = virtual_row_gutter_spans(None, 6);
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, " ".repeat(6));
+        assert_eq!(
+            text.chars().count(),
+            render_gutter(0, 6, None)
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>(),
+            "blank and numbered gutters are the same width, so toggling \
+             `line-numbers` never shifts the strip"
+        );
+    }
 
     /// A span with no background of its own takes the row tint — the
     /// ordinary case, and the behaviour that must not change.

@@ -1522,6 +1522,15 @@ impl Element for EditorElement {
                     kind: lattice_cells::VirtualRowKind::Sticky,
                     bg: self.sticky_context.bg,
                     scales: None,
+                    // TC.8: the header's real place in the file. Decided
+                    // host-side (`context.line-numbers`) so neither peer reads
+                    // a plugin option — they only paint what the layer says.
+                    // ANDed with the pane's own `number`: `context.line-numbers`
+                    // asks for numbers, `:set nonumber` says this pane shows
+                    // none, and the pane wins — a strip numbered above
+                    // unnumbered code reads as a stray column.
+                    gutter_line: (self.sticky_context.line_numbers && self.show_line_numbers)
+                        .then_some(row.source_line),
                 };
                 push_virtual_row(
                     &vrow,
@@ -3337,7 +3346,7 @@ fn push_virtual_row(
             }],
             None,
         );
-        let blank_gutter: String = " ".repeat(gutter_width + 5);
+        let blank_gutter: String = virtual_row_gutter_text(vrow.gutter_line, gutter_width);
         let shaped_g = window.text_system().shape_line(
             SharedString::from(blank_gutter.clone()),
             font_size,
@@ -3434,7 +3443,7 @@ fn push_virtual_row(
             .shape_line(SharedString::from(content), font_size, &runs, None);
     // Gutter: fully blank-padded to match
     // `format_gutter_text`'s virtual-row width.
-    let blank_gutter: String = " ".repeat(gutter_width + 5);
+    let blank_gutter: String = virtual_row_gutter_text(vrow.gutter_line, gutter_width);
     let gutter_run = TextRun {
         len: blank_gutter.len(),
         font: font.clone(),
@@ -3503,6 +3512,31 @@ fn push_virtual_row(
     inlay_offsets_per_row.push(Vec::new());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);
+}
+
+/// TC.8: the gutter text for a virtual row — right-aligned digits when the row
+/// carries a source line, blank otherwise.
+///
+/// The returned string is ALWAYS the same length as the blank it replaces, so
+/// a numbered strip occupies exactly the columns an unnumbered one did.
+/// `format_gutter_text`'s virtual-row branch owns that width; this mirrors its
+/// three trailing cells (separator, fold slot, gap) rather than inventing a
+/// layout, which is what keeps the digits under the document's digits.
+fn virtual_row_gutter_text(gutter_line: Option<u32>, gutter_width: usize) -> String {
+    let total = gutter_width + 5;
+    // `gutter_width == 0` is `nonumber`: there is no digit slot, and the
+    // document rows beneath show nothing. A strip that numbered itself anyway
+    // would be the only numbered thing on screen AND would push its own body
+    // right of the code it heads.
+    let Some(line) = gutter_line.filter(|_| gutter_width > 0) else {
+        return " ".repeat(total);
+    };
+    let num = (line as usize + 1).to_string();
+    // A number wider than the gutter keeps all its digits and eats the leading
+    // pad: truncating a line number is worse than a one-frame misalignment,
+    // and the gutter widens with the file's line count anyway.
+    let lead = total.saturating_sub(num.chars().count() + 3);
+    format!("{:lead$}{num}   ", "", lead = lead)
 }
 
 fn format_gutter_text(
@@ -3663,6 +3697,47 @@ fn build_gutter_runs(
 
 #[cfg(test)]
 mod tests {
+    /// TC.8 (GPUI peer): a numbered virtual-row gutter occupies exactly the
+    /// columns the blank one did.
+    ///
+    /// The TUI gets this for free by calling `render_gutter`; GPUI shapes a
+    /// string, so the width is asserted directly. A gutter one character wider
+    /// pushes the whole context strip right of the code it heads — the one
+    /// failure mode that looks like a renderer bug rather than a feature.
+    #[test]
+    fn a_numbered_virtual_row_gutter_is_the_width_of_a_blank_one() {
+        for gutter_width in [0usize, 3, 5, 8] {
+            let blank = super::virtual_row_gutter_text(None, gutter_width);
+            for line in [0u32, 8, 99, 4_242] {
+                let numbered = super::virtual_row_gutter_text(Some(line), gutter_width);
+                assert_eq!(
+                    numbered.chars().count(),
+                    blank.chars().count(),
+                    "width {gutter_width}, line {line}: `{numbered}` vs `{blank}`"
+                );
+                if gutter_width == 0 {
+                    // `nonumber`: no digit slot, so the strip shows nothing
+                    // either — the document rows beneath show nothing.
+                    assert_eq!(numbered, blank);
+                } else {
+                    assert!(
+                        numbered.contains(&(line + 1).to_string()),
+                        "1-based, like every gutter: {numbered}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A line number too wide for the gutter keeps every digit rather than
+    /// being clipped. It costs a column of alignment for one frame (the gutter
+    /// widens with the file's line count); a truncated number is simply wrong.
+    #[test]
+    fn a_number_wider_than_the_gutter_is_not_truncated() {
+        let text = super::virtual_row_gutter_text(Some(123_456), 2);
+        assert!(text.contains("123457"), "got `{text}`");
+    }
+
     use super::*;
 
     /// DB.4-gpui: the branding parser turns a `BrandingBlock` row group's

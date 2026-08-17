@@ -15028,6 +15028,7 @@ impl Editor {
                 scroll,
                 viewport_height,
             ),
+            sticky_context_line_numbers: self.wasm_context.line_numbers,
             sticky_context: self.sticky_context_for(pane_id),
             // D.4.d.2.1.b (2026-05-29): pre-attach the
             // per-buffer virtual-rows cell at publish time.
@@ -42614,6 +42615,7 @@ mod tests {
                 kind: lattice_cells::VirtualRowKind::Generic,
                 bg: None,
                 scales: None,
+                gutter_line: None,
             })
             .collect();
         let matrix = lattice_cells::VirtualRowMatrix::build(

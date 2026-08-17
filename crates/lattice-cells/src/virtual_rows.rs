@@ -172,6 +172,21 @@ pub struct VirtualRow {
     /// cell grid cannot vary font size). When present, its length
     /// matches `cells`; a shorter/absent entry defaults to `100`.
     pub scales: Option<Arc<[u16]>>,
+    /// TC.8: the SOURCE line this row should show in its gutter (0-based;
+    /// renderers add one, as they do for document rows). `None` — the default
+    /// for every kind — paints the blank gutter virtual rows have always had.
+    ///
+    /// Deliberately separate from [`Self::anchor_line`]. Anchoring answers
+    /// "where does this row sit"; this answers "what number does it show", and
+    /// for most virtual rows the honest answer is *nothing*: a deletion block
+    /// has no current-side line, and a filler row has no line at all. A sticky
+    /// context row is the case where the two differ in the other direction —
+    /// it is anchored above the viewport but shows its own place in the file.
+    ///
+    /// It is a field rather than a renderer-side `match vrow.kind` because the
+    /// renderers must not branch on kind: any producer that knows a real line
+    /// number can set this and get the document gutter for free.
+    pub gutter_line: Option<u32>,
 }
 
 /// F.3 (Thread F): one contiguous run of display columns rendered
@@ -471,6 +486,7 @@ mod tests {
             kind: VirtualRowKind::Generic,
             bg: None,
             scales: None,
+            gutter_line: None,
         }
     }
 

@@ -1480,6 +1480,11 @@ pub struct PaneCellsInputs {
     /// and the paint cannot drift — the failure mode the gutter-width
     /// mismatch taught, designed out rather than tested for.
     pub sticky_context_lines: Arc<[u32]>,
+    /// TC.8: whether those rows show source line numbers
+    /// (`context.line-numbers`). Resolved host-side with the lines so the
+    /// worker stamps it onto the layer it builds and neither renderer reads a
+    /// plugin option.
+    pub sticky_context_line_numbers: bool,
     /// TC.3b: per-PANE sticky-context output cell. Keyed by pane id, not
     /// buffer id, because the rows genuinely differ per pane: one buffer in
     /// two splits with cursors in different scopes must show different

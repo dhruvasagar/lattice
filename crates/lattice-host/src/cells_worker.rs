@@ -488,6 +488,7 @@ fn publish_sticky_context(
     {
         let current = pane.sticky_context.load();
         if current.version == version
+            && current.line_numbers == pane.sticky_context_line_numbers
             && current.rows.len() == pane.sticky_context_lines.len()
             && current
                 .rows
@@ -539,8 +540,12 @@ fn publish_sticky_context(
         .get(ct.ids.sticky_context_background)
         .bg
         .map(|c| c.to_rgb_u32(0));
-    pane.sticky_context
-        .store(Arc::new(StickyContext { rows, version, bg }));
+    pane.sticky_context.store(Arc::new(StickyContext {
+        rows,
+        version,
+        bg,
+        line_numbers: pane.sticky_context_line_numbers,
+    }));
 }
 
 pub fn recompute_pane(
@@ -2888,6 +2893,7 @@ mod tests {
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context_line_numbers: true,
             sticky_context: Default::default(),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
@@ -5550,6 +5556,7 @@ mod tests {
                     indent_unit: lattice_core::IndentUnit::default(),
                     indent_guides_enabled: true,
                     sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+                    sticky_context_line_numbers: true,
                     sticky_context: Default::default(),
                     pane_id: lattice_core::ui::pane::PaneId::default(),
                     buffer_id: lattice_core::BufferId::default(),
@@ -5712,6 +5719,7 @@ mod tests {
                 indent_unit: lattice_core::IndentUnit::default(),
                 indent_guides_enabled: true,
                 sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+                sticky_context_line_numbers: true,
                 sticky_context: Default::default(),
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
@@ -5814,6 +5822,7 @@ mod tests {
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context_line_numbers: true,
             sticky_context: Default::default(),
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),

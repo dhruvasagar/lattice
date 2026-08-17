@@ -219,3 +219,70 @@ async fn a_registered_context_option_reaches_the_resolver() {
          OUTER scope — the innermost is the one you are in"
     );
 }
+
+/// TC.8b: `context.line-numbers` reaches the layer both renderers paint from.
+///
+/// The unit tests prove each painter formats a gutter correctly given a
+/// `gutter_line`; this proves the option actually decides whether there IS
+/// one. Without it the feature can be fully correct in both peers and still
+/// inert, which is exactly the state TC.8 was deferred in.
+#[tokio::test]
+async fn the_line_numbers_option_reaches_the_published_layer() {
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut editor = editor_with_producer(calls);
+    let buffer = editor.document_buffer_id;
+    let pane_id = editor.pane_tree.active().id;
+
+    editor.run_tick_pending();
+    wait_for_cache(&editor, buffer).await;
+
+    editor.cursor.line = 120;
+    editor.scroll = 110;
+    {
+        let pane = editor.pane_tree.active_mut();
+        pane.cursor.line = 120;
+        pane.scroll = 110;
+    }
+    editor.publish_render_state();
+    for _ in 0..100 {
+        if !editor.sticky_context_for(pane_id).load().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        editor.sticky_context_for(pane_id).load().line_numbers,
+        "on by default — the plugin registers `line-numbers` true, and the \
+         host's fallback matches so an unloaded plugin agrees with a loaded one"
+    );
+
+    // Turn it off the way `:set` does.
+    editor
+        .config
+        .try_register(lattice_config::option::Option::<bool>::new(
+            "treesitter-context.line-numbers".to_owned(),
+            false,
+            "Off.".to_owned(),
+        ))
+        .expect("fresh name");
+    editor.run_tick_pending();
+    editor.publish_render_state();
+    for _ in 0..100 {
+        if !editor.sticky_context_for(pane_id).load().line_numbers {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let published = editor.sticky_context_for(pane_id).load();
+    assert!(
+        !published.line_numbers,
+        "the toggle must reach the layer without the lines changing — the \
+         worker's early-return compares the flag for exactly this reason"
+    );
+    assert_eq!(
+        published.rows.len(),
+        2,
+        "and the rows themselves are untouched: this is a gutter option, not \
+         a resolution one"
+    );
+}

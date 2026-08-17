@@ -262,6 +262,7 @@ impl VirtualRowProvider for BlameProvider {
                     kind: VirtualRowKind::Annotation,
                     bg: None,
                     scales: None,
+                    gutter_line: None,
                 }
             })
             .collect()

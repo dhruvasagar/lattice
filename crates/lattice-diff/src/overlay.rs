@@ -417,6 +417,7 @@ impl DiffOverlayVirtualRowProvider {
                     kind: lattice_cells::VirtualRowKind::DeletionBlock,
                     bg: None,
                     scales: None,
+                    gutter_line: None,
                 });
             }
         }

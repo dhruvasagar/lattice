@@ -495,6 +495,7 @@ mod tests {
             kind: lattice_cells::VirtualRowKind::Generic,
             bg: None,
             scales: None,
+            gutter_line: None,
         }
     }
 
@@ -516,6 +517,7 @@ mod tests {
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context_line_numbers: true,
             sticky_context: Default::default(),
             pane_id: PaneId::next(),
             buffer_id,

@@ -43,6 +43,7 @@ fn build_virtual_rows(count: u32, source_line_count: u32) -> Vec<VirtualRow> {
             height: 1,
             kind: VirtualRowKind::Generic,
             scales: None,
+            gutter_line: None,
             bg: None,
         })
         .collect()

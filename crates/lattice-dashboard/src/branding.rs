@@ -220,6 +220,7 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     kind: VirtualRowKind::BrandingBlock,
                     bg: None,
                     scales: scales.map(|s| Arc::from(s.into_boxed_slice())),
+                    gutter_line: None,
                 }
             })
             .collect()

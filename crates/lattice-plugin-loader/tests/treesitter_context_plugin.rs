@@ -329,6 +329,23 @@ async fn the_mode_and_its_chord_are_registered() {
     let id = lattice_mode::ModeId::new("treesitter-context-mode");
     let mode = modes.get(id).expect("the minor mode is registered");
     assert_eq!(mode.kind(), lattice_mode::ModeKind::Minor);
+
+    // The mode must require NO capabilities. Declaring `TREE_SITTER` here made
+    // it fail to activate on every buffer including Rust files: the gate's
+    // enforcement half exists but nothing populates a buffer's capability set
+    // — every activation site passes `CapabilitySet::empty()` — so any
+    // requirement at all is unsatisfiable today.
+    //
+    // It would also be the wrong requirement if the buffer side were built: a
+    // buffer gains its tree when the first parse lands, so gating on it would
+    // make `[u` unavailable until then. The manifest's `editor_capabilities`
+    // is what actually gates the tree handle.
+    assert_eq!(
+        mode.required_capabilities(),
+        lattice_mode::CapabilitySet::empty(),
+        "a mode requiring capabilities can never activate: no buffer is ever \
+         granted any"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

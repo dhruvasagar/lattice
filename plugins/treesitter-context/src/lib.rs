@@ -247,7 +247,24 @@ impl Guest for Component {
             // `global` = document buffers. A listing, help or terminal buffer
             // has no tree and no use for the chord.
             activation_policy: ActivationPolicy::Global,
-            capabilities: ModeCapabilities::TREE_SITTER,
+            // NO capability requirement, deliberately.
+            //
+            // Declaring `TREE_SITTER` here made the mode fail to activate on
+            // every buffer, including Rust files: the mode-capability gate's
+            // enforcement half exists, but nothing ever POPULATES a buffer's
+            // capability set — every activation site passes
+            // `CapabilitySet::empty()`, and no native mode had declared a
+            // requirement before, so the gate had never been exercised.
+            //
+            // It would be the wrong requirement even if the buffer side were
+            // built. A buffer gains its tree when the first parse lands, so
+            // gating on it would make `[u` unavailable until then and need a
+            // re-activation afterwards — activation churn for a chord that
+            // already no-ops gracefully with no tree. The capability that
+            // genuinely matters is the MANIFEST's `editor_capabilities =
+            // ["tree-sitter"]`, which gates the tree handle itself; without
+            // the grant the guest gets `none` and returns no scopes.
+            capabilities: ModeCapabilities::empty(),
             keymap: vec![ModeKeymapBinding {
                 binding_mode: BindingMode::Normal,
                 chord: "[u".to_string(),

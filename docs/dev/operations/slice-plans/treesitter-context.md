@@ -24,6 +24,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
 | TC.7 | Docs, benches, ratchet | ✅ |
 | TC.8 | `context.line-numbers` — source line numbers in the context gutter | ⛔ |
+| TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ⛔ |
 
 ## Sequencing
 
@@ -426,6 +427,36 @@ in every buffer).
 > the linear shape stated so a later superlinear change fails there rather than
 > in review.
 >
+
+## TC.9 — Buffer capability sets ⛔
+
+**Found by running the editor, not by a test.** `treesitter-context-mode`
+declared `TREE_SITTER` and failed to activate on every buffer:
+
+```
+WARN mode: activate(treesitter-context-mode) for buffer 9 failed:
+     mode `treesitter-context-mode` requires capabilities
+     `CapabilitySet(TREE_SITTER)` that the buffer lacks
+```
+
+The gate is half-built editor-wide. `ModeRegistry` enforces
+`required_capabilities() - buffer_caps`, but **nothing populates the buffer
+side**: every activation site in `lattice-host` passes `CapabilitySet::empty()`,
+and no native mode had ever declared a requirement, so the enforcement half had
+never been exercised. Any mode declaring any capability is unsatisfiable today.
+
+This plugin works around it by declaring none (correct for it independently —
+see the design fragment). But the next mode that declares one will hit the same
+wall, and the failure is a `warn` at activation rather than anything that fails
+a build or a test.
+
+Closing it means deciding when a buffer gains each capability (`TREE_SITTER` at
+first parse? at open with a known grammar? `LSP` at attach?) and re-running
+activation when the set changes — a real feature with real timing questions,
+which is why it is not folded into a context slice.
+
+**No test guards this beyond the plugin's own** `required_capabilities() ==
+empty()` assertion, which catches only a regression in this plugin.
 
 ## TC.8 — `context.line-numbers` in the gutter ⛔
 

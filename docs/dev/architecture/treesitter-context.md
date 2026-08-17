@@ -408,7 +408,23 @@ be overriding syntax highlighting from a place nobody would think to look.
 ## Grammar surface
 
 **`treesitter-context-mode`** — a **minor** mode with an `ActivationPolicy`
-spanning every major that has a tree-sitter grammar. Not a chord copied into
+spanning every major that has a tree-sitter grammar.
+
+> **It declares NO required capabilities, and cannot.** Declaring
+> `TREE_SITTER` made the mode fail to activate on every buffer, Rust files
+> included. The mode-capability gate is half-built editor-wide: the enforcement
+> side exists (`ModeRegistry` rejects on `required - buffer_caps`), but nothing
+> ever POPULATES a buffer's capability set — every activation site in
+> `lattice-host` passes `CapabilitySet::empty()`, and no native mode had
+> declared a requirement before, so the gate had never been exercised. Any mode
+> declaring any capability today is unsatisfiable.
+>
+> It would be the wrong requirement even if the buffer half were built: a buffer
+> gains its tree when the first parse lands, so gating on it would make `[u`
+> unavailable until then and require re-activation afterwards — activation churn
+> for a chord that already no-ops gracefully with no tree. The capability that
+> genuinely matters is the manifest's `editor_capabilities = ["tree-sitter"]`,
+> which gates the tree handle itself. Not a chord copied into
 each major: the shared-behaviour-is-a-minor-mode rule exists because a copied
 set silently develops gaps (`magit-diff-mode` got `s` and `u` but not `x`, and
 nothing announced it).

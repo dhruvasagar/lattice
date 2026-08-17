@@ -421,3 +421,40 @@ async fn context_up_walks_outward_and_terminates() {
         }
     }
 }
+
+/// The staged artefact under `runtime/plugins` — what a real editor boots from
+/// — must parse and declare every seam. The in-process tests above write their
+/// own plugin dir, so they would pass even if the STAGED copy were stale or
+/// its manifest wrong, which is the gap between "the tests are green" and "it
+/// works when I run the editor".
+#[test]
+fn the_staged_runtime_plugin_is_discoverable_and_complete() {
+    let staged = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtime/plugins"
+    ));
+    if !staged.exists() {
+        eprintln!("skipping: runtime/plugins not staged (`cargo xtask build-core-plugins`)");
+        return;
+    }
+    let found = lattice_plugin_loader::discover(staged);
+    let ctx = found
+        .iter()
+        .find(|p| p.manifest.id == "treesitter-context")
+        .expect("the staged core-plugin set includes treesitter-context");
+
+    use lattice_plugin_host::PluginSeam;
+    for seam in [
+        PluginSeam::Theme,
+        PluginSeam::Config,
+        PluginSeam::Grammar,
+        PluginSeam::Modes,
+        PluginSeam::Context,
+    ] {
+        assert!(
+            ctx.manifest.provides.contains(&seam),
+            "the staged manifest declares {seam}; a missing seam silently \
+             drops that half of the plugin at boot"
+        );
+    }
+}

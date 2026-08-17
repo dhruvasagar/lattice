@@ -7178,10 +7178,23 @@ fn cursor_screen_position_at(
     // the correct physical row.
     let sticky_count = {
         let rs = view.app.render_state.load();
-        rs.virtual_rows
+        let matrix_rows = rs
+            .virtual_rows
             .matrix_for_pane(pane_id)
             .map(|cell| cell.load_full().sticky_rows().count() as u32)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // TC.3b: the context strip is emitted in the SAME pre-pass, after the
+        // matrix's sticky rows, so it occupies physical rows too. Counting only
+        // the matrix rows here drew the caret N rows above the cursorline —
+        // the cursorline is painted as part of the composed row list, which
+        // does include these, so the two disagreed by exactly the strip height.
+        let context_rows = rs
+            .cells
+            .load()
+            .sticky_context_for_pane(pane_id)
+            .map(|cell| cell.load_full().rows.len() as u32)
+            .unwrap_or(0);
+        matrix_rows + context_rows
     };
     // Horizontal scroll (HS.1): shift the body column left by
     // `leftcol` so the cursor tracks the scrolled view. Wrap off

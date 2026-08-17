@@ -4396,6 +4396,15 @@ pub(crate) fn compose_pane_lines(
         .indent_guides_for_pane(ctx.pane_id)
         .map(|cell| cell.load_full())
         .unwrap_or_else(|| std::sync::Arc::new(lattice_host::indent_guides::IndentGuides::empty()));
+    // TC.3b: this pane's pinned context strip, loaded once per frame for the
+    // same reason as the guides above — one map probe per pane. Published in
+    // the same worker pass as the matrix, so it needs no staleness check.
+    let sticky_context = cells_rs
+        .sticky_context_for_pane(ctx.pane_id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(lattice_host::sticky_context::StickyContext::empty())
+        });
     // The guide glyph and the two styles, resolved once. The active
     // block is picked per frame from the cursor row the pane already
     // holds — that is what keeps a cursor move off the worker entirely
@@ -4556,6 +4565,32 @@ pub(crate) fn compose_pane_lines(
             break;
         }
         out.push(render_virtual_row(view, vrow, gutter_w, body_col_width));
+    }
+    // TC.3b: the pinned context strip, painted AFTER the matrix's sticky rows
+    // and never instead of them. That ordering is the whole contract — the
+    // headerline keeps row 0 whatever it is showing, and context reaches the
+    // top of the pane only when there is no headerline to displace. It falls
+    // out of appending rather than needing a rank field or any negotiation
+    // between the two producers.
+    //
+    // Rows are adapted to `VirtualRow` and painted by `render_virtual_row`
+    // rather than given their own painter: two implementations of "paint a
+    // pinned row of cells" would drift, and the cells here are already
+    // worker-built from the same builder as the document rows.
+    for row in sticky_context.rows.iter() {
+        if (out.len() as u32) >= height {
+            break;
+        }
+        let vrow = lattice_cells::VirtualRow {
+            anchor_line: row.source_line,
+            position: lattice_cells::AnchorPosition::Above,
+            cells: row.cells.clone(),
+            height: 1,
+            kind: lattice_cells::VirtualRowKind::Sticky,
+            bg: None,
+            scales: None,
+        };
+        out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));
     }
     let mut visible_idx: usize = 0;
     while (out.len() as u32) < height {

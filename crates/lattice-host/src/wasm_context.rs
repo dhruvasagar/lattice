@@ -218,3 +218,45 @@ impl Editor {
         });
     }
 }
+
+impl Editor {
+    /// TC.3b — resolve the source lines this pane pins, for the publish that is
+    /// about to happen.
+    ///
+    /// Runs at cursor rate (every pane-inputs publish), so it must stay cheap:
+    /// a cache read plus [`resolve_context`], which is a linear scan over the
+    /// buffer's scopes and a sort of the small enclosing subset. It touches no
+    /// WASM — the producer that filled the cache ran off-thread on the last
+    /// reparse.
+    ///
+    /// The host resolving this (rather than each renderer) is what makes the
+    /// scroll model's reservation and the painted strip incapable of
+    /// disagreeing: both read the list this returns.
+    ///
+    /// Empty is the fast path and the overwhelmingly common one — no context
+    /// plugin loaded means no cached scopes means an empty `Arc<[u32]>` with no
+    /// allocation beyond the shared empty slice.
+    pub fn resolve_sticky_context_lines(
+        &self,
+        buffer_id: BufferId,
+        cursor_line: u32,
+        scroll: u32,
+        viewport_height: u32,
+    ) -> Arc<[u32]> {
+        let cached = self.wasm_context.scopes_for(buffer_id);
+        if cached.scopes.is_empty() {
+            return Arc::from([] as [u32; 0]);
+        }
+        // TC.5 replaces these defaults with the plugin's registered
+        // `context.*` options once they exist; until then the shape is fixed
+        // and the feature is inert without a plugin anyway (no scopes → the
+        // early return above).
+        let opts = lattice_cells::context::ContextOptions {
+            viewport_height,
+            viewport_top: scroll,
+            ..Default::default()
+        };
+        let lines = lattice_cells::context::resolve_context(&cached.scopes, cursor_line, &opts);
+        Arc::from(lines.into_boxed_slice())
+    }
+}

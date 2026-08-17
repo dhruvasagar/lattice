@@ -193,6 +193,9 @@ pub mod state;
 // TC.3a — WASM sticky-context wiring: producer -> per-buffer scope cache.
 // Sibling of `wasm_decorations`, keyed on the PARSE version rather than the
 // document version, because a scope is a function of the tree.
+// TC.3b — the pinned context strip both renderers paint from. Built in the
+// same worker pass as the DisplayMatrix, keyed by PANE (not buffer).
+pub mod sticky_context;
 pub mod wasm_context;
 pub mod wasm_decorations;
 // Phase 5.7.B.9: synthetic-buffer + messages helpers migrate

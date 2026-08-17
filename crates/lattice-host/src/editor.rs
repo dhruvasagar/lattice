@@ -1608,6 +1608,18 @@ pub struct Editor {
             >,
         >,
     >,
+    /// TC.3b: per-PANE sticky-context registry. The one per-pane layer keyed
+    /// by `PaneId` rather than `BufferId` — see
+    /// [`crate::sticky_context`] for why the usual buffer keying is wrong
+    /// here. Inserted lazily via [`Self::sticky_context_for`].
+    pub sticky_contexts: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>>,
+            >,
+        >,
+    >,
     /// D.2.d (2026-05-29): diff subsystem instance. Holds the
     /// per-buffer `DiffSession` registry, the routing inverse
     /// index, and the per-session lazy debouncer. Reads through
@@ -2188,6 +2200,24 @@ impl Editor {
             .lock()
             .expect("indent_guides mutex poisoned");
         map.entry(buffer_id).or_default().clone()
+    }
+
+    /// TC.3b: the sticky-context cell for `pane_id`, inserting an empty layer
+    /// on first ask. Keyed by PANE — two panes on one buffer resolve different
+    /// context and must not share a cell.
+    ///
+    /// Same idempotence contract as the sibling accessors: every call for the
+    /// same `pane_id` returns the same `Arc` identity, so renderer reads and
+    /// worker writes stay coherent.
+    pub fn sticky_context_for(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> std::sync::Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>> {
+        let mut map = self
+            .sticky_contexts
+            .lock()
+            .expect("sticky_contexts mutex poisoned");
+        map.entry(pane_id).or_default().clone()
     }
 
     /// D.4.d.2.0 (2026-05-29): lazy port into the per-document

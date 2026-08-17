@@ -515,6 +515,8 @@ mod tests {
             indent_guides: Default::default(),
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
+            sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context: Default::default(),
             pane_id: PaneId::next(),
             buffer_id,
             matrix: Arc::new(ArcSwap::from_pointee(lattice_cells::CellMatrix::empty())),

@@ -1266,6 +1266,15 @@ pub struct CellsRenderState {
             Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
         >,
     >,
+    /// TC.3b: `PaneId → sticky context`, the peer of
+    /// [`Self::pane_indent_guides`], derived from the same `panes` list at
+    /// publish time. Read via [`Self::sticky_context_for_pane`].
+    pub pane_sticky_context: Arc<
+        std::collections::HashMap<
+            lattice_core::ui::pane::PaneId,
+            Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>>,
+        >,
+    >,
 }
 
 impl CellsRenderState {
@@ -1287,6 +1296,15 @@ impl CellsRenderState {
         pane_id: lattice_core::ui::pane::PaneId,
     ) -> Option<&Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>> {
         self.pane_indent_guides.get(&pane_id)
+    }
+
+    /// TC.3b: look up the pinned context strip for `pane_id`. `None` when the
+    /// pane is not a document-backed leaf (it then pins nothing).
+    pub fn sticky_context_for_pane(
+        &self,
+        pane_id: lattice_core::ui::pane::PaneId,
+    ) -> Option<&Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>>> {
+        self.pane_sticky_context.get(&pane_id)
     }
 
     /// D.4.d.1.c: look up the cell matrix for `pane_id`.
@@ -1455,6 +1473,18 @@ pub struct PaneCellsInputs {
     /// off clears them on the next publish instead of leaving the last
     /// build painted.
     pub indent_guides_enabled: bool,
+    /// TC.3b: the source lines this pane pins above its text, resolved
+    /// HOST-side from the cached scopes + this pane's anchor and viewport
+    /// (`lattice_cells::context::resolve_context`). The host produces this
+    /// list and reserves exactly `len()` rows for it, so the reservation
+    /// and the paint cannot drift — the failure mode the gutter-width
+    /// mismatch taught, designed out rather than tested for.
+    pub sticky_context_lines: Arc<[u32]>,
+    /// TC.3b: per-PANE sticky-context output cell. Keyed by pane id, not
+    /// buffer id, because the rows genuinely differ per pane: one buffer in
+    /// two splits with cursors in different scopes must show different
+    /// context. Cloned from `Editor::sticky_context_for(pane_id)`.
+    pub sticky_context: Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>>,
     /// D.4.d.2.1.b (2026-05-29): per-pane virtual-rows matrix
     /// output cell. Cloned from
     /// `Editor::virtual_rows_matrix_for(buffer_id)` so the
@@ -1581,6 +1611,7 @@ impl Default for CellsRenderState {
             )),
             display_pane_matrices: Arc::new(std::collections::HashMap::new()),
             pane_indent_guides: Arc::new(std::collections::HashMap::new()),
+            pane_sticky_context: Arc::new(std::collections::HashMap::new()),
         }
     }
 }

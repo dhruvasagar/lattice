@@ -451,6 +451,72 @@ fn publish_indent_guides(
     pane.indent_guides.store(Arc::new(guides));
 }
 
+/// TC.3b: build the pane's pinned context rows.
+///
+/// One row per line in `pane.sticky_context_lines` (already resolved host-side
+/// against the cached scopes, so the reservation the scroll model made and the
+/// rows painted here cannot disagree — the host produced the list it reserved
+/// for).
+///
+/// Highlights are fetched PER LINE rather than over one enclosing range: the
+/// context lines are typically far apart (an `impl` at line 10 and a `fn` at
+/// line 3000), so a single spanning range would highlight the whole file to
+/// paint three rows. The call count is bounded by `context.max-lines`.
+///
+/// Publishes the empty layer rather than skipping when there is nothing to
+/// show — skipping would leave the previous strip painted until something else
+/// forced a rebuild, which is how "the context did not go away" happens.
+fn publish_sticky_context(
+    pane: &crate::render_state::PaneCellsInputs,
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    ct: CellTheme<'_>,
+    whitespace: &WhitespaceConfig,
+    version: lattice_cells::MatrixVersion,
+) {
+    use crate::sticky_context::{StickyContext, StickyContextRow};
+
+    if pane.sticky_context_lines.is_empty() {
+        if !pane.sticky_context.load().is_empty() {
+            pane.sticky_context.store(Arc::new(StickyContext::empty()));
+        }
+        return;
+    }
+
+    let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
+    let syntax = pane.syntax_handle.as_deref().map(|h| h.snapshot());
+    let mut rows: Vec<StickyContextRow> = Vec::with_capacity(pane.sticky_context_lines.len());
+
+    for &line in pane.sticky_context_lines.iter() {
+        let text = snapshot.buffer.line(line).unwrap_or_default();
+        // A header outside every built chunk still gets real colour: the
+        // snapshot can highlight any range, which is the whole reason this
+        // build lives in the worker rather than in the renderers.
+        let spans: Vec<lattice_syntax::StyledSpan> = syntax
+            .as_ref()
+            .and_then(|s| s.highlight_lines(line, line + 1).ok())
+            .and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
+            .unwrap_or_default();
+        let (dtext, runs, col_map, col_count) =
+            build_display_row(&text, &spans, &[], whitespace, &[]);
+        let dl = crate::display_matrix::DisplayLine {
+            source_line: line,
+            text: Arc::from(dtext),
+            runs: Arc::from(runs.into_boxed_slice()),
+            col_map: Arc::from(col_map.into_boxed_slice()),
+            col_count,
+            fold: None,
+        };
+        let row = display_line_to_cell_row(&dl, ct, default_fg, default_flags);
+        rows.push(StickyContextRow {
+            source_line: line,
+            cells: row.cells.clone(),
+        });
+    }
+
+    pane.sticky_context
+        .store(Arc::new(StickyContext { rows, version }));
+}
+
 pub fn recompute_pane(
     pane: &crate::render_state::PaneCellsInputs,
     ct: CellTheme<'_>,
@@ -640,6 +706,7 @@ pub fn recompute_pane(
     let cells = display_matrix_to_cell_matrix(&matrix, ct);
     pane.matrix.store(Arc::new(cells));
     publish_indent_guides(pane, snapshot.as_ref(), &matrix);
+    publish_sticky_context(pane, snapshot.as_ref(), ct, whitespace, matrix.version);
     pane.display_matrix.store(Arc::new(matrix));
     decision
 }
@@ -2782,6 +2849,8 @@ mod tests {
             )),
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
+            sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context: Default::default(),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
             )),
@@ -2814,6 +2883,7 @@ mod tests {
         let (resolved_theme, theme_ids) = test_cell_theme();
         let cells = CellsRenderState {
             pane_indent_guides: Arc::new(std::collections::HashMap::new()),
+            pane_sticky_context: Arc::new(std::collections::HashMap::new()),
             matrix: matrix_cell,
             version,
             snapshot,
@@ -5441,6 +5511,8 @@ mod tests {
                     indent_guides: Default::default(),
                     indent_unit: lattice_core::IndentUnit::default(),
                     indent_guides_enabled: true,
+                    sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+                    sticky_context: Default::default(),
                     pane_id: lattice_core::ui::pane::PaneId::default(),
                     buffer_id: lattice_core::BufferId::default(),
                     matrix: matrix_cell.clone(),
@@ -5470,6 +5542,7 @@ mod tests {
                 };
                 let cells = CellsRenderState {
                     pane_indent_guides: Arc::new(std::collections::HashMap::new()),
+                    pane_sticky_context: Arc::new(std::collections::HashMap::new()),
                     matrix: matrix_cell.clone(),
                     version: v,
                     snapshot: Some(snap),
@@ -5600,6 +5673,8 @@ mod tests {
                 indent_guides: Default::default(),
                 indent_unit: lattice_core::IndentUnit::default(),
                 indent_guides_enabled: true,
+                sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+                sticky_context: Default::default(),
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
                 matrix: matrix_cell.clone(),
@@ -5629,6 +5704,7 @@ mod tests {
             };
             let cells = CellsRenderState {
                 pane_indent_guides: Arc::new(std::collections::HashMap::new()),
+                pane_sticky_context: Arc::new(std::collections::HashMap::new()),
                 matrix: matrix_cell.clone(),
                 version: v,
                 snapshot: Some(snap),
@@ -5699,6 +5775,8 @@ mod tests {
             indent_guides: Default::default(),
             indent_unit: lattice_core::IndentUnit::default(),
             indent_guides_enabled: true,
+            sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+            sticky_context: Default::default(),
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix,

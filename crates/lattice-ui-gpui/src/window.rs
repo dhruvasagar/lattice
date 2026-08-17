@@ -2510,6 +2510,15 @@ impl EditorView {
                 .matrix_for_pane(pane.id)
                 .map(|cell| cell.load_full())
                 .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())),
+            // TC.3b: same pane-keyed lookup shape as `virtual_rows` above.
+            sticky_context: rs_guard
+                .cells
+                .load()
+                .sticky_context_for_pane(pane.id)
+                .map(|cell| cell.load_full())
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(lattice_host::sticky_context::StickyContext::empty())
+                }),
             scroll: pane_scroll,
             leftcol: pane_leftcol,
             viewport_height,
@@ -3823,6 +3832,8 @@ impl Render for EditorView {
                         doc_highlights: Vec::new(),
                         worker_static_overlay_quads: None,
                         virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
+                        sticky_context: Default::default(),
+                        sticky_context: Default::default(),
                         diff_tint_per_row: Vec::new(),
                         compilation_location_tint_per_row: Vec::new(),
                         cursorline_bg: 0,

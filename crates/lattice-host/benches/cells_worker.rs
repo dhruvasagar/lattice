@@ -106,6 +106,8 @@ fn rs_for(
         indent_guides: Default::default(),
         indent_unit: lattice_core::IndentUnit::default(),
         indent_guides_enabled: true,
+        sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+        sticky_context: Default::default(),
         pane_id: PaneId::default(),
         buffer_id: BufferId::default(),
         matrix: matrix_cell.clone(),
@@ -150,6 +152,7 @@ fn rs_for(
     };
     let cells = CellsRenderState {
         pane_indent_guides: Arc::new(std::collections::HashMap::new()),
+        pane_sticky_context: std::sync::Arc::new(std::collections::HashMap::new()),
         matrix: matrix_cell,
         version,
         snapshot: Some(snapshot),

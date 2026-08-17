@@ -329,6 +329,10 @@ pub(crate) struct EditorElement {
     /// and Below-anchored virtual rows (deletion blocks today,
     /// multibuffer headers in future) into the row stream.
     pub(crate) virtual_rows: std::sync::Arc<lattice_cells::VirtualRowMatrix>,
+    /// TC.3b: this pane's pinned context strip, painted after the matrix's
+    /// sticky rows so the headerline keeps row 0. Lockstep peer of the TUI's
+    /// `sticky_context` load in `render.rs`.
+    pub(crate) sticky_context: std::sync::Arc<lattice_host::sticky_context::StickyContext>,
     /// D.3.e (2026-05-29): per-visible-row diff line-tint
     /// colour. `Some(rgb)` when a hunk's current side touches
     /// this row (Add → faint green, Change → faint yellow);
@@ -1487,6 +1491,45 @@ impl Element for EditorElement {
                     font_size,
                     self.theme.foreground,
                     vrow.bg.unwrap_or(0),
+                    window,
+                    &mut shaped_text,
+                    &mut shaped_gutter,
+                    &mut row_meta,
+                    &mut row_segment,
+                    &mut row_scale,
+                    &mut row_split,
+                    &mut inlay_offsets_per_row,
+                    &mut diagnostic_segments_per_row,
+                    &mut overlay_quads_per_row,
+                    &mut branding_rows,
+                );
+            }
+            // TC.3b: the pinned context strip, AFTER the matrix's sticky rows
+            // and never instead of them — the headerline keeps row 0 whatever
+            // it shows, and context reaches the top only when there is no
+            // headerline to displace. Adapted to `VirtualRow` and pushed
+            // through `push_virtual_row` rather than given a second painter,
+            // so the two peers and the two row kinds cannot drift.
+            for row in self.sticky_context.rows.iter() {
+                if shaped_text.len() as u32 >= self.viewport_height {
+                    break;
+                }
+                let vrow = lattice_cells::VirtualRow {
+                    anchor_line: row.source_line,
+                    position: lattice_cells::AnchorPosition::Above,
+                    cells: row.cells.clone(),
+                    height: 1,
+                    kind: lattice_cells::VirtualRowKind::Sticky,
+                    bg: None,
+                    scales: None,
+                };
+                push_virtual_row(
+                    &vrow,
+                    self.gutter_width,
+                    &font,
+                    font_size,
+                    self.theme.foreground,
+                    0,
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,

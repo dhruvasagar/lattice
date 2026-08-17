@@ -14,7 +14,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | ✅ |
 | TC.2 | The `context` WIT seam + host quartet + fixture component | ✅ |
 | TC.3a | Scope cache + reparse-driven refresh pump | ✅ |
-| TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | 📝 |
+| TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | ✅ |
 | TC.4 | The `theme` WIT seam — plugin-registered elements | 📝 |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 📝 |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-up`, `:context-toggle` | 📝 |
@@ -191,7 +191,39 @@ keypress**.
 > defeating each in turn; the comment now says so, because a green run there is
 > not evidence that a guard someone just deleted was dead code.
 
-## TC.3b — The layer + both renderers 📝
+## TC.3b — The layer + both renderers ✅
+
+> **Landed 2026-08-17.** One commit, per the lockstep rule.
+>
+> - **Pane-keyed, and it is the only layer that is.** `sticky_contexts` is
+>   keyed by `PaneId` where every sibling (`display_matrices`, `indent_guides`,
+>   `cells_matrices`) is keyed by `BufferId`. `IndentGuides` gets away with
+>   buffer keying by publishing extents and letting each renderer pick the
+>   active block from its own cursor; context cannot, because the ROWS differ
+>   per pane. `two_panes_on_one_buffer_resolve_different_context` is the only
+>   test that fails if this regresses.
+> - **The rows are built in the worker, not copied by the renderers.** A
+>   context header is by definition above the viewport, and `CellMatrix` is
+>   chunked above `4 × viewport_height`, so a header thousands of lines up is
+>   routinely not resident. `SyntaxSnapshot::highlight_lines` gives the worker
+>   real colour for any line; a renderer copying from the published matrix
+>   would have found nothing and fallen back to unhighlighted text.
+> - **The reservation reads the LAST published count, not a fresh resolve.**
+>   Re-resolving in `ensure_cursor_visible` would use the pre-clamp scroll to
+>   predict a strip the post-clamp scroll may not produce. Reading what is
+>   currently painted is the only self-consistent choice; the publish path
+>   stays authoritative, resolving once into a list both the worker and the
+>   renderers read.
+> - **Both peers adapt `StickyContextRow` to `VirtualRow`** and reuse
+>   `render_virtual_row` / `push_virtual_row` rather than gaining a second
+>   painter each — two implementations of "paint a pinned row of cells" across
+>   two renderers is four things to keep in step.
+>
+> Context-gutter line numbers (`context.line-numbers`) are deferred to TC.5
+> with the option that governs them; the strip currently paints a blank gutter
+> exactly as every other virtual row does.
+
+
 
 **One commit.** The TUI/GPUI lockstep rule is not negotiable here: a sticky
 strip that exists in one peer and not the other is a visible divergence in the

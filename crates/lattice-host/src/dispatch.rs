@@ -965,6 +965,18 @@ impl Editor {
                 .map(|p| (p.pane_id, p.indent_guides.clone()))
                 .collect(),
         );
+        // TC.3b: PaneId → pinned context strip, from the same slice.
+        let pane_sticky_context: std::sync::Arc<
+            std::collections::HashMap<
+                lattice_core::ui::pane::PaneId,
+                std::sync::Arc<arc_swap::ArcSwap<crate::sticky_context::StickyContext>>,
+            >,
+        > = std::sync::Arc::new(
+            cells_panes
+                .iter()
+                .map(|p| (p.pane_id, p.sticky_context.clone()))
+                .collect(),
+        );
         // Start from the empty `Default` snapshot, then override
         // each sub-state whose backing source has been wired up.
         // Slice 3a wires only `diagnostics`; Slice 3b/3c add
@@ -1569,6 +1581,7 @@ impl Editor {
                 display_matrix: self.display_matrix_for(self.document_buffer_id),
                 display_pane_matrices,
                 pane_indent_guides,
+                pane_sticky_context,
             })),
             // D.3.d.1 (2026-05-29): snapshot the active
             // document's diff sign map (empty if no session
@@ -6388,7 +6401,22 @@ impl Editor {
         // at a position where the cursor is visually behind the header.
         let buffer_id = self.active_buffer_id();
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
-        let sticky_count = vrows.sticky_rows().count() as u32;
+        // TC.3b: context rows are pinned above the scroll window too, so they
+        // come out of the same budget as the headerline's sticky rows.
+        //
+        // This reads the count from the LAST PUBLISH rather than re-resolving,
+        // and that is deliberate on two counts. It keeps the keystroke path free
+        // of even the cheap resolve; and more importantly it reserves for what
+        // is actually on screen right now, which is the only self-consistent
+        // choice — re-resolving here would use the pre-clamp scroll to predict a
+        // strip that the post-clamp scroll may not produce. The publish path
+        // stays authoritative: it resolves once and both the worker and the
+        // renderers read that one list.
+        let context_count = self
+            .sticky_context_for(self.pane_tree.active().id)
+            .load()
+            .len() as u32;
+        let sticky_count = vrows.sticky_rows().count() as u32 + context_count;
         let effective_height = height.saturating_sub(sticky_count).max(1);
         // 2026-08-16 diagnostic: the scroll clamp's inputs, captured on entry.
         // This runs on the KEYSTROKE path only — the actor's `async_landed`
@@ -14694,6 +14722,15 @@ impl Editor {
                 // diagnostic/diff sign cells) → reserve it from the
                 // wrap width.
                 true,
+                // The context anchor. Live cursor for the pane that owns it,
+                // the leaf's stash otherwise — the same split `scroll` takes,
+                // so an inactive pane keeps the context it had rather than
+                // borrowing the focused pane's.
+                if is_active_pane {
+                    self.cursor.line
+                } else {
+                    leaf.cursor.line
+                },
             ));
         }
         // PU.1b-3 / PU.5: synthetic popup panes. Floating overlays (the
@@ -14727,6 +14764,11 @@ impl Editor {
                 // Floating popups have no gutter — their fed inner
                 // width is already the text width, so reserve nothing.
                 false,
+                // A popup never pins context: it is an overlay with its own
+                // content, not a view into a scrolled document. Anchoring at
+                // its scroll top costs nothing since no scopes are ever
+                // cached for a popup buffer.
+                spec.scroll,
             ));
         }
         Arc::from(entries.into_boxed_slice())
@@ -14759,6 +14801,10 @@ impl Editor {
         whitespace_hash: u64,
         last_edit: Option<lattice_cells::EditDelta>,
         has_gutter: bool,
+        // TC.3b: this pane's cursor line — the context anchor. Threaded the
+        // same way `scroll` is (live slot for the active pane, stashed leaf
+        // value otherwise) because it has the same active/inactive split.
+        cursor_line: u32,
     ) -> crate::render_state::PaneCellsInputs {
         use crate::render_state::PaneCellsInputs;
 
@@ -14950,6 +14996,15 @@ impl Editor {
             indent_guides: self.indent_guides_for(buffer_id),
             indent_unit,
             indent_guides_enabled,
+            // TC.3b: resolved HERE, host-side, so the count the scroll model
+            // reserves and the rows the worker builds come from one list.
+            sticky_context_lines: self.resolve_sticky_context_lines(
+                buffer_id,
+                cursor_line,
+                scroll,
+                viewport_height,
+            ),
+            sticky_context: self.sticky_context_for(pane_id),
             // D.4.d.2.1.b (2026-05-29): pre-attach the
             // per-buffer virtual-rows cell at publish time.
             // Active-pane entry shares Arc identity with

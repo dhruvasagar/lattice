@@ -99,6 +99,9 @@ fn rig(base: &std::path::Path) -> Rig {
                 GutterDecorationSourceRegistry::new(),
             ))),
             context_registry: Some(contexts.clone()),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             tracer: None,
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
         },

@@ -94,6 +94,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         context_registry: boot
             .service::<lattice_mode::ContextSourceRegistryHandle>()
             .map(|h| (*h).clone()),
+        theme_registry: boot
+            .service::<lattice_theme::ThemeRegistryHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

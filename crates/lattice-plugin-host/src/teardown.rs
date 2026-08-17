@@ -77,6 +77,10 @@ pub struct PluginTeardown {
     /// [`ContextSourceRegistry`] — each reversed via
     /// `ContextSourceRegistry::unregister`. Mirrors `decoration_sources`.
     pub context_sources: Vec<u64>,
+    /// TC.4: namespaced theme-element names the plugin registered. Reversed by
+    /// `ThemeRegistry::unregister_element` so an unloaded plugin's elements stop
+    /// appearing in `:customize` and stop resolving.
+    pub theme_elements: Vec<String>,
 }
 
 impl PluginTeardown {
@@ -92,6 +96,7 @@ impl PluginTeardown {
             keymap_bindings: Vec::new(),
             decoration_sources: Vec::new(),
             context_sources: Vec::new(),
+            theme_elements: Vec::new(),
         }
     }
 
@@ -162,6 +167,14 @@ impl PluginTeardown {
         for source_id in &self.context_sources {
             report.context_sources += reg.contexts.unregister(*source_id);
         }
+        for name in &self.theme_elements {
+            if reg
+                .theme
+                .unregister_element(&lattice_theme::ElementName::from(name.clone()))
+            {
+                report.theme_elements += 1;
+            }
+        }
 
         report
     }
@@ -185,6 +198,8 @@ pub struct TeardownRegistries<'a> {
     pub decorations: &'a mut GutterDecorationSourceRegistry,
     /// TC.2: the context-producer registry (`unregister` by producer id).
     pub contexts: &'a mut ContextSourceRegistry,
+    /// TC.4: the theme registry (`unregister_element` by namespaced name).
+    pub theme: &'a dyn lattice_theme::ThemeRegistry,
 }
 
 /// Count of what an [`unload`](PluginTeardown::unload) actually removed, per
@@ -205,6 +220,8 @@ pub struct TeardownReport {
     pub decoration_sources: usize,
     /// TC.2: context producers unregistered.
     pub context_sources: usize,
+    /// TC.4: theme elements unregistered.
+    pub theme_elements: usize,
 }
 
 #[cfg(test)]
@@ -301,6 +318,7 @@ mod tests {
 
         let mut decorations = GutterDecorationSourceRegistry::new();
         let mut contexts = ContextSourceRegistry::new();
+        let theme_reg = lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette());
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -311,6 +329,7 @@ mod tests {
                 bus: &bus,
                 decorations: &mut decorations,
                 contexts: &mut contexts,
+                theme: &theme_reg,
             };
             teardown.unload(&mut reg)
         };
@@ -330,6 +349,7 @@ mod tests {
                 keymap_bindings: 0,
                 decoration_sources: 0,
                 context_sources: 0,
+                theme_elements: 0,
             }
         );
 
@@ -358,6 +378,7 @@ mod tests {
             bus: &bus,
             decorations: &mut decorations,
             contexts: &mut contexts,
+            theme: &theme_reg,
         };
         assert_eq!(teardown.unload(&mut reg), TeardownReport::default());
     }

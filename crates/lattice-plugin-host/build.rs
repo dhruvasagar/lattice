@@ -66,6 +66,12 @@ fn main() {
         "context-guest",
         "CONTEXT_GUEST_WASM",
     );
+    // TC.4: the theme element-registration fixture.
+    build_guest(
+        &fixtures.join("theme-guest"),
+        "theme-guest",
+        "THEME_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("config-guest"),
         "config-guest",

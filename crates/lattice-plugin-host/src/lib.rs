@@ -85,6 +85,9 @@ pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
 pub mod teardown;
+// TC.4 — the `theme` element-registration seam. Guest imports `register-element`
+// and the host inserts into the SAME registry builtins live in.
+pub mod theme_host;
 pub mod trace;
 pub mod trampoline;
 pub mod tree_resource;
@@ -733,6 +736,13 @@ struct PluginState {
     /// `register-option` returns `false` and `get-option` returns `none` (the
     /// honest "no registry wired" degradation — the host isn't boot-wired yet).
     config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
+    /// TC.4: the theme registry a `theme` plugin's `register-element` inserts
+    /// into. Wired before `register-theme-elements` runs; `None` for every
+    /// other world (the call then logs and registers nothing).
+    theme_registry: Option<lattice_theme::ThemeRegistryHandle>,
+    /// TC.4: namespaced element names this plugin registered — the teardown
+    /// tokens, mirroring `config_contributions`.
+    theme_contributions: Vec<String>,
     /// The plugin's manifest id (e.g. `"auto-pair"`). Set by every spawn/
     /// instantiate path from the manifest. Used to **auto-namespace** the
     /// plugin's config options — a `register-option("style")` registers
@@ -1375,6 +1385,37 @@ impl crate::events_host::bindings::lattice::plugin_host::events::Host for Plugin
 /// options use ([`config_host::register_plugin_option`]); a plugin with no
 /// registry wired degrades to `false` / `none` (never a panic — the
 /// four-artefact graceful-failure clause).
+impl crate::theme_host::bindings::lattice::plugin_host::theme::Host for PluginState {
+    fn register_element(
+        &mut self,
+        name: String,
+        doc: String,
+        default: crate::theme_host::bindings::lattice::plugin_host::theme::StyleSpec,
+    ) -> Result<(), String> {
+        let Some(registry) = self.theme_registry.clone() else {
+            // Graceful, not a trap: a harness with no theme service wired is a
+            // test shape, not a plugin error. The element simply does not
+            // exist and rows fall back to their default style.
+            tracing::warn!(
+                element = %name,
+                "register-element ignored: plugin has no theme registry wired"
+            );
+            return Ok(());
+        };
+        // Auto-namespaced by manifest id, exactly like `register-option`, so a
+        // plugin cannot squat a bare name or shadow a builtin. An internal
+        // caller with no manifest id gets no prefix.
+        let Some(plugin_id) = self.plugin_name.clone() else {
+            return Err("register-element requires a plugin identity".to_string());
+        };
+        let spec = crate::theme_host::style_spec_from_wit(default);
+        let full =
+            crate::theme_host::register_plugin_element(&*registry, &plugin_id, &name, &doc, spec);
+        self.theme_contributions.push(full);
+        Ok(())
+    }
+}
+
 impl crate::config_host::bindings::lattice::plugin_host::config::Host for PluginState {
     fn register_option(
         &mut self,
@@ -1769,6 +1810,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // TC.4: the `theme` guest->host element-declaration seam. Sync host
+        // func (`register-element` only touches the theme registry), inert for
+        // worlds that don't import `theme`.
+        crate::theme_host::bindings::lattice::plugin_host::theme::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The `modes` guest→host mode-declaration seam (PH7.11a). Sync host func
         // (`register-mode` only records into `PluginState`), inert for worlds that
         // don't import `modes`.
@@ -2071,6 +2120,8 @@ impl PluginHost {
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),
             config_contributions: Vec::new(),
+            theme_registry: None,
+            theme_contributions: Vec::new(),
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).
             mode_contributions: mode_host::ModeContributions::default(),

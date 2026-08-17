@@ -133,6 +133,9 @@ pub enum PluginSeam {
     /// TC.2 — the sticky-context producer (`context-plugin` world). Async,
     /// host-cached per parse version; see `treesitter-context.md`.
     Context,
+    /// TC.4 — theme-element declaration (`theme-plugin` world). The plugin's
+    /// elements land in the SAME registry builtins use.
+    Theme,
     Keymap,
     /// The `wasi:logging`-shaped guest→host logging import (PO.5, Layer 2). Not a
     /// native trait seam — the guest's own narrative, host-captured into the same
@@ -152,6 +155,7 @@ impl PluginSeam {
             PluginSeam::Config => "config",
             PluginSeam::Decorations => "decorations",
             PluginSeam::Context => "context",
+            PluginSeam::Theme => "theme",
             PluginSeam::Keymap => "keymap",
             PluginSeam::Logging => "logging",
         }
@@ -177,6 +181,7 @@ impl FromStr for PluginSeam {
             "config" => PluginSeam::Config,
             "decorations" => PluginSeam::Decorations,
             "context" => PluginSeam::Context,
+            "theme" => PluginSeam::Theme,
             "keymap" => PluginSeam::Keymap,
             "logging" => PluginSeam::Logging,
             _ => return Err(()),

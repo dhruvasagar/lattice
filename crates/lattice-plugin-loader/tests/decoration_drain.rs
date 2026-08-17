@@ -100,6 +100,9 @@ fn rig(base: &std::path::Path) -> Rig {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             tracer: None,
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
         },
@@ -229,6 +232,9 @@ async fn decorations_plugin_without_a_wired_registry_is_skipped_not_fatal() {
             bus: Some(Arc::new(EventBus::new())),
             decoration_registry: None,
             context_registry: None,
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             ..Default::default()
         },
     );

@@ -96,6 +96,9 @@ async fn discovered_completion_plugin_rides_a_universal_carrier_mode() {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             ..Default::default()
         },
     );

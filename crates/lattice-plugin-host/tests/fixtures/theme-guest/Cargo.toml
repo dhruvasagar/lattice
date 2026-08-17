@@ -1,0 +1,26 @@
+# TC.4 theme fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `theme-plugin` world. Its `register-theme-elements` export declares three
+# elements exercising the shapes that can go wrong at the boundary: a palette
+# reference (the path that makes an element re-colour on `:colorscheme`), an
+# inherit + tri-state modifier (where `Some(false)` must survive as "clear",
+# not collapse to "unspecified"), and a packed literal RGB (where the channel
+# order can silently invert). Built to a component by the host crate's build.rs.
+# Standalone workspace so it targets wasm32-wasip2 without inheriting the host
+# toolchain's lints/target.
+[package]
+name = "theme-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

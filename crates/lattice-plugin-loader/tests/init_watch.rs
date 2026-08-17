@@ -95,6 +95,9 @@ async fn rewriting_the_init_artifact_auto_reloads() {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             tracer: None,
         },
     ));

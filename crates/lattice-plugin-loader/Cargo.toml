@@ -69,6 +69,8 @@ lattice-keymap = { path = "../lattice-keymap" }
 # already in the graph (via `lattice-runtime`); named directly now the loader
 # constructs an `EventFilter::kind(EventKind::PluginCrashed)` + matches `Event`.
 lattice-protocol = { path = "../lattice-protocol" }
+# TC.4: the theme seam's drain hands the plugin the SAME registry builtins use.
+lattice-theme = { path = "../lattice-theme" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

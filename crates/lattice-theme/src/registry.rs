@@ -152,6 +152,25 @@ pub trait ThemeRegistry: Send + Sync {
     /// across runs; a theme-build-time read, never on the hot path.
     fn element_names(&self) -> Vec<String>;
 
+    /// TC.4: withdraw an element by name — the reverse of [`Self::register`],
+    /// used when a plugin unloads. Returns whether a name was removed
+    /// (idempotent: a second unload removes nothing).
+    ///
+    /// **The slot is tombstoned, not deleted.** [`ElementId`] is an index into
+    /// the element vector, so removing an entry would silently re-point every
+    /// later id at the wrong element — a far worse failure than a retained
+    /// slot. Withdrawing therefore drops the NAME binding only: `id`,
+    /// `describe` and `element_names` all resolve through `by_name`, so the
+    /// element disappears from every observable surface (lookup, `:customize`,
+    /// `:describe-element`) while ids already handed out stay valid and keep
+    /// resolving to their last style.
+    ///
+    /// Any theme override the user set for the name is left in place: a plugin
+    /// reload should not silently discard the user's customisation, and a
+    /// dangling override for an element that never comes back resolves to
+    /// nothing.
+    fn unregister_element(&self, name: &ElementName) -> bool;
+
     /// T.11.1: register (or replace, by name) a named theme in the
     /// catalog. Idempotent by name — re-registering a name replaces its
     /// palette + overrides. This is the seam `init.rs` (and, later, a
@@ -315,6 +334,18 @@ impl ThemeRegistry for InMemoryThemeRegistry {
             .by_name
             .get(name)
             .copied()
+    }
+
+    fn unregister_element(&self, name: &ElementName) -> bool {
+        let mut inner = self.inner.write().expect("theme registry lock poisoned");
+        let removed = inner.by_name.remove(name).is_some();
+        if removed {
+            // The resolved table is keyed by id and rebuilt from `elements`,
+            // which still holds the tombstoned slot — but marking dirty keeps
+            // the rebuild honest if resolution ever starts consulting names.
+            inner.dirty = true;
+        }
+        removed
     }
 
     fn resolved(&self) -> Arc<ResolvedTheme> {

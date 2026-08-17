@@ -194,6 +194,10 @@ pub struct LoaderServices {
     /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
     /// refresh reads the same handle wait-free.
     pub context_registry: Option<ContextSourceRegistryHandle>,
+    /// TC.4: the theme registry a `theme` plugin's elements register into — the
+    /// SAME one builtins use, so a plugin element is themeable and
+    /// `:customize`-able like any other.
+    pub theme_registry: Option<lattice_theme::ThemeRegistryHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -217,6 +221,7 @@ pub struct WiredSeams {
     pub meta_sink: bool,
     pub decoration_registry: bool,
     pub context_registry: bool,
+    pub theme_registry: bool,
 }
 
 impl WiredSeams {
@@ -234,6 +239,7 @@ impl WiredSeams {
             && self.meta_sink
             && self.decoration_registry
             && self.context_registry
+            && self.theme_registry
     }
 }
 
@@ -392,6 +398,7 @@ impl PluginLoader {
             meta_sink: self.env.meta_sink.is_some(),
             decoration_registry: self.env.decoration_registry.is_some(),
             context_registry: self.env.context_registry.is_some(),
+            theme_registry: self.env.theme_registry.is_some(),
         }
     }
 
@@ -525,6 +532,12 @@ impl PluginLoader {
                     PluginSeam::Context => {
                         let id = self
                             .drain_context(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::Theme => {
+                        let id = self
+                            .drain_theme(&component, manifest, tier, &mut record)
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
@@ -933,6 +946,7 @@ impl PluginLoader {
             Some(bus),
             Some(deco_h),
             Some(ctx_h),
+            Some(theme_h),
         ) = (
             self.env.command_registry.as_ref(),
             self.env.picker_registry.as_ref(),
@@ -942,6 +956,7 @@ impl PluginLoader {
             self.env.bus.as_ref(),
             self.env.decoration_registry.as_ref(),
             self.env.context_registry.as_ref(),
+            self.env.theme_registry.as_ref(),
         )
         else {
             tracing::warn!(
@@ -966,6 +981,7 @@ impl PluginLoader {
                 bus,
                 decorations: &mut decorations,
                 contexts: &mut contexts,
+                theme: &**theme_h,
             };
             teardown.unload(&mut reg)
         };
@@ -1468,6 +1484,36 @@ impl PluginLoader {
     /// spawn the actor's `run` loop on the runtime. Records the actor task +
     /// source id on `record` for teardown. Mirror of [`Self::drain_decorations`]
     /// — a context source, like a decoration source, carries no id/doc metadata,
+
+    /// TC.4 — drain the theme seam: instantiate the component, drive its
+    /// `register-theme-elements` export once, and record the namespaced element
+    /// names for teardown. No actor and no registry RCU: elements are declared
+    /// synchronously into the shared registry, like config options.
+    async fn drain_theme(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .theme_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("theme"))?;
+        let (id, elements) = self
+            .host
+            .spawn_theme_plugin(component, manifest, tier, PluginBudget::default(), registry)
+            .await?;
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            elements = elements.len(),
+            "theme plugin registered its elements"
+        );
+        record.teardown.theme_elements = elements;
+        Ok(id)
+    }
     /// so there is no `connect` spec round-trip.
     async fn drain_context(
         &self,

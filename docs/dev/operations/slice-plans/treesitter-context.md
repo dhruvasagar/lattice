@@ -15,7 +15,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.2 | The `context` WIT seam + host quartet + fixture component | ✅ |
 | TC.3a | Scope cache + reparse-driven refresh pump | ✅ |
 | TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | ✅ |
-| TC.4 | The `theme` WIT seam — plugin-registered elements | 📝 |
+| TC.4 | The `theme` WIT seam — plugin-registered elements | ✅ |
 | TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 📝 |
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-up`, `:context-toggle` | 📝 |
 | TC.7 | Docs, benches, ratchet | 📝 |
@@ -262,7 +262,33 @@ resolution).
 **Bench.** Worker context-row build cost; and the per-keystroke delta with the
 layer active vs. disabled, so the ratchet sees it.
 
-## TC.4 — The `theme` seam 📝
+## TC.4 — The `theme` seam ✅
+
+> **Landed 2026-08-17.** Closes `theme-system.md`'s deferred WIT
+> element-registration item, which was designed there and waited for a real
+> consumer.
+>
+> - **`family` and `weight` are deliberately absent from the WIT `style-spec`.**
+>   `family` is an interned `FamilyId` a plugin cannot produce — crossing it
+>   needs a name-to-id interning contract nothing has asked for — and `weight`
+>   is a variable-font axis whose only users are native heading treatments.
+>   Shipping half-designed fields to "size the ABI" is worse than adding them
+>   when something needs them; the WIT is explicitly unstable until three real
+>   plugins have exercised it.
+> - **Unregistering tombstones the slot rather than deleting it.** `ElementId`
+>   is an index into the element vector, so removing an entry would silently
+>   re-point every later id at the wrong element. `unregister_element` drops
+>   the NAME binding only — `id`, `describe` and `element_names` all resolve
+>   through `by_name`, so the element vanishes from every observable surface
+>   while ids already handed out stay valid. User overrides are left in place:
+>   a reload should not discard the user's customisation.
+> - **Plugin docs are leaked to `&'static str`.** The registry's doc field is
+>   `&'static`, a plugin's doc is runtime data, and elements are declared once
+>   at load. Bounded by the element count of loaded plugins (tens), so it is a
+>   one-time cost rather than a growing leak — the alternative was widening a
+>   native field for a case only plugins have.
+
+
 
 `wit/theme.wit` — `register-element(name, doc, default: style-spec)` — plus
 `theme_host.rs` mirroring `config_host.rs`. Elements insert into the same

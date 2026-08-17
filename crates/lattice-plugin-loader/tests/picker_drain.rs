@@ -90,6 +90,9 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             ..Default::default()
         },
     );
@@ -163,6 +166,9 @@ async fn discovered_config_plugin_registers_its_options() {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             ..Default::default()
         },
     );

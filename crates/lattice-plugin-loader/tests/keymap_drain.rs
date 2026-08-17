@@ -98,6 +98,9 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
             ))),
+            theme_registry: Some(std::sync::Arc::new(
+                lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
+            )),
             tracer: None,
         },
     );

@@ -141,6 +141,7 @@ fn the_reservation_shrinks_the_window_the_cursor_is_kept_in() {
                 },
             ],
             version: Default::default(),
+            bg: None,
         },
     ));
 

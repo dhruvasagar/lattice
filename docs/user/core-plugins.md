@@ -176,7 +176,7 @@ All prefixed `treesitter-context.`:
 |---|---|---|
 | `enabled` | `true` | Master switch (registered by the plugin loader). |
 | `anchor` | `cursor` | Which line drives the context: `cursor` (where you are) or `topline` (what you are looking at). |
-| `max-lines` | `3` | Maximum context ROWS — a wrapped signature spends more than one. |
+| `max-lines` | `0` | Maximum context ROWS; `0` is unlimited. A wrapped signature spends more than one. The strip is bounded by `max-viewport-fraction` regardless. |
 | `trim-scope` | `outer` | Which end to drop when over budget: `outer` keeps the scopes you are innermost in. |
 | `multiline-threshold` | `1` | Maximum rows one scope's header may use. Raise it to see a whole wrapped signature. |
 | `max-viewport-fraction` | `33` | Percent of the pane the strip may occupy, headerline included. |

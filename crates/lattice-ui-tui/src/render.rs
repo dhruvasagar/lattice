@@ -4587,7 +4587,7 @@ pub(crate) fn compose_pane_lines(
             cells: row.cells.clone(),
             height: 1,
             kind: lattice_cells::VirtualRowKind::Sticky,
-            bg: None,
+            bg: sticky_context.bg,
             scales: None,
         };
         out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));

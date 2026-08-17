@@ -63,6 +63,15 @@ pub struct StickyContext {
     /// `DisplayMatrix` carries, so a renderer can tell the two came from one
     /// build.
     pub version: MatrixVersion,
+    /// Resolved backdrop (`0xRRGGBB`) from the `sticky.context.background`
+    /// theme element, or `None` when the theme leaves it unset.
+    ///
+    /// Resolved once here rather than per row in each renderer: the strip is
+    /// host chrome — the host builds, reserves and paints it — so the host
+    /// owns its styling, while the plugin owns only the scopes. Without a
+    /// backdrop the strip is the same colour as the code beneath it and reads
+    /// as ordinary text that will not scroll, which is what prompted this.
+    pub bg: Option<u32>,
 }
 
 impl StickyContext {

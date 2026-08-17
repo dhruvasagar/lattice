@@ -48,7 +48,19 @@ pub enum TrimScope {
 #[derive(Clone, Copy, Debug)]
 pub struct ContextOptions {
     /// Maximum context **rows** (not scopes — a multi-line header spends
-    /// more than one).
+    /// more than one). **`0` means unlimited**, and is the default.
+    ///
+    /// The principled bound is [`Self::max_viewport_fraction`], not this: a
+    /// fraction scales with the pane, so a tall window shows deep nesting and
+    /// a short split shows little, which is what a reader wants in both. A row
+    /// count cannot do that — tuned for one pane size it is wrong at every
+    /// other.
+    ///
+    /// Truncating also loses the WRONG end first. Depth is not noise: the
+    /// outermost scope (`impl Foo`) is the most stable and often the most
+    /// valuable line in the strip, and a hard cap of 3 discards it exactly
+    /// when nesting is deep enough to need it. So the cap is off by default
+    /// and available as a preference for anyone who wants a fixed ceiling.
     pub max_lines: u32,
     /// Which end to drop when over budget.
     pub trim: TrimScope,
@@ -71,7 +83,7 @@ pub struct ContextOptions {
 impl Default for ContextOptions {
     fn default() -> Self {
         Self {
-            max_lines: 3,
+            max_lines: 0,
             trim: TrimScope::Outer,
             multiline_threshold: 1,
             max_viewport_fraction: 33,
@@ -117,7 +129,15 @@ pub fn resolve_context(scopes: &[ContextScope], anchor: u32, opts: &ContextOptio
     // the viewport, minus whatever the headerline already holds — context
     // stacks under the headerline and never displaces it.
     let share = (opts.viewport_height as u64 * opts.max_viewport_fraction as u64 / 100) as u32;
-    let budget = opts.max_lines.min(share.saturating_sub(opts.reserved_rows)) as usize;
+    let viewport_budget = share.saturating_sub(opts.reserved_rows);
+    // `max_lines == 0` is unlimited: the viewport fraction alone bounds the
+    // strip, which is the bound that actually scales with the pane. A non-zero
+    // value is an additional user-chosen ceiling.
+    let budget = if opts.max_lines == 0 {
+        viewport_budget
+    } else {
+        opts.max_lines.min(viewport_budget)
+    } as usize;
     let mut rows: Vec<u32> = Vec::with_capacity(budget);
     match opts.trim {
         // Keep the innermost — walk inward-out, building the strip
@@ -197,6 +217,45 @@ mod tests {
     /// `max_lines` is a budget in ROWS, and `trim_scope` picks which end
     /// loses. Default `Outer`: the innermost scope is the one you are
     /// actually in, so it survives longest.
+    /// The default is unlimited depth, bounded only by the viewport share.
+    /// Depth is not noise: the outermost scope is the most stable line in the
+    /// strip, and a hard cap of 3 would discard it exactly when nesting is
+    /// deep enough to need it.
+    #[test]
+    fn depth_is_unlimited_by_default_and_bounded_by_the_pane() {
+        // Six nested scopes around the cursor.
+        let scopes: Vec<ContextScope> = (0..6).map(|i| scope(i * 2, 100 - i)).collect();
+        let roomy = ContextOptions {
+            viewport_top: 40,
+            viewport_height: 60, // 60 x 33% = 19 rows available
+            ..ContextOptions::default()
+        };
+        assert_eq!(
+            resolve_context(&scopes, 50, &roomy).len(),
+            6,
+            "all six pin — `max_lines` defaults to 0 (unlimited)"
+        );
+
+        // The same file in a short split: the fraction, not a row count, is
+        // what trims — and it trims from the outermost end.
+        let cramped = ContextOptions {
+            viewport_height: 9, // 9 x 33% = 2 rows
+            ..roomy
+        };
+        assert_eq!(
+            resolve_context(&scopes, 50, &cramped).len(),
+            2,
+            "the viewport share scales with the pane where a row count cannot"
+        );
+
+        // An explicit cap still applies when the user wants a fixed ceiling.
+        let capped = ContextOptions {
+            max_lines: 3,
+            ..roomy
+        };
+        assert_eq!(resolve_context(&scopes, 50, &capped).len(), 3);
+    }
+
     #[test]
     fn over_budget_drops_the_end_trim_scope_names() {
         // mod 5.., impl 10.., fn 20.., loop 25.. — four deep, cursor at 30.

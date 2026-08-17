@@ -862,6 +862,13 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Background for the removed bytes within a refined diff line (intra-line refinement).",
     );
     reg_one(
+        "sticky.context.background",
+        spec().bg("surface0"),
+        "Sticky context strip: the backdrop behind the pinned scope headers. \
+         Host chrome — the strip's rows carry the source lines' own syntax \
+         colour, so this styles only what sits behind them.",
+    );
+    reg_one(
         "diff.deletion_block",
         spec().bg("diff.deletion.bg"),
         "Deletion-block virtual-row background tint.",
@@ -1356,6 +1363,8 @@ pub struct BuiltinElementIds {
     /// D-fix.3b: removed-line tint for the baseline/left pane.
     pub diff_remove_line: ElementId,
     pub diff_deletion_block: ElementId,
+    /// TC.3b: the sticky context strip's backdrop.
+    pub sticky_context_background: ElementId,
     pub diff_conflict_line: ElementId,
     // MG.4 — inline diff text fg colours (magit unified diff ± lines).
     pub diff_add_text: ElementId,
@@ -1536,6 +1545,7 @@ impl Default for BuiltinElementIds {
             diff_change_line: ElementId::INVALID,
             diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
+            sticky_context_background: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
             diff_add_text: ElementId::INVALID,
             diff_remove_text: ElementId::INVALID,
@@ -1737,6 +1747,7 @@ impl BuiltinElementIds {
             diff_change_line: id("diff.change.line"),
             diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),
+            sticky_context_background: id("sticky.context.background"),
             diff_conflict_line: id("diff.conflict.line"),
             diff_add_text: id("diff.add.text"),
             diff_remove_text: id("diff.remove.text"),

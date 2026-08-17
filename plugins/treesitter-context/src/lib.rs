@@ -287,9 +287,11 @@ impl Guest for Component {
             (
                 "max-lines",
                 OptionType::Integer,
-                "3",
-                "Maximum context rows. Counts ROWS, so a wrapped signature \
-                 spends more than one.",
+                "0",
+                "Maximum context rows; 0 (the default) is unlimited. Counts \
+                 ROWS, so a wrapped signature spends more than one. The strip \
+                 is bounded by `max-viewport-fraction` regardless — that bound \
+                 scales with the pane where a row count cannot.",
             ),
             (
                 "trim-scope",

@@ -482,6 +482,23 @@ fn publish_sticky_context(
         return;
     }
 
+    // Already current: same lines, same build. This runs at cursor rate, so
+    // the common case must not rebuild rows — it is a comparison of at most
+    // `max-lines` line numbers.
+    {
+        let current = pane.sticky_context.load();
+        if current.version == version
+            && current.rows.len() == pane.sticky_context_lines.len()
+            && current
+                .rows
+                .iter()
+                .zip(pane.sticky_context_lines.iter())
+                .all(|(row, line)| row.source_line == *line)
+        {
+            return;
+        }
+    }
+
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let syntax = pane.syntax_handle.as_deref().map(|h| h.snapshot());
     let mut rows: Vec<StickyContextRow> = Vec::with_capacity(pane.sticky_context_lines.len());
@@ -513,8 +530,17 @@ fn publish_sticky_context(
         });
     }
 
+    // Resolve the backdrop once per build. `to_rgb_u32` needs a fallback for
+    // a palette entry the theme leaves unset; `None` there means "no
+    // backdrop", which is a legitimate theme choice, so the absence is
+    // carried rather than substituted.
+    let bg = ct
+        .resolved
+        .get(ct.ids.sticky_context_background)
+        .bg
+        .map(|c| c.to_rgb_u32(0));
     pane.sticky_context
-        .store(Arc::new(StickyContext { rows, version }));
+        .store(Arc::new(StickyContext { rows, version, bg }));
 }
 
 pub fn recompute_pane(
@@ -615,6 +641,18 @@ pub fn recompute_pane(
     // from the prior tick is still valid (nothing changed), so we
     // touch neither cell.
     let existing = pane.display_matrix.load_full();
+    // TC.3b fix (2026-08-17): the strip must be republished BEFORE the
+    // matrix cache-hit returns below. Its input is the resolved
+    // `sticky_context_lines`, which changes with the CURSOR — and a cursor
+    // move does not move `MatrixVersion` (text / syntax / folds / theme /
+    // whitespace / indent), so the matrix cache-hits and the strip froze at
+    // whatever it showed when the text last changed. Walking `[u` moved the
+    // cursor out of a scope and the row for it stayed on screen.
+    //
+    // Cheap at cursor rate: `publish_sticky_context` no-ops when the resolved
+    // lines and the version both match what is already published, so the
+    // common case is a slice comparison of at most `max-lines` u32s.
+    publish_sticky_context(pane, snapshot.as_ref(), ct, whitespace, existing.version);
     if !pane.version.differs_from(&existing.version)
         && existing.wrap_width == effective_wrap
         && existing.covers(visible_lo, visible_hi)

@@ -1520,7 +1520,7 @@ impl Element for EditorElement {
                     cells: row.cells.clone(),
                     height: 1,
                     kind: lattice_cells::VirtualRowKind::Sticky,
-                    bg: None,
+                    bg: self.sticky_context.bg,
                     scales: None,
                 };
                 push_virtual_row(
@@ -1529,7 +1529,7 @@ impl Element for EditorElement {
                     &font,
                     font_size,
                     self.theme.foreground,
-                    0,
+                    self.sticky_context.bg.unwrap_or(0),
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,

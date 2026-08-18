@@ -75,7 +75,7 @@
 - [ ] project.el
 - [X] Claude Code IDE
 - [ ] Org Mode
-- [ ] lsp context
+- [X] treesitter context
 - [ ] lsp breadcrumbs
 - [ ] which key
 - [ ] Dictionary lookup

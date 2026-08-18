@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use lattice_core::Document as CoreDocument;
+use lattice_core::buffers::BufferKind;
 use lattice_host::editor::Editor;
 use lattice_mode::{
     ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
@@ -199,4 +200,85 @@ fn a_deferred_activation_is_dropped_once_the_user_deactivates_it() {
     editor.run_tick_pending();
     assert!(!editor.minor_mode_enabled_for(buffer, id));
     assert_eq!(editor.deferred_activation_count(), 0);
+}
+
+/// A MAJOR that requires a capability and claims a buffer kind, so it is
+/// resolved by the buffer-open path rather than asked for by id.
+struct RequiringMajor {
+    id: ModeId,
+    required: CapabilitySet,
+}
+
+impl Mode for RequiringMajor {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        self.id
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Major
+    }
+    fn target_buffer_kind(&self) -> Option<BufferKind> {
+        Some(BufferKind::Help)
+    }
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::Manual
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        self.required
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// TC.9b, second path: the BUFFER-OPEN route must defer too.
+///
+/// The first cut recorded refusals only in `activate_mode_by_id`. But the
+/// scenario the whole slice is about — "a buffer opens, its modes activate,
+/// and its first parse has not run" — goes through
+/// `activate_major_for_buffer_kind`, which warned and dropped. Every test
+/// drove the by-id route, which is exactly why the gap was invisible: the
+/// suite agreed with the prose and neither agreed with the code.
+#[test]
+fn the_buffer_open_path_defers_too() {
+    let mut editor = Editor::boot(CoreDocument::from_text("plain\n"));
+    let id = ModeId::new("kind-claiming-major-mode");
+    {
+        // A FRESH registry, not a clone of the booted one: `kind_index` is
+        // first-claim-wins and every `BufferKind` is already spoken for
+        // (`Help` by `markdown-mode`), so a competing registration would be
+        // ignored and the test would silently exercise the wrong major.
+        let mut next = lattice_mode::ModeRegistry::new();
+        next.register(RequiringMajor {
+            id,
+            required: CapabilitySet::LSP,
+        })
+        .unwrap();
+        editor.mode_registry.store(Arc::new(next));
+    }
+    let buffer = editor.document_buffer_id;
+    assert!(
+        !editor
+            .buffer_capabilities(buffer)
+            .contains(CapabilitySet::LSP),
+        "precondition: no server attached"
+    );
+
+    let resolved = lattice_host::modes::resolve_major_mode(
+        &editor.mode_registry.load(),
+        BufferKind::Help,
+        lattice_syntax::Lang::Plain,
+    );
+    assert_eq!(
+        resolved, id,
+        "precondition: the kind index must resolve to the test major"
+    );
+    let _ = editor.activate_major_for_buffer_kind(buffer, BufferKind::Help);
+
+    assert_eq!(
+        editor.deferred_activation_count(),
+        1,
+        "the buffer-open path must RECORD a capability refusal, not warn and \
+         drop it — this is the path the slice was written for"
+    );
 }

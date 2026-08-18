@@ -16950,7 +16950,7 @@ impl Editor {
             let want = (minor.active)(buffer_id);
             let have = active.has_minor(minor.mode_id);
             if want && !have {
-                let _ = self.mode_registry.load_full().activate_minor(
+                if let Err(e) = self.mode_registry.load_full().activate_minor(
                     &mut active,
                     &self.mode_guards,
                     &self.config,
@@ -16959,7 +16959,9 @@ impl Editor {
                     proto_id,
                     minor.mode_id,
                     self.capabilities_for_proto(proto_id),
-                );
+                ) {
+                    self.note_activation_failure(buffer_id, minor.mode_id, &e);
+                }
             } else if !want && have {
                 let _ = self.mode_registry.load_full().deactivate_minor(
                     &mut active,
@@ -16978,7 +16980,7 @@ impl Editor {
         let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let currently_popup = active.has_minor(popup_mode_id);
         if want_popup && !currently_popup {
-            let _ = self.mode_registry.load_full().activate_minor(
+            if let Err(e) = self.mode_registry.load_full().activate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -16987,7 +16989,9 @@ impl Editor {
                 proto_id,
                 popup_mode_id,
                 self.capabilities_for_proto(proto_id),
-            );
+            ) {
+                self.note_activation_failure(buffer_id, popup_mode_id, &e);
+            }
         } else if !want_popup && currently_popup {
             let _ = self.mode_registry.load_full().deactivate_minor(
                 &mut active,
@@ -17209,39 +17213,8 @@ impl Editor {
                 self.capabilities_for_proto(proto_id),
             ),
         };
-        match &result {
-            // TC.9b: not a failure, a NOT-YET. The overwhelmingly common cause
-            // is that the buffer's first parse has not run, which it will
-            // within a frame or two of opening. Warning about it trains the
-            // user to ignore a line that then resolves itself; recording it
-            // and retrying is what they actually wanted.
-            Err(lattice_mode::ModeActivationError::MissingCapability { missing, .. }) => {
-                tracing::debug!(
-                    mode = %mode_id,
-                    buffer = buffer_id.0,
-                    ?missing,
-                    "mode activation deferred until the buffer offers the capability"
-                );
-                if !self
-                    .deferred_mode_activations
-                    .iter()
-                    .any(|(b, m)| *b == buffer_id && *m == mode_id)
-                {
-                    self.deferred_mode_activations.push((buffer_id, mode_id));
-                }
-            }
-            // A conflict or a wrong kind is a decision, not a race. Retrying
-            // would loop forever, so these stay loud and immediate.
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate({mode_id}) for buffer {} failed: {e}",
-                        buffer_id.0
-                    ),
-                );
-            }
-            Ok(()) => {}
+        if let Err(e) = &result {
+            self.note_activation_failure(buffer_id, mode_id, e);
         }
         self.active_modes.insert(buffer_id, active);
         self.recompute_options_and_folds_for_buffer(buffer_id);
@@ -17424,15 +17397,7 @@ impl Editor {
             self.capabilities_for_proto(proto_id),
         ) {
             Ok(_events) => {}
-            Err(e) => {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate_major({major_id}) for buffer {} failed: {e}",
-                        buffer_id.0,
-                    ),
-                );
-            }
+            Err(e) => self.note_activation_failure(buffer_id, major_id, &e),
         }
         if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
             && let Err(e) = self.mode_registry.load_full().activate_minor(
@@ -17446,13 +17411,7 @@ impl Editor {
                 self.capabilities_for_proto(proto_id),
             )
         {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: activate_minor({minor_id}) for buffer {} failed: {e}",
-                    buffer_id.0,
-                ),
-            );
+            self.note_activation_failure(buffer_id, minor_id, &e);
         }
         for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
             if let Err(e) = self.mode_registry.load_full().activate_minor(
@@ -17465,13 +17424,7 @@ impl Editor {
                 minor_id,
                 self.capabilities_for_proto(proto_id),
             ) {
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!(
-                        "mode: activate_minor({minor_id}) for buffer {} failed: {e}",
-                        buffer_id.0,
-                    ),
-                );
+                self.note_activation_failure(buffer_id, minor_id, &e);
             }
         }
         self.active_modes.insert(buffer_id, active);
@@ -17665,6 +17618,48 @@ impl Editor {
     /// borrow), then activate. `activate_mode_by_id` is idempotent, so
     /// a minor already active (e.g. via the kind-based path) is a
     /// no-op. Unknown buffers (no `kind_of`) are skipped, not panicked.
+    /// TC.9b: the ONE place an activation failure is interpreted.
+    ///
+    /// A `MissingCapability` is a *not yet* — record it for retry. Anything
+    /// else is a decision (a conflict, a wrong kind, an unregistered
+    /// dependency) that retrying would loop on forever, so it stays loud.
+    ///
+    /// This exists as a shared method rather than inline arms because the
+    /// first cut of TC.9b put the logic in `activate_mode_by_id` only, and the
+    /// buffer-open path — the very scenario the slice was written for — kept
+    /// warning and dropping. Every activation site now funnels its `Err`
+    /// through here, so a new call site cannot silently opt out of retrying.
+    pub(crate) fn note_activation_failure(
+        &mut self,
+        buffer_id: BufferId,
+        mode_id: lattice_mode::ModeId,
+        e: &lattice_mode::ModeActivationError,
+    ) {
+        if let lattice_mode::ModeActivationError::MissingCapability { missing, .. } = e {
+            tracing::debug!(
+                mode = %mode_id,
+                buffer = buffer_id.0,
+                ?missing,
+                "mode activation deferred until the buffer offers the capability"
+            );
+            if !self
+                .deferred_mode_activations
+                .iter()
+                .any(|(b, m)| *b == buffer_id && *m == mode_id)
+            {
+                self.deferred_mode_activations.push((buffer_id, mode_id));
+            }
+            return;
+        }
+        self.set_message(
+            EchoLevel::Warn,
+            format!(
+                "mode: activate({mode_id}) for buffer {} failed: {e}",
+                buffer_id.0
+            ),
+        );
+    }
+
     /// TC.9b: retry activations that were refused only for a capability the
     /// buffer has since gained.
     ///
@@ -26727,7 +26722,7 @@ impl Editor {
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         // Markdown as the MAJOR (the content is markdown; highlighting also
         // rides the `SyntaxHandle` seeded by `register_help_document`).
-        let _ = self.mode_registry.load_full().activate_major(
+        if let Err(e) = self.mode_registry.load_full().activate_major(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -26736,7 +26731,9 @@ impl Editor {
             proto_id,
             lattice_syntax::MarkdownMode::mode_id(),
             self.capabilities_for_proto(proto_id),
-        );
+        ) {
+            self.note_activation_failure(buffer_id, lattice_syntax::MarkdownMode::mode_id(), &e);
+        }
         // help-mode MINOR — the same default minor `:help` gets
         // (`default_minor_mode_id_for_buffer_kind(Help)`). It carries
         // help-mode's option overrides (`nonu`, `signcolumn=no`, `wrap`) +
@@ -26744,7 +26741,7 @@ impl Editor {
         // (hover / signature help) rendered WITH line numbers (the
         // user-reported bug: it bypassed the PU help-mode option path that
         // `:help` goes through). HelpMode is a MINOR, not a major.
-        let _ = self.mode_registry.load_full().activate_minor(
+        if let Err(e) = self.mode_registry.load_full().activate_minor(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -26753,9 +26750,11 @@ impl Editor {
             proto_id,
             crate::modes::HelpMode::mode_id(),
             self.capabilities_for_proto(proto_id),
-        );
+        ) {
+            self.note_activation_failure(buffer_id, crate::modes::HelpMode::mode_id(), &e);
+        }
         // hover-specific minor (auto-dismiss on cursor motion, …).
-        let _ = self.mode_registry.load_full().activate_minor(
+        if let Err(e) = self.mode_registry.load_full().activate_minor(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -26764,7 +26763,9 @@ impl Editor {
             proto_id,
             lattice_mode::HoverMode::mode_id(),
             self.capabilities_for_proto(proto_id),
-        );
+        ) {
+            self.note_activation_failure(buffer_id, lattice_mode::HoverMode::mode_id(), &e);
+        }
         self.active_modes.insert(buffer_id, active);
         self.recompute_options_and_folds_for_buffer(buffer_id);
         Vec::new()

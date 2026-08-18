@@ -37,7 +37,6 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_runtime::spawn_document;
 
-use crate::action::EchoLevel;
 use crate::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
 use crate::buffers::{BufferFlags, BufferId};
 use crate::dispatch::last_addressable_line;
@@ -111,13 +110,9 @@ impl Editor {
             major_id,
             self.capabilities_for_proto(proto_id),
         ) {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: activate_major({}) for buffer {} failed: {}",
-                    major_id, buffer_id.0, e,
-                ),
-            );
+            // Through the shared handler, so a capability refusal here defers
+            // like every other activation site rather than being lost.
+            self.note_activation_failure(buffer_id, major_id, &e);
         }
         self.active_modes.insert(buffer_id, active);
         // Recompute the resolved-options cache so the mode's

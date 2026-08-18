@@ -126,9 +126,25 @@ different boundaries than their space-indented twins. That guarantee ("`zc`
 and the active guide agree about this block") was approximate before and is
 now exact.
 
-Worker cost is **flat at 30 µs** across a 16× file-size range — bounded by the
-covered window, not the file — see
-[`benchmarks.md`](benchmarks.md) § IG.6.
+Worker cost is **flat at ~33 µs** across a 16× file-size range for a *fixed
+250-row window*. The window is not always fixed, and that qualifier turned out
+to matter: below `cells_worker::WINDOW_CAP_LINES` (2048) the display matrix
+covers the whole document, so on a normal source file the guide layer is
+rebuilt over every line on every keystroke. Two consequences, found
+2026-08-18 by the keystroke→glyph ratchet:
+
+- **Fixed:** the covered range was read one line at a time, one `O(log n)`
+  rope descent per line. `Buffer::line_shapes_from` streams it from a single
+  cursor instead — one descent per build. The ratchet's 2 000-line corpus went
+  **7.86 ms → 1.38 ms p50** (debug), and its cost spread across 2 k/10 k/100 k
+  lines went ~12× → 2.2×.
+- **Open:** per-row resolution is still `O(covered lines × blocks)` — every
+  covered line tests every block in the window. It is what the remaining 2.2×
+  is made of, and why CI still skips
+  `keystroke_to_glyph_is_flat_across_file_size`. The blocks are sorted by
+  opener, so a sweep with an active set replaces the scan.
+
+See [`benchmarks.md`](benchmarks.md) § IG.6.
 
 **Auto-indent (2026-08-15/16, IN.0–IN.11 landed; branch
 `dhruva/auto-indent`).** Nothing indented before this: `o` / `O` / `<CR>`

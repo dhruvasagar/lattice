@@ -62,8 +62,10 @@
 //!   loose factor. These catch further regression; they are not tight,
 //!   because a shared runner cannot support tight absolute gating.
 //! - The sharp statement lives in
-//!   [`keystroke_to_glyph_is_flat_across_file_size`], which is
-//!   `#[ignore]`d because **it fails today** — see its docs.
+//!   [`keystroke_to_glyph_is_flat_across_file_size`]. It passes on a
+//!   quiet machine with ~12% headroom and is still skipped by CI's
+//!   `keystroke-ratchet` job — see its docs for the residual
+//!   `O(covered lines)` term that eats the rest.
 
 use std::time::{Duration, Instant};
 
@@ -97,13 +99,15 @@ const LARGE_LINES: usize = 100_000;
 /// from release benches — see `docs/dev/operations/benchmarks.md`.
 ///
 /// **These move DOWN.** To lower one: run the job, read the `[ratchet]`
-/// line, commit the new value with the change that earned it. `SMALL` is
-/// ~10× the other two because of the open defect in
-/// [`keystroke_to_glyph_is_flat_across_file_size`], not because the path
-/// is inherently costly: with `display.indent-guides=off` every corpus
-/// measures ~760 us. Fixing that collapses all three to roughly the
-/// `LARGE` row.
-const BASELINE_P99_SMALL: Duration = Duration::from_millis(9);
+/// line, commit the new value with the change that earned it. `SMALL`
+/// sat at 9 ms while the guide layer read its covered range one rope
+/// descent per line; streaming that range (2026-08-18) brought it to
+/// ~1.6 ms p99 and this constant down with it. It remains the dearest
+/// row because the residual `O(covered)` term described in
+/// [`keystroke_to_glyph_is_flat_across_file_size`] still makes a
+/// fully-resident 2 000-line file do more work than a windowed
+/// 100 000-line one.
+const BASELINE_P99_SMALL: Duration = Duration::from_millis(2);
 const BASELINE_P99_MEDIUM: Duration = Duration::from_millis(3);
 const BASELINE_P99_LARGE: Duration = Duration::from_millis(2);
 
@@ -270,11 +274,12 @@ macro_rules! perf_gate {
 /// The **floor**: what the keystroke path costs with the one known
 /// `O(file)` consumer switched off.
 ///
-/// This is the number the indent-guide fix has to restore, pinned so
-/// the gate keeps its teeth while the defect stands. Without it the
-/// only live bars are the guide-inflated ones, and a *second*
-/// regression could hide entirely inside their headroom — 9 ms of
-/// slack at [`SMALL_LINES`] would swallow an 8 ms mistake unnoticed.
+/// This is the number the indent-guide fix is measured against, pinned
+/// so the gate keeps its teeth while the residual `O(covered)` term
+/// stands. Without it the only live bars are the guide-inclusive ones,
+/// and a *second* regression could hide inside their headroom — which
+/// is exactly what 9 ms of slack at [`SMALL_LINES`] did until the
+/// streaming read brought that baseline to 2 ms.
 ///
 /// It also asserts the property the inflated gates cannot: with guides
 /// off the path is **flat across file size**, so this is the live
@@ -344,11 +349,7 @@ perf_gate!(
 );
 
 /// Scale invariance — the statement paramount goal #1 actually makes,
-/// and **the one that fails today**.
-///
-/// Ignored so the suite stays green while the defect stays executable
-/// rather than prose. Un-ignore when the finding below is fixed, and
-/// lower [`BASELINE_P99_SMALL`] to match the others.
+/// and **the one with the least headroom**.
 ///
 /// ## The finding: indent guides are O(covered lines) per keystroke
 ///
@@ -363,20 +364,30 @@ perf_gate!(
 ///
 /// ```text
 ///                  guides on   guides off
-///    2 000 lines     7.86 ms      762 us
+///    2 000 lines     7.86 ms      762 us    (2026-08-18, before)
 ///   10 000 lines     1.63 ms      752 us
+///
+///    2 000 lines     1.38 ms      812 us    (2026-08-18, after)
+///  100 000 lines      639 us      633 us
 /// ```
 ///
-/// With guides off the path is **flat across file size** — the
-/// O(viewport) property paramount goal #1 requires. With them on, a
-/// 2 000-line file costs 10x what it should, and ~5x what a 10 000-line
-/// file costs, because the smaller file is fully resident while the
-/// larger one is windowed.
+/// **What was fixed.** The layer read its covered range one line at a
+/// time — one `O(log n)` rope descent per line, thousands per
+/// keystroke. It now reads that range from a single `Lines` cursor
+/// (`Buffer::line_shapes_from`), which is one descent plus a linear
+/// walk. The per-line constant fell ~11×, the 2 000-line corpus went
+/// 7.86 ms → 1.38 ms, and the spread across the three corpora went
+/// ~12× → 2.2×, inside [`SCALE_TOLERANCE`].
 ///
-/// Indent guides landed 2026-08-16 (IG.0-IG.6), so this is a recent
-/// regression rather than long-standing debt.
+/// **What was not.** The pass is still `O(covered lines)` and coverage
+/// is still the whole document below the window cap, so a resident
+/// 2 000-line file still does more work per keystroke than a windowed
+/// 100 000-line one. That is the whole of the remaining 2.2×, and it is
+/// why this gate is still skipped in CI (see `ci.yml`): 2.2 against a
+/// 2.5 tolerance is passing on a quiet machine and flapping on a
+/// shared-tenant runner, and a gate that flaps stops being read.
 ///
-/// ## What the fix has to respect
+/// ## What the rest of the fix has to respect
 ///
 /// `indent-guides.md` deliberately produces the layer beside the pane's
 /// `DisplayMatrix` in the same `cells_worker` pass, because that is what
@@ -386,8 +397,9 @@ perf_gate!(
 /// guide production somewhere that reintroduces the problems that
 /// placement solved.
 #[test]
-#[ignore = "FAILS: publish_indent_guides is O(covered lines) on the keystroke \
-            path. See this test's docs; un-ignore when fixed."]
+#[ignore = "perf gate: needs a quiet machine. Run via ci.yml's keystroke-ratchet \
+            job, or locally with `cargo test -p lattice-ui-tui --lib \
+            keystroke_glyph_ratchet -- --ignored --test-threads=1`"]
 fn keystroke_to_glyph_is_flat_across_file_size() {
     let (small, _) = record(SMALL_LINES);
     let (medium, _) = record(MEDIUM_LINES);

@@ -142,27 +142,36 @@ impl Buffer {
         })
     }
 
-    /// Allocation-free [`LineShape`] for one line — the indent-guide
-    /// builder's read path.
+    /// Allocation-free [`LineShape`]s from `start` to the end of the
+    /// rope — the indent-guide builder's read path.
     ///
-    /// [`Self::line`] allocates a `String` per call; the guide layer is
-    /// rebuilt over its whole *covered* range on every keystroke, which
-    /// below `WINDOW_CAP_LINES` is the whole document. Streaming the
-    /// rope slice's chars instead keeps that pass allocation-free, and
-    /// `LineShape::from_chars` stops reading each line as soon as the
-    /// answer cannot change.
-    pub fn line_shape(
-        &self,
-        line: u32,
-        unit: &crate::indent::IndentUnit,
-    ) -> Option<crate::indent_blocks::LineShape> {
-        if line >= self.rope_line_count() {
-            return None;
-        }
-        Some(crate::indent_blocks::LineShape::from_chars(
-            self.rope.line(line as usize).chars(),
-            unit,
-        ))
+    /// Two properties, and the guide layer needs both:
+    ///
+    /// - **Allocation-free.** [`Self::line`] allocates a `String` per
+    ///   call, and the guide layer is rebuilt over its whole *covered*
+    ///   range on every keystroke — below `WINDOW_CAP_LINES` that is the
+    ///   whole document. Streaming the rope slice's chars instead keeps
+    ///   the pass allocation-free, and `LineShape::from_chars` stops
+    ///   reading each line as soon as the answer cannot change.
+    /// - **Sequential.** Asking for line `i` costs a `O(log n)` B-tree
+    ///   descent; asking for `n` lines one index at a time costs `n` of
+    ///   them. `Lines` is a cursor that walks chunk by chunk, so the
+    ///   whole covered range costs one descent plus a linear walk —
+    ///   which is what the builder's forward pass wants. Callers that
+    ///   genuinely need one line probe with `line_shapes_from(i).next()`
+    ///   and pay the single descent knowingly.
+    ///
+    /// `start` past the end of the rope yields nothing rather than
+    /// panicking, so an out-of-range probe reads as "no such line".
+    pub fn line_shapes_from<'a>(
+        &'a self,
+        start: u32,
+        unit: &'a crate::indent::IndentUnit,
+    ) -> impl Iterator<Item = crate::indent_blocks::LineShape> + 'a {
+        let start = (start as usize).min(self.rope.len_lines());
+        self.rope
+            .lines_at(start)
+            .map(move |line| crate::indent_blocks::LineShape::from_chars(line.chars(), unit))
     }
 
     /// Byte length of one line excluding the trailing newline.
@@ -369,6 +378,47 @@ mod tests {
     fn from_str_roundtrips() {
         let b = Buffer::from_text("hello\nworld\n");
         assert_eq!(b.as_string(), "hello\nworld\n");
+    }
+
+    #[test]
+    fn line_shapes_stream_matches_the_per_line_projection() {
+        // The streaming read is a pure optimisation of "project each
+        // line in turn", so it must agree with the `&str` projection
+        // line for line — including the tab, the blank, the closer and
+        // the phantom line ropey reports after a trailing newline.
+        let unit = crate::indent::IndentUnit::new(4, true, 4);
+        let text = "fn f() {\n\tif c {\n\n        work();\n\t});\n}\n";
+        let b = Buffer::from_text(text);
+
+        let streamed: Vec<_> = b.line_shapes_from(0, &unit).collect();
+        let projected: Vec<_> = text
+            .split('\n')
+            .map(|l| crate::indent_blocks::LineShape::from_line(l, &unit))
+            .collect();
+        assert_eq!(streamed, projected);
+        assert_eq!(streamed.len(), b.rope_line_count() as usize);
+    }
+
+    #[test]
+    fn line_shapes_from_offsets_and_clamps() {
+        let unit = crate::indent::IndentUnit::new(4, true, 4);
+        let b = Buffer::from_text("a\n    b\nc");
+
+        // Starting mid-rope yields the tail, so a single-line probe is
+        // `.next()` on a stream started at that line.
+        let tail: Vec<_> = b.line_shapes_from(1, &unit).collect();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].columns, 4);
+        assert!(
+            b.line_shapes_from(2, &unit)
+                .next()
+                .is_some_and(|s| s.unindented)
+        );
+
+        // Past the end is empty, not a panic — how an out-of-range
+        // look-back probe reports "no such line".
+        assert!(b.line_shapes_from(3, &unit).next().is_none());
+        assert!(b.line_shapes_from(9_999, &unit).next().is_none());
     }
 
     #[test]

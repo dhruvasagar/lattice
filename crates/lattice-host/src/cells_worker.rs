@@ -441,7 +441,7 @@ fn publish_indent_guides(
         return;
     }
     let guides = crate::indent_guides::build_indent_guides(
-        |line| snapshot.buffer.line_shape(line, &pane.indent_unit),
+        |line| snapshot.buffer.line_shapes_from(line, &pane.indent_unit),
         snapshot.buffer.content_line_count(),
         &pane.indent_unit,
         matrix.covered_start_line(),

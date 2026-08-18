@@ -152,18 +152,26 @@ impl IndentGuides {
 
 /// Build the guide layer for the source lines `[lo, hi)`.
 ///
-/// `lines(i)` yields source line `i`; the caller supplies it so this stays
-/// testable without a rope and so the worker can reuse whatever line access it
-/// already holds. `hi` is clamped by the caller to the buffer's content line
-/// count.
+/// `shapes_from(i)` yields source line `i` and every line after it; the caller
+/// supplies it so this stays testable without a rope and so the worker can
+/// reuse whatever line access it already holds. `hi` is clamped by the caller
+/// to the buffer's content line count.
+///
+/// **Why a stream and not `line(i)`.** The walk covers `[walk_start, hi)`,
+/// which below `cells_worker`'s window cap is the whole document, and it runs
+/// on every publish — every keystroke. Reading that range one index at a time
+/// costs one `O(log n)` rope descent per line; reading it from a single stream
+/// costs one descent plus a linear walk. The only random access left is the
+/// look-back probe, which is bounded by [`MAX_LOOKBACK`] and in practice stops
+/// within a few lines.
 ///
 /// The walk starts above `lo` (see [`MAX_LOOKBACK`]) so a block opened off the
 /// top of the window still paints inside it. It does *not* extend below `hi`:
 /// a block still open at the end of the walk is closed at the last content
 /// line, which is at or below the last visible row, so painting and the
 /// cursor-membership test are both unaffected.
-pub fn build_indent_guides<F>(
-    mut lines: F,
+pub fn build_indent_guides<F, I>(
+    shapes_from: F,
     line_count: u32,
     unit: &IndentUnit,
     lo: u32,
@@ -171,7 +179,8 @@ pub fn build_indent_guides<F>(
     version: MatrixVersion,
 ) -> IndentGuides
 where
-    F: FnMut(u32) -> Option<lattice_core::LineShape>,
+    F: Fn(u32) -> I,
+    I: Iterator<Item = lattice_core::LineShape>,
 {
     let hi = hi.min(line_count);
     let lo = lo.min(hi);
@@ -179,19 +188,20 @@ where
         return IndentGuides::empty();
     }
 
-    let walk_start = scan_back_to_top_level(&mut lines, lo);
-    let indents: Vec<LineIndent> = (walk_start..hi)
-        .map(|i| {
-            let shape = lines(i).unwrap_or(lattice_core::LineShape {
-                blank: true,
-                columns: 0,
-                closer: false,
-                unindented: false,
-            });
-            LineIndent {
-                depth: (!shape.blank).then_some(shape.columns),
-                closer: shape.closer,
-            }
+    let walk_start = scan_back_to_top_level(&shapes_from, lo);
+    // A stream that runs dry before `hi` reads as blank lines — the same
+    // answer the per-index read gave for a line past the end.
+    let indents: Vec<LineIndent> = shapes_from(walk_start)
+        .chain(std::iter::repeat(lattice_core::LineShape {
+            blank: true,
+            columns: 0,
+            closer: false,
+            unindented: false,
+        }))
+        .take((hi - walk_start) as usize)
+        .map(|shape| LineIndent {
+            depth: (!shape.blank).then_some(shape.columns),
+            closer: shape.closer,
         })
         .collect();
 
@@ -248,15 +258,22 @@ where
 /// Nearest non-blank line at column 0 at or above `lo`, bounded by
 /// [`MAX_LOOKBACK`]. No block can span such a line, so the walk starting there
 /// sees every block that reaches into the window.
-fn scan_back_to_top_level<F>(lines: &mut F, lo: u32) -> u32
+///
+/// This is the one caller that reads lines out of order, and it pays a fresh
+/// descent per probe (`shapes_from(i).next()`). That is the right trade here
+/// and the wrong one for the forward walk: the search runs *backward* and
+/// almost always stops within a handful of lines, so a stream would be built
+/// and thrown away, whereas the forward walk reads thousands of lines in order.
+fn scan_back_to_top_level<F, I>(shapes_from: &F, lo: u32) -> u32
 where
-    F: FnMut(u32) -> Option<lattice_core::LineShape>,
+    F: Fn(u32) -> I,
+    I: Iterator<Item = lattice_core::LineShape>,
 {
     let floor = lo.saturating_sub(MAX_LOOKBACK);
     let mut i = lo;
     while i > floor {
         i -= 1;
-        if lines(i).is_some_and(|s| s.unindented) {
+        if shapes_from(i).next().is_some_and(|s| s.unindented) {
             return i;
         }
     }
@@ -271,21 +288,26 @@ mod tests {
         IndentUnit::new(4, true, 4)
     }
 
+    /// A `shapes_from` over a line vector: the same contract the rope's
+    /// `Buffer::line_shapes_from` fulfils, without the rope.
+    fn shapes_of(lines: &[String]) -> impl Fn(u32) -> std::vec::IntoIter<lattice_core::LineShape> {
+        let shapes: Vec<lattice_core::LineShape> = lines
+            .iter()
+            .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+            .collect();
+        move |start: u32| {
+            shapes
+                .get((start as usize).min(shapes.len())..)
+                .unwrap_or(&[])
+                .to_vec()
+                .into_iter()
+        }
+    }
+
     fn build(src: &str) -> IndentGuides {
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let n = lines.len() as u32;
-        build_indent_guides(
-            |i| {
-                lines
-                    .get(i as usize)
-                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-            },
-            n,
-            &unit(),
-            0,
-            n,
-            MatrixVersion::ZERO,
-        )
+        build_indent_guides(shapes_of(&lines), n, &unit(), 0, n, MatrixVersion::ZERO)
     }
 
     fn cols(g: &IndentGuides, line: u32) -> Vec<u16> {
@@ -345,18 +367,7 @@ mod tests {
         let src = "fn f() {\n    a\n    b\n    c\n    d\n}";
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let n = lines.len() as u32;
-        let g = build_indent_guides(
-            |i| {
-                lines
-                    .get(i as usize)
-                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-            },
-            n,
-            &unit(),
-            2,
-            5,
-            MatrixVersion::ZERO,
-        );
+        let g = build_indent_guides(shapes_of(&lines), n, &unit(), 2, 5, MatrixVersion::ZERO);
         assert_eq!(g.covered_start, 2);
         assert_eq!(g.rows.len(), 3);
         // The block opened at line 0 — above the window — still paints inside
@@ -373,18 +384,7 @@ mod tests {
         // first one's extent.
         let src = "fn f() {\n    a\n}\nfn g() {\n    b\n}";
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
-        let g = build_indent_guides(
-            |i| {
-                lines
-                    .get(i as usize)
-                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-            },
-            6,
-            &unit(),
-            4,
-            6,
-            MatrixVersion::ZERO,
-        );
+        let g = build_indent_guides(shapes_of(&lines), 6, &unit(), 4, 6, MatrixVersion::ZERO);
         assert_eq!(cols(&g, 4), vec![0]);
         assert_eq!(g.blocks.len(), 1, "only the enclosing block is walked");
         assert_eq!(g.blocks[0].start_line, 3);
@@ -392,10 +392,53 @@ mod tests {
 
     #[test]
     fn empty_window_yields_the_empty_layer() {
-        let g = build_indent_guides(|_| None, 0, &unit(), 0, 0, MatrixVersion::ZERO);
+        let g = build_indent_guides(
+            |_| std::iter::empty::<lattice_core::LineShape>(),
+            0,
+            &unit(),
+            0,
+            0,
+            MatrixVersion::ZERO,
+        );
         assert!(g.is_empty());
         assert_eq!(g.marks_for_line(0), &[]);
         assert_eq!(g.active_block(0), None);
+    }
+
+    #[test]
+    fn the_forward_walk_opens_exactly_one_stream() {
+        // The perf property, pinned as behaviour. Every `shapes_from`
+        // call is a rope descent, so the covered range must be read from
+        // ONE stream — a build that opens one per line is `O(n log n)`
+        // where a walk is `O(n)`, and it regresses silently because the
+        // output is identical. Only the bounded look-back may probe.
+        let lines: Vec<String> = (0..500)
+            .map(|i| {
+                if i % 5 == 0 {
+                    format!("fn f{i}() {{")
+                } else {
+                    "    body".into()
+                }
+            })
+            .collect();
+        let inner = shapes_of(&lines);
+        let opened = std::cell::Cell::new(0u32);
+        let counting = |start: u32| {
+            opened.set(opened.get() + 1);
+            inner(start)
+        };
+
+        // `lo` sits one line below a top-level line, so the look-back
+        // stops on its first probe and the count is unambiguous.
+        let g = build_indent_guides(counting, 500, &unit(), 401, 500, MatrixVersion::ZERO);
+        assert_eq!(g.rows.len(), 99);
+        assert_eq!(
+            opened.get(),
+            2,
+            "one stream for the walk plus a look-back that stops within a \
+             line or two, got {} streams",
+            opened.get()
+        );
     }
 
     #[test]
@@ -414,19 +457,8 @@ mod tests {
             indent: 3,
             ..MatrixVersion::ZERO
         };
-        let lines = ["a:", "    b"];
-        let g = build_indent_guides(
-            |i| {
-                lines
-                    .get(i as usize)
-                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-            },
-            2,
-            &unit(),
-            0,
-            2,
-            v,
-        );
+        let lines: Vec<String> = vec!["a:".into(), "    b".into()];
+        let g = build_indent_guides(shapes_of(&lines), 2, &unit(), 0, 2, v);
         assert_eq!(g.version, v);
     }
 }

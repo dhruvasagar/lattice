@@ -30,8 +30,8 @@ use std::hash::{Hash, Hasher};
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lattice_cells::MatrixVersion;
-use lattice_core::IndentUnit;
 use lattice_core::indent_blocks::{indent_blocks, line_indents};
+use lattice_core::{Buffer, IndentUnit};
 use lattice_host::indent_guides::build_indent_guides;
 
 /// Nested source of roughly `blocks * 8` lines, three levels deep, with the
@@ -77,11 +77,18 @@ fn bench_walk(c: &mut Criterion) {
 /// The worker-side build over a realistic covered window. The window is what
 /// bounds this, so the file grows underneath while the window does not — a
 /// build that scaled with the file would show up here as a rising curve.
+///
+/// Reads through a real [`Buffer`], not a `Vec<String>`: the line access *is*
+/// the cost being measured. A vector-backed source makes every read `O(1)` and
+/// hides the difference between streaming the covered range and descending the
+/// rope once per line — which is exactly the regression this bench exists to
+/// catch.
 fn bench_build(c: &mut Criterion) {
     let mut group = c.benchmark_group("guide_build");
+    let unit = unit();
     for blocks in [50usize, 200, 800] {
-        let lines = nested_source(blocks);
-        let count = lines.len() as u32;
+        let buffer = Buffer::from_text(&nested_source(blocks).join("\n"));
+        let count = buffer.content_line_count();
         // Two viewports' worth, the cells worker's chunked-mode coverage,
         // anchored in the middle so the look-back has somewhere to walk.
         let lo = count / 2;
@@ -89,13 +96,9 @@ fn bench_build(c: &mut Criterion) {
         group.bench_function(format!("{count}_lines_250_row_window"), |b| {
             b.iter(|| {
                 black_box(build_indent_guides(
-                    |i| {
-                        lines
-                            .get(i as usize)
-                            .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-                    },
+                    |i| buffer.line_shapes_from(i, &unit),
                     count,
-                    &unit(),
+                    &unit,
                     lo,
                     hi,
                     MatrixVersion::ZERO,
@@ -106,21 +109,88 @@ fn bench_build(c: &mut Criterion) {
     group.finish();
 }
 
+/// The build the *keystroke* path actually performs on a normal file.
+///
+/// Below `cells_worker::WINDOW_CAP_LINES` (2048) the display matrix covers the
+/// whole document, so the guide layer is rebuilt over every line on every
+/// keystroke — not over a viewport. That is the shape that made a 2 000-line
+/// file measure ~10× the keystroke→glyph cost of a 10 000-line one (which *is*
+/// windowed), and `guide_build/*`'s fixed 250-row window cannot see it. Sizes
+/// straddle the cap so the cliff stays visible.
+fn bench_build_whole_document(c: &mut Criterion) {
+    let mut group = c.benchmark_group("guide_build_whole_doc");
+    let unit = unit();
+    for blocks in [64usize, 170, 256] {
+        let buffer = Buffer::from_text(&nested_source(blocks).join("\n"));
+        let count = buffer.content_line_count();
+        group.bench_function(format!("{count}_lines"), |b| {
+            b.iter(|| {
+                black_box(build_indent_guides(
+                    |i| buffer.line_shapes_from(i, &unit),
+                    count,
+                    &unit,
+                    0,
+                    count,
+                    MatrixVersion::ZERO,
+                ))
+            });
+        });
+        // Negative control: the same build reading the same rope one
+        // line at a time, which is what it did until 2026-08-18. One
+        // `O(log n)` descent per covered line instead of one per build.
+        // Kept because the streaming read is invisible in the output —
+        // only the clock tells the two apart, and a future refactor that
+        // reintroduces per-line access would pass every guide test.
+        group.bench_function(format!("{count}_lines_per_line_descent"), |b| {
+            b.iter(|| {
+                black_box(build_indent_guides(
+                    |i| PerLineDescent {
+                        buffer: &buffer,
+                        unit: &unit,
+                        line: i,
+                    },
+                    count,
+                    &unit,
+                    0,
+                    count,
+                    MatrixVersion::ZERO,
+                ))
+            });
+        });
+    }
+    group.finish();
+}
+
+/// A `shapes_from` that descends the rope afresh for every line — the
+/// pre-streaming read pattern, kept only to bench against.
+struct PerLineDescent<'a> {
+    buffer: &'a Buffer,
+    unit: &'a IndentUnit,
+    line: u32,
+}
+
+impl Iterator for PerLineDescent<'_> {
+    type Item = lattice_core::LineShape;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shape = self.buffer.line_shapes_from(self.line, self.unit).next()?;
+        self.line += 1;
+        Some(shape)
+    }
+}
+
 /// The per-frame renderer pick. Bounded by blocks in the window, and the
 /// reason cursor motion never wakes the worker.
 fn bench_active_pick(c: &mut Criterion) {
-    let lines = nested_source(200);
-    let count = lines.len() as u32;
+    let unit = unit();
+    let buffer = Buffer::from_text(&nested_source(200).join("\n"));
+    let count = buffer.content_line_count();
     let lo = count / 2;
     let hi = (lo + 250).min(count);
     let guides = build_indent_guides(
-        |i| {
-            lines
-                .get(i as usize)
-                .map(|l| lattice_core::LineShape::from_line(l, &unit()))
-        },
+        |i| buffer.line_shapes_from(i, &unit),
         count,
-        &unit(),
+        &unit,
         lo,
         hi,
         MatrixVersion::ZERO,
@@ -148,5 +218,11 @@ fn bench_active_pick(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_walk, bench_build, bench_active_pick);
+criterion_group!(
+    benches,
+    bench_walk,
+    bench_build,
+    bench_build_whole_document,
+    bench_active_pick
+);
 criterion_main!(benches);

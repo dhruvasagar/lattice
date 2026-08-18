@@ -213,8 +213,12 @@ jobs:
     # The gates are `#[ignore]`d so a developer's `cargo test` isn't
     # slowed by ~30 s of timing loops; `--ignored` opts them in here.
     # `--skip keystroke_to_glyph_is_flat_across_file_size` excludes the
-    # one test that FAILS BY DESIGN — it documents the open O(file)
-    # finding as executable code. Remove the skip when that is fixed.
+    # scale-invariance gate. It PASSES on a quiet machine as of
+    # 2026-08-18 (spread 2.2× against a 2.5× tolerance), but the guide
+    # pass is still O(covered lines) and that margin is thinner than
+    # this runner's measured ~20% variance — enabling it here would
+    # install a flapping gate. Remove the skip when the residual term
+    # is gone and the spread sits near 1.0.
     name: keystroke-ratchet
     runs-on: ubuntu-latest
     steps:

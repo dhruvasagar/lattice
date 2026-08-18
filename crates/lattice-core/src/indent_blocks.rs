@@ -158,6 +158,16 @@ pub fn line_indents<'a>(
 /// The heuristic is deliberately narrow: bracket characters plus the
 /// punctuation that trails them. `} else {` is not a closer — it opens a new
 /// block, and swallowing it would merge two sibling blocks into one.
+pub fn is_closer_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed
+        .chars()
+        .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
+}
+
 /// The only three facts the indent-guide builder needs about a line,
 /// in a `Copy` struct so it can be produced without materialising the
 /// line's text.
@@ -246,16 +256,6 @@ impl LineShape {
     pub fn from_line(line: &str, unit: &IndentUnit) -> Self {
         Self::from_chars(line.chars(), unit)
     }
-}
-
-pub fn is_closer_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed
-        .chars()
-        .all(|c| matches!(c, ')' | ']' | '}' | ',' | ';' | '?'))
 }
 
 /// Walk `lines` and emit every indent region, ordered by opener line.

@@ -136,6 +136,11 @@ mod file_tree;
 mod folds;
 mod help;
 mod highlights;
+// Paramount goal #1's ratchet clause: the keystroke→glyph distribution
+// gate. Test-only — it measures the production path (translate → apply →
+// compose) rather than adding one.
+#[cfg(test)]
+mod keystroke_glyph_ratchet;
 mod lifecycle;
 mod lsp;
 mod lsp_log_buffers;

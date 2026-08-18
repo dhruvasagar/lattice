@@ -45,14 +45,23 @@
 #    the binary -- CI runners have no display server -- but compile +
 #    link is the meaningful platform signal.
 #
+# 6. **Keystroke→glyph ratchet** (`keystroke-ratchet` job) --
+#    paramount goal #1's third clause. Records the p50/p95/p99
+#    distribution of a full keystroke→glyph cycle at three file
+#    sizes and gates each against a checked-in baseline. Serial and
+#    in its own job because a wall-clock gate cannot share a runner
+#    (measured: 0.64ms parallel vs 35ms serial for one corpus).
+#
 # What is NOT gated yet:
 #
-# - **Bench regression detection** (DESIGN.md §8.2: "CI fails on
+# - **Per-bench regression detection** (DESIGN.md §8.2: "CI fails on
 #   >10% regression vs. main"). Shared-tenant runners (the
 #   GitHub-hosted default) have ~20% bench variance; gating at 10%
-#   on those is noise. Honest path: stand up a self-hosted runner
-#   or adopt `bencher.dev` / `criterion-compare-action`, then
-#   enable the gate.
+#   on those is noise. The `keystroke-ratchet` job covers the one
+#   path that matters most (goal #1) by gating loosely against a
+#   committed baseline instead of tightly against `main`. Extending
+#   that to the whole criterion suite still wants a self-hosted
+#   runner or `bencher.dev` / `criterion-compare-action`.
 # - **Alloc discipline check on the render hot path** (DESIGN.md
 #   §8.2). A `dhat`-based test that runs the renderer N times and
 #   asserts no allocations on steady-state frames is the spec; v1
@@ -188,6 +197,55 @@ jobs:
         # not execute the benches -- that's the bench-baseline job
         # below, gated on push-to-main only.
         run: cargo bench --workspace --no-run --locked
+
+  keystroke-ratchet:
+    # Paramount goal #1's ratchet clause: "CI records the measured
+    # keystroke→glyph distribution and fails on regression; the bar only
+    # moves down." The gates live in
+    # `lattice-ui-tui/src/app/keystroke_glyph_ratchet.rs`.
+    #
+    # Its own job, serial, for a reason that is measured rather than
+    # assumed: run alongside the crate's other ~1690 tests, the same
+    # corpus reads 0.64 ms; run with `--test-threads=1` it reads 35 ms.
+    # A wall-clock gate cannot share a runner, so `--test-threads=1` and
+    # a dedicated job are both load-bearing.
+    #
+    # The gates are `#[ignore]`d so a developer's `cargo test` isn't
+    # slowed by ~30 s of timing loops; `--ignored` opts them in here.
+    # `--skip keystroke_to_glyph_is_flat_across_file_size` excludes the
+    # one test that FAILS BY DESIGN — it documents the open O(file)
+    # finding as executable code. Remove the skip when that is fixed.
+    name: keystroke-ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+      - name: keystroke→glyph ratchet
+        run: |
+          cargo test -p lattice-ui-tui --lib --locked keystroke_glyph_ratchet -- \
+            --ignored --test-threads=1 --nocapture \
+            --skip keystroke_to_glyph_is_flat_across_file_size \
+            2>&1 | tee ratchet.log
+      - name: Extract recorded distribution
+        # The `[ratchet]` lines ARE the recorded distribution the clause
+        # asks for. Archived so a regression can be diffed against the
+        # history rather than argued about.
+        if: always()
+        run: grep '^\[ratchet\]' ratchet.log > keystroke-glyph-distribution.txt || true
+      - name: Upload distribution
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keystroke-glyph-distribution
+          path: keystroke-glyph-distribution.txt
+          retention-days: 90
 
   bench-baseline:
     name: bench-baseline

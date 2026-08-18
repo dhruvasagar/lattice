@@ -40,9 +40,11 @@ When the four paramount goals conflict with each other or with an implementation
 
 A change that ships only code is incomplete; the doc, the bench, and the test are part of the deliverable.
 
+6. **A new crate needs a new mechanism, not a new feature.** Only a feature that introduces a genuinely new mechanism — its own substrate, its own dependency surface, a boundary that must be enforced structurally rather than by discipline — earns a dedicated crate. Everything that *overlaps or extends* an existing native feature belongs in the crate or mode that already owns that domain. Which-key extends the keymap, so it lives in `lattice-keymap`; it does not become `lattice-which-key`. The test is not "is this feature big / self-contained / conceptually distinct" — most features are all three. The test is: **name the dependency surface the new crate carves out, and the thing that would break if it did not exist.** `lattice-picker` stays free of syntax / cells so the off-thread guarantee is structural; `lattice-ui-gpui` is a renderer peer behind a cargo feature. Those are mechanisms. "It groups this feature's files" is not — that is what a module is for. Ask which existing crate owns the domain BEFORE presenting design options, and offer "new crate" only with the dependency-surface argument attached. See `dont-mint-a-crate-per-feature`.
+
 ### Presenting design choices (heuristic-mapping rule)
 
-Every time options are presented for a non-trivial design choice — an `AskUserQuestion`, a plan summary, a slice-plan recommendation, a review doc — each option MUST be evaluated against the four paramount goals + five heuristics above by name. Shape diagrams, LOC counts, and "matches pattern X" / "consistent with Y" are context, not reasoning.
+Every time options are presented for a non-trivial design choice — an `AskUserQuestion`, a plan summary, a slice-plan recommendation, a review doc — each option MUST be evaluated against the four paramount goals + six heuristics above by name. Shape diagrams, LOC counts, and "matches pattern X" / "consistent with Y" are context, not reasoning.
 
 For every option include this block BEFORE the implementation shape:
 
@@ -51,6 +53,7 @@ For every option include this block BEFORE the implementation shape:
 > **Heuristic #1 (long-term fit, on merit):** is this the genuinely-better long-term design, or kept out of risk-aversion / rewritten for novelty?
 > **Heuristic #2 (paramount, not other editors):** is the justification anchored on a paramount goal, or on "X does it this way" / "consistent with"?
 > **Heuristic #3 (third option):** is the option-set complete, or am I missing a (C) that fits the goals better than (A) or (B)?
+> **Heuristic #6 (crate boundary):** for any option that proposes a new crate — what dependency surface does it carve out, and what breaks structurally without it? If the answer is "it groups the feature's files", name the existing crate that owns the domain and put it there instead.
 > **Standing-rule check (mode ownership):** for any option that touches a chord, ex-command, action body, or buffer behavior — does this keep BOTH the binding choice AND the handler body with the mode that owns the buffer, or does it leave half the surface in the host? See `feedback_mode_owns_its_surface`. Half-migrations (substrate publishes data but host still wires the chord) DO NOT satisfy the rule.
 
 The recommendation line must name the heuristic that drove it, not just the option label:

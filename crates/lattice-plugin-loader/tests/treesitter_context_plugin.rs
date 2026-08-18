@@ -70,6 +70,7 @@ fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
 
 struct Rig {
     loader: PluginLoader,
+    keymap: KeymapHandle,
     contexts: ContextSourceRegistryHandle,
     theme: ThemeRegistryHandle,
     config: Arc<ConfigRegistry>,
@@ -92,6 +93,10 @@ fn rig(base: &std::path::Path) -> Rig {
     let modes: ModeRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()));
     let modes_for_rig = modes.clone();
+    // Retained, unlike before: TC.6's headline claim is about WHICH LAYER the
+    // chord lands in, and a keymap constructed inline and dropped makes that
+    // unassertable — which is exactly why the claim went untested.
+    let keymap = KeymapHandle::new();
     let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
     let host = Arc::new(
         PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
@@ -105,7 +110,7 @@ fn rig(base: &std::path::Path) -> Rig {
             command_registry: Some(commands),
             mode_registry: Some(modes),
             config_registry: Some(config.clone()),
-            keymap: Some(KeymapHandle::new()),
+            keymap: Some(keymap.clone()),
             decoration_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
                 GutterDecorationSourceRegistry::new(),
             ))),
@@ -117,6 +122,7 @@ fn rig(base: &std::path::Path) -> Rig {
     );
     Rig {
         loader,
+        keymap,
         contexts,
         theme,
         config,
@@ -704,5 +710,171 @@ async fn lowering_max_file_lines_skips_the_query() {
     assert!(
         after.is_empty(),
         "past the guard the query is skipped: {after:?}"
+    );
+}
+
+/// TC.6's headline regression, finally asserted: `[u` must live in the mode's
+/// OWN layer and never in `Builtin`.
+///
+/// `Builtin` is universal vim grammar — a chord there fires in every buffer,
+/// including ones with no tree-sitter grammar at all, where `[u` means
+/// nothing. The slice named this "the regression that matters" and shipped no
+/// test for it: the test that sounded like it (`the_mode_and_its_chord_are_
+/// registered`) never touched a keymap, and the rig dropped its handle so it
+/// could not have.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_chord_lives_in_the_modes_layer_not_the_builtin_one() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+
+    let cmd = rig
+        .commands
+        .load()
+        .lookup_by_name("context-up")
+        .expect("the action is registered")
+        .id;
+    let bindings = rig.keymap.reverse_entries(cmd);
+    assert!(
+        !bindings.is_empty(),
+        "`context-up` is bound to something — an action with no chord is a \
+         command the user can only reach by name"
+    );
+
+    let layers: Vec<String> = bindings
+        .iter()
+        .map(|(chord, layer)| format!("{chord:?} in {layer:?}"))
+        .collect();
+    // `reverse_entries` flattens a SEQUENCE into its individual chords, so the
+    // two-key `[u` comes back as `[` then `u`.
+    let keys: String = bindings
+        .iter()
+        .filter_map(|(chord, _)| match chord.key {
+            lattice_protocol::chord::KeyKind::Char(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys, "[u", "the chord is `[u`: {layers:?}");
+    assert!(
+        bindings
+            .iter()
+            .all(|(_, layer)| !matches!(layer, lattice_keymap::KeymapLayer::Builtin)),
+        "nothing may land in Builtin — that layer fires in every buffer, \
+         including ones with no grammar: {layers:?}"
+    );
+    assert!(
+        bindings
+            .iter()
+            .any(|(_, layer)| matches!(layer, lattice_keymap::KeymapLayer::MinorMode(_))),
+        "and it must be in the mode's own layer, so K.1.c's per-keystroke \
+         filter can scope it to buffers where the mode is active: {layers:?}"
+    );
+}
+
+/// TC.6: a COUNT jumps N levels in one press, and a count past the top clamps
+/// to the outermost rather than falling off.
+///
+/// Claimed by the slice, never written: nothing in the suite ever set a count
+/// on the invocation, so `ctx.count` could have been ignored entirely and
+/// every test would still pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_count_jumps_several_levels_and_clamps_at_the_top() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let commands = rig.commands.load();
+    let up = commands.id_by_name("context-up").unwrap();
+    let snapshot: Arc<dyn std::any::Any + Send + Sync> = {
+        let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        syn.parse(SRC);
+        Arc::new(syn.snapshot_owned())
+    };
+
+    // From line 3 (inside the `if`): count 2 skips the `if` header and lands
+    // on the `fn`; count 9 clamps to the outermost `impl` rather than running
+    // out of scopes.
+    for (count, want) in [(2u32, 1u32), (9, 0)] {
+        let mut doc = lattice_core::Document::from_text(SRC);
+        let env = GrammarEnv {
+            syntax: Some(&snapshot),
+            ..Default::default()
+        };
+        let mut inv = CommandInvocation::of(up);
+        inv.count = Some(lattice_grammar::command::Count(count));
+        let effect = execute_with_env(
+            &commands,
+            &mut doc,
+            lattice_core::buffers::BufferId(1),
+            Position::new(3, 0),
+            inv,
+            &CancellationToken::never(),
+            env,
+        )
+        .expect("context-up dispatches");
+        match &effect {
+            Effect::Many(effects) => assert!(
+                matches!(effects[1], Effect::CursorMove(p) if p.line == want),
+                "count {count} lands on {want}, got {effects:?}"
+            ),
+            other => panic!("count {count}: expected a jump, got {other:?}"),
+        }
+    }
+}
+
+/// TC.6: `[u` in a buffer with no tree-sitter grammar is a quiet no-op.
+///
+/// This is why the mode declares no capabilities: rather than gate the chord
+/// on `TREE_SITTER` and withhold it until a parse lands, the handler simply
+/// has nowhere to go and consumes the keystroke. Claimed by the slice and
+/// never exercised — the guest's `None`-tree branch had no test at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_chord_is_a_quiet_no_op_without_a_grammar() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let commands = rig.commands.load();
+    let up = commands.id_by_name("context-up").unwrap();
+
+    let mut doc = lattice_core::Document::from_text(SRC);
+    // No syntax handle at all — a plain-text buffer.
+    let env = GrammarEnv::default();
+    let effect = execute_with_env(
+        &commands,
+        &mut doc,
+        lattice_core::buffers::BufferId(1),
+        Position::new(3, 0),
+        CommandInvocation::of(up),
+        &CancellationToken::never(),
+        env,
+    )
+    .expect("dispatch succeeds even with no tree");
+    assert!(
+        matches!(effect, Effect::None),
+        "no tree, no jump, no error — and it CONSUMES the chord rather than \
+         declining, so it cannot fall through to another binding: {effect:?}"
     );
 }

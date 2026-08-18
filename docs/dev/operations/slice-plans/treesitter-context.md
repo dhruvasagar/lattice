@@ -407,11 +407,13 @@ every major with a tree-sitter grammar. Keymap at
 
 - `[u` → `context-up`, count-aware.
 - `:context-up` — the same handler, so chord and command cannot drift.
-- `:context-toggle` — flips `context.enabled` buffer-locally.
+- `:context-toggle` — flips `context.enabled` GLOBALLY (the `set-option`
+seam writes the global registry; a buffer-local write has no WIT surface today).
 - Handler body lives in the plugin. Targets the header of the innermost scope
-  with `header_end < cursor_line`; pushes
-  `push_position_history(cursor, PositionSource::PluginPush)` before moving, so
-  `<C-o>` unwinds.
+  with `header_end < cursor_line`; emits `Effect::RecordJump` before moving, so
+  `<C-o>` unwinds. The host records that as `PositionSource::AutoJump` — an
+  earlier draft of this line said `PluginPush`; `<C-o>` walks `AutoJump`, so
+  the behaviour was right and only the name was wrong.
 
 **Tests.** `[u` from inside a nested scope lands on the innermost enclosing
 header; repeated `[u` walks outward and terminates at top level without

@@ -241,10 +241,19 @@ fn context_up_target(scopes: &[ContextScope], line: u32, count: u32) -> Option<u
     let mut at = line;
     let mut landed = None;
     for _ in 0..count.max(1) {
-        let next = scopes
+        let Some(next) = scopes
             .iter()
             .filter(|s| s.scope_start <= at && at <= s.scope_end && s.header_end < at)
-            .max_by_key(|s| s.header_start)?;
+            .max_by_key(|s| s.header_start)
+        else {
+            // Ran out of enclosing scopes part-way through a count: CLAMP to
+            // the outermost reached rather than discarding the whole jump.
+            // `9[u` from two levels deep means "take me out", and answering it
+            // with nothing is the one reading no user intends. Returning
+            // `landed` also keeps `count = 1` at the top a no-op, because
+            // nothing was reached on the first step either.
+            break;
+        };
         at = next.header_start;
         landed = Some(at);
     }

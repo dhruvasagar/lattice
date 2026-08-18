@@ -386,9 +386,9 @@ Registered by the plugin through the ✅ `config` seam, so `:set`,
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
-| `context.enabled` | bool | `true` | Master switch; buffer-local override allowed |
+| `context.enabled` | bool | `true` | Master switch. **Global**, not buffer-local — the plugin's `set-option` seam writes the global registry, and a buffer-local write has no WIT surface today. `:context-toggle` therefore affects every buffer. |
 | `context.anchor` | enum | `cursor` | `cursor` \| `topline` |
-| `context.max-lines` | u32 | `3` | Maximum context **rows** |
+| `context.max-lines` | u32 | `0` | Maximum context **rows** |
 | `context.trim-scope` | enum | `outer` | Which end to drop when over budget |
 | `context.multiline-threshold` | u32 | `1` | Max rows one scope's header may use |
 | `context.max-viewport-fraction` | u32 | `33` | Percent of pane height the strip may occupy |

@@ -4577,17 +4577,27 @@ pub(crate) fn compose_pane_lines(
     // rather than given their own painter: two implementations of "paint a
     // pinned row of cells" would drift, and the cells here are already
     // worker-built from the same builder as the document rows.
-    for row in sticky_context.rows.iter() {
+    let innermost = sticky_context.rows.len().saturating_sub(1);
+    for (idx, row) in sticky_context.rows.iter().enumerate() {
         if (out.len() as u32) >= height {
             break;
         }
+        let is_innermost = idx == innermost;
         let vrow = lattice_cells::VirtualRow {
             anchor_line: row.source_line,
             position: lattice_cells::AnchorPosition::Above,
             cells: row.cells.clone(),
             height: 1,
             kind: lattice_cells::VirtualRowKind::Sticky,
-            bg: sticky_context.bg,
+            // TC.11: the LAST row is the innermost scope — the one the cursor
+            // is actually in, and the line the reader is looking for. Falls
+            // back to the shared backdrop when the theme leaves `active`
+            // unset, so a theme that does not distinguish them still works.
+            bg: if is_innermost {
+                sticky_context.active_bg.or(sticky_context.bg)
+            } else {
+                sticky_context.bg
+            },
             scales: None,
             // TC.8: the header's real place in the file. The decision was made
             // host-side (`context.line-numbers`), so the renderer never reads
@@ -4598,6 +4608,7 @@ pub(crate) fn compose_pane_lines(
             // stray column.
             gutter_line: (sticky_context.line_numbers && view.show_line_numbers)
                 .then_some(row.source_line),
+            gutter_fg: sticky_context.line_number_fg,
         };
         out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));
     }
@@ -6055,9 +6066,30 @@ fn virtual_rows_at<'a>(
 /// the same formatter. The blank branch is the same total width by
 /// construction (`format_gutter_cell` pads to `width`), so toggling
 /// `line-numbers` never shifts the strip.
-fn virtual_row_gutter_spans(gutter_line: Option<u32>, gutter_w: u32) -> Vec<Span<'static>> {
+fn virtual_row_gutter_spans(
+    gutter_line: Option<u32>,
+    gutter_w: u32,
+    gutter_fg: Option<u32>,
+) -> Vec<Span<'static>> {
     match gutter_line {
-        Some(line) => render_gutter(line, gutter_w, None),
+        Some(line) => {
+            let mut spans = render_gutter(line, gutter_w, None);
+            // TC.11: recolour rather than re-format. `render_gutter` owns the
+            // LAYOUT (which is the thing that must match the document gutter
+            // exactly); the theme owns only the colour, so the two concerns
+            // cannot drift into each other.
+            if let Some(rgb) = gutter_fg {
+                let c = Color::Rgb(
+                    ((rgb >> 16) & 0xff) as u8,
+                    ((rgb >> 8) & 0xff) as u8,
+                    (rgb & 0xff) as u8,
+                );
+                for span in &mut spans {
+                    span.style = span.style.fg(c);
+                }
+            }
+            spans
+        }
         None => vec![Span::styled(
             " ".repeat(gutter_w as usize),
             TuiStyle::default().fg(Color::DarkGray),
@@ -6073,7 +6105,7 @@ fn render_virtual_row(
 ) -> Line<'static> {
     let severity_blank = Span::styled(" ".to_string(), TuiStyle::default());
     let diff_sign_blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let gutter = virtual_row_gutter_spans(vrow.gutter_line, gutter_w);
+    let gutter = virtual_row_gutter_spans(vrow.gutter_line, gutter_w, vrow.gutter_fg);
     // D.3.b.2 (2026-05-29): emit per-cell spans with run
     // coalescing — adjacent cells sharing the same `fg`
     // merge into a single styled Span so an 80-char
@@ -7348,7 +7380,7 @@ mod tests {
     #[test]
     fn a_virtual_row_with_a_source_line_paints_the_document_gutter() {
         for width in [4u32, 6, 9] {
-            let mine = virtual_row_gutter_spans(Some(41), width);
+            let mine = virtual_row_gutter_spans(Some(41), width, None);
             let theirs = render_gutter(41, width, None);
             let text = |v: &[RSpan<'static>]| -> String {
                 v.iter().map(|s| s.content.to_string()).collect()
@@ -7367,7 +7399,7 @@ mod tests {
     /// aligned today.
     #[test]
     fn a_virtual_row_without_a_source_line_paints_a_blank_gutter() {
-        let spans = virtual_row_gutter_spans(None, 6);
+        let spans = virtual_row_gutter_spans(None, 6, None);
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(text, " ".repeat(6));
         assert_eq!(
@@ -7378,6 +7410,35 @@ mod tests {
                 .sum::<usize>(),
             "blank and numbered gutters are the same width, so toggling \
              `line-numbers` never shifts the strip"
+        );
+    }
+
+    /// TC.11: the theme's `sticky.context.line_number` recolours the digits
+    /// without changing their LAYOUT.
+    ///
+    /// Layout and colour are separated deliberately: `render_gutter` owns the
+    /// columns (which must match the document gutter exactly, or the strip
+    /// sits off from the code it heads) and the theme owns only the paint. A
+    /// recolour that also reflowed would reintroduce the alignment bug the
+    /// blank/numbered width tests exist to prevent.
+    #[test]
+    fn a_themed_gutter_colour_changes_paint_but_not_columns() {
+        let plain = virtual_row_gutter_spans(Some(41), 6, None);
+        let themed = virtual_row_gutter_spans(Some(41), 6, Some(0x00_ff_00));
+        let text =
+            |v: &[RSpan<'static>]| -> String { v.iter().map(|s| s.content.to_string()).collect() };
+        assert_eq!(text(&plain), text(&themed), "same columns, same digits");
+        assert!(
+            themed
+                .iter()
+                .all(|s| s.style.fg == Some(RColor::Rgb(0, 0xff, 0))),
+            "every span takes the themed colour"
+        );
+        assert!(
+            plain
+                .iter()
+                .all(|s| s.style.fg != Some(RColor::Rgb(0, 0xff, 0))),
+            "and without a theme colour it keeps the default"
         );
     }
 

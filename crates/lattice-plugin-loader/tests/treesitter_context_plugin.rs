@@ -146,7 +146,7 @@ impl Renderer for Tui {
 ";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_bundled_plugin_registers_all_three_seams() {
+async fn the_bundled_plugin_registers_its_seams() {
     let Some(wasm) = plugin_wasm() else {
         eprintln!("skipping: treesitter-context wasm not built (no wasm32-wasip2 target)");
         return;
@@ -168,12 +168,17 @@ async fn the_bundled_plugin_registers_all_three_seams() {
         1,
         "the context producer registered"
     );
-    // theme: four elements, namespaced.
+    // TC.11: theme — the plugin registers NOTHING, and that is the point.
+    //
+    // It used to register four elements that no renderer ever read: the strip
+    // is host chrome, styled by the host's `sticky.context.*` set. An element
+    // that resolves in `:describe-element` but never paints is worse than an
+    // absent one, because the user cannot tell it apart from a theme bug.
     for name in ["background", "separator", "line-number", "active"] {
         let full = format!("treesitter-context.{name}");
         assert!(
-            rig.theme.id(&ElementName::from(full.clone())).is_some(),
-            "{full} is registered so a theme can restyle it"
+            rig.theme.id(&ElementName::from(full.clone())).is_none(),
+            "{full} must NOT be registered — nothing paints it"
         );
     }
     // config: the options land in the same registry core options use.
@@ -504,7 +509,6 @@ fn the_staged_runtime_plugin_is_discoverable_and_complete() {
 
     use lattice_plugin_host::PluginSeam;
     for seam in [
-        PluginSeam::Theme,
         PluginSeam::Config,
         PluginSeam::Grammar,
         PluginSeam::Modes,

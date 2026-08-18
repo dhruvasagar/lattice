@@ -205,6 +205,7 @@ impl VirtualRowProvider for HeaderlineProvider {
             bg: row.bg,
             scales: None,
             gutter_line: None,
+            gutter_fg: None,
         }]
     }
 }

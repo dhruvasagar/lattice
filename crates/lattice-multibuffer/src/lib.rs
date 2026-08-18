@@ -2570,6 +2570,7 @@ pub fn compose_header_rows(
                 bg: None,
                 scales: None,
                 gutter_line: None,
+                gutter_fg: None,
             });
             last_source = Some(excerpt.source);
         }

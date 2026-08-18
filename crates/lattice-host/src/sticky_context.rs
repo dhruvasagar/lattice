@@ -81,6 +81,17 @@ pub struct StickyContext {
     /// `line_numbers.then_some(row.source_line)` — which is hard to get
     /// differently wrong in two places.
     pub line_numbers: bool,
+    /// TC.11: resolved `sticky.context.line_number` foreground, or `None` when
+    /// the theme leaves it unset (the renderer then uses its default gutter
+    /// colour, as it does for document rows).
+    pub line_number_fg: Option<u32>,
+    /// TC.11: resolved `sticky.context.active` backdrop for the INNERMOST row
+    /// — the scope the cursor is actually in.
+    ///
+    /// Rows are outermost-first, so this applies to the last one. It is the
+    /// line the reader is looking for; giving it the same backdrop as its
+    /// ancestors makes a deep strip read as an undifferentiated block.
+    pub active_bg: Option<u32>,
 }
 
 impl StickyContext {

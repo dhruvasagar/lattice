@@ -418,6 +418,7 @@ impl DiffOverlayVirtualRowProvider {
                     bg: None,
                     scales: None,
                     gutter_line: None,
+                    gutter_fg: None,
                 });
             }
         }

@@ -869,6 +869,20 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
          colour, so this styles only what sits behind them.",
     );
     reg_one(
+        "sticky.context.line_number",
+        spec().fg("overlay"),
+        "Sticky context strip: the source line numbers in its gutter. Dimmer \
+         than the document's by default — the strip is orientation, not a \
+         place the cursor can be.",
+    );
+    reg_one(
+        "sticky.context.active",
+        spec().bg("surface1"),
+        "Sticky context strip: the innermost row — the scope the cursor is \
+         actually in. Distinguished from its ancestors because that is the \
+         one line the reader is looking for.",
+    );
+    reg_one(
         "diff.deletion_block",
         spec().bg("diff.deletion.bg"),
         "Deletion-block virtual-row background tint.",
@@ -1365,6 +1379,10 @@ pub struct BuiltinElementIds {
     pub diff_deletion_block: ElementId,
     /// TC.3b: the sticky context strip's backdrop.
     pub sticky_context_background: ElementId,
+    /// TC.11: the strip's gutter line numbers.
+    pub sticky_context_line_number: ElementId,
+    /// TC.11: the strip's innermost row — the scope the cursor is in.
+    pub sticky_context_active: ElementId,
     pub diff_conflict_line: ElementId,
     // MG.4 — inline diff text fg colours (magit unified diff ± lines).
     pub diff_add_text: ElementId,
@@ -1546,6 +1564,8 @@ impl Default for BuiltinElementIds {
             diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             sticky_context_background: ElementId::INVALID,
+            sticky_context_line_number: ElementId::INVALID,
+            sticky_context_active: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
             diff_add_text: ElementId::INVALID,
             diff_remove_text: ElementId::INVALID,
@@ -1748,6 +1768,8 @@ impl BuiltinElementIds {
             diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),
             sticky_context_background: id("sticky.context.background"),
+            sticky_context_line_number: id("sticky.context.line_number"),
+            sticky_context_active: id("sticky.context.active"),
             diff_conflict_line: id("diff.conflict.line"),
             diff_add_text: id("diff.add.text"),
             diff_remove_text: id("diff.remove.text"),

@@ -1510,17 +1510,26 @@ impl Element for EditorElement {
             // headerline to displace. Adapted to `VirtualRow` and pushed
             // through `push_virtual_row` rather than given a second painter,
             // so the two peers and the two row kinds cannot drift.
-            for row in self.sticky_context.rows.iter() {
+            let innermost = self.sticky_context.rows.len().saturating_sub(1);
+            for (idx, row) in self.sticky_context.rows.iter().enumerate() {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
                 }
+                let is_innermost = idx == innermost;
                 let vrow = lattice_cells::VirtualRow {
                     anchor_line: row.source_line,
                     position: lattice_cells::AnchorPosition::Above,
                     cells: row.cells.clone(),
                     height: 1,
                     kind: lattice_cells::VirtualRowKind::Sticky,
-                    bg: self.sticky_context.bg,
+                    // TC.11: the LAST row is the innermost scope — the one the
+                    // cursor is in. Falls back to the shared backdrop when the
+                    // theme leaves `active` unset.
+                    bg: if is_innermost {
+                        self.sticky_context.active_bg.or(self.sticky_context.bg)
+                    } else {
+                        self.sticky_context.bg
+                    },
                     scales: None,
                     // TC.8: the header's real place in the file. Decided
                     // host-side (`context.line-numbers`) so neither peer reads
@@ -1531,6 +1540,7 @@ impl Element for EditorElement {
                     // unnumbered code reads as a stray column.
                     gutter_line: (self.sticky_context.line_numbers && self.show_line_numbers)
                         .then_some(row.source_line),
+                    gutter_fg: self.sticky_context.line_number_fg,
                 };
                 push_virtual_row(
                     &vrow,
@@ -1538,7 +1548,14 @@ impl Element for EditorElement {
                     &font,
                     font_size,
                     self.theme.foreground,
-                    self.sticky_context.bg.unwrap_or(0),
+                    if is_innermost {
+                        self.sticky_context
+                            .active_bg
+                            .or(self.sticky_context.bg)
+                            .unwrap_or(0)
+                    } else {
+                        self.sticky_context.bg.unwrap_or(0)
+                    },
                     window,
                     &mut shaped_text,
                     &mut shaped_gutter,
@@ -3447,7 +3464,7 @@ fn push_virtual_row(
     let gutter_run = TextRun {
         len: blank_gutter.len(),
         font: font.clone(),
-        color: rgb(GUTTER_NORMAL_COLOR).into(),
+        color: rgb(vrow.gutter_fg.unwrap_or(GUTTER_NORMAL_COLOR)).into(),
         background_color: None,
         underline: None,
         strikethrough: None,

@@ -57,10 +57,15 @@ world context-plugin {
 }
 
 /// The `treesitter-context` bundled plugin's world (TC.5). ONE component
-/// providing three seams — the multi-seam shape `auto-pair` proved:
+/// providing the multi-seam shape `auto-pair` proved:
 ///   - **context** — the scope producer (this file's `context` interface),
-///   - **config**  — the ten `context.*` options,
-///   - **theme**   — the four `context.*` elements.
+///   - **config**  — the `context.*` options,
+///   - **grammar** + **modes** — the mode, its `[u` chord and `:context-toggle`.
+///
+/// It does NOT provide **theme**. It used to, registering four elements no
+/// renderer read: the strip is host chrome, so its appearance belongs to the
+/// host's `sticky.context.*` set. An element that resolves in
+/// `:describe-element` but never paints is worse than an absent one.
 ///
 /// The host instantiates this same `.wasm` once per seam against the superset
 /// async linker, exactly as it does for `auto-pair`. A component exporting more
@@ -72,11 +77,9 @@ world treesitter-context-plugin {
     import grammar;
     import modes;
     import config;
-    import theme;
 
     export context;
     export register-options: func();
-    export register-theme-elements: func();
     export register-grammar: func();
     export grammar-callbacks;
     export register-modes: func();

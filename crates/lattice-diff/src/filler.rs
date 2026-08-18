@@ -249,6 +249,7 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
                 bg: None,
                 scales: None,
                 gutter_line: None,
+                gutter_fg: None,
             });
         }
     }

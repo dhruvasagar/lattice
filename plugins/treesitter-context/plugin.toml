@@ -17,6 +17,6 @@
 # this plugin does NOT register an `enabled` option of its own: two switches for
 # one thing is one too many, and the loader's is the canonical one.
 id = "treesitter-context"
-provides = ["theme", "config", "grammar", "modes", "context"]
+provides = ["config", "grammar", "modes", "context"]
 editor_capabilities = ["tree-sitter"]
 default_mode = "treesitter-context-mode"

@@ -8,7 +8,8 @@
 //!     a function of the cursor and viewport, and the host does it natively so
 //!     no WASM call sits on the scroll path.
 //!   - **config** — the ten `context.*` options.
-//!   - **theme** — the four `context.*` elements.
+//!   NOT theme: the strip is host chrome, styled by the host's
+//!   `sticky.context.*` elements. The plugin owns the scopes, not their look.
 //!
 //! ## Why the header span comes from a `@context.end` capture
 //!
@@ -44,7 +45,6 @@ use lattice::plugin_host::modes::{
     register_mode,
 };
 use lattice::plugin_host::config::{OptionType, get_option, register_option, set_option};
-use lattice::plugin_host::theme::{ColorRef, ModifierSet, StyleSpec, register_element};
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, ContextRequest, ContextScope, Effect, ExCommandContext,
@@ -415,73 +415,6 @@ impl Guest for Component {
         }
     }
 
-    // ── Theme ────────────────────────────────────────────────────────────────
-
-    /// Four elements, and none of them a foreground for code.
-    ///
-    /// The context rows carry the source lines' OWN syntax highlighting — that
-    /// is the point of building them from the same cell builder as the document
-    /// — so these compose the backdrop and the gutter around that. An element
-    /// that recoloured the code in the strip would be overriding syntax
-    /// highlighting from a place nobody would think to look.
-    fn register_theme_elements() {
-        let plain = ModifierSet {
-            bold: None,
-            italic: None,
-            underline: None,
-            dim: None,
-            reverse: None,
-        };
-        let _ = register_element(
-            "background",
-            "Sticky context strip: the row backdrop.",
-            &StyleSpec {
-                inherit: None,
-                fg: None,
-                // A palette KEY, not a literal: the strip recolours when the
-                // user swaps colourscheme, which a baked colour could not.
-                bg: Some(ColorRef::Palette("surface0".to_string())),
-                modifiers: plain,
-                scale: None,
-            },
-        );
-        let _ = register_element(
-            "separator",
-            "Sticky context strip: the rule beneath it, when `separator` is set.",
-            &StyleSpec {
-                inherit: None,
-                fg: Some(ColorRef::Palette("overlay".to_string())),
-                bg: None,
-                modifiers: plain,
-                scale: None,
-            },
-        );
-        let _ = register_element(
-            "line-number",
-            "Sticky context strip: source line numbers in the gutter.",
-            &StyleSpec {
-                inherit: None,
-                fg: Some(ColorRef::Palette("overlay".to_string())),
-                bg: None,
-                modifiers: plain,
-                scale: None,
-            },
-        );
-        let _ = register_element(
-            "active",
-            "Sticky context strip: the innermost row — the scope you are in.",
-            &StyleSpec {
-                inherit: Some("treesitter-context.background".to_string()),
-                fg: None,
-                bg: None,
-                modifiers: ModifierSet {
-                    bold: Some(true),
-                    ..plain
-                },
-                scale: None,
-            },
-        );
-    }
 }
 
 

@@ -42789,6 +42789,7 @@ mod tests {
                 bg: None,
                 scales: None,
                 gutter_line: None,
+                gutter_fg: None,
             })
             .collect();
         let matrix = lattice_cells::VirtualRowMatrix::build(

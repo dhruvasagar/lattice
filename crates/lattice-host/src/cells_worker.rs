@@ -540,11 +540,26 @@ fn publish_sticky_context(
         .get(ct.ids.sticky_context_background)
         .bg
         .map(|c| c.to_rgb_u32(0));
+    // TC.11: resolved here with the backdrop, for the same reason — the strip
+    // is host chrome, so the host owns its styling and neither renderer reads
+    // a theme (or a plugin option) of its own.
+    let line_number_fg = ct
+        .resolved
+        .get(ct.ids.sticky_context_line_number)
+        .fg
+        .map(|c| c.to_rgb_u32(0));
+    let active_bg = ct
+        .resolved
+        .get(ct.ids.sticky_context_active)
+        .bg
+        .map(|c| c.to_rgb_u32(0));
     pane.sticky_context.store(Arc::new(StickyContext {
         rows,
         version,
         bg,
         line_numbers: pane.sticky_context_line_numbers,
+        line_number_fg,
+        active_bg,
     }));
 }
 

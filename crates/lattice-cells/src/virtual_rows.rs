@@ -187,6 +187,10 @@ pub struct VirtualRow {
     /// renderers must not branch on kind: any producer that knows a real line
     /// number can set this and get the document gutter for free.
     pub gutter_line: Option<u32>,
+    /// TC.11: foreground for [`Self::gutter_line`]'s digits (`0xRRGGBB`).
+    /// `None` — the default — leaves the renderer's own gutter colour, which
+    /// is what document rows use.
+    pub gutter_fg: Option<u32>,
 }
 
 /// F.3 (Thread F): one contiguous run of display columns rendered
@@ -487,6 +491,7 @@ mod tests {
             bg: None,
             scales: None,
             gutter_line: None,
+            gutter_fg: None,
         }
     }
 

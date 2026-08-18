@@ -406,3 +406,48 @@ async fn the_separator_option_adds_a_reserved_rule_row() {
         "the rule is the glyph, repeated"
     );
 }
+
+/// TC.5: `context.enabled = false` must empty the strip.
+///
+/// This is what `:context-toggle` flips, so it is the option with the most
+/// direct user-visible meaning of the whole set. The loader turns it into a
+/// MODE enable/disable, which controls the chord — but nothing consulted it on
+/// the render path, so the strip carried on painting after the user turned the
+/// feature off.
+///
+/// Publishing an EMPTY list rather than skipping the publish is deliberate:
+/// the reservation is computed from the published length, so a skipped publish
+/// would leave the rows reserved and the text pushed down with nothing in the
+/// gap.
+#[tokio::test]
+async fn disabling_the_feature_empties_the_strip() {
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut editor = editor_with_producer(calls);
+    let buffer = editor.document_buffer_id;
+    editor.run_tick_pending();
+    wait_for_cache(&editor, buffer).await;
+
+    assert_eq!(
+        &*editor.resolve_sticky_context_lines(buffer, 120, 110, 40),
+        &[10, 100],
+        "precondition: enabled by default"
+    );
+
+    editor
+        .config
+        .try_register(lattice_config::option::Option::<bool>::new(
+            "treesitter-context.enabled".to_owned(),
+            false,
+            "Off.".to_owned(),
+        ))
+        .expect("fresh name");
+    editor.run_tick_pending();
+
+    assert!(
+        editor
+            .resolve_sticky_context_lines(buffer, 120, 110, 40)
+            .is_empty(),
+        "turned off means no rows — and an empty published list, so the \
+         reservation goes to zero and the text moves back up"
+    );
+}

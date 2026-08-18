@@ -106,6 +106,13 @@ pub struct WasmContextState {
     /// describes; here that falls out for free, because the host passes the
     /// scroll value it already holds and reservation happens later.
     pub anchor_topline: bool,
+    /// TC.5: `context.enabled` — the master switch `:context-toggle` flips.
+    ///
+    /// Consulted on the RESOLVE path so turning the feature off empties the
+    /// published list rather than skipping the publish: the reservation is
+    /// computed from that length, so a skipped publish would leave the rows
+    /// reserved and the text pushed down with nothing in the gap.
+    pub enabled: bool,
 }
 
 impl Default for WasmContextState {
@@ -124,6 +131,7 @@ impl Default for WasmContextState {
             line_numbers: true,
             separator: None,
             anchor_topline: false,
+            enabled: true,
         }
     }
 }
@@ -342,6 +350,9 @@ impl Editor {
         scroll: u32,
         viewport_height: u32,
     ) -> Arc<[u32]> {
+        if !self.wasm_context.enabled {
+            return Arc::from([] as [u32; 0]);
+        }
         let cached = self.wasm_context.scopes_for(buffer_id);
         if cached.scopes.is_empty() {
             return Arc::from([] as [u32; 0]);
@@ -423,6 +434,10 @@ impl Editor {
             .config
             .get_string_by_name(&format!("{NS}.separator"))
             .and_then(|v| v.chars().next());
+        self.wasm_context.enabled = self
+            .config
+            .get_bool_by_name(&format!("{NS}.enabled"))
+            .unwrap_or(true);
         self.wasm_context.anchor_topline = self
             .config
             .get_string_by_name(&format!("{NS}.anchor"))

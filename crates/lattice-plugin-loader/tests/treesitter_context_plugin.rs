@@ -878,3 +878,88 @@ async fn the_chord_is_a_quiet_no_op_without_a_grammar() {
          declining, so it cannot fall through to another binding: {effect:?}"
     );
 }
+
+/// TC.5: every shipped language actually captures something.
+///
+/// The slice claimed "a representative file per language produces the expected
+/// scopes"; only Rust was ever exercised end to end. The query test compiles
+/// each query against its grammar, which catches a bad node kind or field
+/// name, but a query that compiles and captures NOTHING passes it — and that
+/// is exactly what a wrong-but-valid node kind produces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_shipped_language_captures_a_nested_scope() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let sources = rig.contexts.load().sources();
+
+    // Each sample nests an inner construct inside an outer one, so a query
+    // that only captures top-level items fails too.
+    let cases: &[(Lang, &str)] = &[
+        (
+            Lang::Python,
+            "class C:\n    def m(self):\n        if x:\n            pass\n",
+        ),
+        (
+            Lang::Go,
+            "func f() {\n\tif x {\n\t\ty := 1\n\t\t_ = y\n\t}\n}\n",
+        ),
+        (
+            Lang::JavaScript,
+            "class C {\n  m() {\n    if (x) {\n      y();\n    }\n  }\n}\n",
+        ),
+        (
+            Lang::TypeScript,
+            "interface I {\n  a: number;\n}\nclass C {\n  m(): void {\n    if (x) {\n      y();\n    }\n  }\n}\n",
+        ),
+        (
+            Lang::C,
+            "struct S {\n  int a;\n};\nint f(void) {\n  if (a) {\n    return 1;\n  }\n  return 0;\n}\n",
+        ),
+        (
+            Lang::Markdown,
+            "# One\n\ntext\n\n## Two\n\nmore text\n\n### Three\n\nbody\n",
+        ),
+    ];
+
+    for (lang, text) in cases {
+        let mut syn = match Syntax::for_language(*lang) {
+            Ok(Some(s)) => s,
+            _ => {
+                eprintln!("skipping {lang:?}: no grammar in this build");
+                continue;
+            }
+        };
+        syn.parse(text);
+        let snapshot: Arc<dyn std::any::Any + Send + Sync> = Arc::new(syn.snapshot_owned());
+        let scopes = sources[0]
+            .produce(7, None, text.lines().count() as u32, Some(snapshot))
+            .await
+            .unwrap_or_else(|e| panic!("{lang:?}: producer errored: {e}"));
+
+        assert!(
+            !scopes.is_empty(),
+            "{lang:?}: the bundled query captured nothing. It compiles (the \
+             query test proves that), so this is a query that names valid \
+             node kinds which never match — the failure mode compilation \
+             cannot catch."
+        );
+        assert!(
+            scopes.len() >= 2,
+            "{lang:?}: the sample nests, so at least two scopes must be \
+             captured; got {scopes:?}"
+        );
+        assert!(
+            scopes.iter().all(|s| s.scope_end > s.scope_start),
+            "{lang:?}: single-line scopes are dropped by the producer"
+        );
+    }
+}

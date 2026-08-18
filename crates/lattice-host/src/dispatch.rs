@@ -14550,6 +14550,7 @@ impl Editor {
     fn gc_ephemeral_buffer(&mut self, id: BufferId) {
         self.buffers.remove(id);
         self.active_modes.remove(&id);
+        self.deferred_mode_activations.retain(|(b, _)| *b != id);
         self.buffer_locals.remove(&id);
         self.resolved_options.remove(&id);
         self.on_disk_fingerprints.remove(&id);
@@ -16054,6 +16055,7 @@ impl Editor {
         signals.extend(self.drain_pending_definitions());
         signals.extend(self.drain_mode_lifecycle_events());
         signals.extend(self.drain_minor_activation());
+        signals.extend(self.drain_deferred_activations());
         // CI.4: apply any pending `enable-mode` / `disable-mode` (a plugin's
         // deferred config) — flip enablement + re-activate open buffers.
         signals.extend(self.drain_mode_enablement());
@@ -17207,14 +17209,39 @@ impl Editor {
                 self.capabilities_for_proto(proto_id),
             ),
         };
-        if let Err(e) = result {
-            self.set_message(
-                EchoLevel::Warn,
-                format!(
-                    "mode: activate({mode_id}) for buffer {} failed: {e}",
-                    buffer_id.0
-                ),
-            );
+        match &result {
+            // TC.9b: not a failure, a NOT-YET. The overwhelmingly common cause
+            // is that the buffer's first parse has not run, which it will
+            // within a frame or two of opening. Warning about it trains the
+            // user to ignore a line that then resolves itself; recording it
+            // and retrying is what they actually wanted.
+            Err(lattice_mode::ModeActivationError::MissingCapability { missing, .. }) => {
+                tracing::debug!(
+                    mode = %mode_id,
+                    buffer = buffer_id.0,
+                    ?missing,
+                    "mode activation deferred until the buffer offers the capability"
+                );
+                if !self
+                    .deferred_mode_activations
+                    .iter()
+                    .any(|(b, m)| *b == buffer_id && *m == mode_id)
+                {
+                    self.deferred_mode_activations.push((buffer_id, mode_id));
+                }
+            }
+            // A conflict or a wrong kind is a decision, not a race. Retrying
+            // would loop forever, so these stay loud and immediate.
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!(
+                        "mode: activate({mode_id}) for buffer {} failed: {e}",
+                        buffer_id.0
+                    ),
+                );
+            }
+            Ok(()) => {}
         }
         self.active_modes.insert(buffer_id, active);
         self.recompute_options_and_folds_for_buffer(buffer_id);
@@ -17269,6 +17296,9 @@ impl Editor {
             );
             return Vec::new();
         };
+        // An explicit "off" also withdraws any pending request, or the retry
+        // pass would switch the mode on moments after the user turned it off.
+        self.cancel_deferred_activation(buffer_id, mode_id);
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match mode.kind() {
@@ -17635,6 +17665,54 @@ impl Editor {
     /// borrow), then activate. `activate_mode_by_id` is idempotent, so
     /// a minor already active (e.g. via the kind-based path) is a
     /// no-op. Unknown buffers (no `kind_of`) are skipped, not panicked.
+    /// TC.9b: retry activations that were refused only for a capability the
+    /// buffer has since gained.
+    ///
+    /// Runs on the same pump every other async arrival reaches the screen
+    /// through, so a mode whose parse landed switches on WITHOUT the user
+    /// pressing anything — the failure mode `boot-composition.md` §3 exists to
+    /// design out, and one this would otherwise have reproduced exactly (the
+    /// mode would appear on the next keystroke, which reads as flakiness).
+    ///
+    /// Costs a `is_empty()` check in every ordinary session. When it is not
+    /// empty, `activate_mode_by_id` re-checks and either succeeds or re-records
+    /// the entry, so the list converges rather than growing.
+    pub fn drain_deferred_activations(&mut self) -> Vec<RendererSignal> {
+        if self.deferred_mode_activations.is_empty() {
+            return Vec::new();
+        }
+        let pending = std::mem::take(&mut self.deferred_mode_activations);
+        let mut signals = Vec::new();
+        for (buffer_id, mode_id) in pending {
+            // A closed buffer's pending activations die with it rather than
+            // being retried against a stale id forever.
+            if self.buffers.kind_of(buffer_id).is_none() {
+                continue;
+            }
+            signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
+        }
+        signals
+    }
+
+    /// Forget a pending activation — the user said no, or the buffer is going
+    /// away. A deferred activation that outlives an explicit "off" would
+    /// switch the mode back on later, which is the opposite of what was asked.
+    pub fn cancel_deferred_activation(
+        &mut self,
+        buffer_id: BufferId,
+        mode_id: lattice_mode::ModeId,
+    ) {
+        self.deferred_mode_activations
+            .retain(|(b, m)| !(*b == buffer_id && *m == mode_id));
+    }
+
+    /// How many activations are waiting on a capability. Exposed for tests and
+    /// for `:describe-buffer`-style introspection; a number that only grows is
+    /// the symptom of a capability nothing ever grants.
+    pub fn deferred_activation_count(&self) -> usize {
+        self.deferred_mode_activations.len()
+    }
+
     pub fn drain_minor_activation(&mut self) -> Vec<RendererSignal> {
         let Some(mut rx) = self.pending_major_entered_rx.take() else {
             return Vec::new();

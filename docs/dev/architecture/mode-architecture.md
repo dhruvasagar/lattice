@@ -3758,3 +3758,54 @@ The under-utilisation is real; the cleanup is bounded. The
 refactor lands as a series of focused per-area slices,
 sequenced after M-series multibuffer work to avoid touching
 the same files concurrently.
+
+## Capabilities (TC.9)
+
+`required_capabilities()` is checked against what the BUFFER offers:
+`Editor::buffer_capabilities` computes the set from live state at each
+activation, and `ModeRegistry` refuses on `required - offered`.
+
+Computed, not stored. A stored set needs every subsystem that attaches a
+parser, a server or a path to remember to update it, and the failure mode of
+forgetting is a mode that never activates — silent, and indistinguishable from
+having no gate at all. The reads are a map lookup or an `ArcSwap` load each,
+and activation is a rare event, not a per-keystroke one.
+
+Four of the six bits are granted, each on the state that MEANS it rather than
+one that correlates with it:
+
+| Bit | Granted on |
+|---|---|
+| `BUFFER_URI` | the buffer has a path (not `buffer_uris`, which means "LSP-known") |
+| `LSP` | `servers_for(uri)` is non-empty (not "a config's patterns match") |
+| `TREE_SITTER` | the syntax handle's snapshot HAS a tree (a handle alone means the first parse has not run) |
+| `WRITABLE` | the resolved `read-only` is false |
+
+`FOLDS` and `DIAGNOSTICS` are deliberately **not granted**. Nothing models
+them, and granting on a proxy is a lie a plugin author cannot see through:
+every Document can fold, so the bit would carry no information (`foldenable` is
+vim's display toggle, not a capability), and the diagnostics overlay exists
+only while `lsp-diagnostics-mode` is active — a mode DEPENDENCY, which
+`implies` already expresses. They stay as ungranted bits rather than being
+removed, because they are shipped API and a retired capability leaves a hole
+rather than changing meaning under a compiled plugin. A mode requiring either
+is refused today, which is honest and visible where a proxy would be neither.
+
+### Deferred activation
+
+A refusal for a MISSING capability is a *not yet*, not a failure. The common
+case is a buffer whose first parse has not run — which is exactly when every
+mode is being activated, so a `TREE_SITTER` requirement would be refused at
+open and never asked about again.
+
+Those refusals are recorded and retried on the tick pump, so a mode whose
+parse landed switches on **without a keypress**. Only `MissingCapability`
+defers; a conflict or a wrong kind is a decision, not a race, and retrying it
+would loop. Deactivating a mode, or closing its buffer, withdraws the pending
+request — a deferred activation that outlived an explicit "off" would switch
+the mode back on later.
+
+Cost is an `is_empty()` check per tick in any ordinary session. When it is not
+empty, the retry re-checks and either succeeds or re-records, so the list
+converges rather than growing; `Editor::deferred_activation_count()` exposes
+it, and a count that only grows is the symptom of a capability nothing grants.

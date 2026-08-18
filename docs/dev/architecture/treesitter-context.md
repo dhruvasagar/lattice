@@ -441,19 +441,22 @@ be overriding syntax highlighting from a place nobody would think to look.
 **`treesitter-context-mode`** — a **minor** mode with an `ActivationPolicy`
 spanning every major that has a tree-sitter grammar.
 
-> **It declares NO required capabilities, and cannot.** Declaring
-> `TREE_SITTER` made the mode fail to activate on every buffer, Rust files
-> included. The mode-capability gate is half-built editor-wide: the enforcement
-> side exists (`ModeRegistry` rejects on `required - buffer_caps`), but nothing
-> ever POPULATES a buffer's capability set — every activation site in
-> `lattice-host` passes `CapabilitySet::empty()`, and no native mode had
-> declared a requirement before, so the gate had never been exercised. Any mode
-> declaring any capability today is unsatisfiable.
+> **It declares NO required capabilities.** Declaring `TREE_SITTER` originally
+> made the mode fail to activate on every buffer, Rust files included, because
+> the gate was half-built editor-wide: the enforcement side existed
+> (`ModeRegistry` rejects on `required - buffer_caps`) but nothing POPULATED a
+> buffer's set, so any mode declaring anything was unsatisfiable. **TC.9 fixed
+> that** — see `mode-architecture.md` — and buffers now offer real
+> capabilities, with refusals for a not-yet-available one retried when it
+> arrives.
 >
-> It would be the wrong requirement even if the buffer half were built: a buffer
+> The declaration stays empty anyway, because it was the wrong requirement
+> independently of the gate: a buffer
 > gains its tree when the first parse lands, so gating on it would make `[u`
 > unavailable until then and require re-activation afterwards — activation churn
-> for a chord that already no-ops gracefully with no tree. The capability that
+> for a chord that already no-ops gracefully with no tree — TC.9b's retry pass
+> would absorb the churn, but a chord that works without the tree should not
+> wait for it. The capability that
 > genuinely matters is the manifest's `editor_capabilities = ["tree-sitter"]`,
 > which gates the tree handle itself. Not a chord copied into
 each major: the shared-behaviour-is-a-minor-mode rule exists because a copied

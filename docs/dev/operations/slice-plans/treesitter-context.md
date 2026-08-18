@@ -1,10 +1,8 @@
 # Tree-sitter context — slice plan
 
 > **Status: Active.** Opened 2026-08-16, branch `dhruva/treesitter-context`.
-> TC.1–TC.8 + TC.10 ✅. **NOT archivable:** TC.9 is ⛔
-> deferred, and the completed-plans-only rule is explicit that deferred is open
-> work, not done. Archiving now is exactly the mistake that rule exists to
-> prevent.
+> **Every slice ✅ (TC.1–TC.10).** Archivable once the icons below are
+> verified against source rather than trusted.
 > Implements [`../../architecture/treesitter-context.md`](../../architecture/treesitter-context.md)
 > — sticky scope headers as a core bundled plugin, plus the two host seams it
 > forces.
@@ -24,7 +22,7 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
 | TC.7 | Docs, benches, ratchet | ✅ |
 | TC.8 | `context.line-numbers` — source line numbers in the context gutter | ✅ |
-| TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ⛔ |
+| TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ✅ |
 | TC.10 | `run-query-ranges` — the large-file fix, in the seam not the guard | ✅ |
 
 ## Sequencing
@@ -429,7 +427,7 @@ in every buffer).
 > in review.
 >
 
-## TC.9 — Buffer capability sets ⛔
+## TC.9 — Buffer capability sets ✅
 
 **Found by running the editor, not by a test.** `treesitter-context-mode`
 declared `TREE_SITTER` and failed to activate on every buffer:
@@ -440,24 +438,62 @@ WARN mode: activate(treesitter-context-mode) for buffer 9 failed:
      `CapabilitySet(TREE_SITTER)` that the buffer lacks
 ```
 
-The gate is half-built editor-wide. `ModeRegistry` enforces
-`required_capabilities() - buffer_caps`, but **nothing populates the buffer
-side**: every activation site in `lattice-host` passes `CapabilitySet::empty()`,
-and no native mode had ever declared a requirement, so the enforcement half had
-never been exercised. Any mode declaring any capability is unsatisfiable today.
+The gate was half-built editor-wide. `ModeRegistry` enforced
+`required_capabilities() - buffer_caps`, but nothing populated the buffer side:
+all thirteen activation sites passed `CapabilitySet::empty()`, and no native
+mode had ever declared a requirement, so the enforcement half had never once
+run against a non-empty one. Any mode declaring any capability was
+unsatisfiable — and it announced itself as a `warn`, never a failing build.
 
-This plugin works around it by declaring none (correct for it independently —
-see the design fragment). But the next mode that declares one will hit the same
-wall, and the failure is a `warn` at activation rather than anything that fails
-a build or a test.
+### TC.9a — buffers offer capabilities
 
-Closing it means deciding when a buffer gains each capability (`TREE_SITTER` at
-first parse? at open with a known grammar? `LSP` at attach?) and re-running
-activation when the set changes — a real feature with real timing questions,
-which is why it is not folded into a context slice.
+`Editor::buffer_capabilities` computes the set from live state at each
+activation. Computed, not stored: a stored set needs every subsystem that
+attaches a parser, a server or a path to remember to update it, and forgetting
+produces a mode that never activates — silent, and indistinguishable from the
+bug being fixed.
 
-**No test guards this beyond the plugin's own** `required_capabilities() ==
-empty()` assertion, which catches only a regression in this plugin.
+Four bits granted, each on the state that MEANS it rather than one that
+correlates with it (`BUFFER_URI` on a path, not on `buffer_uris` which means
+"LSP-known"; `LSP` on an actual attachment, not on a config's patterns
+matching; `TREE_SITTER` on a snapshot that HAS a tree, not on a handle
+existing; `WRITABLE` on the resolved `read-only`).
+
+`FOLDS` and `DIAGNOSTICS` deliberately not granted — nothing models them, and a
+proxy would be a lie a plugin author cannot see through. Left as ungranted bits
+rather than removed, per `capability.rs`'s own rule that a retired capability
+leaves a hole. See `mode-architecture.md` for the full table and reasoning.
+
+Reads go through `resolved_option_opt`, not `resolved_option`: capabilities are
+consulted on the ACTIVATION path, which runs against buffers whose options are
+not resolved yet and against the minimal registries `Editor::boot` builds.
+Panicking there turns a missing option into a crash while activating a mode.
+Five diff-mode tests caught exactly that.
+
+### TC.9b — a not-yet is not a failure
+
+The timing half, and the one that actually bites. A buffer opens, its modes
+activate, and its first parse has not run — so a `TREE_SITTER` requirement is
+refused at exactly the moment every mode is activated, and nothing ever asks
+again. The user sees a mode that is simply never on.
+
+`MissingCapability` refusals are recorded and retried on the tick pump, so the
+mode switches on **without a keypress** — asserting after a keystroke would
+pass on the broken version too, which is the hole `test_helpers::settle` exists
+for. Only capability refusals defer; a conflict or a wrong kind is a decision,
+not a race, and retrying would loop. Deactivating the mode or closing the
+buffer withdraws the request.
+
+Cost is an `is_empty()` check per tick. The retry re-checks and either succeeds
+or re-records, so the list converges rather than growing.
+
+### What this does NOT change
+
+`treesitter-context-mode` still declares nothing. That was the right
+declaration independently of the broken gate: `[u` no-ops gracefully with no
+tree, so gating it on `TREE_SITTER` would withhold a working chord until the
+parse lands for no benefit. TC.9b would absorb the churn; the point is there is
+nothing to gate.
 
 ## TC.8 — `context.line-numbers` in the gutter ✅
 

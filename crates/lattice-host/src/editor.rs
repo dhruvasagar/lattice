@@ -1081,6 +1081,21 @@ pub struct Editor {
     /// sites in dispatch autoref `&mut self.active_modes`, which
     /// bumps the version once per mutation.
     pub active_modes: Versioned<HashMap<BufferId, ActiveModes>>,
+    /// TC.9b: activations refused only because the buffer did not offer a
+    /// required capability YET, to be retried when it does.
+    ///
+    /// A buffer opens, its modes activate, and its first parse has not run —
+    /// so a mode requiring `TREE_SITTER` is refused at exactly the moment
+    /// every mode is activated, and without this nothing ever asks again. The
+    /// user sees a mode that is simply never on.
+    ///
+    /// Only `MissingCapability` refusals land here. A conflict or a wrong kind
+    /// is a decision, not a race, and retrying it would loop forever.
+    ///
+    /// A `Vec` because it is empty in every ordinary session — the retry pass
+    /// costs a length check — and because the natural operations are "walk all"
+    /// and "remove one", neither of which wants a map.
+    pub deferred_mode_activations: Vec<(BufferId, lattice_mode::ModeId)>,
     /// Per-buffer mode-owned local state. Modes populate
     /// locals via the `BufferLocal` typed-map during
     /// `on_activate`; the App routes `&mut BufferLocals`

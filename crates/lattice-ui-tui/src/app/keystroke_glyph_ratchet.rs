@@ -35,15 +35,20 @@
 //!
 //! ## Steady state, not first keystroke — this is load-bearing
 //!
-//! Cost is **not** stable across a typing run. The first ~25–50
-//! keystrokes are cheap; then an expensive path engages and stays
-//! engaged. [`WARMUP`] burns those, so what is recorded is what a user
-//! typing continuously actually experiences.
+//! Cost is **not** stable across a typing run. The async cells worker
+//! publishes its first `DisplayMatrix` only after a number of keystrokes
+//! proportional to document size; until it exists the incremental
+//! rebuild has nothing to reuse and no-ops, so early keystrokes are
+//! cheap and unrepresentative. [`WARMUP`] burns them.
 //!
-//! A short measurement sees only the cheap prefix. That is very likely
-//! how CLAUDE.md's descriptive "≈0.7 ms p50 (TUI, debug build,
-//! 2300-line file)" arose: it matches this file's *pre-warm* number
-//! almost exactly, and is ~10× under the steady state at that size.
+//! ## Pane geometry must be set, not just `Editor::viewport_height`
+//!
+//! [`booted`] sets the **pane's** `viewport_height`. The cells worker's
+//! chunked-mode threshold reads that, and `pick_chunk_size` returns
+//! `WholeDoc` whenever it is 0 — so a harness that sets only the editor
+//! field silently measures one whole-document chunk at every size. That
+//! mistake produced a first round of numbers from this file that were
+//! pure artefact (10 000 lines "measured" 34.9 ms; it is 1.6 ms).
 //!
 //! ## Why the gates are shaped this way
 //!
@@ -92,13 +97,14 @@ const LARGE_LINES: usize = 100_000;
 /// from release benches — see `docs/dev/operations/benchmarks.md`.
 ///
 /// **These move DOWN.** To lower one: run the job, read the `[ratchet]`
-/// line, commit the new value with the change that earned it. Two of the
-/// three are high because of the defect in
+/// line, commit the new value with the change that earned it. `SMALL` is
+/// ~10× the other two because of the open defect in
 /// [`keystroke_to_glyph_is_flat_across_file_size`], not because the path
-/// is inherently costly; fixing it should collapse them toward the
+/// is inherently costly: with `display.indent-guides=off` every corpus
+/// measures ~760 us. Fixing that collapses all three to roughly the
 /// `LARGE` row.
 const BASELINE_P99_SMALL: Duration = Duration::from_millis(9);
-const BASELINE_P99_MEDIUM: Duration = Duration::from_millis(37);
+const BASELINE_P99_MEDIUM: Duration = Duration::from_millis(3);
 const BASELINE_P99_LARGE: Duration = Duration::from_millis(2);
 
 /// Headroom over a baseline before failing. Loose on purpose: `ci.yml`
@@ -138,6 +144,20 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 fn booted(lines: usize) -> App {
     let mut app = app_with(&synthetic_rust_source(lines), 60);
     app.mutate_editor(move |e| {
+        // Pane geometry, NOT just `Editor::viewport_height`. The cells
+        // worker's chunked-mode threshold reads the PANE's height
+        // (`PaneCellsInputs::viewport_height`, sourced from
+        // `PaneState`), and `pick_chunk_size` returns `WholeDoc`
+        // whenever that is 0 — so a harness that only sets the editor
+        // field measures a single whole-document chunk and an O(file)
+        // rebuild per keystroke that production never performs. In
+        // production the renderer supplies this via
+        // `EditorCommand::SetPaneViewport` from the terminal size.
+        {
+            let pane = e.pane_tree.active_mut();
+            pane.viewport_height = 60;
+            pane.viewport_width = 200;
+        }
         e.cursor.line = (lines / 2) as u32;
         e.cursor.byte = 0;
         e.scroll = (lines / 2).saturating_sub(30) as u32;
@@ -262,43 +282,46 @@ perf_gate!(
 ///
 /// Ignored so the suite stays green while the defect stays executable
 /// rather than prose. Un-ignore when the finding below is fixed, and
-/// collapse the three baselines above toward the `LARGE` row.
+/// lower [`BASELINE_P99_SMALL`] to match the others.
 ///
-/// ## The finding
+/// ## The finding: indent guides are O(covered lines) per keystroke
 ///
-/// Steady-state keystroke→glyph cost is **linear in document line
-/// count** across the range where most source files live, then stops
-/// being observed above a cutoff between 20k and 50k lines. Measured
-/// 2026-08-18, debug, serial, at iteration 199:
+/// `sync_rebuild_pane_on_edit` calls `publish_indent_guides` over the
+/// whole covered matrix on **every keystroke**. Coverage is the whole
+/// document below `cells_worker::WINDOW_CAP_LINES` (2048) and a
+/// viewport window above it, so the cost is O(file) for the file sizes
+/// most source code actually occupies.
+///
+/// Toggling `display.indent-guides` is the controlled experiment
+/// (debug, serial, p50):
 ///
 /// ```text
-///   lines:  2 000   3 000   5 000   8 000  10 000  20 000  50 000  100 000
-///   steady:  7.6ms  10.9ms  17.5ms  27.7ms  34.2ms  69.9ms  0.62ms   0.69ms
+///                  guides on   guides off
+///    2 000 lines     7.86 ms      762 us
+///   10 000 lines     1.63 ms      752 us
 /// ```
 ///
-/// A flat **~3.5 µs per line** from 2k to 20k. Two consequences:
+/// With guides off the path is **flat across file size** — the
+/// O(viewport) property paramount goal #1 requires. With them on, a
+/// 2 000-line file costs 10x what it should, and ~5x what a 10 000-line
+/// file costs, because the smaller file is fully resident while the
+/// larger one is windowed.
 ///
-/// 1. A 20 000-line file costs ~70 ms per keystroke in debug — eight
-///    120 Hz frames — while a 100 000-line file costs 0.62 ms. The
-///    common case pays; the exotic one does not.
-/// 2. The cost engages only after ~25–50 keystrokes (before that every
-///    size measures ~0.7 ms), so any short measurement misses it
-///    entirely. [`WARMUP`] exists for this reason.
+/// Indent guides landed 2026-08-16 (IG.0-IG.6), so this is a recent
+/// regression rather than long-standing debt.
 ///
-/// ## What is *not* yet established
+/// ## What the fix has to respect
 ///
-/// The mechanism. `cells_worker::WINDOW_CAP_LINES` (2048) was the first
-/// suspect and is **not** it — the linear band starts below that cap and
-/// continues well past it, and `pick_chunk_size` only special-cases
-/// `line_count <= 4 × viewport_height`. The leading hypothesis is that
-/// the `O(file)` work is asynchronous and, above the cutoff, has simply
-/// not *landed* within a keystroke — which would make 50k/100k's 0.62 ms
-/// stale-cell work-not-yet-done rather than a virtue, and the defect
-/// worse than the table suggests rather than better. Confirming that
-/// needs a debugging pass, not more measurement.
+/// `indent-guides.md` deliberately produces the layer beside the pane's
+/// `DisplayMatrix` in the same `cells_worker` pass, because that is what
+/// gives every visible pane coverage and keeps the active-block
+/// highlight off the worker. A fix must keep that placement and make
+/// the *extent computation* incremental or viewport-scoped — not move
+/// guide production somewhere that reintroduces the problems that
+/// placement solved.
 #[test]
-#[ignore = "FAILS: steady-state keystroke cost is O(file) between ~2k and ~20k \
-            lines (~3.5us/line). See this test's docs; un-ignore when fixed."]
+#[ignore = "FAILS: publish_indent_guides is O(covered lines) on the keystroke \
+            path. See this test's docs; un-ignore when fixed."]
 fn keystroke_to_glyph_is_flat_across_file_size() {
     let (small, _) = record(SMALL_LINES);
     let (medium, _) = record(MEDIUM_LINES);
@@ -311,13 +334,13 @@ fn keystroke_to_glyph_is_flat_across_file_size() {
     eprintln!(
         "[ratchet] scale {SMALL_LINES}/{MEDIUM_LINES}/{LARGE_LINES} lines: \
          {small:?} / {medium:?} / {large:?} \
-         (spread {spread:.1}×, tolerance {SCALE_TOLERANCE})"
+         (spread {spread:.1}x, tolerance {SCALE_TOLERANCE})"
     );
 
     assert!(
         spread <= SCALE_TOLERANCE,
-        "keystroke→glyph cost spread {spread:.1}× across {SMALL_LINES}–{LARGE_LINES} \
-         lines (tolerance {SCALE_TOLERANCE}×). The keystroke path must be \
+        "keystroke->glyph cost spread {spread:.1}x across {SMALL_LINES}-{LARGE_LINES} \
+         lines (tolerance {SCALE_TOLERANCE}x). The keystroke path must be \
          O(viewport), not O(file) — paramount goal #1, and the property that keeps \
          latency flat as files grow."
     );

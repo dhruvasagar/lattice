@@ -305,7 +305,7 @@ it is bounded by the covered window, not by the file:
 
 | `guide_build` (250-row window) | 600 lines | 2400 lines | 9600 lines |
 |---|---|---|---|
-| build + per-row resolution | **33.8 µs** | **33.8 µs** | **32.5 µs** |
+| build + per-row resolution | **23.5 µs** | **23.4 µs** | **23.4 µs** |
 
 Flat to within noise across a 16× file-size range. That is the property the
 bench exists for: a version that walked the whole rope would look fine on the
@@ -314,29 +314,42 @@ bench exists for: a version that walked the whole rope would look fine on the
 **But the covered window is not always 250 rows** — below
 `cells_worker::WINDOW_CAP_LINES` (2048) the display matrix covers the *whole
 document*, so on a normal source file the table above measures a case the
-keystroke path does not take (2026-08-18):
+keystroke path does not take. Two defects lived in that gap, both fixed
+2026-08-18:
 
 | `guide_build_whole_doc` | 767 lines | 2039 lines | 3071 lines |
 |---|---|---|---|
-| streaming read | **158 µs** | **746 µs** | **1.52 ms** |
-| per-line descent (control) | **255 µs** | **982 µs** | **1.86 ms** |
+| per line | **93 ns** | **92 ns** | **94 ns** |
+| build | **71.4 µs** | **188 µs** | **289 µs** |
+| ⟵ before the row sweep | 158 µs | 746 µs | 1.52 ms |
+| ⟵ before both (per-line descent) | 255 µs | 982 µs | 1.86 ms |
 
-Two findings, and they are separate:
+1. **The read pattern.** The layer fetched its covered range one line at a time
+   — one `O(log n)` rope descent per line. It now reads that range from a
+   single `Lines` cursor (`Buffer::line_shapes_from`). The bottom row is the
+   old pattern, kept as a permanent control because the two are
+   indistinguishable in the *output*: only the clock tells them apart, so a
+   refactor that reintroduced per-line access would pass every guide test.
+2. **The per-row resolution was `O(covered lines × blocks)`** — every covered
+   line tested every block in the window, and both factors grow with the file,
+   so per-line cost rose 206 → 365 → 494 ns across these three sizes. The
+   blocks are sorted by opener, so a forward cursor plus an active set replaces
+   the scan; `active`'s length is the nesting depth, single digits in real
+   code. Per-line cost is now **flat at ~93 ns** — the pass is linear in
+   covered lines, which is what it always claimed to be.
 
-1. **The read pattern.** The layer used to fetch its covered range one line at
-   a time — one `O(log n)` rope descent per line. It now reads that range from
-   a single `Lines` cursor (`Buffer::line_shapes_from`); the control row is the
-   old pattern, kept because the two are indistinguishable in the *output* and
-   only the clock tells them apart. Worth 24–38% here, and far more in a debug
-   build, where the keystroke→glyph ratchet's 2 000-line corpus went 7.86 ms →
-   1.38 ms p50 (that corpus is unindented, so the descents were nearly its
-   whole guide cost).
-2. **The per-row resolution is still `O(lines × blocks)`** — every covered line
-   tests every block in the window. Per-line cost rises 206 ns → 365 ns → 494 ns
-   across the three sizes above, which is that product showing through, and it
-   is what the remaining 2.2× spread in the keystroke ratchet is made of. The
-   blocks are sorted by opener, so a sweep with an active set replaces it; not
-   yet done.
+The debug-build keystroke→glyph ratchet is where this was found and where it
+matters. Its 2 000-line corpora, p50:
+
+| ratchet corpus, 2 000 lines | before | after |
+|---|---|---|
+| flat (every line at column 0) | 7.86 ms | 1.34 ms |
+| nested, ~600 blocks | 14.69 ms | 2.10 ms |
+
+The nested row is the one to read: real source is indented, and at nearly two
+60 Hz frames per keystroke it was a paramount-goal-#1 violation that no gate
+was watching — the ratchet's only corpus was flat, and a flat corpus has no
+blocks. `keystroke_to_glyph_nested_within_baseline` now covers it.
 
 **The renderer side** — the active-block pick, run per frame per pane on the UI
 thread. This is the price of a zero-lag active guide: rather than publish an

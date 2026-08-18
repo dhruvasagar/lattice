@@ -222,17 +222,48 @@ where
     // thousands of allocations per keystroke to represent nothing.
     let empty_row: Arc<[GuideMark]> = Arc::from([] as [GuideMark; 0]);
     let mut marks: Vec<GuideMark> = Vec::new();
+    // Sweep, not scan. Testing every block on every row is
+    // `O(covered lines × blocks)`, and both factors grow with the file:
+    // a 3 000-line source has ~800 blocks, so the naive form is ~2.4 M
+    // predicate calls per keystroke and its per-line cost rises with
+    // file size — the shape a keystroke path must never have.
+    //
+    // `blocks` is sorted by opener, so one forward cursor admits each
+    // block exactly once and `active` holds only those still open. Its
+    // length is the *nesting depth* at this row, single digits in real
+    // code, which is what makes the pass linear in covered lines.
+    //
+    // `active` inherits `blocks`' `(start_line, col)` order and both
+    // `push` and `retain` preserve it, so a row's marks come out in the
+    // same order the scan produced — outermost guide first.
+    let mut active: Vec<usize> = Vec::new();
+    let mut admitted = 0usize;
     let rows: Vec<Arc<[GuideMark]>> = (lo..hi)
         .map(|line| {
+            while let Some(b) = blocks.get(admitted).filter(|b| b.start_line <= line) {
+                // A block that both opened and closed above the window
+                // is admitted and dropped in the same step.
+                if b.end_line >= line {
+                    active.push(admitted);
+                }
+                admitted += 1;
+            }
+            active.retain(|&i| blocks[i].end_line >= line);
+
             let depth = indents[(line - walk_start) as usize].depth;
             // Reused across iterations: `Arc::from(&marks[..])` copies
             // out, so the buffer's capacity survives to the next line
             // instead of being reallocated per row.
             marks.clear();
             marks.extend(
-                blocks
+                active
                     .iter()
-                    .enumerate()
+                    .map(|&i| (i, blocks[i]))
+                    // Still the shared predicate rather than an inlined
+                    // depth test: `paints_on` is what guarantees a mark
+                    // never lands on a column holding text, and one
+                    // implementation of that is worth more than the
+                    // redundant range check it re-does here.
                     .filter(|(_, b)| b.paints_on(line, depth))
                     .map(|(i, b)| GuideMark {
                         col: b.col,
@@ -439,6 +470,59 @@ mod tests {
              line or two, got {} streams",
             opened.get()
         );
+    }
+
+    #[test]
+    fn the_row_sweep_agrees_with_testing_every_block() {
+        // The sweep's whole justification is that it visits fewer blocks
+        // per row while producing the same rows — including their ORDER,
+        // which renderers see. So the reference implementation is the
+        // definition: apply `paints_on` to every published block, in
+        // published order, on every covered line.
+        //
+        // The corpus nests three deep, closes siblings at every level and
+        // carries blank lines inside blocks, because those are the rows
+        // where "still open" and "opens here" disagree.
+        let mut src: Vec<String> = Vec::new();
+        for i in 0..40 {
+            src.push(format!("fn f{i}() {{"));
+            src.push("    let mut n = 0;".into());
+            src.push(String::new());
+            src.push("    if n > 0 {".into());
+            src.push("        while n > 0 {".into());
+            src.push("            n -= 1;".into());
+            src.push(String::new());
+            src.push("        }".into());
+            src.push("    }".into());
+            src.push("}".into());
+            src.push(String::new());
+        }
+        let n = src.len() as u32;
+
+        for (lo, hi) in [(0, n), (0, 25), (137, n), (150, 260), (n - 1, n)] {
+            let g = build_indent_guides(shapes_of(&src), n, &unit(), lo, hi, MatrixVersion::ZERO);
+            let shapes = shapes_of(&src);
+            for line in lo..hi {
+                let depth = shapes(line)
+                    .next()
+                    .and_then(|s| (!s.blank).then_some(s.columns));
+                let expected: Vec<GuideMark> = g
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.paints_on(line, depth))
+                    .map(|(i, b)| GuideMark {
+                        col: b.col,
+                        block: i as u16,
+                    })
+                    .collect();
+                assert_eq!(
+                    g.marks_for_line(line),
+                    &expected[..],
+                    "window {lo}..{hi}, line {line}"
+                );
+            }
+        }
     }
 
     #[test]

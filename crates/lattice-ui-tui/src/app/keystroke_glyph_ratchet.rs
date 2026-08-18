@@ -108,6 +108,11 @@ const LARGE_LINES: usize = 100_000;
 /// fully-resident 2 000-line file do more work than a windowed
 /// 100 000-line one.
 const BASELINE_P99_SMALL: Duration = Duration::from_millis(2);
+/// [`SMALL_LINES`] of *nested* source — the corpus that exercises the
+/// indent-guide layer's per-row resolution. See
+/// [`keystroke_to_glyph_nested_within_baseline`].
+const BASELINE_P99_NESTED: Duration = Duration::from_millis(3);
+
 const BASELINE_P99_MEDIUM: Duration = Duration::from_millis(3);
 const BASELINE_P99_LARGE: Duration = Duration::from_millis(2);
 
@@ -139,6 +144,37 @@ fn synthetic_rust_source(line_count: usize) -> String {
         .collect()
 }
 
+/// `line_count` lines of *nested* Rust-ish source, three levels deep,
+/// with blank lines inside every block.
+///
+/// [`synthetic_rust_source`] is flat — every line starts at column 0 —
+/// which makes it blind to anything whose cost scales with indentation
+/// structure. That blindness was load-bearing once: the indent-guide
+/// layer's per-row resolution was `O(covered lines × blocks)`, and the
+/// flat corpus has no blocks, so the gates below could not see it at all
+/// (it showed up in `benches/indent_guides.rs` instead). Real source is
+/// nested; the ratchet needs one corpus that is.
+///
+/// Sized at [`SMALL_LINES`] deliberately — that is the band where the
+/// display matrix covers the whole document, so the guide layer is
+/// rebuilt over every line on every keystroke.
+fn synthetic_nested_source(line_count: usize) -> String {
+    let mut out = String::new();
+    for i in 0..line_count.div_ceil(10) {
+        out.push_str(&format!("fn nested_{i:04}(input: &str) -> usize {{\n"));
+        out.push_str("    let mut total = input.len();\n");
+        out.push('\n');
+        out.push_str("    if total > 0 {\n");
+        out.push_str("        for byte in input.bytes() {\n");
+        out.push_str("            total += byte as usize;\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+        out.push_str("    total\n");
+        out.push_str("}\n");
+    }
+    out
+}
+
 /// Nearest-rank percentile over a sorted sample vec.
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
     debug_assert!(!sorted.is_empty());
@@ -152,7 +188,13 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 /// Scrolling to the middle matters: composing at the top of a document
 /// hits cache-warm, offset-free paths that would understate the cost.
 fn booted(lines: usize) -> App {
-    let mut app = app_with(&synthetic_rust_source(lines), 60);
+    booted_over(&synthetic_rust_source(lines), lines)
+}
+
+/// [`booted`] over a caller-supplied corpus. `lines` is what the cursor
+/// and scroll are positioned by, so it must describe `src`.
+fn booted_over(src: &str, lines: usize) -> App {
+    let mut app = app_with(src, 60);
     app.mutate_editor(move |e| {
         // Pane geometry, NOT just `Editor::viewport_height`. The cells
         // worker's chunked-mode threshold reads the PANE's height
@@ -337,6 +379,40 @@ perf_gate!(
     SMALL_LINES,
     BASELINE_P99_SMALL
 );
+
+/// The same size as [`keystroke_to_glyph_small_within_baseline`], over
+/// *nested* source — see [`synthetic_nested_source`] for why a flat
+/// corpus cannot stand in for one.
+///
+/// This is the gate that watches the indent-guide layer's per-row
+/// resolution, and the reason it is worth its own corpus is the size of
+/// what it was hiding. That resolution tested every block on every
+/// covered row; at 2 000 nested lines (~600 blocks) it cost **14.69 ms
+/// p50** — nearly two frames at 60 Hz, per keystroke — while the flat
+/// corpus at the same line count read 1.41 ms and reported nothing
+/// wrong. The active-set sweep (2026-08-18) brought it to **2.10 ms**.
+///
+/// Nested still costs ~50% more than flat here, and that residue is
+/// real work: this corpus has guides to resolve, mark vectors to
+/// allocate and glyphs to substitute, where the flat one has none.
+#[test]
+#[ignore = "perf gate: needs a quiet machine. Run via ci.yml's keystroke-ratchet \
+            job, or locally with `cargo test -p lattice-ui-tui --lib \
+            keystroke_glyph_ratchet -- --ignored --test-threads=1`"]
+fn keystroke_to_glyph_nested_within_baseline() {
+    let mut app = booted_over(&synthetic_nested_source(SMALL_LINES), SMALL_LINES);
+    let samples = sample(&mut app);
+    let (p50, p95, p99) = (
+        percentile(&samples, 0.50),
+        percentile(&samples, 0.95),
+        percentile(&samples, 0.99),
+    );
+    eprintln!(
+        "[ratchet] keystroke_to_glyph nested lines={SMALL_LINES} build=debug \
+         p50={p50:?} p95={p95:?} p99={p99:?}"
+    );
+    gate(SMALL_LINES, p99, BASELINE_P99_NESTED);
+}
 perf_gate!(
     keystroke_to_glyph_medium_within_baseline,
     MEDIUM_LINES,

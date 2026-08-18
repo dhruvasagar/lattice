@@ -214,11 +214,13 @@ jobs:
     # slowed by ~30 s of timing loops; `--ignored` opts them in here.
     # `--skip keystroke_to_glyph_is_flat_across_file_size` excludes the
     # scale-invariance gate. It PASSES on a quiet machine as of
-    # 2026-08-18 (spread 2.2× against a 2.5× tolerance), but the guide
-    # pass is still O(covered lines) and that margin is thinner than
-    # this runner's measured ~20% variance — enabling it here would
-    # install a flapping gate. Remove the skip when the residual term
-    # is gone and the spread sits near 1.0.
+    # 2026-08-18 (spread 2.1× against a 2.5× tolerance), but the guide
+    # pass is still O(covered lines) — linear now rather than
+    # lines×blocks, but still proportional to a window that IS the file
+    # below 2048 lines. That margin is thinner than this runner's
+    # measured ~20% variance, so enabling it here would install a
+    # flapping gate. Remove the skip when the layer is rebuilt
+    # incrementally and the spread sits near 1.0.
     name: keystroke-ratchet
     runs-on: ubuntu-latest
     steps:

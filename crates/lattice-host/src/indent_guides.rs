@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use lattice_cells::MatrixVersion;
 use lattice_core::indent::IndentUnit;
-use lattice_core::indent_blocks::{IndentBlock, LineIndent, indent_blocks, is_closer_line};
+use lattice_core::indent_blocks::{IndentBlock, LineIndent, indent_blocks};
 
 /// One guide occupying one column of one row.
 ///
@@ -171,7 +171,7 @@ pub fn build_indent_guides<F>(
     version: MatrixVersion,
 ) -> IndentGuides
 where
-    F: FnMut(u32) -> Option<String>,
+    F: FnMut(u32) -> Option<lattice_core::LineShape>,
 {
     let hi = hi.min(line_count);
     let lo = lo.min(hi);
@@ -182,14 +182,15 @@ where
     let walk_start = scan_back_to_top_level(&mut lines, lo);
     let indents: Vec<LineIndent> = (walk_start..hi)
         .map(|i| {
-            let line = lines(i).unwrap_or_default();
+            let shape = lines(i).unwrap_or(lattice_core::LineShape {
+                blank: true,
+                columns: 0,
+                closer: false,
+                unindented: false,
+            });
             LineIndent {
-                depth: if IndentUnit::is_blank(&line) {
-                    None
-                } else {
-                    Some(unit.columns_of(&line))
-                },
-                closer: is_closer_line(&line),
+                depth: (!shape.blank).then_some(shape.columns),
+                closer: shape.closer,
             }
         })
         .collect();
@@ -203,19 +204,36 @@ where
         })
         .collect();
 
+    // One shared empty row, cloned by refcount for every line that
+    // paints no guide. This is the common case by a wide margin — every
+    // top-level line, every blank line, every line in an unnested file —
+    // and the layer is rebuilt over its whole covered range on each
+    // keystroke, so allocating a fresh `Arc<[GuideMark]>` per line was
+    // thousands of allocations per keystroke to represent nothing.
+    let empty_row: Arc<[GuideMark]> = Arc::from([] as [GuideMark; 0]);
+    let mut marks: Vec<GuideMark> = Vec::new();
     let rows: Vec<Arc<[GuideMark]>> = (lo..hi)
         .map(|line| {
             let depth = indents[(line - walk_start) as usize].depth;
-            let marks: Vec<GuideMark> = blocks
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.paints_on(line, depth))
-                .map(|(i, b)| GuideMark {
-                    col: b.col,
-                    block: i as u16,
-                })
-                .collect();
-            Arc::from(marks.into_boxed_slice())
+            // Reused across iterations: `Arc::from(&marks[..])` copies
+            // out, so the buffer's capacity survives to the next line
+            // instead of being reallocated per row.
+            marks.clear();
+            marks.extend(
+                blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.paints_on(line, depth))
+                    .map(|(i, b)| GuideMark {
+                        col: b.col,
+                        block: i as u16,
+                    }),
+            );
+            if marks.is_empty() {
+                Arc::clone(&empty_row)
+            } else {
+                Arc::from(&marks[..])
+            }
         })
         .collect();
 
@@ -232,14 +250,13 @@ where
 /// sees every block that reaches into the window.
 fn scan_back_to_top_level<F>(lines: &mut F, lo: u32) -> u32
 where
-    F: FnMut(u32) -> Option<String>,
+    F: FnMut(u32) -> Option<lattice_core::LineShape>,
 {
     let floor = lo.saturating_sub(MAX_LOOKBACK);
     let mut i = lo;
     while i > floor {
         i -= 1;
-        let line = lines(i).unwrap_or_default();
-        if !IndentUnit::is_blank(&line) && !line.starts_with([' ', '\t']) {
+        if lines(i).is_some_and(|s| s.unindented) {
             return i;
         }
     }
@@ -258,7 +275,11 @@ mod tests {
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let n = lines.len() as u32;
         build_indent_guides(
-            |i| lines.get(i as usize).cloned(),
+            |i| {
+                lines
+                    .get(i as usize)
+                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+            },
             n,
             &unit(),
             0,
@@ -325,7 +346,11 @@ mod tests {
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let n = lines.len() as u32;
         let g = build_indent_guides(
-            |i| lines.get(i as usize).cloned(),
+            |i| {
+                lines
+                    .get(i as usize)
+                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+            },
             n,
             &unit(),
             2,
@@ -349,7 +374,11 @@ mod tests {
         let src = "fn f() {\n    a\n}\nfn g() {\n    b\n}";
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let g = build_indent_guides(
-            |i| lines.get(i as usize).cloned(),
+            |i| {
+                lines
+                    .get(i as usize)
+                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+            },
             6,
             &unit(),
             4,
@@ -387,7 +416,11 @@ mod tests {
         };
         let lines = ["a:", "    b"];
         let g = build_indent_guides(
-            |i| lines.get(i as usize).map(|s| s.to_string()),
+            |i| {
+                lines
+                    .get(i as usize)
+                    .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+            },
             2,
             &unit(),
             0,

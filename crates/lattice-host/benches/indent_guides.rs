@@ -89,7 +89,11 @@ fn bench_build(c: &mut Criterion) {
         group.bench_function(format!("{count}_lines_250_row_window"), |b| {
             b.iter(|| {
                 black_box(build_indent_guides(
-                    |i| lines.get(i as usize).cloned(),
+                    |i| {
+                        lines
+                            .get(i as usize)
+                            .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+                    },
                     count,
                     &unit(),
                     lo,
@@ -110,7 +114,11 @@ fn bench_active_pick(c: &mut Criterion) {
     let lo = count / 2;
     let hi = (lo + 250).min(count);
     let guides = build_indent_guides(
-        |i| lines.get(i as usize).cloned(),
+        |i| {
+            lines
+                .get(i as usize)
+                .map(|l| lattice_core::LineShape::from_line(l, &unit()))
+        },
         count,
         &unit(),
         lo,

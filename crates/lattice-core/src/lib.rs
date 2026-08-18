@@ -39,6 +39,7 @@ pub use crate::folding::{
     ProviderKind,
 };
 pub use crate::indent::{IndentMethod, IndentUnit};
+pub use crate::indent_blocks::LineShape;
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
 

@@ -158,6 +158,96 @@ pub fn line_indents<'a>(
 /// The heuristic is deliberately narrow: bracket characters plus the
 /// punctuation that trails them. `} else {` is not a closer — it opens a new
 /// block, and swallowing it would merge two sibling blocks into one.
+/// The only three facts the indent-guide builder needs about a line,
+/// in a `Copy` struct so it can be produced without materialising the
+/// line's text.
+///
+/// Replaces three separate whole-line predicates
+/// ([`IndentUnit::is_blank`], [`IndentUnit::columns_of`],
+/// [`is_closer_line`]) that each took `&str` — which forced the caller
+/// to allocate a `String` per line. On the keystroke path that was one
+/// allocation per *covered* line per keystroke, and coverage is the
+/// whole document below `WINDOW_CAP_LINES`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineShape {
+    /// Every character is ' ', '\t' or '\r' — [`IndentUnit::is_blank`].
+    pub blank: bool,
+    /// Display columns of leading whitespace — [`IndentUnit::columns_of`].
+    pub columns: u16,
+    /// Non-blank and every non-whitespace character closes something —
+    /// [`is_closer_line`].
+    pub closer: bool,
+    /// Non-blank and starting hard against column 0. The
+    /// `scan_back_to_top_level` test; equivalent to
+    /// `!blank && columns == 0`, precomputed for clarity at the call
+    /// site.
+    pub unindented: bool,
+}
+
+impl LineShape {
+    /// Stream `chars` (one line, trailing newline optional) into a
+    /// shape. Allocation-free, and **breaks early**: once the line is
+    /// known non-blank and known not-all-closers, no later character
+    /// can change any field, which is the common case after one or two
+    /// content characters.
+    ///
+    /// Deliberately mirrors the three predicates byte-for-byte rather
+    /// than approximating them:
+    /// - indent scanning stops at the first char that is not ' ' or
+    ///   '\t', matching `columns_of`'s `break`;
+    /// - "blank" tests membership of `{' ', '\t', '\r'}` rather than
+    ///   Unicode whitespace, matching `is_blank` (so U+00A0 is content);
+    /// - closer-ness ignores whitespace and tests the same six
+    ///   characters `is_closer_line` does.
+    pub fn from_chars<I: Iterator<Item = char>>(chars: I, unit: &IndentUnit) -> Self {
+        let tab = unit.tab_width().max(1);
+        let mut columns: u16 = 0;
+        let mut in_indent = true;
+        let mut saw_content = false;
+        let mut all_closers = true;
+        for c in chars {
+            if c == '\n' {
+                break;
+            }
+            if in_indent {
+                match c {
+                    ' ' => {
+                        columns = columns.saturating_add(1);
+                        continue;
+                    }
+                    '\t' => {
+                        columns = (columns / tab).saturating_add(1).saturating_mul(tab);
+                        continue;
+                    }
+                    _ => in_indent = false,
+                }
+            }
+            if c == ' ' || c == '\t' || c == '\r' {
+                continue;
+            }
+            saw_content = true;
+            if !matches!(c, ')' | ']' | '}' | ',' | ';' | '?') {
+                all_closers = false;
+                // Nothing later can change `blank`, `closer` or
+                // `columns` now — stop reading the line.
+                break;
+            }
+        }
+        Self {
+            blank: !saw_content,
+            columns,
+            closer: saw_content && all_closers,
+            unindented: saw_content && columns == 0,
+        }
+    }
+
+    /// Convenience for callers that already hold the text (tests, and
+    /// any path where the line was materialised for another reason).
+    pub fn from_line(line: &str, unit: &IndentUnit) -> Self {
+        Self::from_chars(line.chars(), unit)
+    }
+}
+
 pub fn is_closer_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {

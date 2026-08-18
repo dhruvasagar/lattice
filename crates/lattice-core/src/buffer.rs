@@ -142,6 +142,29 @@ impl Buffer {
         })
     }
 
+    /// Allocation-free [`LineShape`] for one line — the indent-guide
+    /// builder's read path.
+    ///
+    /// [`Self::line`] allocates a `String` per call; the guide layer is
+    /// rebuilt over its whole *covered* range on every keystroke, which
+    /// below `WINDOW_CAP_LINES` is the whole document. Streaming the
+    /// rope slice's chars instead keeps that pass allocation-free, and
+    /// `LineShape::from_chars` stops reading each line as soon as the
+    /// answer cannot change.
+    pub fn line_shape(
+        &self,
+        line: u32,
+        unit: &crate::indent::IndentUnit,
+    ) -> Option<crate::indent_blocks::LineShape> {
+        if line >= self.rope_line_count() {
+            return None;
+        }
+        Some(crate::indent_blocks::LineShape::from_chars(
+            self.rope.line(line as usize).chars(),
+            unit,
+        ))
+    }
+
     /// Byte length of one line excluding the trailing newline.
     /// O(log n). Cheap helper for renderers that want to know a
     /// line's width without materialising its text.

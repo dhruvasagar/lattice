@@ -97,6 +97,31 @@ fn rs_for(
     syntax: Option<Arc<lattice_syntax::SyntaxHandle>>,
     display_cell: Arc<ArcSwap<DisplayMatrix>>,
 ) -> ArcSwap<RenderState> {
+    rs_for_with_strip(
+        snapshot,
+        version,
+        last_edit,
+        matrix_cell,
+        syntax,
+        display_cell,
+        &[],
+    )
+}
+
+/// TC.3b: the same fixture with a populated sticky-context strip, so the
+/// worker's per-line row build is measurable. Every other bench here stubs
+/// `sticky_context_lines` to empty, which means the strip's cost has never
+/// appeared in a bench at all — the layer was invisible to the ratchet.
+#[allow(clippy::too_many_arguments)]
+fn rs_for_with_strip(
+    snapshot: Arc<DocumentSnapshot>,
+    version: MatrixVersion,
+    last_edit: Option<EditDelta>,
+    matrix_cell: Arc<ArcSwap<CellMatrix>>,
+    syntax: Option<Arc<lattice_syntax::SyntaxHandle>>,
+    display_cell: Arc<ArcSwap<DisplayMatrix>>,
+    sticky_lines: &[u32],
+) -> ArcSwap<RenderState> {
     use lattice_core::BufferId;
     use lattice_core::ui::pane::PaneId;
     let inlay_hints: Arc<[InlayHintRow]> = Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice());
@@ -106,7 +131,7 @@ fn rs_for(
         indent_guides: Default::default(),
         indent_unit: lattice_core::IndentUnit::default(),
         indent_guides_enabled: true,
-        sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
+        sticky_context_lines: std::sync::Arc::from(sticky_lines.to_vec().into_boxed_slice()),
         sticky_context_line_numbers: true,
         sticky_context_separator: None,
         sticky_context: Default::default(),
@@ -566,8 +591,61 @@ fn bench_display_edit_path(c: &mut Criterion) {
     group.finish();
 }
 
+/// TC.3b: the sticky-context row build, against strip depth.
+///
+/// The strip rebuilds only when its resolved LINE LIST changes — a cursor
+/// moving within one scope is a no-op — so the cost that matters is the
+/// rebuild, measured here at 0 (the baseline every other bench uses), 3 and 10
+/// pinned rows over a highlighted 5k-line document. Each row is one
+/// `highlight_lines` call plus one cell materialisation, so the shape must
+/// stay LINEAR in depth and independent of file size; a regression to
+/// re-deriving the whole matrix per row would show as super-linear growth
+/// here. Recorded in `docs/dev/operations/benchmarks.md`.
+fn bench_sticky_context_build(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cells_worker_sticky_context");
+    let line_count = 5_000usize;
+    let doc = synthetic_rust_doc(line_count);
+    let text = doc.text();
+    let snapshot = Arc::new(DocumentSnapshot::__bench_from_document(&doc));
+    let mut syn = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+        .unwrap()
+        .unwrap();
+    syn.parse_at(&text, 1);
+    let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(syn));
+    let version = MatrixVersion {
+        text: 1,
+        ..MatrixVersion::ZERO
+    };
+
+    for &depth in &[0usize, 3, 10] {
+        // Spread the pinned lines through the file so the far ones are
+        // genuinely outside the built chunk — the case the worker exists for.
+        let lines: Vec<u32> = (0..depth).map(|i| (i * 97) as u32).collect();
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{depth}_rows")),
+            &(snapshot.clone(), handle.clone(), lines),
+            |b, (snap, handle, lines)| {
+                b.iter(|| {
+                    let rs = rs_for_with_strip(
+                        snap.clone(),
+                        version,
+                        None,
+                        Arc::default(),
+                        Some(handle.clone()),
+                        empty_display(),
+                        lines,
+                    );
+                    black_box(recompute(&rs));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_sticky_context_build,
     bench_full_build,
     bench_incremental_build,
     bench_incremental_build_highlighted,

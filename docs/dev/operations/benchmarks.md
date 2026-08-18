@@ -486,6 +486,65 @@ augmented interval structure, not a reordering.
 
 ---
 
+## TC.3b — sticky-context row build (2026-08-18)
+
+The off-keystroke half. When the resolved line list CHANGES, the cells worker
+builds one row per pinned line: a `highlight_lines` call plus a cell
+materialisation each. A cursor moving within one scope changes nothing and is
+skipped entirely, so this measures the rebuild, not the steady state.
+
+Measured against strip depth over a highlighted 5 000-line Rust document, with
+the pinned lines spread through the file so the far ones are genuinely outside
+the built chunk — the case the worker exists for:
+
+| strip depth | full pane recompute |
+|---|---|
+| 0 rows (baseline) | **1.61 ms** |
+| 3 rows | **1.70 ms** |
+| 10 rows | **1.90 ms** |
+
+**~29 µs per pinned row**, linear in depth and independent of file size. That
+is the number the design's central claim rests on: the worker can build a row
+for any line whether or not a chunk covers it, and doing so costs a highlight
+call rather than a matrix rebuild. A regression to re-deriving the matrix per
+row shows here as super-linear growth against depth.
+
+The default strip is unbounded in depth (`max-lines = 0`) and bounded by
+`max-viewport-fraction = 33`, so a 30-row pane tops out near 10 rows — the
+right-hand column above is the realistic worst case, not the typical one.
+
+---
+
+## TC.10 — the whole-buffer structural query (2026-08-18)
+
+The plugin's only expensive call: one `run-query-ranges` per reparse, off
+thread. Rust, release wasm, measured on this repo's `dispatch.rs` and multiples
+of it.
+
+| lines | `run-query` (before) | `run-query-ranges` (after) |
+|---:|---:|---:|
+| 1 000 | 25 ms | **4.6 ms** |
+| 2 500 | 83 ms | **6.0 ms** |
+| 5 000 | 287 ms | **9.0 ms** |
+| 10 000 | 1.18 s | **15 ms** |
+| 20 000 | **TRAP** | **28 ms** |
+| 36 000 | **TRAP** | **52 ms** |
+| 100 000 | — | **135 ms** |
+| 400 000 | — | **534 ms** |
+
+The old shape was superlinear because `run-query` mints one `node` RESOURCE per
+capture — a host table entry with a snapshot bump and a guest-side drop — and a
+whole-file structural query has tens of thousands. Past ~20k lines it exceeded
+the producer's epoch deadline and trapped, which quarantines the plugin for
+every buffer until reload.
+
+The ranges form is **linear at ~1.4 µs/line** with no cliff, which is what let
+`max-file-lines` move 5 000 → 100 000. The ratchet here is the shape: a return
+to per-capture resource churn shows as super-linear growth long before it
+reaches a trap.
+
+---
+
 ## PH7.9 — decoration production (the §7 "status/gutter segment update" gate, 2026-07-13)
 
 The **off-render-path** cost a decoration provider pays per trigger (edit /

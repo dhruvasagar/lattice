@@ -107,6 +107,12 @@ const BASELINE_P99_SMALL: Duration = Duration::from_millis(9);
 const BASELINE_P99_MEDIUM: Duration = Duration::from_millis(3);
 const BASELINE_P99_LARGE: Duration = Duration::from_millis(2);
 
+/// The floor with `display.indent-guides=off` — measured ~760 us p50 at
+/// every corpus size. Shared by both sizes in
+/// [`keystroke_to_glyph_floor_without_indent_guides`] precisely because
+/// it should NOT vary with file size.
+const BASELINE_P99_FLOOR: Duration = Duration::from_millis(2);
+
 /// Headroom over a baseline before failing. Loose on purpose: `ci.yml`
 /// measures ~20% variance on GitHub-hosted runners and a p99 amplifies
 /// tail noise well past a median's, so a tight gate would flap and get
@@ -259,6 +265,66 @@ macro_rules! perf_gate {
             gate($lines, p99, $baseline);
         }
     };
+}
+
+/// The **floor**: what the keystroke path costs with the one known
+/// `O(file)` consumer switched off.
+///
+/// This is the number the indent-guide fix has to restore, pinned so
+/// the gate keeps its teeth while the defect stands. Without it the
+/// only live bars are the guide-inflated ones, and a *second*
+/// regression could hide entirely inside their headroom — 9 ms of
+/// slack at [`SMALL_LINES`] would swallow an 8 ms mistake unnoticed.
+///
+/// It also asserts the property the inflated gates cannot: with guides
+/// off the path is **flat across file size**, so this is the live
+/// evidence that everything else on the keystroke path really is
+/// `O(viewport)` and the guide pass is the sole offender.
+#[test]
+#[ignore = "perf gate: needs a quiet machine. Run via ci.yml's keystroke-ratchet \
+            job, or locally with `cargo test -p lattice-ui-tui --lib \
+            keystroke_glyph_ratchet -- --ignored --test-threads=1`"]
+fn keystroke_to_glyph_floor_without_indent_guides() {
+    let mut small = booted(SMALL_LINES);
+    let mut large = booted(LARGE_LINES);
+    for app in [&mut small, &mut large] {
+        let _ = app
+            .editor
+            .config
+            .set_typed::<lattice_config::core_options::IndentGuides>(false);
+        app.editor.rebuild_option_cache();
+    }
+
+    let small_samples = sample(&mut small);
+    let large_samples = sample(&mut large);
+    let (small_p50, small_p99) = (
+        percentile(&small_samples, 0.50),
+        percentile(&small_samples, 0.99),
+    );
+    let (large_p50, large_p99) = (
+        percentile(&large_samples, 0.50),
+        percentile(&large_samples, 0.99),
+    );
+
+    eprintln!(
+        "[ratchet] keystroke_to_glyph floor (indent-guides=off) build=debug \
+         {SMALL_LINES}: p50={small_p50:?} p99={small_p99:?} | \
+         {LARGE_LINES}: p50={large_p50:?} p99={large_p99:?}"
+    );
+
+    gate(SMALL_LINES, small_p99, BASELINE_P99_FLOOR);
+    gate(LARGE_LINES, large_p99, BASELINE_P99_FLOOR);
+
+    // Flatness, which the guide-inflated gates cannot assert. Same
+    // process, same machine, so the ratio is a property of the code.
+    let ratio = small_p50.as_secs_f64() / large_p50.as_secs_f64().max(f64::EPSILON);
+    assert!(
+        ratio <= SCALE_TOLERANCE,
+        "with indent guides off, keystroke→glyph still scaled {ratio:.2}× from \
+         {LARGE_LINES} to {SMALL_LINES} lines (tolerance {SCALE_TOLERANCE}×). A \
+         SECOND O(file) term has joined the keystroke path — the guide pass was \
+         the only known one when this gate was written."
+    );
 }
 
 perf_gate!(

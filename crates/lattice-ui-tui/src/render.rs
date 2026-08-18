@@ -4577,12 +4577,14 @@ pub(crate) fn compose_pane_lines(
     // rather than given their own painter: two implementations of "paint a
     // pinned row of cells" would drift, and the cells here are already
     // worker-built from the same builder as the document rows.
-    let innermost = sticky_context.rows.len().saturating_sub(1);
+    // TC.12: a trailing separator row is not a scope, so it must not take
+    // the `active` styling meant for the scope the cursor is in.
+    let innermost = sticky_context.innermost_scope();
     for (idx, row) in sticky_context.rows.iter().enumerate() {
         if (out.len() as u32) >= height {
             break;
         }
-        let is_innermost = idx == innermost;
+        let is_innermost = Some(idx) == innermost;
         let vrow = lattice_cells::VirtualRow {
             anchor_line: row.source_line,
             position: lattice_cells::AnchorPosition::Above,
@@ -4606,8 +4608,11 @@ pub(crate) fn compose_pane_lines(
             // for numbers, `:set nonumber` says this pane shows none, and the
             // pane wins — a strip numbered above unnumbered code reads as a
             // stray column.
-            gutter_line: (sticky_context.line_numbers && view.show_line_numbers)
-                .then_some(row.source_line),
+            // A separator mirrors no source line, so it shows no number.
+            gutter_line: (sticky_context.line_numbers
+                && view.show_line_numbers
+                && !(sticky_context.has_separator && idx + 1 == sticky_context.rows.len()))
+            .then_some(row.source_line),
             gutter_fg: sticky_context.line_number_fg,
         };
         out.push(render_virtual_row(view, &vrow, gutter_w, body_col_width));

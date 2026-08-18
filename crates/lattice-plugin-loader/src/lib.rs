@@ -1540,7 +1540,14 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_context_source(component, manifest, tier, PluginBudget::context(), bus)
+            .spawn_context_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::context(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
             .await?;
         // PO.2: attach the boundary tracer so the actor emits a trace record per
         // guest call (a no-op when unwired).

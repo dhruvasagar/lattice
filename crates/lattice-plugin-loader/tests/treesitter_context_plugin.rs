@@ -602,3 +602,107 @@ async fn a_very_large_real_file_still_produces_scopes() {
          superlinear cost"
     );
 }
+
+/// TC.12: `context.disabled-languages` must actually disable a language.
+///
+/// It was registered from TC.5 and read by nobody — the only occurrence of the
+/// name in the whole tree was its own registration. An option that appears in
+/// `:customize`, answers `:set …?`, and changes nothing is worse than an
+/// absent one, because the editor reports a setting it is ignoring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disabled_language_produces_no_scopes() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let sources = rig.contexts.load().sources();
+
+    let mut syn = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+    syn.parse(SRC);
+    let snapshot = || -> Arc<dyn std::any::Any + Send + Sync> {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(SRC);
+        Arc::new(s.snapshot_owned())
+    };
+    let lines = SRC.lines().count() as u32;
+
+    // Baseline: rust produces scopes.
+    let before = sources[0]
+        .produce(7, None, lines, Some(snapshot()))
+        .await
+        .expect("the query runs");
+    assert!(!before.is_empty(), "precondition: rust has context");
+
+    // Switch it off the way `:set` does, through the same registry the guest
+    // reads via `get-option`.
+    rig.config
+        .parse_and_set_command("treesitter-context.disabled-languages=rust")
+        .expect("the option is registered");
+
+    let after = sources[0]
+        .produce(7, None, lines, Some(snapshot()))
+        .await
+        .expect("still not an error — a disabled language is a normal state");
+    assert!(
+        after.is_empty(),
+        "a disabled language yields no scopes, so no strip: {after:?}"
+    );
+}
+
+/// TC.12: `context.max-file-lines` must skip a file when the USER lowers it.
+///
+/// The guard was only ever exercised through the plugin's compiled default,
+/// because the context seam's store had no config registry — every
+/// `get-option` in the producer returned `None`. So the option was reachable
+/// from `:set`, reported a value, and did nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lowering_max_file_lines_skips_the_query() {
+    let Some(wasm) = plugin_wasm() else {
+        eprintln!("skipping: treesitter-context wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    let sources = rig.contexts.load().sources();
+    let snapshot = || -> Arc<dyn std::any::Any + Send + Sync> {
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse(SRC);
+        Arc::new(s.snapshot_owned())
+    };
+    let lines = SRC.lines().count() as u32;
+
+    assert!(
+        !sources[0]
+            .produce(7, None, lines, Some(snapshot()))
+            .await
+            .unwrap()
+            .is_empty(),
+        "precondition: under the default guard this file has context"
+    );
+
+    // One line is below this fixture's line count, so the guard must fire.
+    rig.config
+        .parse_and_set_command("treesitter-context.max-file-lines=1")
+        .expect("the option is registered");
+
+    let after = sources[0]
+        .produce(7, None, lines, Some(snapshot()))
+        .await
+        .expect("skipping is not an error — the host caches an empty set");
+    assert!(
+        after.is_empty(),
+        "past the guard the query is skipped: {after:?}"
+    );
+}

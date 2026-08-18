@@ -519,6 +519,7 @@ mod tests {
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
             sticky_context_line_numbers: true,
+            sticky_context_separator: None,
             sticky_context: Default::default(),
             pane_id: PaneId::next(),
             buffer_id,

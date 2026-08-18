@@ -489,6 +489,7 @@ fn publish_sticky_context(
         let current = pane.sticky_context.load();
         if current.version == version
             && current.line_numbers == pane.sticky_context_line_numbers
+            && current.has_separator == pane.sticky_context_separator.is_some()
             && current.rows.len() == pane.sticky_context_lines.len()
             && current
                 .rows
@@ -553,6 +554,31 @@ fn publish_sticky_context(
         .get(ct.ids.sticky_context_active)
         .bg
         .map(|c| c.to_rgb_u32(0));
+
+    // TC.12: the rule, as a REAL row so `len()` counts it and the scroll model
+    // reserves for it. Width is the pane's, because a rule that stops short of
+    // the edge reads as a dashed underline on the last scope rather than as a
+    // boundary.
+    let has_separator = pane.sticky_context_separator.is_some();
+    if let Some(glyph) = pane.sticky_context_separator {
+        let fg = ct
+            .resolved
+            .get(ct.ids.sticky_context_separator)
+            .fg
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(default_fg);
+        let width = pane.viewport_width.max(1) as usize;
+        let cells: Vec<lattice_cells::Cell> = (0..width)
+            .map(|_| lattice_cells::Cell::new(glyph as u32, fg, 0, 0))
+            .collect();
+        rows.push(StickyContextRow {
+            // The rule mirrors no source line, so it shows no line number.
+            // `u32::MAX` would be a sentinel a renderer could mistake for one;
+            // the `has_separator` flag is what renderers branch on instead.
+            source_line: 0,
+            cells: Arc::from(cells.into_boxed_slice()),
+        });
+    }
     pane.sticky_context.store(Arc::new(StickyContext {
         rows,
         version,
@@ -560,6 +586,7 @@ fn publish_sticky_context(
         line_numbers: pane.sticky_context_line_numbers,
         line_number_fg,
         active_bg,
+        has_separator,
     }));
 }
 
@@ -2909,6 +2936,7 @@ mod tests {
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
             sticky_context_line_numbers: true,
+            sticky_context_separator: None,
             sticky_context: Default::default(),
             virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
                 lattice_cells::VirtualRowMatrix::empty(),
@@ -5572,6 +5600,7 @@ mod tests {
                     indent_guides_enabled: true,
                     sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
                     sticky_context_line_numbers: true,
+                    sticky_context_separator: None,
                     sticky_context: Default::default(),
                     pane_id: lattice_core::ui::pane::PaneId::default(),
                     buffer_id: lattice_core::BufferId::default(),
@@ -5735,6 +5764,7 @@ mod tests {
                 indent_guides_enabled: true,
                 sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
                 sticky_context_line_numbers: true,
+                sticky_context_separator: None,
                 sticky_context: Default::default(),
                 pane_id: lattice_core::ui::pane::PaneId::default(),
                 buffer_id: lattice_core::BufferId::default(),
@@ -5838,6 +5868,7 @@ mod tests {
             indent_guides_enabled: true,
             sticky_context_lines: std::sync::Arc::from([] as [u32; 0]),
             sticky_context_line_numbers: true,
+            sticky_context_separator: None,
             sticky_context: Default::default(),
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),

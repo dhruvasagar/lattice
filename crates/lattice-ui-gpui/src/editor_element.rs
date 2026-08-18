@@ -1510,12 +1510,14 @@ impl Element for EditorElement {
             // headerline to displace. Adapted to `VirtualRow` and pushed
             // through `push_virtual_row` rather than given a second painter,
             // so the two peers and the two row kinds cannot drift.
-            let innermost = self.sticky_context.rows.len().saturating_sub(1);
+            // TC.12: a trailing separator row is not a scope, so it must not
+            // take the `active` styling meant for the innermost scope.
+            let innermost = self.sticky_context.innermost_scope();
             for (idx, row) in self.sticky_context.rows.iter().enumerate() {
                 if shaped_text.len() as u32 >= self.viewport_height {
                     break;
                 }
-                let is_innermost = idx == innermost;
+                let is_innermost = Some(idx) == innermost;
                 let vrow = lattice_cells::VirtualRow {
                     anchor_line: row.source_line,
                     position: lattice_cells::AnchorPosition::Above,
@@ -1538,8 +1540,12 @@ impl Element for EditorElement {
                     // asks for numbers, `:set nonumber` says this pane shows
                     // none, and the pane wins — a strip numbered above
                     // unnumbered code reads as a stray column.
-                    gutter_line: (self.sticky_context.line_numbers && self.show_line_numbers)
-                        .then_some(row.source_line),
+                    // A separator mirrors no source line, so no number.
+                    gutter_line: (self.sticky_context.line_numbers
+                        && self.show_line_numbers
+                        && !(self.sticky_context.has_separator
+                            && idx + 1 == self.sticky_context.rows.len()))
+                    .then_some(row.source_line),
                     gutter_fg: self.sticky_context.line_number_fg,
                 };
                 push_virtual_row(

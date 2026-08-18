@@ -53,6 +53,9 @@ async fn source(host: &PluginHost) -> WasmContextSource {
             TrustTier::Bundled,
             PluginBudget::context(),
             &Arc::new(lattice_runtime::EventBus::new()),
+            // No config registry: this fixture reads no options, and passing
+            // `None` keeps the seam test hermetic from the option layer.
+            None,
         )
         .await
         .expect("spawn context source");

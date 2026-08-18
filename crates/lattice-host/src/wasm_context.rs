@@ -95,6 +95,17 @@ pub struct WasmContextState {
     /// it rides beside [`Self::options`] rather than inside it
     /// (`resolve_context` has no business knowing about gutters).
     pub line_numbers: bool,
+    /// TC.12: `context.separator` — the glyph repeated as a rule beneath the
+    /// strip. `None` (the default) is no rule.
+    pub separator: Option<char>,
+    /// TC.12: `context.anchor == "topline"`.
+    ///
+    /// The resolver anchors on the CURSOR by default. `topline` resolves
+    /// against the topline *as of before* this frame's reservation, which is
+    /// what breaks the reserve→shrink→retop→reserve cycle the design fragment
+    /// describes; here that falls out for free, because the host passes the
+    /// scroll value it already holds and reservation happens later.
+    pub anchor_topline: bool,
 }
 
 impl Default for WasmContextState {
@@ -111,6 +122,8 @@ impl Default for WasmContextState {
             // silently drops its numbers — a difference visible only in the
             // first frames, which is the hardest kind to notice.
             line_numbers: true,
+            separator: None,
+            anchor_topline: false,
         }
     }
 }
@@ -294,7 +307,16 @@ impl Editor {
             viewport_top: scroll,
             ..self.wasm_context.options
         };
-        let lines = lattice_cells::context::resolve_context(&cached.scopes, cursor_line, &opts);
+        // TC.12: `context.anchor`. `cursor` (the default) asks "where am I";
+        // `topline` asks "what am I looking at". The topline passed here is
+        // this frame's pre-reservation value, which is what keeps the
+        // reserve→shrink→retop→reserve cycle from closing.
+        let anchor = if self.wasm_context.anchor_topline {
+            scroll
+        } else {
+            cursor_line
+        };
+        let lines = lattice_cells::context::resolve_context(&cached.scopes, anchor, &opts);
         Arc::from(lines.into_boxed_slice())
     }
 
@@ -348,5 +370,16 @@ impl Editor {
             .config
             .get_bool_by_name(&format!("{NS}.line-numbers"))
             .unwrap_or(true);
+        // Only the FIRST character: the option is a rule glyph, and a
+        // multi-character value would make the rule's width depend on the
+        // pane's width in a way the user cannot predict.
+        self.wasm_context.separator = self
+            .config
+            .get_string_by_name(&format!("{NS}.separator"))
+            .and_then(|v| v.chars().next());
+        self.wasm_context.anchor_topline = self
+            .config
+            .get_string_by_name(&format!("{NS}.anchor"))
+            .is_some_and(|v| v == "topline");
     }
 }

@@ -92,6 +92,14 @@ pub struct StickyContext {
     /// line the reader is looking for; giving it the same backdrop as its
     /// ancestors makes a deep strip read as an undifferentiated block.
     pub active_bg: Option<u32>,
+    /// TC.12: whether the LAST row is a separator rule rather than a scope.
+    ///
+    /// The rule is built as a real row, not carried as a glyph for renderers
+    /// to append, so that it is counted by `len()` — which is what the scroll
+    /// model reserves from. A separator drawn outside the row list would be
+    /// one row the reservation did not know about, and the text under it would
+    /// sit one line too high.
+    pub has_separator: bool,
 }
 
 impl StickyContext {
@@ -105,5 +113,12 @@ impl StickyContext {
 
     pub fn len(&self) -> usize {
         self.rows.len()
+    }
+
+    /// Index of the innermost SCOPE row — the one the cursor is in — skipping
+    /// a trailing separator. `None` when there are no scope rows.
+    pub fn innermost_scope(&self) -> Option<usize> {
+        let scopes = self.rows.len() - usize::from(self.has_separator);
+        (scopes > 0).then(|| scopes - 1)
     }
 }

@@ -286,3 +286,123 @@ async fn the_line_numbers_option_reaches_the_published_layer() {
          a resolution one"
     );
 }
+
+/// TC.12: `context.anchor = topline` resolves against the pane's first visible
+/// line instead of the cursor.
+///
+/// The option was specified in full (design fragment, "Anchor: cursor, and why
+/// not topline") and registered from TC.5, and the resolver never saw it —
+/// `resolve_sticky_context_lines` always passed the cursor.
+///
+/// The scenario is chosen so the two anchors genuinely DISAGREE: cursor 120 is
+/// inside the inner scope (100..=150) while topline 160 is past its end. A
+/// scenario where both agree would pass against the unfixed code, which is the
+/// trap this whole verification pass exists to catch.
+#[tokio::test]
+async fn the_anchor_option_switches_what_the_strip_resolves_against() {
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut editor = editor_with_producer(calls);
+    let buffer = editor.document_buffer_id;
+    editor.run_tick_pending();
+    wait_for_cache(&editor, buffer).await;
+
+    let cursor = 120;
+    let top = 160;
+
+    let by_cursor = editor.resolve_sticky_context_lines(buffer, cursor, top, 40);
+    assert_eq!(
+        &*by_cursor,
+        &[10, 100],
+        "cursor anchor: the cursor is inside both scopes and both headers have \
+         scrolled away"
+    );
+
+    editor
+        .config
+        .try_register(lattice_config::option::Option::<String>::new(
+            "treesitter-context.anchor".to_owned(),
+            "topline".to_owned(),
+            "Anchor.".to_owned(),
+        ))
+        .expect("fresh name");
+    editor.run_tick_pending();
+
+    let by_topline = editor.resolve_sticky_context_lines(buffer, cursor, top, 40);
+    assert_eq!(
+        &*by_topline,
+        &[10],
+        "topline anchor: line 160 is past the inner scope's end, so only the \
+         outer one encloses what the pane is showing — a different answer from \
+         the cursor's, which is the point of the option"
+    );
+}
+
+/// TC.12: `context.separator` puts a rule under the strip, as a REAL row.
+///
+/// It matters that it is a row rather than a glyph the renderer appends: the
+/// scroll model reserves `len()` rows, so a rule outside the list would be one
+/// row nothing reserved for, and the text beneath would sit a line too high.
+#[tokio::test]
+async fn the_separator_option_adds_a_reserved_rule_row() {
+    let calls = Arc::new(AtomicU64::new(0));
+    let mut editor = editor_with_producer(calls);
+    let buffer = editor.document_buffer_id;
+    let pane_id = editor.pane_tree.active().id;
+    editor.run_tick_pending();
+    wait_for_cache(&editor, buffer).await;
+
+    editor.cursor.line = 120;
+    editor.scroll = 110;
+    {
+        let pane = editor.pane_tree.active_mut();
+        pane.cursor.line = 120;
+        pane.scroll = 110;
+    }
+    editor.publish_render_state();
+    for _ in 0..100 {
+        if !editor.sticky_context_for(pane_id).load().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let without = editor.sticky_context_for(pane_id).load();
+    assert_eq!(without.rows.len(), 2, "two scopes, no rule");
+    assert!(!without.has_separator);
+    assert_eq!(without.innermost_scope(), Some(1));
+
+    editor
+        .config
+        .try_register(lattice_config::option::Option::<String>::new(
+            "treesitter-context.separator".to_owned(),
+            "-".to_owned(),
+            "Rule.".to_owned(),
+        ))
+        .expect("fresh name");
+    editor.run_tick_pending();
+    editor.publish_render_state();
+    for _ in 0..100 {
+        if editor.sticky_context_for(pane_id).load().has_separator {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let with = editor.sticky_context_for(pane_id).load();
+    assert!(with.has_separator, "the rule landed");
+    assert_eq!(
+        with.rows.len(),
+        3,
+        "and it is a real row, so `len()` — which is what the scroll model \
+         reserves — counts it"
+    );
+    assert_eq!(
+        with.innermost_scope(),
+        Some(1),
+        "the innermost SCOPE is still row 1; the rule must not take the \
+         `active` styling meant for the scope the cursor is in"
+    );
+    assert!(
+        with.rows[2].cells.iter().all(|c| c.codepoint == '-' as u32),
+        "the rule is the glyph, repeated"
+    );
+}

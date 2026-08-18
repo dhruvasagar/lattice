@@ -145,6 +145,7 @@ fn the_reservation_shrinks_the_window_the_cursor_is_kept_in() {
             line_numbers: true,
             line_number_fg: None,
             active_bg: None,
+            has_separator: false,
         },
     ));
 

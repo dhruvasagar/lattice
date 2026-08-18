@@ -1485,6 +1485,8 @@ pub struct PaneCellsInputs {
     /// worker stamps it onto the layer it builds and neither renderer reads a
     /// plugin option.
     pub sticky_context_line_numbers: bool,
+    /// TC.12: `context.separator`'s glyph, resolved host-side.
+    pub sticky_context_separator: Option<char>,
     /// TC.3b: per-PANE sticky-context output cell. Keyed by pane id, not
     /// buffer id, because the rows genuinely differ per pane: one buffer in
     /// two splits with cursors in different scopes must show different

@@ -94,8 +94,25 @@ fn scope_from(scope: (u32, u32), body_start: Option<u32>) -> ContextScope {
     }
 }
 
+/// Whether `language` appears in `context.disabled-languages`.
+///
+/// Comma-separated, whitespace-tolerant. A language the user has switched off
+/// yields no scopes, which the host caches as "this buffer has no context" —
+/// the same state as a language with no query, and the same absence of a strip.
+fn language_disabled(language: &str) -> bool {
+    let Some(list) = get_option("disabled-languages") else {
+        return false;
+    };
+    list.split(',')
+        .map(str::trim)
+        .any(|entry| !entry.is_empty() && entry.eq_ignore_ascii_case(language))
+}
+
 fn scopes_from_tree(tree: &TreeSnapshot) -> Result<Vec<ContextScope>, String> {
     let language = tree.language();
+    if language_disabled(&language) {
+        return Ok(Vec::new());
+    }
     let Some(source) = query_for(&language) else {
         // No query for this grammar. Not an error — the strip simply has
         // nothing to show, and the host caches that as "no scopes".

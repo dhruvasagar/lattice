@@ -205,6 +205,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(ContextClient, ContextActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -221,6 +222,16 @@ impl PluginHost {
         let id = self.alloc_id();
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2).
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // The producer reads its OWN options through `get-option`
+        // (`max-file-lines`, `disabled-languages`). Without the registry on
+        // this store every such read returns `None` and the guest silently
+        // falls back to its compiled defaults — so the options resolve in
+        // `:customize`, report a value to `:set …?`, and change nothing.
+        // `spawn_config_plugin` wires this for the config seam; the context
+        // seam runs in its own store and needs it too.
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
         let (tx, rx) = mpsc::unbounded();
         let client = ContextClient { tx, id };
         let actor = ContextActor {

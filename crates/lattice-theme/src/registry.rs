@@ -876,6 +876,13 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
          place the cursor can be.",
     );
     reg_one(
+        "sticky.context.separator",
+        spec().fg("overlay"),
+        "Sticky context strip: the rule beneath it, when `context.separator` \
+         is set. Off by default — a separator is a preference, not an \
+         affordance.",
+    );
+    reg_one(
         "sticky.context.active",
         spec().bg("surface1"),
         "Sticky context strip: the innermost row — the scope the cursor is \
@@ -1383,6 +1390,8 @@ pub struct BuiltinElementIds {
     pub sticky_context_line_number: ElementId,
     /// TC.11: the strip's innermost row — the scope the cursor is in.
     pub sticky_context_active: ElementId,
+    /// TC.12: the rule beneath the strip, when `context.separator` is set.
+    pub sticky_context_separator: ElementId,
     pub diff_conflict_line: ElementId,
     // MG.4 — inline diff text fg colours (magit unified diff ± lines).
     pub diff_add_text: ElementId,
@@ -1566,6 +1575,7 @@ impl Default for BuiltinElementIds {
             sticky_context_background: ElementId::INVALID,
             sticky_context_line_number: ElementId::INVALID,
             sticky_context_active: ElementId::INVALID,
+            sticky_context_separator: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
             diff_add_text: ElementId::INVALID,
             diff_remove_text: ElementId::INVALID,
@@ -1770,6 +1780,7 @@ impl BuiltinElementIds {
             sticky_context_background: id("sticky.context.background"),
             sticky_context_line_number: id("sticky.context.line_number"),
             sticky_context_active: id("sticky.context.active"),
+            sticky_context_separator: id("sticky.context.separator"),
             diff_conflict_line: id("diff.conflict.line"),
             diff_add_text: id("diff.add.text"),
             diff_remove_text: id("diff.remove.text"),

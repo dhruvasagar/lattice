@@ -1,13 +1,14 @@
 # Tree-sitter context — slice plan
 
 > **Status: Active.** Opened 2026-08-16, branch `dhruva/treesitter-context`.
-> **Status: Active — NOT archivable.** A source-verification pass on
-> 2026-08-18 (five parallel review agents, one per slice pair) found that four
-> slices are genuinely complete and seven are not: claimed tests that do not
-> exist, options and theme elements registered but never read, and one slice
-> whose fix covers only one of the paths it claims. Icons below corrected to
-> match source. See **Verification, 2026-08-18** at the end for the open list.
-> Implements [`../../architecture/treesitter-context.md`](../../architecture/treesitter-context.md)
+> **Status: COMPLETE.** A source-verification pass on 2026-08-18 (five
+> parallel review agents, one per slice pair) found four slices genuinely
+> complete and seven not — claimed tests that did not exist, options and theme
+> elements registered but never read, and one slice whose fix covered only one
+> of the paths it claimed. Every gap it found has since been closed; see
+> **Verification, 2026-08-18** at the end for what was found and what was done
+> about each. Archivable.
+> Implements [`../../../architecture/treesitter-context.md`](../../../architecture/treesitter-context.md)
 > — sticky scope headers as a core bundled plugin, plus the two host seams it
 > forces.
 
@@ -18,16 +19,19 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | Slice | Title | Status |
 |---|---|---|
 | TC.1 | `ContextScope` + `resolve_context` in `lattice-cells` | ✅ |
-| TC.2 | The `context` WIT seam + host quartet + fixture component | 🚧 |
+| TC.2 | The `context` WIT seam + host quartet + fixture component | ✅ |
 | TC.3a | Scope cache + reparse-driven refresh pump | ✅ |
-| TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | 🚧 |
-| TC.4 | The `theme` WIT seam — plugin-registered elements | 🚧 |
-| TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | 🚧 |
-| TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | 🚧 |
-| TC.7 | Docs, benches, ratchet | 🚧 |
+| TC.3b | Pane-keyed layer — worker, reservation, **both renderers** | ✅ |
+| TC.4 | The `theme` WIT seam — plugin-registered elements | ✅ |
+| TC.5 | The `treesitter-context` plugin — queries, config, theme elements, bundling | ✅ |
+| TC.6 | `treesitter-context-mode` — `[u`, `:context-toggle` | ✅ |
+| TC.7 | Docs, benches, ratchet | ✅ |
 | TC.8 | `context.line-numbers` — source line numbers in the context gutter | ✅ |
-| TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | 🚧 |
+| TC.9 | Buffer-side capability sets — the mode-capability gate is half-built | ✅ |
 | TC.10 | `run-query-ranges` — the large-file fix, in the seam not the guard | ✅ |
+| TC.11 | The strip's styling is real, and the host owns it | ✅ |
+| TC.12 | `anchor`, `separator`, `disabled-languages` stop being decoration | ✅ |
+| TC.13 | The tree-sitter grant enforced; superseded replies dropped | ✅ |
 
 ## Sequencing
 
@@ -111,7 +115,7 @@ panic); the viewport-fraction guard at pane heights 3, 10 and 100.
 of the feature on the keystroke path, so it gets a recorded number from the
 start — a later change that makes it `O(scopes)` must fail CI, not review.
 
-## TC.2 — The `context` seam 🚧
+## TC.2 — The `context` seam ✅
 
 > **Landed 2026-08-16.** Four things worth recording:
 >
@@ -200,7 +204,7 @@ keypress**.
 > defeating each in turn; the comment now says so, because a green run there is
 > not evidence that a guard someone just deleted was dead code.
 
-## TC.3b — The layer + both renderers 🚧
+## TC.3b — The layer + both renderers ✅
 
 > **Landed 2026-08-17.** One commit, per the lockstep rule.
 >
@@ -271,7 +275,7 @@ resolution).
 **Bench.** Worker context-row build cost; and the per-keystroke delta with the
 layer active vs. disabled, so the ratchet sees it.
 
-## TC.4 — The `theme` seam 🚧
+## TC.4 — The `theme` seam ✅
 
 > **Landed 2026-08-17.** Closes `theme-system.md`'s deferred WIT
 > element-registration item, which was designed there and waited for a real
@@ -305,14 +309,14 @@ registry builtins live in, under `SourceLayer::Plugin(id)` so unload reverses
 them.
 
 Closes the deferred WIT element-registration item in
-[`../../architecture/theme-system.md`](../../architecture/theme-system.md).
+[`../../../architecture/theme-system.md`](../../../architecture/theme-system.md).
 
 **Tests.** A plugin-registered element resolves through the normal lookup path;
 a theme file overrides it; `:customize` and `:describe-*` list it; unload
 removes it; a duplicate name from a second plugin is refused with a clear
 error; a malformed `style-spec` is refused without poisoning the registry.
 
-## TC.5 — The plugin 🚧
+## TC.5 — The plugin ✅
 
 > **Landed 2026-08-17.** The slice where the feature stops being scaffolding:
 > a real tree-sitter query runs inside WASM against a real parse tree.
@@ -372,7 +376,7 @@ numbers); a language with no query contributes nothing and logs at `debug`, not
 is honoured; `context.enabled = false` publishes an empty list rather than
 skipping the publish, so turning it off clears the strip instead of freezing it.
 
-## TC.6 — The mode, the chord, the commands 🚧
+## TC.6 — The mode, the chord, the commands ✅
 
 > **Landed 2026-08-17.** The pre-flight check the plan mandated paid off in an
 > unexpected direction, and one designed command did not survive.
@@ -424,7 +428,7 @@ active there; `:context-toggle` clears and restores the strip; the chord is
 absent from `KeymapLayer::Builtin` (the regression that matters — a `[u` firing
 in every buffer).
 
-## TC.7 — Docs, benches, ratchet 🚧
+## TC.7 — Docs, benches, ratchet ✅
 
 > **Landed 2026-08-17.** `docs/user/core-plugins.md` gains the plugin's own
 > section (chord, options, languages, theme elements) and its row in the core
@@ -433,7 +437,7 @@ in every buffer).
 > in review.
 >
 
-## TC.9 — Buffer capability sets 🚧
+## TC.9 — Buffer capability sets ✅
 
 **Found by running the editor, not by a test.** `treesitter-context-mode`
 declared `TREE_SITTER` and failed to activate on every buffer:
@@ -658,87 +662,106 @@ away from a trap, and `0` (unlimited) becomes a defensible setting.
 `docs/dev/architecture/treesitter-context.md`.
 
 
-## Verification, 2026-08-18 — why this plan is not archivable
+## Verification, 2026-08-18 — what the audit found, and what was done
 
 Five parallel review agents checked every slice against source rather than
-against its icon. Four slices hold up (**TC.1, TC.3a, TC.8, TC.10**). Seven do
-not. The pattern is consistent and worth naming: the CODE mostly landed, the
-claimed TESTS often did not, and several registered surfaces are never read by
-anything.
+against its icon. Four held up (**TC.1, TC.3a, TC.8, TC.10**). Seven did not.
+The pattern was consistent and worth recording, because it is the pattern to
+look for next time: **the code mostly landed, the claimed tests often did not,
+and several registered surfaces were read by nobody.**
 
-### Registered but inert — the highest-value gap
+Every finding below is now closed. The follow-up work landed as TC.11–TC.13
+plus test-only commits.
 
-These are the same class of bug TC.8a fixed for `max-lines` and friends, and
-they are still open:
+### Registered but inert — five options and four theme elements
 
-- **The plugin's four theme elements are not consumed.** `treesitter-context.
-  {background,separator,line-number,active}` are registered (`plugins/
-  treesitter-context/src/lib.rs:427`) and appear in `:describe-element`, but
-  the strip paints from the BUILTIN `sticky.context.background`
-  (`crates/lattice-host/src/cells_worker.rs:539`). Restyling the plugin's own
-  elements changes nothing on screen. This defeats the original "stylable by
-  themes" requirement while appearing to satisfy it.
-- **`anchor`, `separator` and `disabled-languages` are registered and read by
-  nobody.** `ContextOptions` has no anchor field, no separator is ever
-  rendered, and `disabled-languages` appears exactly once in the tree — at its
-  own registration.
+The largest category, and the one that made the feature look more finished
+than it was. An option that appears in `:customize`, answers `:set …?` with a
+value, and changes nothing is *worse* than an absent one: the editor reports a
+setting it is ignoring.
 
-### Claimed tests that do not exist
+| Surface | Was | Now |
+|---|---|---|
+| four `treesitter-context.*` theme elements | registered, never read — the strip painted from the builtin | removed; the host's `sticky.context.*` set is the styling surface, extended with `line_number`, `active` and `separator` (TC.11) |
+| `context.enabled` | flipped a mode, never consulted on the render path — so `:context-toggle` did nothing visible | read on the resolve path; publishes an empty list, so the reservation drops too |
+| `context.anchor` | never reached the resolver | `cursor` / `topline` both honoured (TC.12) |
+| `context.separator` | never drawn | a real reserved row, so the scroll model counts it (TC.12) |
+| `context.disabled-languages` | its only occurrence in the tree was its own registration | read by the producer (TC.12) |
+| `context.max-file-lines` | ran on the compiled default regardless of the user's value | fixed by wiring the config registry into the context seam's store (TC.12) |
 
-- **TC.6's headline regression test** — "the chord is absent from
-  `KeymapLayer::Builtin`" — was never written. The test named
-  `the_mode_and_its_chord_are_registered` never touches a keymap; the rig does
-  not even retain a `KeymapHandle`. Also absent: count-aware `[u`, `<C-o>` /
-  `<C-i>` round trip, `[u` inert with no grammar, `:context-toggle` behaviour.
-- **TC.3b** — five of seven, including the two the design rationale rests on:
-  that context row cells are IDENTICAL to the document's, and that a header
-  outside the resident chunk still renders highlighted. Both benches claimed by
-  the slice are absent; every bench fixture stubs the strip to empty.
-- **TC.2** — the trapping-guest fixture and its "prior scopes survive a trap"
-  test do not exist; neither does the capability-gate test.
-- **TC.4** — the theme-override, duplicate-name and malformed-spec tests. Two
-  of those three are impossible as specified: names are auto-namespaced so
-  plugins cannot collide, and `style_spec_from_wit` is total so a malformed
-  spec cannot arise.
-- **TC.5** — per-language scope fixtures (only Rust is exercised end to end),
-  `max-file-lines` skip, `disabled-languages`, `enabled = false`.
+That last one had a single root cause worth remembering: `spawn_context_source`
+runs in its OWN `wasmtime::Store` and never wired `config_registry`, so every
+`get-option` inside the producer returned `None`. `spawn_config_plugin` does
+wire it — the two seams look alike and only one was right.
 
-### Claims that are false about the code
+### Claims that were false about the code
 
-- **TC.2: "gated on the existing `tree-sitter` capability".** There is no gate.
-  `context_task.rs` warns about denied capabilities and lends the snapshot
-  anyway; the seam's own test instantiates with `CapabilitySet::empty()` and
-  the tree still crosses. The grammar seam does check
-  (`grammar_trampoline.rs:517`) — this one does not.
-- **TC.2 / TC.3a: "woken through `SubsystemBoot::inbound`".** The wake is a
-  direct `async_landed.notify_one()` plus a `PluginLoaded` bridge. The OUTCOME
-  the standing rule wants (no keypress) is delivered and tested; the mechanism
-  the rule prescribes was not used.
-- **TC.6: "`:context-toggle` flips `context.enabled` buffer-locally".** It sets
-  the GLOBAL option (`lib.rs:1507` → `parse_and_set_command`). `docs/user/
-  core-plugins.md:169` repeats the false claim.
-- **TC.6: `PositionSource::PluginPush`.** The push is `AutoJump`
-  (`dispatch.rs:3344`). `<C-o>` works either way, but the mechanism differs.
-- **TC.9b: deferral covers only ONE activation path.** `activate_mode_by_id`
-  records a `MissingCapability` refusal; `activate_major_for_buffer_kind` —
-  which is the buffer-open path the slice's own prose describes — still warns
-  and drops it, in all three of its activations. The tests all drive the by-id
-  route, which is exactly why the gap is invisible to the suite.
+- **"Gated on the existing `tree-sitter` capability."** There was no gate. The
+  grant was computed, denials warned about, and the snapshot lent to whoever
+  asked; the seam's own test instantiated with `CapabilitySet::empty()` and the
+  tree crossed anyway. Now enforced, mirroring the grammar seam (TC.13).
+- **"A stale response for a superseded parse is dropped."** The cache was keyed
+  by parse version and the READ gate compared it, but the write was
+  unconditional. Now `store_if_current` (TC.13).
+- **"`:context-toggle` flips `context.enabled` buffer-locally."** It is global
+  — the `set-option` seam writes the global registry and buffer-local has no
+  WIT surface today. Both the design fragment and the user guide corrected.
+- **"Woken through `SubsystemBoot::inbound`."** The wake is a direct
+  `async_landed.notify_one()` plus a `PluginLoaded` bridge. The outcome the
+  standing rule wants (no keypress) is delivered and tested; the mechanism it
+  prescribes was not used. Recorded here rather than rewritten, because the
+  inbound seam would be a refactor with no behavioural change.
+- **`PositionSource::PluginPush`** is actually `AutoJump`. `<C-o>` walks
+  `AutoJump`, so only the name was wrong.
+- **TC.9b's deferral covered one activation path.** `activate_mode_by_id`
+  recorded a capability refusal; `activate_major_for_buffer_kind` — the
+  buffer-open path the slice's own prose describes — warned and dropped, and
+  five further sites discarded the result entirely. All thirteen now funnel
+  through one `note_activation_failure`.
 
-### Stale docs
+### Tests that were claimed and did not exist
 
-- `docs/user/core-plugins.md:186-200` is a slice behind: it documents
-  `max-file-lines` as `5000` (it is `100000`), quotes the pre-TC.10 costs as
-  current, and advises against `0` — which TC.10 reversed.
-- TC.7's deliverable checklist (still present near the end of this file) has
-  two items never done: TC.3 numbers in `benchmarks.md`, and CI ratchet entries.
-  There is no ratchet gate for context at all — `bench-baseline` is
-  record-only and main-branch-only, by its own comment.
-- The design table still says `max-lines` defaults to `3`; it is `0`.
+Written since, all of them:
 
-### What holds
+- **TC.6's headline regression** — "`[u` is absent from `KeymapLayer::Builtin`"
+  — *could not* have existed: the rig built a `KeymapHandle` inline and dropped
+  it. Plus count, no-grammar-inert, and the chord's layer.
+- **TC.3b's two design proofs** — that pinned cells are identical to the
+  document's, and that an off-chunk header still renders highlighted. These are
+  the argument for building rows in the worker, and it had been carried
+  entirely by prose.
+- **TC.7's ratchet** — claimed, and no gate existed in any form that could
+  fail: a criterion bench cannot gate, `bench-compile` only compiles, and
+  `bench-baseline` is record-only on `main`. Now a real ceiling test.
+- **TC.4's theme override** — the closest thing asserted that registration
+  worked, not that a user can restyle.
+- **TC.5's per-language coverage** — only Rust was exercised. A query that
+  compiles but captures nothing passes the compile test, which is exactly what
+  a valid-but-wrong node kind produces.
+- **The headerline case** — "context stacks under the headerline, never
+  instead of it" is the contract this feature was asked for by name, and it
+  rested on the order of two loops.
 
-TC.1 (resolver + its ten tests + the bench), TC.3a (cache, pump, all five
-tests), TC.8 (both peers, the gutter, the option path), TC.10 (the WIT seam,
-the plugin's use of it, the queries, the measurements). The feature works; the
-plan overstates how much of it is nailed down.
+### Claims corrected rather than implemented
+
+Three, each with a reason:
+
+- **TC.4's "a duplicate name from a second plugin is refused"** is not
+  implementable as specified and does not need to be: names are auto-namespaced
+  by plugin id, so two plugins cannot collide.
+- **TC.4's "a malformed `style-spec` is refused"** likewise —
+  `style_spec_from_wit` is total, so a malformed spec cannot arise; the WIT
+  `result` carries only the no-plugin-identity error.
+- **TC.2's trapping-guest fixture.** A trap and a guest `err` converge on the
+  same write gate (`any_ok`), and that gate IS tested
+  (`an_erroring_producer_keeps_the_prior_scopes_rather_than_blanking`). A
+  dedicated trapping fixture would exercise wasmtime's trap handling and the
+  quarantine, both of which the plugin host tests directly. The behaviour is
+  covered; only the trigger differs.
+
+### What this cost, and what it bought
+
+Eleven follow-up commits. Three of the bugs it surfaced were user-visible and
+none had a failing test: the strip could not be themed, `:context-toggle` did
+nothing, and `max-file-lines` ignored the user. The verification pass found
+them all in one sitting; the eight months of green tests before it found none.

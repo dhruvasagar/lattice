@@ -1,7 +1,7 @@
 # Tree-sitter context — sticky scope headers
 
 Status: design fragment (2026-08-16). Slice plan:
-[`../operations/slice-plans/treesitter-context.md`](../operations/slice-plans/treesitter-context.md).
+[`../operations/slice-plans/archive/treesitter-context.md`](../operations/slice-plans/archive/treesitter-context.md).
 
 Anchors: [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md) (the ✅ built
 structural query surface this consumes), [`plugin-host.md`](plugin-host.md) §5
@@ -672,5 +672,5 @@ rows and never to a flicker.
   deferred WIT item.
 - [`cancellation.md`](cancellation.md) — superseded-parse cancellation for the
   producer task.
-- [`../operations/slice-plans/treesitter-context.md`](../operations/slice-plans/treesitter-context.md)
+- [`../operations/slice-plans/archive/treesitter-context.md`](../operations/slice-plans/archive/treesitter-context.md)
   — sequencing.

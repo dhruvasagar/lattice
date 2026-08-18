@@ -188,7 +188,7 @@ plugin**, the second after `auto-pair`, consuming the ✅ tree-sitter seam
 (TS.1–TS.3). Design:
 [`../architecture/treesitter-context.md`](../architecture/treesitter-context.md);
 slice plan
-[`slice-plans/treesitter-context.md`](slice-plans/treesitter-context.md).
+[`slice-plans/archive/treesitter-context.md`](slice-plans/archive/treesitter-context.md).
 
 **The design's load-bearing claim** is that a *scope* — a structural range plus
 its header span — is a pure function of the parse tree, so it is correct to

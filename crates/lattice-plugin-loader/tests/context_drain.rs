@@ -57,7 +57,14 @@ fn write_plugin_dir(root: &std::path::Path, id: &str, provides: &str, wasm: &[u8
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("plugin.toml"),
-        format!("id = \"{id}\"\nprovides = [\"{provides}\"]\n"),
+        // TS.1: the context seam is gated on `tree-sitter`, so a producer that
+        // wants a tree must ASK for it — the real bundled plugin does the same
+        // in its own manifest. Without this the producer loads and runs and is
+        // simply handed `none`, which is the gate working.
+        format!(
+            "id = \"{id}\"\nprovides = [\"{provides}\"]\n\
+             editor_capabilities = [\"tree-sitter\"]\n"
+        ),
     )
     .unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();

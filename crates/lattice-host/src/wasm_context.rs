@@ -145,6 +145,50 @@ impl WasmContextState {
     }
 }
 
+/// TC.13: cache `scopes` for `buffer_id` unless a NEWER parse's answer is
+/// already there. Returns whether the write happened.
+///
+/// Producers run off-thread, so a slow one can land after a newer parse's
+/// reply is already cached. The cache is keyed by parse version and the READ
+/// gate compares that key, but the write was unconditional — so a late reply
+/// replaced correct scopes with stale ones, pointing the strip at lines that
+/// have since moved. It self-heals on the next tick, and "wrong for one frame,
+/// then right" is exactly the flicker the UX contract vetoes.
+///
+/// A free function rather than a closure so the ordering rule is testable
+/// without racing two real producers, which is the kind of test that passes
+/// nine times in ten.
+pub fn store_if_current(
+    cache: &PerBufferCache<ContextScopeCache>,
+    buffer_id: BufferId,
+    parse_version: u64,
+    mut scopes: Vec<lattice_cells::context::ContextScope>,
+) -> bool {
+    use crate::per_buffer_cache::PerBufferCacheExt;
+    if let Some(current) = cache.get_for(buffer_id)
+        && current.parse_version > parse_version
+    {
+        tracing::debug!(
+            buffer = buffer_id.0,
+            stale = parse_version,
+            current = current.parse_version,
+            "dropping a context reply for a superseded parse"
+        );
+        return false;
+    }
+    // Sorted once here rather than on every per-pane resolution: the resolver
+    // runs at cursor rate, this runs per reparse.
+    scopes.sort_by_key(|s| s.scope_start);
+    cache.insert_for(
+        buffer_id,
+        ContextScopeCache {
+            parse_version,
+            scopes,
+        },
+    );
+    true
+}
+
 impl Editor {
     /// Per-tick context refresh pump — the off-render-path drive.
     ///
@@ -252,16 +296,18 @@ impl Editor {
                 }
             }
             if any_ok {
-                // Sort once here rather than on every per-pane resolution: the
-                // resolver runs at cursor rate, this runs per reparse.
-                merged.sort_by_key(|s| s.scope_start);
-                cache_slot.insert_for(
-                    buffer_id,
-                    ContextScopeCache {
-                        parse_version,
-                        scopes: merged,
-                    },
-                );
+                // A late reply for a SUPERSEDED parse is dropped rather than
+                // written. Producers run off-thread and a slow one can land
+                // after a newer parse's reply has already been cached; writing
+                // unconditionally would replace correct scopes with stale ones
+                // and leave the strip pointing at lines that have since moved.
+                //
+                // It self-heals on the next tick (the stamp no longer matches,
+                // so the pump re-drives), but "wrong for one frame, then
+                // right" is precisely the flicker the UX contract vetoes.
+                if !store_if_current(&cache_slot, buffer_id, parse_version, merged) {
+                    return;
+                }
                 generation.fetch_add(1, Ordering::Relaxed);
                 // The wake is what makes the strip appear with no keypress. A
                 // bare cache write would sit until the user happened to press

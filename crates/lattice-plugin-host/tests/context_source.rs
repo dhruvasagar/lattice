@@ -42,10 +42,16 @@ fn guest_wasm() -> Option<&'static str> {
 
 /// Instantiate the fixture + spawn its actor; returns the host-facing producer.
 async fn source(host: &PluginHost) -> WasmContextSource {
+    source_with(host, CapabilitySet::TREE_SITTER).await
+}
+
+/// The same fixture under an explicit grant, so the capability gate is
+/// testable rather than assumed.
+async fn source_with(host: &PluginHost, caps: CapabilitySet) -> WasmContextSource {
     let component = host
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
         .expect("compile context fixture");
-    let manifest = PluginManifest::new("context-fixture", Vec::new(), CapabilitySet::empty());
+    let manifest = PluginManifest::new("context-fixture", Vec::new(), caps);
     let (client, actor) = host
         .spawn_context_source(
             &component,
@@ -185,4 +191,55 @@ async fn repeated_produce_calls_reuse_the_same_store() {
         .await
         .expect("a guest err must not poison the next call");
     assert_eq!(after.len(), 3);
+}
+
+/// TS.1 parity: a producer WITHOUT the `tree-sitter` grant never sees a tree.
+///
+/// The slice claimed the context seam was "gated on the existing tree-sitter
+/// editor capability". It was not: the grant was computed, the denial warned
+/// about, and the snapshot lent to whoever asked. A capability that is
+/// documented, denied at load, logged — and then not enforced — is worse than
+/// no capability at all, because every layer above it reads as if it were.
+///
+/// The ungranted producer is handed `none`, which is the same thing a buffer
+/// with no parse hands it, so the guest's existing "no tree" path covers it
+/// and the result is an empty scope list rather than an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_producer_without_the_tree_sitter_grant_gets_no_tree() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: context fixture guest not built");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+
+    let granted = source_with(&host, CapabilitySet::TREE_SITTER).await;
+    let with_tree = granted
+        .context_scopes(
+            7,
+            Some(std::path::Path::new("src/lib.rs")),
+            SRC.lines().count() as u32,
+            Some(parsed()),
+        )
+        .await
+        .expect("granted producer runs");
+    assert!(
+        !with_tree.is_empty(),
+        "precondition: with the grant the fixture walks the tree"
+    );
+
+    let ungranted = source_with(&host, CapabilitySet::empty()).await;
+    let without = ungranted
+        .context_scopes(
+            7,
+            Some(std::path::Path::new("src/lib.rs")),
+            SRC.lines().count() as u32,
+            Some(parsed()),
+        )
+        .await
+        .expect("an ungranted producer is not an ERROR — it just sees no tree");
+    assert!(
+        without.is_empty(),
+        "no grant, no tree, no scopes: {without:?}"
+    );
 }

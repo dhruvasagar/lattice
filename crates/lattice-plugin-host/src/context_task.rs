@@ -112,6 +112,10 @@ pub struct ContextActor {
     /// PO.2: the boundary tracer, wired by the loader via `with_tracer`; `None`
     /// in tests / pre-wire.
     tracer: Option<crate::trace::PluginTracerHandle>,
+    /// TS.1: whether this component holds the `tree-sitter` editor capability.
+    /// Without it the producer is handed `none` for its snapshot, exactly as a
+    /// buffer with no parse would be.
+    tree_sitter_granted: bool,
 }
 
 impl ContextActor {
@@ -155,7 +159,16 @@ impl ContextActor {
         // buffer actually HAS a parse — otherwise the guest gets `none` and is
         // expected to return an empty list (a normal state, not an error).
         let owned_tree = match tree {
-            Some(snap) if snap.tree().is_some() => Some(
+            // TS.1 parity: the tree-sitter seam is gated on the `tree-sitter`
+            // editor capability, so a producer WITHOUT the grant gets `none`
+            // for its handle — the same answer as a buffer with no parse, and
+            // the same expected response (an empty list, not an error).
+            //
+            // The grammar seam has always done this; the context seam claimed
+            // to and did not, lending the snapshot to any component that asked.
+            // A capability that is documented, denied at load, warned about,
+            // and then not enforced is worse than no capability at all.
+            Some(snap) if snap.tree().is_some() && self.tree_sitter_granted => Some(
                 self.store
                     .data_mut()
                     .table
@@ -215,6 +228,10 @@ impl PluginHost {
                 "context plugin loaded with a withheld capability (reduced function)"
             );
         }
+        let tree_sitter_granted = outcome
+            .grant
+            .editor
+            .contains(lattice_mode::CapabilitySet::TREE_SITTER);
         let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
         let bindings = ContextPlugin::instantiate_async(&mut store, component, &self.linker)
             .await
@@ -235,6 +252,7 @@ impl PluginHost {
         let (tx, rx) = mpsc::unbounded();
         let client = ContextClient { tx, id };
         let actor = ContextActor {
+            tree_sitter_granted,
             store,
             bindings,
             budget,

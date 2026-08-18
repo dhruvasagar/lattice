@@ -268,3 +268,45 @@ async fn unloading_every_producer_clears_the_cache() {
          refresh because the producer set itself changed"
     );
 }
+
+/// TC.13: a producer reply for a SUPERSEDED parse must not overwrite a newer
+/// one.
+///
+/// Producers run off-thread, so a slow one can land after a newer parse's
+/// reply is already cached. The cache is keyed by parse version, and the read
+/// gate compares that key — but the WRITE was unconditional, so a late reply
+/// replaced correct scopes with stale ones. It self-heals on the next tick
+/// (the stamp no longer matches, so the pump re-drives), and "wrong for one
+/// frame, then right" is exactly the flicker the UX contract vetoes.
+#[tokio::test]
+async fn a_reply_for_a_superseded_parse_is_dropped() {
+    use lattice_host::per_buffer_cache::PerBufferCacheExt;
+
+    let editor = Editor::boot(CoreDocument::from_text("fn a() {}\n"));
+    let buffer = editor.document_buffer_id;
+    let cache = &editor.wasm_context.cache;
+
+    // The newer parse's answer is already cached.
+    cache.insert_for(
+        buffer,
+        lattice_host::wasm_context::ContextScopeCache {
+            parse_version: 9,
+            scopes: vec![scope(10, 20)],
+        },
+    );
+
+    // An older reply lands late and must be refused.
+    lattice_host::wasm_context::store_if_current(cache, buffer, 5, vec![scope(99, 100)]);
+
+    let current = cache.get_for(buffer).expect("still cached");
+    assert_eq!(current.parse_version, 9, "the newer parse's entry survives");
+    assert_eq!(
+        current.scopes[0].scope_start, 10,
+        "and its scopes are untouched — a stale write here would point the \
+         strip at lines that have since moved"
+    );
+
+    // A reply for the CURRENT parse still lands.
+    lattice_host::wasm_context::store_if_current(cache, buffer, 9, vec![scope(30, 40)]);
+    assert_eq!(cache.get_for(buffer).unwrap().scopes[0].scope_start, 30);
+}

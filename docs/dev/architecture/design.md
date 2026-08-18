@@ -3391,8 +3391,19 @@ repackaging built-in modes + reference plugins **as WASM components** (§5.8.3
 goal). Built-in modes stay native by design; the as-components path is the
 extension story.
 
-### Phase 9: Rich Buffer Rendering (weeks 26-28)
-Shaped path in `lattice-render-editor`. Per-line layout cache + Fenwick index. `markdown-mode`. Style mappings system. **Exit:** edit markdown with variable headings; latency indistinguishable from code.
+### Phase 9: Rich Buffer Rendering (weeks 26-28) — ⛔ RETIRED from v1 (2026-08-18)
+
+Original scope: shaped path in `lattice-render-editor`, per-line layout cache + Fenwick index, `markdown-mode`, style mappings system. **Exit:** edit markdown with variable headings; latency indistinguishable from code.
+
+**Retired, on three grounds.**
+
+1. **Its named substrate was superseded.** `lattice-render-editor` was never built — the taffy + cosmic-text document renderer was dropped for the **cell grid** (see the Phase-5 superseded note above and §5.6). Phase 9 is written against a crate that does not exist.
+2. **Most of the intent already shipped, elsewhere.** The markdown grammar with fenced-code injection, the full `Heading1..6` / `Bold` / `Italic` / `Link` / `Url` / `MarkupRaw` / `Markup` style set (themable per element), the rich minibuffer, virtual rows, soft-wrap and indent guides all landed under Phases 3–6. What "rich markdown" means in practice is largely delivered.
+3. **What remains is narrow and GPUI-only.** The GPUI peer *does* shape text (`WindowTextSystem::shape_line`), so per-line variable font size is reachable there. What is genuinely unbuilt is the **variable row-height scroll machinery** — the Fenwick height index and every scroll / cursor / viewport calculation that currently assumes uniform rows. And a terminal has exactly one cell size, so variable-size headings can never reach the TUI peer, which is a *first-class* peer rather than a fallback. Building it would mean a permanently renderer-divergent surface for a cosmetic gain.
+
+**Moved to Post-1.0** alongside Path 4 (inline media blocks), which shares the same variable-height substrate.
+
+**Carved out and kept for v1:** *concealment* — hiding `**`, `[]()`, heading `#` markers on lines the cursor is not on. It is what actually makes markdown editing feel rich in Vim, Emacs and Helix alike, it costs no shaped path, and it works identically on both peers. Not yet implemented (no `conceal` support exists in the tree).
 
 ### Phase 10: Polish and v1.0 (weeks 29-32)
 Live-eval (`*scratch:rust*` -> `rustc` -> dynamic plugin load). Accessibility. Cross-platform packaging. Crash reporter. Documentation. Themes. **Exit:** 1.0 release.

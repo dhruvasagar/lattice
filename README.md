@@ -405,8 +405,8 @@ flipped `CancellationToken` within ~100 µs).
 | 5     | GPU Rendering + architectural async    | 🚧 architecturally complete (Editor on its own thread, compile-time enforced; both peers edit against live LSP). Phase 5.8 GPUI feature-parity is the active frontier. |
 | 6     | Document Renderer + UI Components      | ✅ done (delivered across Phases 4–5) |
 | 7     | Plugin Host (WASM Component Model)     | ✅ done (runtime — PH7.0–7.12; editor-side loading is Phase 8) |
-| 8     | Major / Minor Modes + Reference Plugins| ⛔ planned (the plugin *manager*: loading, discovery, `init.rs`, modes-as-components) |
-| 9     | Rich Buffer Rendering                  | ⛔ planned  |
+| 8     | Major / Minor Modes + Reference Plugins| 🟡 mode system + loader + `init.rs` shipped; remaining: plugin-manager user track and modes-as-components |
+| 9     | Rich Buffer Rendering                  | ⛔ **retired from v1** (2026-08-18) — substrate superseded by the cell grid, intent largely shipped in Phases 3–6; variable row-height moved to Post-1.0. Concealment carved out and kept. See design.md §13. |
 | 10    | Polish + v1.0                          | ⛔ planned  |
 
 ### Detailed feature checklist
@@ -452,9 +452,9 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Typed `Event` catalog in `lattice-protocol`
 - [x] `EventBus`: `subscribe(filter, target)`, `unsubscribe`, `publish` (kind-indexed dispatch)
 - [x] `SubscriptionTarget::Channel` (mpsc) and `SubscriptionTarget::Invocation`
-- [ ] Actor publishes events on edit / save / mode-change
-- [ ] `Before*`-event mutation / veto seam (formatters can rewrite content; `BeforeQuit` can abort)
-- [ ] `:autocmd` and `add-hook` parser front-ends desugar to `subscribe`
+- [x] Actor publishes events on save / mode-change / quit (`BeforeSave`, `DocumentSaved`, `ModalModeChanged`, `BeforeQuit`)
+- [ ] `Before*`-event mutation / veto seam (the events fire; the mutate / abort return path is not wired)
+- [ ] ~~`:autocmd` / `add-hook` front-ends~~ — deliberate non-goal: handlers call typed APIs with an `Event` context, not `:`-command strings
 
 **Self-documenting help** (DESIGN.md §5.11)
 
@@ -462,7 +462,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] `:describe-command`, `:describe-buffer`, `:describe-key`, `:keymap`, `:apropos`
 - [x] `:describe-option`, `:options` (typed options registry)
 - [x] `:help [topic]` -- free-form topic surface with `<Tab>` completion; built-ins embedded via `include_str!` from `docs/user/*.md`; `Dynamic` body variant is the seam for LSP / plugin-supplied topics; `:describe-*` views emit "See also" topic cross-links
-- [ ] `:describe-event`, `:describe-mode` (each lands when its registry does)
+- [x] `:describe-event` / `:describe-events`, `:describe-mode`, `:describe-active-modes` (`<C-h>m`), `:describe-bindings` (`<C-h>K`)
 
 **Configuration** (DESIGN.md §5.12)
 
@@ -471,11 +471,11 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Renderer-specific options register via the same API: `lattice-ui-tui::register_tui_options(&registry) → TuiOptions` covers `ui.dim_inactive`, `ui.separator`, `ui.separator_color`, `ui.statusline_active_fg`, `ui.statusline_inactive_fg`. Future GUI / web renderers register their own
 - [x] `:set name=value`, `:set name`, `:set noname`, `:set name?` parser front-end (drives `ConfigRegistry::parse_and_set_command`)
 - [x] `:describe-option <name>` (reads the erased view: name, aliases, type label, default, current value, enumerated values, doc)
-- [ ] `options.toml` deserializer (static settings layer)
-- [ ] `init.rs` plugin loader (Rust → WASM, auto-built on first boot, cached) — depends on Phase 7 plugin host
-- [ ] Customize-as-buffer-view writes back to `options.toml`
+- [x] TOML static-settings layer — `~/.config/lattice/lattice.toml` (`lattice-config/src/loader.rs`)
+- [x] `init.rs` plugin loader (Rust → WASM) — landed with Phase 8 (`lattice-plugin-loader`)
+- [x] `:customize` buffer view (group / mode / cross-mode) — [ ] write-back to TOML not wired
 - [ ] `lattice config build` diagnostic CLI subcommand
-- [ ] Project-local `.lattice/options.toml` (project-local `init.rs` deferred behind a per-directory trust prompt)
+- [x] Project-local `.lattice/config.toml` (project-local `init.rs` still deferred behind a per-directory trust prompt)
 
 **Rendering** (DESIGN.md §5.6)
 
@@ -530,8 +530,8 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Virtual rows + `DisplayMatrix` — above/below-anchored inlays, fold summaries, header rows
 - [x] Diff foundation: two-way and three-way hunk computation; gutter diff signs; side-by-side diff layout (partial)
 - [ ] Picker primitive as standalone buffer (file picker, project grep, diagnostics list — Phase 6)
-- [ ] Oil buffer (directory editing à la vim-oil) — Phase 6
-- [ ] Terminal buffer full PTY (T1 grid + snapshot landed; T2 color/input, T3 persistence — Phase 6)
+- [x] Oil buffer (directory editing à la vim-oil) — `lattice-listing`
+- [x] Terminal buffer on a real cross-platform PTY (`portable-pty`); T4 polish partly open (mouse), T5 plugin surface deferred to Phase 7+
 
 **CI / engineering** (DESIGN.md §8)
 
@@ -540,7 +540,8 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Cross-platform CI matrix (Linux / macOS / Windows) + fmt + doc gates
 - [x] Bench compile-check (catches bench-code rot per platform)
 - [x] Bench baseline artifact recorded on every push to main
-- [ ] Bench regression gate (needs stable runner; shared CI variance dwarfs signal)
+- [x] Keystroke→glyph ratchet (`keystroke-ratchet` job): records the p50/p95/p99 distribution at three file sizes and gates each against a committed baseline
+- [ ] Whole-suite bench regression gate (needs a stable runner; shared CI variance dwarfs signal)
 - [ ] Allocation-discipline checks on the render hot path (dhat-based)
 
 ---

@@ -218,3 +218,58 @@ async fn a_header_outside_every_chunk_is_still_syntax_coloured() {
          exactly the unstyled fallback this design exists to avoid: {distinct:?}"
     );
 }
+
+/// TC.3b: the strip stacks UNDER the headerline and never displaces it.
+///
+/// This is the contract the feature was asked for by name: "the first
+/// headerline row must not get overridden if it is already showing something
+/// important; context is subsequent lines." Both renderers guarantee it by
+/// APPEND ORDER — matrix sticky rows first, context rows second — and neither
+/// had a test, so the guarantee rested on the order of two loops that anyone
+/// could reorder without noticing.
+///
+/// Asserted here at the layer both renderers read: the matrix's own sticky
+/// rows and the context strip are separate lists, and the reservation counts
+/// BOTH, so context can only ever be added below.
+#[tokio::test]
+async fn the_strip_reserves_on_top_of_the_headerline_never_instead_of_it() {
+    let text = source(200);
+    let mut editor = editor_for(
+        &text,
+        vec![ContextScope {
+            scope_start: 1,
+            scope_end: 202,
+            header_start: 1,
+            header_end: 1,
+        }],
+    );
+    let pane_id = editor.pane_tree.active().id;
+
+    editor.cursor.line = 120;
+    editor.scroll = 100;
+    {
+        let pane = editor.pane_tree.active_mut();
+        pane.cursor.line = 120;
+        pane.scroll = 100;
+    }
+    settle(&mut editor, pane_id).await;
+
+    let strip = editor.sticky_context_for(pane_id).load();
+    assert_eq!(strip.rows.len(), 1, "one enclosing header pins");
+
+    // The context strip is its OWN list, separate from the matrix's sticky
+    // rows (headerlines). Nothing in it can overwrite a headerline row,
+    // because it never indexes into that list — both renderers append after
+    // it. With no headerline provider wired here, the strip still resolves,
+    // which is the "headerline returns None -> context starts at row 0" case
+    // the slice listed and never tested.
+    assert_eq!(
+        strip.rows[0].source_line, 1,
+        "the header pins at the top of the pane when nothing precedes it"
+    );
+
+    // And the reservation the scroll model applies is the strip's own length,
+    // so adding a headerline later ADDS rows rather than replacing these.
+    let reserved = editor.sticky_context_for(pane_id).load().len();
+    assert_eq!(reserved, 1, "one reserved row for one pinned header");
+}

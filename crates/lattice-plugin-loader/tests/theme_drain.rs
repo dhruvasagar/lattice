@@ -200,3 +200,58 @@ async fn unloading_a_theme_plugin_withdraws_its_elements() {
         "no plugin element survives in the listing"
     );
 }
+
+/// TC.4: a theme file OVERRIDES a plugin-registered element, exactly as it
+/// overrides a builtin.
+///
+/// The slice claimed this as a test and the closest thing shipped was an
+/// assertion that a palette key resolved to some colour — which is a
+/// different property (that registration worked) from the one that matters
+/// (that a user can restyle it). "Indistinguishable from a builtin" is the
+/// design's promise, and an override is the sharpest way to hold it: if the
+/// plugin's element sat outside the override layer, registration would still
+/// look fine and restyling would silently do nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_theme_override_reaches_a_plugin_registered_element() {
+    let Some(wasm) = theme_guest_wasm() else {
+        eprintln!("skipping: theme-guest wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, "theme-fixture", "theme", &wasm);
+    let rig = rig(base.path());
+    rig.loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+
+    let name = lattice_theme::ElementName::from("theme-fixture.background".to_string());
+    let id = rig
+        .theme
+        .id(&name)
+        .expect("the plugin's element is registered");
+    let before = rig.theme.resolved().get(id).bg;
+
+    rig.theme.set_override(
+        name.clone(),
+        lattice_theme::StyleSpec {
+            bg: Some(lattice_theme::ColorRef::Literal(lattice_theme::Color::Rgb(
+                0x12, 0x34, 0x56,
+            ))),
+            ..Default::default()
+        },
+    );
+
+    let after = rig.theme.resolved().get(id).bg;
+    assert_ne!(
+        before, after,
+        "the override changed the resolved style — a plugin element outside \
+         the override layer would resolve identically and restyling would \
+         silently do nothing"
+    );
+    assert_eq!(
+        after.map(|c| c.to_rgb_u32(0)),
+        Some(0x12_34_56),
+        "and it resolved to exactly what the theme asked for"
+    );
+}

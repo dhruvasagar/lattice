@@ -116,7 +116,7 @@ impl Editor {
             &self.services,
             proto_id,
             crate::tutor::TutorMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         );
         self.active_modes.insert(buffer_id, active);
         signals

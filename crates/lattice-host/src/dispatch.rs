@@ -4613,7 +4613,7 @@ impl Editor {
                         &self.services,
                         proto_id,
                         mode_id,
-                        lattice_mode::CapabilitySet::empty(),
+                        self.capabilities_for_proto(proto_id),
                     )
                 }
                 crate::diff::mode::DiffModeAction::Deactivate => {
@@ -16956,7 +16956,7 @@ impl Editor {
                     &self.services,
                     proto_id,
                     minor.mode_id,
-                    lattice_mode::CapabilitySet::empty(),
+                    self.capabilities_for_proto(proto_id),
                 );
             } else if !want && have {
                 let _ = self.mode_registry.load_full().deactivate_minor(
@@ -16984,7 +16984,7 @@ impl Editor {
                 &self.services,
                 proto_id,
                 popup_mode_id,
-                lattice_mode::CapabilitySet::empty(),
+                self.capabilities_for_proto(proto_id),
             );
         } else if !want_popup && currently_popup {
             let _ = self.mode_registry.load_full().deactivate_minor(
@@ -17075,6 +17075,100 @@ impl Editor {
     /// hook can fan out a renderer-coupled tail; e.g. `lsp-folding-mode`
     /// swapping `foldmethod=lsp`). Callers fan via the renderer
     /// signal-pipe.
+    /// TC.9: what `buffer_id` can offer a mode, computed from live state.
+    ///
+    /// The gate's other half. `ModeRegistry` has always checked
+    /// `required_capabilities() - buffer_caps`; every caller passed
+    /// `CapabilitySet::empty()`, so any mode declaring any capability was
+    /// unsatisfiable and said so as a `warn` — never a failing build or test.
+    ///
+    /// **Computed on demand rather than stored.** A stored set needs every
+    /// subsystem that attaches a parser, an LSP server or a path to remember
+    /// to update it, and the failure mode of forgetting is a mode that never
+    /// activates — silent, and indistinguishable from the bug this fixes. The
+    /// reads here are each a map lookup or an `ArcSwap` load, and activation
+    /// is a rare event (buffer open, `:mode` toggle, plugin load), not a
+    /// per-keystroke one.
+    ///
+    /// Two bits are deliberately NOT granted, because nothing in the editor
+    /// models them and granting on a proxy would be a lie a plugin author
+    /// cannot see through:
+    ///
+    /// - `FOLDS` — every Document has a rope and fold metadata, so the honest
+    ///   answer is "always", which makes the bit carry no information. The
+    ///   nearest per-buffer state, `foldenable`, is vim's DISPLAY toggle: a
+    ///   user with `:set nofoldenable` has not lost the ability to fold.
+    /// - `DIAGNOSTICS` — the overlay provider exists only while
+    ///   `lsp-diagnostics-mode` is active, which is a mode DEPENDENCY, and the
+    ///   mode system already has `implies` for that. Spelling it as a
+    ///   capability would give two mechanisms for one relationship.
+    ///
+    /// Both are left ungranted rather than removed: the bits are shipped API,
+    /// and `capability.rs` is explicit that a retired capability leaves a hole
+    /// rather than having its meaning changed underneath a compiled plugin. A
+    /// mode requiring either is refused today — which is honest, and visible,
+    /// where a proxy would be neither.
+    pub fn buffer_capabilities(&self, buffer_id: BufferId) -> lattice_mode::CapabilitySet {
+        use lattice_mode::CapabilitySet;
+        let mut caps = CapabilitySet::empty();
+
+        // A path IS the stable URI in the pre-URI form, and it is the form
+        // every buffer kind can answer for; `buffer_uris` is populated only
+        // once a document is opened toward the LSP, which would make
+        // BUFFER_URI mean "LSP-known" rather than "has a URI".
+        let path = self.path_for_buffer(buffer_id);
+        if path.is_some() {
+            caps |= CapabilitySet::BUFFER_URI;
+        }
+
+        // Attachment, not availability: `has_server_for_path` only says a
+        // config's patterns match, which is true long before (and sometimes
+        // without ever) a server being up.
+        if let Some(uri) = self.buffer_uris.get(&buffer_id)
+            && !self.lsp.servers_for(uri).is_empty()
+        {
+            caps |= CapabilitySet::LSP;
+        }
+
+        // A handle with no tree is a buffer whose first parse has not run.
+        // Granting on the handle alone would hand a mode a snapshot with
+        // nothing in it — the failure the retry path below exists to avoid.
+        if self
+            .document_syntax_for(buffer_id)
+            .is_some_and(|h| h.snapshot().tree().is_some())
+        {
+            caps |= CapabilitySet::TREE_SITTER;
+        }
+
+        // `resolved_option_opt`, not `resolved_option`: capabilities are read
+        // on the ACTIVATION path, which runs against buffers whose options
+        // have not been resolved yet and against the minimal registries
+        // `Editor::boot` builds. Panicking there would turn a missing option
+        // into a crash while activating a mode — strictly worse than the
+        // wrong answer, and the wrong answer here is not wrong: `read-only`
+        // is registered `false`, so "unregistered" and "registered at its
+        // default" agree.
+        let read_only = self
+            .resolved_option_opt::<lattice_config::ReadOnly>(buffer_id)
+            .map(|v| *v)
+            .unwrap_or(false);
+        if !read_only {
+            caps |= CapabilitySet::WRITABLE;
+        }
+
+        caps
+    }
+
+    /// [`Self::buffer_capabilities`] keyed by the protocol id the activation
+    /// sites already hold, so each of them reads the same one line rather than
+    /// converting inline eleven different ways.
+    pub fn capabilities_for_proto(
+        &self,
+        proto: lattice_protocol::ids::BufferId,
+    ) -> lattice_mode::CapabilitySet {
+        self.buffer_capabilities(BufferId(proto.0 as u32))
+    }
+
     #[must_use]
     pub fn activate_mode_by_id(
         &mut self,
@@ -17100,7 +17194,7 @@ impl Editor {
                 &self.services,
                 proto_id,
                 mode_id,
-                lattice_mode::CapabilitySet::empty(),
+                self.capabilities_for_proto(proto_id),
             ),
             lattice_mode::ModeKind::Minor => self.mode_registry.load_full().activate_minor(
                 &mut active,
@@ -17110,7 +17204,7 @@ impl Editor {
                 &self.services,
                 proto_id,
                 mode_id,
-                lattice_mode::CapabilitySet::empty(),
+                self.capabilities_for_proto(proto_id),
             ),
         };
         if let Err(e) = result {
@@ -17297,7 +17391,7 @@ impl Editor {
             &self.services,
             proto_id,
             major_id,
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         ) {
             Ok(_events) => {}
             Err(e) => {
@@ -17319,7 +17413,7 @@ impl Editor {
                 &self.services,
                 proto_id,
                 minor_id,
-                lattice_mode::CapabilitySet::empty(),
+                self.capabilities_for_proto(proto_id),
             )
         {
             self.set_message(
@@ -17339,7 +17433,7 @@ impl Editor {
                 &self.services,
                 proto_id,
                 minor_id,
-                lattice_mode::CapabilitySet::empty(),
+                self.capabilities_for_proto(proto_id),
             ) {
                 self.set_message(
                     EchoLevel::Warn,
@@ -26563,7 +26657,7 @@ impl Editor {
             &self.services,
             proto_id,
             lattice_syntax::MarkdownMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         );
         // help-mode MINOR — the same default minor `:help` gets
         // (`default_minor_mode_id_for_buffer_kind(Help)`). It carries
@@ -26580,7 +26674,7 @@ impl Editor {
             &self.services,
             proto_id,
             crate::modes::HelpMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         );
         // hover-specific minor (auto-dismiss on cursor motion, …).
         let _ = self.mode_registry.load_full().activate_minor(
@@ -26591,7 +26685,7 @@ impl Editor {
             &self.services,
             proto_id,
             lattice_mode::HoverMode::mode_id(),
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         );
         self.active_modes.insert(buffer_id, active);
         self.recompute_options_and_folds_for_buffer(buffer_id);

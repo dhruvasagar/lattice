@@ -109,7 +109,7 @@ impl Editor {
             &self.services,
             proto_id,
             major_id,
-            lattice_mode::CapabilitySet::empty(),
+            self.capabilities_for_proto(proto_id),
         ) {
             self.set_message(
                 EchoLevel::Warn,

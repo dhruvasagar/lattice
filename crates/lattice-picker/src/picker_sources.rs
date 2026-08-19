@@ -642,8 +642,8 @@ impl PickerSourceGenerator for FilePickSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::SuppliedValue { value } => Ok(PickerAcceptOutcome::SupplyValue {
-                value: value.clone(),
+            RoutingPayload::SuppliedValue { value } => Ok(PickerAcceptOutcome::FillCaller {
+                text: value.clone(),
             }),
             other => Err(format!(
                 "{FILE_PICK_SOURCE}: unexpected routing payload {other:?}"

@@ -859,6 +859,19 @@ pub struct Editor {
     /// targeting variants (OpenFile / SwitchBuffer / JumpInBuffer
     /// / JumpToLocation). `Default` for `<CR>`.
     pub picker_open_target: lattice_picker::OpenTarget,
+    /// YR.3: where a `FillCaller` accept should put its text, recorded
+    /// when the picker was **opened**.
+    ///
+    /// Not resolved at accept: by then the picker has been dismissed and
+    /// the modal state that identified the caller is gone, so resolving
+    /// would read whatever context happens to be current. That is right
+    /// often enough to pass a single-level test and wrong in exactly the
+    /// picker-inside-a-prompt case this exists for.
+    ///
+    /// `None` means the picker was opened to act, not to answer, and a
+    /// `FillCaller` arriving against it is a wiring bug the host reports
+    /// rather than swallows.
+    pub picker_fill_target: Option<lattice_picker::FillTarget>,
 
     /// T.12a: the theme to restore if the colorscheme picker is
     /// dismissed (`<Esc>`). Captured on the FIRST live preview as a

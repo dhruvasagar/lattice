@@ -13,6 +13,38 @@ use std::path::PathBuf;
 
 use lattice_grammar::args::Args;
 
+/// YR.3: where a [`PickerAcceptOutcome::FillCaller`] puts its text.
+///
+/// **Captured when the picker is opened, never resolved when it
+/// accepts.** By accept time the picker has been dismissed and the
+/// modal state that identified the caller is gone; resolving then reads
+/// whatever context is current. In the single-level case that is
+/// usually the right answer, which is precisely the trap — it passes a
+/// naive test and fails in the picker-inside-a-prompt case the feature
+/// exists for. `Effect::CursorMoveIn` (name the buffer the position was
+/// computed in) and MG.32's `<CR>` (ask the view before resolving the
+/// path) are the same shape, arrived at the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FillTarget {
+    /// Insert at the cursor in the buffer that was focused at open.
+    Document,
+    /// The `:` line.
+    CommandLine,
+    /// The `/` or `?` line.
+    SearchLine,
+    /// A one-line minibuffer prompt, named so a later prompt cannot
+    /// receive text meant for the one that opened this picker.
+    Prompt { buffer: u32 },
+    /// The query of the picker that was showing when this one opened —
+    /// the `M-y`-inside-a-picker case.
+    PickerQuery,
+    /// A transient menu's argument, parked while this picker is up.
+    /// MG.53.e's case, folded in here rather than kept as a second
+    /// mechanism: "which argument" is already recorded in the parked
+    /// `PendingTransientArgument`, so this variant carries nothing.
+    TransientArgument,
+}
+
 /// Issue #32 (2026-05-22): where a picker's file-opening
 /// outcome should land. `<CR>` uses `Default` and the host's
 /// preference (typically the active pane). `<C-s>` / `<C-v>` /
@@ -123,25 +155,27 @@ pub enum PickerAcceptOutcome {
         on_submit_action: String,
         buffer_name: Option<String>,
     },
-    /// MG.53.e: the picked item's **value**, for whatever asked for one.
+    /// YR.3 / MG.53.e: the picked item's **text**, for whatever opened
+    /// the picker.
     ///
     /// The outcome for a source that answers a question rather than
-    /// performing an action. Today the asker is a picker-backed
-    /// [`crate::TransientItemKind::Argument`], which parked its menu
-    /// before opening the picker and is re-seated with this value.
+    /// performing an action. Where the text lands is not the source's
+    /// business and not encoded here — the host consumes the
+    /// [`FillTarget`] it captured when the picker was opened. The same
+    /// `file-pick` list fills a magit argument; the same `yank-ring`
+    /// list fills the document, the `:` line, a prompt, or another
+    /// picker's query.
     ///
-    /// Deliberately not `InvokeCommand`. A source that supplies a value
-    /// does not know, and must not decide, what the value is for — the
-    /// same `file-pick` list feeds a stage argument, a diff argument,
-    /// and anything a later provider asks it for. Baking a command into
-    /// the source would mean one registered source per consumer, which
-    /// is the duplication route (b) was chosen to avoid.
+    /// Deliberately not `InvokeCommand`. A source that supplies text
+    /// does not know, and must not decide, what the text is for. Baking
+    /// a command into the source would mean one registered source per
+    /// consumer, which is the duplication this exists to avoid.
     ///
-    /// The host echoes and drops it when nothing is waiting; a value
-    /// arriving with no asker is a wiring bug, not a user error, and
-    /// silently discarding it would present as a picker that does
+    /// The host echoes and drops it when no target was captured; text
+    /// arriving with nowhere to go is a wiring bug, not a user error,
+    /// and silently discarding it would present as a picker that does
     /// nothing.
-    SupplyValue { value: String },
+    FillCaller { text: String },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

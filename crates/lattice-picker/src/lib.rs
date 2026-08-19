@@ -60,7 +60,7 @@ pub use mru::{
     DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, MruPersistError,
     PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
-pub use outcome::{OpenTarget, PickerAcceptOutcome};
+pub use outcome::{FillTarget, OpenTarget, PickerAcceptOutcome};
 pub use picker_sources::FILE_PICK_SOURCE;
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,

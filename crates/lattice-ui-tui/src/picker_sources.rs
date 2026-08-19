@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn file_pick_accept_supplies_the_value() {
+    fn file_pick_accept_fills_the_caller() {
         use lattice_picker::PickerAcceptOutcome;
         use lattice_picker::picker_sources::FilePickSource;
         let app = app_with("hi\n", 5);
@@ -180,8 +180,8 @@ mod tests {
             )
             .expect("accept");
         match outcome {
-            PickerAcceptOutcome::SupplyValue { value } => assert_eq!(value, "src/main.rs"),
-            other => panic!("expected SupplyValue, got {other:?}"),
+            PickerAcceptOutcome::FillCaller { text } => assert_eq!(text, "src/main.rs"),
+            other => panic!("expected FillCaller, got {other:?}"),
         }
     }
 

@@ -8269,6 +8269,105 @@ impl Editor {
         self.resume_parked_transient(None);
     }
 
+    /// YR.3: deliver `text` to whatever opened the picker.
+    ///
+    /// Consumes `picker_fill_target`, so a second accept cannot land in a
+    /// caller that has already been filled and moved on.
+    ///
+    /// Every arm names the surface it writes to rather than asking "what
+    /// is focused now". The target was captured at open precisely
+    /// because the answer to that question changes when the picker is
+    /// dismissed — and changes in a way that is *usually right*, which is
+    /// what makes resolving-at-accept survive a single-level test and
+    /// fail the nested case.
+    fn fill_captured_target(&mut self, text: &str) {
+        use lattice_picker::FillTarget;
+        let Some(target) = self.picker_fill_target.take() else {
+            // Nowhere to put it. A wiring bug rather than a user error —
+            // a source emitted `FillCaller` for a picker that was opened
+            // to act, not to answer. Saying so beats a `<CR>` that
+            // visibly does nothing.
+            self.set_message(
+                EchoLevel::Warn,
+                format!("picker: nothing was waiting for a value (got `{text}`)"),
+            );
+            return;
+        };
+        match target {
+            FillTarget::TransientArgument => {
+                if !self.resume_parked_transient(Some(text)) {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        "picker: the menu that asked for this value is gone".to_string(),
+                    );
+                }
+            }
+            // The three one-line surfaces and the document all insert at
+            // the cursor, which is what `<C-r>` means in vim. They differ only
+            // in which surface has to be focused first — and naming that
+            // is exactly what the captured target buys, versus trusting
+            // whatever `apply_edit_blocking` would target right now.
+            FillTarget::CommandLine => {
+                if self.ensure_command_line_focus() {
+                    self.insert_at_cursor(text);
+                } else {
+                    self.report_vanished_caller("the `:` line");
+                }
+            }
+            FillTarget::SearchLine => {
+                if self.search_line_active() {
+                    self.insert_at_cursor(text);
+                } else {
+                    self.report_vanished_caller("the search line");
+                }
+            }
+            FillTarget::Prompt { buffer } => {
+                if self.document_buffer_id == lattice_core::BufferId(buffer) {
+                    self.insert_at_cursor(text);
+                } else {
+                    self.report_vanished_caller("the prompt");
+                }
+            }
+            FillTarget::Document => {
+                self.insert_at_cursor(text);
+            }
+            FillTarget::PickerQuery => match self.picker.as_mut() {
+                Some(picker) => {
+                    picker.query.push_str(text);
+                    picker.query_cursor = picker.query.len();
+                    picker.refilter();
+                }
+                None => self.report_vanished_caller("the picker"),
+            },
+        }
+    }
+
+    /// YR.3: insert `text` at the cursor of the focused buffer.
+    fn insert_at_cursor(&mut self, text: &str) {
+        let at = self.cursor;
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, text))
+            .is_ok()
+        {
+            self.cursor = lattice_protocol::position::Position {
+                line: at.line,
+                byte: at.byte + text.len() as u32,
+            };
+        }
+    }
+
+    /// YR.3: the caller named at open is no longer there.
+    ///
+    /// Says which surface rather than failing silently: the text is gone
+    /// either way, and "nothing happened" is indistinguishable from a
+    /// broken keybinding.
+    fn report_vanished_caller(&mut self, surface: &str) {
+        self.set_message(
+            EchoLevel::Warn,
+            format!("picker: {surface} that asked for this value is gone"),
+        );
+    }
+
     /// MG.17b: re-seat a transient parked by an `Argument` prompt.
     ///
     /// `value` is the submitted text, or `None` when the prompt was
@@ -27153,22 +27252,11 @@ impl Editor {
                 }
             }
             NoOp => {}
-            SupplyValue { value } => {
-                // MG.53.e: a source answered a question. The only asker
-                // today is a picker-backed transient argument, which
-                // parked its menu before opening this picker.
-                //
-                // Echo rather than swallow when nothing is waiting: a
-                // value with no asker means a source was opened straight
-                // from `:picker file-pick` with no transient behind it,
-                // and a picker that visibly does nothing on `<CR>` is
-                // the failure mode this whole slice exists to remove.
-                if !self.resume_parked_transient(Some(&value)) {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        format!("picker: nothing was waiting for a value (got `{value}`)"),
-                    );
-                }
+            FillCaller { text } => {
+                // YR.3: put the text where the caller was when the
+                // picker opened — `picker_fill_target`, captured then
+                // rather than resolved now.
+                self.fill_captured_target(&text);
             }
             JumpToMark { name } => {
                 self.do_jump_mark(name, true);
@@ -30459,6 +30547,10 @@ impl Editor {
                 out.renderer_signals.extend(self.do_picker_dismiss());
                 self.pending_transient_argument = Some(parked);
                 match source {
+                    // YR.3: name the caller NOW, while the menu is still
+                    // the thing that asked. `do_picker_dismiss` above has
+                    // already torn down the surface that would identify
+                    // it at accept time.
                     // MG.53.e: the value is picked from a list. Same
                     // park, different surface — `SupplyValue` re-seats
                     // the menu through the identical
@@ -30466,6 +30558,8 @@ impl Editor {
                     // so cancel semantics (menu returns, state
                     // untouched) come along for free.
                     Some(src) => {
+                        self.picker_fill_target =
+                            Some(lattice_picker::FillTarget::TransientArgument);
                         let signals = self.open_picker(src.id.clone(), src.args.clone());
                         out.renderer_signals.extend(signals);
                     }
@@ -39168,9 +39262,12 @@ mod tests {
     fn a_supplied_value_restores_the_menu_with_it() {
         use lattice_picker::{PickerAcceptOutcome, TransientValue};
         let mut ed = parked("file", &[("cached", TransientValue::Bool(true))]);
+        // YR.3: the target is captured when the picker opens; `parked`
+        // stands in for that half, so set it explicitly here.
+        ed.picker_fill_target = Some(lattice_picker::FillTarget::TransientArgument);
 
-        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::SupplyValue {
-            value: "src/main.rs".to_string(),
+        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::FillCaller {
+            text: "src/main.rs".to_string(),
         });
 
         let picker = ed.picker.as_ref().expect("menu came back");
@@ -39202,8 +39299,8 @@ mod tests {
         let mut ed = Editor::default();
         assert!(ed.pending_transient_argument.is_none(), "precondition");
 
-        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::SupplyValue {
-            value: "src/main.rs".to_string(),
+        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::FillCaller {
+            text: "src/main.rs".to_string(),
         });
 
         let msg = ed

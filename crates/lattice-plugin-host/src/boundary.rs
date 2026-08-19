@@ -408,15 +408,14 @@ impl WitBoundary for NativePickerAcceptOutcome {
                         .into(),
                 );
             }
-            // MG.53.e: `supply-value` answers a question a HOST surface
-            // asked (a parked transient argument waiting to be re-seated).
-            // The asker is host state, so a plugin source emitting this
-            // would be supplying a value to something it cannot see.
-            // Representable only once transients themselves cross the
-            // boundary.
-            NativePickerAcceptOutcome::SupplyValue { .. } => {
+            // YR.3: `fill-caller` puts text into a HOST surface — the
+            // document, the `:` line, a prompt, a parked transient
+            // argument. Which one is the `FillTarget` the host captured
+            // when the picker opened, so a plugin source emitting this
+            // would be filling something it cannot see or name.
+            NativePickerAcceptOutcome::FillCaller { .. } => {
                 return Err(
-                    "supply-value is a host-internal picker outcome, not representable over WIT"
+                    "fill-caller is a host-internal picker outcome, not representable over WIT"
                         .into(),
                 );
             }

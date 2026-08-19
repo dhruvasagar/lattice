@@ -61,14 +61,15 @@ pub use mru::{
     PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
 pub use outcome::{OpenTarget, PickerAcceptOutcome};
+pub use picker_sources::FILE_PICK_SOURCE;
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 pub use transient::{
-    KeyResolution, TransientContext, TransientGroup, TransientItem, TransientItemKind,
-    TransientSourceRegistry, TransientSourceRegistryHandle, TransientSpec, TransientState,
-    TransientValue, confirm_transient_spec, transient_initial_state,
+    KeyResolution, TransientArgSource, TransientContext, TransientGroup, TransientItem,
+    TransientItemKind, TransientSourceRegistry, TransientSourceRegistryHandle, TransientSpec,
+    TransientState, TransientValue, confirm_transient_spec, transient_initial_state,
 };
 
 use std::path::PathBuf;
@@ -246,6 +247,15 @@ pub enum RoutingPayload {
     /// branch's name (`PickerAcceptOutcome::OpenPrompt`, stashing
     /// this name in the prompt buffer's synthetic name).
     BranchBase { name: String },
+    /// MG.53.e: a plain value the picked candidate stands for, for a
+    /// source that answers a question rather than performing an action.
+    ///
+    /// Carried by `file-pick` and consumed by whatever parked itself
+    /// waiting for a value — today a picker-backed transient argument.
+    /// The source does not know what the value is for, which is the
+    /// point: one registered file listing serves every argument that
+    /// names a file.
+    SuppliedValue { value: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

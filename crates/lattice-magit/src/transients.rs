@@ -1152,6 +1152,12 @@ fn flag_items_from(flags: &'static [crate::magit_global_mode::RemoteFlag]) -> Ve
                         name: f.name.to_string(),
                         default: None,
                         prompt: prompt.to_string(),
+                        // Free text: these are values being *created*
+                        // (a new remote name, a URL), not names of
+                        // things that already exist. MG.53's rule —
+                        // a picker for a new name is worse than
+                        // useless, because there is nothing to pick.
+                        source: None,
                     }
                 }
             },
@@ -2860,6 +2866,22 @@ pub fn other_file_dispatch_transient(ids: &MagitActionIds) -> TransientSpec {
                         name: "file".to_string(),
                         prompt: "File (repo-relative): ".to_string(),
                         default: None,
+                        // MG.53.e: the file must already exist, so it is
+                        // picked rather than typed — the rule this whole
+                        // plan applies. A free-text path is a typo
+                        // waiting to happen, and git reports it long
+                        // after the keystroke that caused it, by which
+                        // point the menu has closed.
+                        //
+                        // The listing lives in `lattice-picker`, not
+                        // here: magit names the source and the walk stays
+                        // generic, so the next provider that needs
+                        // "choose a file, then act" declares the same
+                        // row instead of copying a directory walk into
+                        // its own crate.
+                        source: Some(lattice_picker::TransientArgSource::new(
+                            lattice_picker::FILE_PICK_SOURCE,
+                        )),
                     },
                 }],
             },

@@ -533,6 +533,125 @@ impl PickerSourceGenerator for FilesSource {
     }
 }
 
+/// `:picker file-pick [root]`. MG.53.e — the same walk as
+/// [`FilesSource`], accepting to a **value** instead of to an open
+/// buffer.
+///
+/// The two differ only in what accept means, and that difference is the
+/// whole reason this exists: `FilesSource` hands its path to `do_edit`,
+/// i.e. it opens the file, where a caller asking "which file?" needs the
+/// path itself. magit's `File (repo-relative):` argument was a free-text
+/// prompt because of that one mismatch — the listing was always
+/// reusable, the accept never was.
+///
+/// The path is emitted **relative to the walk root**, because the
+/// consumers are git commands and git addresses files repo-relatively.
+/// An absolute path would work by luck for the common case (the root is
+/// the repo) and break the moment it is not.
+///
+/// Registered in the host rather than in `lattice-magit` so every
+/// provider wanting "choose a file, then act" reaches it through the
+/// same `PickerSourceSpec` surface, including WASM ones. A magit-local
+/// copy would have put a second consumer of the repo file walk inside a
+/// feature crate and bought nothing but a smaller diff.
+pub struct FilePickSource {
+    pub spec: PickerSourceSpec,
+}
+
+/// The source id, shared by the generator and every declaration that
+/// names it — one constant so a rename cannot leave a transient
+/// pointing at a source that no longer exists.
+pub const FILE_PICK_SOURCE: &str = "file-pick";
+
+impl FilePickSource {
+    pub fn new() -> Self {
+        use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
+        Self {
+            spec: PickerSourceSpec {
+                id: FILE_PICK_SOURCE.into(),
+                doc: "Pick a file and supply its path as a value (for a transient argument or \
+                      other caller awaiting one). Lists the same files as `files`; differs only \
+                      in that accepting yields the path rather than opening it."
+                    .into(),
+                args_hint: "[root]".into(),
+                args_schema: vec![ArgSpec {
+                    name: "root".into(),
+                    kind: ArgKind::String,
+                    doc: "Directory to walk recursively. Absent = current working directory. \
+                          Picked paths are relative to it."
+                        .into(),
+                    prompt: "root:".into(),
+                    default: ArgDefault::None,
+                    completion: Some("gen:files".into()),
+                }],
+                live: false,
+            },
+        }
+    }
+}
+
+impl Default for FilePickSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for FilePickSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let root: std::path::PathBuf = match args.first() {
+            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => std::env::current_dir().map_err(|e| {
+                format!("{FILE_PICK_SOURCE}: failed to read current directory: {e}")
+            })?,
+        };
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
+        let entries = walk_files_for_picker(&canonical_root);
+        if entries.is_empty() {
+            return Err(format!(
+                "{FILE_PICK_SOURCE}: no files under {}",
+                canonical_root.display()
+            ));
+        }
+        let pairs = entries
+            .into_iter()
+            .map(|abs| {
+                let rel = abs
+                    .strip_prefix(&canonical_root)
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|_| abs.clone());
+                let rel_display = rel.display().to_string();
+                // No `accept_action`: this source supplies a value, and
+                // an `AcceptAction::OpenFile` here would let the
+                // completion layer open the file behind the caller's
+                // back — the exact confusion this source exists to
+                // avoid.
+                let cand = RawCandidate::plain(rel_display.clone(), CandidateKind::Plain);
+                (cand, RoutingPayload::SuppliedValue { value: rel_display })
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::SuppliedValue { value } => Ok(PickerAcceptOutcome::SupplyValue {
+                value: value.clone(),
+            }),
+            other => Err(format!(
+                "{FILE_PICK_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
 /// `:picker recent`. Walks `ctx.recent_files` (MRU, newest
 /// first) and emits one row per path. Empty MRU returns
 /// `Err("no recent files")` which the host echoes.
@@ -2091,6 +2210,7 @@ pub fn first_party_generators(
 ) -> Vec<Arc<dyn PickerSourceGenerator>> {
     vec![
         Arc::new(FilesSource::new()),
+        Arc::new(FilePickSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
         Arc::new(LinesSource::new()),

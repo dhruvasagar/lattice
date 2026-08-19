@@ -5217,6 +5217,71 @@ mod tests {
         );
     }
 
+    /// MG.53.e: that argument names an existing file, so it is picked,
+    /// not typed. Asserts the wiring rather than the intent — a
+    /// declaration that merely *says* "repo-relative" in its prompt is
+    /// what it was before, and it typed fine while accepting paths that
+    /// git would reject minutes later.
+    ///
+    /// The source id is checked against the picker crate's constant, so
+    /// renaming the source cannot leave this row pointing at nothing:
+    /// an unknown source id fails at open time with an echo, which is a
+    /// menu row that looks alive and is not.
+    #[test]
+    fn the_other_file_menu_picks_its_file_rather_than_prompting_for_it() {
+        let spec = transients::other_file_dispatch_transient(&Default::default());
+        let source = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find_map(|item| match &item.kind {
+                lattice_picker::TransientItemKind::Argument { name, source, .. }
+                    if name == "file" =>
+                {
+                    Some(source.clone())
+                }
+                _ => None,
+            })
+            .expect("the `file` argument exists");
+        let source = source.expect(
+            "the `file` argument must be picker-backed — a free-text path for a \
+             file that must already exist is the typo this plan exists to remove",
+        );
+        assert_eq!(source.id, lattice_picker::FILE_PICK_SOURCE);
+    }
+
+    /// The generic counterpart, and the one that would catch a rename on
+    /// either side: whatever source the menu names has to actually be
+    /// registered. Checked against the real first-party generator list.
+    #[test]
+    fn the_file_pick_source_the_menu_names_is_registered() {
+        let ids: Vec<String> = lattice_picker::picker_sources::first_party_generators(
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_grammar::CommandRegistry::new(),
+            )),
+            std::sync::Arc::new(lattice_config::ConfigRegistry::new()),
+            std::sync::Arc::new(NoKeybindings),
+            None,
+        )
+        .iter()
+        .map(|g| g.spec().id.to_string())
+        .collect();
+        assert!(
+            ids.iter().any(|id| id == lattice_picker::FILE_PICK_SOURCE),
+            "`{}` must be a registered first-party source; known: {ids:?}",
+            lattice_picker::FILE_PICK_SOURCE
+        );
+    }
+
+    /// Minimal stand-in for the keybinding reverse lookup the commands
+    /// source needs; this test only reads source ids.
+    struct NoKeybindings;
+    impl lattice_completion::KeymapReverseLookup for NoKeybindings {
+        fn chords_for(&self, _name: &str) -> Vec<lattice_protocol::chord::KeyChord> {
+            Vec::new()
+        }
+    }
+
     /// IX.7 — the other-file menu's destructive row carries its target.
     ///
     /// Replaces MG.23a's "no destructive row here" guard, which existed

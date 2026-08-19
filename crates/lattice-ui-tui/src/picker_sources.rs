@@ -93,6 +93,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // ── MG.53.e: `file-pick`, the value-supplying peer ──
+
+    /// Same listing as `files`, different accept. The paths come back
+    /// **relative to the walk root** because the consumers are git
+    /// commands and git addresses files repo-relatively; an absolute
+    /// path would work by luck whenever the root happened to be the
+    /// repo and break silently when it was not.
+    #[test]
+    fn file_pick_source_emits_relative_supplied_values() {
+        use lattice_picker::picker_sources::FilePickSource;
+        let tmp = std::env::temp_dir().join(format!("lattice-file-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(tmp.join("src").join("main.rs"), "").unwrap();
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = FilePickSource::new();
+        let result = source
+            .init(&ctx, std::slice::from_ref(&tmp.display().to_string()))
+            .expect("inline result");
+        let PickerInitResult::Inline(pairs) = result else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 1);
+        match &pairs[0].1 {
+            RoutingPayload::SuppliedValue { value } => {
+                assert_eq!(
+                    value,
+                    &std::path::PathBuf::from("src")
+                        .join("main.rs")
+                        .display()
+                        .to_string(),
+                    "relative to the root, not absolute"
+                );
+            }
+            other => panic!("expected SuppliedValue, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The candidate must NOT carry an `OpenFile` accept action. It
+    /// would let the completion layer open the file behind the caller's
+    /// back — the precise confusion this source exists to avoid, and the
+    /// reason `FilesSource` could not simply be reused.
+    #[test]
+    fn file_pick_candidates_do_not_open_the_file() {
+        use lattice_picker::picker_sources::FilePickSource;
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-file-pick-noopen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.rs"), "").unwrap();
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = FilePickSource::new();
+        let PickerInitResult::Inline(pairs) = source
+            .init(&ctx, std::slice::from_ref(&tmp.display().to_string()))
+            .expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        assert!(
+            pairs[0].0.accept_action.is_none(),
+            "a value-supplying candidate must not also open the file"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn file_pick_accept_supplies_the_value() {
+        use lattice_picker::PickerAcceptOutcome;
+        use lattice_picker::picker_sources::FilePickSource;
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = FilePickSource::new();
+        let outcome = source
+            .accept(
+                &ctx,
+                &RoutingPayload::SuppliedValue {
+                    value: "src/main.rs".into(),
+                },
+            )
+            .expect("accept");
+        match outcome {
+            PickerAcceptOutcome::SupplyValue { value } => assert_eq!(value, "src/main.rs"),
+            other => panic!("expected SupplyValue, got {other:?}"),
+        }
+    }
+
     /// MR.3: the files source carries marginalia as typed `Styled`
     /// annotations (perm / size / mtime columns), NOT baked into the
     /// `display` string. `display` is the path so fuzzy matching runs on
@@ -303,6 +395,13 @@ mod tests {
             ids,
             vec![
                 "files",
+                // MG.53.e: `file-pick` — the same walk as `files`,
+                // accepting to a value instead of to an open buffer.
+                // Third time this list has needed updating for a new
+                // source, and the two notes below say the previous two
+                // were noticed only when it went red. That is the list
+                // working.
+                "file-pick",
                 "recent",
                 "buffers",
                 "lines",

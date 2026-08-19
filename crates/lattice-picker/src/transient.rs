@@ -217,6 +217,38 @@ pub struct TransientItem {
     pub kind: TransientItemKind,
 }
 
+/// MG.53.e: where a picker-backed [`TransientItemKind::Argument`] gets
+/// its candidate list.
+///
+/// The transient names a registered picker source rather than carrying
+/// the listing itself, which is what keeps the listing out of the
+/// feature crate: magit's "repo-relative file" argument declares
+/// `file-pick` and the walk stays in `lattice-picker`, reachable by
+/// every other provider — including WASM ones — through the same
+/// `PickerSourceSpec` surface.
+#[derive(Clone, Debug)]
+pub struct TransientArgSource {
+    /// Registered `PickerSourceSpec` id, e.g. `"file-pick"`.
+    pub id: String,
+    /// Positional arguments passed to the source's `init`, as `:picker
+    /// <id> <args...>` would supply them.
+    pub args: Vec<String>,
+}
+
+impl TransientArgSource {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            args: Vec::new(),
+        }
+    }
+
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+}
+
 /// The kind of a transient item — determines its interaction.
 #[derive(Clone, Debug)]
 pub enum TransientItemKind {
@@ -229,12 +261,28 @@ pub enum TransientItemKind {
     /// A boolean flag that toggles in-place. The `name` is the key
     /// in `TransientState`.
     Flag { name: String, default: bool },
-    /// An argument that opens a minibuffer prompt for a value. The
-    /// `name` is the key in `TransientState`.
+    /// An argument that collects a value into `TransientState` under
+    /// `name`.
+    ///
+    /// By default it opens a minibuffer prompt. When `source` is set the
+    /// value is **picked from a list** instead — MG.53's rule is that
+    /// naming a thing which must already exist gets a picker, and an
+    /// argument is as much a naming site as a command is. A free-text
+    /// prompt for an existing path is a typo waiting to happen, and git
+    /// reports it long after the keystroke that caused it.
+    ///
+    /// Either way the menu is parked and re-seated with the collected
+    /// value (`PendingTransientArgument` → `resume_parked_transient`);
+    /// the picker and the prompt are both surfaces the menu cannot stay
+    /// seated underneath. `prompt` stays meaningful with a `source` set:
+    /// it titles the picker.
     Argument {
         name: String,
         default: Option<String>,
         prompt: String,
+        /// `None` = free-text prompt. `Some` = pick from this registered
+        /// picker source, whose accept supplies the value.
+        source: Option<TransientArgSource>,
     },
     /// Dismisses the transient picker without firing any action.
     /// Used for 'n' / 'q' keys in confirmation dialogs.

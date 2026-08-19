@@ -27113,6 +27113,23 @@ impl Editor {
                 }
             }
             NoOp => {}
+            SupplyValue { value } => {
+                // MG.53.e: a source answered a question. The only asker
+                // today is a picker-backed transient argument, which
+                // parked its menu before opening this picker.
+                //
+                // Echo rather than swallow when nothing is waiting: a
+                // value with no asker means a source was opened straight
+                // from `:picker file-pick` with no transient behind it,
+                // and a picker that visibly does nothing on `<CR>` is
+                // the failure mode this whole slice exists to remove.
+                if !self.resume_parked_transient(Some(&value)) {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        format!("picker: nothing was waiting for a value (got `{value}`)"),
+                    );
+                }
+            }
             JumpToMark { name } => {
                 self.do_jump_mark(name, true);
             }
@@ -30378,6 +30395,7 @@ impl Editor {
                 name,
                 default,
                 prompt,
+                source,
             } => {
                 // MG.17b: park the whole menu, collect the value, put
                 // the menu back. The prompt is a different surface —
@@ -30400,11 +30418,26 @@ impl Editor {
                 };
                 out.renderer_signals.extend(self.do_picker_dismiss());
                 self.pending_transient_argument = Some(parked);
-                // No submit action: `do_prompt_line_submit` routes a
-                // parked transient itself. Naming an action here would
-                // be a lie — there is no handler to fire.
-                let signals = self.open_prompt_line(prompt.clone(), seeded, String::new(), None);
-                out.renderer_signals.extend(signals);
+                match source {
+                    // MG.53.e: the value is picked from a list. Same
+                    // park, different surface — `SupplyValue` re-seats
+                    // the menu through the identical
+                    // `resume_parked_transient` the prompt submit uses,
+                    // so cancel semantics (menu returns, state
+                    // untouched) come along for free.
+                    Some(src) => {
+                        let signals = self.open_picker(src.id.clone(), src.args.clone());
+                        out.renderer_signals.extend(signals);
+                    }
+                    // No submit action: `do_prompt_line_submit` routes a
+                    // parked transient itself. Naming an action here would
+                    // be a lie — there is no handler to fire.
+                    None => {
+                        let signals =
+                            self.open_prompt_line(prompt.clone(), seeded, String::new(), None);
+                        out.renderer_signals.extend(signals);
+                    }
+                }
             }
         }
     }
@@ -30820,6 +30853,18 @@ impl Editor {
                 self.set_message(
                     EchoLevel::Error,
                     "picker: branch-base routing requires a generator-based source".to_string(),
+                );
+            }
+            lattice_picker::RoutingPayload::SuppliedValue { .. } => {
+                // Same shape as `BranchBase` above: this payload only
+                // ever comes from a generator source, whose `accept`
+                // turns it into `PickerAcceptOutcome::SupplyValue` and
+                // never reaches this legacy path. Saying so beats a
+                // silent `_ => {}`, which would present as a `<CR>` that
+                // does nothing.
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: supplied-value routing requires a generator-based source".to_string(),
                 );
             }
             lattice_picker::RoutingPayload::AcceptShowMessageAction {
@@ -39070,6 +39115,66 @@ mod tests {
             "the flag toggled BEFORE the prompt survived the round-trip"
         );
         assert!(ed.pending_transient_argument.is_none(), "park is consumed");
+    }
+
+    // ── MG.53.e: the same round-trip, fed by a picker ──
+
+    /// A picker-backed argument re-seats the menu through the identical
+    /// path a typed value does. Driven through `apply_picker_outcome`
+    /// rather than by calling `resume_parked_transient` directly — the
+    /// question is whether the accept outcome is *routed* there, which
+    /// is the wiring a direct call would skip.
+    #[test]
+    fn a_supplied_value_restores_the_menu_with_it() {
+        use lattice_picker::{PickerAcceptOutcome, TransientValue};
+        let mut ed = parked("file", &[("cached", TransientValue::Bool(true))]);
+
+        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::SupplyValue {
+            value: "src/main.rs".to_string(),
+        });
+
+        let picker = ed.picker.as_ref().expect("menu came back");
+        assert!(picker.transient.is_some(), "still a transient menu");
+        assert!(
+            matches!(
+                picker.transient_state.get("file"),
+                Some(TransientValue::String(v)) if v == "src/main.rs"
+            ),
+            "the picked path landed in the argument"
+        );
+        assert!(
+            matches!(
+                picker.transient_state.get("cached"),
+                Some(TransientValue::Bool(true))
+            ),
+            "a flag set before opening the picker survived the round-trip"
+        );
+        assert!(ed.pending_transient_argument.is_none(), "park is consumed");
+    }
+
+    /// A value arriving with nothing waiting is a wiring bug, not a user
+    /// error. It must say so: silently dropping it presents as a picker
+    /// whose `<CR>` does nothing, which is indistinguishable from a dead
+    /// keymap and is exactly what this slice set out to remove.
+    #[test]
+    fn a_supplied_value_with_no_asker_says_so() {
+        use lattice_picker::PickerAcceptOutcome;
+        let mut ed = Editor::default();
+        assert!(ed.pending_transient_argument.is_none(), "precondition");
+
+        let _ = ed.apply_picker_outcome(PickerAcceptOutcome::SupplyValue {
+            value: "src/main.rs".to_string(),
+        });
+
+        let msg = ed
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("nothing was waiting"),
+            "expected an echo explaining the dropped value; got {msg:?}"
+        );
     }
 
     /// `<Esc>` cancels the ARGUMENT, not the menu. Dropping the user

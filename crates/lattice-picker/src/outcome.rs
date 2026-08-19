@@ -123,6 +123,25 @@ pub enum PickerAcceptOutcome {
         on_submit_action: String,
         buffer_name: Option<String>,
     },
+    /// MG.53.e: the picked item's **value**, for whatever asked for one.
+    ///
+    /// The outcome for a source that answers a question rather than
+    /// performing an action. Today the asker is a picker-backed
+    /// [`crate::TransientItemKind::Argument`], which parked its menu
+    /// before opening the picker and is re-seated with this value.
+    ///
+    /// Deliberately not `InvokeCommand`. A source that supplies a value
+    /// does not know, and must not decide, what the value is for — the
+    /// same `file-pick` list feeds a stage argument, a diff argument,
+    /// and anything a later provider asks it for. Baking a command into
+    /// the source would mean one registered source per consumer, which
+    /// is the duplication route (b) was chosen to avoid.
+    ///
+    /// The host echoes and drops it when nothing is waiting; a value
+    /// arriving with no asker is a wiring bug, not a user error, and
+    /// silently discarding it would present as a picker that does
+    /// nothing.
+    SupplyValue { value: String },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

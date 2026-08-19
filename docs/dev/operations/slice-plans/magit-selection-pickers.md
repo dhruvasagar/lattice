@@ -1,9 +1,8 @@
 # MG.53 — every selection is a picker
 
-**Status:** 🚧 MG.53.a/b/d/g/h ✅; c — three of four ✅, bisect known-good
-⛔ deferred (2026-08-19, the list would not contain the thing being
-named); e — ref ✅, file 🚧 building as (b), the generic host accept
-(called 2026-08-19); f ⛔ deferred to `:customize`.
+**Status:** 🚧 MG.53.a/b/d/e/g/h ✅; c — three of four ✅, bisect
+known-good ⛔ deferred (2026-08-19, the list would not contain the thing
+being named); f ⛔ deferred to `:customize`.
 
 **This plan does not archive when c and e close.** MG.53.f is deferred,
 not done, and a deferred slice is open work — archiving here is what
@@ -215,7 +214,7 @@ one. Verified against the argv builder, not the label.
 Extend `magit_registers_exactly_the_sources_its_rows_open` in the same
 edit; that test exists precisely to force this.
 
-### MG.53.e — ref and file selections 🚧 ref ✅, file ⛔ deferred (host decision)
+### MG.53.e — ref and file selections ✅
 
 **Ref: landed.** `Merge notes ref` uses `RefPickSource::AllRefs` — and
 the "does one source subsume both" question answered itself, since
@@ -256,6 +255,42 @@ The lift is smaller than the deferral implies: `takes_ex_command`
 already renders `RoutingPayload::InvokeCommand { id, args }` as an ex
 line. What moves to the host is the *listing paired with that accept*,
 so magit registers a row rather than a file walk. Tracked as MG.53.e.
+
+**Landed 2026-08-19,** and the accept turned out not to be
+`InvokeCommand` after all. The note above had the right shape for the
+wrong consumer: `File (repo-relative):` is a transient **argument**, not
+a command trigger, so the picked path has to become a value the menu
+holds — the menu then decides what to do with it, once, for every row.
+An `InvokeCommand` accept would have meant one registered source per
+consuming command, which is the duplication route (b) was chosen to
+avoid.
+
+So the generic piece is `PickerAcceptOutcome::SupplyValue` — a source
+that *answers a question* rather than performing an action — and
+`file-pick`, which is `files`' listing with that accept. The consumer
+side is a `source` field on `TransientItemKind::Argument`: set it and
+the row picks from a list instead of prompting, parking and re-seating
+the menu through the identical `resume_parked_transient` the prompt
+submit already used. Cancel semantics came along for free because both
+surfaces share that path.
+
+The generic win is one level up from where the slice expected it: not
+"choose a file, then act" but "this argument names something that
+already exists" — the rule at the top of this plan, now expressible
+declaratively by any transient in any provider. magit's `=f` row is the
+first consumer and declares four lines.
+
+**Tests.** The `=f` row is picker-backed and names the registered
+source (checked against the constant, and against the real first-party
+generator list, so a rename on either side fails); `file-pick` emits
+root-relative values and carries no `OpenFile` accept action (which
+would let the completion layer open the file behind the caller's back —
+the mismatch that made `FilesSource` unreusable); a supplied value
+re-seats the parked menu with a flag set beforehand intact; a supplied
+value with nothing waiting echoes rather than vanishing.
+
+`args_schema` bookkeeping: `file-pick` joins the `first_party_generators`
+list assertion, which its own comments record going stale twice before.
 
 ### MG.53.h — the row this sweep deleted ✅
 

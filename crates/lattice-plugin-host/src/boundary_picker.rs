@@ -470,6 +470,15 @@ impl WitBoundary for NativeRoutingPayload {
                         .into(),
                 );
             }
+            // MG.53.e: pairs with `supply-value` in `boundary.rs` — the
+            // thing waiting for the value is host state a plugin cannot
+            // address.
+            NativeRoutingPayload::SuppliedValue { .. } => {
+                return Err(
+                    "supplied-value is a host-internal picker routing payload, not representable over WIT"
+                        .into(),
+                );
+            }
         })
     }
 

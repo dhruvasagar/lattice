@@ -420,6 +420,14 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         // already ordered by recency anyway, exactly like the command
         // and search rings above.
         | RoutingPayload::PaneHistoryEntry { .. }
+        // MG.53.e: a supplied value has no meaning without knowing who
+        // asked for it. The same variant carries a file path for one
+        // argument and something else entirely for the next, so ranking
+        // them in one namespace would mix unrelated histories — a file
+        // picked for a stage argument would float to the top of a
+        // picker choosing something else. Per-consumer MRU needs the
+        // consumer's identity in the key, which is its own slice.
+        | RoutingPayload::SuppliedValue { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }

@@ -333,6 +333,112 @@ pub fn compute_syntax_folds(syntax: &SyntaxSnapshot) -> Option<Vec<Fold>> {
 /// range and state but different identities don't change which
 /// bytes are visible.
 ///
+// ── FL.1: fold levels ─────────────────────────────────────────
+
+/// Nesting level of each fold, 1-based, in `folds` order.
+///
+/// Vim's model: the outermost fold is level 1, and `foldlevel=N`
+/// closes everything deeper than `N` (so `foldlevel=0` closes
+/// everything). A fold's level is one more than the number of folds
+/// that **properly** contain it.
+///
+/// *Properly* is the load-bearing word. Two providers routinely emit
+/// folds over the identical range — a multibuffer file that contributes
+/// exactly one excerpt gets a `FileBoundaryFoldProvider` fold and an
+/// `ExcerptFoldProvider` fold with the same bounds. Under a
+/// `start <= start && end >= end` test each would "contain" the other,
+/// both would land at level 2, and `foldlevel=1` would collapse a view
+/// that has only one level of structure to show. Equal ranges are
+/// siblings, not parent and child.
+///
+/// O(n²) in the fold count — the same shape as the closed-state
+/// carry-over `recompute_folds` already runs over the same list, so this
+/// adds a constant factor rather than a complexity class. Both callers
+/// skip it entirely at the default `foldlevel` (see
+/// [`level_opens_everything`]), which is the case that runs after every
+/// reparse.
+pub fn fold_levels(folds: &[Fold]) -> Vec<u32> {
+    folds
+        .iter()
+        .map(|f| {
+            1 + folds
+                .iter()
+                .filter(|o| {
+                    o.start_line <= f.start_line
+                        && o.end_line >= f.end_line
+                        && (o.start_line < f.start_line || o.end_line > f.end_line)
+                })
+                .count() as u32
+        })
+        .collect()
+}
+
+/// Close every fold deeper than `level`, open the rest.
+///
+/// This is what `:set foldlevel=N` does at the moment it is set. It is
+/// deliberately a one-shot bulk action rather than a standing invariant:
+/// a user who then presses `za` on one fold must not have it reopened by
+/// the next rebuild, so `recompute_folds` carries manual state over by
+/// identity and consults `foldlevel` only for folds it has not seen
+/// before (see [`apply_fold_level_to_new`]).
+pub fn apply_fold_level(folds: &mut [Fold], level: u32) {
+    if level_opens_everything(folds, level) {
+        for fold in folds.iter_mut() {
+            fold.closed = false;
+        }
+        return;
+    }
+    let levels = fold_levels(folds);
+    for (fold, depth) in folds.iter_mut().zip(levels) {
+        fold.closed = depth > level;
+    }
+}
+
+/// Can any fold in `folds` be deeper than `level`?
+///
+/// A fold's level is bounded by the number of folds, so `level >= len`
+/// answers "no" without computing anything. This is the default case —
+/// `foldlevel` ships at 99 — and it is the one that runs after every
+/// reparse, so the quadratic level pass never touches the path a user
+/// is typing on.
+fn level_opens_everything(folds: &[Fold], level: u32) -> bool {
+    level as usize >= folds.len()
+}
+
+/// Close new folds that sit deeper than `foldlevel`, leaving folds
+/// whose state was carried over untouched.
+///
+/// `carried[i]` is true when `folds[i]` inherited its `closed` flag from
+/// a previous fold with the same identity. Those keep whatever the user
+/// last did to them; the rest are new structure, and new structure obeys
+/// the option.
+///
+/// **Only ever closes.** A provider may emit a fold already closed —
+/// diff-mode's unchanged-region folds are the in-tree case, and the
+/// whole point of them is that the unchanged stretches start collapsed.
+/// Assigning `closed = depth > level` here rather than OR-ing reopened
+/// every one of them at the default level, because a level-1 fold is not
+/// deeper than 99. `foldlevel` decides whether nesting depth *adds* a
+/// close; it does not get a vote on a provider's own intent. Reopening
+/// is the bulk [`apply_fold_level`] path, which is a user action.
+pub fn apply_fold_level_to_new(folds: &mut [Fold], carried: &[bool], level: u32) {
+    if level_opens_everything(folds, level) {
+        return;
+    }
+    let levels = fold_levels(folds);
+    for ((fold, depth), carried) in folds.iter_mut().zip(levels).zip(carried) {
+        if !*carried {
+            fold.closed |= depth > level;
+        }
+    }
+}
+
+/// Deepest level present, or 0 when there are no folds. `zR`'s
+/// equivalent `foldlevel` value.
+pub fn max_fold_level(folds: &[Fold]) -> u32 {
+    fold_levels(folds).into_iter().max().unwrap_or(0)
+}
+
 /// Phase 5.8.AF.5 / Slice X2: hoisted host-side from
 /// `lattice-ui-tui::app::folds::compute_fold_hash` so dispatch's
 /// `publish_render_state` can populate
@@ -1793,5 +1899,151 @@ impl Buffer {
         // ...but the start row is still a fold start (for the gutter
         // glyph that distinguishes open vs closed).
         assert!(idx.fold_start_at_any(0));
+    }
+
+    // ── FL.1: fold levels ─────────────────────────────────
+
+    fn f(start: u32, end: u32) -> Fold {
+        Fold {
+            start_line: start,
+            end_line: end,
+            closed: false,
+            identity: None,
+        }
+    }
+
+    #[test]
+    fn a_flat_set_of_folds_is_all_level_one() {
+        let folds = vec![f(0, 3), f(5, 8), f(10, 12)];
+        assert_eq!(fold_levels(&folds), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn a_nested_fold_is_one_level_deeper_than_its_parent() {
+        // outer 0..10, inner 2..5, innermost 3..4
+        let folds = vec![f(0, 10), f(2, 5), f(3, 4)];
+        assert_eq!(fold_levels(&folds), vec![1, 2, 3]);
+    }
+
+    /// The multibuffer case that makes proper containment necessary: a
+    /// file with exactly one excerpt yields a file fold and an excerpt
+    /// fold over the identical range. If equal ranges counted as
+    /// nesting, both would be level 2 and `foldlevel=1` would collapse
+    /// a view with only one level of structure.
+    #[test]
+    fn folds_over_the_identical_range_are_siblings_not_parent_and_child() {
+        let folds = vec![f(0, 4), f(0, 4)];
+        assert_eq!(fold_levels(&folds), vec![1, 1]);
+    }
+
+    #[test]
+    fn level_is_independent_of_the_order_folds_arrive_in() {
+        let ordered = vec![f(0, 10), f(2, 5)];
+        let reversed = vec![f(2, 5), f(0, 10)];
+        assert_eq!(fold_levels(&ordered), vec![1, 2]);
+        assert_eq!(fold_levels(&reversed), vec![2, 1]);
+    }
+
+    #[test]
+    fn foldlevel_zero_closes_everything() {
+        let mut folds = vec![f(0, 10), f(2, 5)];
+        apply_fold_level(&mut folds, 0);
+        assert!(folds.iter().all(|x| x.closed));
+    }
+
+    #[test]
+    fn foldlevel_one_keeps_the_outermost_open() {
+        let mut folds = vec![f(0, 10), f(2, 5)];
+        apply_fold_level(&mut folds, 1);
+        assert!(!folds[0].closed, "level 1 fold stays open at foldlevel=1");
+        assert!(folds[1].closed, "level 2 fold closes at foldlevel=1");
+    }
+
+    #[test]
+    fn a_high_foldlevel_opens_everything() {
+        let mut folds = vec![f(0, 10), f(2, 5), f(3, 4)];
+        apply_fold_level(&mut folds, 99);
+        assert!(folds.iter().all(|x| !x.closed));
+    }
+
+    /// `apply_fold_level` is a bulk action, so it reopens folds the user
+    /// had closed by hand — that is what `:set foldlevel=N` means. The
+    /// rebuild path must NOT do that, which is why it has its own entry
+    /// point.
+    #[test]
+    fn the_rebuild_path_leaves_carried_over_state_alone() {
+        let mut folds = vec![f(0, 10), f(2, 5)];
+        folds[0].closed = true; // user pressed `za` on the outer fold
+        apply_fold_level_to_new(&mut folds, &[true, false], 99);
+        assert!(
+            folds[0].closed,
+            "a fold whose state was carried over keeps it"
+        );
+        assert!(!folds[1].closed, "a new fold obeys foldlevel");
+    }
+
+    /// diff-mode emits its unchanged-region folds already closed — that
+    /// is the feature. `foldlevel` must not reopen them: at the default
+    /// level a level-1 fold is not deeper than 99, so an assignment
+    /// (rather than an OR) silently unfolded every collapsed stretch in
+    /// every diff. Caught by `both_diff_panes_fold_unchanged_after_activation`.
+    #[test]
+    fn a_provider_fold_that_arrives_closed_stays_closed() {
+        let mut folds = vec![f(0, 8), f(22, 30)];
+        folds[0].closed = true;
+        folds[1].closed = true;
+        apply_fold_level_to_new(&mut folds, &[false, false], 99);
+        assert!(
+            folds.iter().all(|x| x.closed),
+            "foldlevel may add a close, never remove one a provider asked for"
+        );
+    }
+
+    /// ...and the level still closes a new fold that arrived open.
+    #[test]
+    fn the_rebuild_path_still_closes_what_is_too_deep() {
+        let mut folds = vec![f(0, 10), f(2, 5)];
+        apply_fold_level_to_new(&mut folds, &[false, false], 1);
+        assert!(!folds[0].closed);
+        assert!(folds[1].closed);
+    }
+
+    #[test]
+    fn max_level_reports_the_deepest_nesting() {
+        assert_eq!(max_fold_level(&[]), 0);
+        assert_eq!(max_fold_level(&[f(0, 10)]), 1);
+        assert_eq!(max_fold_level(&[f(0, 10), f(2, 5), f(3, 4)]), 3);
+    }
+
+    /// The early-out must agree with the full computation, or the
+    /// default path would quietly diverge from the explicit one.
+    #[test]
+    fn the_early_out_agrees_with_the_full_pass() {
+        let cases: Vec<Vec<Fold>> = vec![
+            vec![],
+            vec![f(0, 10)],
+            vec![f(0, 10), f(2, 5)],
+            vec![f(0, 10), f(2, 5), f(3, 4), f(6, 9)],
+            vec![f(0, 4), f(0, 4)],
+        ];
+        for folds in cases {
+            for level in 0..=6u32 {
+                let mut via_early_out = folds.clone();
+                apply_fold_level(&mut via_early_out, level);
+
+                let levels = fold_levels(&folds);
+                let mut expected = folds.clone();
+                for (fold, depth) in expected.iter_mut().zip(levels) {
+                    fold.closed = depth > level;
+                }
+
+                assert_eq!(
+                    via_early_out.iter().map(|x| x.closed).collect::<Vec<_>>(),
+                    expected.iter().map(|x| x.closed).collect::<Vec<_>>(),
+                    "level {level} over {} folds",
+                    folds.len()
+                );
+            }
+        }
     }
 }

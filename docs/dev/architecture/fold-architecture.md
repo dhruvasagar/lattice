@@ -195,7 +195,43 @@ Mostly the rules vim already uses, generalised:
   source distinction.
 - **`:set foldlevel=N` honours nesting depth.** The depth
   computation walks `self.folds` and counts enclosing
-  folds; source-agnostic.
+  folds; source-agnostic. Built in FL.1 —
+  `folds::fold_levels` / `apply_fold_level`. A fold's level
+  is `1 + the number of folds that PROPERLY contain it`, and
+  *properly* is load-bearing: two providers routinely emit
+  folds over the identical range (a multibuffer file with
+  exactly one excerpt gets a file fold and an excerpt fold
+  with the same bounds), and under a non-strict test each
+  would contain the other, putting both at level 2 and making
+  `foldlevel=1` collapse a view with one level of structure.
+  Equal ranges are siblings. This is the level-side
+  counterpart to the identity-collision rule below, which
+  answers the same question for closed-state.
+
+- **`foldlevel` applies as a bulk action, not a standing
+  invariant.** Setting it opens/closes to match, once.
+  Afterwards `za` / `zo` / `zc` adjust individual folds
+  without changing the option, and a rebuild carries that
+  state over by identity — `foldlevel` decides only the
+  initial state of folds that appear later
+  (`apply_fold_level_to_new`). A standing invariant would
+  mean every reparse, and every async excerpt batch landing
+  during a scan, silently undid the fold the user had just
+  toggled.
+
+- **The default is `99`, not vim's `0`.** Vim's `0` default
+  is why practically every vimrc carries
+  `set foldlevelstart=99`. Lattice would wear it worse:
+  `foldmethod` defaults to `manual`, so an ordinary document
+  has no folds, but overlay fold sources are registered
+  regardless of foldmethod — a `0` default would open every
+  search result, project diff and agent transcript collapsed
+  to nothing. `99` is the effective-infinity value the vim
+  idiom settled on, and it preserves shipped behaviour. It
+  also makes the common path free: a fold's level is bounded
+  by the fold count, so `level >= folds.len()` short-circuits
+  the quadratic level pass, which is what keeps it off the
+  post-reparse path.
 - **Identity collisions resolve last-write-wins on
   closed-state.** When two providers emit folds with the
   same `(start_line, end_line)` (rare — would require a

@@ -106,6 +106,18 @@ fn validate_shiftwidth(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_foldlevel(i: &i64) -> Result<(), String> {
+    // Negative is meaningless (level 1 is the outermost fold, so 0
+    // already closes everything). The ceiling is far past any real
+    // nesting depth and exists so a typo'd `:set foldlevel=999999`
+    // reports an error instead of silently meaning "open".
+    if (0..=1024).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("foldlevel out of range [0, 1024]: {i}"))
+    }
+}
+
 fn validate_scrolloff(i: &i64) -> Result<(), String> {
     if (0..=64).contains(i) {
         Ok(())
@@ -376,6 +388,34 @@ crate::options! {
     #[aliases("fdm")]
     #[name("foldmethod")]
     pub FoldMethodOption: FoldMethod = FoldMethod::Manual;
+
+    /// Folds nested deeper than this level are closed; the rest are
+    /// open. The outermost fold is level 1, so `foldlevel=0` closes
+    /// everything and `foldlevel=1` shows only the top level's
+    /// structure. In a multibuffer view that means `0` gives one row
+    /// per file and `1` gives one row per excerpt.
+    ///
+    /// Setting it is a bulk action, applied at the moment of the
+    /// `:set`. Afterwards `za` / `zo` / `zc` adjust individual folds
+    /// without changing the option, and a fold whose state the user has
+    /// touched keeps it across rebuilds -- `foldlevel` only decides the
+    /// initial state of folds that appear later.
+    ///
+    /// **Default deviates from vim deliberately.** Vim defaults this to
+    /// `0`, which is why practically every vimrc carries
+    /// `set foldlevelstart=99` -- the default means "open every file
+    /// fully collapsed", which few people want. Lattice would suffer
+    /// that worse than vim does: `foldmethod` defaults to `manual`, so
+    /// an ordinary document has no folds, but overlay fold sources are
+    /// always registered (multibuffer file/excerpt folds, diff hunk
+    /// folds, the AI conversation's tool-call folds). A `0` default
+    /// would open every search result, project diff and agent transcript
+    /// collapsed to nothing. `99` is the effective-infinity value the
+    /// vim idiom settled on, and it keeps the shipped behaviour.
+    #[aliases("fdl")]
+    #[name("foldlevel")]
+    #[validate(validate_foldlevel)]
+    pub FoldLevel: i64 = 99;
 
     /// Minimum visual lines kept above and below the cursor when
     /// scrolling.

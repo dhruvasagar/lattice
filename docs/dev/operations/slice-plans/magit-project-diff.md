@@ -19,7 +19,7 @@ Catalogue entry: A.1 in
 | PD.2 | Scan — changed set → baselines → excerpts | ✅ |
 | PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | ✅ |
 | PD.4 | Edit propagation + the read-only rule | 📝 |
-| PD.5 | File-boundary folds | 📝 |
+| PD.5 | File-boundary folds | ✅ |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
 empty view is a legitimate intermediate). PD.5 is independent.
@@ -154,12 +154,53 @@ recomputes; a staged-comparison view refuses edits *through the modal
 Insert / operator path* (the read-only gate), with the refusal echoed;
 closing a source file removes its excerpts.
 
-## PD.5 — File-boundary folds 📝
+## PD.5 — File-boundary folds ✅
 
 M.8 folds so `:set foldlevel=0` gives one row per file.
 
-**Tests.** 50-file diff at `foldlevel=0` → 50 rows; toggling a file's
-fold reveals its hunks; fold state survives a `gr` refresh.
+Most of this turned out to be built already and none of it where the
+slice expected. M.8's `FileBoundaryFoldProvider` and `ExcerptFoldProvider`
+are registered by `MultibufferMode::on_activate` for *every* multibuffer,
+so the project diff inherited both; `zM` collapsed a diff to one row per
+file before this slice started. Two things were actually missing.
+
+**PD.5a — fold identity outlived nothing.** `recompute_folds` carries
+closed/open state across a rebuild by matching `Fold::identity`, and the
+file-boundary provider used the source's `BufferId`. `attach_batch` calls
+`BufferId::next()` for every file it re-reads, so a `gr` renumbered all of
+them: identity missed on every fold and the positional fallback keyed on
+rows a changed diff had already moved. Every collapsed file sprang open,
+looking like the fold command not sticking. Identity is now hashed from
+the source path via the generic `source_path` accessor. Not
+project-diff-specific — the search provider re-mints sources the same way.
+
+**FL.1 — `foldlevel` did not exist.** §5 of the fold design fragment
+specified `:set foldlevel=N` honouring nesting depth; nothing implemented
+it, and `folds.rs` said so in a comment ("v1 doesn't model the level
+option yet"). Built as `folds::fold_levels` / `apply_fold_level` /
+`apply_fold_level_to_new` plus the typed option, with three decisions
+recorded in the design fragment: equal-range folds are siblings not
+parent/child (or a one-excerpt file would sit at level 2 and `foldlevel=1`
+would collapse a view with one level of structure); the option is a bulk
+action rather than a standing invariant (or every rebuild would undo the
+user's `za`); and the default is `99` rather than vim's `0`, because
+overlay fold sources are registered regardless of `foldmethod` and a `0`
+default would open every search result, project diff and agent transcript
+collapsed to nothing.
+
+**Tests.** `project_diff_folds.rs` drives the real `:set` cascade over a
+project-diff-shaped view: 50-file diff at `foldlevel=0` → 50 rows;
+`foldlevel=1` → one row per hunk; raising it reopens; toggling one file
+reveals that file's hunks and no other's; fold state survives a rebuild;
+a manual toggle survives a rebuild. Plus the level arithmetic in
+`folds.rs` — nesting, equal ranges, order-independence, and that the
+`level >= folds.len()` early-out agrees with the full pass.
+
+**Regression caught during the slice:** diff-mode emits unchanged-region
+folds already `closed: true`. Seeding new folds with
+`closed = depth > level` reopened all of them at the default level, since
+a level-1 fold is not deeper than 99. `apply_fold_level_to_new` now ORs —
+`foldlevel` may add a close, never remove one a provider asked for.
 
 ---
 

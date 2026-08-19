@@ -17973,6 +17973,18 @@ impl Editor {
         self.option_cache.foldmethod
     }
 
+    /// FL.1: `:set foldlevel=...`, resolved for the active buffer.
+    ///
+    /// Read on the fold-rebuild path rather than per keystroke, so it
+    /// goes through the resolver instead of earning a slot in
+    /// `option_cache` — the cache is for reads on the hot path.
+    /// Clamped into `u32`; the validator already bounds it to
+    /// `[0, 1024]`.
+    pub fn foldlevel(&self) -> u32 {
+        (*self.resolved_option::<lattice_config::core_options::FoldLevel>(self.document_buffer_id))
+            .clamp(0, u32::MAX as i64) as u32
+    }
+
     /// Refresh [`Self::folds`] from the active [`FoldMethod`].
     ///
     /// `Manual` -- no-op (preserves user `zf` folds). The other
@@ -18069,6 +18081,10 @@ impl Editor {
         // adding a line to one section doesn't reopen the closed
         // section above. Falls back to (start_line, end_line) when
         // identity is missing.
+        // FL.1: `carried[i]` records whether `next[i]` inherited its
+        // closed flag, so folds the user has never seen can be seeded
+        // from `foldlevel` below without disturbing the ones they have.
+        let mut carried = Vec::with_capacity(next.len());
         for nf in next.iter_mut() {
             let prev = nf
                 .identity
@@ -18081,7 +18097,13 @@ impl Editor {
             if let Some(prev) = prev {
                 nf.closed = prev.closed;
             }
+            carried.push(prev.is_some());
         }
+        // FL.1: new structure obeys `foldlevel`; carried-over folds keep
+        // the state the user put them in. Doing this before the manual
+        // (`zf`) folds are appended keeps hand-made folds out of it
+        // entirely — those are the user's, start to finish.
+        crate::folds::apply_fold_level_to_new(&mut next, &carried, self.foldlevel());
         // Manual folds (identity = None) coexist with computed
         // folds; recomputed providers don't produce them, so carry
         // them over verbatim.
@@ -32532,6 +32554,18 @@ impl Editor {
                 // and cheap when method is `Manual` (the recompute
                 // returns immediately).
                 self.recompute_folds();
+            }
+            "foldlevel" => {
+                // FL.1: a bulk open/close to match the new level, applied
+                // here rather than as a standing invariant. `:set
+                // foldlevel=N` is the user saying "show me N levels" and
+                // legitimately discards their individual `za`s; the
+                // rebuild path deliberately does not (see
+                // `apply_fold_level_to_new` in `recompute_folds`), or
+                // every recompute would undo the fold the user just
+                // toggled.
+                let level = self.foldlevel();
+                crate::folds::apply_fold_level(&mut self.folds, level);
             }
             // EP.4: turning the feed ON takes a snapshot immediately
             // rather than waiting for the next republish, so the list

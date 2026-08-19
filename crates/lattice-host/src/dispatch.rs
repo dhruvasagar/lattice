@@ -8336,11 +8336,12 @@ impl Editor {
             FillTarget::Document => {
                 self.insert_at_cursor(text);
             }
-            FillTarget::PickerQuery => match self.picker.as_mut() {
-                Some(picker) => {
+            FillTarget::PickerQuery => match self.stashed_picker.take() {
+                Some(mut picker) => {
                     picker.query.push_str(text);
                     picker.query_cursor = picker.query.len();
                     picker.refilter();
+                    self.picker = Some(picker);
                 }
                 None => self.report_vanished_caller("the picker"),
             },
@@ -8392,7 +8393,15 @@ impl Editor {
         } else {
             FillTarget::Document
         };
+        let is_picker_query = matches!(target, FillTarget::PickerQuery);
         self.picker_fill_target = Some(target);
+        // Take the picker underneath rather than letting `open_picker`
+        // overwrite it. `do_picker_accept` takes `self.picker` before
+        // the outcome is applied, so the list we are filtering has to be
+        // held somewhere the fill can reach.
+        if is_picker_query {
+            self.stashed_picker = self.picker.take();
+        }
         self.open_picker(lattice_picker::YANK_RING_SOURCE.to_string(), Vec::new())
     }
 
@@ -9818,7 +9827,14 @@ impl Editor {
             active_buffer: self.active_buffer,
             completion_open: false,
             chord_capture: self.auto_submit_after_chord,
-            picker_open: false,
+            // Derived, not hardcoded `false`. It was hardcoded, which made
+            // this entry point structurally unable to route ANY picker
+            // chord — every picker key resolved as if no picker were open,
+            // so a test driving one could not fail on a broken binding
+            // because it could not reach one. Same blind spot MG.13 closed
+            // for `active_minor_modes` in the TUI's harness, in the peer
+            // entry point.
+            picker_open: self.picker.is_some(),
             insert_completion_open: false,
             snippet_active: self.snippet_session.is_active(self.document_buffer_id),
             terminal_insert_active: false,
@@ -30318,6 +30334,16 @@ impl Editor {
     /// (SMR queue advance, event-bus publish, preview-origin
     /// restore) consolidated host-side.
     pub fn do_picker_dismiss(&mut self) -> Vec<RendererSignal> {
+        // YR.5b: a yank picker opened over another picker restores it on
+        // Esc. Closing both would lose the list the user was filtering,
+        // which they never asked to leave — they asked to abandon the
+        // yank pick. The fill target goes with it: nothing is waiting
+        // any more.
+        if let Some(stashed) = self.stashed_picker.take() {
+            self.picker_fill_target = None;
+            self.picker = Some(stashed);
+            return Vec::new();
+        }
         if let Some(state) = self.live_picker_query.take()
             && let Some(inflight) = state.inflight
         {

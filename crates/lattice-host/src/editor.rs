@@ -872,6 +872,16 @@ pub struct Editor {
     /// `FillCaller` arriving against it is a wiring bug the host reports
     /// rather than swallows.
     pub picker_fill_target: Option<lattice_picker::FillTarget>,
+    /// YR.5b: the picker the yank picker was opened *over*.
+    ///
+    /// `do_picker_accept` takes `self.picker` before applying the
+    /// outcome, and `open_picker` replaces it — so without stashing, a
+    /// yank picker opened from `:files` would destroy the `:files`
+    /// picker on the way in and have nothing to fill on the way out.
+    /// Restored both on accept (then filled) and on dismiss, because
+    /// pressing Esc in the yank picker must return you to the list you
+    /// were filtering rather than closing both.
+    pub stashed_picker: Option<lattice_picker::Picker>,
 
     /// T.12a: the theme to restore if the colorscheme picker is
     /// dismissed (`<Esc>`). Captured on the FIRST live preview as a

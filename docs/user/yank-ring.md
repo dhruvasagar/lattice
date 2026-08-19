@@ -22,13 +22,18 @@ In **Insert mode**:
 | `<C-r>` then a register char | Insert that register's contents — vim's insert-register. `<C-r>"` for the unnamed one, `<C-r>+` for the system clipboard. |
 | `<C-r><C-r>` | Open the yank picker: the ring newest-first, then your named registers, filtered as you type. |
 
+In **any picker**, `<C-r>` opens the yank picker over it and appends your
+pick to that picker's query — so you can filter `:files` by something you
+copied a minute ago instead of retyping it. `<Esc>` in the yank picker
+returns you to the list you were filtering rather than closing both.
+
 `:picker yank-ring` opens the same list from anywhere.
 
 **The pick lands where you opened it from.** That is the part worth
 knowing: open the picker while editing and the text is inserted at your
 cursor; open it from the `:` line and it goes into the command line; from
 a search or a prompt, into that. Opening it from *inside another picker*
-adds the text to that picker's query rather than replacing it.
+adds the text to that picker's query rather than replacing the picker.
 
 Normal-mode `<C-r>` is still redo. Only Insert mode gains a meaning here,
 which is where vim puts it too.

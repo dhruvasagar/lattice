@@ -162,3 +162,91 @@ fn normal_mode_c_r_is_still_redo() {
     );
     assert!(editor.picker.is_none());
 }
+
+// ── YR.5b: the yank picker over another picker ──
+//
+// With `:files` (or any picker) open, `<C-r>` opens the yank picker; the
+// pick is appended to the ORIGINAL picker's query as a filter. Two things
+// have to hold that are easy to get wrong: the picker underneath must
+// survive being opened over, and abandoning the yank pick must return you
+// to it rather than closing both.
+
+fn open_yank_over(editor: &mut Editor, source: &str) {
+    let _ = editor.open_picker(source.to_string(), Vec::new());
+    press(editor, &[KeyChord::ctrl('r')]);
+}
+
+#[test]
+fn c_r_in_a_picker_opens_the_yank_picker_over_it() {
+    let mut editor = boot();
+    editor.store_yank(
+        Register::Unnamed,
+        "needle".to_string(),
+        YankKind::Charwise,
+        true,
+    );
+    open_yank_over(&mut editor, "buffers");
+
+    assert_eq!(
+        editor.picker_fill_target,
+        Some(lattice_picker::FillTarget::PickerQuery),
+        "the pick should fill the picker it was opened from"
+    );
+    assert!(
+        editor.stashed_picker.is_some(),
+        "the picker underneath must be held, not overwritten"
+    );
+}
+
+/// The flow end to end: pick from the ring, land in the original query.
+#[test]
+fn the_pick_becomes_the_original_pickers_filter() {
+    let mut editor = boot();
+    editor.store_yank(
+        Register::Unnamed,
+        "needle".to_string(),
+        YankKind::Charwise,
+        true,
+    );
+    open_yank_over(&mut editor, "buffers");
+
+    // Accept the yank picker's first row.
+    let _ = editor.do_picker_accept();
+
+    let picker = editor.picker.as_ref().expect("the original picker is back");
+    assert_eq!(picker.title, "buffers", "and it is the ORIGINAL one");
+    assert!(
+        picker.query.contains("needle"),
+        "the pick should have been appended to its query; got {:?}",
+        picker.query
+    );
+    assert!(editor.stashed_picker.is_none(), "stash consumed");
+    assert!(editor.picker_fill_target.is_none(), "target consumed");
+}
+
+/// Abandoning the yank pick returns you to the list you were filtering.
+/// Closing both would lose work the user never asked to abandon.
+#[test]
+fn dismissing_the_yank_picker_returns_to_the_one_underneath() {
+    let mut editor = boot();
+    editor.store_yank(
+        Register::Unnamed,
+        "needle".to_string(),
+        YankKind::Charwise,
+        true,
+    );
+    open_yank_over(&mut editor, "buffers");
+
+    let _ = editor.do_picker_dismiss();
+
+    let picker = editor.picker.as_ref().expect("the original picker is back");
+    assert_eq!(picker.title, "buffers");
+    assert!(
+        !picker.query.contains("needle"),
+        "an abandoned pick must not have been applied"
+    );
+    assert!(
+        editor.picker_fill_target.is_none(),
+        "nothing is waiting now"
+    );
+}

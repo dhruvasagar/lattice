@@ -519,6 +519,12 @@ fn translate_picker(chord: KeyChord) -> Action {
             // the telescope idiom. Echoes on a picker whose opener
             // declared no bulk meaning, rather than doing nothing.
             KeyKind::Char('q') => Action::PickerBulkAccept,
+            // YR.5b: open the yank picker over this one and append the
+            // pick to THIS picker's query. `<C-r>` rather than the
+            // plan's `M-y` so it is the same key as in Insert mode —
+            // one chord for "give me something I copied", wherever you
+            // are. It was unbound here.
+            KeyKind::Char('r') => Action::OpenYankPicker,
             _ => Action::None,
         };
     }

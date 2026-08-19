@@ -2945,7 +2945,18 @@ a refresh that drops the diff, and splice alignment.
 **Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
 lands with MG.22, which is where magit's options get an owner.
 
-### MG.34–MG.40 — closing magit-dispatch parity 📝 (scoped 2026-08-03)
+### MG.34–MG.40 — closing magit-dispatch parity ✅ (scoped 2026-08-03, closed 2026-08-03)
+
+> **All six landed.** Each sub-slice below carries its own ✅; this
+> heading read 📝 until 2026-08-19 because the parent was never flipped
+> when the last child closed. Verified against source rather than
+> against the icons: `transients.rs` carries the subtree rows as data,
+> and `magit_cherry_mode.rs` / `magit_notes_mode.rs` /
+> `magit_refs_mode.rs` all exist. MG.41 (transient completeness) is
+> likewise complete and archived.
+>
+> `Z` worktree remains out of scope — blocked on the process-wide-workdir
+> decision below, which is reopened by choice, not closed by work.
 
 **Decision: the full MG.23i+ tail ships before this branch lands.** The
 alternative offered was v1 = current state, deferring all six on the

@@ -69,6 +69,7 @@
 - [X] GPUI: Maximise window after init
 - [X] `:opencode` support, similar to `:claude`
 - [X] indent guide
+- [ ] notification should have icons & color coding
 
 * Plugins
 - [X] plugin manager

@@ -1,6 +1,13 @@
 # MG.53 — every selection is a picker
 
-**Status:** 🚧 MG.53.a/b/d/g/h ✅, c partial, e ref-only, f deferred. Parent:
+**Status:** 🚧 MG.53.a/b/d/g/h ✅; c — three of four ✅, bisect known-good
+⛔ deferred (2026-08-19, the list would not contain the thing being
+named); e — ref ✅, file 🚧 building as (b), the generic host accept
+(called 2026-08-19); f ⛔ deferred to `:customize`.
+
+**This plan does not archive when c and e close.** MG.53.f is deferred,
+not done, and a deferred slice is open work — archiving here is what
+buries it. Parent:
 [`magit-transient-completeness.md`](archive/magit-transient-completeness.md).
 Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
 
@@ -173,13 +180,17 @@ the wrong noun.
   op.usage()` prompt macro shared with non-revision operations.
   Converting it means splitting that macro, which is a bigger edit than
   the rest of this slice put together.
-- bisect known-good — a TWO-step chain (bad, then good) where the first
-  value is carried in the prompt buffer's name. A picker chain needs
-  the bad rev to survive into the second picker's args; `picked_line`'s
-  placeholder makes that expressible (`magit-bisect-start {bad} {}`)
-  but the first step has to become a picker too, and bisect's good rev
-  is characteristically OLDER than the 200-commit window — the case
-  where the ex-command escape is the common path, not the fallback.
+- bisect known-good — ⛔ **deferred (2026-08-19), on the reason that was
+  already written here.** A TWO-step chain (bad, then good) where the
+  first value is carried in the prompt buffer's name. A picker chain
+  needs the bad rev to survive into the second picker's args;
+  `picked_line`'s placeholder makes that expressible
+  (`magit-bisect-start {bad} {}`) but the first step has to become a
+  picker too, and bisect's good rev is characteristically OLDER than the
+  200-commit window. That inverts the rule this plan applies: the list
+  would usually *not contain* the thing being named, so the picker is
+  the escape and the ex-command is the common path. Building it would
+  ship a picker that is wrong about its own premise.
 
 ### MG.53.d — tag and remote pickers ✅
 
@@ -230,7 +241,21 @@ decision rather than a magit one:
   wanting "choose a file, then act" gets it.
 
 (b) is the better long-term fit and the reason this slice stops here
-rather than taking (a) for expedience. **Deferred pending that call.**
+rather than taking (a) for expedience.
+
+**Called 2026-08-19: (b).** The deciding argument is paramount goal #2,
+not size — a registered "pick a file, then run this ex-command" source
+is reachable by every future provider, including WASM ones, through the
+same `PickerSourceSpec` surface `magit-branch` / `magit-commit` /
+`magit-ref` already use. (a) would put a second consumer of the repo
+file listing inside a feature crate and buy nothing beyond a smaller
+diff, which heuristic #1 explicitly refuses as a tiebreaker.
+
+The lift is smaller than the deferral implies: `takes_ex_command`
+(`lattice-magit/src/picker_sources.rs`) is the shape, and the host
+already renders `RoutingPayload::InvokeCommand { id, args }` as an ex
+line. What moves to the host is the *listing paired with that accept*,
+so magit registers a row rather than a file walk. Tracked as MG.53.e.
 
 ### MG.53.h — the row this sweep deleted ✅
 

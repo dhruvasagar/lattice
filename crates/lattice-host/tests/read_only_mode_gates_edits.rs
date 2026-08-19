@@ -27,9 +27,16 @@
 //! The multibuffer is the kind PD.4 needs this for, and it is the kind whose
 //! edits travel furthest before landing (view row → excerpt → source document),
 //! so the insert path is exercised there. Operators are exercised on a plain
-//! `Document` instead — not by preference but because they are **inert in a
-//! multibuffer view today**, for reasons that have nothing to do with this mode;
-//! see `operators_are_inert_in_a_multibuffer_view` below, which pins that.
+//! `Document` as well, because the two reach the gate by different routes:
+//! insert-mode self-insert goes through `apply_edit_blocking`, while an operator
+//! is stopped earlier, by the mode's invocation runner.
+//!
+//! `operators_edit_a_multibuffer_view` was ignored when this file was written —
+//! operator edits were dropped in every multibuffer view, for reasons that had
+//! nothing to do with this mode (grammar dispatch ran against a scratch rope and
+//! nothing wrote back). Fixed since; the test stays as the control that keeps
+//! the read-only assertions from passing against an operator that does nothing
+//! anywhere.
 
 #![allow(clippy::unwrap_used)]
 
@@ -203,14 +210,32 @@ fn deactivating_when_never_active_is_a_no_op() {
 /// return `Effect::Edits` … that the host's `apply_edit_blocking` routes through
 /// this handle's `apply_edit`"); that route does not exist in the code.
 #[test]
-#[ignore = "FAILS: operator edits are dropped in multibuffer views — grammar \
-            dispatch runs against a scratch rope and nothing writes back. \
-            Unrelated to read-only-mode; see the doc comment."]
-fn operators_are_inert_in_a_multibuffer_view() {
+fn operators_edit_a_multibuffer_view() {
     let (mut editor, _view) = boot_with_view();
     let before = body(&editor);
     press(&mut editor, &[KeyChord::char('x')]);
     assert_ne!(body(&editor), before, "`x` must delete a character");
+}
+
+/// PD.4's actual scenario, testable only since operators started landing
+/// in multibuffers: a project diff over the index is a multibuffer, and
+/// `x` in it must be refused. Until the K.4.11 fix this could not be
+/// asserted — `x` did nothing in a multibuffer whether the mode was
+/// active or not, so a passing test would have proved nothing.
+#[test]
+fn x_does_not_delete_in_a_read_only_multibuffer() {
+    let (mut editor, view) = boot_with_view();
+
+    press(&mut editor, &[KeyChord::char('x')]);
+    let after_control = body(&editor);
+
+    editor.activate_minor_by_id(view, ReadOnlyMode::mode_id());
+    press(&mut editor, &[KeyChord::char('x')]);
+    assert_eq!(
+        body(&editor),
+        after_control,
+        "`x` must not edit a read-only multibuffer"
+    );
 }
 
 /// The refusal is explained, not merely enforced. A buffer that silently

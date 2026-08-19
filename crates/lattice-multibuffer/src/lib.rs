@@ -1452,51 +1452,7 @@ impl Document for MultibufferDocumentHandle {
     /// each sub-edit sequentially; per-edit parallelism is a
     /// later refinement once a consumer needs it.
     fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        // M.11 (2026-06-02): same shape as `apply_edit` — local
-        // mutation per edit, sync source-forward enqueue, return
-        // synchronously. No Pending::spawn, no cross-actor
-        // round-trip.
-        let mut applied_results = Vec::with_capacity(edits.len());
-        let mut forwards = Vec::with_capacity(edits.len());
-
-        for edit in edits {
-            // Pre-resolve source forward target before mutating
-            // (the row translation uses composed coords valid
-            // before this edit lands).
-            let state = self.lock_state();
-            let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
-                let source_edit = build_source_edit(&target, &edit);
-                SourceForwardMsg::Edit {
-                    source_handle: target.source_handle.clone(),
-                    source_edit,
-                }
-            });
-            drop(state);
-
-            let mut doc = self
-                .inner
-                .composed_doc
-                .lock()
-                .expect("composed_doc mutex poisoned");
-            match doc.apply_edit(edit) {
-                Ok(applied) => {
-                    let selections = self.lock_state().selections.clone();
-                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
-                    self.inner.snapshot_cell.store(snap);
-                    applied_results.push(applied);
-                    if let Some(msg) = source_forward {
-                        forwards.push(msg);
-                    }
-                }
-                Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
-            }
-        }
-
-        for msg in forwards {
-            let _ = self.inner.source_forward_tx.send(msg);
-        }
-
-        Pending::ready(Ok(applied_results))
+        Pending::ready(self.apply_edit_batch_sync(edits))
     }
 
     /// M.3 (2026-06-01): fan undo out to every source the view
@@ -1786,6 +1742,110 @@ impl Document for MultibufferDocumentHandle {
 }
 
 impl MultibufferDocumentHandle {
+    /// The batch-apply body, synchronous.
+    ///
+    /// M.11 (2026-06-02): local mutation per edit, sync source-forward
+    /// enqueue, return synchronously. No `Pending::spawn`, no
+    /// cross-actor round-trip.
+    ///
+    /// Factored out of [`Document::apply_edit_batch`] so grammar
+    /// dispatch can reach it too — a `Pending` is the wrong shape for a
+    /// caller that is already inside the synchronous dispatch path and
+    /// would otherwise have to block on a future it knows is ready.
+    fn apply_edit_batch_sync(&self, edits: Vec<Edit>) -> Result<Vec<AppliedEdit>, RuntimeError> {
+        let mut applied_results = Vec::with_capacity(edits.len());
+        let mut forwards = Vec::with_capacity(edits.len());
+
+        for edit in edits {
+            // Pre-resolve source forward target before mutating
+            // (the row translation uses composed coords valid
+            // before this edit lands).
+            let state = self.lock_state();
+            let source_forward = resolve_edit_target(&state, edit.range.start).map(|target| {
+                let source_edit = build_source_edit(&target, &edit);
+                SourceForwardMsg::Edit {
+                    source_handle: target.source_handle.clone(),
+                    source_edit,
+                }
+            });
+            drop(state);
+
+            let mut doc = self
+                .inner
+                .composed_doc
+                .lock()
+                .expect("composed_doc mutex poisoned");
+            match doc.apply_edit(edit) {
+                Ok(applied) => {
+                    let selections = self.lock_state().selections.clone();
+                    let snap = snapshot_from_composed_doc(&doc, self.inner.id, selections);
+                    self.inner.snapshot_cell.store(snap);
+                    applied_results.push(applied);
+                    if let Some(msg) = source_forward {
+                        forwards.push(msg);
+                    }
+                }
+                Err(e) => return Err(RuntimeError::Core(e)),
+            }
+        }
+
+        for msg in forwards {
+            let _ = self.inner.source_forward_tx.send(msg);
+        }
+
+        Ok(applied_results)
+    }
+
+    /// K.4.11-fix: land the edits a grammar operator produced.
+    ///
+    /// `dispatch_composed` runs the grammar against a **scratch**
+    /// `Document` cloned from the composed snapshot — cheap, because
+    /// `Buffer::clone` is an `Arc`-backed rope clone, and necessary,
+    /// because `execute_with_env` wants `&mut Document` while the real
+    /// composed doc lives behind a mutex the dispatch also reads through.
+    /// The scratch is then dropped.
+    ///
+    /// That is fine for a motion, which only reports a cursor, and wrong
+    /// for an operator, which reports edits it has already made — to the
+    /// throwaway. The host's `Effect::Edits` arm (`handle_edits`) records
+    /// the cursor and publishes the deltas on the premise, true for a
+    /// real `Document` actor and false here, that the document has
+    /// already applied them. Nothing wrote back, so `x` / `dd` / `cw`
+    /// were inert in every multibuffer view — search results, references,
+    /// project diff — while insert-mode typing worked, because typing
+    /// goes through `apply_edit` rather than through dispatch.
+    ///
+    /// So: replay the scratch's edits onto the real composed doc through
+    /// [`Self::apply_edit_batch_sync`], which is the M.3 path that also
+    /// forwards to the source documents, and return the `AppliedEdit`s
+    /// that landed rather than the scratch's. Replaying is sound because
+    /// the batch applies in the same order the grammar did, so each
+    /// edit's `original_range` describes the same text in both runs.
+    fn land_composed_edits(&self, effect: Effect) -> Result<Effect, RuntimeError> {
+        match effect {
+            Effect::Edits(scratch_edits) => {
+                if scratch_edits.is_empty() {
+                    return Ok(Effect::Edits(scratch_edits));
+                }
+                let edits: Vec<Edit> = scratch_edits
+                    .iter()
+                    .map(|a| Edit::replace(a.original_range, a.inserted_text.clone()))
+                    .collect();
+                Ok(Effect::Edits(self.apply_edit_batch_sync(edits)?))
+            }
+            // `Many` is how an operator reports edits alongside its yank
+            // and cursor move, so the edits are almost always nested one
+            // level down rather than at the top.
+            Effect::Many(effects) => Ok(Effect::Many(
+                effects
+                    .into_iter()
+                    .map(|e| self.land_composed_edits(e))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            other => Ok(other),
+        }
+    }
+
     /// Body shared by [`Document::dispatch_with_cancel`] and
     /// [`Document::dispatch_with_env`].
     fn dispatch_composed(
@@ -1809,10 +1869,16 @@ impl MultibufferDocumentHandle {
         //
         // Resulting Effect flows through the usual host pipeline:
         // motions return a cursor Effect; operators return
-        // Effect::Edits in composed coordinates that the host's
-        // apply_edit_blocking routes through this handle's
-        // `apply_edit`, which translates to source coordinates +
-        // forwards to the source document (M.3).
+        // Effect::Edits in composed coordinates.
+        //
+        // This comment used to claim those edits reached the sources
+        // because "the host's apply_edit_blocking routes through this
+        // handle's `apply_edit`". It did not — the host's Effect::Edits
+        // arm only records the cursor and publishes deltas, on the
+        // premise that the document already applied them. Nothing
+        // applied them here, so every operator was a silent no-op. The
+        // route the comment described now exists for real, in
+        // `land_composed_edits` below; see its doc.
         // K.4.11.perf-fix (2026-06-02): Pre-fix this routed
         // `snapshot.buffer.as_string() → Document::from_text(&composed)`,
         // which allocated O(composed_size) bytes + rebuilt a fresh
@@ -1874,7 +1940,10 @@ impl MultibufferDocumentHandle {
             },
         )
         .map_err(RuntimeError::Grammar);
-        Pending::ready(result)
+        // K.4.11-fix: the grammar edited the scratch. Land those edits on
+        // the real composed doc (and forward them to the sources), or the
+        // operator is a no-op the host cannot tell from a successful one.
+        Pending::ready(result.and_then(|effect| self.land_composed_edits(effect)))
     }
 }
 
@@ -3115,6 +3184,99 @@ mod tests {
             "source did not converge to multibuffer edit; got: {:?}",
             source_handle.text()
         );
+    }
+
+    // ── K.4.11-fix: an operator's edits have to LAND ──────────
+    //
+    // Grammar dispatch runs against a scratch clone of the composed
+    // rope, so an operator reported edits it had made to a throwaway.
+    // The host publishes those deltas assuming the document already
+    // applied them — true for a real `Document` actor, false here — so
+    // `x` / `dd` / `cw` were inert in every multibuffer view while
+    // insert-mode typing worked, because typing does not go through
+    // dispatch.
+
+    /// Build a one-source view and run `invocation` through the real
+    /// dispatch path, returning the source handle so the test can watch
+    /// it converge.
+    fn view_for_dispatch(
+        text: &str,
+    ) -> (
+        MultibufferDocumentHandle,
+        std::sync::Arc<dyn Document>,
+        lattice_grammar::CommandRegistryHandle,
+        lattice_grammar::builtins::Builtins,
+    ) {
+        let (sources, ids) = make_sources(&[text]);
+        let source_handle = sources.get(&ids[0]).expect("source present").clone();
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        let builtins = lattice_grammar::builtins::populate(&mut registry);
+        let handle: lattice_grammar::CommandRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(registry));
+        let excerpts = vec![Excerpt::new(ids[0], 0, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, handle.clone()).unwrap();
+        (mb, source_handle, handle, builtins)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operator_edits_the_composed_view() {
+        let (mb, _source, _reg, builtins) = view_for_dispatch("alpha\nbeta\ngamma\n");
+        assert_eq!(mb.snapshot().buffer.as_string(), "alpha\nbeta\ngamma\n");
+
+        // `x` at (0,0): delete-char-forward over one character.
+        let inv = lattice_grammar::CommandInvocation::of(builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(builtins.char_right, lattice_grammar::args::Args::None),
+        );
+        mb.dispatch(inv, Position::new(0, 0))
+            .await
+            .expect("dispatch succeeds");
+
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            "lpha\nbeta\ngamma\n",
+            "the operator's edit must land on the composed rope, not on the scratch"
+        );
+    }
+
+    /// The half that would still be missing if the fix only mutated the
+    /// composed rope: a multibuffer edit is an edit to a FILE, and the
+    /// view exists to propagate it. Replaying through
+    /// `apply_edit_batch_sync` is what buys this — it is the M.3 path,
+    /// so the source forward comes with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operator_edit_reaches_the_source_document() {
+        let (mb, source, _reg, builtins) = view_for_dispatch("alpha\nbeta\ngamma\n");
+        let inv = lattice_grammar::CommandInvocation::of(builtins.delete.0).with_target(
+            lattice_grammar::Target::Motion(builtins.char_right, lattice_grammar::args::Args::None),
+        );
+        mb.dispatch(inv, Position::new(0, 0))
+            .await
+            .expect("dispatch succeeds");
+
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if source.text() == "lpha\nbeta\ngamma\n" {
+                return;
+            }
+        }
+        panic!(
+            "source never saw the operator's edit; got {:?}",
+            source.text()
+        );
+    }
+
+    /// A motion reports a cursor and no edits, so it must pass through
+    /// the landing step untouched. Without this, a fix that blindly
+    /// re-applied everything would turn every `j` into a rope mutation.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_motion_changes_no_text() {
+        let (mb, _source, _reg, builtins) = view_for_dispatch("alpha\nbeta\ngamma\n");
+        let before = mb.snapshot().buffer.as_string();
+        let inv = lattice_grammar::CommandInvocation::of(builtins.line_down.0);
+        mb.dispatch(inv, Position::new(0, 0))
+            .await
+            .expect("dispatch succeeds");
+        assert_eq!(mb.snapshot().buffer.as_string(), before);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -250,3 +250,105 @@ fn dismissing_the_yank_picker_returns_to_the_one_underneath() {
         "nothing is waiting now"
     );
 }
+
+// ── An empty ring must not strand the caller ──
+//
+// `YankRingSource::init` errors when nothing has been yanked yet, and
+// `open_picker` echoes that and leaves `self.picker` alone. But
+// `do_open_yank_picker` has already taken the picker underneath into the
+// stash by then — so the list the user was filtering disappears from the
+// screen while still being held, with no key that brings it back. Opening a
+// picker that fails to open must leave everything exactly as it was.
+
+#[test]
+fn an_empty_ring_leaves_the_picker_underneath_alone() {
+    let mut editor = boot();
+    assert!(editor.yank_ring.is_empty(), "precondition: nothing yanked");
+
+    let _ = editor.open_picker("buffers".to_string(), Vec::new());
+    press(&mut editor, &[KeyChord::ctrl('r')]);
+
+    let picker = editor
+        .picker
+        .as_ref()
+        .expect("the picker the user was in must still be there");
+    assert_eq!(picker.title, "buffers");
+    assert!(
+        editor.stashed_picker.is_none(),
+        "nothing should be held in the stash"
+    );
+    assert!(
+        editor.picker_fill_target.is_none(),
+        "and nothing should be waiting for a value"
+    );
+}
+
+#[test]
+fn an_empty_ring_from_a_document_leaves_no_dangling_target() {
+    let mut editor = boot();
+    assert!(editor.yank_ring.is_empty(), "precondition");
+
+    insert_mode(&mut editor);
+    press(&mut editor, &[KeyChord::ctrl('r'), KeyChord::ctrl('r')]);
+
+    assert!(editor.picker.is_none(), "no picker opened");
+    assert!(
+        editor.picker_fill_target.is_none(),
+        "a target left set here would be consumed by the next unrelated \
+         FillCaller, landing text in a caller that never asked for it"
+    );
+    let msg = editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("yank"),
+        "the user pressed two keys and is owed an answer; got {msg:?}"
+    );
+}
+
+// ── The `:` line ──
+//
+// Command mode routes through `dispatch_insert`, so the Insert-layer
+// bindings apply there without a second registration. That is a fact about
+// the dispatcher rather than something this slice arranged, which is exactly
+// why it is worth a test: nothing here would fail if that routing changed.
+
+#[test]
+fn c_r_then_a_register_inserts_into_the_command_line() {
+    let mut editor = boot();
+    editor.store_yank(
+        Register::Named('a'),
+        "REG-A".to_string(),
+        YankKind::Charwise,
+        true,
+    );
+
+    press(&mut editor, &[KeyChord::char(':')]);
+    assert!(editor.command_line_active(), "precondition");
+    press(&mut editor, &[KeyChord::ctrl('r'), KeyChord::char('a')]);
+
+    assert_eq!(editor.command_line(), "REG-A");
+}
+
+#[test]
+fn the_picker_opened_from_the_command_line_fills_the_command_line() {
+    let mut editor = boot();
+    editor.store_yank(
+        Register::Unnamed,
+        "ringed".to_string(),
+        YankKind::Charwise,
+        true,
+    );
+
+    press(&mut editor, &[KeyChord::char(':')]);
+    press(&mut editor, &[KeyChord::ctrl('r'), KeyChord::ctrl('r')]);
+
+    assert!(editor.picker.is_some(), "the picker opened");
+    assert_eq!(
+        editor.picker_fill_target,
+        Some(lattice_picker::FillTarget::CommandLine),
+        "the pick belongs to the `:` line it was opened from, not the document"
+    );
+}

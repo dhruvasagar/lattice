@@ -8402,7 +8402,22 @@ impl Editor {
         if is_picker_query {
             self.stashed_picker = self.picker.take();
         }
-        self.open_picker(lattice_picker::YANK_RING_SOURCE.to_string(), Vec::new())
+        let signals = self.open_picker(lattice_picker::YANK_RING_SOURCE.to_string(), Vec::new());
+        // The source refuses to open on an empty ring, and `open_picker`
+        // reports that by echoing and leaving `self.picker` alone — which
+        // by this point means leaving it as the `None` we just created.
+        //
+        // Rolling back matters most in the `PickerQuery` case: without it
+        // the list the user was filtering has vanished from the screen
+        // while still being held in the stash, with no key that brings it
+        // back. From a document the damage is quieter but real — a fill
+        // target left set is consumed by the next unrelated `FillCaller`,
+        // landing text in a caller that never asked for it.
+        if self.picker.is_none() {
+            self.picker = self.stashed_picker.take();
+            self.picker_fill_target = None;
+        }
+        signals
     }
 
     /// YR.3: insert `text` at the cursor of the focused buffer.

@@ -5125,6 +5125,15 @@ impl lattice_core::FoldSource for ExcerptFoldProvider {
 /// to the last excerpt belonging to that file. Registered alongside
 /// `ExcerptFoldProvider` by `MultibufferMode::on_activate`. Enables
 /// collapsing all excerpts from a file to its header row with `za`.
+///
+/// PD.5a: the fold's `identity` is derived from the source **path**,
+/// not its `BufferId`. `recompute_folds` carries closed/open state
+/// across a rebuild by matching identity, and a refreshing provider
+/// re-reads its files under fresh `BufferId::next()` values — so a
+/// BufferId-derived identity changes on every refresh, the match
+/// misses, and every file the user had collapsed springs back open.
+/// The path is what the user was collapsing, so it is what the
+/// identity should track.
 pub struct FileBoundaryFoldProvider {
     id: lattice_core::ProviderId,
     handle: MultibufferDocumentHandle,
@@ -5169,9 +5178,39 @@ impl lattice_core::FoldSource for FileBoundaryFoldProvider {
                 start_line: start,
                 end_line: end,
                 closed: false,
-                identity: Some(source.0 as u64),
+                identity: Some(self.source_identity(source)),
             })
             .collect()
+    }
+}
+
+impl FileBoundaryFoldProvider {
+    /// PD.5a: stable identity for a source file's fold.
+    ///
+    /// Hashed from the source's path when it has one. A pathless source
+    /// — a synthetic buffer, or a scratch source a provider composes in
+    /// memory — falls back to its `BufferId`, which is as stable as such
+    /// a source gets and at least keeps the identity unique.
+    ///
+    /// The two spaces are kept apart by a discriminant byte, so a path
+    /// whose hash happens to equal some buffer id cannot be mistaken for
+    /// that buffer's pathless fold.
+    fn source_identity(&self, source: BufferId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        match self.handle.source_path(source) {
+            Some(path) => {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                0u8.hash(&mut h);
+                path.hash(&mut h);
+                h.finish()
+            }
+            None => {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                1u8.hash(&mut h);
+                source.0.hash(&mut h);
+                h.finish()
+            }
+        }
     }
 }
 
@@ -5182,6 +5221,7 @@ mod excerpt_fold_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use lattice_core::Document as CoreDocument;
+    use lattice_core::DocumentBuilder as CoreDocumentBuilder;
     use lattice_core::{FoldOverlayService, FoldOverlayServiceHandle, FoldSource};
     use lattice_grammar::CommandRegistry;
     use lattice_runtime::spawn_document;
@@ -5314,14 +5354,21 @@ mod excerpt_fold_tests {
             .find(|f| f.start_line == 0)
             .expect("buf_a fold");
         assert_eq!(a_fold.end_line, 4);
-        assert_eq!(a_fold.identity, Some(buf_a.0 as u64));
         // buf_b fold spans rows 5-6.
         let b_fold = folds
             .iter()
             .find(|f| f.start_line == 5)
             .expect("buf_b fold");
         assert_eq!(b_fold.end_line, 6);
-        assert_eq!(b_fold.identity, Some(buf_b.0 as u64));
+        // PD.5a: identity used to be the raw `BufferId`, and this test
+        // asserted exactly that. It is now derived (path when there is
+        // one, hashed buffer id otherwise), so the raw value was an
+        // implementation detail to stop pinning. What the fold engine
+        // actually needs is that the two files do not collide — see
+        // `file_boundary_fold_identity_survives_a_refresh` for the
+        // stability half.
+        assert!(a_fold.identity.is_some());
+        assert_ne!(a_fold.identity, b_fold.identity);
     }
 
     #[test]
@@ -5345,5 +5392,103 @@ mod excerpt_fold_tests {
         let buf_id = mb.buffer_id();
         let provider = FileBoundaryFoldProvider::new(mb, buf_id);
         assert!(provider.compute_folds().is_empty());
+    }
+
+    // ── PD.5a: identity has to outlive the source buffer ──────
+    //
+    // `recompute_folds` carries the closed/open state across a rebuild
+    // by matching `Fold::identity`, falling back to `(start_line,
+    // end_line)`. A refreshing provider re-reads its files and calls
+    // `BufferId::next()` for each one (`attach_batch` in project-diff,
+    // and the search provider does the same), so a `BufferId`-derived
+    // identity is a fresh number on every refresh: the match misses,
+    // the fallback keys on rows that have themselves moved, and every
+    // file the user collapsed springs back open. Deriving identity from
+    // the source *path* fixes it, because the path is the thing the
+    // user was collapsing.
+
+    /// Same file, same path, new `BufferId` — the shape a `gr` refresh
+    /// produces.
+    #[tokio::test]
+    async fn file_boundary_fold_identity_survives_a_refresh() {
+        let build = |text: &str| {
+            let r = reg();
+            let id = BufferId::next();
+            let doc = CoreDocumentBuilder::default()
+                .with_text(text)
+                .with_path(std::path::PathBuf::from("/repo/src/main.rs"))
+                .build();
+            let handle = spawn_document(id, doc, r.clone());
+            let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+            sources.insert(id, Arc::new(handle) as Arc<dyn Document>);
+            let mb =
+                MultibufferDocumentHandle::new(sources, vec![Excerpt::new(id, 0, 1)], r).unwrap();
+            let buf_id = mb.buffer_id();
+            (
+                id,
+                FileBoundaryFoldProvider::new(mb, buf_id).compute_folds(),
+            )
+        };
+
+        let (first_id, before) = build("a\nb\n");
+        let (second_id, after) = build("a\nchanged\n");
+
+        assert_ne!(
+            first_id, second_id,
+            "the fixture must mint a new BufferId, or this proves nothing"
+        );
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            before[0].identity, after[0].identity,
+            "same path across a refresh must keep its fold identity"
+        );
+    }
+
+    /// Two different files must not collide, or collapsing one would
+    /// collapse the other.
+    #[tokio::test]
+    async fn file_boundary_fold_identity_differs_between_paths() {
+        let r = reg();
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        let mut ids = Vec::new();
+        for path in ["/repo/src/a.rs", "/repo/src/b.rs"] {
+            let id = BufferId::next();
+            let doc = CoreDocumentBuilder::default()
+                .with_text("x\ny\n")
+                .with_path(std::path::PathBuf::from(path))
+                .build();
+            sources.insert(
+                id,
+                Arc::new(spawn_document(id, doc, r.clone())) as Arc<dyn Document>,
+            );
+            ids.push(id);
+        }
+        let excerpts = ids.iter().map(|id| Excerpt::new(*id, 0, 1)).collect();
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let folds = FileBoundaryFoldProvider::new(mb, buf_id).compute_folds();
+        assert_eq!(folds.len(), 2);
+        assert_ne!(
+            folds[0].identity, folds[1].identity,
+            "distinct paths must get distinct fold identities"
+        );
+    }
+
+    /// A source with no path — a synthetic buffer, or a scratch source a
+    /// future provider composes — still needs *an* identity. It falls
+    /// back to the buffer id, which is as stable as such a source gets.
+    #[tokio::test]
+    async fn a_pathless_source_still_gets_an_identity() {
+        let r = reg();
+        let id = BufferId::next();
+        let doc = spawn_document(id, CoreDocument::from_text("a\nb\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, Arc::new(doc) as Arc<dyn Document>);
+        let mb = MultibufferDocumentHandle::new(sources, vec![Excerpt::new(id, 0, 1)], r).unwrap();
+        let buf_id = mb.buffer_id();
+        let folds = FileBoundaryFoldProvider::new(mb, buf_id).compute_folds();
+        assert_eq!(folds.len(), 1);
+        assert!(folds[0].identity.is_some());
     }
 }

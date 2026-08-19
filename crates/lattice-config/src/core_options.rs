@@ -429,12 +429,17 @@ crate::options! {
     pub FoldLevel: i64 = 99;
 
     /// How many entries the yank ring holds. Every yank *and* every
-    /// delete pushes one; the picker (`<C-r><C-r>`) reads them back.
+    /// delete pushes one.
     ///
-    /// Vim keeps 9, emacs 120. 50 is enough that the picker's fuzzy
-    /// filter is the tool you reach for rather than scrolling, and small
-    /// enough that the whole ring stays cheap to hold and to render.
-    /// `0` disables the ring.
+    /// **The ring has no reader yet.** It records, and nothing surfaces
+    /// it: the picker that browses it and the `<C-r>` keys that open
+    /// that picker are later slices (YR.4 / YR.5). Setting this today
+    /// changes how much history is waiting for them.
+    ///
+    /// Vim keeps 9, emacs 120. 50 is enough that a fuzzy filter will be
+    /// the tool you reach for rather than scrolling, and small enough
+    /// that the whole ring stays cheap to hold and to render. `0`
+    /// disables the ring.
     ///
     /// Read at push time, so lowering it takes effect on the next yank
     /// rather than at the next restart.

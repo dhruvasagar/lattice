@@ -121,17 +121,22 @@ mod tests {
         );
     }
 
-    /// Cursor sitting ON the opening delimiter. `find_surround_pair` scans
-    /// strictly backward from the cursor (`byte < cursor_byte`), so the
-    /// opener at the cursor is never seen and no pair is found. Vim's `ds"`
-    /// works here. Fixed in the next slice — this is the pair finder, not
-    /// the chord path, which `ds_deletes_the_pair` above already proves.
+    /// SU.3f: cursor sitting ON the opening delimiter. The pair finder
+    /// skipped an opener under the cursor, so this did nothing where vim
+    /// deletes the pair. Kept at the chord level as well as in the finder's
+    /// own unit tests, because this is the shape a user actually types —
+    /// landing on a quote and pressing `ds"`.
     #[test]
-    #[ignore = "FAILS: find_surround_pair ignores a delimiter at the cursor. \
-                Pair-finder gap, not a keymap one; fixed in SU.3f."]
     fn ds_with_the_cursor_on_the_delimiter() {
         let mut app = app_with("\"hello\"\n", 20);
         press_chars(&mut app, "ds\"");
         assert_eq!(body(&app), "hello\n");
+    }
+
+    #[test]
+    fn cs_with_the_cursor_on_the_delimiter() {
+        let mut app = app_with("\"hello\"\n", 20);
+        press_chars(&mut app, "cs\"'");
+        assert_eq!(body(&app), "'hello'\n");
     }
 }

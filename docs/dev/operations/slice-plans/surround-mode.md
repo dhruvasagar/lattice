@@ -1,7 +1,7 @@
 # surround-mode — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-19).** SU.1–SU.3e complete (27 tests).
-> SU.3f open; SU.5–SU.6 deferred to v2.
+> **Status: 🚧 ACTIVE (2026-08-19).** SU.1–SU.3f complete (38 tests).
+> SU.3g open; SU.5–SU.6 deferred to v2.
 > Sequencing companion to the design fragment
 > [`../../architecture/surround-mode.md`](../../architecture/surround-mode.md).
 >
@@ -109,13 +109,28 @@ chain bindings' `with_doc` strings are what it already displayed.
 that surround-mode is active at all (else the suite is vacuous) and a pin
 that `d<Space>s` is unbound.
 
-## Slice SU.3f — cursor on the delimiter 📝
+## Slice SU.3f — cursor on the delimiter ✅
 
-`find_surround_pair` scans strictly backward from the cursor
-(`byte < cursor_byte`), so a cursor sitting ON the opening delimiter never
-sees it and no pair is found — `ds"` with the caret on the `"` does nothing,
-where vim deletes the pair. Pinned by the ignored
-`ds_with_the_cursor_on_the_delimiter`.
+The two scans are half-open around the cursor (backward `byte < cursor`,
+forward `byte >= cursor`), so a *closer* under the cursor was already found
+by the forward scan while an *opener* under it was skipped by both — `ds"`
+with the caret on the opening quote did nothing, where vim deletes the pair.
+The effective cursor is now nudged one character right when it sits on an
+opener, which puts it just inside its own pair: the position the scans
+already handle.
+
+A symmetric target is its own closer, so which end the cursor is on is
+decided by the count of that character preceding it **on the line** (even ⇒
+opens). Design fragment §4.2 records the rule and why it is not optional:
+without it, `"a" "b"` with the caret on the second pair's opening quote
+resolves to the gap between the pairs, which is a real enclosing pair and
+the wrong one.
+
+**Tests.** Eight finder-level cases (opener/closer × quote/bracket, the two
+`"a" "b"` parity cases, an inner delimiter in a nested pair, and a lone
+unmatched delimiter that must still find nothing) plus `ds` / `cs` at the
+chord level, since landing on a quote and typing `ds"` is the shape a user
+actually produces.
 
 ## Slice SU.3g — `(` vs `)` spacing 📝
 

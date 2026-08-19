@@ -158,6 +158,18 @@ If both opener and closer are found, return `Some((opener_pos, closer_pos))`.
 Special cases:
 - **Cursor between pair**: If the cursor is between `(` and `)`, scanning
   backward finds `(`, scanning forward finds `)` — return the bounds.
+- **Cursor ON a delimiter** (SU.3f): counts as part of the pair that
+  delimiter belongs to, as in vim — `ds"` works from either quote. The two
+  scans are half-open around the cursor (backward `byte < cursor`, forward
+  `byte >= cursor`), so a *closer* under the cursor is already found by the
+  forward scan; an *opener* under it is skipped by both, and the effective
+  cursor is nudged one character right so it sits just inside its own pair.
+  For a **symmetric** target the character is its own closer, so which end
+  it is cannot be read off the character and is decided by the count of
+  that character preceding the cursor **on the line**: even ⇒ this one
+  opens. Without the parity rule, `"a" "b"` with the caret on the second
+  pair's opening quote resolves to the gap between the pairs — quotes 2 and
+  4 — which is a genuine enclosing pair and the wrong answer.
 - **Nested pairs**: Stacks handle nesting correctly — `((x))` with cursor on
   `x` → the innermost `()` pair is found.
 - **No match**: Return `None`. The operator produces no effect (vim's "no

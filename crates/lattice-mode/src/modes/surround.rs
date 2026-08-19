@@ -77,6 +77,15 @@ fn matching_opener(closer: char) -> Option<char> {
 ///
 /// Algorithm: scan backward from cursor tracking closers, scan
 /// forward tracking openers. Stacks handle nesting correctly.
+///
+/// SU.3f: a delimiter sitting *under* the cursor counts as part of the
+/// pair it belongs to, matching vim — `ds"` works with the caret on
+/// either quote. The two scans are half-open around the cursor
+/// (backward is `byte < cursor_byte`, forward is `byte >= cursor_byte`),
+/// so a closer under the cursor was already found by the forward scan
+/// while an opener under it was skipped by both. Nudging the effective
+/// cursor one character right when it sits on an opener puts it just
+/// inside its own pair, which is the position the scans already handle.
 pub fn find_surround_pair(
     buffer: &Buffer,
     cursor: Position,
@@ -87,6 +96,35 @@ pub fn find_surround_pair(
 
     // Determine target's opener/closer identity.
     let (target_open, target_close) = open_close_pair(target)?;
+
+    let cursor_byte = match text.get(cursor_byte..).and_then(|s| s.chars().next()) {
+        // Symmetric target (`"`, `'`, backtick): the character is its own
+        // closer, so "am I on an opener?" cannot be read off the character
+        // and is decided by how many precede it on the line — an even count
+        // means this one opens. Skipping this and always nudging would
+        // resolve `"a" "b"` with the caret on the second pair's opening
+        // quote to the *gap* between the pairs (quotes 2 and 4), which is a
+        // real enclosing pair and the wrong one.
+        Some(ch) if ch == target_open && target_open == target_close => {
+            let line = buffer.line(cursor.line).unwrap_or_default().to_string();
+            let preceding = line
+                .get(..cursor.byte as usize)
+                .unwrap_or("")
+                .chars()
+                .filter(|c| *c == target_open)
+                .count();
+            if preceding % 2 == 0 {
+                cursor_byte + ch.len_utf8()
+            } else {
+                cursor_byte
+            }
+        }
+        // Asymmetric: the character says which end it is. On the closer,
+        // leave the cursor alone — the forward scan starts there and finds
+        // it.
+        Some(ch) if ch == target_open => cursor_byte + ch.len_utf8(),
+        _ => cursor_byte,
+    };
 
     // ---- Backward scan: find the unmatched opener ----
     let mut closer_stack: Vec<char> = Vec::new();
@@ -726,6 +764,84 @@ mod tests {
         let buf = Buffer::from_text("hello world");
         let pair = find_surround_pair(&buf, Position::ZERO, '"');
         assert!(pair.is_none());
+    }
+
+    // ── SU.3f: a delimiter sitting under the cursor ───────────
+    //
+    // The scans are half-open around the cursor — backward is
+    // `byte < cursor_byte`, forward is `byte >= cursor_byte` — so a
+    // closer under the cursor was always found (the forward scan starts
+    // on it) while an opener under the cursor never was (the backward
+    // scan starts just past it). `ds"` with the caret on the opening
+    // quote did nothing; vim deletes the pair from either delimiter.
+
+    /// Helper: byte-offset pair → (open col, close col) on line 0.
+    fn pair_cols(buf: &Buffer, cursor_col: u32, target: char) -> Option<(u32, u32)> {
+        let pair = find_surround_pair(buf, Position::new(0, cursor_col), target)?;
+        let open = buf.byte_to_position(pair.0).ok()?;
+        let close = buf.byte_to_position(pair.1).ok()?;
+        Some((open.byte, close.byte))
+    }
+
+    #[test]
+    fn a_cursor_on_the_opening_quote_finds_its_pair() {
+        let buf = Buffer::from_text("\"hello\"");
+        assert_eq!(pair_cols(&buf, 0, '"'), Some((0, 6)));
+    }
+
+    #[test]
+    fn a_cursor_on_the_closing_quote_finds_its_pair() {
+        let buf = Buffer::from_text("\"hello\"");
+        assert_eq!(pair_cols(&buf, 6, '"'), Some((0, 6)));
+    }
+
+    #[test]
+    fn a_cursor_on_the_opening_bracket_finds_its_pair() {
+        let buf = Buffer::from_text("(hello)");
+        assert_eq!(pair_cols(&buf, 0, '('), Some((0, 6)));
+    }
+
+    #[test]
+    fn a_cursor_on_the_closing_bracket_finds_its_pair() {
+        let buf = Buffer::from_text("(hello)");
+        assert_eq!(pair_cols(&buf, 6, '('), Some((0, 6)));
+    }
+
+    /// The case that makes "is this delimiter an opener or a closer?"
+    /// a real question rather than a formality. A symmetric char is
+    /// both, so the answer comes from how many precede it on the line:
+    /// an even count means this one opens. Without that rule, the
+    /// cursor on the second pair's opening quote resolves the *gap*
+    /// between the two pairs — quotes 2 and 4 — which is a plausible
+    /// enclosing pair and entirely the wrong one.
+    #[test]
+    fn a_cursor_on_a_later_opening_quote_takes_its_own_pair() {
+        let buf = Buffer::from_text("\"a\" \"b\"");
+        // "(0)a(1)"(2) (3)"(4)b(5)"(6)
+        assert_eq!(pair_cols(&buf, 4, '"'), Some((4, 6)));
+    }
+
+    #[test]
+    fn a_cursor_on_a_later_closing_quote_takes_its_own_pair() {
+        let buf = Buffer::from_text("\"a\" \"b\"");
+        assert_eq!(pair_cols(&buf, 6, '"'), Some((4, 6)));
+    }
+
+    /// Nesting still resolves innermost-first when the cursor is on an
+    /// inner delimiter rather than on text.
+    #[test]
+    fn a_cursor_on_an_inner_bracket_takes_the_inner_pair() {
+        let buf = Buffer::from_text("a (b (c) d) e");
+        // a(0) (1)((2)b(3) (4)((5)c(6))(7) (8)d(9))(10)
+        assert_eq!(pair_cols(&buf, 5, '('), Some((5, 7)));
+    }
+
+    /// An unmatched delimiter under the cursor still finds nothing,
+    /// rather than pairing with something across the buffer.
+    #[test]
+    fn a_lone_delimiter_under_the_cursor_finds_nothing() {
+        let buf = Buffer::from_text("(hello");
+        assert_eq!(pair_cols(&buf, 0, '('), None);
     }
 
     #[test]

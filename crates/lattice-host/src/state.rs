@@ -489,3 +489,103 @@ pub struct SnippetCandidateMeta {
     pub description: Option<String>,
     pub body: lattice_snippet::SnippetBody,
 }
+
+// ─────────────────────────────────────────────────────────────
+// YR.1 — the yank ring
+// ─────────────────────────────────────────────────────────────
+
+/// A bounded history of everything that has been yanked or deleted.
+///
+/// Beside [`UnnamedRegister`] rather than in `lattice-grammar` (where the
+/// slice plan proposed it) because that is where the entry type it holds
+/// already lives; the grammar does not read the ring.
+///
+/// **Deletes push too, and the system clipboard still does not take
+/// them.** That looks like a contradiction of `clipboard.md` §5, which
+/// keeps deletes out of the clipboard on purpose — vim's `unnamedplus`
+/// wart, where an incidental `x` clobbers what you copied from a browser.
+/// The two stores have different blast radii. The clipboard is shared
+/// with every other application, so a stray write there destroys
+/// something the editor never owned; the ring is internal, bounded and
+/// additive, so an `x` landing in it costs one slot and destroys
+/// nothing. "Get back the line I just deleted" is also among the most
+/// common reasons to open the picker at all, and a ring holding only
+/// yanks would decline the question users most want to ask it.
+#[derive(Debug, Clone, Default)]
+pub struct YankRing {
+    /// Newest first. Front is the most recent entry, which is what the
+    /// `"0`–`"9` projection (YR.2) and the picker both read from.
+    entries: std::collections::VecDeque<UnnamedRegister>,
+}
+
+impl YankRing {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of entries currently held.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Entries newest-first.
+    pub fn iter(&self) -> impl Iterator<Item = &UnnamedRegister> {
+        self.entries.iter()
+    }
+
+    /// The `n`th newest entry, 0-based. `nth(0)` is the most recent.
+    pub fn nth(&self, n: usize) -> Option<&UnnamedRegister> {
+        self.entries.get(n)
+    }
+
+    /// Record a yank or a delete, trimming to `capacity`.
+    ///
+    /// Two duplicate rules, and they are deliberately different:
+    ///
+    /// - **A consecutive repeat collapses.** `yy` pressed twice, or a
+    ///   re-yank of an unchanged line, otherwise produces two identical
+    ///   rows the picker cannot help you tell apart. The existing front
+    ///   entry is left in place rather than removed and re-pushed, so
+    ///   the ring does not churn on a held key.
+    /// - **A non-consecutive repeat is promoted.** Re-yanking something
+    ///   from an hour ago is a real event, and moving it to the top is
+    ///   the useful answer — it is what you are about to paste. Adding a
+    ///   second row for it would not be.
+    ///
+    /// Eviction is oldest-first, which is what lets YR.2's `"0`–`"9`
+    /// projection be sound: the numbered registers read the newest
+    /// entries, so dropping from the back can never change what `"9`
+    /// means.
+    ///
+    /// `capacity` is passed in rather than held on the ring because it
+    /// is a live option (`yank.ring.size`) — reading it at push time is
+    /// what makes lowering it take effect on the next yank instead of at
+    /// the next restart. A capacity of 0 disables the ring.
+    pub fn push(&mut self, entry: UnnamedRegister, capacity: usize) {
+        if capacity == 0 {
+            self.entries.clear();
+            return;
+        }
+        match self.entries.front() {
+            // Consecutive duplicate: already at the top, nothing to do.
+            Some(front) if front.content == entry.content && front.kind == entry.kind => return,
+            _ => {}
+        }
+        // Non-consecutive repeat: promote rather than duplicate.
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|e| e.content == entry.content && e.kind == entry.kind)
+        {
+            self.entries.remove(pos);
+        }
+        self.entries.push_front(entry);
+        while self.entries.len() > capacity {
+            self.entries.pop_back();
+        }
+    }
+}

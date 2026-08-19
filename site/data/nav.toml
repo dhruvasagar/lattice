@@ -52,6 +52,7 @@ description = "The vim grammar, the mode system, and the `:` line — the vocabu
 [[section.group]]
 docs = [
   "modal-editing",
+  "yank-ring",
   "cancellation",
   "modes",
   "command-line-mode",
@@ -314,6 +315,7 @@ docs = [
 # ---------------------------------------------------------------------------
 
 [labels]
+"yank-ring"            = "Yank ring"
 "lsp-references-mode"  = "References view"
 "magit-project-diff-mode" = "Project diff"
 "plugin-trace-mode"    = "Plugin boundary trace"

@@ -19183,9 +19183,21 @@ impl Editor {
         match register {
             Register::Unnamed | Register::BlackHole => {}
             other => {
-                self.registers.insert(other, entry);
+                self.registers.insert(other, entry.clone());
             }
         }
+        // YR.1: the ring takes yanks AND deletes. `store_yank` is
+        // already the single write seam for both, which is why the push
+        // belongs here and nothing else has to change.
+        //
+        // Note this sits ABOVE the clipboard mirror and is deliberately
+        // not gated by `explicit_yank`. The asymmetry is the point: the
+        // clipboard is shared with every other application, so CB.1
+        // keeps deletes out of it; the ring is internal and bounded, so
+        // a delete costs one slot and destroys nothing.
+        let ring_capacity = *self
+            .resolved_option::<lattice_config::core_options::YankRingSize>(self.document_buffer_id);
+        self.yank_ring.push(entry, ring_capacity.max(0) as usize);
         // CB.1: yank-only system-clipboard mirror.
         let clipboard_on =
             *self.resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);

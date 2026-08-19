@@ -433,6 +433,11 @@ pub struct Editor {
     /// register) is [`Self::unnamed_register`]; this map
     /// covers everything else.
     pub registers: HashMap<Register, UnnamedRegister>,
+    /// YR.1: every yank and every delete, newest first. Distinct from
+    /// `registers`, which is addressed by name — this is addressed by
+    /// recency, and it is what the yank picker lists and what YR.2's
+    /// `"0`–`"9` projection reads.
+    pub yank_ring: crate::state::YankRing,
     /// Register selected for the next operator / paste
     /// (`"a` prefix). Consumed-and-cleared by `run_invocation`
     /// (operators) and `do_paste` (paste). `None` means use

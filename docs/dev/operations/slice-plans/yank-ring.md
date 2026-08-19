@@ -2,11 +2,11 @@
 
 Design fragment:
 [`../../architecture/yank-ring.md`](../../architecture/yank-ring.md).
-Planned 2026-08-03; **nothing implemented**.
+Planned 2026-08-03. **YR.1 landed 2026-08-19**; YR.2–YR.6 open.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
-| YR.1 | The ring itself — `YankRing`, `store_yank` push, cap + dedupe, `yank.ring.size` | — | 📝 |
+| YR.1 | The ring itself — `YankRing`, `store_yank` push, cap + dedupe, `yank.ring.size` | — | ✅ |
 | YR.2 | `"0`–`"9` projected out of the ring | YR.1 | 📝 |
 | YR.3 | `PickerAcceptOutcome::FillCaller` + `FillTarget` captured at open | — | 📝 |
 | YR.4 | The `yank-ring` picker source (ring + named registers) | YR.1, YR.3 | 📝 |
@@ -45,6 +45,25 @@ breaking); cap eviction; consecutive-dedupe; non-consecutive promotion;
 
 **No bench.** A bounded `VecDeque` push on an existing synchronous path.
 Say so rather than adding a bench that measures nothing.
+
+**Landed 2026-08-19.** Two notes for whoever picks up YR.2:
+
+- `YankRing` sits in `lattice-host/src/state.rs` beside `UnnamedRegister`,
+  not in `lattice-grammar` as this plan said — `UnnamedRegister` is not in
+  `lattice-grammar` and the grammar does not read the ring.
+- Capacity is passed to `push` rather than held on the ring, so
+  `yank.ring.size` is read per push. That is what makes lowering it take
+  effect on the next yank instead of at the next restart, and it keeps the
+  ring free of a config dependency.
+
+The CB.1 guard is the one that matters: `a_delete_reaches_the_ring_but_not_the_clipboard`,
+paired with `a_yank_still_reaches_the_clipboard` so it is measuring the
+yank/delete distinction rather than a clipboard that never works. It uses
+the `FakeClipboard` `Editor::boot` already registers — `Editor::services`
+is an `Arc` and immutable after boot, so a test installing its own spy
+would assert against a clipboard the code under test never writes to.
+
+User doc `docs/user/yank-ring.md`, in the site's Editing section.
 
 ---
 

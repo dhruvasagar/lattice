@@ -106,6 +106,17 @@ fn validate_shiftwidth(i: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_yank_ring_size(i: &i64) -> Result<(), String> {
+    // 0 disables. The ceiling is generous — the ring is held whole in
+    // memory and rendered by a fuzzy picker, and past a few thousand
+    // entries neither of those is the tool you want.
+    if (0..=10_000).contains(i) {
+        Ok(())
+    } else {
+        Err(format!("yank.ring.size out of range [0, 10000]: {i}"))
+    }
+}
+
 fn validate_foldlevel(i: &i64) -> Result<(), String> {
     // Negative is meaningless (level 1 is the outermost fold, so 0
     // already closes everything). The ceiling is far past any real
@@ -416,6 +427,20 @@ crate::options! {
     #[name("foldlevel")]
     #[validate(validate_foldlevel)]
     pub FoldLevel: i64 = 99;
+
+    /// How many entries the yank ring holds. Every yank *and* every
+    /// delete pushes one; the picker (`<C-r><C-r>`) reads them back.
+    ///
+    /// Vim keeps 9, emacs 120. 50 is enough that the picker's fuzzy
+    /// filter is the tool you reach for rather than scrolling, and small
+    /// enough that the whole ring stays cheap to hold and to render.
+    /// `0` disables the ring.
+    ///
+    /// Read at push time, so lowering it takes effect on the next yank
+    /// rather than at the next restart.
+    #[name("yank.ring.size")]
+    #[validate(validate_yank_ring_size)]
+    pub YankRingSize: i64 = 50;
 
     /// Minimum visual lines kept above and below the cursor when
     /// scrolling.

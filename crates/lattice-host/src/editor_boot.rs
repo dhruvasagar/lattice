@@ -2260,6 +2260,26 @@ impl Editor {
             lattice_ai::acp::conversation_mode::AiConversationMode::mode_id(),
             Editor::run_editable_tail_invocation,
         );
+        // PD.4: the same gap, one layer more general. `read-only-mode`
+        // contributes `ReadOnly = true`, and that option is only consulted
+        // by `read_only_edit_rejected` — which guards `apply_edit_blocking`
+        // and its batch peer, i.e. the insert-mode char path. Operators
+        // never go near it: a plain `Document`'s grammar dispatch applies
+        // its edits inside the document actor and hands the host an
+        // already-applied `Effect::Edits`. Without a runner the mode
+        // stopped typing and left `x` / `dd` / `cw` working, which is worse
+        // than not gating at all — the buffer looks protected and isn't.
+        //
+        // `run_read_only_motion` is the right runner rather than the
+        // conversation buffer's tail-aware one: there is no editable tail
+        // here, the whole buffer is frozen. Motions still move, `:` and `/`
+        // still fall through to the central dispatcher, and mutating
+        // operators echo "buffer is read-only" instead of silently doing
+        // nothing.
+        editor.register_invocation_runner(
+            lattice_mode::modes::ReadOnlyMode::mode_id(),
+            Editor::run_read_only_motion,
+        );
         editor
     }
 }

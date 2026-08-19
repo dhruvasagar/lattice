@@ -34,6 +34,11 @@ impl ModeActivator for Editor {
         self.enqueue_renderer_signals(signals);
     }
 
+    fn deactivate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId) {
+        let signals = self.deactivate_mode_by_id(buffer, mode);
+        self.enqueue_renderer_signals(signals);
+    }
+
     /// The real create-and-activate seam (`ensure_named_synthetic_document`
     /// inserts the buffer + runs the major's `on_activate` by id). This
     /// is why buffer creation lives here on the `&mut`-backed

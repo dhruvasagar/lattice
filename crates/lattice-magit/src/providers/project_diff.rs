@@ -572,6 +572,22 @@ pub fn open_project_diff(
 
     activator.activate_minor_by_id(view, MagitProjectDiffMode::mode_id());
 
+    // PD.4: editability follows the post-image (design §2.1). A working
+    // tree is a file an edit can propagate into; an index blob is not,
+    // and neither is a revision's blob — so those open read-only through
+    // the generic minor, never a magit-local gate or a kind-branch.
+    //
+    // Both arms fire, and the `else` is the load-bearing one: the view
+    // is reused across triggers, so opening the staged diff and then the
+    // working-tree diff must *clear* the mode. Activating conditionally
+    // and never deactivating is how the second view ends up silently
+    // unwritable, in a buffer that looks exactly like a writable one.
+    if comparison.is_editable() {
+        activator.deactivate_minor_by_id(view, lattice_mode::modes::ReadOnlyMode::mode_id());
+    } else {
+        activator.activate_minor_by_id(view, lattice_mode::modes::ReadOnlyMode::mode_id());
+    }
+
     let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
     spawn_project_diff_scan(view, workdir, comparison, mb_registry, events);
 

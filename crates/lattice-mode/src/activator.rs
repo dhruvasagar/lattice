@@ -50,6 +50,24 @@ pub trait ModeActivator {
     /// minor is a no-op.
     fn activate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId);
 
+    /// Deactivate a minor mode by id on `buffer`. Idempotent: a mode
+    /// that is not active is a no-op.
+    ///
+    /// PD.4: the symmetric half of [`Self::activate_minor_by_id`], and
+    /// it exists because a re-triggered provider view reuses its buffer.
+    /// A view that was read-only for one query and is editable for the
+    /// next has to be able to say so — without this, "open the staged
+    /// diff, then open the working-tree diff" would leave the second one
+    /// unwritable, and the cause would be invisible because the buffer
+    /// looks identical.
+    ///
+    /// Default impl is a no-op so test activators that do not model
+    /// mode state stay valid; the host impl forwards to
+    /// `Editor::deactivate_mode_by_id`.
+    fn deactivate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId) {
+        let _ = (buffer, mode);
+    }
+
     /// Find-or-create a synthetic **named `Document`** buffer and
     /// activate `major` on it *by id* (no on-disk language detection),
     /// returning its [`BufferId`]. This is the reliable, `&mut`-backed

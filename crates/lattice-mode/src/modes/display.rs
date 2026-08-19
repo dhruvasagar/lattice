@@ -127,11 +127,57 @@ display_minor_mode!(
 // arbitrary buffer kinds. `ReadOnly` is `customizable = false`
 // (mode-only); this is the only user-typed pathway. No
 // `mirrors` hint because `ReadOnly` has no `:set` surface.
-display_minor_mode!(
-    ReadOnlyMode,
-    "read-only-mode",
-    contributes lattice_config::ReadOnly = true,
-);
+//
+// PD.4: written out rather than declared through
+// `display_minor_mode!` because it is the one mode here that is
+// not purely a display toggle -- it also declares an
+// **invocation runner**, and the option alone does not make a
+// buffer read-only. `ReadOnly` is read by the host's
+// `read_only_edit_rejected`, which guards `apply_edit_blocking`
+// and its batch peer -- the insert-mode char path, and only
+// that. Operators never pass through it: a `Document`'s grammar
+// dispatch applies its own edits and hands the host an
+// already-applied `Effect::Edits`. Contributing the option and
+// stopping there gated typing and left `x` / `dd` / `cw`
+// working, which is worse than not gating at all, because the
+// buffer looks protected and is not.
+pub struct ReadOnlyMode;
+
+impl ReadOnlyMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("read-only-mode")
+    }
+}
+
+impl Mode for ReadOnlyMode {
+    type Guard = ();
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+    fn options(&self) -> OptionOverrideSet {
+        lattice_config::overrides! {
+            lattice_config::ReadOnly = true,
+        }
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    /// The host registers `Editor::run_read_only_motion` under this id
+    /// (see `editor_boot.rs`). Motions still move the cursor, `:` and
+    /// `/` still fall through to the central dispatcher, and mutating
+    /// operators echo "buffer is read-only" rather than silently doing
+    /// nothing -- a buffer that ignores keystrokes without saying so
+    /// reads as a hang.
+    fn invocation_runner(&self) -> Option<ModeId> {
+        Some(Self::mode_id())
+    }
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 // M.7.2: `whitespace-show-mode` -- backing for `:set list`
 // (vim convention). Renderer's whitespace-glyph plumbing

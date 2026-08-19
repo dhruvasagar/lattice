@@ -318,8 +318,20 @@ crate::options! {
     /// contribute `ReadOnly = true` via `Mode::options()` (per
     /// `mode-architecture.md` §6.5.3 read-only-mode pattern).
     /// Users who want to flip it on / off for a particular
-    /// buffer use `:enable read-only-mode` (when that minor
-    /// mode lands in M.7), not `:set read-only=true`.
+    /// buffer use `:enable read-only-mode`, not
+    /// `:set read-only=true`. That minor **exists** — it is
+    /// declared in `lattice_mode::modes::display` and registered
+    /// with the other foundation modes; the parenthetical here
+    /// used to read "when that minor mode lands in M.7" long
+    /// after it had, which is enough to send a reader off to
+    /// build a second one.
+    ///
+    /// A provider whose buffer is read-only *conditionally* —
+    /// same kind, same major, editable or not depending on what
+    /// it is showing — activates that minor on the buffer via
+    /// `ModeActivator::activate_minor_by_id` and clears it with
+    /// `deactivate_minor_by_id`, rather than reaching for this
+    /// option directly.
     #[customizable(false)]
     #[name("read-only")]
     pub ReadOnly: bool = false;

@@ -701,6 +701,23 @@ impl MultibufferDocumentHandle {
         self.lock_state().sources.get(&source_buffer_id)?.path()
     }
 
+    /// The current text of a source document, by the same key
+    /// [`Self::source_path`] takes.
+    ///
+    /// PD.4: the peer of `source_path`, and it exists for the same
+    /// reason — a provider that spawns its own sources (project-diff,
+    /// search) hands them to `add_source` and keeps no handle, so
+    /// without this there is no way to ask whether an edit made in the
+    /// view actually arrived in the file's document. Propagating into
+    /// *some* document proves nothing; the claim is that it reaches the
+    /// one anchored to the path.
+    ///
+    /// Reads through the source's own snapshot, so it observes the
+    /// forwarder task's progress rather than the composed rope's.
+    pub fn source_text(&self, source_buffer_id: BufferId) -> Option<String> {
+        Some(self.lock_state().sources.get(&source_buffer_id)?.text())
+    }
+
     /// M.10.2 (2026-06-03): translate a composed-coordinate
     /// cursor to its source-coordinate equivalent. Walks excerpts
     /// in display order to find the one containing

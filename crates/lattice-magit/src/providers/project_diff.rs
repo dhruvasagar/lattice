@@ -927,6 +927,134 @@ mod tests {
         );
     }
 
+    // ── PD.4: an edit in the view lands in the file ──────────────
+    //
+    // Design §2: an excerpt is a hunk's post-image range in the
+    // WORKING-TREE file, so editing it goes through the ordinary M.3
+    // propagation pipeline and lands in the file — no patch application,
+    // no write-back path of its own. These assert the anchoring that
+    // claim rests on, which is the part that would break silently: an
+    // excerpt anchored in generated patch text would still render, still
+    // accept keystrokes, and propagate an edit to nowhere.
+
+    /// The source document a batch attaches carries the **working-tree**
+    /// text and the file's path — not the baseline blob. Anchoring it to
+    /// the baseline would look identical in the view (the hunk ranges are
+    /// post-image either way) and send every edit into a document that
+    /// was never the file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_attached_source_is_the_working_tree_file() {
+        let dir = repo_with_changes();
+        let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let built = read_and_diff(&files);
+        let tracked = built
+            .iter()
+            .find(|f| f.path.ends_with("tracked.rs"))
+            .expect("the modified file is in the batch");
+
+        assert!(
+            tracked.text.contains("let new = 2;"),
+            "the source must hold the working-tree text; got {:?}",
+            tracked.text
+        );
+        assert!(
+            !tracked.text.contains("let old = 1;"),
+            "...and not the HEAD baseline, or edits would land in the wrong content"
+        );
+        assert_eq!(
+            tracked.text,
+            std::fs::read_to_string(&tracked.path).unwrap(),
+            "byte-identical to the file on disk"
+        );
+    }
+
+    /// End to end through a live view: attach a real repo's hunks, edit
+    /// a composed row, and watch the edit arrive in the source document
+    /// that carries the file's path. That last clause is the assertion
+    /// that matters — propagation into *some* document proves nothing if
+    /// it is not the one anchored to the file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_an_excerpt_reaches_the_document_anchored_to_the_file() {
+        let dir = repo_with_changes();
+        let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let built: Vec<FileHunks> = read_and_diff(&files)
+            .into_iter()
+            .filter(|f| f.path.ends_with("tracked.rs"))
+            .collect();
+        assert_eq!(built.len(), 1, "one changed file for this test");
+        let path = built[0].path.clone();
+
+        let registry: lattice_grammar::CommandRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+        let view =
+            MultibufferDocumentHandle::new(std::collections::HashMap::new(), Vec::new(), registry)
+                .expect("empty view");
+        assert!(attach_batch(&view, &built) > 0, "hunks attached");
+
+        let source_id = *view
+            .source_buffer_ids()
+            .first()
+            .expect("the batch attached a source");
+        assert_eq!(
+            view.source_path(source_id).as_deref(),
+            Some(path.as_path()),
+            "the source is anchored to the file the hunk came from"
+        );
+        // Read BEFORE the edit. Propagation turned out to be fast enough
+        // that sampling afterwards raced the forwarder and saw the
+        // marker already there — which would have made the assertion
+        // below unfalsifiable.
+        assert!(
+            !view
+                .source_text(source_id)
+                .expect("source present")
+                .contains("// "),
+            "precondition: the marker is not already in the file"
+        );
+
+        // Type at the very start of the composed view — inside the first
+        // hunk's post-image range by construction.
+        view.apply_edit(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(0, 0),
+            "// ",
+        ))
+        .await
+        .expect("the working-tree view is editable");
+
+        // Asserted as "the marker arrived", not "the text starts with
+        // it": composed row 0 is the first row of the first hunk, which
+        // sits at whatever source row its context begins on. Pinning
+        // row 0 would pass here and break on a fixture whose first hunk
+        // is further down, for a reason having nothing to do with
+        // propagation.
+        //
+        // The source catches up through the forwarder task.
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            if view
+                .source_text(source_id)
+                .is_some_and(|t| t.contains("// "))
+            {
+                return;
+            }
+        }
+        panic!(
+            "the edit never reached the file's document; source reads {:?}",
+            view.source_text(source_id)
+        );
+    }
+
+    /// The read-only half of §2.1, at the level the table states it:
+    /// only the working tree is a file, so only it is editable. Pinned
+    /// alongside the propagation tests because the two claims are one
+    /// rule — an index blob has no anchor to propagate through, which is
+    /// exactly why it opens read-only rather than editable-but-broken.
+    #[test]
+    fn the_editable_comparisons_are_the_working_tree_ones() {
+        assert!(ProjectDiffComparison::WorkingTree.is_editable());
+        assert!(!ProjectDiffComparison::Staged.is_editable());
+    }
+
     /// The blocking half never panics on a path that vanished between
     /// `git status` and the read — a rebase or a `rm` mid-scan is a
     /// normal race, not an error state.

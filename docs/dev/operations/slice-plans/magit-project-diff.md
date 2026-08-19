@@ -18,7 +18,7 @@ Catalogue entry: A.1 in
 | PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | PD.2 | Scan — changed set → baselines → excerpts | ✅ |
 | PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | ✅ |
-| PD.4 | Edit propagation + the read-only rule | 📝 |
+| PD.4 | Edit propagation + the read-only rule | ✅ |
 | PD.5 | File-boundary folds | ✅ |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
@@ -139,7 +139,7 @@ which both renderers route through the existing `Effect::AppAction`
 path. Confirmed with `grep -rn "project.diff\|OpenProviderView"
 crates/lattice-ui-gpui/` → empty, recorded here rather than assumed.
 
-## PD.4 — Edit propagation + the read-only rule 📝
+## PD.4 — Edit propagation + the read-only rule ✅
 
 - Working-tree comparisons: excerpt edits propagate through the standard
   M.3 pipeline into the file. No patch application anywhere.
@@ -149,10 +149,54 @@ crates/lattice-ui-gpui/` → empty, recorded here rather than assumed.
 - The headerline states which comparison is shown and whether it is
   editable, so read-only is explained rather than merely enforced.
 
-**Tests.** Edit an excerpt → the working-tree file changes and the hunk
-recomputes; a staged-comparison view refuses edits *through the modal
-Insert / operator path* (the read-only gate), with the refusal echoed;
-closing a source file removes its excerpts.
+**The read-only half landed first** (2026-08-19), through the generic
+`read-only-mode` minor rather than a magit-local gate, with
+`ModeActivator::deactivate_minor_by_id` added so a re-triggered view can
+become writable again. It absorbed a fix it could not be honest without:
+the mode contributed the `ReadOnly` option and nothing else, and that
+option is only consulted by `read_only_edit_rejected` — the insert-mode
+char path. Operators bypassed it entirely, so the mode stopped typing
+and left `x` / `dd` / `cw` working. `ReadOnlyMode` now declares an
+invocation runner.
+
+**Edit propagation was already working; what was missing was the
+coverage.** Three tests now pin the anchoring the design's §2 claim rests
+on, which is the part that would have broken silently: an excerpt
+anchored in generated patch text would still render, still accept
+keystrokes, and propagate an edit to nowhere. So they assert that an
+attached source holds the *working-tree* text (not the HEAD baseline —
+the hunk ranges are post-image either way, so the two look identical in
+the view), byte-identical to the file on disk; and that an edit made in
+a live view arrives in the source document carrying that file's *path*.
+Propagation into some document proves nothing.
+
+`MultibufferDocumentHandle::source_text` was added for that last
+assertion — the peer of `source_path`, and needed for the same reason: a
+provider that spawns its own sources keeps no handle to them.
+
+**"Closing a source file removes its excerpts" does not apply to this
+provider, and the test is not written.** Recorded rather than silently
+dropped. A project-diff source is created by `attach_batch` and handed
+to `view.add_source`, which touches only the view's own state — these
+documents are never in the host's `BufferRegistry`, so the user cannot
+close one and `Event::DocumentClosed` never names them. The generic
+mechanism exists and is tested where it belongs
+(`lattice-multibuffer`: the source is pruned from the map and
+`MultibufferSourceClosed` is published so a provider can choose policy);
+it is reachable by a provider whose sources *are* user-visible buffers.
+Note the generic default is to keep the excerpts and render empty rows,
+which is right for search — closing one buffer should not delete your
+results — and no provider consumes the event yet.
+
+"...and the hunk recomputes" is likewise narrower than it reads: an edit
+slides the excerpt's anchors (`slide_anchors_for_source`), so the view
+stays coherent within a session. A genuine re-diff is `gr`.
+
+**Also required by the tests above:** operator edits were being dropped
+in every multibuffer view (grammar dispatch ran against a scratch rope
+and nothing wrote back). Fixed separately; without it PD.4's
+`x_does_not_delete_in_a_read_only_multibuffer` would have passed against
+a mode that contributed nothing at all.
 
 ## PD.5 — File-boundary folds ✅
 

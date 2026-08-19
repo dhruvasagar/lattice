@@ -149,6 +149,41 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         CommandInvocation::of(actions.enter_mode_normal),
         source(),
     );
+
+    // YR.5: vim's insert-register. `<C-r>` is free in Insert — Normal's
+    // `<C-r>` is redo and stays that way — so nothing is displaced.
+    //
+    // The two paths share a prefix and do not shadow each other, which is
+    // worth stating rather than trusting: the trie tries an exact child
+    // before the char wildcard, AND a modifier-bearing chord never
+    // matches the wildcard at all. So `<C-r><C-r>` takes the literal path
+    // and `<C-r>a` the wildcard, with no ordering dependency between the
+    // two binds. That is the shadowing class SU.3e spent a slice on.
+    //
+    // These belong on the BASE Insert layer, not the completion-popup
+    // overlay a few functions down — that trie is live only while the
+    // popup is open, so binding there would make `<C-r>` work only while
+    // completing. It was written there first and the tests caught it.
+    handle.bind(
+        layer,
+        mode,
+        &[
+            ChordPattern::Literal(KeyChord::ctrl('r')),
+            ChordPattern::Literal(KeyChord::ctrl('r')),
+        ],
+        CommandInvocation::of(actions.open_yank_picker),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[
+            ChordPattern::Literal(KeyChord::ctrl('r')),
+            ChordPattern::CharLiteral,
+        ],
+        CommandInvocation::of(actions.insert_register),
+        source(),
+    );
     handle.bind(
         layer,
         mode,

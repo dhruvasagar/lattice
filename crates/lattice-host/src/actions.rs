@@ -289,6 +289,10 @@ pub struct ActionIds {
     pub completion_docs_scroll_down: CommandId,
     pub completion_docs_scroll_up: CommandId,
     pub completion_accept_then_insert: CommandId,
+    /// YR.5: `<C-r>{reg}` — vim's insert-register.
+    pub insert_register: CommandId,
+    /// YR.5: `<C-r><C-r>` — the yank picker.
+    pub open_yank_picker: CommandId,
     /// CSM.K2: restrict the popup to a single completion source.
     /// Args::String(source_id), e.g. `"gen:buffer-words"`. Bound
     /// to popup-mode filter chords (`<C-b>`, `<C-o>`, `<C-f>`,
@@ -1531,6 +1535,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
                 }
             }),
         ),
+        insert_register: register_action(
+            registry,
+            "action:insert-register",
+            "Insert a register's contents at the cursor (vim's `<C-r>{reg}`).",
+            captured_char_action(|c| Some(AppEffect::InsertRegister(c))),
+        ),
+        open_yank_picker: register_simple(
+            registry,
+            "action:open-yank-picker",
+            "Open the yank-ring picker, inserting the pick into whichever surface it was opened from.",
+            AppEffect::OpenYankPicker,
+        ),
         completion_filter_to_source: register_action(
             registry,
             "action:completion-filter-to-source",
@@ -1985,6 +2001,8 @@ mod tests {
                 ids.completion_accept_then_insert,
                 "action:completion-accept-then-insert",
             ),
+            (ids.insert_register, "action:insert-register"),
+            (ids.open_yank_picker, "action:open-yank-picker"),
             (
                 ids.completion_filter_to_source,
                 "action:completion-filter-to-source",

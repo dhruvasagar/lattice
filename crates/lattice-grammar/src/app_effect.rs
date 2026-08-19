@@ -693,6 +693,12 @@ pub enum AppEffect {
     /// `Action::CompletionAcceptThenInsert(c)` in slice
     /// 8.i.4.e.
     CompletionAcceptThenInsert(char),
+    /// YR.5: vim's insert-register — `<C-r>` then a register char,
+    /// inserting that register's contents at the cursor.
+    InsertRegister(char),
+    /// YR.5: `<C-r><C-r>` — open the yank-ring picker, filling whichever
+    /// surface it was opened from.
+    OpenYankPicker,
     /// Active-snippet overlay: jump to the next placeholder
     /// (`<Tab>`). Promoted from
     /// `Action::SnippetNextPlaceholder` in slice 8.i.4.e.

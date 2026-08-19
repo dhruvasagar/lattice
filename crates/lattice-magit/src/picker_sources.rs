@@ -828,6 +828,7 @@ mod tests {
             buffers: Vec::new(),
             marks: Vec::new(),
             registers: Vec::new(),
+            yank_ring: Vec::new(),
             active_modes: Vec::new(),
             command_history: Vec::new(),
             search_history: Vec::new(),

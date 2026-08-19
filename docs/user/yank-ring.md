@@ -1,5 +1,5 @@
 ---
-summary: "yank-ring: every yank and delete kept in a bounded, recency-ordered history, sized by `yank.ring.size`. The ring records today; the picker and keys that read it back are not built yet."
+summary: "yank-ring: every yank and delete kept in a bounded, recency-ordered history. `<C-r>{reg}` inserts a register, `<C-r><C-r>` picks from the ring, and the pick lands wherever you opened it from."
 related: [modal-editing, picker]
 ---
 
@@ -13,26 +13,35 @@ The yank ring keeps them. Every yank **and every delete** pushes an
 entry; the ring holds the most recent `yank.ring.size` of them, newest
 first.
 
-## What you can do with it today: nothing, yet
+## Using it
 
-Stated plainly because the alternative is you going looking for a
-keybinding that is not there.
+In **Insert mode**:
 
-The ring **records**. Nothing reads it back yet — there is no picker, no
-keybinding, and no `:` command that shows you its contents. `"0`–`"9`
-still behave as they always have; they are not wired to the ring either.
-
-What exists is the store and its option, which is the half everything
-else needs. The parts that make it visible are separate slices:
-
-| Slice | What it adds |
+| Keys | Does |
 |---|---|
-| YR.2 | `"0`–`"9` reading out of the ring — `"0` the newest yank, `"1`–`"9` the nine newest deletes |
-| YR.3 | The picker primitive that lets a nested picker fill whatever opened it |
-| YR.4 | The `yank-ring` picker source itself, listing ring entries and named registers together |
-| YR.5 | The keys — `<C-r>` then a register char, `<C-r><C-r>` to open the picker, `M-y` inside a picker |
+| `<C-r>` then a register char | Insert that register's contents — vim's insert-register. `<C-r>"` for the unnamed one, `<C-r>+` for the system clipboard. |
+| `<C-r><C-r>` | Open the yank picker: the ring newest-first, then your named registers, filtered as you type. |
 
-So if you are here because `<C-r><C-r>` did nothing: it is not bound yet.
+`:picker yank-ring` opens the same list from anywhere.
+
+**The pick lands where you opened it from.** That is the part worth
+knowing: open the picker while editing and the text is inserted at your
+cursor; open it from the `:` line and it goes into the command line; from
+a search or a prompt, into that. Opening it from *inside another picker*
+adds the text to that picker's query rather than replacing it.
+
+Normal-mode `<C-r>` is still redo. Only Insert mode gains a meaning here,
+which is where vim puts it too.
+
+Ring entries show their position and whether they are linewise or
+charwise, because the two paste differently and you are usually choosing
+between rows that look alike.
+
+## Still to come
+
+`"0`–`"9` do **not** read from the ring yet — they are still the old
+behaviour. Wiring them up so `"0` is the newest yank and `"1`–`"9` the
+nine newest deletes is a later slice.
 
 ## Deletes go in too
 
@@ -54,8 +63,8 @@ decline the question you most want to ask it.
 Two rules, and they are different on purpose:
 
 - **A consecutive repeat collapses.** Holding `yy`, or re-yanking an
-  unchanged line, would otherwise fill the history with identical rows
-  that a picker could not help you tell apart.
+  unchanged line, would otherwise fill the picker with identical rows it
+  could not help you tell apart.
 - **A non-consecutive repeat is promoted.** Re-yanking something from an
   hour ago is a real event, and moving it to the top is the useful
   answer — it is what you are about to paste.
@@ -70,8 +79,8 @@ linewise and charwise pastes differently, so both are kept.
 :set yank.ring.size=0       " disable the ring
 ```
 
-Vim keeps 9, emacs 120. 50 is enough that filtering will be the tool you
-reach for rather than scrolling, and small enough that the whole ring
+Vim keeps 9, emacs 120. 50 is enough that the picker's filter is the tool
+you reach for rather than scrolling, and small enough that the whole ring
 stays cheap to hold.
 
 The value is read when an entry is pushed, so lowering it takes effect

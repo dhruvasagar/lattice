@@ -3248,6 +3248,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CompletionAcceptThenInsert(c) => {
             editor.do_completion_accept_then_insert(c, _out);
         }
+        Action::InsertRegister(c) => editor.do_insert_register(c),
+        Action::OpenYankPicker => {
+            let signals = editor.do_open_yank_picker();
+            _out.renderer_signals.extend(signals);
+        }
         Action::LspOnTypeFormattingRequest(c) => editor.do_lsp_on_type_formatting_request(c),
         Action::LspInsertCompletionRequest => editor.do_lsp_insert_completion_request(),
         // L7: `Action::LspFollowLinkAtCursor` (`gx`) removed — mode-owned
@@ -8342,6 +8347,55 @@ impl Editor {
         }
     }
 
+    /// YR.5: vim's insert-register — `<C-r>` then a register char.
+    ///
+    /// Reads through `read_register`, so `"+` reaches the system
+    /// clipboard and `""` the unnamed register exactly as a paste would.
+    /// An unset register echoes rather than inserting nothing silently:
+    /// the user typed two deliberate keys and is owed an answer.
+    pub fn do_insert_register(&mut self, name: char) {
+        let Some(register) = Register::from_input_char(name) else {
+            self.set_message(EchoLevel::Warn, format!("`{name}` is not a register"));
+            return;
+        };
+        match self.read_register(Some(register)) {
+            Some(entry) if !entry.content.is_empty() => {
+                let text = entry.content.clone();
+                self.insert_at_cursor(&text);
+            }
+            _ => self.set_message(EchoLevel::Info, format!("register `{name}` is empty")),
+        }
+    }
+
+    /// YR.5: `<C-r><C-r>` — open the yank picker over the current
+    /// surface.
+    ///
+    /// The fill target is decided HERE, which is the whole of YR.3's
+    /// rule: this is open time, when the surface that asked is still the
+    /// focused one. By the time the picker accepts it will have been
+    /// dismissed and this question would have a different answer.
+    #[must_use]
+    pub fn do_open_yank_picker(&mut self) -> Vec<RendererSignal> {
+        use lattice_picker::FillTarget;
+        let target = if self.picker.is_some() {
+            // `M-y` inside a picker: fill the query rather than
+            // replacing the picker the user is already using.
+            FillTarget::PickerQuery
+        } else if self.command_line_active() {
+            FillTarget::CommandLine
+        } else if self.search_line_active() {
+            FillTarget::SearchLine
+        } else if matches!(self.modal, ModalState::Prompt) {
+            FillTarget::Prompt {
+                buffer: self.document_buffer_id.0,
+            }
+        } else {
+            FillTarget::Document
+        };
+        self.picker_fill_target = Some(target);
+        self.open_picker(lattice_picker::YANK_RING_SOURCE.to_string(), Vec::new())
+    }
+
     /// YR.3: insert `text` at the cursor of the focused buffer.
     fn insert_at_cursor(&mut self, text: &str) {
         let at = self.cursor;
@@ -8951,6 +9005,8 @@ impl Editor {
             AppEffect::CompletionAcceptThenInsert(c) => {
                 out.next_actions.push(Action::CompletionAcceptThenInsert(c))
             }
+            AppEffect::InsertRegister(c) => out.next_actions.push(Action::InsertRegister(c)),
+            AppEffect::OpenYankPicker => out.next_actions.push(Action::OpenYankPicker),
             // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
             // navigation is now mode-owned. `active-snippet-mode`
             // registers `ActionContext -> Effect` handlers on the

@@ -620,7 +620,11 @@ impl App {
             | Action::CompletionToggleDocs
             | Action::CompletionFilterToSource(_)
             | Action::CompletionFilterClear
-            | Action::CompletionAcceptThenInsert(_) => {}
+            | Action::CompletionAcceptThenInsert(_)
+            // YR.5: both are handled host-side in `handle_action` — the
+            // TUI has nothing renderer-coupled to add.
+            | Action::InsertRegister(_)
+            | Action::OpenYankPicker => {}
             // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed;
             // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`

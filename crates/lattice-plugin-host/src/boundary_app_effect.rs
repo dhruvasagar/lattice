@@ -326,6 +326,15 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::CompletionAcceptThenInsert(c) => {
                 WitAppEffect::CompletionAcceptThenInsert(*c)
             }
+            // YR.5: both put text into, or open a picker over, whichever
+            // HOST surface is focused — a place a plugin cannot name.
+            // Representable once the fill targets themselves cross.
+            NativeAppEffect::InsertRegister(_) | NativeAppEffect::OpenYankPicker => {
+                return Err(
+                    "insert-register / open-yank-picker are host-internal, not representable over WIT"
+                        .into(),
+                );
+            }
             NativeAppEffect::SnippetNextPlaceholder => WitAppEffect::SnippetNextPlaceholder,
             NativeAppEffect::SnippetPrevPlaceholder => WitAppEffect::SnippetPrevPlaceholder,
             NativeAppEffect::CompletionFilterToSource(s) => {

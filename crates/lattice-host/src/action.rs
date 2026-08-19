@@ -298,6 +298,10 @@ pub enum Action {
     /// action keeps the input layer ignorant of commit-char
     /// state -- the App reads it once at apply time.
     CompletionAcceptThenInsert(char),
+    /// YR.5: insert register `c`'s contents at the cursor.
+    InsertRegister(char),
+    /// YR.5: open the yank-ring picker over the current surface.
+    OpenYankPicker,
     // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
     // `<C-x><C-s>` is mode-owned now (`snippet-mode`'s `keymap()` +
     // `action_handlers()` emit `Effect::ExpandSnippet`); no host

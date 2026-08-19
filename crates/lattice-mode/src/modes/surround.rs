@@ -19,7 +19,6 @@ use lattice_grammar::effect::{Effect, YankKind};
 use lattice_grammar::registry::{CommandRegistry, OperatorId, OperatorSpec};
 use lattice_grammar::source::SourceLocation;
 use lattice_keymap::contribution::Keymap;
-use lattice_keymap::keymap_entry::KeymapEntry;
 use lattice_protocol::ChordPattern;
 use lattice_protocol::chord::KeyChord;
 use lattice_protocol::edit::Edit;
@@ -545,9 +544,30 @@ impl Mode for SurroundMode {
 
         let lit_ch = |c: char| ChordPattern::Literal(KeyChord::char(c));
 
-        // Chain-form bindings carry the actual dispatch surface
-        // (with CharLiteral wildcards for char capture).
-        // Table-form entries provide the :describe-key / :keymap catalog.
+        // Chain-form only. Every binding here ends in a `CharLiteral`
+        // wildcard, which the table form cannot express.
+        //
+        // SU.3e: there used to be four table-form entries appended below,
+        // on the belief that they were an inert `:describe-key` / `:keymap`
+        // catalog while these bindings did the dispatching. They were not
+        // inert. `push_mode_keymap` resolves entries into real
+        // `KeymapBinding`s and pushes them into the SAME trie, so the
+        // Visual row `chord: "S"` bound `[S]` at one chord and the trie —
+        // which returns a node's own binding before descending — could
+        // never reach `[S, CharLiteral]`. The mode shadowed itself; that is
+        // the `S`-does-nothing-but-`:describe-key`-lists-it report.
+        //
+        // The three Normal rows were worse than redundant: they wrote their
+        // chords space-separated (`"d s"`), and `parse_chord_sequence` reads
+        // a space as a literal Space chord, so they bound `d<Space>s`,
+        // `c<Space>s` and `y<Space>s<Space>s`. Nothing resolved those, and
+        // three stray bindings sat in the trie. They were the only
+        // space-separated `keymap_entry!` chords in the workspace.
+        //
+        // Nothing was lost by deleting them. No production code reads the
+        // static catalog: `:describe-key` resolves against the trie
+        // (`Editor::build_describe_key_content` → `resolve_trace`), so the
+        // `with_doc` strings below are what it already showed.
         Keymap::new()
             .bind(
                 KeymapBinding::new(
@@ -601,7 +621,6 @@ impl Mode for SurroundMode {
                     "Wrap the visual selection in a surrounding pair (vim's visual `S{char}`).",
                 ),
             )
-            .extend_with_entries(surround_mode_keymap_entries())
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
@@ -611,44 +630,6 @@ impl Mode for SurroundMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
-}
-
-// ── Keymap (table-form supplementary entries) ─────────────────
-
-/// Table-form entries for documentation + `:describe-key` /
-/// `:keymap` catalog. The actual dispatch surface is in the
-/// chain-form `KeymapBinding` entries above (table form doesn't
-/// support `ChordPattern::CharLiteral` wildcards).
-fn surround_mode_keymap_entries() -> &'static [KeymapEntry] {
-    use std::sync::OnceLock;
-
-    use lattice_keymap::keymap_entry;
-
-    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        vec![
-            keymap_entry! {
-                mode: Normal, chord: "d s",
-                doc: "Delete the nearest surrounding pair (type the char next).",
-                cmd: "operator:surround-delete"
-            },
-            keymap_entry! {
-                mode: Normal, chord: "c s",
-                doc: "Change the nearest surrounding pair (type old then new char).",
-                cmd: "operator:surround-change"
-            },
-            keymap_entry! {
-                mode: Normal, chord: "y s s",
-                doc: "Wrap the current line in a pair (type the wrapper char next).",
-                cmd: "operator:surround-add"
-            },
-            keymap_entry! {
-                mode: Visual, chord: "S",
-                doc: "Wrap the visual selection in a surrounding pair.",
-                cmd: "operator:surround-add"
-            },
-        ]
-    })
 }
 
 // ── Mode registration ─────────────────────────────────────────

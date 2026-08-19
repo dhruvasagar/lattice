@@ -56,40 +56,82 @@ mod tests {
         );
     }
 
+    /// SU.3e: `[y, s, s]` was bound at the Builtin layer by
+    /// `register_operator_bindings`' doubled-operator block, so the fourth
+    /// keystroke never had a path to walk to.
     #[test]
-    #[ignore = "FAILS: surround chords are inert through the key path. Two \
-                defects — the catalog entry shadows the wildcard binding, and \
-                the operator no-ops even when the chord resolves. See the \
-                module docs; un-ignore when fixed."]
     fn yss_wraps_the_line() {
         let mut app = app_with("hello\n", 20);
         press_chars(&mut app, "yss\"");
         assert_eq!(body(&app), "\"hello\"\n");
     }
 
+    /// Cursor deliberately inside the pair — see
+    /// `ds_with_the_cursor_on_the_delimiter` for why that matters.
     #[test]
-    #[ignore = "FAILS: see yss_wraps_the_line."]
     fn ds_deletes_the_pair() {
         let mut app = app_with("\"hello\"\n", 20);
-        press_chars(&mut app, "ds\"");
+        press_chars(&mut app, "lds\"");
         assert_eq!(body(&app), "hello\n");
     }
 
     #[test]
-    #[ignore = "FAILS: see yss_wraps_the_line."]
     fn cs_changes_the_pair() {
         let mut app = app_with("\"hello\"\n", 20);
-        press_chars(&mut app, "cs\"'");
+        press_chars(&mut app, "lcs\"'");
         assert_eq!(body(&app), "'hello'\n");
     }
 
     /// The reported defect: bound, listed by `:describe-key`, inert.
+    /// surround-mode's own table-form catalog row bound `[S]` at one chord
+    /// and shadowed its own `[S, CharLiteral]`.
     #[test]
-    #[ignore = "FAILS: see yss_wraps_the_line."]
     fn visual_s_wraps_the_selection() {
         let mut app = app_with("hello world\n", 20);
         press_chars(&mut app, "ve");
         press_chars(&mut app, "S\"");
         assert_eq!(body(&app), "\"hello\" world\n");
+    }
+
+    /// SU.4 (`ys{motion}{char}`) is wired by `register_operator_bindings`
+    /// with `post_motion_char: true` and works — whatever the slice plan's
+    /// ⛔ says. Pinned here because the doubled-operator fix edits that same
+    /// function, and the doubled form and the motion form must not drift.
+    #[test]
+    fn ysiw_wraps_the_word() {
+        let mut app = app_with("hello world\n", 20);
+        press_chars(&mut app, "ysiw\"");
+        assert_eq!(body(&app), "\"hello\" world\n");
+    }
+
+    /// The three deleted Normal catalog rows wrote their chords
+    /// space-separated (`"d s"`), and `parse_chord_sequence` reads a space
+    /// as a literal Space chord — so they bound `d<Space>s`, `c<Space>s`
+    /// and `y<Space>s<Space>s`. Nothing ever resolved those paths; they were
+    /// three stray bindings sitting in the trie. Pin that they are gone,
+    /// because re-adding a catalog row is exactly how they would come back.
+    #[test]
+    fn a_space_separated_chord_is_not_bound() {
+        let mut app = app_with("\"hello\"\n", 20);
+        press_chars(&mut app, "d s\"");
+        assert_eq!(
+            body(&app),
+            "\"hello\"\n",
+            "`d<Space>s\"` must do nothing; it was a typo'd catalog chord"
+        );
+    }
+
+    /// Cursor sitting ON the opening delimiter. `find_surround_pair` scans
+    /// strictly backward from the cursor (`byte < cursor_byte`), so the
+    /// opener at the cursor is never seen and no pair is found. Vim's `ds"`
+    /// works here. Fixed in the next slice — this is the pair finder, not
+    /// the chord path, which `ds_deletes_the_pair` above already proves.
+    #[test]
+    #[ignore = "FAILS: find_surround_pair ignores a delimiter at the cursor. \
+                Pair-finder gap, not a keymap one; fixed in SU.3f."]
+    fn ds_with_the_cursor_on_the_delimiter() {
+        let mut app = app_with("\"hello\"\n", 20);
+        press_chars(&mut app, "ds\"");
+        assert_eq!(body(&app), "hello\n");
     }
 }

@@ -1507,9 +1507,29 @@ pub fn register_operator_bindings(
 
     // ---- Doubled-operator -> `Range::CurrentLine`. `dd`, `cc`,
     // ---- `yy`, `>>`, `<<`, `gUU`, `guu`, `g~~`.
+    //
+    // ---- SU.3e: honours `post_motion_char` like every other path in
+    // ---- this function. It did not, and that is what made `yss{char}`
+    // ---- unreachable: this block bound `[y, s, s]` at three chords, the
+    // ---- trie returns a node's own binding before descending into its
+    // ---- children, so surround-mode's four-chord `[y, s, s, CharLiteral]`
+    // ---- could never be walked to. `yss"` fired surround-add with no
+    // ---- wrapper character and the quote landed as the start of a fresh
+    // ---- chord. Design fragment §3.3 spells out that step 3 must resolve
+    // ---- `Partial`.
+    //
+    // ---- No `Args::Char('\0')` placeholder here, unlike the motion and
+    // ---- text-object paths above: those need it so
+    // ---- `substitute_invocation_char_arg` routes the captured char to the
+    // ---- OPERATOR rather than to the motion it is targeting. A doubled
+    // ---- operator has no target, so the capture lands on the
+    // ---- invocation's own args with no disambiguation needed.
     {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
         path.push(doubled_self);
+        if post_motion_char {
+            path.push(ChordPattern::CharLiteral);
+        }
         handle.bind(
             layer,
             mode,

@@ -1,9 +1,14 @@
 # surround-mode — slice plan
 
-> **Status: 🚧 ACTIVE (2026-07-25).** SU.1–SU.3d complete (19 tests).
-> SU.4–SU.6 deferred to v2.
+> **Status: 🚧 ACTIVE (2026-08-19).** SU.1–SU.3e complete (27 tests).
+> SU.3f open; SU.5–SU.6 deferred to v2.
 > Sequencing companion to the design fragment
 > [`../../architecture/surround-mode.md`](../../architecture/surround-mode.md).
+>
+> **SU.4 is done, not deferred** (corrected 2026-08-19). The ⛔ below stood
+> while `editor_boot.rs` was already calling `register_operator_bindings`
+> with `post_motion_char: true`, and `ysiw"` works — verified in source and
+> pinned by `ysiw_wraps_the_word`. An icon is not evidence.
 
 Native minor mode in `lattice-mode` (SL.0). Three operators registered in
 `CommandRegistry` at boot; keymap at `MinorMode(surround-mode)`; one infrastructure
@@ -75,9 +80,53 @@ green; ship doc + bench + test + graceful-error together.
 - **SU.3d — Update implementation ledger.** ✅
   - Surround entry added to `docs/dev/operations/implementation.md`.
 
+## Slice SU.3e — the chord path actually reaches the operators ✅
+
+Everything above was verified through `grammar_execute()`. Nothing tested
+that a *keypress* arrived, and three of the four chords did not. Three
+defects, all shadowing at the trie level — a node's own binding is returned
+before its children, so any binding at a shorter prefix makes the
+wildcard-bearing path unreachable:
+
+- `register_operator_bindings`' doubled-operator block ignored its own
+  `post_motion_char` flag, binding `[y, s, s]` at the Builtin layer. Design
+  fragment §3.3 step 3 says that must resolve `Partial`.
+- surround-mode's own table-form catalog row `chord: "S"` bound `[S]` at one
+  chord and shadowed `[S, CharLiteral]` — the mode shadowed itself. §3.2 says
+  `[S]` must resolve `Partial`. The rows were believed inert; they are not.
+  `push_mode_keymap` resolves entries into dispatch bindings in the same trie.
+- the three Normal catalog rows wrote chords space-separated (`"d s"`), which
+  `parse_chord_sequence` reads as a literal Space chord — binding
+  `d<Space>s`, `c<Space>s`, `y<Space>s<Space>s`. They were the only
+  space-separated `keymap_entry!` chords in the workspace.
+
+All four table-form rows deleted. Nothing was lost: no production code reads
+the static catalog, and `:describe-key` resolves against the trie, so the
+chain bindings' `with_doc` strings are what it already displayed.
+
+**Tests.** `surround_bindings.rs` drives real keys through
+`test_helpers::press`: `yss`, `ds`, `cs`, visual `S`, `ysiw`, plus a guard
+that surround-mode is active at all (else the suite is vacuous) and a pin
+that `d<Space>s` is unbound.
+
+## Slice SU.3f — cursor on the delimiter 📝
+
+`find_surround_pair` scans strictly backward from the cursor
+(`byte < cursor_byte`), so a cursor sitting ON the opening delimiter never
+sees it and no pair is found — `ds"` with the caret on the `"` does nothing,
+where vim deletes the pair. Pinned by the ignored
+`ds_with_the_cursor_on_the_delimiter`.
+
+## Slice SU.3g — `(` vs `)` spacing 📝
+
+vim-surround distinguishes the opening form from the closing one: `ysiw(`
+yields `( hello )`, `ysiw)` yields `(hello)` (likewise `[`/`]`, `{`/`}`).
+`open_close_pair` canonicalises both to `(`,`)` and `operator_surround_add`
+wraps without spacing either way, so the distinction is currently absent.
+Design fragment §4.3 needs amending before the code changes.
+
 ## Deferred to v2
 
-- **SU.4 — `ys{motion}{char}`.** ⛔ Needs post-motion char capture infrastructure.
 - **SU.5 — HTML/XML tag targets** (`t` — `cst<div>`, `dst`, `ysiwt`). ⛔ Needs tag-scanning parser.
 - **SU.6 — Config gate** (`surround.enabled` typed option + `:surround-mode` toggle). ⛔
 

@@ -245,33 +245,31 @@ fn hunk_excerpt_header(path: &std::path::Path, line0: u32) -> ExcerptHeader {
 /// Returns the post-image ranges — the lines as they exist on disk
 /// *now* — because that is what an excerpt anchors to and what an edit
 /// propagates into.
-/// PD.7a: post-image lines the diff touched, paired with the hunk kind
-/// that touched them. Source-line coordinates.
-pub fn changed_lines(before: &str, after: &str) -> Vec<(u32, lattice_diff::HunkKind)> {
-    use lattice_diff::{DiffAlgorithm, HunkKind};
+/// PD.7a: post-image lines the diff touched, as a [`DiffSignMap`].
+///
+/// **Delegates to `lattice_diff::compute_diff_sign_map`.** This function
+/// used to walk the hunks itself and derive its own `(line, kind)` pairs,
+/// which was the same classification written twice — and drifting
+/// already: the hand-rolled version collapsed `Change` into `Add`, and
+/// had no answer for `Conflict` at all.
+///
+/// The distinction that makes this reuse rather than a workaround: diff
+/// classification is a **pure function** of two texts, and that is what
+/// is shared. `DiffSession` is the orthogonal thing — a lifecycle that
+/// watches buffers, debounces and republishes — and this view genuinely
+/// has a different one: its baselines come from git rather than from a
+/// sibling buffer, and it refreshes on a scan rather than on an edit.
+/// Depending on the pure core and not the stateful shell is the whole of
+/// the design here; manufacturing a baseline buffer per file so a session
+/// could be opened would have been contorting the data to fit the tool.
+pub fn changed_lines(before: &str, after: &str) -> lattice_diff::overlay::DiffSignMap {
     let Ok(idx) = lattice_diff::compute_diff(
         &[ropey::Rope::from_str(before), ropey::Rope::from_str(after)],
-        DiffAlgorithm::Histogram,
+        lattice_diff::DiffAlgorithm::Histogram,
     ) else {
-        return Vec::new();
+        return lattice_diff::overlay::DiffSignMap::default();
     };
-    let mut out: Vec<(u32, HunkKind)> = Vec::new();
-    for h in &idx.hunks {
-        // Slot 1 is the post-image. A pure Remove's slot-1 range is
-        // empty by construction, so nothing is emitted — correct here,
-        // and the reason PD.7b needs virtual rows rather than more of
-        // this.
-        let Some(r) = h.ranges.get(1) else { continue };
-        if !matches!(h.kind, HunkKind::Add | HunkKind::Change) {
-            continue;
-        }
-        for line in r.start..r.end {
-            out.push((line, h.kind));
-        }
-    }
-    out.sort_by_key(|(l, _)| *l);
-    out.dedup_by_key(|(l, _)| *l);
-    out
+    lattice_diff::overlay::compute_diff_sign_map(&idx)
 }
 
 /// PD.7b: text the diff removed, grouped by the post-image line the
@@ -378,7 +376,7 @@ pub struct FileHunks {
     /// row to paint — showing it needs a virtual row, which is PD.7b.
     /// Recording nothing for it here is why this view currently reads as
     /// "some lines are highlighted" rather than "these lines went away".
-    pub changed: Vec<(u32, lattice_diff::HunkKind)>,
+    pub changed: lattice_diff::overlay::DiffSignMap,
     /// PD.7b: lines the diff removed, keyed by the **post-image line they
     /// sat above** and carrying the removed text.
     ///
@@ -455,7 +453,7 @@ pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
 /// asserts it must not.
 fn composed_diff_spans(
     view: &MultibufferDocumentHandle,
-    changed_by_source: &HashMap<BufferId, Vec<(u32, lattice_diff::HunkKind)>>,
+    changed_by_source: &HashMap<BufferId, lattice_diff::overlay::DiffSignMap>,
 ) -> Vec<Vec<lattice_cells::StyledSpan>> {
     use lattice_cells::style::Style;
     let excerpts = view.excerpts();
@@ -468,16 +466,18 @@ fn composed_diff_spans(
         for offset in 0..excerpt.line_count() {
             let source_line = excerpt.start_line + offset;
             if let Some(kind) = changed.and_then(|c| {
-                c.binary_search_by_key(&source_line, |(l, _)| *l)
+                let e = c.entries();
+                e.binary_search_by_key(&source_line, |(l, _)| *l)
                     .ok()
-                    .map(|i| c[i].1)
+                    .map(|i| e[i].1)
             }) {
-                // Only Add and Remove exist as text styles. A changed
-                // line IS an added line in the post-image — the removal
+                // Only Add and Remove exist as text styles. Every kind
+                // that reaches here describes a line PRESENT in the
+                // post-image — `compute_diff_sign_map` skips `Remove`
+                // outright — so `DiffAdd` is accurate for what this rope
+                // actually contains rather than a fallback. The removal
                 // half is the row that is not there, which PD.7b renders
-                // as a virtual row. Painting Change as Add is therefore
-                // accurate for what this rope actually contains, not a
-                // fallback.
+                // as a virtual row.
                 let _ = kind;
                 let style = Style::DiffAdd;
                 // Whole-row span. The renderer paints the line background
@@ -845,7 +845,7 @@ fn spawn_project_diff_scan(
         // PD.7a: accumulated across batches, because the composed spans
         // are rebuilt whole each time and every source's classification
         // has to still be there when a later batch triggers the rebuild.
-        let mut changed_by_source: HashMap<BufferId, Vec<(u32, lattice_diff::HunkKind)>> =
+        let mut changed_by_source: HashMap<BufferId, lattice_diff::overlay::DiffSignMap> =
             HashMap::new();
 
         for chunk in files.chunks(SCAN_BATCH) {
@@ -1198,17 +1198,36 @@ mod tests {
     fn an_added_line_is_classified() {
         let changed = changed_lines("a\nb\n", "a\nNEW\nb\n");
         assert!(
-            changed.iter().any(|(l, _)| *l == 1),
-            "the inserted line 1 should be marked; got {changed:?}"
+            changed.entries().iter().any(|(l, _)| *l == 1),
+            "the inserted line 1 should be marked; got {:?}",
+            changed.entries()
         );
+    }
+
+    /// Delegating to `compute_diff_sign_map` buys a distinction the
+    /// hand-rolled version did not make: a rewritten line is `Change`,
+    /// not `Add`. Pinned because it is the concrete evidence that the
+    /// duplication had already drifted, and the reason to keep only one
+    /// implementation.
+    #[test]
+    fn a_rewritten_line_is_change_not_add() {
+        use lattice_diff::overlay::DiffSignKind;
+        let changed = changed_lines("a\nold\nc\n", "a\nnew\nc\n");
+        let kind = changed
+            .entries()
+            .iter()
+            .find(|(l, _)| *l == 1)
+            .map(|(_, k)| *k);
+        assert_eq!(kind, Some(DiffSignKind::Change));
     }
 
     #[test]
     fn a_changed_line_is_classified() {
         let changed = changed_lines("a\nold\nc\n", "a\nnew\nc\n");
         assert!(
-            changed.iter().any(|(l, _)| *l == 1),
-            "the rewritten line 1 should be marked; got {changed:?}"
+            changed.entries().iter().any(|(l, _)| *l == 1),
+            "the rewritten line 1 should be marked; got {:?}",
+            changed.entries()
         );
     }
 
@@ -1217,7 +1236,7 @@ mod tests {
     #[test]
     fn untouched_lines_are_not_classified() {
         let changed = changed_lines("a\nb\nc\n", "a\nNEW\nb\nc\n");
-        let marked: Vec<u32> = changed.iter().map(|(l, _)| *l).collect();
+        let marked: Vec<u32> = changed.entries().iter().map(|(l, _)| *l).collect();
         assert!(
             !marked.contains(&0),
             "line 0 is unchanged context; got {marked:?}"
@@ -1233,7 +1252,8 @@ mod tests {
         let changed = changed_lines("a\ngone\nb\n", "a\nb\n");
         assert!(
             changed.is_empty(),
-            "a removed line has no post-image row to mark; got {changed:?}"
+            "a removed line has no post-image row to mark; got {:?}",
+            changed.entries()
         );
     }
 
@@ -1247,11 +1267,11 @@ mod tests {
     #[test]
     fn the_classification_is_sorted_and_unique() {
         let changed = changed_lines("a\nb\nc\nd\n", "A\nb\nC\nD\n");
-        let lines: Vec<u32> = changed.iter().map(|(l, _)| *l).collect();
+        let lines: Vec<u32> = changed.entries().iter().map(|(l, _)| *l).collect();
         let mut sorted = lines.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(lines, sorted, "must be sorted and unique for binary search");
+        assert_eq!(lines, sorted, "must be sorted for binary search");
     }
 
     /// The scan carries the classification through to the batch, or the

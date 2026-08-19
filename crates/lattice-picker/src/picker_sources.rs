@@ -652,6 +652,148 @@ impl PickerSourceGenerator for FilePickSource {
     }
 }
 
+/// `:picker yank-ring`. YR.4 — the yank ring and the live named
+/// registers, in one list.
+///
+/// Both are "text you already copied", and which of the two a given
+/// piece of text is in is an implementation detail of how you copied it.
+/// Splitting them across two pickers would make the user answer that
+/// question before they can look.
+///
+/// Accept returns the text through [`PickerAcceptOutcome::FillCaller`],
+/// so where it lands is whatever opened the picker — the document, the
+/// `:` line, a prompt, a transient argument, another picker's query. The
+/// source does not know and must not decide.
+pub struct YankRingSource {
+    pub spec: PickerSourceSpec,
+}
+
+pub const YANK_RING_SOURCE: &str = "yank-ring";
+
+impl YankRingSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                YANK_RING_SOURCE,
+                "Yank ring and named registers — pick previously copied text and \
+                 insert it wherever the picker was opened from.",
+            ),
+        }
+    }
+}
+
+impl Default for YankRingSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for YankRingSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        let mut pairs: Vec<(RawCandidate, RoutingPayload)> = Vec::new();
+
+        // Ring first, newest first: the thing you just copied is the
+        // thing you are most likely reaching for.
+        for (i, (content, linewise)) in ctx.yank_ring.iter().enumerate() {
+            let mut cand = RawCandidate::plain(one_line_preview(content), CandidateKind::Plain);
+            cand.annotations = vec![
+                // Position is the address you would have used: the newest
+                // entry is what `"0` will name once YR.2 lands.
+                Annotation::Styled {
+                    category: "register".into(),
+                    segments: vec![txt_seg(format!("{i}"), SLOT_REGISTER)],
+                },
+                // Kind is not decoration. A linewise entry pastes on its
+                // own line and a charwise one pastes inline, so hiding it
+                // makes paste unpredictable at the exact moment the user
+                // is choosing between two rows that look alike.
+                Annotation::Styled {
+                    category: "yank-kind".into(),
+                    segments: vec![txt_seg(
+                        if *linewise { "line" } else { "char" }.to_string(),
+                        SLOT_REGISTER,
+                    )],
+                },
+            ];
+            pairs.push((
+                cand,
+                RoutingPayload::SuppliedValue {
+                    value: content.clone(),
+                },
+            ));
+        }
+
+        // Then the named registers, which are addressed rather than
+        // recent. `ctx.registers` carries previews rather than full
+        // content, so these rows can only offer what the preview holds —
+        // noted here because it is a real limit, not an oversight: the
+        // register's full text is re-read host-side by the paste path,
+        // which this accept deliberately does not use.
+        for (name, preview) in &ctx.registers {
+            let mut cand = RawCandidate::plain(one_line_preview(preview), CandidateKind::Plain);
+            cand.annotations = vec![Annotation::Styled {
+                category: "register".into(),
+                segments: vec![txt_seg(format!("\"{name}"), SLOT_REGISTER)],
+            }];
+            pairs.push((
+                cand,
+                RoutingPayload::SuppliedValue {
+                    value: preview.clone(),
+                },
+            ));
+        }
+
+        if pairs.is_empty() {
+            return Err("yank-ring: nothing has been yanked or deleted yet".into());
+        }
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::SuppliedValue { value } => Ok(PickerAcceptOutcome::FillCaller {
+                text: value.clone(),
+            }),
+            other => Err(format!(
+                "{YANK_RING_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+/// Collapse an entry to one matchable, renderable line.
+///
+/// A yank is frequently multi-line, and a picker row is one line — so
+/// without this the list renders broken and the fuzzy matcher scores
+/// against embedded newlines. The full text is still what accept
+/// returns; only the display is folded.
+fn one_line_preview(text: &str) -> String {
+    let flat: String = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ⏎ ");
+    if flat.chars().count() > 120 {
+        let head: String = flat.chars().take(117).collect();
+        format!("{head}...")
+    } else if flat.is_empty() {
+        // Whitespace-only yanks are real and worth being able to pick
+        // back; an empty row would be indistinguishable from a bug.
+        format!("<{} blank chars>", text.chars().count())
+    } else {
+        flat
+    }
+}
+
 /// `:picker recent`. Walks `ctx.recent_files` (MRU, newest
 /// first) and emits one row per path. Empty MRU returns
 /// `Err("no recent files")` which the host echoes.
@@ -2211,6 +2353,7 @@ pub fn first_party_generators(
     vec![
         Arc::new(FilesSource::new()),
         Arc::new(FilePickSource::new()),
+        Arc::new(YankRingSource::new()),
         Arc::new(RecentFilesSource::new()),
         Arc::new(BuffersSource::new()),
         Arc::new(LinesSource::new()),

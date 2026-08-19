@@ -12750,6 +12750,18 @@ impl Editor {
             registers.push((name, preview));
         }
 
+        // YR.4: the ring, newest first, with full content.
+        let yank_ring: Vec<(String, bool)> = self
+            .yank_ring
+            .iter()
+            .map(|e| {
+                (
+                    e.content.clone(),
+                    matches!(e.kind, lattice_grammar::effect::YankKind::Linewise),
+                )
+            })
+            .collect();
+
         // Position history: translate from the host's richer
         // PositionEntry (which carries BufferKind) into the
         // picker's renderer-agnostic view.
@@ -12790,6 +12802,7 @@ impl Editor {
             buffers,
             marks,
             registers,
+            yank_ring,
             active_modes,
             // MB.3: snapshot the command-line history ring so the
             // `history` picker source can walk it (newest-first).

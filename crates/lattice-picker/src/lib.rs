@@ -61,7 +61,7 @@ pub use mru::{
     PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
 pub use outcome::{FillTarget, OpenTarget, PickerAcceptOutcome};
-pub use picker_sources::FILE_PICK_SOURCE;
+pub use picker_sources::{FILE_PICK_SOURCE, YANK_RING_SOURCE};
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,

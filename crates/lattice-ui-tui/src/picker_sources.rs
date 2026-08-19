@@ -185,6 +185,148 @@ mod tests {
         }
     }
 
+    // ── YR.4: the yank-ring source ──
+
+    fn ring_ctx_app() -> crate::app::App {
+        app_with("hi\n", 5)
+    }
+
+    /// Ring entries and named registers arrive in ONE list. Splitting
+    /// them would make the user answer "was this a yank or a register?"
+    /// before they can look, which is a question about how they copied
+    /// rather than about what they want.
+    #[test]
+    fn yank_ring_lists_the_ring_and_the_registers_together() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let mut app = ring_ctx_app();
+        app.editor.store_yank(
+            lattice_grammar::Register::Unnamed,
+            "from-the-ring".into(),
+            lattice_grammar::effect::YankKind::Charwise,
+            true,
+        );
+        app.editor.store_yank(
+            lattice_grammar::Register::Named('q'),
+            "in-register-q".into(),
+            lattice_grammar::effect::YankKind::Charwise,
+            true,
+        );
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let PickerInitResult::Inline(pairs) =
+            YankRingSource::new().init(&ctx, &[]).expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        let shown: Vec<String> = pairs.iter().map(|(c, _)| c.display.clone()).collect();
+        assert!(
+            shown.iter().any(|d| d.contains("from-the-ring")),
+            "ring entries missing: {shown:?}"
+        );
+        assert!(
+            shown.iter().any(|d| d.contains("in-register-q")),
+            "register entries missing: {shown:?}"
+        );
+    }
+
+    /// The routing payload carries the FULL text, not the one-line
+    /// display. Pasting the display would paste a truncation, and the
+    /// truncation is lossy exactly for the multi-line yanks the ring is
+    /// most useful for.
+    #[test]
+    fn a_multi_line_entry_folds_for_display_but_not_for_accept() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let mut app = ring_ctx_app();
+        app.editor.store_yank(
+            lattice_grammar::Register::Unnamed,
+            "first\nsecond\nthird".into(),
+            lattice_grammar::effect::YankKind::Linewise,
+            true,
+        );
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let PickerInitResult::Inline(pairs) =
+            YankRingSource::new().init(&ctx, &[]).expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        let (cand, routing) = &pairs[0];
+        assert!(
+            !cand.display.contains('\n'),
+            "a picker row is one line; got {:?}",
+            cand.display
+        );
+        match routing {
+            RoutingPayload::SuppliedValue { value } => {
+                assert_eq!(
+                    value, "first\nsecond\nthird",
+                    "accept carries the real text"
+                );
+            }
+            other => panic!("expected SuppliedValue, got {other:?}"),
+        }
+    }
+
+    /// `YankKind` is in the marginalia because linewise and charwise
+    /// paste differently — hiding it makes paste unpredictable at the
+    /// moment the user is choosing between two similar-looking rows.
+    #[test]
+    fn the_yank_kind_reaches_the_marginalia() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let mut app = ring_ctx_app();
+        app.editor.store_yank(
+            lattice_grammar::Register::Unnamed,
+            "a line".into(),
+            lattice_grammar::effect::YankKind::Linewise,
+            true,
+        );
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let PickerInitResult::Inline(pairs) =
+            YankRingSource::new().init(&ctx, &[]).expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        let has_kind = pairs[0].0.annotations.iter().any(|a| match a {
+            lattice_completion::Annotation::Styled { category, segments } => {
+                category.as_ref() == "yank-kind" && segments.iter().any(|s| s.text.contains("line"))
+            }
+            _ => false,
+        });
+        assert!(has_kind, "expected a yank-kind annotation reading `line`");
+    }
+
+    #[test]
+    fn an_empty_ring_says_so_rather_than_opening_blank() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let app = ring_ctx_app();
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let err = YankRingSource::new().init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("nothing has been yanked"), "got {err:?}");
+    }
+
+    #[test]
+    fn yank_ring_accept_fills_the_caller() {
+        use lattice_picker::PickerAcceptOutcome;
+        use lattice_picker::picker_sources::YankRingSource;
+        let app = ring_ctx_app();
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let outcome = YankRingSource::new()
+            .accept(
+                &ctx,
+                &RoutingPayload::SuppliedValue {
+                    value: "text".into(),
+                },
+            )
+            .expect("accept");
+        match outcome {
+            PickerAcceptOutcome::FillCaller { text } => assert_eq!(text, "text"),
+            other => panic!("expected FillCaller, got {other:?}"),
+        }
+    }
+
     /// MR.3: the files source carries marginalia as typed `Styled`
     /// annotations (perm / size / mtime columns), NOT baked into the
     /// `display` string. `display` is the path so fuzzy matching runs on
@@ -402,6 +544,8 @@ mod tests {
                 // were noticed only when it went red. That is the list
                 // working.
                 "file-pick",
+                // YR.4: the yank ring + named registers in one list.
+                "yank-ring",
                 "recent",
                 "buffers",
                 "lines",

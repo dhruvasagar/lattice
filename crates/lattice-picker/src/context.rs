@@ -54,6 +54,20 @@ pub struct PickerContext<'a> {
     /// real content lives App-side and the host pastes via the
     /// `PasteRegister` outcome.
     pub registers: Vec<(String, String)>,
+    /// YR.4: the yank ring, newest first, as
+    /// `(content, linewise)` pairs.
+    ///
+    /// The full content, not a preview — the picker's accept has to
+    /// return the real text, and truncating here would mean pasting a
+    /// truncation. `registers` above carries previews because its accept
+    /// is `PasteRegister { name }`, which re-reads the register host-side
+    /// rather than carrying its text.
+    ///
+    /// `linewise` rides along because a linewise and a charwise entry
+    /// paste differently, and a picker that hides that makes paste
+    /// unpredictable exactly when the user is choosing between two
+    /// similar-looking rows.
+    pub yank_ring: Vec<(String, bool)>,
     /// MARG.3 (2026-07-15): active minor+major mode names for the
     /// current buffer. The command completion margin uses this to
     /// filter out keybindings whose source minor/major mode is not

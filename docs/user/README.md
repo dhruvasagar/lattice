@@ -83,6 +83,7 @@ same surface).
 | magit — cherries (not upstream yet) | [`magit-cherry-mode`](help:magit-cherry-mode) | ✅      |
 | magit — project diff (editable) | [`magit-project-diff-mode`](help:magit-project-diff-mode) | ✅      |
 | magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
+| magit — shared navigation   | [`magit-nav-mode`](help:magit-nav-mode) | ✅      |
 | magit — hunk chords        | [`magit-hunk-mode`](help:magit-hunk-mode) | ✅      |
 | magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |
 | Magit transient menus      | [`magit-transient`](help:magit-transient) | ✅      |

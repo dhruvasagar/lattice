@@ -225,7 +225,22 @@ impl Mode for MagitProjectDiffMode {
 
 fn magit_core_implies() -> &'static [ModeId] {
     static IDS: std::sync::OnceLock<Vec<ModeId>> = std::sync::OnceLock::new();
-    IDS.get_or_init(|| vec![crate::magit_core_mode::MagitCoreMode::mode_id()])
+    // PD.9: `magit-nav-mode`, NOT `magit-core-mode`. This view is
+    // editable, and `magit-core-mode` claims `i`, `C`, `D`, `S`, `U`, `q`
+    // and `yr` — legitimate only because every major it attaches to is a
+    // read-only list, which its `ActivationPolicy::Majors` enforces.
+    // Reaching it through `implies` bypassed that gate, so `i` opened the
+    // .gitignore prompt instead of entering Insert. The same trap
+    // `magit-commit-mode` is excluded by name to avoid.
+    //
+    // `refreshable-view-mode` supplies `gr`, which this view does still
+    // want and which was never magit-core's to give.
+    IDS.get_or_init(|| {
+        vec![
+            crate::magit_nav_mode::MagitNavMode::mode_id(),
+            lattice_mode::RefreshableViewMode::mode_id(),
+        ]
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1094,6 +1109,14 @@ mod tests {
 
     /// The mode joins the magit family rather than copying its chords —
     /// the thing RV.2 spent a slice undoing elsewhere.
+    ///
+    /// PD.9 changed WHICH part of the family it joins. It implied
+    /// `magit-core-mode`, which claims `i`, `C`, `D`, `S`, `U`, `q` and
+    /// `yr` — legitimate only on the read-only lists its
+    /// `ActivationPolicy::Majors` gate allows, and this view is editable,
+    /// so `i` opened the .gitignore prompt instead of entering Insert.
+    /// It now implies `magit-nav-mode` (the chords that are safe
+    /// anywhere) plus `refreshable-view-mode` for `gr`.
     #[test]
     fn the_mode_inherits_magit_chords_and_declares_none() {
         let m = MagitProjectDiffMode;
@@ -1104,8 +1127,9 @@ mod tests {
         );
         assert!(
             m.implies()
-                .contains(&crate::magit_core_mode::MagitCoreMode::mode_id()),
-            "must join magit-core-mode to get gr / q / ]] / [["
+                .contains(&crate::magit_nav_mode::MagitNavMode::mode_id()),
+            "must join magit-nav-mode to get ]] / [[ / <Tab> without the \
+             read-only letters"
         );
     }
 

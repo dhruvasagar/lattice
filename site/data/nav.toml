@@ -178,6 +178,7 @@ title = "Magit buffers & chords"
 description = "Every magit buffer kind, plus the shared minor modes that carry chords across all of them."
 docs = [
   "magit-core-mode",
+  "magit-nav-mode",
   "magit-hunk-mode",
   "magit-global-mode",
   "magit-diff-mode",

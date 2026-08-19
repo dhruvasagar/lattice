@@ -69,10 +69,9 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
         // and its handler are unchanged — only the binding moved.
         vec![
             keymap_entry! { mode: Normal, chord: "q", doc: "Close magit buffer", cmd: "action:magit-close" },
-            keymap_entry! { mode: Normal, chord: "]]", doc: "Next section", cmd: "action:magit-next-section" },
-            keymap_entry! { mode: Normal, chord: "[[", doc: "Previous section", cmd: "action:magit-prev-section" },
-            keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
-            keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
+            // `]]` / `[[` / `<Tab>` / `<S-Tab>` moved to
+            // `magit-nav-mode` (implied below): they are the only chords
+            // here that mean something in a buffer the user can edit.
             // MG.23k: magit's `D`. Bound here rather than per-view for
             // the same reason `gr` is — the chord is one question
             // ("re-run this with different arguments") and the view
@@ -1204,6 +1203,15 @@ impl Mode for MagitCoreMode {
     }
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
+    }
+
+    /// The navigation chords live in `magit-nav-mode`; read-only views
+    /// get them by implication so nothing changes for them, and an
+    /// EDITABLE magit view can imply that mode alone without inheriting
+    /// the bare letters below.
+    fn implies(&self) -> &[ModeId] {
+        static IDS: OnceLock<Vec<ModeId>> = OnceLock::new();
+        IDS.get_or_init(|| vec![crate::magit_nav_mode::MagitNavMode::mode_id()])
     }
 
     fn activation_policy(&self) -> ActivationPolicy {

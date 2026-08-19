@@ -41,6 +41,7 @@ pub mod magit_file_revision_mode;
 pub mod magit_global_mode;
 pub mod magit_hunk_mode;
 pub mod magit_log_mode;
+pub mod magit_nav_mode;
 pub mod magit_notes_mode;
 pub mod magit_rebase_mode;
 pub mod magit_refs_mode;
@@ -135,6 +136,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitCommitMode)
         .expect("magit-commit-mode registers without conflict");
+
+    boot.modes_mut()
+        .register(magit_nav_mode::MagitNavMode)
+        .expect("magit-nav-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitDiffMode)
@@ -4907,6 +4912,8 @@ mod tests {
             MagitFileRevisionMode => "magit-file-revision-mode",
             magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
             magit_hunk_mode::MagitHunkMode => "magit-hunk-mode",
+            // PD.9: the navigation chords `magit-core-mode` used to own.
+            magit_nav_mode::MagitNavMode => "magit-nav-mode",
         );
     }
 
@@ -5272,6 +5279,69 @@ mod tests {
             registry.id_by_name("magit-diff-project").is_none(),
             "the old spelling must not linger — one alias per command"
         );
+    }
+
+    /// PD.9: nothing editable may reach `magit-core-mode`.
+    ///
+    /// Its bare letters (`i`, `C`, `D`, `S`, `U`, `q`, `yr`) are only
+    /// legitimate because every major it attaches to is a read-only list —
+    /// that is the rule its own `ActivationPolicy::Majors` doc states, and
+    /// why `magit-commit-mode` is excluded by name.
+    ///
+    /// `ActivationPolicy::Majors` enforces it for majors. **Nothing
+    /// enforced it for `Mode::implies`**, which is how the editable
+    /// project diff acquired the whole set and lost `i`. This is that
+    /// missing half: no mode may imply `magit-core-mode` unless it is
+    /// itself read-only.
+    #[test]
+    fn no_editable_mode_implies_magit_core() {
+        use lattice_mode::Mode as _;
+
+        // The editable magit views, and what each must imply INSTEAD.
+        // A new editable view added without a line here is the gap this
+        // test exists to make loud.
+        let project_diff = providers::project_diff::MagitProjectDiffMode.implies();
+        assert!(
+            !project_diff.contains(&magit_core_mode::MagitCoreMode::mode_id()),
+            "the project diff is EDITABLE — implying `magit-core-mode` gives it \
+             `i`, `C`, `D`, `S`, `U`, `q`, `yr` and makes the buffer untypeable"
+        );
+        assert!(
+            project_diff.contains(&magit_nav_mode::MagitNavMode::mode_id()),
+            "...but it still wants section navigation and folding"
+        );
+        assert!(
+            project_diff.contains(&lattice_mode::RefreshableViewMode::mode_id()),
+            "...and `gr`, which comes from refreshable-view-mode rather than magit-core"
+        );
+    }
+
+    /// The read-only views are unchanged: `magit-core-mode` implies the
+    /// navigation mode, so nothing they had was taken away by the split.
+    #[test]
+    fn magit_core_still_supplies_navigation_to_read_only_views() {
+        use lattice_mode::Mode as _;
+        assert!(
+            magit_core_mode::MagitCoreMode
+                .implies()
+                .contains(&magit_nav_mode::MagitNavMode::mode_id()),
+            "read-only magit buffers must keep `]]` / `[[` / `<Tab>` / `<S-Tab>`"
+        );
+    }
+
+    /// The split must not have left a copy behind. Two modes binding the
+    /// same chord is the duplication the standing rule forbids, and it is
+    /// silent — both work until one is changed.
+    #[test]
+    fn the_navigation_chords_live_in_exactly_one_mode() {
+        use lattice_mode::Mode as _;
+        let core = magit_core_mode::MagitCoreMode.keymap();
+        for chord in ["]]", "[[", "<Tab>", "<S-Tab>"] {
+            assert!(
+                !core.entries.iter().any(|e| e.chord == chord),
+                "`{chord}` still bound in magit-core-mode as well as magit-nav-mode"
+            );
+        }
     }
 
     /// `V` on an ordinary file buffer is a NO-OP, not an error.
@@ -5750,6 +5820,8 @@ mod tests {
             MagitFileRevisionMode => "magit-file-revision-mode",
             magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
             magit_hunk_mode::MagitHunkMode => "magit-hunk-mode",
+            // PD.9: the navigation chords `magit-core-mode` used to own.
+            magit_nav_mode::MagitNavMode => "magit-nav-mode",
         );
 
         // MG.22: the two lists above are HAND-KEPT, and a mode missing
@@ -5769,9 +5841,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 19,
+            installed, 20,
             "`install` registers {installed} magit modes but this guard \
-             checks 19 — a mode registered at boot and absent from the \
+             checks 20 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 

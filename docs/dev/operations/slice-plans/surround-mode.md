@@ -1,7 +1,7 @@
 # surround-mode — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-19).** SU.1–SU.3f complete (38 tests).
-> SU.3g open; SU.5–SU.6 deferred to v2.
+> **Status: 🚧 ACTIVE (2026-08-19).** SU.1–SU.3g complete (49 tests).
+> SU.5–SU.6 deferred to v2.
 > Sequencing companion to the design fragment
 > [`../../architecture/surround-mode.md`](../../architecture/surround-mode.md).
 >
@@ -68,7 +68,7 @@ green; ship doc + bench + test + graceful-error together.
     - `cs"'` on `"hello"` → `'hello'`
     - `cs(]` on `(hello)` → `[hello]`
     - `yss"` on `hello` → `"hello"`
-    - `yss(` on `hello` → `(hello)`
+    - `yss(` on `hello` → `( hello )` (was `(hello)` until SU.3g)
     - Visual `S"` on selection → wrap
     - No-op on unmatched `ds"` / `cs"'`
     - No-op on unknown wrapper char
@@ -132,13 +132,30 @@ unmatched delimiter that must still find nothing) plus `ds` / `cs` at the
 chord level, since landing on a quote and typing `ds"` is the shape a user
 actually produces.
 
-## Slice SU.3g — `(` vs `)` spacing 📝
+## Slice SU.3g — `(` vs `)` spacing ✅
 
 vim-surround distinguishes the opening form from the closing one: `ysiw(`
-yields `( hello )`, `ysiw)` yields `(hello)` (likewise `[`/`]`, `{`/`}`).
-`open_close_pair` canonicalises both to `(`,`)` and `operator_surround_add`
-wraps without spacing either way, so the distinction is currently absent.
-Design fragment §4.3 needs amending before the code changes.
+yields `( hello )`, `ysiw)` yields `(hello)` (likewise `[`/`]`, `{`/`}`,
+`<`/`>`). `open_close_pair` canonicalises both halves to the same pair,
+which is right for *matching* a target and wrong for *inserting* one, so
+the distinction is now carried by a separate `pads_inside(ch)` predicate.
+
+Two-sided, and that is the part worth stating: insertion pads (add's
+wrapper, change's replacement) and removal absorbs (delete's target,
+change's target). A one-sided rule would leave `ds(` unable to undo
+`ysiw(`, and the padding would accumulate on every round trip. `ds)` still
+deletes the delimiters alone, so `( hello )` → ` hello `.
+
+Design fragment gains §4.4. Two existing tests changed expectation
+deliberately — `surround_add_linewise_wraps_line_with_brackets` and
+`surround_change_parens_to_brackets` both used the opening form and
+therefore now pad.
+
+**Tests.** All four bracket pairs on both sides of the rule, symmetric
+wrappers unaffected, `cs` in both directions (padded → unpadded and back),
+the `ds)`-leaves-the-padding pair to the `ds(`-takes-it case, and a
+round-trip property over all four pairs. Plus `ysiw(` / `ysiw)` and the
+`ysiw(` → `ds(` round trip at the chord level.
 
 ## Deferred to v2
 

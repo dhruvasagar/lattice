@@ -190,6 +190,40 @@ Maps a user-provided character to its canonical (open, close) form:
 Used by `surround-add` (the wrapping char determines what to insert) and
 `surround-change` (the replacement char determines the new wrap).
 
+### 4.4 `pads_inside(ch) → bool` — the one place the halves differ (SU.3g)
+
+The mapping above is deliberately many-to-one: `(` and `)` name the same
+pair, so either may be typed as a target. For **insertion** they are not
+interchangeable, and this is the single exception in the grammar:
+
+```
+ysiw(  →  ( hello )        ysiw)  →  (hello)
+ysiw[  →  [ hello ]        ysiw]  →  [hello]
+```
+
+`pads_inside(ch)` is true exactly when `ch` is the *opening* form of an
+asymmetric pair. A symmetric wrapper (`"`, `'`, backtick) is its own
+closer, so it has no opening form to mean something different and never
+pads, however it is typed.
+
+The rule is two-sided, because a one-sided one does not survive contact
+with use — `ds(` has to undo what `ysiw(` did, or padding accumulates on
+every round trip:
+
+- **Insertion** (`surround-add`'s wrapper, `surround-change`'s
+  *replacement*): pad both sides when the opening form was typed.
+- **Removal** (`surround-delete`'s target, `surround-change`'s *target*):
+  absorb one run of horizontal whitespace immediately inside each
+  delimiter when the opening form was typed. `ds)` on `( hello )` deletes
+  the parens alone and leaves ` hello `.
+
+So `cs("` turns `( hello )` into `"hello"`, and `cs")` turns `"hello"`
+into `(hello)`.
+
+The two absorbed runs are clamped against each other: in `(   )` the
+forward run would otherwise take all three spaces and the backward run
+would take the same three again, yielding overlapping edits in one batch.
+
 ## 5. Operator implementations
 
 ### 5.1 `operator:surround-delete` (`ds{char}`)

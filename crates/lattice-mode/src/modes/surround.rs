@@ -67,6 +67,104 @@ fn matching_opener(closer: char) -> Option<char> {
     open_close_pair(closer).map(|(open, _)| open)
 }
 
+// ── SU.3g: the opening form pads, the closing form does not ───
+
+/// Does typing `ch` as a surround *wrapper* mean "pad the inside"?
+///
+/// vim-surround's rule, and the one piece of the grammar where the two
+/// halves of a bracket pair are not interchangeable: `ysiw(` gives
+/// `( hello )` and `ysiw)` gives `(hello)`. The distinction only exists
+/// for asymmetric pairs — a symmetric wrapper (`"`, `'`, backtick) is its
+/// own closer, so there is no opening form to mean anything different,
+/// and it never pads however it is typed.
+fn pads_inside(ch: char) -> bool {
+    matches!(open_close_pair(ch), Some((open, close)) if open != close && ch == open)
+}
+
+/// One padding string per side. Separate function from [`pads_inside`]
+/// so the two call sites that build text read as prose.
+fn padding_for(ch: char) -> &'static str {
+    if pads_inside(ch) { " " } else { "" }
+}
+
+/// Bytes of horizontal whitespace running forward from `from` in `line`,
+/// capped at `limit`.
+fn space_run_forward(line: &str, from: usize, limit: usize) -> usize {
+    line.get(from..limit)
+        .unwrap_or("")
+        .bytes()
+        .take_while(|b| *b == b' ' || *b == b'\t')
+        .count()
+}
+
+/// Bytes of horizontal whitespace running backward from `until` in
+/// `line`, not reaching before `floor`.
+fn space_run_backward(line: &str, until: usize, floor: usize) -> usize {
+    line.get(floor..until)
+        .unwrap_or("")
+        .bytes()
+        .rev()
+        .take_while(|b| *b == b' ' || *b == b'\t')
+        .count()
+}
+
+/// The two spans `ds` / `cs` replace for a pair whose delimiters sit at
+/// `open_pos` / `close_pos`.
+///
+/// With `absorb_padding` (the user typed the opening form) each span
+/// grows inward over one run of horizontal whitespace, so `ds(` undoes
+/// what `ysiw(` did. Without it the spans are the delimiters alone and
+/// `ds)` leaves any padding in place.
+///
+/// The two runs are clamped against each other: in `(   )` the forward
+/// run would otherwise take all three spaces and the backward run would
+/// take them again, producing overlapping edits in one batch.
+fn delimiter_spans(
+    buffer: &Buffer,
+    open_pos: Position,
+    open_len: u32,
+    close_pos: Position,
+    close_len: u32,
+    absorb_padding: bool,
+) -> (
+    lattice_protocol::position::Range,
+    lattice_protocol::position::Range,
+) {
+    let open_end = open_pos.byte + open_len;
+    let close_end = close_pos.byte + close_len;
+
+    let (pad_after_open, pad_before_close) = if !absorb_padding {
+        (0, 0)
+    } else if open_pos.line == close_pos.line {
+        let line = buffer.line(open_pos.line).unwrap_or_default().to_string();
+        let inner_end = close_pos.byte as usize;
+        let forward = space_run_forward(&line, open_end as usize, inner_end);
+        let backward = space_run_backward(
+            &line,
+            inner_end,
+            (open_end as usize + forward).min(inner_end),
+        );
+        (forward as u32, backward as u32)
+    } else {
+        let open_line = buffer.line(open_pos.line).unwrap_or_default().to_string();
+        let close_line = buffer.line(close_pos.line).unwrap_or_default().to_string();
+        let forward = space_run_forward(&open_line, open_end as usize, open_line.len());
+        let backward = space_run_backward(&close_line, close_pos.byte as usize, 0);
+        (forward as u32, backward as u32)
+    };
+
+    (
+        lattice_protocol::position::Range::new(
+            open_pos,
+            Position::new(open_pos.line, open_end + pad_after_open),
+        ),
+        lattice_protocol::position::Range::new(
+            Position::new(close_pos.line, close_pos.byte - pad_before_close),
+            Position::new(close_pos.line, close_end),
+        ),
+    )
+}
+
 // ── Pair detection ────────────────────────────────────────────
 
 /// Find the nearest enclosing pair matching `target` around the
@@ -271,18 +369,24 @@ fn operator_surround_delete(
 
     let target_close = open_close_pair(target).map(|(_, c)| c).unwrap_or(target);
 
+    // SU.3g: `ds(` takes the inner padding with it, `ds)` does not — so
+    // `ds(` undoes `ysiw(` exactly and a round trip does not accumulate
+    // spaces.
+    let (open_span, close_span) = {
+        let buffer = ctx.document.buffer();
+        delimiter_spans(
+            buffer,
+            open_pos,
+            target.len_utf8() as u32,
+            close_pos,
+            target_close.len_utf8() as u32,
+            pads_inside(target),
+        )
+    };
+
     // Apply deletions as one undo batch (closer first so byte offsets stay valid).
-    let edit_close = Edit::delete(lattice_protocol::position::Range::new(
-        close_pos,
-        Position::new(
-            close_pos.line,
-            close_pos.byte + target_close.len_utf8() as u32,
-        ),
-    ));
-    let edit_open = Edit::delete(lattice_protocol::position::Range::new(
-        open_pos,
-        Position::new(open_pos.line, open_pos.byte + target.len_utf8() as u32),
-    ));
+    let edit_close = Edit::delete(close_span);
+    let edit_open = Edit::delete(open_span);
 
     let applied = ctx.document.apply_edit_batch(vec![edit_close, edit_open])?;
 
@@ -359,26 +463,29 @@ fn operator_surround_change(
         (open_pos, close_pos, yanked_open, yanked_close)
     };
 
-    let open_text_repl = new_open.to_string();
-    let close_text_repl = new_close.to_string();
+    // SU.3g: both halves of the rule meet here. The *target* decides
+    // whether the old pair's padding comes out (`cs(` yes, `cs)` no) and
+    // the *replacement* decides whether new padding goes in — so
+    // `cs("` turns `( hello )` into `"hello"` and `cs")` turns
+    // `"hello"` into `(hello)`.
+    let pad = padding_for(replacement);
+    let open_text_repl = format!("{new_open}{pad}");
+    let close_text_repl = format!("{pad}{new_close}");
 
-    let edit_close = Edit::replace(
-        lattice_protocol::position::Range::new(
-            close_pos,
-            Position::new(
-                close_pos.line,
-                close_pos.byte + target_close.len_utf8() as u32,
-            ),
-        ),
-        close_text_repl.clone(),
-    );
-    let edit_open = Edit::replace(
-        lattice_protocol::position::Range::new(
+    let (open_span, close_span) = {
+        let buffer = ctx.document.buffer();
+        delimiter_spans(
+            buffer,
             open_pos,
-            Position::new(open_pos.line, open_pos.byte + target.len_utf8() as u32),
-        ),
-        open_text_repl,
-    );
+            target.len_utf8() as u32,
+            close_pos,
+            target_close.len_utf8() as u32,
+            pads_inside(target),
+        )
+    };
+
+    let edit_close = Edit::replace(close_span, close_text_repl.clone());
+    let edit_open = Edit::replace(open_span, open_text_repl);
 
     let applied = ctx.document.apply_edit_batch(vec![edit_close, edit_open])?;
 
@@ -439,19 +546,23 @@ fn operator_surround_add(
             (ctx.range.start, ctx.range.end, text)
         };
 
+        // SU.3g: the cursor lands just inside the pair, which with the
+        // padding form means past the pad as well as past the delimiter.
+        let inside = open.len_utf8() + padding_for(wrapper).len();
+
         let new_cursor = if ctx.linewise {
-            Position::new(wrap_start.line, open.len_utf8() as u32)
+            Position::new(wrap_start.line, inside as u32)
         } else {
-            let new_byte = buffer.position_to_byte(wrap_start)? + open.len_utf8();
+            let new_byte = buffer.position_to_byte(wrap_start)? + inside;
             buffer.byte_to_position(new_byte)?
         };
 
         (wrap_start, wrap_end, wrap_text, new_cursor)
     };
 
-    let open_s = open.to_string();
-    let close_s = close.to_string();
-    let wrapped = format!("{}{}{}", open_s, wrap_text, close_s);
+    // SU.3g: `ysiw(` → `( hello )`, `ysiw)` → `(hello)`.
+    let pad = padding_for(wrapper);
+    let wrapped = format!("{open}{pad}{wrap_text}{pad}{close}");
 
     let wrap_range = lattice_protocol::position::Range::new(wrap_start, wrap_end);
     let edit = Edit::replace(wrap_range, wrapped);
@@ -1007,6 +1118,10 @@ mod operator_tests {
         assert_eq!(doc_text(&doc), "hello 'world' foo");
     }
 
+    /// SU.3g changed this expectation deliberately: the replacement here
+    /// is `[`, the padding form, so the result gains inner spaces. The
+    /// unpadded spelling is `cs(]`, covered in
+    /// `surround_change_pads_when_the_replacement_is_an_opening_form`.
     #[test]
     fn surround_change_parens_to_brackets() {
         let (registry, _builtins, ops, mut doc) = fixture("(hello)");
@@ -1024,7 +1139,7 @@ mod operator_tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        assert_eq!(doc_text(&doc), "[hello]");
+        assert_eq!(doc_text(&doc), "[ hello ]");
     }
 
     #[test]
@@ -1046,6 +1161,9 @@ mod operator_tests {
         assert_eq!(doc_text(&doc), "\"hello world\"\n");
     }
 
+    /// SU.3g changed this expectation deliberately: `(` is the padding
+    /// form, so a linewise add with `(` now yields `( hello )`. The
+    /// unpadded spelling moved to `surround_add_with_the_closing_form_does_not_pad`.
     #[test]
     fn surround_add_linewise_wraps_line_with_brackets() {
         let (registry, _builtins, ops, mut doc) = fixture("hello\n");
@@ -1062,7 +1180,138 @@ mod operator_tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        assert_eq!(doc_text(&doc), "(hello)\n");
+        assert_eq!(doc_text(&doc), "( hello )\n");
+    }
+
+    // ── SU.3g: the opening form pads, the closing form does not ──
+
+    /// Run `yss{ch}` (linewise add) over `text` and return the result.
+    fn add_linewise(text: &str, wrapper: char) -> String {
+        let (registry, _builtins, ops, mut doc) = fixture(text);
+        let cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char(wrapper));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        doc_text(&doc)
+    }
+
+    /// Run `cs{target}{replacement}` with the cursor at `col`.
+    fn change_at(text: &str, col: u32, target: char, replacement: char) -> String {
+        let (registry, _builtins, ops, mut doc) = fixture(text);
+        let cursor = Position::new(0, col);
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.change.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::List(vec![
+                ArgValue::Char(target),
+                ArgValue::Char(replacement),
+            ]));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        doc_text(&doc)
+    }
+
+    /// Run `ds{target}` with the cursor at `col`.
+    fn delete_at(text: &str, col: u32, target: char) -> String {
+        let (registry, _builtins, ops, mut doc) = fixture(text);
+        let cursor = Position::new(0, col);
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.delete.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char(target));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        doc_text(&doc)
+    }
+
+    #[test]
+    fn surround_add_with_the_opening_form_pads() {
+        assert_eq!(add_linewise("hello\n", '('), "( hello )\n");
+        assert_eq!(add_linewise("hello\n", '['), "[ hello ]\n");
+        assert_eq!(add_linewise("hello\n", '{'), "{ hello }\n");
+        assert_eq!(add_linewise("hello\n", '<'), "< hello >\n");
+    }
+
+    #[test]
+    fn surround_add_with_the_closing_form_does_not_pad() {
+        assert_eq!(add_linewise("hello\n", ')'), "(hello)\n");
+        assert_eq!(add_linewise("hello\n", ']'), "[hello]\n");
+        assert_eq!(add_linewise("hello\n", '}'), "{hello}\n");
+        assert_eq!(add_linewise("hello\n", '>'), "<hello>\n");
+    }
+
+    /// A symmetric wrapper has no opening form to distinguish, so it never
+    /// pads however it is typed.
+    #[test]
+    fn surround_add_never_pads_a_symmetric_wrapper() {
+        assert_eq!(add_linewise("hello\n", '"'), "\"hello\"\n");
+        assert_eq!(add_linewise("hello\n", '\''), "'hello'\n");
+    }
+
+    #[test]
+    fn surround_change_pads_when_the_replacement_is_an_opening_form() {
+        assert_eq!(change_at("\"hello\"", 3, '"', '('), "( hello )");
+        assert_eq!(change_at("\"hello\"", 3, '"', ')'), "(hello)");
+    }
+
+    /// The removal half, and the reason it is in this slice rather than a
+    /// later one: without it `ds(` cannot undo what `ysiw(` just did, and
+    /// the padding would accumulate on every round trip.
+    #[test]
+    fn surround_delete_with_the_opening_form_takes_the_padding_too() {
+        assert_eq!(delete_at("( hello )", 3, '('), "hello");
+        // Already unpadded — the opening form must not eat real text.
+        assert_eq!(delete_at("(hello)", 3, '('), "hello");
+    }
+
+    /// The closing form deletes the delimiters and nothing else, so the
+    /// padding survives. This is the pair to the test above: the two forms
+    /// have to differ on removal or the distinction is decorative.
+    #[test]
+    fn surround_delete_with_the_closing_form_leaves_the_padding() {
+        assert_eq!(delete_at("( hello )", 3, ')'), " hello ");
+    }
+
+    #[test]
+    fn surround_change_from_a_padded_pair_drops_the_padding() {
+        assert_eq!(change_at("( hello )", 3, '(', '"'), "\"hello\"");
+        // ...and the closing form keeps it, symmetrically with delete.
+        assert_eq!(change_at("( hello )", 3, ')', '"'), "\" hello \"");
+    }
+
+    /// Round trip: add the padded form, remove it with the same character,
+    /// and the buffer is back where it started. This is the property the
+    /// two halves exist to hold.
+    #[test]
+    fn the_padded_forms_round_trip() {
+        for ch in ['(', '[', '{', '<'] {
+            let added = add_linewise("hello\n", ch);
+            let back = delete_at(added.trim_end_matches('\n'), 3, ch);
+            assert_eq!(back, "hello", "round trip failed for {ch:?}");
+        }
     }
 
     #[test]

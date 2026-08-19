@@ -104,6 +104,31 @@ mod tests {
         assert_eq!(body(&app), "\"hello\" world\n");
     }
 
+    /// SU.3g at the level the user types it. `ysiw(` pads, `ysiw)` does
+    /// not — the one place the two halves of a bracket pair are not
+    /// interchangeable.
+    #[test]
+    fn ysiw_distinguishes_the_opening_form_from_the_closing_one() {
+        let mut padded = app_with("hello world\n", 20);
+        press_chars(&mut padded, "ysiw(");
+        assert_eq!(body(&padded), "( hello ) world\n");
+
+        let mut tight = app_with("hello world\n", 20);
+        press_chars(&mut tight, "ysiw)");
+        assert_eq!(body(&tight), "(hello) world\n");
+    }
+
+    /// The round trip a user actually performs: pad it, then take the
+    /// padding back off with the same character.
+    #[test]
+    fn ds_with_the_opening_form_undoes_ysiw_with_it() {
+        let mut app = app_with("hello world\n", 20);
+        press_chars(&mut app, "ysiw(");
+        assert_eq!(body(&app), "( hello ) world\n");
+        press_chars(&mut app, "ds(");
+        assert_eq!(body(&app), "hello world\n");
+    }
+
     /// The three deleted Normal catalog rows wrote their chords
     /// space-separated (`"d s"`), and `parse_chord_sequence` reads a space
     /// as a literal Space chord — so they bound `d<Space>s`, `c<Space>s`

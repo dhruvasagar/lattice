@@ -229,6 +229,87 @@ mod tests {
         );
     }
 
+    /// A register's row must carry the register's REAL contents, not the
+    /// 40-char preview the context used to hand over. Picking a long
+    /// register otherwise inserted a truncation — with `\u{21B5}` in place
+    /// of its newlines, so the result was not merely short but corrupt.
+    #[test]
+    fn a_register_row_carries_its_full_contents() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let long = "x".repeat(200);
+        let mut app = ring_ctx_app();
+        // Disable the ring, or `store_yank` pushes the same text there too
+        // and the assertion below finds the RING row — passing while the
+        // register row is still truncated. It did exactly that first.
+        app.editor
+            .config
+            .parse_and_set_command("yank.ring.size=0")
+            .expect("settable");
+        app.editor.drain_option_changes();
+        app.editor.store_yank(
+            lattice_grammar::Register::Named('a'),
+            long.clone(),
+            lattice_grammar::effect::YankKind::Charwise,
+            true,
+        );
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let PickerInitResult::Inline(pairs) =
+            YankRingSource::new().init(&ctx, &[]).expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        let full_rows = pairs
+            .iter()
+            .filter(|(_, r)| matches!(r, RoutingPayload::SuppliedValue { value } if value == &long))
+            .count();
+        assert!(
+            full_rows >= 1,
+            "no row carried the register's full 200-char contents; \
+             values were {:?}",
+            pairs
+                .iter()
+                .map(|(_, r)| match r {
+                    RoutingPayload::SuppliedValue { value } => value.chars().count(),
+                    _ => 0,
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// ...and a multi-line register keeps its newlines rather than the
+    /// `\u{21B5}` the display substitution used to bake in.
+    #[test]
+    fn a_multi_line_register_keeps_its_newlines() {
+        use lattice_picker::picker_sources::YankRingSource;
+        let mut app = ring_ctx_app();
+        app.editor
+            .config
+            .parse_and_set_command("yank.ring.size=0")
+            .expect("settable");
+        app.editor.drain_option_changes();
+        app.editor.store_yank(
+            lattice_grammar::Register::Named('b'),
+            "one\ntwo".to_string(),
+            lattice_grammar::effect::YankKind::Linewise,
+            true,
+        );
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let PickerInitResult::Inline(pairs) =
+            YankRingSource::new().init(&ctx, &[]).expect("inline")
+        else {
+            panic!("expected Inline");
+        };
+        let has_real_newlines = pairs.iter().any(
+            |(_, r)| matches!(r, RoutingPayload::SuppliedValue { value } if value.contains('\n')),
+        );
+        assert!(
+            has_real_newlines,
+            "a register's newlines must survive into the paste"
+        );
+    }
+
     /// The routing payload carries the FULL text, not the one-line
     /// display. Pasting the display would paste a truncation, and the
     /// truncation is lossy exactly for the multi-line yanks the ring is

@@ -12813,13 +12813,16 @@ impl Editor {
 
         // Registers: unnamed + named, both as (name, preview).
         let mut registers: Vec<(String, String)> = Vec::new();
+        // Full contents, not previews — a consumer that returns the text
+        // (the yank picker) would otherwise hand back a truncation.
+        // Display truncation belongs to whoever renders the row.
         if let Some(r) = &self.unnamed_register {
-            registers.push(("\"".into(), preview_register(&r.content)));
+            registers.push(("\"".into(), r.content.clone()));
         }
         let mut named: Vec<(Register, String)> = self
             .registers
             .iter()
-            .map(|(k, v)| (*k, preview_register(&v.content)))
+            .map(|(k, v)| (*k, v.content.clone()))
             .collect();
         named.sort_by_key(|(k, _)| match k {
             Register::Named(c) => format!("a{c}"),

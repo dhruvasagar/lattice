@@ -49,10 +49,17 @@ pub struct PickerContext<'a> {
     pub position_history: Vec<PositionEntry>,
     pub buffers: Vec<BufferEntry>,
     pub marks: Vec<(char, Position)>,
-    /// Registers as `(name, preview)` pairs. The preview is the
-    /// register's stored content truncated for display -- the
-    /// real content lives App-side and the host pastes via the
-    /// `PasteRegister` outcome.
+    /// Registers as `(name, contents)` pairs, with the **full**
+    /// contents.
+    ///
+    /// It used to carry a 40-char preview with newlines replaced by
+    /// `\u{21B5}`, which was harmless while the only consumer routed
+    /// `PasteRegister { name }` and the host re-read the register itself.
+    /// `yank-ring` returns the text directly, so a preview here meant
+    /// picking a long register inserted a truncation — and one with `↵`
+    /// where its newlines had been, so corrupt rather than merely short.
+    ///
+    /// Consumers truncate for display; only display should be lossy.
     pub registers: Vec<(String, String)>,
     /// YR.4: the yank ring, newest first, as
     /// `(content, linewise)` pairs.

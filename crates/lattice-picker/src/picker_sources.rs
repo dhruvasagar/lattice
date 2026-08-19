@@ -1641,7 +1641,9 @@ impl PickerSourceGenerator for RegistersSource {
                 // MP.4/§9: the register contents are the matchable
                 // `display`; the register name (`"a`) is a `register`
                 // marginalia cell.
-                let mut cand = RawCandidate::plain(preview.clone(), CandidateKind::Plain);
+                // `ctx.registers` carries FULL contents now, so the
+                // display truncation happens here rather than upstream.
+                let mut cand = RawCandidate::plain(one_line_preview(preview), CandidateKind::Plain);
                 cand.annotations = vec![Annotation::Styled {
                     category: "register".into(),
                     segments: vec![txt_seg(format!("\"{name}"), SLOT_REGISTER)],

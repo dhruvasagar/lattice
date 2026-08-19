@@ -194,6 +194,7 @@ docs = [
   "magit-rebase-mode",
   "magit-notes-mode",
   "magit-cherry-mode",
+  "magit-project-diff-mode",
 ]
 
 [[section.group]]
@@ -219,6 +220,27 @@ docs = [
   "lsp-log-mode",
   "lsp-server-log-mode",
   "lsp-trace-log-mode",
+  "lsp-references-mode",
+]
+
+[[section.group]]
+title = "LSP feature gates"
+description = "One per server capability. `lsp-mode` implies the whole set; turn one off to keep a server whose other features you want."
+docs = [
+  "lsp-diagnostics-mode",
+  "lsp-nav-mode",
+  "lsp-hover-mode",
+  "lsp-signature-mode",
+  "lsp-symbols-mode",
+  "lsp-code-action-mode",
+  "lsp-format-mode",
+  "lsp-rename-mode",
+  "lsp-document-highlight-mode",
+  "lsp-selection-range-mode",
+  "lsp-inlay-hint-mode",
+  "lsp-semantic-tokens-mode",
+  "lsp-folding-mode",
+  "lsp-progress-mode",
 ]
 
 [[section.group]]
@@ -272,6 +294,15 @@ docs = [
   "plugins-mode",
   "problems-minor-mode",
   "diff-conflict-mode",
+  "plugin-trace-mode",
+]
+
+[[section.group]]
+title = "Shared behaviour minors"
+description = "Modes that exist so several buffer kinds share one implementation rather than a copied keymap."
+docs = [
+  "refreshable-view-mode",
+  "directory-listing-mode",
 ]
 
 # ---------------------------------------------------------------------------
@@ -283,6 +314,11 @@ docs = [
 # ---------------------------------------------------------------------------
 
 [labels]
+"lsp-references-mode"  = "References view"
+"magit-project-diff-mode" = "Project diff"
+"plugin-trace-mode"    = "Plugin boundary trace"
+"refreshable-view-mode" = "gr — refresh a view"
+"directory-listing-mode" = "Listing presentation"
 "getting-started"      = "First steps"
 "tutor-mode"           = "Interactive tutor"
 "dashboard-mode"       = "The launch dashboard"

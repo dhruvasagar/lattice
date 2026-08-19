@@ -51,7 +51,9 @@ same surface).
 | Buffers and panes          | [`buffers`](help:buffers)                | ✅      |
 | File tree                  | [`file-tree-mode`](help:file-tree-mode)  | ✅      |
 | Oil (editable directory)   | [`oil-mode`](help:oil-mode)              | ✅      |
+|   — listing presentation   | [`directory-listing-mode`](help:directory-listing-mode) | ✅      |
 | Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
+|   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
@@ -78,6 +80,7 @@ same surface).
 | magit — refs (branches, remotes, tags) | [`magit-refs-mode`](help:magit-refs-mode) | ✅      |
 | magit — commit notes       | [`magit-notes-mode`](help:magit-notes-mode) | ✅      |
 | magit — cherries (not upstream yet) | [`magit-cherry-mode`](help:magit-cherry-mode) | ✅      |
+| magit — project diff (editable) | [`magit-project-diff-mode`](help:magit-project-diff-mode) | ✅      |
 | magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
 | magit — hunk chords        | [`magit-hunk-mode`](help:magit-hunk-mode) | ✅      |
 | magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |
@@ -108,6 +111,21 @@ same surface).
 |   — subsystem log          | [`lsp-log-mode`](help:lsp-log-mode) | ✅      |
 |   — one server's log       | [`lsp-server-log-mode`](help:lsp-server-log-mode) | ✅      |
 |   — protocol trace         | [`lsp-trace-log-mode`](help:lsp-trace-log-mode) | ✅      |
+|   — diagnostics           | [`lsp-diagnostics-mode`](help:lsp-diagnostics-mode) | ✅      |
+|   — go-to definition      | [`lsp-nav-mode`](help:lsp-nav-mode) | ✅      |
+|   — hover gate            | [`lsp-hover-mode`](help:lsp-hover-mode) | ✅      |
+|   — signature help        | [`lsp-signature-mode`](help:lsp-signature-mode) | ✅      |
+|   — symbols               | [`lsp-symbols-mode`](help:lsp-symbols-mode) | ✅      |
+|   — code actions          | [`lsp-code-action-mode`](help:lsp-code-action-mode) | ✅      |
+|   — formatting            | [`lsp-format-mode`](help:lsp-format-mode) | ✅      |
+|   — rename                | [`lsp-rename-mode`](help:lsp-rename-mode) | ✅      |
+|   — occurrence highlight  | [`lsp-document-highlight-mode`](help:lsp-document-highlight-mode) | ✅      |
+|   — selection range       | [`lsp-selection-range-mode`](help:lsp-selection-range-mode) | ✅      |
+|   — inlay hints           | [`lsp-inlay-hint-mode`](help:lsp-inlay-hint-mode) | ✅      |
+|   — semantic tokens       | [`lsp-semantic-tokens-mode`](help:lsp-semantic-tokens-mode) | ✅      |
+|   — server-driven folds   | [`lsp-folding-mode`](help:lsp-folding-mode) | ✅      |
+|   — progress reporting    | [`lsp-progress-mode`](help:lsp-progress-mode) | ✅      |
+|   — references view       | [`lsp-references-mode`](help:lsp-references-mode) | ✅      |
 | Hover popups               | [`hover-mode`](help:hover-mode) | ✅      |
 | `emacs-keys-mode`          | [`emacs-keys-mode`](help:emacs-keys-mode) | ✅      |
 | Claude Code                | [`claude-code-mode`](help:claude-code-mode) | ✅      |
@@ -151,6 +169,7 @@ same surface).
 | The `*messages*` log       | [`messages-mode`](help:messages-mode) | ✅      |
 | Plugins                    | [`plugins`](help:plugins)                | ✅      |
 |   — the manager buffer     | [`plugins-mode`](help:plugins-mode) | ✅      |
+|   — the boundary trace     | [`plugin-trace-mode`](help:plugin-trace-mode) | ✅      |
 | Core plugins               | [`core-plugins`](help:core-plugins)      | ✅      |
 | Configuring with `init.rs` | [`init`](help:init)                      | ✅      |
 | Performance posture        | _planned_                                | ⛔      |

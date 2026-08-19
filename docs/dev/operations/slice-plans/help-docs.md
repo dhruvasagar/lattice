@@ -1,6 +1,6 @@
 # Help docs — mode-aligned naming and full coverage
 
-**Status:** in progress — HD.1–HD.5 ✅, HD.6/HD.7 📝, HP.1–HP.3 ✅. Design
+**Status:** in progress — HD.1–HD.5 ✅, HD.7 ✅, HD.6 📝, HP.1–HP.3 ✅. Design
 fragment: none — this is a naming + coverage convention, recorded here
 and enforced by tests in `crates/lattice-help/src/topics.rs`. The HP
 slices at the end cover how a page *renders* rather than which pages
@@ -371,7 +371,7 @@ Closing it means classifying against the full contribution registry
 rather than the pushed-layer set; documented in `help.md` rather than
 left for a user to discover.
 
-### HD.7 — the coverage test only checks one direction 📝
+### HD.7 — the coverage test only checks one direction ✅
 
 Found by the 2026-08-07 documentation audit.
 
@@ -402,3 +402,34 @@ needs a way to say "this id is internal and deliberately has no page"
 mode REGISTRY at boot rather than from grepping the source. That is the
 slice: registry-driven enumeration, an explicit internal-modes
 allowlist, the guard, and then the three pages.
+
+**Landed 2026-08-19 — and the gap was 19 modes, not three.** The audit
+found three by inspection; the guard, enumerating the registry at boot,
+found every one. That difference is the slice's whole argument: a gap
+nothing enumerates grows silently between audits.
+
+`crates/lattice-host/tests/every_mode_has_a_help_page.rs` boots a real
+`Editor`, walks `mode_registry`, and requires `docs/user/<id>.md` for
+each. It lives in the host rather than beside its `lattice-help` twin
+because the registry only exists once every mode-owning crate has
+registered into it — grepping `ModeId::new` instead catches ~47 test
+fixtures, which is exactly the noise that gets a guard weakened until it
+stops guarding.
+
+`NO_PAGE_EXPECTED` ships **empty**. It is the escape hatch for a mode a
+user cannot act on, and two further tests keep it from becoming where
+pages go to be forgotten: an entry naming an unregistered mode fails,
+and so does an entry that has since grown a page.
+
+The 19: 15 `lsp-*` (the feature gates, plus diagnostics / folding /
+progress / the references view), `magit-project-diff-mode`,
+`plugin-trace-mode`, `refreshable-view-mode`,
+`directory-listing-mode`.
+
+**Site parity.** `site/data/nav.toml` gains all 19 — a new *LSP feature
+gates* group, a new *Shared behaviour minors* group, and additions to the
+magit and synthetic-buffer groups — plus sidebar labels where the bare
+mode id reads badly. `site/scripts/sync-docs.sh` then carries them into
+`site/content/docs/reference/` and into `static/docs-search.json`
+(133 entries), so the pages are reachable by search and not only by URL.
+Reference went 74 → 93 topics.

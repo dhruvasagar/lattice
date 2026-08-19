@@ -318,7 +318,7 @@ cancels the first, a second rename cancels the first. That granularity
 is correct and the foreground slot cannot express it — a single slot
 would make a hover cancel an in-flight rename. What was actually
 missing is only that `<C-g>` had no route to any of them, and
-[`enrol`](#421-two-verbs-arm-vs-enrol-cg3) supplies exactly that
+`enrol` (§4.2.1 above) supplies exactly that
 without disturbing the per-feature behaviour.
 
 The CG.1 special case (`cancel_foreground` reaching into

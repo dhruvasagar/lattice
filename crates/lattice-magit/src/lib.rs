@@ -5274,6 +5274,54 @@ mod tests {
         );
     }
 
+    /// `V` on an ordinary file buffer is a NO-OP, not an error.
+    ///
+    /// It used to echo "open a file-at-revision first", which told the
+    /// user they had done something wrong when they had asked for a state
+    /// they were already in: `V` means "take me to the live file", and
+    /// from a live file that request is already satisfied.
+    ///
+    /// `Effect::None` rather than an informational echo — "you are
+    /// already on the live file" is noise on a key whose entire job is to
+    /// put you there.
+    ///
+    /// Distinguished from reverse blame, which genuinely cannot run
+    /// outside a revision buffer because it needs a revision to resolve
+    /// against. Refusing is right there and wrong here; the two looked
+    /// alike, which is how this got the wrong one.
+    #[test]
+    fn visiting_the_live_file_from_a_live_file_does_nothing() {
+        use lattice_mode::Mode as _;
+        let handler = magit_global_mode::MagitGlobalMode
+            .action_handlers()
+            .into_iter()
+            .find(|c| c.action_name == "action:magit-global-file-visit-live")
+            .expect("the handler is contributed")
+            .handler;
+
+        // No `BufferStoreHandle`, so the buffer resolves to no
+        // file-at-revision name — the ordinary-file case.
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(1),
+            cursor: lattice_protocol::position::Position::new(0, 0),
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+
+        match handler(&ctx) {
+            None | Some(lattice_grammar::Effect::None) => {}
+            Some(lattice_grammar::Effect::Echo { level, text }) => {
+                panic!("`V` on a live file must not report anything; got {level:?}: {text}")
+            }
+            Some(other) => panic!("expected a no-op; got {other:?}"),
+        }
+    }
+
     /// MG.53.e: that argument names an existing file, so it is picked,
     /// not typed. Asserts the wiring rather than the intent — a
     /// declaration that merely *says* "repo-relative" in its prompt is

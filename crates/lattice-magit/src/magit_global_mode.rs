@@ -1531,14 +1531,26 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         }
                     }
                 }
-                // Naming what is missing beats a row that appears to do
-                // nothing — the same shape reverse blame's refusal has.
-                None => Effect::Echo {
-                    level: lattice_grammar::EchoLevel::Error,
-                    text: "magit: `V` goes from a file-at-revision back to the live file — \
-                           open one first (`C-c f v`, or <CR> on a log entry)"
-                        .to_string(),
-                },
+                // Not a file-at-revision buffer.
+                //
+                // This used to be an error, and it was wrong. `V` means
+                // "take me to the live file"; run from an ordinary file
+                // buffer you are ALREADY there, so the request is
+                // satisfied, not refused. Erroring told the user they had
+                // done something wrong when they had asked for a state
+                // they were already in.
+                //
+                // `Effect::None` rather than an echo: there is nothing to
+                // report. An echo saying "you are already on the live
+                // file" would be noise on a key whose whole job is to put
+                // you there.
+                //
+                // Contrast reverse blame, which genuinely cannot run
+                // outside a revision buffer — it needs a revision to
+                // resolve against, so refusing IS the answer there. The
+                // two looked alike and are not: one is missing an input,
+                // the other has already reached its destination.
+                None => Effect::None,
             })
         }),
     });

@@ -158,6 +158,8 @@ pub(crate) mod picker;
 mod popup;
 mod search;
 mod state;
+#[cfg(test)]
+mod surround_bindings;
 mod syntax;
 mod visual;
 

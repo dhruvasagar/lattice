@@ -712,7 +712,7 @@ const DIFF_SHOW_ROWS: &[TransientRow] = &[
         key: "e",
         label: "edit",
         doc: "Edit the working-tree diff across files",
-        action: "action:magit-diff-project",
+        action: "action:magit-project-diff",
         placeholder: "diff_project",
     },
 ];
@@ -2436,6 +2436,28 @@ pub fn dispatch_transient_with(
                                 .expect("`magit-menu-diff` is in ROOT_MENUS"),
                         )),
                     },
+                    // PD.6: the editable cross-file diff, promoted to the
+                    // dispatch's top level.
+                    //
+                    // It shipped reachable only as `d` → `e`, one level
+                    // down inside the Diff menu, next to three rows that
+                    // open patch text. That put the view people would
+                    // reach for most often behind the one they would
+                    // reach for least, and made it look like a variant of
+                    // the patch views rather than the different surface it
+                    // is. `e` for edit, matching the row it also keeps
+                    // inside the Diff menu — the two front-ends emit the
+                    // same action, so they cannot drift.
+                    //
+                    // An Action row, not a Submenu: this opens a view,
+                    // and there is nothing to choose first.
+                    action_or_placeholder(
+                        ids.get("action:magit-project-diff"),
+                        "e",
+                        "edit diff",
+                        "Edit the working-tree diff across every changed file",
+                        "project_diff",
+                    ),
                     TransientItem {
                         key: vec!["c".into()],
                         label: "commit".into(),
@@ -4480,7 +4502,7 @@ mod root_menu_chord_tests {
         assert_eq!(by_key.get("v"), Some(&"action:magit-diff-side-by-side"));
         assert_eq!(
             by_key.get("e"),
-            Some(&"action:magit-diff-project"),
+            Some(&"action:magit-project-diff"),
             "`e` opens the editable cross-file view"
         );
     }

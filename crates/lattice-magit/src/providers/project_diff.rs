@@ -435,7 +435,7 @@ pub fn scan_changed_files(
 
 /// The name this provider is registered under in the
 /// [`ProviderViewRegistry`]. Both front-ends —
-/// `:magit-diff-project` and the Diff transient's `e` row — name it.
+/// `:magit-project-diff` and the Diff transient's `e` row — name it.
 pub const PROVIDER_NAME: &str = "magit-project-diff";
 
 /// The view's buffer name. Stable, so re-triggering finds the buffer
@@ -747,7 +747,7 @@ pub fn register_project_diff_mode(modes: &mut ModeRegistry) {
 pub fn register_project_diff_provider(services: &lattice_mode::ServiceRegistry) {
     let Some(registry) = services.get::<lattice_mode::ProviderViewRegistryHandle>() else {
         tracing::debug!(
-            "project-diff: no ProviderViewRegistry; `:magit-diff-project` will not be available"
+            "project-diff: no ProviderViewRegistry; `:magit-project-diff` will not be available"
         );
         return;
     };
@@ -1069,7 +1069,7 @@ mod tests {
     // ── PD.3: the trigger ────────────────────────────────────────
 
     /// The comparison selector is an argument, not a second entry
-    /// point — one opener serves `:magit-diff-project` and the Diff
+    /// point — one opener serves `:magit-project-diff` and the Diff
     /// transient's `e` row.
     #[test]
     fn the_comparison_comes_from_the_trigger_arguments() {

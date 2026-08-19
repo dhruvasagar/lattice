@@ -171,7 +171,7 @@ excerpt per hunk, folded per file.
   comparisons edit through; staged and `rev..rev` open read-only, because an
   index blob has no anchor to propagate into.
 - Inherits `gr` / `q` from `magit-core-mode`; declares neither.
-- Surface: `:magit-diff-project` + an `e` row on the Diff transient.
+- Surface: `:magit-project-diff` + an `e` row on the Diff transient.
 - Compose: still the base A.2 (AI multi-file edits) would reuse — same
   rendering, different commit path.
 

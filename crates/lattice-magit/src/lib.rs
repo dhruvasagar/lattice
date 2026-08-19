@@ -841,7 +841,7 @@ fn register_ex_commands(
     // One dashed namespaced alias, per the ex-command naming rule. No
     // collapsed spelling, and no new 1–2 letter short.
     registry.register_ex_command(
-        "magit-diff-project",
+        "magit-project-diff",
         "Open every changed file in the working tree as one editable diff view. \
          Pass `staged` to see the index against HEAD instead (read-only).",
         ExCommandSpec {
@@ -2535,7 +2535,7 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     // picks it up from the `action:magit-` prefix, so the row wires
     // itself once the name is registered here.
     reg(
-        "action:magit-diff-project",
+        "action:magit-project-diff",
         "Open every changed file as one editable diff view",
     );
     reg(
@@ -5217,6 +5217,63 @@ mod tests {
         );
     }
 
+    /// PD.6: the project diff is reachable from the dispatch's top level,
+    /// not only from `d` → `e`. Asserts BOTH, because the point of the
+    /// promotion is an extra route rather than a moved one — losing the
+    /// Diff-menu row would break the muscle memory of anyone who learned
+    /// it there.
+    #[test]
+    fn the_project_diff_is_reachable_from_the_dispatch_and_the_diff_menu() {
+        let ids = transients::MagitActionIds::default();
+        let ctx = lattice_picker::TransientContext::default();
+        let spec = transients::dispatch_transient(&ids, &ctx);
+        let top_level = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .any(|i| i.key.iter().any(|k| k == "e"));
+        assert!(
+            top_level,
+            "the dispatch must offer `e` at its top level; keys were {:?}",
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .flat_map(|i| i.key.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // ...and the Diff menu keeps its own row. Read through the
+        // drift table rather than the private const, which is the same
+        // list `menu_rows_for_drift_check` guards.
+        let in_diff_menu = transients::all_row_tables()
+            .iter()
+            .filter(|(name, _)| *name == "diff/show")
+            .flat_map(|(_, rows)| rows.iter())
+            .any(|r| r.key == "e" && r.action == "action:magit-project-diff");
+        assert!(
+            in_diff_menu,
+            "the Diff menu must keep its `e` row — the promotion adds a route"
+        );
+    }
+
+    /// The ex-command answers to the mode's own name. `magit-project-diff-mode`
+    /// is the mode, `*magit:project-diff*` the buffer, `magit-project-diff.md`
+    /// the design — the command was the one surface spelling it the other way
+    /// round, which is exactly the split HD.1's rule exists to remove.
+    #[test]
+    fn the_ex_command_matches_the_mode_name() {
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        crate::register_ex_commands_for_test(&mut registry);
+        assert!(
+            registry.id_by_name("magit-project-diff").is_some(),
+            "`:magit-project-diff` must resolve"
+        );
+        assert!(
+            registry.id_by_name("magit-diff-project").is_none(),
+            "the old spelling must not linger — one alias per command"
+        );
+    }
+
     /// MG.53.e: that argument names an existing file, so it is picked,
     /// not typed. Asserts the wiring rather than the intent — a
     /// declaration that merely *says* "repo-relative" in its prompt is
@@ -6050,7 +6107,11 @@ mod tests {
             // walks, so its `m` row never reaches this count. The
             // one-row-per-section invariant is pinned separately, by
             // the jump-submenu count test.
-            116,
+            // PD.6: +1 — the project diff promoted to the dispatch's own
+            // top level as `e`. It is an ADDITIONAL leaf, not a moved
+            // one: the Diff menu keeps its `e` row, so both routes stay
+            // and both are counted.
+            117,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -6082,7 +6143,9 @@ mod tests {
             // MG.49: +2, the same two Diff rows as the guard above.
             // PD.3: +1, the same `e` Diff row as the guard above.
             // MG-unmerged: no change here either, for the same reason.
-            119,
+            // PD.6: +1 — the dispatch's top-level `e` row, present in
+            // this context too.
+            120,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

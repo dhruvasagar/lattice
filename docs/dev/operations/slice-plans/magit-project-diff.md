@@ -17,9 +17,11 @@ Catalogue entry: A.1 in
 |---|---|---|
 | PD.1 | `lattice-magit` → `lattice-multibuffer` dep + provider skeleton | ✅ |
 | PD.2 | Scan — changed set → baselines → excerpts | ✅ |
-| PD.3 | Trigger — `:magit-diff-project` + the Diff transient's `e` row | ✅ |
+| PD.3 | Trigger — `:magit-project-diff` + the Diff transient's `e` row | ✅ |
 | PD.4 | Edit propagation + the read-only rule | ✅ |
 | PD.5 | File-boundary folds | ✅ |
+| PD.6 | Rename + dispatch promotion | ✅ |
+| PD.7 | Diff colouring on the excerpts | 📝 **blocks usefulness** |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
 empty view is a legitimate intermediate). PD.5 is independent.
@@ -99,12 +101,12 @@ that presses a key first passes on the broken version too).
 > **PD.2's deferred async half landed here too**, as specified — the
 > trigger is what gave the batched scan something to drive.
 
-- Ex-command `:magit-diff-project`, one dashed namespaced alias, with
+- Ex-command `:magit-project-diff`, one dashed namespaced alias, with
   an optional `staged` argument. No collapsed spelling; no new 1–2
   letter short.
 - A fourth `TransientRow` on `DIFF_SHOW_ROWS`: key `e`, label `edit`,
   "Edit the working-tree diff across files". `d` / `f` / `v` unchanged.
-- `action:magit-diff-project` + its handler in `magit_global_mode`'s
+- `action:magit-project-diff` + its handler in `magit_global_mode`'s
   contribution list. Both front-ends return the *same*
   `AppEffect::OpenProviderView`, so they cannot drift.
 - `open_project_diff` — the registered opener. Opens the view **empty
@@ -246,6 +248,54 @@ folds already `closed: true`. Seeding new folds with
 a level-1 fold is not deeper than 99. `apply_fold_level_to_new` now ORs —
 `foldlevel` may add a close, never remove one a provider asked for.
 
+## PD.6 — the name and the way in ✅
+
+Two corrections from first use (2026-08-19).
+
+**`:magit-diff-project` → `:magit-project-diff`.** Everything else about
+this feature spells it the other way round: the mode is
+`magit-project-diff-mode`, the buffer `*magit:project-diff*`, the design
+fragment `magit-project-diff.md`. The command was the single surface
+disagreeing, which is the split HD.1's rule exists to remove — a thing
+answers to one name everywhere. Renamed outright with no alias, per the
+one-alias ex-command rule; it is unreleased.
+
+**Promoted to the dispatch's top level as `e`.** It shipped reachable
+only as `C-c g` → `d` → `e`, one level inside the Diff menu beside three
+rows that all open patch text. That put the view people reach for most
+often behind the one they reach for least, and framed it as a variant of
+the patch views rather than the different surface it is. The Diff-menu
+row stays: the promotion adds a route rather than moving one, and a test
+asserts both, because losing the old one would break whatever muscle
+memory had formed.
+
+## PD.7 — diff colouring on the excerpts 📝
+
+**Reported from first use, and it is the thing standing between this
+view and being useful:** the excerpts render, but nothing shows what
+changed, so a reader cannot tell a changed line from its context.
+
+Design §2 already claims this works — *"diff colouring layers over the
+excerpt exactly as it does elsewhere — syntax highlighting underneath,
+diff styling on top. Nothing about rendering is special-cased for this
+view."* That is aspiration written in the present tense. Nothing attaches
+a `DiffSession` to the composed multibuffer, and `project_diff.rs`
+contains no reference to diff signs, sessions or decorations at all.
+
+What makes it more than a wiring job: the existing diff subsystem is
+per-buffer, keyed on a `BufferId` with a baseline and a current rope. A
+project-diff view is **one** buffer whose rows come from *many* sources,
+each with its own baseline — so either the session model grows a
+composed-view variant, or the provider computes the styling itself at
+excerpt-build time (it already has both texts; `read_and_diff` holds the
+baseline and the working-tree content when it computes the hunk ranges)
+and publishes it as decorations the renderer layers.
+
+The second is likely right and cheaper, but it is a design choice about
+where diff styling for composed views comes from, so it wants deciding
+rather than assuming. Both renderers must land together per the
+cross-renderer rule.
+
 ---
 
 ## Deferred
@@ -256,6 +306,6 @@ a level-1 fold is not deeper than 99. `apply_fold_level_to_new` now ORs —
   the user typing (the hunk moves on the first keystroke). Its own
   design question, not a follow-on chore.
 - **Index write-back**, which would make staged comparisons editable.
-- **`:magit-diff-project <rev1>..<rev2>`** — read-only by design §2.1;
+- **`:magit-project-diff <rev1>..<rev2>`** — read-only by design §2.1;
   cheap once PD.2 parameterises the comparison, but not the daily
   driver.

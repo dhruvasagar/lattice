@@ -166,7 +166,7 @@ substrate" rule prescribes.
 
 ## 9. Trigger
 
-- Ex-command **`:magit-diff-project`** — dashed, namespaced, one alias.
+- Ex-command **`:magit-project-diff`** — dashed, namespaced, one alias.
 - A fourth row on the **Diff transient** (`d`), which currently carries
   `d` diff / `f` file / `v` side-by-side. **`e` — "edit"** reads
   correctly and is free. (`p` was considered and passed over: real magit

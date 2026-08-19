@@ -167,10 +167,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     //
     // The handler is a pure name + args hand-off; everything the view
     // does lives in `providers::project_diff`'s registered opener. The
-    // ex-command `:magit-diff-project` returns the identical effect, so
+    // ex-command `:magit-project-diff` returns the identical effect, so
     // the two front-ends cannot drift apart.
     contributions.push(ActionHandlerContribution {
-        action_name: "action:magit-diff-project",
+        action_name: "action:magit-project-diff",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             Some(Effect::AppAction(
                 lattice_grammar::app_effect::AppEffect::OpenProviderView {

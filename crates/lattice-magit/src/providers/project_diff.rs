@@ -274,6 +274,41 @@ pub fn changed_lines(before: &str, after: &str) -> Vec<(u32, lattice_diff::HunkK
     out
 }
 
+/// PD.7b: text the diff removed, grouped by the post-image line the
+/// removal sits above.
+///
+/// Taken from the PRE-image side (slot 0), which is the only place the
+/// removed text still exists — the post-image is the file, and the file
+/// no longer has it.
+pub fn removed_lines(before: &str, after: &str) -> Vec<(u32, Vec<String>)> {
+    use lattice_diff::{DiffAlgorithm, HunkKind};
+    let Ok(idx) = lattice_diff::compute_diff(
+        &[ropey::Rope::from_str(before), ropey::Rope::from_str(after)],
+        DiffAlgorithm::Histogram,
+    ) else {
+        return Vec::new();
+    };
+    let pre: Vec<&str> = before.lines().collect();
+    let mut out: Vec<(u32, Vec<String>)> = Vec::new();
+    for h in &idx.hunks {
+        if !matches!(h.kind, HunkKind::Remove | HunkKind::Change) {
+            continue;
+        }
+        let (Some(before_r), Some(after_r)) = (h.ranges.first(), h.ranges.get(1)) else {
+            continue;
+        };
+        let text: Vec<String> = (before_r.start..before_r.end)
+            .filter_map(|l| pre.get(l as usize).map(|s| (*s).to_string()))
+            .collect();
+        if text.is_empty() {
+            continue;
+        }
+        out.push((after_r.start, text));
+    }
+    out.sort_by_key(|(l, _)| *l);
+    out
+}
+
 pub fn file_hunk_ranges(before: &str, after: &str) -> Vec<(u32, u32)> {
     use lattice_diff::{DiffAlgorithm, HunkKind};
     let idx = lattice_diff::compute_diff(
@@ -298,8 +333,22 @@ pub fn file_hunk_ranges(before: &str, after: &str) -> Vec<(u32, u32)> {
                 }
                 _ => return None,
             };
+            // `LineRange` is half-open (`start..end`); `Excerpt::new`
+            // takes an INCLUSIVE end. Converting needs the `- 1`, and
+            // the clamp is to `last_line`, not `last_line + 1`.
+            //
+            // Both were wrong, and together they made every excerpt name
+            // at least one row the file does not have. That row is
+            // silently dropped when the text is composed
+            // (`compose_text_from_sources` skips a `None` line) but still
+            // gets an entry in the row translation — so the composed text
+            // ran one row SHORT of its own line-number map, and every row
+            // after the first such excerpt was numbered one low. Compounding
+            // per excerpt, which is why `<CR>` landed off by one too: the
+            // jump reads the same map.
             let start = r.start.saturating_sub(CONTEXT);
-            let end = (r.end.saturating_add(CONTEXT)).min(last_line.saturating_add(1));
+            let last_changed = r.end.saturating_sub(1);
+            let end = last_changed.saturating_add(CONTEXT).min(last_line);
             Some((start, end.max(start)))
         })
         .collect()
@@ -330,6 +379,16 @@ pub struct FileHunks {
     /// Recording nothing for it here is why this view currently reads as
     /// "some lines are highlighted" rather than "these lines went away".
     pub changed: Vec<(u32, lattice_diff::HunkKind)>,
+    /// PD.7b: lines the diff removed, keyed by the **post-image line they
+    /// sat above** and carrying the removed text.
+    ///
+    /// These have no row in the working-tree file — that is what "removed"
+    /// means — so they cannot be painted like `changed`. They render as
+    /// virtual rows anchored above the post-image line, which is also why
+    /// they are unselectable and untypeable: a line that is not in the file
+    /// is not a line you can edit, and the ghost row makes that visible
+    /// rather than surprising.
+    pub removed: Vec<(u32, Vec<String>)>,
 }
 
 /// **The blocking half.** Read each changed file and compute its hunk
@@ -360,11 +419,13 @@ pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
             continue;
         }
         let changed = changed_lines(baseline, &text);
+        let removed = removed_lines(baseline, &text);
         out.push(FileHunks {
             path: path.clone(),
             text,
             ranges,
             changed,
+            removed,
         });
     }
     out
@@ -1054,6 +1115,75 @@ mod tests {
             "the modified file is in the built batch: {:?}",
             built.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
+    }
+
+    // ── PD.8: excerpt ranges must name rows the file has ─────────
+
+    /// Reported as "the line numbers are off by one, and `<CR>` lands one
+    /// line off". One cause: `LineRange` is half-open and `Excerpt::new`
+    /// takes an inclusive end, so every range named one row too many —
+    /// and the clamp allowed `last_line + 1`, a row past EOF.
+    ///
+    /// The symptom is indirect, which is why it is worth a test at this
+    /// level: a row the source does not have is skipped when the text is
+    /// composed but still counted in the row translation, so the composed
+    /// text runs short of its own line-number map and everything below is
+    /// numbered low. Compounding per excerpt.
+    #[test]
+    fn an_excerpt_never_names_a_row_past_the_end_of_the_file() {
+        // Change the LAST line, so context pushes the range against EOF.
+        let before = "a\nb\nc\n";
+        let after = "a\nb\nCHANGED\n";
+        let last = (after.lines().count() as u32) - 1;
+        for (start, end) in file_hunk_ranges(before, after) {
+            assert!(
+                end <= last,
+                "excerpt ({start},{end}) names row {end}, past the last line {last}"
+            );
+        }
+    }
+
+    /// The inclusive end must be the last CHANGED line plus context, not
+    /// the half-open end plus context — otherwise every excerpt is one row
+    /// long even when it fits inside the file, and the desync is just
+    /// harder to notice.
+    #[test]
+    fn the_excerpt_end_is_inclusive_of_the_last_context_line() {
+        // 20 lines, one changed in the middle: context is unclamped, so
+        // the arithmetic is visible.
+        let before: String = (0..20).map(|i| format!("line{i}\n")).collect();
+        let after = before.replace("line10\n", "CHANGED\n");
+        let ranges = file_hunk_ranges(&before, &after);
+        assert_eq!(ranges.len(), 1, "one hunk; got {ranges:?}");
+        let (start, end) = ranges[0];
+        assert_eq!(
+            start,
+            10 - CONTEXT,
+            "start is the changed line minus context"
+        );
+        assert_eq!(
+            end,
+            10 + CONTEXT,
+            "end is the changed line plus context, INCLUSIVE"
+        );
+    }
+
+    /// Every row an excerpt names must exist in the source, for any hunk
+    /// position — the property the two tests above are instances of.
+    #[test]
+    fn every_named_row_exists_for_a_change_anywhere_in_the_file() {
+        let before: String = (0..12).map(|i| format!("line{i}\n")).collect();
+        let last = 11u32;
+        for changed in 0..12u32 {
+            let after = before.replace(&format!("line{changed}\n"), "CHANGED\n");
+            for (start, end) in file_hunk_ranges(&before, &after) {
+                assert!(
+                    end <= last && start <= end,
+                    "changing line {changed} produced excerpt ({start},{end}); \
+                     last line is {last}"
+                );
+            }
+        }
     }
 
     // ── PD.7a: which lines the diff touched ──────────────────────

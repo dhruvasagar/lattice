@@ -3963,9 +3963,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn m5_expand_clips_to_source_end() {
-        // Source text "L0\n...L9\n" has 10 content lines AND a
-        // trailing empty line after the final `\n` — `Buffer::line_count`
-        // returns 11. Clip target is the last row index = 10.
+        // Source text "L0\n...L9\n" has 10 content lines, plus the
+        // phantom row ropey reports after the terminating newline.
+        // CV.3 clips expansion in CONTENT space, so the last row an
+        // excerpt may reach is index 9 — the phantom row is not a line
+        // the source has, and an excerpt ending on it would render a
+        // blank tail row that is not in the file.
         let mut text = String::new();
         for i in 0..10 {
             text.push_str(&format!("L{i}\n"));
@@ -3975,11 +3978,11 @@ mod tests {
         let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
 
         // delta=6 → above=3, below=3. start = 7-3 = 4.
-        // end = 8+3 = 11 → clipped to source_line_count - 1 = 10.
+        // end = 8+3 = 11 → clipped to content_line_count - 1 = 9.
         mb.expand_excerpt_at(0, 6);
         let excerpts = mb.excerpts();
         assert_eq!(excerpts[0].start_line, 4);
-        assert_eq!(excerpts[0].end_line, 10);
+        assert_eq!(excerpts[0].end_line, 9);
     }
 
     #[tokio::test(flavor = "multi_thread")]

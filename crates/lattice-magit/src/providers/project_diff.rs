@@ -245,6 +245,35 @@ fn hunk_excerpt_header(path: &std::path::Path, line0: u32) -> ExcerptHeader {
 /// Returns the post-image ranges — the lines as they exist on disk
 /// *now* — because that is what an excerpt anchors to and what an edit
 /// propagates into.
+/// PD.7a: post-image lines the diff touched, paired with the hunk kind
+/// that touched them. Source-line coordinates.
+pub fn changed_lines(before: &str, after: &str) -> Vec<(u32, lattice_diff::HunkKind)> {
+    use lattice_diff::{DiffAlgorithm, HunkKind};
+    let Ok(idx) = lattice_diff::compute_diff(
+        &[ropey::Rope::from_str(before), ropey::Rope::from_str(after)],
+        DiffAlgorithm::Histogram,
+    ) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, HunkKind)> = Vec::new();
+    for h in &idx.hunks {
+        // Slot 1 is the post-image. A pure Remove's slot-1 range is
+        // empty by construction, so nothing is emitted — correct here,
+        // and the reason PD.7b needs virtual rows rather than more of
+        // this.
+        let Some(r) = h.ranges.get(1) else { continue };
+        if !matches!(h.kind, HunkKind::Add | HunkKind::Change) {
+            continue;
+        }
+        for line in r.start..r.end {
+            out.push((line, h.kind));
+        }
+    }
+    out.sort_by_key(|(l, _)| *l);
+    out.dedup_by_key(|(l, _)| *l);
+    out
+}
+
 pub fn file_hunk_ranges(before: &str, after: &str) -> Vec<(u32, u32)> {
     use lattice_diff::{DiffAlgorithm, HunkKind};
     let idx = lattice_diff::compute_diff(
@@ -293,6 +322,14 @@ pub struct FileHunks {
     pub text: String,
     /// Post-image excerpt ranges, one per hunk, context already applied.
     pub ranges: Vec<(u32, u32)>,
+    /// PD.7a: which post-image lines the diff touched, in **source** line
+    /// coordinates, sorted.
+    ///
+    /// Only `Add` and `Change` appear. A removed line has no post-image
+    /// row to paint — showing it needs a virtual row, which is PD.7b.
+    /// Recording nothing for it here is why this view currently reads as
+    /// "some lines are highlighted" rather than "these lines went away".
+    pub changed: Vec<(u32, lattice_diff::HunkKind)>,
 }
 
 /// **The blocking half.** Read each changed file and compute its hunk
@@ -322,10 +359,12 @@ pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
         if ranges.is_empty() {
             continue;
         }
+        let changed = changed_lines(baseline, &text);
         out.push(FileHunks {
             path: path.clone(),
             text,
             ranges,
+            changed,
         });
     }
     out
@@ -340,6 +379,60 @@ pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
 /// Appending (rather than replacing) is what makes the view fill
 /// progressively: the user sees the first files while the rest are
 /// still being read.
+/// PD.7a: the composed-row spans that make a change visible.
+///
+/// Composed rows are excerpts laid end to end, so a source line's row
+/// index depends on every excerpt appended before it — which is why this
+/// runs after the batch has been appended and reads the view's own
+/// excerpt list rather than trying to predict it.
+///
+/// Published as **styled spans**, not as a diff session. The host already
+/// derives its gutter sign map from `Style::DiffAdd` / `DiffRemove`
+/// (`diff_signs_from_spans`), which is how magit's patch buffers get
+/// their signs — so one publish yields both the row tint and the gutter
+/// mark, and `lattice-multibuffer` gains no diff dependency, which PD.1
+/// asserts it must not.
+fn composed_diff_spans(
+    view: &MultibufferDocumentHandle,
+    changed_by_source: &HashMap<BufferId, Vec<(u32, lattice_diff::HunkKind)>>,
+) -> Vec<Vec<lattice_cells::StyledSpan>> {
+    use lattice_cells::style::Style;
+    let excerpts = view.excerpts();
+    let total: usize = excerpts.iter().map(|e| e.line_count() as usize).sum();
+    let mut rows: Vec<Vec<lattice_cells::StyledSpan>> = vec![Vec::new(); total];
+
+    let mut composed = 0usize;
+    for excerpt in &excerpts {
+        let changed = changed_by_source.get(&excerpt.source);
+        for offset in 0..excerpt.line_count() {
+            let source_line = excerpt.start_line + offset;
+            if let Some(kind) = changed.and_then(|c| {
+                c.binary_search_by_key(&source_line, |(l, _)| *l)
+                    .ok()
+                    .map(|i| c[i].1)
+            }) {
+                // Only Add and Remove exist as text styles. A changed
+                // line IS an added line in the post-image — the removal
+                // half is the row that is not there, which PD.7b renders
+                // as a virtual row. Painting Change as Add is therefore
+                // accurate for what this rope actually contains, not a
+                // fallback.
+                let _ = kind;
+                let style = Style::DiffAdd;
+                // Whole-row span. The renderer paints the line background
+                // from it and the host reads the style for the gutter.
+                rows[composed + offset as usize] = vec![lattice_cells::StyledSpan {
+                    start: 0,
+                    end: usize::MAX,
+                    style,
+                }];
+            }
+        }
+        composed += excerpt.line_count() as usize;
+    }
+    rows
+}
+
 pub fn attach_batch(view: &MultibufferDocumentHandle, batch: &[FileHunks]) -> usize {
     let mut appended = 0usize;
     for file in batch {
@@ -589,7 +682,20 @@ pub fn open_project_diff(
     }
 
     let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
-    spawn_project_diff_scan(view, workdir, comparison, mb_registry, events);
+    // PD.7a: the seam the diff styling rides on. Absent in a test host
+    // that wired no highlight service — the view then renders uncoloured
+    // rather than failing, which is the graceful-degradation rule.
+    let synthetic_highlights = services
+        .get::<lattice_mode::PendingSyntheticHighlightsHandle>()
+        .map(|h| (*h).clone());
+    spawn_project_diff_scan(
+        view,
+        workdir,
+        comparison,
+        mb_registry,
+        events,
+        synthetic_highlights,
+    );
 
     ProviderViewOutcome::Opened {
         view,
@@ -629,6 +735,7 @@ fn spawn_project_diff_scan(
     comparison: ProjectDiffComparison,
     mb_registry: Arc<MultibufferRegistryHandle>,
     events: Option<Arc<EventBus>>,
+    synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
 ) {
     let editable_note = if comparison.is_editable() {
         ""
@@ -674,6 +781,11 @@ fn spawn_project_diff_scan(
         let total_files = files.len();
         let mut files_done = 0usize;
         let mut hunks = 0usize;
+        // PD.7a: accumulated across batches, because the composed spans
+        // are rebuilt whole each time and every source's classification
+        // has to still be there when a later batch triggers the rebuild.
+        let mut changed_by_source: HashMap<BufferId, Vec<(u32, lattice_diff::HunkKind)>> =
+            HashMap::new();
 
         for chunk in files.chunks(SCAN_BATCH) {
             let owned: Vec<(PathBuf, String)> = chunk.to_vec();
@@ -689,6 +801,23 @@ fn spawn_project_diff_scan(
                 return;
             };
             hunks += attach_batch(&handle, &built);
+            // PD.7a: repaint the whole view after each batch. Rebuilding
+            // every row rather than appending is what keeps the spans
+            // aligned — an excerpt appended now shifts nothing, but a
+            // later batch's rows sit after these, and `Replace` is the
+            // op that cannot drift out of step with the rope.
+            for f in &built {
+                if let Some(id) = handle
+                    .source_buffer_ids()
+                    .into_iter()
+                    .find(|id| handle.source_path(*id).as_deref() == Some(f.path.as_path()))
+                {
+                    changed_by_source.insert(id, f.changed.clone());
+                }
+            }
+            if let Some(pending) = &synthetic_highlights {
+                pending.store_and_wake(view, composed_diff_spans(&handle, &changed_by_source));
+            }
             files_done += chunk.len();
 
             handle.set_headerline(HeaderlineStatus::InProgress {
@@ -924,6 +1053,91 @@ mod tests {
             built.iter().any(|f| f.path.ends_with("tracked.rs")),
             "the modified file is in the built batch: {:?}",
             built.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    // ── PD.7a: which lines the diff touched ──────────────────────
+    //
+    // The view showed real source with nothing marking what changed, so a
+    // reader could not tell a changed line from its context — the whole
+    // point of a diff. `changed_lines` is the classification that fixes
+    // it, in post-image (working-tree) coordinates, which is the only
+    // coordinate space the excerpts have rows in.
+
+    #[test]
+    fn an_added_line_is_classified() {
+        let changed = changed_lines("a\nb\n", "a\nNEW\nb\n");
+        assert!(
+            changed.iter().any(|(l, _)| *l == 1),
+            "the inserted line 1 should be marked; got {changed:?}"
+        );
+    }
+
+    #[test]
+    fn a_changed_line_is_classified() {
+        let changed = changed_lines("a\nold\nc\n", "a\nnew\nc\n");
+        assert!(
+            changed.iter().any(|(l, _)| *l == 1),
+            "the rewritten line 1 should be marked; got {changed:?}"
+        );
+    }
+
+    /// Context lines are what the marks are read AGAINST. If everything
+    /// were marked the view would be as uninformative as marking nothing.
+    #[test]
+    fn untouched_lines_are_not_classified() {
+        let changed = changed_lines("a\nb\nc\n", "a\nNEW\nb\nc\n");
+        let marked: Vec<u32> = changed.iter().map(|(l, _)| *l).collect();
+        assert!(
+            !marked.contains(&0),
+            "line 0 is unchanged context; got {marked:?}"
+        );
+    }
+
+    /// A pure deletion has NO post-image row, so it is deliberately absent
+    /// here — there is no line to paint. Showing the user that something
+    /// was removed needs a virtual row, which is PD.7b. Pinned so that
+    /// absence reads as a decision rather than a miss.
+    #[test]
+    fn a_pure_removal_marks_nothing_because_it_has_no_row() {
+        let changed = changed_lines("a\ngone\nb\n", "a\nb\n");
+        assert!(
+            changed.is_empty(),
+            "a removed line has no post-image row to mark; got {changed:?}"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_file_classifies_nothing() {
+        assert!(changed_lines("same\n", "same\n").is_empty());
+    }
+
+    /// The classification is sorted and deduplicated, because the span
+    /// builder binary-searches it once per composed row.
+    #[test]
+    fn the_classification_is_sorted_and_unique() {
+        let changed = changed_lines("a\nb\nc\nd\n", "A\nb\nC\nD\n");
+        let lines: Vec<u32> = changed.iter().map(|(l, _)| *l).collect();
+        let mut sorted = lines.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(lines, sorted, "must be sorted and unique for binary search");
+    }
+
+    /// The scan carries the classification through to the batch, or the
+    /// view has nothing to paint from.
+    #[test]
+    fn the_batch_carries_the_classification() {
+        let dir = repo_with_changes();
+        let files = scan_changed_files(dir.path(), ProjectDiffComparison::WorkingTree);
+        let built = read_and_diff(&files);
+        let tracked = built
+            .iter()
+            .find(|f| f.path.ends_with("tracked.rs"))
+            .expect("the modified file is in the batch");
+        assert!(
+            !tracked.changed.is_empty(),
+            "a file with hunks must carry marked lines"
         );
     }
 

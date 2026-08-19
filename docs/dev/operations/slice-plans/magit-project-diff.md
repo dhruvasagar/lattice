@@ -21,7 +21,9 @@ Catalogue entry: A.1 in
 | PD.4 | Edit propagation + the read-only rule | ✅ |
 | PD.5 | File-boundary folds | ✅ |
 | PD.6 | Rename + dispatch promotion | ✅ |
-| PD.7 | Diff colouring on the excerpts | 📝 **blocks usefulness** |
+| PD.7a | Added/changed lines coloured | ✅ |
+| PD.7b | Removed lines as virtual rows | 📝 |
+| PD.7c | Staleness policy after an edit | 📝 |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
 empty view is a legitimate intermediate). PD.5 is independent.
@@ -269,7 +271,7 @@ row stays: the promotion adds a route rather than moving one, and a test
 asserts both, because losing the old one would break whatever muscle
 memory had formed.
 
-## PD.7 — diff colouring on the excerpts 📝
+## PD.7 — diff colouring on the excerpts 🚧 (a ✅, b/c 📝)
 
 **Reported from first use, and it is the thing standing between this
 view and being useful:** the excerpts render, but nothing shows what

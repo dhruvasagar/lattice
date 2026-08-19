@@ -17958,6 +17958,34 @@ impl Editor {
             // contract). Either way the call is the same.
             (lattice_mode::ModeKind::Major, _) => self.activate_mode_by_id(buffer_id, mode_id),
         };
+        // Report what the buffer is in NOW, not what the toggle set out to
+        // do. Activation can refuse — a missing capability, an
+        // `ActivationPolicy` that declines — and those paths set their own
+        // message; printing "enabled" over one would be worse than the
+        // silence this replaced.
+        //
+        // Silence is what it replaced: the toggle has echoed only on an
+        // unknown name since M.5.1 introduced it. For a mode with a visible
+        // surface that was survivable, since the screen answered the
+        // question. For a gate or a marker — `lsp-hover-mode`,
+        // `lsp-progress-mode` — nothing on screen changes, so the only way to
+        // learn which way you had just flipped it was to run the command
+        // again, which flips it back.
+        let active_after = self
+            .active_modes
+            .get(&buffer_id)
+            .map(|m| m.is_active(mode_id))
+            .unwrap_or(false);
+        if active_after != active_now {
+            let state = if active_after { "enabled" } else { "disabled" };
+            self.set_message(EchoLevel::Info, format!("{mode_id} {state}"));
+        } else if active_after {
+            // A major re-activated on the buffer it already owns: the
+            // registry contract is a reload, not a toggle off. Saying
+            // "enabled" would be true but would read as a no-op; saying
+            // "disabled" would be a lie.
+            self.set_message(EchoLevel::Info, format!("{mode_id} reloaded"));
+        }
         // Slice 3c.final.B (group 2): mode cascades flip
         // `option_cache.X` (current_line_highlight,
         // show_whitespace, …) which renderers now read through

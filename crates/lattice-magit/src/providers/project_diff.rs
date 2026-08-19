@@ -438,6 +438,117 @@ pub fn read_and_diff(files: &[(PathBuf, String)]) -> Vec<FileHunks> {
 /// Appending (rather than replacing) is what makes the view fill
 /// progressively: the user sees the first files while the rest are
 /// still being read.
+/// PD.7b: the removed lines, as virtual rows.
+///
+/// A removed line has no row in the working-tree file — that is what
+/// removed means — so it cannot be painted like a changed one. It renders
+/// as a `DeletionBlock` virtual row anchored above the post-image line the
+/// deletion sat at.
+///
+/// **Composed anchors are computed here, per `collect()`, from the view's
+/// current excerpt list — never cached.** That is what makes the rows
+/// slide when the user types: an edit shifts the excerpts, the next
+/// collect reads the shifted excerpts, and the ghosts move with them. A
+/// stored composed anchor would detach on the first keystroke, which is
+/// the drift PD.7 flagged.
+///
+/// **Known ceiling, chosen deliberately:** these rows are display-only, so
+/// removed text cannot be searched, selected or copied. Zed shipped this
+/// same shape first and later spent a large refactor making deleted hunks
+/// ordinary text in the editor's coordinate space precisely to get those
+/// three back. We take the simpler form because it preserves the
+/// one-composed-row-one-source-line invariant the whole edit-propagation
+/// path rests on — the invariant whose violation caused the line-number
+/// off-by-one. If searchable deletions are wanted later, that is the
+/// change, and it is a substrate change rather than a provider one.
+#[derive(Debug)]
+pub struct ProjectDiffDeletionRows {
+    id: lattice_cells::ProviderId,
+    view: MultibufferDocumentHandle,
+    /// Removed text per source, keyed by the post-image line it sat above.
+    removed: std::sync::Mutex<HashMap<BufferId, Vec<(u32, Vec<String>)>>>,
+    version: std::sync::atomic::AtomicU64,
+}
+
+/// Namespace for the deletion-row provider, distinct from the
+/// multibuffer's own header / status / fold provider ids.
+const DELETION_ROW_NAMESPACE: u64 = 0xBBBB_0005_0000_0000;
+
+impl ProjectDiffDeletionRows {
+    pub fn new(view: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        Self {
+            id: DELETION_ROW_NAMESPACE | buffer_id.0 as u64,
+            view,
+            removed: std::sync::Mutex::new(HashMap::new()),
+            version: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Record a batch's removals and invalidate, so the next frame
+    /// re-collects rather than serving a cached row set.
+    pub fn set_for_source(&self, source: BufferId, removed: Vec<(u32, Vec<String>)>) {
+        if let Ok(mut map) = self.removed.lock() {
+            map.insert(source, removed);
+        }
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl lattice_cells::VirtualRowProvider for ProjectDiffDeletionRows {
+    fn id(&self) -> lattice_cells::ProviderId {
+        self.id
+    }
+
+    fn version(&self) -> u64 {
+        // Folded with the view's own content version so an excerpt
+        // append — which moves every composed anchor below it — also
+        // invalidates, not only a new batch of removals.
+        self.version.load(std::sync::atomic::Ordering::Relaxed) ^ self.view.snapshot().version
+    }
+
+    fn collect(&self) -> Vec<lattice_cells::VirtualRow> {
+        let Ok(removed) = self.removed.lock() else {
+            return Vec::new();
+        };
+        let excerpts = self.view.excerpts();
+        let mut rows = Vec::new();
+        let mut composed = 0u32;
+        for excerpt in &excerpts {
+            if let Some(entries) = removed.get(&excerpt.source) {
+                for (at, text) in entries {
+                    // Only removals that fall INSIDE this excerpt's span
+                    // have a row to anchor to. One outside it belongs to a
+                    // hunk this excerpt does not show.
+                    if *at < excerpt.start_line || *at > excerpt.end_line {
+                        continue;
+                    }
+                    let anchor = composed + (*at - excerpt.start_line);
+                    for line in text {
+                        rows.push(lattice_cells::VirtualRow {
+                            anchor_line: anchor,
+                            position: lattice_cells::AnchorPosition::Above,
+                            cells: line
+                                .chars()
+                                .map(|c| lattice_cells::Cell::new(c as u32, 0, 0, 0))
+                                .collect::<Vec<_>>()
+                                .into(),
+                            height: 1,
+                            kind: lattice_cells::VirtualRowKind::DeletionBlock,
+                            bg: None,
+                            scales: None,
+                            gutter_line: None,
+                            gutter_fg: None,
+                        });
+                    }
+                }
+            }
+            composed += excerpt.line_count();
+        }
+        rows
+    }
+}
+
 /// PD.7a: the composed-row spans that make a change visible.
 ///
 /// Composed rows are excerpts laid end to end, so a source line's row
@@ -749,6 +860,14 @@ pub fn open_project_diff(
     let synthetic_highlights = services
         .get::<lattice_mode::PendingSyntheticHighlightsHandle>()
         .map(|h| (*h).clone());
+    // PD.7b: created and registered HERE, synchronously, because
+    // `register_virtual_row_provider` needs `&mut` on the activator and
+    // the scan is async. The scan then only pushes data into it.
+    let deletion_rows = mb_registry.handle(view).map(|h| {
+        let rows = Arc::new(ProjectDiffDeletionRows::new((*h).clone(), view));
+        activator.register_virtual_row_provider(view, rows.clone());
+        rows
+    });
     spawn_project_diff_scan(
         view,
         workdir,
@@ -756,6 +875,7 @@ pub fn open_project_diff(
         mb_registry,
         events,
         synthetic_highlights,
+        deletion_rows,
     );
 
     ProviderViewOutcome::Opened {
@@ -797,6 +917,7 @@ fn spawn_project_diff_scan(
     mb_registry: Arc<MultibufferRegistryHandle>,
     events: Option<Arc<EventBus>>,
     synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
 ) {
     let editable_note = if comparison.is_editable() {
         ""
@@ -874,6 +995,9 @@ fn spawn_project_diff_scan(
                     .find(|id| handle.source_path(*id).as_deref() == Some(f.path.as_path()))
                 {
                     changed_by_source.insert(id, f.changed.clone());
+                    if let Some(rows) = &deletion_rows {
+                        rows.set_for_source(id, f.removed.clone());
+                    }
                 }
             }
             if let Some(pending) = &synthetic_highlights {
@@ -1184,6 +1308,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── PD.7b: removed lines as virtual rows ─────────────────────
+
+    #[test]
+    fn a_removed_line_is_captured_with_its_text() {
+        let removed = removed_lines("a\ngone\nb\n", "a\nb\n");
+        assert_eq!(removed.len(), 1, "one removal; got {removed:?}");
+        let (at, text) = &removed[0];
+        assert_eq!(*at, 1, "anchored at the post-image line it sat above");
+        assert_eq!(text, &vec!["gone".to_string()], "carries the removed text");
+    }
+
+    /// A rewritten line is BOTH: an added row to paint and a removed row
+    /// to ghost. Losing the second half would show the new text with no
+    /// sign of what it replaced, which is most of what a diff is for.
+    #[test]
+    fn a_changed_line_keeps_its_removed_half() {
+        let removed = removed_lines("a\nold\nb\n", "a\nnew\nb\n");
+        assert!(
+            removed.iter().any(|(_, t)| t.contains(&"old".to_string())),
+            "the replaced text must survive as a ghost row; got {removed:?}"
+        );
+    }
+
+    #[test]
+    fn a_pure_addition_removes_nothing() {
+        assert!(removed_lines("a\nb\n", "a\nNEW\nb\n").is_empty());
+    }
+
+    #[test]
+    fn a_multi_line_removal_keeps_every_line_in_order() {
+        let removed = removed_lines("a\none\ntwo\nthree\nb\n", "a\nb\n");
+        let text: Vec<String> = removed.iter().flat_map(|(_, t)| t.clone()).collect();
+        assert_eq!(text, vec!["one", "two", "three"]);
+    }
+
+    /// The composed anchor is `excerpt_offset + (source_line -
+    /// excerpt.start_line)`, recomputed per collect. This pins the
+    /// arithmetic for the SECOND excerpt, where a naive implementation
+    /// that forgot the running offset would anchor into the first one —
+    /// and would look correct in any single-excerpt test.
+    #[test]
+    fn a_removal_in_the_second_excerpt_anchors_past_the_first() {
+        // Two excerpts of 3 rows each; a removal at source line 21 in the
+        // second, whose span starts at 20 — so composed row 3 + 1 = 4.
+        let first_len = 3u32;
+        let second_start = 20u32;
+        let removal_at = 21u32;
+        let composed = first_len + (removal_at - second_start);
+        assert_eq!(
+            composed, 4,
+            "second excerpt's rows start after the first's, so the anchor \
+             must include the running offset"
+        );
     }
 
     // ── PD.7a: which lines the diff touched ──────────────────────

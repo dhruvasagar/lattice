@@ -22,7 +22,7 @@ Catalogue entry: A.1 in
 | PD.5 | File-boundary folds | ✅ |
 | PD.6 | Rename + dispatch promotion | ✅ |
 | PD.7a | Added/changed lines coloured | ✅ |
-| PD.7b | Removed lines as virtual rows | 📝 |
+| PD.7b | Removed lines as virtual rows | ✅ (searchability a known ceiling) |
 | PD.7c | Staleness policy after an edit | 📝 |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an

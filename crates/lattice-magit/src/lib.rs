@@ -54,6 +54,7 @@ pub mod magit_submodule_mode;
 pub mod picker_sources;
 pub mod providers;
 pub mod refresh;
+pub mod repo_scope;
 pub mod sections;
 pub mod transients;
 pub mod workdir;
@@ -230,7 +231,23 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // MG.41g: no notification handle is captured any more — the git
     // ops publish `BackgroundTaskFinished` and the notification layer
     // subscribes, so magit has no dependency on it at all.
-    register_ex_commands(boot.commands_mut(), blame_requests);
+    // MR.2: which repository each magit buffer acts on. Registered as a
+    // service (the modes read it at activation) AND captured by the
+    // ex-command closures below, which have no service registry to
+    // reach — one map, both surfaces.
+    let repo_scopes: repo_scope::RepoScopesHandle = Arc::new(repo_scope::RepoScopes::default());
+    boot.register_service::<repo_scope::RepoScopesHandle>(repo_scopes.clone());
+    // The store handle exists on `boot` from Phase A; the *service*
+    // entry for it is registered after this install runs, so the
+    // ex-commands capture the handle rather than looking it up.
+    let store = boot.buffer_store().clone();
+    install_repo_scope_cleanup(boot, repo_scopes.clone());
+    register_ex_commands(
+        boot.commands_mut(),
+        blame_requests,
+        store,
+        repo_scopes.clone(),
+    );
 
     // ── Action commands (keymap resolution targets) ──────
 
@@ -740,17 +757,90 @@ fn reverse_blame_usage() -> Effect {
     }
 }
 
+/// MR.2: drop a magit buffer's recorded repository when the buffer
+/// closes.
+///
+/// Same shape as `lattice-lsp`'s references cleanup, including the
+/// runtime guard: an `Editor` built outside a tokio runtime (the host
+/// lib tests) skips the subscriber rather than panicking, and leaks at
+/// most one small entry per magit buffer in a short-lived process.
+fn install_repo_scope_cleanup(boot: &mut impl SubsystemBoot, scopes: repo_scope::RepoScopesHandle) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!(
+            "magit: no tokio runtime in scope; skipping DocumentClosed \
+             repo-scope cleanup (expected in test paths)"
+        );
+        return;
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+    boot.event_bus().subscribe(
+        lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::DocumentClosed),
+        lattice_runtime::SubscriptionTarget::Channel(tx),
+    );
+    handle.spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let lattice_protocol::Event::DocumentClosed { id } = event {
+                scopes.forget_by_document_id(id);
+            }
+        }
+    });
+}
+
 /// Register all magit ex-commands in the command registry.
+///
 /// MG.26b: `blame_requests` is threaded in rather than looked up,
 /// because an ex-command's `apply` receives `lattice_grammar`'s
-/// `ActionContext`, which carries no service registry — by design, the
-/// grammar crate knows nothing about magit's services. Capturing the
+/// `ExCommandContext`, which carries no service registry — by design,
+/// the grammar crate knows nothing about magit's services. Capturing the
 /// same `Arc` the mode's handlers get as a service means both surfaces
 /// write to one map instead of two.
+///
+/// MR.2 threads `store` + `scopes` in for the same reason and through
+/// the same door. `store` comes from `SubsystemBoot::buffer_store`,
+/// which magit holds at install time — the service-registry entry does
+/// not exist yet at that point, so a lookup would silently find nothing.
 fn register_ex_commands(
     registry: &mut CommandRegistry,
     blame_requests: magit_blame_mode::BlameRequestsHandle,
+    store: lattice_mode::BufferStoreHandle,
+    scopes: repo_scope::RepoScopesHandle,
 ) {
+    // MR.2: `:magit-status` resolves its repository from the buffer the
+    // `:` line was submitted from, exactly as `C-x g` does — both go
+    // through `repo_scope::open_repo_view` and neither has a path of its
+    // own. The remaining views keep `mk` (fixed name, cwd resolution)
+    // until MR.3 converts them; this is the whole reason MR.2 is
+    // status-only.
+    //
+    // Registered before `mk` is built, not for style: `mk` borrows
+    // `registry` mutably for its whole life, so anything else touching
+    // the registry has to happen first.
+    registry.register_ex_command(
+        "magit-status",
+        "Open the Magit status buffer for the repository of the current buffer.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+            apply: {
+                let store = store.clone();
+                let scopes = scopes.clone();
+                Arc::new(move |ctx| {
+                    Ok(repo_scope::open_repo_view(
+                        "status",
+                        "magit-status-mode",
+                        &store,
+                        &scopes,
+                        ctx.buffer_id,
+                    ))
+                })
+            },
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+
     let mut mk = |name: &'static str,
                   doc: &'static str,
                   buffer_name: &'static str,
@@ -776,12 +866,6 @@ fn register_ex_commands(
         );
     };
 
-    mk(
-        "magit-status",
-        "Open the Magit status buffer for the current git repository.",
-        "*magit:status*",
-        "magit-status-mode",
-    );
     mk(
         "magit-commit",
         "Open the Magit commit buffer with staged diff preview.",
@@ -2495,7 +2579,12 @@ pub(crate) fn register_action_commands_for_test(registry: &mut CommandRegistry) 
 /// registered, and picking would silently do nothing.
 #[cfg(test)]
 pub(crate) fn register_ex_commands_for_test(registry: &mut CommandRegistry) {
-    register_ex_commands(registry, Default::default());
+    register_ex_commands(
+        registry,
+        Default::default(),
+        crate::repo_scope::test_support::empty_store(),
+        Default::default(),
+    );
 }
 
 fn register_action_commands(registry: &mut CommandRegistry) {
@@ -3940,7 +4029,12 @@ mod tests {
     #[test]
     fn every_commit_picker_arg_names_a_registered_ex_command() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
 
         // Every ex-command any handler passes as the commit picker's
         // single arg. Kept explicit rather than scraped: a scrape that
@@ -4390,7 +4484,12 @@ mod tests {
         );
 
         let mut ex = CommandRegistry::new();
-        register_ex_commands(&mut ex, Default::default());
+        register_ex_commands(
+            &mut ex,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         let id = ex
             .id_by_name("magit-find-file")
             .expect("`:magit-find-file` must exist");
@@ -4748,7 +4847,12 @@ mod tests {
     #[test]
     fn the_submodule_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         let id = registry
             .id_by_name("magit-submodule")
             .expect("`:magit-submodule` must exist");
@@ -5084,7 +5188,12 @@ mod tests {
     #[test]
     fn every_commit_ops_ex_command_is_registered() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         for op in [
             magit_global_mode::CommitOp::CHERRY_PICK,
             magit_global_mode::CommitOp::REVERT,
@@ -5123,7 +5232,12 @@ mod tests {
     #[test]
     fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         let id = registry
             .id_by_name("magit-remote")
             .expect("`:magit-remote` must exist");
@@ -5964,7 +6078,12 @@ mod tests {
         use lattice_mode::Mode;
 
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         register_action_commands(&mut registry);
         let handlers = MagitGlobalMode.action_handlers();
 
@@ -6028,7 +6147,12 @@ mod tests {
     #[test]
     fn magit_stash_and_magit_stash_list_are_distinct_commands() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+        );
         let create = registry
             .lookup_by_name("magit-stash")
             .expect("`:magit-stash` registered");

@@ -110,7 +110,17 @@ the same way `gr_is_declared_once.rs` guards its rule.
   other buffer. No kind-branching: the name and the recorded workdir are
   per-buffer *properties*.
 - **Mode ownership.** Resolver, naming pair and the per-buffer record all
-  live in `lattice-magit`. The host gains nothing.
+  live in `lattice-magit`. The host gains nothing magit-shaped.
+
+  One layer below does gain something, and it is worth stating rather
+  than burying: `ExCommandContext` now carries `buffer_id`, because an
+  ex-command could not name the buffer it fired in *at all*. That is not
+  a magit concession — the `:` line is a parser front-end onto the one
+  dispatcher (§5.2.1), vim's ex-commands are buffer-scoped by definition
+  (`:w`, `:%s`, `:bd`), and the field was simply not forwarded from the
+  same call site the chord path already reads it from. Magit is what
+  found it, not what it is for. See the slice plan for the alternatives
+  weighed against it.
 
 ## 6. UX (higher court)
 

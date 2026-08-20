@@ -138,6 +138,31 @@ impl Mode for MagitGlobalMode {
 /// `ActionHandlerRegistry::register` call; this function only builds
 /// the declarative list. See [`Mode::action_handlers`]'s doc comment
 /// for why closing over no per-buffer state is what makes this safe.
+/// MR.2: the action-handler half of the repo-scoped trigger.
+///
+/// Reads what an action has that an ex-command does not — the service
+/// registry — and hands both halves to the one shared body. When either
+/// service is missing (a harness that registered neither) the fixed,
+/// unlabelled name is returned: the buffer still opens, on the working
+/// directory's repository, which is what magit did before MR.2.
+fn open_repo_view_from_action(ctx: &ActionContext<'_>, view: &str, mode_id: &str) -> Effect {
+    let store = ctx.services.get::<lattice_mode::BufferStoreHandle>();
+    let scopes = ctx.services.get::<crate::repo_scope::RepoScopesHandle>();
+    match (store, scopes) {
+        (Some(store), Some(scopes)) => crate::repo_scope::open_repo_view(
+            view,
+            mode_id,
+            &store,
+            &scopes,
+            lattice_core::BufferId(ctx.buffer_id.raw() as u32),
+        ),
+        _ => Effect::OpenSyntheticBuffer {
+            name: crate::workdir::magit_buffer_name(view, ""),
+            mode_id: mode_id.to_string(),
+        },
+    }
+}
+
 fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     let mut contributions = Vec::new();
 
@@ -155,11 +180,27 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         };
     }
 
-    open!(
-        "action:magit-global-status",
-        "*magit:status*",
-        "magit-status-mode"
-    );
+    // MR.2: `C-x g` opens the status of the repository the buffer in
+    // front of you belongs to, not the one the editor was started in.
+    // The resolution, the naming and the record all live in
+    // `repo_scope::open_repo_view`, which `:magit-status` calls too —
+    // the two surfaces have one body between them by construction, not
+    // by two closures that happen to agree today.
+    //
+    // A handler with no `BufferStoreHandle` service (a harness that did
+    // not register one) falls back to the fixed name, which is exactly
+    // the pre-MR.2 behaviour: the status buffer still opens, on the cwd
+    // repository.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-status",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            Some(open_repo_view_from_action(
+                ctx,
+                "status",
+                "magit-status-mode",
+            ))
+        }),
+    });
     // PD.3 (2026-08-12): the Diff transient's `e` row — the editable
     // cross-file project diff. It cannot use `open!`: the view is a
     // multibuffer, not a synthetic Document, so it routes through the

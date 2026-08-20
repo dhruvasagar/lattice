@@ -13,8 +13,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 | Slice | Title | Status |
 |---|---|---|
-| MR.1 | The resolver + the naming pair — **lands with MR.2** | 📝 |
-| MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | 📝 |
+| MR.1 | The resolver + the naming pair — **landed inside MR.2** | ✅ |
+| MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | ✅ |
 | MR.3 | Views read the record instead of cwd | 📝 |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | 📝 |
 | MR.5 | The grep guard + docs | 📝 |
@@ -24,7 +24,7 @@ rather than merely differently-wrong, so it is not optional polish.
 
 ---
 
-## MR.1 — the resolver + the naming pair 📝
+## MR.1 — the resolver + the naming pair ✅
 
 - `workdir::repo_for_trigger(…) -> Option<PathBuf>`, implementing design
   §2's three questions in order (magit buffer's own repo → active file's
@@ -56,7 +56,7 @@ re-triggering must find the buffer you already have, not stack a second).
 > is "add a helper" has no warning-clean landing, so it is not a slice.
 > Pair it with its first consumer.
 
-## MR.2 — the per-buffer record + the first trigger 📝
+## MR.2 — the per-buffer record + the first trigger ✅
 
 Absorbs MR.1 (see the note above). Scope: **status only** — the other
 views keep their fixed names and cwd resolution until MR.3, so this slice
@@ -73,29 +73,45 @@ stays landable.
 - **Not** one-shot like `ViewArgsRequests`: MR.4's action bodies read it
   for the buffer's whole life. Cleared on `DocumentClosed`.
 
-### The constraint that decides the mechanism (found 2026-08-20)
+### The constraint that decides the mechanism
 
-**An ex-command cannot reach the buffer store, but an action handler
-can.** `lattice_grammar::ActionContext` (what an `ExCommandSpec::apply`
-receives) carries `buffer_id` and a `Buffer`, but no path and no
-services — deliberately, so `lattice-grammar` knows nothing about
-services. And capturing the handle at registration does not work either:
-`ServiceRegistry` is a plain `HashMap` (not `Arc`-shared, `register`
-takes `&mut self`), and the host registers `BufferStoreHandle` at
-`editor_boot.rs:1624` — *after* `lattice_magit::install` at `:630`.
+> **Corrected 2026-08-20, from executing it.** The paragraph below
+> replaces an earlier one that named the wrong type and drew the wrong
+> conclusion from it. What it said: `ExCommandSpec::apply` receives
+> `lattice_grammar::ActionContext`, which "carries `buffer_id` and a
+> `Buffer`, but no path and no services", so magit should cache the
+> buffer-store handle in a service of its own and look the path up from
+> there. Both halves were wrong, and the plan built on them could not
+> have worked.
 
-So `C-x g` (which can be an action) and `:magit-status` (which cannot)
-have different reach, and letting them diverge is not acceptable: the
-request was explicitly that both behave the same.
+**An ex-command could not name the buffer it fired in at all.**
+`ExCommandSpec::apply` receives `ExCommandContext` (`registry.rs:368`) —
+`bang / args / range / register / count / cancel`. Not `ActionContext`,
+and *no buffer id*. So the question was never "how does the ex-command
+reach the store"; it was "what would it look up in it". Caching the
+store handle answers a question nobody was asking.
 
-**Chosen: magit caches the store handle in its own service.**
-`MagitGlobalMode` is `ActivationPolicy::Universal` with an empty
-`on_activate`, so it activates on the very first buffer at startup and
-can stash `ctx.service::<BufferStoreHandle>()` into a magit-owned
-`RepoScopes` service. Ex-command closures capture `RepoScopesHandle` at
-boot — the `blame_requests` precedent, already threaded through
-`register_ex_commands` for exactly this reason — and read the store at
-call time. One resolution path, both surfaces.
+The store itself was never the obstacle: `SubsystemBoot::buffer_store()`
+hands magit the handle at install time (`BootContext::new` receives it in
+Phase A, long before the *service-registry* entry at
+`editor_boot.rs:1624`). Capturing it in `register_ex_commands` is the
+`blame_requests` pattern, one line.
+
+**Chosen: `ExCommandContext` carries `buffer_id`.** Filled in
+`dispatcher::execute_ex_command` from the same parameter the Action arm
+beside it already passes on — the fact exists at the call site and was
+simply not forwarded. Magit then resolves through one function
+(`repo_scope::open_repo_view`) that both surfaces call: `C-x g` from an
+action handler (services + buffer id), `:magit-status` from an
+ex-command closure (captured store + buffer id).
+
+Anchored on **paramount #3**: the `:` line is a parser front-end onto the
+one dispatcher, and a command reached that way was seeing strictly less
+than the same command reached by a chord. Vim's ex-commands are
+buffer-scoped by definition (`:w`, `:%s`, `:bd`); the absence read as an
+asymmetry, not a decision. Cost: one public field on a `lattice-grammar`
+type and 16 literal construction sites (14 of them tests; the plugin
+boundary only *projects* the context, so the WIT record is unchanged).
 
 Rejected alternatives, with reasons:
 
@@ -103,6 +119,17 @@ Rejected alternatives, with reasons:
   buffer; `:magit-status` stays cwd-based unless given an argument).
   Rejected: it makes the common case the one that needs an argument, and
   the same command would mean two things depending on how it was reached.
+- **Route both through the provider-view seam** (`OpenProviderView`, the
+  way `:magit-project-diff` opens). The opener runs host-side with a
+  `&mut dyn ModeActivator`, so resolution would happen in one place at
+  apply time and `lattice-grammar` would not change. Rejected on
+  heuristic #1: `ModeActivator` exposes no active buffer either, so it
+  needs a new generic host method regardless — the same
+  host-API-for-one-consumer cost this plan already rejected
+  `ModeContext::activated_from` for — and status is a synthetic
+  `Document`, not a multibuffer, so MR.3 would then face converting 15
+  more views to a seam built for a different shape, or leaving magit with
+  two opening mechanisms.
 - **A host-side `ModeContext::activated_from`** carrying the buffer the
   activation came from (the host already stashes it in
   `prev_pane_for_popup`). Genuinely elegant — no trigger plumbing at all,
@@ -125,9 +152,41 @@ Rejected alternatives, with reasons:
   `lattice-ui-tui/src/render.rs`) compute it instead, plus 4 in
   `lattice-host/tests/synthetic_buffer_survives_command_line.rs`.
 
+  > **There were two, not eleven.** The count was a grep over the whole
+  > string, and everything except `lib.rs`'s ex-command registration and
+  > `magit_global_mode.rs`'s `C-x g` handler turned out to be a test
+  > asserting a *parser* declines the name, a doc comment, or a test
+  > opening the buffer by name through `open_synthetic_buffer`. Those
+  > last still pass unchanged and still mean what they meant: a buffer
+  > named `*magit:status*` with no record falls back to the working
+  > directory, which is exactly the `:b`-after-restart path.
+
 **Tests.** The record survives the trigger→activation gap; closing the
 buffer drops it; a second trigger for the same repo overwrites rather
 than accumulating.
+
+### Landed 2026-08-20
+
+`crates/lattice-magit/src/repo_scope.rs` (new) holds the record, the
+`DocumentClosed` index and the shared trigger body; the resolver and the
+name producer live in `workdir.rs`; `lattice-grammar` gained
+`ExCommandContext::buffer_id`. 16 tests across the two magit modules,
+2572 green in the touched crates.
+
+Two things came out different from the plan and are worth carrying into
+MR.3:
+
+- **The parser half of the naming pair did not land.** Design §3.1 asks
+  for one producer and one parser; in MR.2 nothing reads a repository
+  back *out* of a name — the record is keyed by the whole name, and `:ls`
+  prints the name verbatim. Written and then deleted rather than
+  committed unused, per MR.1's own lesson. It lands in MR.3 or MR.4 with
+  whatever first reads it (a headerline, most likely).
+- **The trigger body is view-agnostic already.**
+  `repo_scope::open_repo_view(view, mode_id, …)` takes the view name, so
+  MR.3 is mostly switching the remaining `mk(...)` registrations and
+  `open!(...)` contributions over to it — not writing new resolution per
+  view.
 
 ## MR.3 — views read the record 📝
 

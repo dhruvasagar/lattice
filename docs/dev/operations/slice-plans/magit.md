@@ -3776,7 +3776,7 @@ the syntax worker's assumptions about who owns that local.
 That path in `lattice-diff` remains unowned by any mode — tracked in
 the help-docs slice plan as a separate design item.
 
-### MG.54 — preview the file at a revision 📝 (designed 2026-08-20)
+### MG.54 — preview the file at a revision ✅ (landed 2026-08-20)
 
 `C-c f v` opens a revision picker and shows nothing until you accept, so
 choosing between revisions means accepting one, looking, going back, and
@@ -3819,18 +3819,38 @@ remainder. Bounded — one `git show`, never a queue — and at most once per
 settle. The worst realistic case is a large blob on a cold cache, which
 the size guard below turns into a message.
 
-**To check or decide while building:**
+**Answers to the questions this slice opened, as built:**
 
-- **Which thread the timer fires on.** If it is an editor-actor tick
-  rather than the render path, the blocking fetch delays keystroke
-  *processing* but never a frame — the UI keeps painting. Verify before
-  claiming it; the distinction is the difference between "briefly slow"
-  and "drops a frame".
-- **Whether a selection-move debounce exists at all.** `LIVE_PICKER_DEBOUNCE`
-  (150ms) debounces the live *query*; confirm whether the selection-move
-  path has one or whether this slice adds it.
-- **A blob size guard.** Refuse over a threshold and say so in the pane
-  rather than blocking on a 40MB file.
+- **The timer fires on the editor-actor thread.** The wake goes
+  `spawn_on_lsp_runtime(sleep)` → `async_landed` → `run_actor`'s select
+  arm → `run_tick_pending`. So the blocking fetch delays keystroke
+  *processing* and never a frame: the UI keeps painting. "Briefly slow",
+  not "drops a frame" — verified against `editor_actor.rs`, not assumed.
+- **No selection-move debounce existed; MG.54a added it.**
+  `LIVE_PICKER_DEBOUNCE` debounces the live *query* only;
+  `Action::PickerSelectNext/Prev` called `preview_picker_selection`
+  inline. The new window is declared per source
+  (`PickerSourceGenerator::preview_debounce`) and its deadline lives on
+  `Picker`, not on the host — a deadline is meaningful only for the
+  selection that armed it, so tying its lifetime to the picker's makes
+  "a settle fired into the picker that replaced mine" unrepresentable
+  instead of something host-side clear sites must remember.
+- **The size guard reads the object header.** `git cat-file -s` before
+  `git show`, so refusing a 40MB blob never pays for it. 256 KiB, the
+  same bound the host's own file preview uses. Binary blobs and stray
+  control bytes are refused too — a blob at a revision can be a PNG, and
+  its escapes would corrupt the alternate screen.
+
+**Reuse, as it turned out.** `magit-file-revision-mode` supplied the
+buffer NAME (so the preview pane is called what the accepted buffer will
+be) and the blob-spec producer, but not the fetch: `run_show_file` has
+no guards and returning its error string as pane content would be wrong
+for the ordinary "file did not exist at that revision" case, which now
+returns `None` and leaves the previous preview up. The DISPLAY half was
+pure reuse — `PickerPreviewOutcome::Buffer` renders through the same
+ephemeral-buffer + pane-override path `do_preview` uses for an unopened
+file, lifted out of it, so preview isolation / dismiss / GC stay one
+mechanism (PI series, unchanged).
 
 **Reuse rather than rebuild.** `magit-find-file` already fetches a blob at
 a revision, and `magit-file-revision-mode` already produces the synthetic
@@ -3839,10 +3859,20 @@ Check [`preview-isolation.md`](preview-isolation.md)'s open PI.x slices
 first: previewing *generated* content may already belong there, in which
 case this is an instance rather than a new mechanism.
 
-**Docs are part of the deliverable** (standing rule): option help text,
-a user doc, the `docs/user/README.md` index row, a `site/data/nav.toml`
-entry, then `sync-docs.sh` + `zola build` to verify it is reachable by
-search rather than only by URL.
+**Docs landed with it:** the option's own help text,
+`docs/user/magit-file-revision-mode.md` (a section on choosing a
+revision with the file in front of you, and what the pane shows when the
+blob is absent / oversized / binary), and the `magit.*` options table in
+`docs/user/magit.md`. Both pages were already carried by
+`site/data/nav.toml`, so no new entry was needed; `sync-docs.sh` +
+`zola build` re-run and the new section heading is in the search index.
+
+**Landed as two commits:**
+
+| Slice | What | Commit |
+|---|---|---|
+| MG.54a | The generic mechanism: `preview_debounce` declaration, picker-owned settle deadline, `PickerPreviewOutcome` (split from the accept enum), `preview_text_in_active_pane` | `6c190c50` |
+| MG.54b | Magit's half: `magit.revision-preview`, the `magit-find-file`-only guard, `preview_blob` + its size / binary / line bounds | `c2d414bb` |
 
 ## Cross-references
 

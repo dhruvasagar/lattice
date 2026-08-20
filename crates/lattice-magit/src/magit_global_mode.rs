@@ -1219,12 +1219,19 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $finish:expr, $config_key:expr, $label:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
                     // Seeded with the current value: a configure row
                     // edits an EXISTING setting, so starting blank
                     // would mean retyping it to change one character,
                     // and an accidental `<CR>` would clear it.
-                    let current = crate::git_config::value_of($config_key).unwrap_or_default();
+                    //
+                    // MR.6: read from the buffer's repository, which is
+                    // also the one the finish half writes to.
+                    let current = crate::git_config::value_of(
+                        &crate::repo_scope::action_workdir(ctx),
+                        $config_key,
+                    )
+                    .unwrap_or_default();
                     Some(prompt_seeded(
                         concat!($label, " (", $config_key, "): "),
                         $finish,

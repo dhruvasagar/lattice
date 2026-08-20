@@ -1,6 +1,7 @@
 # Magit repo scoping — slice plan (MR)
 
-> **Status: 🚧 Active.** Opened 2026-08-20. Implements
+> **Status: ✅ Complete, archived 2026-08-20.** Opened and finished the
+> same day, MR.1 … MR.6. Implements
 > [`magit-repo-scoping.md`](../../architecture/magit-repo-scoping.md):
 > every magit surface acts on the repository containing the active
 > buffer's file, not the process's working directory.
@@ -19,10 +20,22 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | MR.3b | The views that encode parameters (diff, log, file, …) | ✅ |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | ✅ |
 | MR.5 | The grep guard + docs | ✅ |
-| MR.6 | The pickers + the project-diff opener | 📝 |
+| MR.6 | The pickers + the project-diff opener | ✅ |
 
 MR.1→MR.2→MR.3 is the spine. MR.4 is the half that makes it *correct*
-rather than merely differently-wrong, so it is not optional polish.
+rather than merely differently-wrong, so it was not optional polish —
+and MR.5's guard is what proved MR.3 and MR.4 had both stopped short.
+MR.6 cleared the exceptions that guard was left holding.
+
+**The lesson the series keeps repeating:** every slice here shipped
+believing it was complete, and three of them were not. A behavioural
+test cannot tell a cwd-bound site from a correct one, because a test
+process has one checkout — so the enumeration has to come from a source
+grep, and the grep has to match the *question* rather than whichever
+spelling the last author used. Four spellings turned up in the end:
+`magit_workdir()`, `Repository::discover(".")`,
+`std::env::current_dir()`, and a `git` subprocess with no
+`current_dir`.
 
 ---
 
@@ -356,8 +369,8 @@ an action body:
 - `picker_sources`' revision preview — a preview buffer, built where no
   buffer id is in scope.
 
-MR.5's grep guard has to either cover these or state them as the
-exceptions, with the reason attached.
+MR.5's grep guard states them as exceptions with the reason attached;
+MR.6 then removed all three, and the exception list with them.
 
 ## MR.5 — the guard + docs ✅
 
@@ -398,26 +411,45 @@ argument is a suppression wearing the guard's clothes. Two are genuine
 directory, because there is no repository yet); three are MR.6's debt,
 recorded rather than hidden.
 
-## MR.6 — the pickers + the project-diff opener 📝
+## MR.6 — the pickers + the project-diff opener ✅
 
-Left cwd-bound by MR.4, and excepted **by name** in the guard so they
-cannot be forgotten:
+The three the guard excepted by name, now none of them:
 
-- **`picker_sources.rs`** — the branch / commit / stash / ref pickers
-  list the process's repository, so `C-c g b b` opened over another
-  checkout offers the wrong branches. Mechanical: `PickerContext` already
-  carries `active_buffer.buffer_id`, so each source takes the store +
-  scopes handles at registration (≈12 `::new()` sites) and resolves the
-  same way every other surface does.
-- **`providers::project_diff`'s opener** — reached through
-  `ProviderViewOpener`, whose `ModeActivator` exposes no active buffer.
-  The same gap `TransientContext` had before MR.4 gave it `buffer`, and
-  the fix is the same shape: a generic host primitive naming the buffer a
-  provider view is being opened over.
-- **`git_config::refresh`** — a process-wide config cache keyed by
-  nothing. Per-repository is a cache-shape change; it decides which
-  *labels* the menus show, not which repository they act on, so it is the
-  least urgent of the three.
+- **The pickers.** `RepoLens` (store + scopes, taken at registration)
+  answers "which repository is this picker about" from
+  `PickerContext::active_buffer`, resolved at `init` before the listing
+  goes off-thread — a task that asked afterwards would be asking about
+  whatever buffer is active by the time it runs. All nine sources plus
+  the revision preview.
+- **The project-diff opener.** `ModeActivator` gained `active_buffer()`,
+  the peer of `TransientContext::buffer` and
+  `ExCommandContext::buffer_id` and generic for the same reason: a
+  provider view is opened *over* something, and what it shows usually
+  depends on which. Default `None`, so test activators stay valid.
+- **The git-config cache**, now keyed by repository. It held one map for
+  the process, which was invisible while every magit surface acted on one
+  repository and wrong the moment they stopped: the `Configure` rows in a
+  menu opened over repo B reported repo A's `pull.rebase`, and `C` then
+  *wrote* what the row had read — the read and the write disagreeing
+  about which repository they were about. `DispatchGates` carries the
+  workdir now, so both kinds of question a menu asks ("is a rebase
+  stopped", "what is `pull.rebase`") are answered about one repository.
+
+### A fourth spelling, and a guard that could not fail
+
+The commit picker ran `Command::new("git").args(["log", …]).output()`
+with no `current_dir` — inheriting the editor's directory, the same bug
+as `discover(".")` in a shape neither the `magit_workdir` sweep nor the
+discovery grep could see. The guard grew a third test for it: every git
+subprocess must say where it runs.
+
+That test then **passed on the broken code**. Its proximity check asked
+whether `current_dir` appeared in the builder chain, and the comment
+explaining the rule contains the words `current_dir` — so the fix hid
+itself. Found by mutating the fix back out and watching the guard stay
+green; the chain strips comments now, and the mutation was re-run to
+confirm it fails and then passes. Worth writing down: a guard nobody has
+watched fail is a guard nobody has tested.
 
 ---
 

@@ -311,7 +311,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                 source,
                 &ids,
                 ctx,
-                transients::DispatchGates::probe_in(&workdir),
+                &transients::DispatchGates::probe_in(&workdir),
             )
             .expect("every ROOT_MENUS source has a spec")
         });
@@ -330,8 +330,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         // refresh that lands after this menu was built shows up the
         // next time it opens, which is why an unread value renders
         // `…` rather than blocking.
-        git_config::refresh();
         let workdir = menu_workdir(&dispatch_store, &dispatch_scopes, ctx);
+        git_config::refresh(workdir.clone());
         transients::dispatch_transient(&dispatch_ids, ctx, &workdir)
     });
     transient_registry.register("magit-file-dispatch", move |_| {
@@ -5190,7 +5190,8 @@ mod tests {
             let root = transients::dispatch_transient_with(
                 &ids,
                 &outside_magit(),
-                transients::DispatchGates {
+                &transients::DispatchGates {
+                    workdir: Default::default(),
                     merge: false,
                     bisect: in_progress,
                     notes_merge: false,
@@ -5248,7 +5249,8 @@ mod tests {
             let root = transients::dispatch_transient_with(
                 &ids,
                 &outside_magit(),
-                transients::DispatchGates {
+                &transients::DispatchGates {
+                    workdir: Default::default(),
                     merge: false,
                     bisect: in_progress,
                     notes_merge: false,
@@ -6623,7 +6625,7 @@ mod tests {
             &transients::dispatch_transient_with(
                 &Default::default(),
                 &outside_magit(),
-                transients::DispatchGates::default(),
+                &transients::DispatchGates::default(),
             ),
             "",
         );
@@ -6670,7 +6672,8 @@ mod tests {
             &transients::dispatch_transient_with(
                 &Default::default(),
                 &outside_magit(),
-                transients::DispatchGates {
+                &transients::DispatchGates {
+                    workdir: Default::default(),
                     merge: false,
                     bisect: true,
                     notes_merge: false,

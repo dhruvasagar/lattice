@@ -5,7 +5,8 @@ the file you are looking at**, rather than the repository containing the
 process's working directory.
 
 Companion to [`magit.md`](magit.md) (the subsystem). Sequencing:
-[`../operations/slice-plans/magit-repo-scoping.md`](../operations/slice-plans/magit-repo-scoping.md).
+[`../operations/slice-plans/archive/magit-repo-scoping.md`](../operations/slice-plans/archive/magit-repo-scoping.md)
+(complete — MR.1 … MR.6).
 
 ## 1. The gap
 
@@ -97,8 +98,23 @@ fixing only the first is worse than fixing neither:
   a half-migration here produces.
 
 The rule that keeps this from rotting: **after this change, no magit code
-outside the resolver calls `magit_workdir()`.** A grep guard enforces it,
-the same way `gr_is_declared_once.rs` guards its rule.
+outside the resolver reads the process's repository.** A grep guard
+enforces it, the same way `gr_is_declared_once.rs` guards its rule.
+
+Stated as the *question* rather than as `magit_workdir()`, because the
+enumeration by helper-name was wrong three times running. The same
+question has four spellings in this codebase, and each one hid real sites
+from the sweep that preceded it:
+
+| Spelling | What it hid |
+|---|---|
+| `magit_workdir()` | the obvious ones |
+| `Repository::discover(".")` | an entire view's `on_activate`, six branch operations, `.gitignore` writes |
+| `std::env::current_dir()` | the two prompt seeds that are legitimately about the cwd |
+| `Command::new("git")` with no `current_dir` | the commit picker's listing |
+
+A guard matching only the first would have certified a magit that was
+still substantially bound to the shell's directory.
 
 ## 5. Paramount-goal alignment
 

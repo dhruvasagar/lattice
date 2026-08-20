@@ -19,13 +19,69 @@ use lattice_picker::{
 };
 use lattice_vcs::{Branch, RefKind, Reference, Remote, Repository};
 
+/// MR.6: which repository a picker is about.
+///
+/// The branch / commit / stash / ref pickers used to list
+/// `Repository::discover(".")` — the process's repository — so opening
+/// one over a file from another checkout offered that checkout's *name*
+/// in the prompt and the wrong repository's branches in the list.
+///
+/// `PickerContext` already carries the active buffer, so the answer is
+/// the same one every other magit surface reaches for; these two handles
+/// are what turn a buffer id into it. They arrive at registration
+/// because a picker source is built at boot and `PickerContext` carries
+/// no service registry — the same reason the ex-commands capture them.
+///
+/// `Default` (no handles) resolves from the active buffer's *path* and
+/// then the working directory, which is what a harness without a buffer
+/// store gets and what magit did everywhere before MR.6.
+#[derive(Clone, Default)]
+pub struct RepoLens {
+    store: Option<lattice_mode::BufferStoreHandle>,
+    scopes: Option<crate::repo_scope::RepoScopesHandle>,
+}
+
+impl RepoLens {
+    pub fn new(
+        store: lattice_mode::BufferStoreHandle,
+        scopes: crate::repo_scope::RepoScopesHandle,
+    ) -> Self {
+        Self {
+            store: Some(store),
+            scopes: Some(scopes),
+        }
+    }
+
+    /// The repository the picker's rows belong to.
+    ///
+    /// Resolved at `init`, before the listing goes off-thread: the
+    /// answer has to be captured into the spawned task, and a task that
+    /// asked afterwards would be asking about whatever buffer is active
+    /// by the time it runs.
+    pub fn workdir(&self, ctx: &PickerContext<'_>) -> std::path::PathBuf {
+        if let (Some(store), Some(scopes)) = (&self.store, &self.scopes) {
+            let buffer = lattice_core::BufferId(ctx.active_buffer.buffer_id);
+            if let Some(workdir) = crate::repo_scope::active_workdir(store, scopes, buffer) {
+                return workdir;
+            }
+        }
+        ctx.active_buffer
+            .path
+            .and_then(|p| crate::workdir::workdir_for_file(p).map(|(workdir, _rel)| workdir))
+            .or_else(crate::workdir::magit_workdir)
+            .unwrap_or_default()
+    }
+}
+
 pub struct BranchPickBaseSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl BranchPickBaseSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: PickerSourceSpec::no_args(
                 "magit-branch-pick-base",
                 "Pick an existing branch as the base for a new branch (magit branch-create wizard).",
@@ -36,7 +92,7 @@ impl BranchPickBaseSource {
 
 impl Default for BranchPickBaseSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -45,10 +101,13 @@ impl PickerSourceGenerator for BranchPickBaseSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        // MR.6: the rows belong to the repository the picker was
+        // opened over, resolved BEFORE the listing goes off-thread.
+        let workdir = self.repo.workdir(ctx);
         Ok(PickerInitResult::Future(Box::pin(async move {
-            let branches = tokio::task::spawn_blocking(|| {
-                let repo = Repository::discover(".")
+            let branches = tokio::task::spawn_blocking(move || {
+                let repo = Repository::discover(&workdir)
                     .map_err(|e| format!("magit-branch-pick-base: repo discover failed: {e}"))?;
                 Branch::list(&repo).map_err(|e| format!("magit-branch-pick-base: {e}"))
             })
@@ -86,11 +145,13 @@ impl PickerSourceGenerator for BranchPickBaseSource {
 /// `A` / `_` / `O`: the row asks rather than being gated away.
 pub struct BranchCheckoutSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl BranchCheckoutSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: PickerSourceSpec::no_args(
                 BRANCH_CHECKOUT_SOURCE,
                 "Pick a branch and check it out.",
@@ -101,7 +162,7 @@ impl BranchCheckoutSource {
 
 impl Default for BranchCheckoutSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -116,7 +177,7 @@ impl PickerSourceGenerator for BranchCheckoutSource {
         // One listing, one place. A second copy of "enumerate the
         // branches" would drift from this one the first time either
         // grows a filter.
-        BranchPickBaseSource::new().init(ctx, args)
+        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
     }
 
     fn accept(
@@ -179,11 +240,13 @@ fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
 /// you are mid-edit.
 pub struct BranchCreateNoCheckoutSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl BranchCreateNoCheckoutSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: PickerSourceSpec::no_args(
                 BRANCH_CREATE_NO_CHECKOUT_SOURCE,
                 "Pick a base, then name a new branch — without checking it out.",
@@ -194,7 +257,7 @@ impl BranchCreateNoCheckoutSource {
 
 impl Default for BranchCreateNoCheckoutSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -206,7 +269,7 @@ impl PickerSourceGenerator for BranchCreateNoCheckoutSource {
     }
 
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new().init(ctx, args)
+        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
     }
 
     fn accept(
@@ -242,11 +305,13 @@ fn branch_create_no_checkout_outcome(base: &str) -> PickerAcceptOutcome {
 /// `c`'s wizard uses for its base — one mechanism, not a second.
 pub struct BranchRenameSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl BranchRenameSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: PickerSourceSpec::no_args(
                 BRANCH_RENAME_SOURCE,
                 "Pick a branch, then type its new name.",
@@ -257,7 +322,7 @@ impl BranchRenameSource {
 
 impl Default for BranchRenameSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -269,7 +334,7 @@ impl PickerSourceGenerator for BranchRenameSource {
     }
 
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new().init(ctx, args)
+        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
     }
 
     fn accept(
@@ -310,11 +375,13 @@ fn branch_rename_outcome(old: &str) -> PickerAcceptOutcome {
 /// <name>` is that ask, and is the scriptable form besides.
 pub struct BranchDeleteSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl BranchDeleteSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: PickerSourceSpec::no_args(
                 BRANCH_DELETE_SOURCE,
                 "Pick a branch to delete — asks before deleting.",
@@ -325,7 +392,7 @@ impl BranchDeleteSource {
 
 impl Default for BranchDeleteSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -337,7 +404,7 @@ impl PickerSourceGenerator for BranchDeleteSource {
     }
 
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new().init(ctx, args)
+        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
     }
 
     fn accept(
@@ -395,28 +462,36 @@ pub(crate) fn picked_line(command: &str, value: &str) -> String {
 pub fn register(
     picker_registry: &mut lattice_picker::PickerRegistry,
     config: Option<Arc<lattice_config::ConfigRegistry>>,
+    repo: RepoLens,
 ) {
-    picker_registry.register_generator(Arc::new(BranchPickBaseSource::new()));
-    picker_registry.register_generator(Arc::new(BranchCheckoutSource::new()));
+    picker_registry.register_generator(Arc::new(BranchPickBaseSource::new(repo.clone())));
+    picker_registry.register_generator(Arc::new(BranchCheckoutSource::new(repo.clone())));
     // MG.32: the rest of the branch transient's picker-backed rows.
-    picker_registry.register_generator(Arc::new(BranchCreateNoCheckoutSource::new()));
-    picker_registry.register_generator(Arc::new(BranchRenameSource::new()));
-    picker_registry.register_generator(Arc::new(BranchDeleteSource::new()));
-    picker_registry.register_generator(Arc::new(CommitPickSource::new()));
+    picker_registry.register_generator(Arc::new(BranchCreateNoCheckoutSource::new(repo.clone())));
+    picker_registry.register_generator(Arc::new(BranchRenameSource::new(repo.clone())));
+    picker_registry.register_generator(Arc::new(BranchDeleteSource::new(repo.clone())));
+    picker_registry.register_generator(Arc::new(CommitPickSource::new(repo.clone())));
     // The stash peer: the dispatch menu's apply / pop / drop / show
     // rows have no cursor to resolve a stash from.
-    picker_registry.register_generator(Arc::new(StashPickSource::new()));
+    picker_registry.register_generator(Arc::new(StashPickSource::new(repo.clone())));
     // MG.52: the branch peer of `CommitPickSource` — one source for
     // every "which branch?" question, parameterised by what to do with
     // the answer.
-    picker_registry.register_generator(Arc::new(BranchPickSource::new()));
+    picker_registry.register_generator(Arc::new(BranchPickSource::new(repo.clone())));
     // MG.53.d/e: tag / remote / ref — one implementation, three scopes.
-    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Tags)));
-    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Remotes)));
-    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::AllRefs)));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(repo.clone(), RefScope::Tags)));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(
+        repo.clone(),
+        RefScope::Remotes,
+    )));
+    picker_registry.register_generator(Arc::new(RefPickSource::new(
+        repo.clone(),
+        RefScope::AllRefs,
+    )));
     // MG.54: the revision scope is the one that previews (`C-c f v`), so
     // it is the one that needs the config handle.
     picker_registry.register_generator(Arc::new(RefPickSource::with_config(
+        repo,
         RefScope::Revisions,
         config,
     )));
@@ -442,6 +517,7 @@ pub fn register(
 /// `ex_command` for exactly this.
 pub struct CommitPickSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 /// Spec for a source that **takes the ex-command to run on the pick**.
@@ -474,8 +550,9 @@ fn takes_ex_command(id: &'static str, doc: &'static str, noun: &'static str) -> 
 }
 
 impl CommitPickSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: takes_ex_command(
                 COMMIT_PICK_SOURCE,
                 "Pick a commit, then run the named magit ex-command on it.",
@@ -487,7 +564,7 @@ impl CommitPickSource {
 
 impl Default for CommitPickSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -508,7 +585,8 @@ impl PickerSourceGenerator for CommitPickSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        let workdir = self.repo.workdir(ctx);
         let command = args
             .first()
             .filter(|c| !c.is_empty())
@@ -517,7 +595,7 @@ impl PickerSourceGenerator for CommitPickSource {
             })?
             .clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
-            let rows = tokio::task::spawn_blocking(recent_commits)
+            let rows = tokio::task::spawn_blocking(move || recent_commits(workdir))
                 .await
                 .map_err(|e| format!("{COMMIT_PICK_SOURCE}: join error: {e}"))??;
             Ok(rows
@@ -574,11 +652,13 @@ impl PickerSourceGenerator for CommitPickSource {
 /// person remembers, exactly as the commit picker shows the subject.
 pub struct StashPickSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 impl StashPickSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: takes_ex_command(
                 STASH_PICK_SOURCE,
                 "Pick a stash, then run the named magit ex-command on it.",
@@ -590,7 +670,7 @@ impl StashPickSource {
 
 impl Default for StashPickSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -601,7 +681,10 @@ impl PickerSourceGenerator for StashPickSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // MR.6: the rows belong to the repository the picker was
+        // opened over, resolved BEFORE the listing goes off-thread.
+        let workdir = self.repo.workdir(ctx);
         let command = args
             .first()
             .filter(|c| !c.is_empty())
@@ -610,8 +693,8 @@ impl PickerSourceGenerator for StashPickSource {
             })?
             .clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
-            let entries = tokio::task::spawn_blocking(|| {
-                let repo = Repository::discover(".")
+            let entries = tokio::task::spawn_blocking(move || {
+                let repo = Repository::discover(&workdir)
                     .map_err(|e| format!("{STASH_PICK_SOURCE}: repo discover failed: {e}"))?;
                 lattice_vcs::Stash::list(&repo).map_err(|e| format!("{STASH_PICK_SOURCE}: {e}"))
             })
@@ -659,13 +742,17 @@ impl PickerSourceGenerator for StashPickSource {
 /// The display is `<short> <subject>` — what a log row looks like, so
 /// the fuzzy filter matches on the subject, which is what anyone
 /// actually remembers about a commit.
-fn recent_commits() -> Result<Vec<(String, String)>, String> {
+fn recent_commits(workdir: std::path::PathBuf) -> Result<Vec<(String, String)>, String> {
     let out = std::process::Command::new("git")
         .args([
             "log",
             &format!("-n{COMMIT_PICK_LIMIT}"),
             "--format=%H%x00%h %s",
         ])
+        // MR.6: a `Command` with no `current_dir` inherits the
+        // process's, which is the same bug as `discover(".")` wearing a
+        // shape no grep for the discovery would match.
+        .current_dir(&workdir)
         .output()
         .map_err(|e| format!("{COMMIT_PICK_SOURCE}: {e}"))?;
     if !out.status.success() {
@@ -694,7 +781,7 @@ mod commit_pick {
 
     #[test]
     fn spec_id_matches_the_name_every_open_effect_uses() {
-        let source = CommitPickSource::new();
+        let source = CommitPickSource::new(RepoLens::default());
         assert_eq!(source.spec().id, COMMIT_PICK_SOURCE);
         assert_eq!(
             source.spec().args_schema.len(),
@@ -794,7 +881,7 @@ mod tests {
     #[test]
     fn magit_registers_exactly_the_sources_its_rows_open() {
         let mut registry = lattice_picker::PickerRegistry::new();
-        register(&mut registry, None);
+        register(&mut registry, None, RepoLens::default());
         let mut ids: Vec<&str> = registry.ids().collect();
         ids.sort_unstable();
 
@@ -867,7 +954,7 @@ mod tests {
     #[test]
     fn a_source_that_needs_an_ex_command_declares_it() {
         let mut registry = lattice_picker::PickerRegistry::new();
-        register(&mut registry, None);
+        register(&mut registry, None, RepoLens::default());
         let buffer = lattice_core::Buffer::empty();
         let ctx = empty_picker_ctx(&buffer);
         let ids: Vec<String> = registry.ids().map(str::to_string).collect();
@@ -916,7 +1003,12 @@ mod tests {
             RefScope::Revisions,
         ]
         .into_iter()
-        .map(|sc| RefPickSource::new(sc).spec().id.to_string())
+        .map(|sc| {
+            RefPickSource::new(RepoLens::default(), sc)
+                .spec()
+                .id
+                .to_string()
+        })
         .collect();
         let mut sorted = ids.clone();
         sorted.sort_unstable();
@@ -927,7 +1019,9 @@ mod tests {
             "each scope registers under its own id: {ids:?}"
         );
         assert_eq!(
-            RefPickSource::new(RefScope::Revisions).spec().id,
+            RefPickSource::new(RepoLens::default(), RefScope::Revisions)
+                .spec()
+                .id,
             super::REVISION_PICK_SOURCE
         );
         // The commit-only picker is a DIFFERENT source and stays so —
@@ -1018,8 +1112,11 @@ mod tests {
         // `options! { … }` is a compile-time declaration; this is what
         // makes it a runtime fact in a registry.
         config.init_from_linkme();
-        let src =
-            RefPickSource::with_config(RefScope::Revisions, Some(std::sync::Arc::clone(&config)));
+        let src = RefPickSource::with_config(
+            RepoLens::default(),
+            RefScope::Revisions,
+            Some(std::sync::Arc::clone(&config)),
+        );
         assert!(
             src.preview_debounce().is_some(),
             "on by default ⇒ the settle window is declared"
@@ -1042,7 +1139,9 @@ mod tests {
         use lattice_picker::PickerSourceGenerator;
         for scope in [RefScope::Tags, RefScope::Remotes, RefScope::AllRefs] {
             assert!(
-                RefPickSource::new(scope).preview_debounce().is_none(),
+                RefPickSource::new(RepoLens::default(), scope)
+                    .preview_debounce()
+                    .is_none(),
                 "{scope:?} has nothing to preview"
             );
         }
@@ -1053,7 +1152,7 @@ mod tests {
         // magit_branch_mode's `c` handler hardcodes this string in
         // `Effect::OpenPicker { source: "magit-branch-pick-base", .. }`
         // — this assertion is the tripwire if the id ever drifts.
-        let source = BranchPickBaseSource::new();
+        let source = BranchPickBaseSource::new(RepoLens::default());
         assert_eq!(source.spec().id, "magit-branch-pick-base");
         assert!(source.spec().args_schema.is_empty());
     }
@@ -1219,13 +1318,15 @@ mod tests {
 /// line.
 pub struct BranchPickSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
 }
 
 pub const BRANCH_PICK_SOURCE: &str = "magit-branch";
 
 impl BranchPickSource {
-    pub fn new() -> Self {
+    pub fn new(repo: RepoLens) -> Self {
         Self {
+            repo,
             spec: takes_ex_command(
                 BRANCH_PICK_SOURCE,
                 "Pick a branch, then run the named magit ex-command on it.",
@@ -1237,7 +1338,7 @@ impl BranchPickSource {
 
 impl Default for BranchPickSource {
     fn default() -> Self {
-        Self::new()
+        Self::new(RepoLens::default())
     }
 }
 
@@ -1246,7 +1347,10 @@ impl PickerSourceGenerator for BranchPickSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // MR.6: the rows belong to the repository the picker was
+        // opened over, resolved BEFORE the listing goes off-thread.
+        let workdir = self.repo.workdir(ctx);
         let command = args
             .first()
             .filter(|c| !c.is_empty())
@@ -1255,8 +1359,8 @@ impl PickerSourceGenerator for BranchPickSource {
             })?
             .clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
-            let branches = tokio::task::spawn_blocking(|| {
-                let repo = Repository::discover(".")
+            let branches = tokio::task::spawn_blocking(move || {
+                let repo = Repository::discover(&workdir)
                     .map_err(|e| format!("{BRANCH_PICK_SOURCE}: repo discover failed: {e}"))?;
                 Branch::list(&repo).map_err(|e| format!("{BRANCH_PICK_SOURCE}: {e}"))
             })
@@ -1308,6 +1412,7 @@ impl PickerSourceGenerator for BranchPickSource {
 /// reason: a picked candidate reaches an operation only as an ex line.
 pub struct RefPickSource {
     spec: PickerSourceSpec,
+    repo: RepoLens,
     which: RefScope,
     /// MG.54: read at PREVIEW time for `magit.revision-preview`, so
     /// `:set` lands on the next selection rather than the next picker.
@@ -1348,11 +1453,12 @@ pub const REF_PICK_SOURCE: &str = "magit-ref";
 pub const REVISION_PICK_SOURCE: &str = "magit-revision";
 
 impl RefPickSource {
-    pub fn new(which: RefScope) -> Self {
-        Self::with_config(which, None)
+    pub fn new(repo: RepoLens, which: RefScope) -> Self {
+        Self::with_config(repo, which, None)
     }
 
     pub fn with_config(
+        repo: RepoLens,
         which: RefScope,
         config: Option<Arc<lattice_config::ConfigRegistry>>,
     ) -> Self {
@@ -1380,6 +1486,7 @@ impl RefPickSource {
             ),
         };
         Self {
+            repo,
             spec: takes_ex_command(id, doc, noun),
             which,
             config,
@@ -1429,7 +1536,10 @@ impl PickerSourceGenerator for RefPickSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // MR.6: the rows belong to the repository the picker was
+        // opened over, resolved BEFORE the listing goes off-thread.
+        let workdir = self.repo.workdir(ctx);
         let id = self.id();
         let which = self.which;
         let command = args
@@ -1443,7 +1553,7 @@ impl PickerSourceGenerator for RefPickSource {
             // the full sha — an abbreviation is ambiguous in principle
             // and git resolves the ambiguity by refusing.
             let names = tokio::task::spawn_blocking(move || {
-                let repo = Repository::discover(".")
+                let repo = Repository::discover(&workdir)
                     .map_err(|e| format!("{id}: repo discover failed: {e}"))?;
                 Ok::<Vec<(String, String)>, String>(match which {
                     RefScope::Remotes => Remote::list(&repo)
@@ -1472,7 +1582,7 @@ impl PickerSourceGenerator for RefPickSource {
                             .map(|r| (r.name.clone(), r.name))
                             .collect();
                         out.extend(
-                            recent_commits()?
+                            recent_commits(workdir.clone())?
                                 .into_iter()
                                 .map(|(sha, display)| (display, sha)),
                         );
@@ -1530,7 +1640,7 @@ impl PickerSourceGenerator for RefPickSource {
     /// what the buffer is called once you accept.
     fn preview(
         &self,
-        _ctx: &PickerContext<'_>,
+        ctx: &PickerContext<'_>,
         routing: &RoutingPayload,
     ) -> Option<lattice_picker::PickerPreviewOutcome> {
         if self.which != RefScope::Revisions || !self.preview_enabled() {
@@ -1540,7 +1650,10 @@ impl PickerSourceGenerator for RefPickSource {
             return None;
         };
         let (rev, path) = find_file_preview_target(id)?;
-        let workdir = crate::workdir::magit_workdir()?;
+        // MR.6: the same repository the rows came from — a preview of
+        // the file at a revision of some other checkout would be a
+        // different file entirely.
+        let workdir = self.repo.workdir(ctx);
         let text = crate::magit_file_revision_mode::preview_blob(&workdir, &rev, &path)?;
         Some(lattice_picker::PickerPreviewOutcome::Buffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(

@@ -29,6 +29,12 @@
 //! A guard that matched only the helper's name would have certified all
 //! three. So this matches the question in any spelling, and the
 //! exceptions are listed one by one with the reason attached.
+//!
+//! MR.6 then found a fourth spelling the first three patterns still
+//! missed: `std::process::Command::new("git")` with no `current_dir`,
+//! which inherits the process's directory just as silently. The commit
+//! picker listed the wrong repository's commits that way. Every git
+//! `Command` in this crate must therefore say where it runs.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -51,27 +57,6 @@ const ALLOWED: &[(&str, &str)] = &[
         "The record and the trigger body, which call the resolver as \
          their documented fall-back — a fresh editor with nothing open \
          still answers `C-x g`.",
-    ),
-    (
-        "src/picker_sources.rs",
-        "MR.6 (open): the branch / commit / stash / ref pickers list the \
-         process's repository. They receive `PickerContext`, which DOES \
-         carry the active buffer, so the fix is mechanical — each source \
-         takes the store + scopes handles at registration. Excepted \
-         rather than silently passing, so the debt is visible here.",
-    ),
-    (
-        "src/providers/project_diff.rs",
-        "MR.6 (open): the opener runs behind `ProviderViewOpener`, whose \
-         `ModeActivator` exposes no active buffer. Same gap \
-         `TransientContext` had before MR.4 closed it, and the fix is the \
-         same shape.",
-    ),
-    (
-        "src/git_config.rs",
-        "A process-wide config cache keyed by nothing. Making it \
-         per-repository is a cache-shape change rather than a scoping \
-         one, so it is a decision deferred rather than a site missed.",
     ),
 ];
 
@@ -130,6 +115,73 @@ fn production_part(text: &str) -> &str {
         Some(i) => &text[..i],
         None => text,
     }
+}
+
+/// MR.6: a `git` subprocess that never says where it runs.
+///
+/// `Command::new("git")` without `current_dir` inherits the process's
+/// directory — the same bug as `discover(".")`, in a shape no pattern
+/// above matches. The commit picker listed the wrong repository's
+/// commits this way, and it was invisible to both the `magit_workdir`
+/// sweep and the discovery grep.
+///
+/// Checked by proximity rather than by parsing: `current_dir` must
+/// appear within the builder chain that follows. Crude, and the
+/// crudeness is the point — a test that needed a Rust parser to state
+/// this rule would not survive its first refactor.
+#[test]
+fn every_git_subprocess_says_which_repository_it_runs_in() {
+    let root = crate_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("src"), &mut files);
+
+    let mut offenders: Vec<String> = Vec::new();
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let rel = file
+            .strip_prefix(&root)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let lines: Vec<&str> = production_part(&text).lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains(r#"Command::new("git")"#) {
+                continue;
+            }
+            // The chain ends at the call that runs it, and COMMENTS are
+            // dropped first: the comment explaining this very rule
+            // mentions `current_dir`, and satisfied the check until a
+            // mutation test showed the guard passing on a subprocess
+            // that had none. A guard that cannot fail is worthless, so
+            // it is worth proving one can.
+            let chain: String = lines[n..(n + 14).min(lines.len())]
+                .iter()
+                .map(|l| l.trim_start())
+                .filter(|l| !l.starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let chain = match chain.find(".output()").or_else(|| chain.find(".status()")) {
+                Some(end) => &chain[..end],
+                None => &chain[..],
+            };
+            if chain.contains("current_dir") {
+                continue;
+            }
+            offenders.push(format!("{rel}:{}", n + 1));
+        }
+    }
+    offenders.sort();
+
+    assert!(
+        offenders.is_empty(),
+        "every `git` subprocess must name the repository it runs in \
+         with `.current_dir(...)`; without one it inherits the editor's \
+         own directory, which is a different repository for anyone with \
+         two checkouts open.\n\nThese do not:\n  {}",
+        offenders.join("\n  ")
+    );
 }
 
 #[test]

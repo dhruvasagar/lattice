@@ -87,6 +87,27 @@ pub trait ModeActivator {
     /// activation stays put).
     fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 
+    /// MR.6: the buffer that is active right now.
+    ///
+    /// A provider view is opened *over* something — the file you were
+    /// reading, the magit buffer you pressed a chord in — and what it
+    /// should show usually depends on which. `ProviderViewOpener`
+    /// received the services and the trigger's arguments but no way to
+    /// name that buffer, so magit's project diff had to fall back to the
+    /// process's working directory and showed the wrong repository's
+    /// changes for anyone with two checkouts open.
+    ///
+    /// The peer of `TransientContext::buffer` and
+    /// `ExCommandContext::buffer_id`, and generic for the same reason:
+    /// "which buffer did this come from" is a question every
+    /// context-varying surface asks, not a magit one.
+    ///
+    /// Default `None` so test activators that model no pane tree stay
+    /// valid; the host impl returns its active document buffer.
+    fn active_buffer(&self) -> Option<BufferId> {
+        None
+    }
+
     /// Cheap-clone handle to the App's [`ServiceRegistry`]. Used
     /// by extension-crate trigger functions that need to look up
     /// service handles (`BufferStoreHandle`, per-provider

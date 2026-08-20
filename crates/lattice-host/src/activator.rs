@@ -24,6 +24,15 @@ use lattice_mode::{ModeActivator, ModeId, ServiceRegistry};
 use crate::editor::Editor;
 
 impl ModeActivator for Editor {
+    /// MR.6: the buffer a provider view is being opened over.
+    ///
+    /// The active *document* buffer, which is what the trigger was
+    /// pressed in — the same id `transient_open_context` reports and the
+    /// same one the chord dispatcher hands an action handler.
+    fn active_buffer(&self) -> Option<BufferId> {
+        Some(self.document_buffer_id)
+    }
+
     fn activate_major_for_kind(&mut self, buffer: BufferId, kind: BufferKind) {
         let signals = self.activate_major_for_buffer_kind(buffer, kind);
         self.enqueue_renderer_signals(signals);

@@ -120,6 +120,7 @@ fn built_in_picker_registry(
     grep_highlighter: Option<Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>>,
     snippet_registry: Arc<ArcSwap<SnippetRegistry>>,
     theme_registry: lattice_theme::ThemeRegistryHandle,
+    magit_repo: lattice_magit::picker_sources::RepoLens,
 ) -> PickerRegistry {
     let mut reg = PickerRegistry::new();
     // MG.54: magit's revision picker reads `magit.revision-preview` at
@@ -134,7 +135,7 @@ fn built_in_picker_registry(
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
-    lattice_magit::picker_sources::register(&mut reg, Some(magit_config));
+    lattice_magit::picker_sources::register(&mut reg, Some(magit_config), magit_repo);
     // T.12a: the live-preview theme picker (`:colorscheme` no-arg).
     // Holds a clone of the host's `ThemeRegistryHandle` so it can
     // enumerate registered theme names + drive live preview.
@@ -995,6 +996,18 @@ impl Editor {
                 grep_highlighter,
                 snippet_registry_handle.clone(),
                 theme_registry.clone(),
+                // MR.6: magit's pickers list the repository the picker was
+                // opened over. Both handles exist by now — this runs after
+                // the Phase-B install list, where magit registers its
+                // `RepoScopes` — which is what lets the lens be built here
+                // rather than threaded through the whole builder.
+                match boot.service::<lattice_magit::repo_scope::RepoScopesHandle>() {
+                    Some(scopes) => lattice_magit::picker_sources::RepoLens::new(
+                        buffer_store_handle.clone(),
+                        (*scopes).clone(),
+                    ),
+                    None => lattice_magit::picker_sources::RepoLens::default(),
+                },
             )));
         boot.register_service::<lattice_picker::PickerRegistryHandle>(picker_registry.clone());
 

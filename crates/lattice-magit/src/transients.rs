@@ -1192,6 +1192,7 @@ fn remote_op_transient(
     ids: &MagitActionIds,
     rows: &'static [TransientRow],
     config_rows: &'static [ConfigRow],
+    workdir: &std::path::Path,
 ) -> TransientSpec {
     let mut groups = Vec::new();
     let flags = flag_items(op);
@@ -1205,7 +1206,7 @@ fn remote_op_transient(
     // push menu offers seven; lattice offered `P`.
     groups.push(row_group("Destination", ids, rows));
     // MG.43g: magit's `C`, reporting the key's current value inline.
-    groups.extend(config_group(ids, config_rows));
+    groups.extend(config_group(ids, config_rows, workdir));
     TransientSpec {
         title: title.into(),
         groups,
@@ -1356,6 +1357,7 @@ fn action_or_placeholder(
 /// renders disabled rather than panicking.
 fn variable_item(
     ids: &MagitActionIds,
+    workdir: &std::path::Path,
     key_chord: &str,
     label: &str,
     description: &str,
@@ -1372,7 +1374,7 @@ fn variable_item(
         description: description.to_string(),
         kind: TransientItemKind::Variable {
             key: config_key.to_string(),
-            value: crate::git_config::value_of(config_key),
+            value: crate::git_config::value_of(workdir, config_key),
             action: cid,
         },
     }
@@ -1452,7 +1454,11 @@ pub(crate) fn all_config_tables() -> &'static [(&'static str, &'static [ConfigRo
 
 /// The `Configure` group a menu appends, or nothing when the table is
 /// empty.
-fn config_group(ids: &MagitActionIds, rows: &'static [ConfigRow]) -> Option<TransientGroup> {
+fn config_group(
+    ids: &MagitActionIds,
+    rows: &'static [ConfigRow],
+    workdir: &std::path::Path,
+) -> Option<TransientGroup> {
     if rows.is_empty() {
         return None;
     }
@@ -1463,6 +1469,7 @@ fn config_group(ids: &MagitActionIds, rows: &'static [ConfigRow]) -> Option<Tran
             .map(|r| {
                 variable_item(
                     ids,
+                    workdir,
                     r.key,
                     r.label,
                     "Change this setting for the repository",
@@ -1575,7 +1582,7 @@ fn reset_transient(ids: &MagitActionIds) -> TransientSpec {
 /// spin-off/spin-out, `C` configure (a sub-transient over
 /// `branch.<name>.*` that likely belongs to `:customize`, not a
 /// hand-rolled menu), `X` reset (wants MG.23j's commit picker).
-fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
+fn branch_transient(ids: &MagitActionIds, workdir: &std::path::Path) -> TransientSpec {
     TransientSpec {
         title: "Branch".into(),
         groups: vec![
@@ -1584,7 +1591,7 @@ fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
             row_group("Do", ids, BRANCH_DO_ROWS),
         ]
         .into_iter()
-        .chain(config_group(ids, BRANCH_CONFIG_ROWS))
+        .chain(config_group(ids, BRANCH_CONFIG_ROWS, workdir))
         .collect(),
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
@@ -1608,7 +1615,11 @@ fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
 /// the remaining three (`c` / `d` / `D`, chiefly `notes.displayRef`)
 /// are table entries rather than a missing capability. Only outside a
 /// merge: a stopped notes merge shows the ways out and nothing else.
-fn notes_transient(ids: &MagitActionIds, merge_in_progress: bool) -> TransientSpec {
+fn notes_transient(
+    ids: &MagitActionIds,
+    workdir: &std::path::Path,
+    merge_in_progress: bool,
+) -> TransientSpec {
     let groups = if merge_in_progress {
         vec![TransientGroup {
             label: "Notes merge in progress".into(),
@@ -1673,7 +1684,7 @@ fn notes_transient(ids: &MagitActionIds, merge_in_progress: bool) -> TransientSp
     } else {
         groups
             .into_iter()
-            .chain(config_group(ids, NOTES_CONFIG_ROWS))
+            .chain(config_group(ids, NOTES_CONFIG_ROWS, workdir))
             .collect()
     };
     TransientSpec {
@@ -1993,12 +2004,12 @@ fn merge_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     }
 }
 
-fn tag_transient(ids: &MagitActionIds) -> TransientSpec {
+fn tag_transient(ids: &MagitActionIds, workdir: &std::path::Path) -> TransientSpec {
     TransientSpec {
         title: "Tag".into(),
         groups: vec![row_group("Tag", ids, TAG_ROWS)]
             .into_iter()
-            .chain(config_group(ids, TAG_CONFIG_ROWS))
+            .chain(config_group(ids, TAG_CONFIG_ROWS, workdir))
             .collect(),
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
@@ -2049,7 +2060,7 @@ pub fn dispatch_transient(
     ctx: &TransientContext,
     workdir: &std::path::Path,
 ) -> TransientSpec {
-    dispatch_transient_with(ids, ctx, DispatchGates::probe_in(workdir))
+    dispatch_transient_with(ids, ctx, &DispatchGates::probe_in(workdir))
 }
 
 /// One repository question, asked once — the shape every gate above
@@ -2067,7 +2078,7 @@ fn repo_flag(workdir: &std::path::Path, ask: impl Fn(&lattice_vcs::Repository) -
 /// type, and both mean "something is half-done" — exactly the pair that
 /// transposes silently, and a transposed gate shows the wrong menu with
 /// no error.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DispatchGates {
     /// MG.21g: `git bisect` is running.
     pub bisect: bool,
@@ -2085,6 +2096,14 @@ pub struct DispatchGates {
     /// before this, so the merge menu offered only ways IN while git
     /// refused every one of them.
     pub merge: bool,
+    /// MR.6: the repository these gates describe.
+    ///
+    /// Carried rather than threaded separately because a menu's rows ask
+    /// two kinds of question about one repository — "is a rebase
+    /// stopped" and "what is `pull.rebase` set to" — and answering them
+    /// about *different* repositories is the bug this whole series is
+    /// about. One value, probed once, for both.
+    pub workdir: std::path::PathBuf,
 }
 
 impl DispatchGates {
@@ -2107,6 +2126,7 @@ impl DispatchGates {
             .ok()
             .and_then(|repo| lattice_vcs::InFlightOp::detect(&repo));
         Self {
+            workdir: workdir.to_path_buf(),
             bisect: repo_flag(workdir, lattice_vcs::Bisect::in_progress),
             notes_merge: repo_flag(workdir, |repo| {
                 lattice_vcs::Note::merge_in_progress(repo.gitdir())
@@ -2311,7 +2331,7 @@ pub fn root_menu_spec(
     source: &str,
     ids: &MagitActionIds,
     ctx: &TransientContext,
-    gates: DispatchGates,
+    gates: &DispatchGates,
 ) -> Option<TransientSpec> {
     let spec = match source {
         "magit-menu-diff" => view_open_transient(
@@ -2328,21 +2348,36 @@ pub fn root_menu_spec(
         "magit-menu-revert" => revert_transient(ids, gates.revert),
         "magit-menu-reset" => reset_transient(ids),
         "magit-menu-bisect" => bisect_transient(ids, gates.bisect),
-        "magit-menu-notes" => notes_transient(ids, gates.notes_merge),
-        "magit-menu-branch" => branch_transient(ids),
+        "magit-menu-notes" => notes_transient(ids, &gates.workdir, gates.notes_merge),
+        "magit-menu-branch" => branch_transient(ids, &gates.workdir),
         "magit-menu-stash" => stash_transient(ids),
-        "magit-menu-fetch" => {
-            remote_op_transient("Fetch", RemoteOp::FETCH, ids, FETCH_ROWS, FETCH_CONFIG_ROWS)
-        }
-        "magit-menu-pull" => {
-            remote_op_transient("Pull", RemoteOp::PULL, ids, PULL_ROWS, PULL_CONFIG_ROWS)
-        }
-        "magit-menu-push" => {
-            remote_op_transient("Push", RemoteOp::PUSH, ids, PUSH_ROWS, PUSH_CONFIG_ROWS)
-        }
+        "magit-menu-fetch" => remote_op_transient(
+            "Fetch",
+            RemoteOp::FETCH,
+            ids,
+            FETCH_ROWS,
+            FETCH_CONFIG_ROWS,
+            &gates.workdir,
+        ),
+        "magit-menu-pull" => remote_op_transient(
+            "Pull",
+            RemoteOp::PULL,
+            ids,
+            PULL_ROWS,
+            PULL_CONFIG_ROWS,
+            &gates.workdir,
+        ),
+        "magit-menu-push" => remote_op_transient(
+            "Push",
+            RemoteOp::PUSH,
+            ids,
+            PUSH_ROWS,
+            PUSH_CONFIG_ROWS,
+            &gates.workdir,
+        ),
         "magit-menu-patches" => patch_transient(ids, gates.am),
         "magit-menu-rebase" => rebase_transient(ids, gates.rebase),
-        "magit-menu-tag" => tag_transient(ids),
+        "magit-menu-tag" => tag_transient(ids, &gates.workdir),
         "magit-menu-merge" => merge_transient(ids, gates.merge),
         _ => return None,
     };
@@ -2353,7 +2388,7 @@ pub fn root_menu_spec(
 pub fn dispatch_transient_with(
     ids: &MagitActionIds,
     ctx: &TransientContext,
-    gates: DispatchGates,
+    gates: &DispatchGates,
 ) -> TransientSpec {
     let _bisect_in_progress = gates.bisect;
     TransientSpec {
@@ -3522,7 +3557,8 @@ mod config_row_tests {
         crate::register_action_commands(&mut registry);
         let ids = MagitActionIds::resolve(&registry);
 
-        let group = config_group(&ids, BRANCH_CONFIG_ROWS).expect("branch has a configure row");
+        let group = config_group(&ids, BRANCH_CONFIG_ROWS, std::path::Path::new("/work/api"))
+            .expect("branch has a configure row");
         let item = &group.items[0];
         match &item.kind {
             TransientItemKind::Variable { key, value, .. } => {
@@ -4461,7 +4497,7 @@ mod root_menu_chord_tests {
         let ctx = TransientContext::default();
         for menu in ROOT_MENUS {
             assert!(
-                root_menu_spec(menu.source, &ids, &ctx, DispatchGates::default()).is_some(),
+                root_menu_spec(menu.source, &ids, &ctx, &DispatchGates::default()).is_some(),
                 "{} has no spec — its chord and its dispatch row would both \
                  open nothing",
                 menu.source,

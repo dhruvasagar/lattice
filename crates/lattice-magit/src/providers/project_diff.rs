@@ -1115,7 +1115,22 @@ pub fn open_project_diff(
     use lattice_mode::ProviderViewOutcome;
 
     let comparison = comparison_from_args(args);
-    let Some(workdir) = crate::workdir::magit_workdir() else {
+    // MR.6: the repository the view was opened over, through the same
+    // record every other magit surface reads. `magit_workdir()` stays as
+    // the fall-back for an activator with no active buffer.
+    let scopes = activator
+        .services()
+        .get::<crate::repo_scope::RepoScopesHandle>();
+    let store = activator
+        .services()
+        .get::<lattice_mode::BufferStoreHandle>();
+    let resolved = match (activator.active_buffer(), store, scopes) {
+        (Some(buffer), Some(store), Some(scopes)) => {
+            crate::repo_scope::active_workdir(&store, &scopes, buffer)
+        }
+        _ => None,
+    };
+    let Some(workdir) = resolved.or_else(crate::workdir::magit_workdir) else {
         return ProviderViewOutcome::Declined {
             message: "magit: not inside a git repository".to_string(),
         };

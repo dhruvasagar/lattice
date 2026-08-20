@@ -147,6 +147,58 @@ pub fn open_repo_view(
     }
 }
 
+/// MR.3: the repository a magit view acts on, read at activation — the
+/// other end of what [`open_repo_view`] wrote.
+///
+/// Every view's `on_activate` asks exactly this, and asks it the same
+/// way: the record under this buffer's name, else the working directory.
+/// The fallback is not defensive padding — a magit buffer reopened by
+/// `:b` after a restart has a name and no record, and the working
+/// directory is the answer magit gave for that buffer before MR.2.
+///
+/// Also indexes the document, so closing the buffer drops the record.
+/// Here rather than at the trigger because this is the first moment the
+/// document exists — and in the same helper as the read so a new view
+/// cannot pick up one half and forget the other.
+pub fn view_workdir(
+    ctx: &lattice_mode::ModeContext,
+    buffer: lattice_core::BufferId,
+    handle: &std::sync::Arc<dyn lattice_runtime::Document>,
+) -> Option<PathBuf> {
+    let name = ctx
+        .service::<lattice_mode::BufferStoreHandle>()
+        .and_then(|store| store.name_for(buffer));
+    let scopes = ctx.service::<RepoScopesHandle>();
+
+    if let (Some(scopes), Some(name)) = (scopes.as_ref(), name.as_ref()) {
+        scopes.index_document(handle.id(), name.clone());
+        if let Some(recorded) = scopes.workdir_for(name) {
+            return Some(recorded);
+        }
+    }
+    crate::workdir::magit_workdir()
+}
+
+/// MR.3: [`open_repo_view`] for a view that encodes parameters of its
+/// own — the commit family's target (`*magit:augment:<repo>:<sha>*`) and,
+/// from MR.3b, the path- and revision-scoped views.
+///
+/// `rest` is the view's own encoding, verbatim; this function only puts
+/// the repository in front of it.
+pub fn open_repo_view_with(
+    view: &str,
+    mode_id: &str,
+    rest: &str,
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+) -> lattice_grammar::Effect {
+    lattice_grammar::Effect::OpenSyntheticBuffer {
+        name: repo_view_name_with(view, Some(rest), store, scopes, active),
+        mode_id: mode_id.to_string(),
+    }
+}
+
 /// The naming half of [`open_repo_view`], split out so a test can assert
 /// which buffer a trigger lands on without an `Effect` in the way.
 pub fn repo_view_name(
@@ -155,7 +207,24 @@ pub fn repo_view_name(
     scopes: &RepoScopes,
     active: lattice_core::BufferId,
 ) -> String {
+    repo_view_name_with(view, None, store, scopes, active)
+}
+
+/// Resolve the repository, compose the name, record what the buffer acts
+/// on. The single body under every magit trigger.
+pub fn repo_view_name_with(
+    view: &str,
+    rest: Option<&str>,
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+) -> String {
     use crate::workdir;
+
+    let compose = |label: &str| match rest {
+        Some(rest) => workdir::magit_buffer_name_with(view, label, rest),
+        None => workdir::magit_buffer_name(view, label),
+    };
 
     // Question 1 (design §2): the active buffer is itself a magit
     // buffer, so it already knows which repository it is showing.
@@ -173,14 +242,14 @@ pub fn repo_view_name(
         // Not in a repository from any of the three directions. The
         // unqualified name is what magit always used, and the view says
         // "Not a git repository." exactly as it did before.
-        return workdir::magit_buffer_name(view, "");
+        return compose("");
     };
 
-    let mut name = workdir::magit_buffer_name(view, &workdir::repo_label(&repo));
+    let mut name = compose(&workdir::repo_label(&repo));
     if scopes.collides(&name, &repo) {
         // Two checkouts sharing a basename. Qualifying is the only
         // outcome that is not "both repositories share one buffer".
-        name = workdir::magit_buffer_name(view, &workdir::qualified_repo_label(&repo));
+        name = compose(&workdir::qualified_repo_label(&repo));
     }
     scopes.record(name.clone(), repo);
     name
@@ -451,6 +520,82 @@ mod tests {
             "the qualified name names its parent directory: {name}"
         );
         assert_eq!(scopes.tracked(), 2, "two repositories, two records");
+    }
+
+    /// MR.3: every view that has moved resolves from the buffer in front
+    /// of you, and each gets its OWN buffer per repository.
+    ///
+    /// Table-driven because the failure this guards is a view left
+    /// behind: a conversion that does eight of nine, and the ninth still
+    /// opening the working directory's repository — which looks correct
+    /// from inside the repository you happen to be in, and is invisible
+    /// until someone works across two.
+    #[test]
+    fn every_converted_view_resolves_from_the_buffer_it_was_triggered_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git_init(&repo);
+        let file = repo.join("src").join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        let store = store_showing(Some("src/main.rs"), Some(file));
+
+        for view in [
+            "status",
+            "commit",
+            "amend",
+            "reword",
+            "branch",
+            "remote",
+            "submodule",
+            "refs",
+        ] {
+            let name = repo_view_name(view, &store, &scopes, active());
+            assert_eq!(
+                name,
+                format!("*magit:{view}:api*"),
+                "`{view}` must open the file's repository"
+            );
+            assert_eq!(
+                scopes
+                    .workdir_for(&name)
+                    .and_then(|w| w.canonicalize().ok()),
+                repo.canonicalize().ok(),
+                "…and record it, or its `on_activate` reads the cwd back"
+            );
+        }
+    }
+
+    /// The commit family's targeted intents keep their target AND gain
+    /// the repository, in that order: `*magit:augment:<repo>:<sha>*`.
+    ///
+    /// Both halves matter and they fail differently — losing the repo
+    /// squashes into the wrong checkout, losing the target composes a
+    /// squash for nothing.
+    #[test]
+    fn a_targeted_commit_buffer_carries_both_repo_and_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_init(&repo);
+        let file = repo.join("a.rs");
+        std::fs::write(&file, "\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        let store = store_showing(Some("a.rs"), Some(file));
+
+        let name = repo_view_name_with("augment", Some("abc123"), &store, &scopes, active());
+        assert_eq!(name, "*magit:augment:api:abc123*");
+        assert_eq!(
+            crate::magit_commit_mode::CommitIntent::from_buffer_name(&name),
+            crate::magit_commit_mode::CommitIntent::Augment {
+                target: "abc123".to_string()
+            },
+            "the intent must survive the repository being in the name"
+        );
+        assert!(scopes.workdir_for(&name).is_some(), "…and be recorded");
     }
 
     /// `C-x g` and `:magit-status` must land on the same buffer from the

@@ -841,10 +841,84 @@ fn register_ex_commands(
         },
     );
 
-    let mut mk = |name: &'static str,
-                  doc: &'static str,
-                  buffer_name: &'static str,
-                  mode_id: &'static str| {
+    // MR.3: a view whose whole identity is "this view, this repository".
+    // The view word goes in; the repository is resolved from the buffer
+    // the `:` line was submitted from and the name is composed from
+    // both. Same body as `C-x g`'s handler and `:magit-status`.
+    let mut mk =
+        |name: &'static str, doc: &'static str, view: &'static str, mode_id: &'static str| {
+            let store = store.clone();
+            let scopes = scopes.clone();
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+                    apply: Arc::new(move |ctx| {
+                        Ok(repo_scope::open_repo_view(
+                            view,
+                            mode_id,
+                            &store,
+                            &scopes,
+                            ctx.buffer_id,
+                        ))
+                    }),
+                    args_schema: Vec::new(),
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        };
+
+    mk(
+        "magit-commit",
+        "Open the Magit commit buffer for the repository of the current buffer.",
+        "commit",
+        "magit-commit-mode",
+    );
+    mk(
+        "magit-branch",
+        "Open the Magit branch list for the repository of the current buffer.",
+        "branch",
+        "magit-branch-mode",
+    );
+    // MG.21c
+    mk(
+        "magit-remote",
+        "Open the Magit remote list for the repository of the current buffer.",
+        "remote",
+        "magit-remote-mode",
+    );
+    // MG.21i
+    mk(
+        "magit-submodule",
+        "Open the Magit submodule list for the repository of the current buffer.",
+        "submodule",
+        "magit-submodule-mode",
+    );
+    // MG.35: magit's `y` show-refs. Named for what it lists rather than
+    // for magit's key, per the dashed-namespaced ex-command rule.
+    mk(
+        "magit-refs",
+        "Open the Magit refs buffer — every branch, remote-tracking branch and tag.",
+        magit_refs_mode::REFS_VIEW,
+        "magit-refs-mode",
+    );
+
+    // MR.3b: the views whose names ALSO encode parameters of their own
+    // (`*magit:diff:staged:<path>*`, `*magit:log:<path>*`,
+    // `*magit:stash:<n>*`). They cannot take a repository segment one at
+    // a time: `*magit:log:src*` would mean either the `src` repository
+    // or the log of the path `src`, and the answer has to be the same
+    // for every producer and parser of that view at once. They keep the
+    // fixed name and the working directory until their parsers move
+    // together.
+    let mut mk_fixed = |name: &'static str,
+                        doc: &'static str,
+                        buffer_name: &'static str,
+                        mode_id: &'static str| {
         let mode_id = mode_id.to_string();
         registry.register_ex_command(
             name,
@@ -866,57 +940,23 @@ fn register_ex_commands(
         );
     };
 
-    mk(
-        "magit-commit",
-        "Open the Magit commit buffer with staged diff preview.",
-        "*magit:commit*",
-        "magit-commit-mode",
-    );
-    mk(
+    mk_fixed(
         "magit-diff",
         "Open a dedicated side-by-side diff view against HEAD.",
         "*magit:diff*",
         "magit-diff-mode",
     );
-    mk(
+    mk_fixed(
         "magit-log",
         "Open the Magit commit history log.",
         "*magit:log*",
         "magit-log-mode",
     );
-    mk(
+    mk_fixed(
         "magit-stash-list",
         "Open the Magit stash list buffer.",
         "*magit:stash*",
         "magit-stash-mode",
-    );
-    mk(
-        "magit-branch",
-        "Open the Magit branch list buffer.",
-        "*magit:branch*",
-        "magit-branch-mode",
-    );
-    // MG.21c
-    mk(
-        "magit-remote",
-        "Open the Magit remote list buffer.",
-        "*magit:remote*",
-        "magit-remote-mode",
-    );
-    // MG.21i
-    mk(
-        "magit-submodule",
-        "Open the Magit submodule list buffer.",
-        "*magit:submodule*",
-        "magit-submodule-mode",
-    );
-    // MG.35: magit's `y` show-refs. Named for what it lists rather than
-    // for magit's key, per the dashed-namespaced ex-command rule.
-    mk(
-        "magit-refs",
-        "Open the Magit refs buffer — every branch, remote-tracking branch and tag.",
-        magit_refs_mode::REFS_BUFFER,
-        "magit-refs-mode",
     );
     // PD.3 (2026-08-12): the project-diff view — every changed file at
     // once, as editable source. Not `mk`-able: it opens a multibuffer,
@@ -1534,21 +1574,32 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(move |ctx| {
-                    let commit = match ctx.args {
-                        Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
-                        _ => {
-                            return Ok(Effect::OpenPicker {
-                                source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
-                                args: vec!["magit-rebase-reword-commit".to_string()],
-                            });
-                        }
-                    };
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_commit_mode::CommitIntent::reword_commit_buffer_name(&commit),
-                        mode_id: "magit-commit-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let commit = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                    args: vec!["magit-rebase-reword-commit".to_string()],
+                                });
+                            }
+                        };
+                        // MR.3: the compose buffer belongs to the
+                        // repository the `:` line came from, and records it
+                        // — `magit-commit-mode`'s activation reads it back.
+                        Ok(repo_scope::open_repo_view_with(
+                            "reword-commit",
+                            "magit-commit-mode",
+                            &commit,
+                            &store,
+                            &scopes,
+                            ctx.buffer_id,
+                        ))
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::optional(
                     "commit",
                     lattice_grammar::ArgKind::String,
@@ -1574,21 +1625,29 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(move |ctx| {
-                    let commit = match ctx.args {
-                        Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
-                        _ => {
-                            return Ok(Effect::OpenPicker {
-                                source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
-                                args: vec!["magit-augment".to_string()],
-                            });
-                        }
-                    };
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_commit_mode::CommitIntent::augment_buffer_name(&commit),
-                        mode_id: "magit-commit-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let commit = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                    args: vec!["magit-augment".to_string()],
+                                });
+                            }
+                        };
+                        Ok(repo_scope::open_repo_view_with(
+                            "augment",
+                            "magit-commit-mode",
+                            &commit,
+                            &store,
+                            &scopes,
+                            ctx.buffer_id,
+                        ))
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::optional(
                     "commit",
                     lattice_grammar::ArgKind::String,
@@ -1774,6 +1833,10 @@ fn register_ex_commands(
                 "Merge the current branch INTO another: `<branch>`.",
             ),
         ] {
+            // Cloned per iteration: the closure outlives the loop body,
+            // so it cannot borrow the shared handles.
+            let store = store.clone();
+            let scopes = scopes.clone();
             registry.register_ex_command(
                 name,
                 doc,
@@ -1806,10 +1869,14 @@ fn register_ex_commands(
                             // No git call: the merge runs when the
                             // commit buffer is confirmed, which is the
                             // whole point of the "edit message" variant.
-                            "magit-merge-edit" => Effect::OpenSyntheticBuffer {
-                                name: magit_commit_mode::CommitIntent::merge_edit_buffer_name(&b),
-                                mode_id: "magit-commit-mode".to_string(),
-                            },
+                            "magit-merge-edit" => repo_scope::open_repo_view_with(
+                                "merge-edit",
+                                "magit-commit-mode",
+                                &b,
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
                             // Merging the CURRENT branch into another
                             // needs to know which one that is, and
                             // detached HEAD has no answer. Declines

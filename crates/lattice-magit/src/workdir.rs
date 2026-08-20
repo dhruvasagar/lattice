@@ -115,17 +115,45 @@ pub(crate) fn qualified_repo_label(workdir: &Path) -> String {
     }
 }
 
-/// MR.2: the one producer of a repo-scoped magit buffer name.
+/// MR.3: the shape every magit view buffer's name has.
+///
+/// ```text
+/// *magit:<view>[:<repo>[:<rest>]]*
+///          │       │        └─ whatever the view encodes: a path, a
+///          │       │           revision, a diff scope, a stash index
+///          │       └─ the repository's label — ALWAYS segment 2
+///          └─ which view this is
+/// ```
+///
+/// **Segment 2 is the repository, always.** That rule is what makes the
+/// name parseable at all once views carry both a repository and their
+/// own parameters: `*magit:log:src*` is otherwise unreadable — repo
+/// `src`, or the log of the path `src`? Fixing the position answers it
+/// without asking the record, and the only way to keep the rule true is
+/// to never produce a `rest` without a repo segment before it (hence the
+/// empty segment in [`magit_buffer_name_with`] when there is no repo).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MagitName<'a> {
+    pub view: &'a str,
+    /// `None` outside a repository, where the trigger has nothing to
+    /// label with. Not an error — the view opens and says so.
+    pub repo: Option<&'a str>,
+    /// The view's own encoded parameters, unsplit: each view knows its
+    /// own shape and parses this itself.
+    pub rest: Option<&'a str>,
+}
+
+/// MR.2/MR.3: the one producer of a magit view's buffer name.
 ///
 /// `("status", "lattice")` → `*magit:status:lattice*`. The label comes
 /// from [`repo_label`] (or [`qualified_repo_label`] on a collision), not
 /// from the workdir directly, because the caller — not this function —
 /// is the one that knows whether the plain form is already taken.
 ///
-/// One producer and one parser ([`repo_display_from_name`]), every
-/// caller through them: MG.15 lost every stash chord to a hand-rolled
-/// producer drifting from its parser, and this name has more callers
-/// than that one did.
+/// One producer and one parser ([`parse_magit_name`]), every caller
+/// through them: MG.15 lost every stash chord to a hand-rolled producer
+/// drifting from its parser, and this name has more callers than that
+/// one did.
 pub(crate) fn magit_buffer_name(view: &str, label: &str) -> String {
     if label.is_empty() {
         // The repo-less form: what every magit buffer was called before
@@ -135,12 +163,35 @@ pub(crate) fn magit_buffer_name(view: &str, label: &str) -> String {
     format!("*magit:{view}:{label}*")
 }
 
-// The parser half of the pair (design §3.1's `repo_display_from_name`)
-// is NOT here yet, deliberately: in MR.2 nothing reads a repository back
-// out of a name — the record is looked up by the whole name, and `:ls`
-// prints the name verbatim. It lands with its first consumer, per the
-// lesson MR.1 was rewritten around: a helper with no caller has no
-// warning-clean landing, so it is not a slice.
+/// The same producer for a view that encodes parameters of its own —
+/// a path, a revision, a diff scope.
+///
+/// With no repository the repo segment is left **empty** rather than
+/// omitted (`*magit:diff::staged:src/main.rs*`). Omitting it would slide
+/// `staged` into segment 2 and the parser would report it as the
+/// repository — the ambiguity the fixed position exists to prevent. The
+/// name is admittedly odd, and it is only reachable outside any
+/// repository, where the view's whole content is "Not a git repository."
+pub(crate) fn magit_buffer_name_with(view: &str, label: &str, rest: &str) -> String {
+    format!("*magit:{view}:{label}:{rest}*")
+}
+
+/// MR.3: the parser half — `*magit:<view>[:<repo>[:<rest>]]*` split into
+/// its three parts.
+///
+/// `None` for anything that is not a magit buffer name at all. An empty
+/// repo segment reads back as `None`, which is the round-trip of
+/// [`magit_buffer_name_with`]'s no-repository form.
+pub(crate) fn parse_magit_name(name: &str) -> Option<MagitName<'_>> {
+    let body = name.strip_prefix("*magit:")?.strip_suffix('*')?;
+    let mut parts = body.splitn(3, ':');
+    let view = parts.next().filter(|v| !v.is_empty())?;
+    Some(MagitName {
+        view,
+        repo: parts.next().filter(|r| !r.is_empty()),
+        rest: parts.next().filter(|r| !r.is_empty()),
+    })
+}
 
 /// MR.2: does this name belong to a magit buffer at all?
 ///
@@ -355,6 +406,105 @@ mod tests {
     #[test]
     fn no_label_produces_the_name_magit_always_had() {
         assert_eq!(magit_buffer_name("status", ""), "*magit:status*");
+    }
+
+    // ── MR.3: the name grammar ───────────────────────────────────
+
+    /// Everything the producers can make must read back as what went in
+    /// — the property the pair exists for, and the one MG.15 lost.
+    #[test]
+    fn every_name_the_producers_make_the_parser_reads_back() {
+        let cases: &[(String, &str, Option<&str>, Option<&str>)] = &[
+            (
+                magit_buffer_name("status", "lattice"),
+                "status",
+                Some("lattice"),
+                None,
+            ),
+            (
+                magit_buffer_name("status", "work/api"),
+                "status",
+                Some("work/api"),
+                None,
+            ),
+            (magit_buffer_name("status", ""), "status", None, None),
+            (
+                magit_buffer_name_with("diff", "lattice", "staged:src/main.rs"),
+                "diff",
+                Some("lattice"),
+                Some("staged:src/main.rs"),
+            ),
+            (
+                magit_buffer_name_with("file", "api", "a1b2c3d:src/main.rs"),
+                "file",
+                Some("api"),
+                Some("a1b2c3d:src/main.rs"),
+            ),
+        ];
+        for (name, view, repo, rest) in cases {
+            let parsed = parse_magit_name(name).unwrap_or_else(|| panic!("{name} must parse"));
+            assert_eq!(
+                parsed,
+                MagitName {
+                    view,
+                    repo: *repo,
+                    rest: *rest
+                },
+                "{name}"
+            );
+        }
+    }
+
+    /// The rule the fixed position exists for, asserted as the pair of
+    /// names it disambiguates: the repository `src` and the log of the
+    /// path `src` are different buffers, and before MR.3 they were the
+    /// same string.
+    #[test]
+    fn segment_two_is_the_repository_even_when_it_looks_like_a_parameter() {
+        let repo_only = magit_buffer_name("log", "src");
+        let path_in_repo = magit_buffer_name_with("log", "lattice", "src");
+
+        assert_eq!(
+            parse_magit_name(&repo_only).and_then(|n| n.repo),
+            Some("src")
+        );
+        assert_eq!(parse_magit_name(&repo_only).and_then(|n| n.rest), None);
+
+        assert_eq!(
+            parse_magit_name(&path_in_repo).and_then(|n| n.repo),
+            Some("lattice")
+        );
+        assert_eq!(
+            parse_magit_name(&path_in_repo).and_then(|n| n.rest),
+            Some("src")
+        );
+    }
+
+    /// Outside a repository a parameterised view leaves the repo segment
+    /// EMPTY rather than omitting it. Omitting would slide the parameter
+    /// into segment 2 and the parser would report `staged` as the
+    /// repository — which is the whole failure the fixed position
+    /// prevents, arrived at from the producer's side.
+    #[test]
+    fn a_parameterised_name_with_no_repo_keeps_the_slot_open() {
+        let name = magit_buffer_name_with("diff", "", "staged:src/main.rs");
+        let parsed = parse_magit_name(&name).expect("parses");
+        assert_eq!(parsed.repo, None, "there is no repository");
+        assert_eq!(
+            parsed.rest,
+            Some("staged:src/main.rs"),
+            "…and the parameter survives intact: {name}"
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_magit_buffers_do_not_parse() {
+        for name in ["src/main.rs", "*messages*", "*magit:*", "*magit:status"] {
+            assert!(
+                parse_magit_name(name).is_none(),
+                "{name} must not parse as a magit view name"
+            );
+        }
     }
 
     #[test]

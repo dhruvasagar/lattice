@@ -82,54 +82,55 @@ pub enum CommitIntent {
 }
 
 impl CommitIntent {
-    /// Map a compose buffer's name to its intent.
+    /// Map a compose buffer's name to its intent. Kept in ONE place so
+    /// the mapping is auditable.
     ///
-    /// Order matters: `*magit:reword*` must be tested before the
-    /// `amend` substring, or a future rename could make one shadow the
-    /// other. Kept in ONE place so the mapping is auditable.
+    /// MR.3: read through the shared name grammar
+    /// (`*magit:<view>[:<repo>[:<rest>]]*`) rather than by substring.
+    ///
+    /// The substring form it replaces (`name.contains("reword")`) was
+    /// fine while names held only a view word; with a repository in the
+    /// name, a checkout called `amend` or `reword` would have selected
+    /// the wrong operation on every commit buffer in it. Structured
+    /// parsing makes that unrepresentable rather than unlikely.
+    ///
+    /// A name that does not parse at all falls to `Create`, which is
+    /// what an unrecognised compose buffer did before.
     pub fn from_buffer_name(name: &str) -> Self {
+        let Some(parsed) = crate::workdir::parse_magit_name(name) else {
+            return Self::Create;
+        };
         // Targeted intents carry their target IN the name
-        // (`*magit:augment:<sha>*`), so the compose buffer needs no
-        // side-channel and `:ls` shows what it is about to act on.
-        if let Some(target) = Self::suffix_after(name, "augment:") {
-            return Self::Augment { target };
-        }
-        if let Some(branch) = Self::suffix_after(name, "merge-edit:") {
-            return Self::MergeEdit { branch };
-        }
-        // Checked before the bare `reword` test below: this name
-        // contains "reword" too, and the two are different operations
-        // (amend HEAD vs. replay history).
-        if let Some(target) = Self::suffix_after(name, "reword-commit:") {
-            return Self::RewordCommit { target };
-        }
-        if name.contains("reword") {
-            Self::Reword
-        } else if name.contains("amend") {
-            Self::Amend
-        } else {
-            Self::Create
+        // (`*magit:augment:<repo>:<sha>*`), so the compose buffer needs
+        // no side-channel and `:ls` shows what it is about to act on.
+        match (parsed.view, parsed.rest) {
+            ("augment", Some(target)) => Self::Augment {
+                target: target.to_string(),
+            },
+            ("merge-edit", Some(branch)) => Self::MergeEdit {
+                branch: branch.to_string(),
+            },
+            ("reword-commit", Some(target)) => Self::RewordCommit {
+                target: target.to_string(),
+            },
+            ("reword", _) => Self::Reword,
+            ("amend", _) => Self::Amend,
+            _ => Self::Create,
         }
     }
 
-    /// The value between `<marker>` and the buffer name's trailing `*`.
-    fn suffix_after(name: &str, marker: &str) -> Option<String> {
-        let rest = name.split_once(marker)?.1;
-        let value = rest.trim_end_matches('*').trim();
-        (!value.is_empty()).then(|| value.to_string())
+    /// The buffer name that selects this intent, for the repository
+    /// labelled `repo` (empty outside one).
+    pub fn augment_buffer_name(repo: &str, target: &str) -> String {
+        crate::workdir::magit_buffer_name_with("augment", repo, target)
     }
 
-    /// The buffer name that selects this intent.
-    pub fn augment_buffer_name(target: &str) -> String {
-        format!("*magit:augment:{target}*")
+    pub fn merge_edit_buffer_name(repo: &str, branch: &str) -> String {
+        crate::workdir::magit_buffer_name_with("merge-edit", repo, branch)
     }
 
-    pub fn merge_edit_buffer_name(branch: &str) -> String {
-        format!("*magit:merge-edit:{branch}*")
-    }
-
-    pub fn reword_commit_buffer_name(target: &str) -> String {
-        format!("*magit:reword-commit:{target}*")
+    pub fn reword_commit_buffer_name(repo: &str, target: &str) -> String {
+        crate::workdir::magit_buffer_name_with("reword-commit", repo, target)
     }
 
     /// Does the buffer open pre-filled with the previous message?
@@ -378,7 +379,10 @@ impl Mode for MagitCommitMode {
                 return Ok(orphan());
             };
 
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
             // MG.42-E1: the name selects the intent ONCE, here.
             let intent = store

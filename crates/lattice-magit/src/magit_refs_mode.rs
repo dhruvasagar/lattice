@@ -40,9 +40,14 @@ impl MagitRefsMode {
     }
 }
 
-/// The buffer this mode owns. Fixed, not parameterised: "every ref in
-/// this repository" has no argument to vary.
-pub const REFS_BUFFER: &str = "*magit:refs*";
+/// The view word this mode owns — `*magit:refs:<repo>*`.
+///
+/// MR.3 replaced the fixed `*magit:refs*` this was: "every ref in this
+/// repository" has no argument to vary, but it does vary by repository,
+/// and a constant naming one buffer for all of them was the assumption
+/// the whole slice removes. Composed through
+/// [`crate::workdir::magit_buffer_name`] at the trigger.
+pub const REFS_VIEW: &str = "refs";
 
 fn magit_refs_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
@@ -192,7 +197,10 @@ impl Mode for MagitRefsMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
             let (hl, hl_registration) =

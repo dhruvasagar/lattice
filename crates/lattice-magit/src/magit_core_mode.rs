@@ -1455,12 +1455,12 @@ impl Mode for MagitCoreMode {
                             args: vec!["magit-rebase-reword-commit".to_string()],
                         });
                     };
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: crate::magit_commit_mode::CommitIntent::reword_commit_buffer_name(
-                            &commit,
-                        ),
-                        mode_id: "magit-commit-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        "reword-commit",
+                        "magit-commit-mode",
+                        Some(&commit),
+                    ))
                 }),
             },
             // MG.43a: the `--no-commit` halves. Same resolution, same
@@ -1524,10 +1524,12 @@ impl Mode for MagitCoreMode {
                             args: vec!["magit-augment".to_string()],
                         });
                     };
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: crate::magit_commit_mode::CommitIntent::augment_buffer_name(&commit),
-                        mode_id: "magit-commit-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        "augment",
+                        "magit-commit-mode",
+                        Some(&commit),
+                    ))
                 }),
             },
             // MG.42-E2: magit's `F` / `S` — record the marker commit

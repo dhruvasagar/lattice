@@ -4299,7 +4299,7 @@ mod commit_intent_tests {
     /// between opening the buffer and confirming it.
     #[test]
     fn targeted_intents_round_trip_through_the_buffer_name() {
-        let name = CommitIntent::augment_buffer_name("abc123");
+        let name = CommitIntent::augment_buffer_name("lattice", "abc123");
         assert_eq!(
             CommitIntent::from_buffer_name(&name),
             CommitIntent::Augment {
@@ -4307,7 +4307,7 @@ mod commit_intent_tests {
             }
         );
 
-        let name = CommitIntent::merge_edit_buffer_name("feature/x");
+        let name = CommitIntent::merge_edit_buffer_name("lattice", "feature/x");
         assert_eq!(
             CommitIntent::from_buffer_name(&name),
             CommitIntent::MergeEdit {
@@ -4326,26 +4326,32 @@ mod commit_intent_tests {
     #[test]
     fn an_empty_target_does_not_produce_a_targeted_intent() {
         assert_eq!(
-            CommitIntent::from_buffer_name("*magit:augment:*"),
+            CommitIntent::from_buffer_name("*magit:augment:lattice:*"),
             CommitIntent::Create
         );
         assert_eq!(
-            CommitIntent::from_buffer_name("*magit:merge-edit:*"),
+            CommitIntent::from_buffer_name("*magit:merge-edit:lattice:*"),
             CommitIntent::Create
         );
     }
 
-    /// The targeted intents are checked BEFORE the substring tests.
+    /// A target — or a REPOSITORY — containing "amend" or "reword"
+    /// stays what the view word says it is.
     ///
-    /// The name is matched by substring, so a target containing
-    /// "amend" or "reword" is entirely legal — `amend-fixes` is an
-    /// ordinary branch name. Order is what stops it selecting the
-    /// wrong intent, and the two are opposite operations: merge-edit
-    /// records a new merge commit, amend rewrites the last one.
+    /// `amend-fixes` is an ordinary branch name and a checkout can be
+    /// called anything; before MR.3 the intent was chosen by substring
+    /// (`name.contains("amend")`), so either would have selected the
+    /// opposite operation — merge-edit records a new merge commit,
+    /// amend rewrites the last one. The repo here is deliberately named
+    /// `amend` to pin that the structured parse, not ordering, is what
+    /// makes this safe.
     #[test]
     fn a_target_containing_amend_stays_targeted() {
         assert_eq!(
-            CommitIntent::from_buffer_name(&CommitIntent::merge_edit_buffer_name("amend-fixes")),
+            CommitIntent::from_buffer_name(&CommitIntent::merge_edit_buffer_name(
+                "amend",
+                "amend-fixes"
+            )),
             CommitIntent::MergeEdit {
                 branch: "amend-fixes".to_string()
             }
@@ -4361,7 +4367,7 @@ mod commit_intent_tests {
     /// after it has happened.
     #[test]
     fn reword_a_commit_is_not_reword_head() {
-        let name = CommitIntent::reword_commit_buffer_name("abc123");
+        let name = CommitIntent::reword_commit_buffer_name("lattice", "abc123");
         assert_eq!(
             CommitIntent::from_buffer_name(&name),
             CommitIntent::RewordCommit {

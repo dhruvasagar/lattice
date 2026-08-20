@@ -145,19 +145,47 @@ impl Mode for MagitGlobalMode {
 /// service is missing (a harness that registered neither) the fixed,
 /// unlabelled name is returned: the buffer still opens, on the working
 /// directory's repository, which is what magit did before MR.2.
-fn open_repo_view_from_action(ctx: &ActionContext<'_>, view: &str, mode_id: &str) -> Effect {
+pub(crate) fn open_repo_view_from_action(
+    ctx: &ActionContext<'_>,
+    view: &str,
+    mode_id: &str,
+) -> Effect {
+    open_repo_view_from_action_with(ctx, view, mode_id, None)
+}
+
+/// MR.3: the same, for a view whose name also encodes a target — the
+/// commit family's `augment` / `merge-edit` / `reword-commit`.
+///
+/// These fire *inside* a magit buffer, so the repository they resolve to
+/// is that buffer's own (design §2's first question), which is what
+/// makes a `w` pressed in repo B's log compose a message for repo B.
+pub(crate) fn open_repo_view_from_action_with(
+    ctx: &ActionContext<'_>,
+    view: &str,
+    mode_id: &str,
+    rest: Option<&str>,
+) -> Effect {
     let store = ctx.services.get::<lattice_mode::BufferStoreHandle>();
     let scopes = ctx.services.get::<crate::repo_scope::RepoScopesHandle>();
     match (store, scopes) {
-        (Some(store), Some(scopes)) => crate::repo_scope::open_repo_view(
-            view,
-            mode_id,
-            &store,
-            &scopes,
-            lattice_core::BufferId(ctx.buffer_id.raw() as u32),
-        ),
+        (Some(store), Some(scopes)) => Effect::OpenSyntheticBuffer {
+            name: crate::repo_scope::repo_view_name_with(
+                view,
+                rest,
+                &store,
+                &scopes,
+                lattice_core::BufferId(ctx.buffer_id.raw() as u32),
+            ),
+            mode_id: mode_id.to_string(),
+        },
+        // Neither service registered (a harness that wired neither):
+        // the unlabelled name, which is what magit opened before MR.2 —
+        // the buffer still appears, on the working directory's repo.
         _ => Effect::OpenSyntheticBuffer {
-            name: crate::workdir::magit_buffer_name(view, ""),
+            name: match rest {
+                Some(rest) => crate::workdir::magit_buffer_name_with(view, "", rest),
+                None => crate::workdir::magit_buffer_name(view, ""),
+            },
             mode_id: mode_id.to_string(),
         },
     }
@@ -166,6 +194,22 @@ fn open_repo_view_from_action(ctx: &ActionContext<'_>, view: &str, mode_id: &str
 fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     let mut contributions = Vec::new();
 
+    /// MR.3: a view identified by "this view, this repository" — the
+    /// chord half of `lib.rs`'s `mk`, sharing the same body.
+    macro_rules! open_repo {
+        ($action_name:expr, $view:expr, $mode_id:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(open_repo_view_from_action(ctx, $view, $mode_id))
+                }),
+            });
+        };
+    }
+
+    /// MR.3b: still fixed-name + working-directory. See `lib.rs`'s
+    /// `mk_fixed` for why these views move as a family rather than one
+    /// at a time.
     macro_rules! open {
         ($action_name:expr, $buffer_name:expr, $mode_id:expr) => {
             contributions.push(ActionHandlerContribution {
@@ -221,11 +265,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             ))
         }),
     });
-    open!(
-        "action:magit-global-commit",
-        "*magit:commit*",
-        "magit-commit-mode"
-    );
+    open_repo!("action:magit-global-commit", "commit", "magit-commit-mode");
     // MG.43h: `d` / `l` carry the argument menu's toggles into the
     // view they open. The values are left under the buffer's name for
     // the mode to take on activation (`ViewArgsRequests`) — the buffer
@@ -257,11 +297,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "magit-log-mode",
         crate::magit_log_mode::LOG_ARGS
     );
-    open!(
-        "action:magit-global-branch",
-        "*magit:branch*",
-        "magit-branch-mode"
-    );
+    open_repo!("action:magit-global-branch", "branch", "magit-branch-mode");
     open!(
         "action:magit-global-stash",
         "*magit:stash*",
@@ -271,21 +307,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // management. It opens the remote BUFFER rather than a submenu —
     // see `magit_remote_mode`'s header for why the list needs a
     // surface that can show URLs.
-    open!(
-        "action:magit-global-remote",
-        "*magit:remote*",
-        "magit-remote-mode"
-    );
+    open_repo!("action:magit-global-remote", "remote", "magit-remote-mode");
     // MG.21i: `o` on the root dispatch, magit's own key.
-    open!(
+    open_repo!(
         "action:magit-global-submodule",
-        "*magit:submodule*",
+        "submodule",
         "magit-submodule-mode"
     );
     // MG.35: `y` on the root dispatch, magit's own key.
-    open!(
+    open_repo!(
         "action:magit-global-refs",
-        crate::magit_refs_mode::REFS_BUFFER,
+        crate::magit_refs_mode::REFS_VIEW,
         "magit-refs-mode"
     );
     open!(
@@ -293,18 +325,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:rebase*",
         "magit-rebase-mode"
     );
-    open!(
-        "action:magit-global-amend",
-        "*magit:amend*",
-        "magit-commit-mode"
-    );
+    open_repo!("action:magit-global-amend", "amend", "magit-commit-mode");
     // MG.42-E1: magit's `w`. Same compose buffer, different intent —
     // the name selects it (see `CommitIntent::from_buffer_name`).
-    open!(
-        "action:magit-global-reword",
-        "*magit:reword*",
-        "magit-commit-mode"
-    );
+    open_repo!("action:magit-global-reword", "reword", "magit-commit-mode");
     open_view_with_args!(
         "action:magit-global-diff",
         "*magit:diff*",
@@ -1303,10 +1327,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if branch.is_empty() {
                 return None;
             }
-            Some(Effect::OpenSyntheticBuffer {
-                name: crate::magit_commit_mode::CommitIntent::merge_edit_buffer_name(branch),
-                mode_id: "magit-commit-mode".to_string(),
-            })
+            Some(open_repo_view_from_action_with(
+                ctx,
+                "merge-edit",
+                "magit-commit-mode",
+                Some(branch),
+            ))
         }),
     });
 

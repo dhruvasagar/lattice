@@ -149,28 +149,12 @@ impl Mode for MagitStatusMode {
                 return Ok(MagitStatusGuard::default());
             };
 
-            // MR.2: the repository this buffer acts on, as the trigger
-            // resolved it — `on_activate` cannot see what the trigger
-            // saw, which is the whole reason the record exists.
-            //
-            // The fall-back to `magit_workdir()` is not defensive
-            // padding: a status buffer reopened by `:b` after a restart
-            // has a name and no record, and the working directory is the
-            // same answer magit gave before MR.2.
-            let scopes = ctx.service::<crate::repo_scope::RepoScopesHandle>();
-            let buffer_name = store.name_for(buffer_id);
-            let recorded = scopes
-                .as_ref()
-                .zip(buffer_name.as_ref())
-                .and_then(|(scopes, name)| scopes.workdir_for(name));
-            // Index the document so closing the buffer drops the
-            // record. Here rather than at the trigger because this is
-            // the first moment the document exists.
-            if let (Some(scopes), Some(name)) = (scopes.as_ref(), buffer_name.as_ref()) {
-                scopes.index_document(handle.id(), name.clone());
-            }
-
-            let workdir = match recorded.or_else(crate::workdir::magit_workdir) {
+            // MR.2/MR.3: the repository this buffer acts on, as the
+            // trigger resolved it — `on_activate` cannot see what the
+            // trigger saw, which is the whole reason the record exists.
+            // Through the shared helper every view uses, so the read and
+            // the document-index cannot come apart per view.
+            let workdir = match crate::repo_scope::view_workdir(&ctx, buffer_id, &handle) {
                 Some(w) => w,
                 None => {
                     let _ = handle

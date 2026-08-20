@@ -15,7 +15,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 |---|---|---|
 | MR.1 | The resolver + the naming pair — **landed inside MR.2** | ✅ |
 | MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | ✅ |
-| MR.3 | Views read the record instead of cwd | 📝 |
+| MR.3a | The name grammar + the parameterless views | ✅ |
+| MR.3b | The views that encode parameters (diff, log, file, …) | 📝 |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | 📝 |
 | MR.5 | The grep guard + docs | 📝 |
 
@@ -188,7 +189,7 @@ MR.3:
   `open!(...)` contributions over to it — not writing new resolution per
   view.
 
-## MR.3 — views read the record 📝
+## MR.3 — views read the record
 
 Each view's `on_activate` takes its workdir from the record instead of
 `magit_workdir()`, falling back to the resolver when there is no record
@@ -197,6 +198,77 @@ Each view's `on_activate` takes its workdir from the record instead of
 **Tests.** `C-x g` from a file in repo B opens repo B's status while the
 editor's cwd is repo A — the acid test for the whole change, and the one
 that fails today.
+
+### Carved into MR.3a + MR.3b, 2026-08-20 — the reason is the names
+
+Reading the record is uniform and mechanical (one line per view), but a
+view can only *find* its record by name, and a view whose name is fixed
+has one buffer for every repository. So the read cannot land without the
+rename, and the rename is where the work is.
+
+The rule MR.3 adopts, and the reason it cannot be adopted one view at a
+time:
+
+```text
+*magit:<view>[:<repo>[:<rest>]]*        segment 2 is the repository, ALWAYS
+```
+
+`*magit:log:src*` is unreadable without a fixed position — the `src`
+repository, or the log of the path `src`? Both are names magit already
+produces. Fixing segment 2 answers it, but only if *every* producer and
+parser of a given view moves together: a half-converted view is exactly
+the ambiguity, spelled out. That splits the views into two populations,
+which are the two slices.
+
+## MR.3a — the name grammar + the views with no parameters ✅
+
+`workdir::{magit_buffer_name, magit_buffer_name_with, parse_magit_name}`
+— one composer, one parser, `MagitName { view, repo, rest }` — plus the
+views whose names carry no parameters of their own, so adding the
+repository segment cannot collide with anything they already encode:
+**commit, amend, reword, branch, remote, submodule, refs**, and the
+commit family's targeted forms (`*magit:augment:<repo>:<sha>*`,
+`merge-edit`, `reword-commit`) which move with it because one parser
+reads all six.
+
+Also here, because they are the same edit:
+
+- `repo_scope::view_workdir(ctx, buffer, handle)` — the activation-side
+  read every view now shares, including status (MR.2 had inlined it).
+  Reading the record and indexing the document for `DocumentClosed`
+  cleanup live in one helper, so a new view cannot take one and forget
+  the other.
+- `CommitIntent::from_buffer_name` stops matching by substring
+  (`name.contains("amend")`). With a repository in the name, a checkout
+  called `amend` would have selected the wrong operation on every commit
+  buffer in it — a structured parse makes that unrepresentable rather
+  than unlikely, and the test pins it with a repo named `amend`.
+- `magit_refs_mode::REFS_BUFFER` (`"*magit:refs*"`) becomes `REFS_VIEW`
+  (`"refs"`). A constant naming one buffer for all repositories is the
+  assumption this slice removes.
+
+**Tests.** A table over all eight converted views — a conversion that
+does seven of eight looks right from inside whichever repository you are
+in, and is invisible until someone works across two. Plus the targeted
+commit form carrying repo *and* target, since those fail differently
+(wrong checkout vs. squash into nothing).
+
+## MR.3b — the views that encode parameters 📝
+
+**diff, log, stash (list + show), rebase (+ rebase-edit), file, note,
+merged, cherry.** Each has a producer/parser pair whose second segment is
+currently a parameter, and each moves whole: producer, parser, tests, and
+the ~30 call sites (16 of them `blob_buffer_name`, which every view
+reaches to visit a file at a revision).
+
+The parsers shift by one segment rather than being rewritten:
+`parse_magit_name` hands back `rest`, which is the exact string each
+parser reads today.
+
+Still fixed-name and cwd-resolved until then, and deliberately marked as
+such in the code (`mk_fixed` in `lib.rs`, `open!` in
+`magit_global_mode.rs` — the repo-scoped peers are `mk` and
+`open_repo!`).
 
 ## MR.4 — action bodies 📝
 

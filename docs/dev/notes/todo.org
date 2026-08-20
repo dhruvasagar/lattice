@@ -70,6 +70,7 @@
 - [X] `:opencode` support, similar to `:claude`
 - [X] indent guide
 - [ ] notification should have icons & color coding
+- [X] `C-x g` should also trigger refresh so we see latest changes, gated by an option
 
 * Plugins
 - [X] plugin manager

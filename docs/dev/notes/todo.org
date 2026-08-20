@@ -1,5 +1,5 @@
 * Features
-- [X] under cursor
+- [X] diagnostics under cursor
 - [X] Terminal
 - [X] ligatures
 - [X] variable size fonts in GUI, first consumer markdown

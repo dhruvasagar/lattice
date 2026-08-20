@@ -13,8 +13,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 | Slice | Title | Status |
 |---|---|---|
-| MR.1 | The resolver + the naming pair | 📝 |
-| MR.2 | Per-buffer workdir record, written by the trigger | 📝 |
+| MR.1 | The resolver + the naming pair — **lands with MR.2** | 📝 |
+| MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | 📝 |
 | MR.3 | Views read the record instead of cwd | 📝 |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | 📝 |
 | MR.5 | The grep guard + docs | 📝 |
@@ -39,7 +39,22 @@ falls through to cwd; two repos sharing a basename produce two distinct
 names, and the same repo asked twice produces the same one (idempotent —
 re-triggering must find the buffer you already have, not stack a second).
 
-No behaviour change: nothing calls the resolver yet.
+> **Corrected 2026-08-20, from attempting it: MR.1 cannot land alone.**
+> Written and green (resolver + `repo_label` + `qualified_repo_label`, 10
+> tests), it still could not be committed: with no caller yet, all three
+> functions raise `dead_code`, and the standing rule treats a rustc
+> warning in touched code as always-real rather than as noise to allow
+> through. "No behaviour change, nothing calls it yet" is precisely the
+> shape that rule refuses.
+>
+> So the boundary was wrong, not the code. **MR.1 lands as part of MR.2**,
+> with the status trigger as its first caller. The work is preserved as a
+> patch — `scratchpad/mr1-resolver.patch` in the session that wrote it —
+> and reproducible from the test names above, which are the spec.
+>
+> Worth carrying forward as a slicing lesson: a slice whose whole content
+> is "add a helper" has no warning-clean landing, so it is not a slice.
+> Pair it with its first consumer.
 
 ## MR.2 — the per-buffer record 📝
 

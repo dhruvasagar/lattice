@@ -490,6 +490,35 @@ lattice_protocol::register_event!(
     "lattice-multibuffer",
 );
 
+/// PD.7c: published when one of a multibuffer's source buffers is
+/// **edited** — the peer of [`MultibufferSourceClosed`], and it exists
+/// for the same reason.
+///
+/// The view keeps composing correctly on its own (excerpts slide,
+/// content recomposes). What an edit invalidates is whatever the
+/// PROVIDER derived from the source's content at scan time — diff
+/// classifications, match positions, symbol ranges — and only the
+/// provider knows what that is or what to do about it. Publishing the
+/// fact here rather than letting each provider re-derive
+/// `DocumentId → source` from raw `DocumentChanged` events keeps that
+/// translation in the one place that already owns the source map.
+///
+/// Fires once per applied change, so a provider that reacts expensively
+/// should react once per source (project-diff clears that file's
+/// styling on the first edit and then ignores the rest until `gr`).
+#[derive(Debug, Clone)]
+pub struct MultibufferSourceEdited {
+    pub view: BufferId,
+    pub source: BufferId,
+}
+
+lattice_protocol::register_event!(
+    MultibufferSourceEdited,
+    "multibuffer.source-edited",
+    "One of a multibuffer view's source buffers was edited; providers choose policy for data they derived from its content.",
+    "lattice-multibuffer",
+);
+
 /// A multibuffer document handle. Composes N source
 /// `Arc<dyn Document>`s into one read-only composed view; impls
 /// [`Document`] so dispatch / motion / render code paths serve
@@ -1260,6 +1289,15 @@ impl MultibufferDocumentHandle {
                             // content for in-excerpt edits.
                             slide_anchors_for_source(&inner, source_id, &edits);
                             recompose_inner(&inner);
+                            // PD.7c: the view has recomposed correctly;
+                            // what may now be wrong is whatever the
+                            // PROVIDER derived from this source's
+                            // content. Tell it, with the translation
+                            // already done — the source map lives here.
+                            events_for_task.publish_typed(MultibufferSourceEdited {
+                                view: inner.buffer_id,
+                                source: source_id,
+                            });
                         }
                     }
                     lattice_protocol::Event::DocumentClosed { id } => {

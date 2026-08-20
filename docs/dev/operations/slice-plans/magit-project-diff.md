@@ -23,7 +23,7 @@ Catalogue entry: A.1 in
 | PD.6 | Rename + dispatch promotion | ✅ |
 | PD.7a | Added/changed lines coloured | ✅ |
 | PD.7b | Removed lines as virtual rows | ✅ (searchability a known ceiling) |
-| PD.7c | Staleness policy after an edit | 📝 |
+| PD.7c | Staleness policy after an edit | ✅ |
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
 empty view is a legitimate intermediate). PD.5 is independent.
@@ -271,7 +271,7 @@ row stays: the promotion adds a route rather than moving one, and a test
 asserts both, because losing the old one would break whatever muscle
 memory had formed.
 
-## PD.7 — diff colouring on the excerpts 🚧 (a ✅, b/c 📝)
+## PD.7 — diff colouring on the excerpts ✅ (a, b, c all landed)
 
 **Reported from first use, and it is the thing standing between this
 view and being useful:** the excerpts render, but nothing shows what
@@ -297,6 +297,49 @@ The second is likely right and cheaper, but it is a design choice about
 where diff styling for composed views comes from, so it wants deciding
 rather than assuming. Both renderers must land together per the
 cross-renderer rule.
+
+## PD.7c — staleness policy after an edit ✅
+
+Design: [`magit-project-diff.md`](../../architecture/magit-project-diff.md)
+§2.2, which owns the *why* (including why a live re-diff was rejected
+and where the Zed/magit convention split falls).
+
+**What shipped.**
+
+- `MultibufferSourceEdited { view, source }` in `lattice-multibuffer` —
+  the peer of `MultibufferSourceClosed`, published from the same
+  `DocumentChanged` arm that already slides anchors and recomposes. The
+  substrate publishes the fact with its `DocumentId → source`
+  translation done; providers choose policy.
+- `magit-project-diff-mode` subscribes in `on_activate` (RAII guard
+  unsubscribes) and applies the policy: first edit to a file clears that
+  file's spans + deletion ghosts, headerline gains
+  `· N edited files — gr to refresh`. Later edits to the same file are
+  ignored — the styling is already gone, and re-publishing per keystroke
+  would be work for no change on the path the user is typing on.
+- The scan's per-source classification moved onto `ProjectDiffService`,
+  because the edit handler has to rewrite it and the scan's task locals
+  do not outlive the scan. A batch still landing for a file the user has
+  already edited is skipped, so a slow scan cannot un-clear it.
+- `begin_styling` runs at open *and* at every `gr`, which is what makes
+  a refresh clear the edited marks.
+
+**Prerequisite found while building it, fixed first** (commit
+`f5ac42e2`): `gr` in this view resolved to nothing. PD.9 moved the view
+onto `refreshable-view-mode` and left no `refresh_action()` declaration,
+so the chord was bound with no target — silent, since an unresolved
+chord produces no error. PD.7c's headerline points at `gr`, so the key
+had to work before the message could be honest.
+`refreshable_views_declare_their_refresh.rs` now walks the booted mode
+registry and fails any mode that inherits the chord without declaring
+what it refreshes.
+
+**Tests.** `project_diff_staleness.rs` drives the real chain — host
+`DocumentChanged` → substrate translation → the mode's subscriber →
+policy → headerline — and asserts it lands **without a keypress**; plus
+"a file you did not touch keeps its colouring" and "the second edit to
+the same file is not reprocessed". The first version of the test failed
+with `"Idle"`, which is what proves the chain is what makes it pass.
 
 ---
 

@@ -36,6 +36,25 @@ Those comparisons open read-only and the headerline says which you are
 looking at. That is the correct rendering of a comparison between two
 things that are not the file on disk, rather than a degraded mode.
 
+## What happens to the colours once you edit
+
+Fix something in an excerpt and that file's `+` colouring, gutter marks
+and grey deleted-line rows **go away**, and the headerline gains a note:
+
+```
+[project-diff: working tree] 12 hunks in 5 files · 1 edited file — gr to refresh
+```
+
+That is deliberate. The diff was computed against the file as it was
+when the view opened; the moment you insert a line, every mark below
+your edit describes the line above or below the one it is drawn on. The
+view would rather show you no diff colouring for a file it can no longer
+describe than colouring that is quietly one row out.
+
+Only the file you edited loses its colouring — the other four in the
+example keep theirs. `gr` re-scans and brings it all back, including
+your edit as part of the diff.
+
 ## Folding a large diff
 
 The view has two levels of structure, so `:set foldlevel=0` collapses it
@@ -44,8 +63,14 @@ fifty-file review that is the difference between a list and a wall.
 
 ## Keybindings
 
-None of its own — it joins `magit-core-mode`, so `gr` (refresh), `q`,
-and `]]` / `[[` work here exactly as in every other magit buffer.
+None of its own. It joins the magit family and takes the family's
+chords: `gr` (re-scan, keeping whichever comparison you are looking at),
+`q`, and `]]` / `[[` to walk file boundaries.
+
+It joins `magit-nav-mode` rather than `magit-core-mode`, which matters
+here: core's single letters (`i`, `C`, `D`, `S`, `U`, `yr`) are meant
+for read-only lists, and in a buffer you can type in, `i` has to mean
+Insert.
 
 ## See also
 

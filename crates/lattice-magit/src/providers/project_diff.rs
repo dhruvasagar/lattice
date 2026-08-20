@@ -42,7 +42,7 @@ use lattice_mode::{
 use lattice_multibuffer::view::create_multibuffer_view;
 use lattice_multibuffer::{
     Excerpt, ExcerptHeader, HeaderlineStatus, MultibufferDocumentHandle, MultibufferExcerptsReady,
-    MultibufferRegistryHandle,
+    MultibufferRegistryHandle, MultibufferSourceEdited,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 use lattice_syntax::LangRegistry;
@@ -93,6 +93,35 @@ pub struct ProjectDiffState {
     pub comparison: ProjectDiffComparison,
 }
 
+/// PD.7c: everything needed to *re-publish* the view's diff styling
+/// after a source is edited, plus which sources have been.
+///
+/// The scan used to hold this in its own task locals, which was enough
+/// while the styling was written once and never touched again. The
+/// staleness policy has to rewrite it later, from a different task, so
+/// it lives with the view instead.
+#[derive(Default)]
+struct ProjectDiffStyling {
+    /// Per-source diff classification, as `composed_diff_spans` wants
+    /// it. An edited source is REMOVED from here — that is how its
+    /// tints stop being published.
+    changed_by_source: HashMap<BufferId, lattice_diff::overlay::DiffSignMap>,
+    /// The deletion-ghost provider, so an edited source's ghosts can be
+    /// cleared too. Ghosts anchor to post-image line numbers, so they
+    /// are wrong the moment the lines above them move.
+    deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
+    /// The publish seam for composed spans.
+    highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// The headerline summary the scan finished with, so the staleness
+    /// note can be appended to it rather than replacing what the view
+    /// says about itself.
+    summary: String,
+    /// Sources edited since the last scan. The policy runs once per
+    /// source: after the first edit its styling is already gone, and
+    /// re-publishing on every keystroke would be work for no change.
+    edited: std::collections::HashSet<BufferId>,
+}
+
 /// Per-view state keyed by the view's `BufferId`, plus a
 /// `DocumentId → BufferId` index for cleanup.
 ///
@@ -100,10 +129,23 @@ pub struct ProjectDiffState {
 /// `DocumentId` and the two ids are NOT interchangeable — the
 /// multibuffer registry keeps a separate `remove_by_document_id` for
 /// the same reason.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ProjectDiffService {
     views: std::sync::RwLock<HashMap<BufferId, ProjectDiffState>>,
     by_document: std::sync::RwLock<HashMap<lattice_protocol::ids::DocumentId, BufferId>>,
+    /// PD.7c: per-view styling + staleness bookkeeping.
+    styling: std::sync::RwLock<HashMap<BufferId, ProjectDiffStyling>>,
+}
+
+impl std::fmt::Debug for ProjectDiffService {
+    /// Hand-written because `ProjectDiffStyling` holds provider handles
+    /// that are not `Debug`, and the useful thing to print is how many
+    /// views are tracked rather than their contents.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProjectDiffService")
+            .field("views", &self.tracked_views())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ProjectDiffService {
@@ -154,6 +196,141 @@ impl ProjectDiffService {
     pub fn tracked_views(&self) -> usize {
         self.views.read().map(|r| r.len()).unwrap_or(0)
     }
+
+    // ── PD.7c: styling + staleness ───────────────────────────────
+
+    /// Start (or restart) a view's styling bookkeeping. Called at open
+    /// AND at every `gr`, which is what makes a refresh clear the
+    /// "edited" marks: the fresh scan's classification is computed
+    /// against the file as it now is, so nothing about it is stale.
+    pub fn begin_styling(
+        &self,
+        view: BufferId,
+        deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
+        highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    ) {
+        if let Ok(mut w) = self.styling.write() {
+            w.insert(
+                view,
+                ProjectDiffStyling {
+                    deletion_rows,
+                    highlights,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// Record one file's classification as the scan produces it.
+    pub fn record_source_styling(
+        &self,
+        view: BufferId,
+        source: BufferId,
+        changed: lattice_diff::overlay::DiffSignMap,
+        removed: Vec<(u32, Vec<String>)>,
+    ) {
+        if let Ok(mut w) = self.styling.write()
+            && let Some(entry) = w.get_mut(&view)
+        {
+            entry.changed_by_source.insert(source, changed);
+            if let Some(rows) = &entry.deletion_rows {
+                rows.set_for_source(source, removed);
+            }
+        }
+    }
+
+    /// Remember what the headerline settled on, so the staleness note
+    /// can extend it instead of replacing what the view says it is.
+    pub fn record_summary(&self, view: BufferId, summary: String) {
+        if let Ok(mut w) = self.styling.write()
+            && let Some(entry) = w.get_mut(&view)
+        {
+            entry.summary = summary;
+        }
+    }
+
+    /// Republish the composed spans from whatever classifications
+    /// survive. Returns `false` when there is nothing wired to publish
+    /// through (a test host with no highlight service) — the view then
+    /// renders uncoloured rather than failing.
+    pub fn republish_spans(&self, view: BufferId, handle: &MultibufferDocumentHandle) -> bool {
+        let Ok(r) = self.styling.read() else {
+            return false;
+        };
+        let Some(entry) = r.get(&view) else {
+            return false;
+        };
+        let Some(highlights) = entry.highlights.clone() else {
+            return false;
+        };
+        let spans = composed_diff_spans(handle, &entry.changed_by_source);
+        drop(r);
+        highlights.store_and_wake(view, spans);
+        true
+    }
+
+    /// **The staleness policy.** Drop everything this view derived from
+    /// `source`'s content, because the user has edited it.
+    ///
+    /// Returns the headerline summary to show, or `None` when this
+    /// source was already marked (every keystroke after the first) or
+    /// the view is not tracked.
+    ///
+    /// Clearing rather than recomputing is the decision PD.7c turns on.
+    /// The classification is computed against a baseline in *source line
+    /// coordinates*; an in-excerpt insert does not resize the excerpt
+    /// (`slide_anchors_for_source` only slides excerpts an edit sits
+    /// above), so the composed rows keep their indices while the text
+    /// beneath them moves — every tint below the edit then describes the
+    /// wrong line, and the deletion ghosts anchor a row out. Nothing
+    /// announces it. Recomputing the tints would fix them and still
+    /// leave the excerpt SET stale (an edit creating a new hunk gets no
+    /// excerpt; one edited back to the baseline keeps an excerpt showing
+    /// unchanged code) — liveness that looks total and is not. The
+    /// honest answer is to show no diff styling for a file we can no
+    /// longer describe, say so, and let `gr` rebuild.
+    pub fn mark_source_edited(&self, view: BufferId, source: BufferId) -> Option<String> {
+        let mut w = self.styling.write().ok()?;
+        let entry = w.get_mut(&view)?;
+        if !entry.edited.insert(source) {
+            return None;
+        }
+        entry.changed_by_source.remove(&source);
+        if let Some(rows) = &entry.deletion_rows {
+            // Empty, not absent: the provider keys on source, so this is
+            // "this file contributes no ghosts" and it bumps the version
+            // so the next frame re-collects.
+            rows.set_for_source(source, Vec::new());
+        }
+        Some(stale_summary(&entry.summary, entry.edited.len()))
+    }
+
+    /// Whether `source` has been edited since the last scan of `view`.
+    pub fn is_source_edited(&self, view: BufferId, source: BufferId) -> bool {
+        self.styling
+            .read()
+            .ok()
+            .and_then(|r| r.get(&view).map(|e| e.edited.contains(&source)))
+            .unwrap_or(false)
+    }
+}
+
+/// PD.7c: the headerline once the view can no longer describe part of
+/// itself.
+///
+/// Extends the scan's own summary rather than replacing it — the view
+/// still IS a working-tree diff of N files, and losing that to say
+/// "stale" would trade one missing fact for another. It names `gr`
+/// because the whole policy rests on the user having a way back to a
+/// correct view, and it counts the files so "I edited one thing" and "I
+/// have been working in here for ten minutes" do not read identically.
+fn stale_summary(summary: &str, edited: usize) -> String {
+    let files = if edited == 1 { "file" } else { "files" };
+    if summary.is_empty() {
+        format!("[project-diff] {edited} edited {files} — gr to refresh")
+    } else {
+        format!("{summary} · {edited} edited {files} — gr to refresh")
+    }
 }
 
 /// Register and look up under THIS alias, never the inner type — the
@@ -183,7 +360,27 @@ impl MagitProjectDiffMode {
     }
 }
 
-pub struct MagitProjectDiffModeGuard;
+/// PD.7c: holds the staleness subscription for one view. Dropping it
+/// (buffer closed, mode deactivated) unsubscribes and stops the
+/// forwarder — the same RAII shape `ProjectSearchModeGuard` uses.
+pub struct MagitProjectDiffModeGuard {
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+    subs: Vec<lattice_runtime::SubscriptionId>,
+    bus: Option<Arc<EventBus>>,
+}
+
+impl Drop for MagitProjectDiffModeGuard {
+    fn drop(&mut self) {
+        if let Some(h) = self.forwarder.take() {
+            h.abort();
+        }
+        if let Some(bus) = &self.bus {
+            for id in self.subs.drain(..) {
+                let _ = bus.unsubscribe(id);
+            }
+        }
+    }
+}
 
 impl Mode for MagitProjectDiffMode {
     type Guard = MagitProjectDiffModeGuard;
@@ -267,8 +464,81 @@ impl Mode for MagitProjectDiffMode {
         }]
     }
 
-    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
-        Box::pin(async move { Ok(MagitProjectDiffModeGuard) })
+    /// PD.7c: watch for edits to this view's sources and apply the
+    /// staleness policy.
+    ///
+    /// The mode owns the policy because the mode owns the view — the
+    /// substrate publishes the *fact* (`MultibufferSourceEdited`, with
+    /// the `DocumentId → source` translation already done, since the
+    /// source map lives there) and this decides what it means for
+    /// magit's diff data. No host involvement in either half.
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        let view = BufferId(ctx.buffer_id().0 as u32);
+        let bus = ctx.events_handle();
+        let service = ctx
+            .service::<ProjectDiffServiceHandle>()
+            .map(|s| (*s).clone());
+        let mb_registry = ctx.service::<MultibufferRegistryHandle>();
+        Box::pin(async move {
+            let (Some(service), Some(mb_registry)) = (service, mb_registry) else {
+                // A harness without the services: the view still renders,
+                // it just cannot report staleness. Degrade, do not refuse
+                // to activate.
+                tracing::debug!(
+                    "project-diff: no service / multibuffer registry; \
+                     staleness will not be reported"
+                );
+                return Ok(MagitProjectDiffModeGuard {
+                    forwarder: None,
+                    subs: Vec::new(),
+                    bus: None,
+                });
+            };
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MultibufferSourceEdited>();
+            let sub = bus.subscribe_typed::<MultibufferSourceEdited>(tx);
+            // No runtime in some test paths — the subscription is still
+            // live and harmless; only the drain cannot spawn.
+            let forwarder = if tokio::runtime::Handle::try_current().is_ok() {
+                let bus_for_task = bus.clone();
+                Some(tokio::spawn(async move {
+                    while let Some(edited) = rx.recv().await {
+                        // One bus, many views: ignore other views' sources.
+                        if edited.view != view {
+                            continue;
+                        }
+                        let Some(summary): Option<String> =
+                            service.mark_source_edited(view, edited.source)
+                        else {
+                            // Already marked — every keystroke after the
+                            // first lands here and does nothing.
+                            continue;
+                        };
+                        let Some(handle) = mb_registry.handle(view) else {
+                            continue;
+                        };
+                        service.republish_spans(view, &handle);
+                        handle.set_headerline(HeaderlineStatus::Complete {
+                            summary,
+                            emphasis: None,
+                        });
+                        // The re-publish has to reach the screen without
+                        // a keypress — the user is typing in ANOTHER
+                        // file's excerpt when this fires, and a stale
+                        // tint that clears only on the next unrelated
+                        // keystroke is the bug this policy exists to
+                        // remove.
+                        bus_for_task.publish_typed(MultibufferExcerptsReady { view });
+                    }
+                }))
+            } else {
+                None
+            };
+            Ok(MagitProjectDiffModeGuard {
+                forwarder,
+                subs: vec![sub],
+                bus: Some(bus),
+            })
+        })
     }
 }
 
@@ -942,6 +1212,16 @@ pub fn open_project_diff(
         activator.register_virtual_row_provider(view, rows.clone());
         rows
     });
+    // PD.7c: (re)start the styling bookkeeping. On a `gr` this is what
+    // clears the previous scan's "edited" marks — the fresh
+    // classification is computed against the files as they now are, so
+    // nothing about it is stale.
+    let service = services
+        .get::<ProjectDiffServiceHandle>()
+        .map(|s| (*s).clone());
+    if let Some(svc) = &service {
+        svc.begin_styling(view, deletion_rows.clone(), synthetic_highlights.clone());
+    }
     spawn_project_diff_scan(
         view,
         workdir,
@@ -950,6 +1230,7 @@ pub fn open_project_diff(
         events,
         synthetic_highlights,
         deletion_rows,
+        service,
     );
 
     ProviderViewOutcome::Opened {
@@ -992,6 +1273,7 @@ fn spawn_project_diff_scan(
     events: Option<Arc<EventBus>>,
     synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
     deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
+    service: Option<ProjectDiffServiceHandle>,
 ) {
     let editable_note = if comparison.is_editable() {
         ""
@@ -1068,9 +1350,27 @@ fn spawn_project_diff_scan(
                     .into_iter()
                     .find(|id| handle.source_path(*id).as_deref() == Some(f.path.as_path()))
                 {
+                    // PD.7c: a source the user has already edited must
+                    // NOT be re-styled by a batch still landing from the
+                    // scan that was running when they typed. Its
+                    // classification describes a file that no longer
+                    // exists in that shape, and publishing it would undo
+                    // the clearing a moment after it happened.
+                    if service
+                        .as_ref()
+                        .is_some_and(|svc| svc.is_source_edited(view, id))
+                    {
+                        continue;
+                    }
                     changed_by_source.insert(id, f.changed.clone());
                     if let Some(rows) = &deletion_rows {
                         rows.set_for_source(id, f.removed.clone());
+                    }
+                    // PD.7c: the same classification, kept where the
+                    // edit handler can find it — the scan's locals do
+                    // not outlive the scan.
+                    if let Some(svc) = &service {
+                        svc.record_source_styling(view, id, f.changed.clone(), f.removed.clone());
                     }
                 }
             }
@@ -1099,11 +1399,17 @@ fn spawn_project_diff_scan(
         // hunks, which can be lower than the scanned count: a file can be
         // edited back to its baseline between `git status` and the read.
         let shown_files = handle.source_buffer_ids().len();
+        let summary = format!(
+            "[project-diff: {}{editable_note}] {hunks} hunks in {shown_files} files",
+            comparison.label()
+        );
+        // PD.7c: remember it, so the staleness note extends this line
+        // rather than replacing what the view says it is.
+        if let Some(svc) = &service {
+            svc.record_summary(view, summary.clone());
+        }
         handle.set_headerline(HeaderlineStatus::Complete {
-            summary: format!(
-                "[project-diff: {}{editable_note}] {hunks} hunks in {shown_files} files",
-                comparison.label()
-            ),
+            summary,
             emphasis: None,
         });
         if let Some(events) = &events {

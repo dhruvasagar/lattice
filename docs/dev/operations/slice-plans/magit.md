@@ -3776,6 +3776,74 @@ the syntax worker's assumptions about who owns that local.
 That path in `lattice-diff` remains unowned by any mode — tracked in
 the help-docs slice plan as a separate design item.
 
+### MG.54 — preview the file at a revision 📝 (designed 2026-08-20)
+
+`C-c f v` opens a revision picker and shows nothing until you accept, so
+choosing between revisions means accepting one, looking, going back, and
+accepting another. A preview pane answers the question the picker is
+asking.
+
+**Debounced-sync, deliberately — not async.** This is the decision the
+slice turns on, and it inverts the obvious reading of paramount goal #1,
+so the reasoning is recorded rather than left to be re-derived.
+
+`PickerSourceGenerator::preview(&self, ctx, routing) -> Option<PickerAcceptOutcome>`
+already exists (T.12; the colorscheme picker is its user) and fires as the
+**selection moves**. It is synchronous. Implementing it naively means
+`git show <rev>:<path>` — a subprocess — on the input thread on every
+arrow key, which is a paramount-#1 violation outright and the exact trap
+the preview path already has a rule about (`do_preview`, never `do_edit`;
+no LSP or parse on that path).
+
+The fix is not to make the call async. It is to **not make the call**:
+
+- selection moves → (re)start a ~150ms timer. Nothing runs.
+- moves again before it elapses → timer resets. Still nothing runs.
+- stable for 150ms → timer fires → `git show` runs synchronously → the
+  preview appears.
+
+Fast scrolling therefore spawns **zero** subprocesses rather than
+cancelling in-flight ones. That is what makes a synchronous call viable,
+and it deletes two of the four things an async design would have needed:
+there is no cancellation, and there is no staleness race — there is never
+more than one call, and it is always for the selection the user is already
+sitting on.
+
+**Option, default ON.** Its help text must say plainly that it does I/O on
+the input thread, so the trade-off is visible at `:set` rather than
+discovered as jank.
+
+**Residual cost, accepted rather than hidden.** If the user settles, git
+starts, and they press again mid-fetch, that keypress waits for the
+remainder. Bounded — one `git show`, never a queue — and at most once per
+settle. The worst realistic case is a large blob on a cold cache, which
+the size guard below turns into a message.
+
+**To check or decide while building:**
+
+- **Which thread the timer fires on.** If it is an editor-actor tick
+  rather than the render path, the blocking fetch delays keystroke
+  *processing* but never a frame — the UI keeps painting. Verify before
+  claiming it; the distinction is the difference between "briefly slow"
+  and "drops a frame".
+- **Whether a selection-move debounce exists at all.** `LIVE_PICKER_DEBOUNCE`
+  (150ms) debounces the live *query*; confirm whether the selection-move
+  path has one or whether this slice adds it.
+- **A blob size guard.** Refuse over a threshold and say so in the pane
+  rather than blocking on a 40MB file.
+
+**Reuse rather than rebuild.** `magit-find-file` already fetches a blob at
+a revision, and `magit-file-revision-mode` already produces the synthetic
+read-only buffer a preview pane would host — so this may be mostly wiring.
+Check [`preview-isolation.md`](preview-isolation.md)'s open PI.x slices
+first: previewing *generated* content may already belong there, in which
+case this is an instance rather than a new mechanism.
+
+**Docs are part of the deliverable** (standing rule): option help text,
+a user doc, the `docs/user/README.md` index row, a `site/data/nav.toml`
+entry, then `sync-docs.sh` + `zola build` to verify it is reachable by
+search rather than only by URL.
+
 ## Cross-references
 
 - [`../../architecture/magit.md`](../../architecture/magit.md) — design fragment (what + why)

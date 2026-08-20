@@ -58,11 +58,12 @@ are staged. The rules are identical to magit-status's;
 [that page](help:magit-status-mode) has the details.
 
 Which chord applies depends on the buffer's scope. A
-`*magit:diff:unstaged:*` buffer stages with `s`; a `*magit:diff:staged:*`
+`*magit:diff:<repo>:unstaged:*` buffer stages with `s`; a
+`*magit:diff:<repo>:staged:*`
 one unstages with `u`; pressing the other says so rather than failing
 in git.
 
-**`*magit:diff*` (against HEAD) stages files, not hunks.** Its hunks
+**`*magit:diff:<repo>*` (against HEAD) stages files, not hunks.** Its hunks
 combine staged and unstaged changes, so a single hunk there is not a
 patch against either the index or the working tree. `s` inside one
 reports that hunk staging isn't available in this view; move to the
@@ -73,10 +74,10 @@ file in magit-status) to work hunk by hunk.
 
 | Buffer | Baseline | Opened by |
 |---|---|---|
-| `*magit:diff*` | `git diff HEAD` | `:magit-diff`, or `d` in the repo dispatch |
-| `*magit:diff:<path>*` | that file against HEAD | `d` in the [file dispatch](help:magit-transient) (`C-c f`) |
-| `*magit:diff:staged:<path>*` | `git diff --cached` | `d` on a file in magit-status's **Staged** section |
-| `*magit:diff:unstaged:<path>*` | `git diff` (worktree vs index) | `d` on a file in magit-status's **Unstaged** section |
+| `*magit:diff:<repo>*` | `git diff HEAD` | `:magit-diff`, or `d` in the repo dispatch |
+| `*magit:diff:<repo>:<path>*` | that file against HEAD | `d` in the [file dispatch](help:magit-transient) (`C-c f`) |
+| `*magit:diff:<repo>:staged:<path>*` | `git diff --cached` | `d` on a file in magit-status's **Staged** section |
+| `*magit:diff:<repo>:unstaged:<path>*` | `git diff` (worktree vs index) | `d` on a file in magit-status's **Unstaged** section |
 
 The scope decides what `<CR>` opens: from a **staged**-scoped buffer it
 opens the index blob (read-only,

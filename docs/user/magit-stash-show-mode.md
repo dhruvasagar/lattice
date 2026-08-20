@@ -5,7 +5,7 @@ related: [magit, magit-stash-show]
 
 # magit-stash-show-mode
 
-One stash's patch, in `*magit:stash:<n>*`. `<CR>` on a row in
+One stash's patch, in `*magit:stash:<repo>:<n>*`. `<CR>` on a row in
 [`magit-stash-mode`](help:magit-stash-mode).
 
 It answers the question you have before pressing `a`: *what would this

@@ -6,19 +6,25 @@ related: [magit, magit-revision, ex:magit-log-merged]
 # magit-revision-mode
 
 One commit, in full: metadata, message, a file-change summary, then the
-diff. `git show --stat -p <sha>`, read-only, in `*magit:commit:<sha>*`.
+diff. `git show --stat -p <sha>`, read-only, in
+`*magit:show:<repo>:<sha>*`.
 
 This is **not** the compose buffer — that's
 [`magit-commit-mode`](help:magit-commit-mode), where you write a *new*
-commit. This one shows a commit that already exists. The buffer names
-are similar because git's vocabulary is; the two are unrelated in use.
+commit. This one shows a commit that already exists.
+
+The buffer used to be called `*magit:commit:<sha>*`, and it was renamed
+for a reason worth knowing: once buffer names carry their repository
+(`*magit:commit:<repo>*` is the compose buffer), the two shapes became
+the same string, and a checkout named like a SHA would have made them
+one buffer. `show` says what the buffer does and cannot collide.
 
 ## The two questions it answers
 
 | Buffer | Shows |
 |---|---|
-| `*magit:commit:<sha>*` | That commit |
-| `*magit:merged:<sha>*` | The **merge** that brought that commit into `HEAD` |
+| `*magit:show:<repo>:<sha>*` | That commit |
+| `*magit:merged:<repo>:<sha>*` | The **merge** that brought that commit into `HEAD` |
 
 The second is `C-c f M` (or `:magit-log-merged <commit>`), and it is
 worth reading carefully: the SHA in the name is the *question*, and the

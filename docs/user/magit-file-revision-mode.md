@@ -15,7 +15,8 @@ related: [magit, magit-file-revision]
 | `gj` / `gk` once here | Walk to the next / previous revision of it |
 | `C-c f` then `V` | Back out to the **live** file, at the same line |
 
-One file, as it was at one fixed point: `*magit:file:<ref>:<path>*`,
+One file, as it was at one fixed point:
+`*magit:file:<repo>:<ref>:<path>*`,
 read-only.
 
 It exists to answer "what did this file actually look like *there*"

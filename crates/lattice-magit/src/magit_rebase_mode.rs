@@ -269,11 +269,13 @@ impl Mode for MagitRebaseMode {
                 return Ok(orphan());
             };
 
-            let discovered = Repository::discover(".").ok();
-            let workdir = discovered
-                .as_ref()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            // MR.5: this view read the PROCESS's repository, and the
+            // MR.3 sweep missed it because it spelled the discovery out
+            // rather than calling `magit_workdir()` — which is why the
+            // guard test greps for the discovery too.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
+            let discovered = Repository::discover(&workdir).ok();
             let gitdir = discovered
                 .as_ref()
                 .map(|r| r.gitdir().to_path_buf())

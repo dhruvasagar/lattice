@@ -92,6 +92,51 @@ Magit views are ordinary Documents. They appear in panes, respond to
 (yanks, searches, folds). The renderer treats them identically to code
 buffers — there is zero special-cased rendering for magit.
 
+### Which repository a magit buffer acts on
+
+**The one containing the file you were looking at** — not the one the
+editor was started in.
+
+Press `C-x g` on a file from another checkout and you get *that*
+checkout's status. Every chord in that buffer then acts there: `s`
+stages into it, `c c` commits to it, `p` pushes it. The dispatch menus
+follow too — `C-c g` opened over it offers the way out of *its* stopped
+rebase, not some other repository's.
+
+Two checkouts open at once are two buffers, because the repository is
+part of the name:
+
+```
+*magit:status:lattice*      the status of ~/src/lattice
+*magit:status:api*          …and of ~/work/api, at the same time
+*magit:log:api*             that repository's log
+*magit:diff:api:staged:src/main.rs*
+```
+
+`:ls` tells them apart, `:b` reaches either, and `<C-6>` returns to the
+one you left. If two checkouts share a directory name, the second one to
+open qualifies itself with its parent (`*magit:status:work/api*`) rather
+than sharing a buffer — sharing would mean `s` staging into whichever
+was opened last.
+
+Nothing changes if you work in one repository: one repo means one status
+buffer, behaving exactly as before. The only visible difference is that
+`:ls` now says which repository it is, which it should always have said.
+
+The three questions, in order, when you press a magit chord:
+
+1. **Already in a magit buffer?** That buffer's repository. A magit
+   chord pressed inside magit never moves you to another repository.
+2. **Looking at a file?** That file's repository.
+3. **Neither?** The directory the editor was started in — which is what
+   magit always did, kept so a fresh editor with nothing open still
+   answers `C-x g`.
+
+Two commands are deliberately about the working directory rather than a
+repository, because there is no repository yet: `:magit-init` seeds its
+prompt with the current directory, and `:magit-clone` defaults its
+destination there.
+
 ### Modes own their surface
 
 Every chord (`s`, `u`, `x`, `q`, `gr`, `TAB`, `]]`/`[[`) and every
@@ -145,14 +190,18 @@ Magit buffers load only the data needed to paint the viewport.
 Expensive operations — diffs, blame data, commit details — are
 **deferred** until you explicitly invoke them.
 
+Buffer names below are written without their repository segment for
+brevity — every view is really `*magit:<view>:<repo>…*`, per
+[which repository a magit buffer acts on](#which-repository-a-magit-buffer-acts-on).
+
 | View | On open | On demand |
 |---|---|---|
-| `*magit:status*` | File paths + status labels (fast list view) | `=` loads `git diff --cached <path>` / `git diff <path>` per-file |
-| `*magit:diff*` | Diff loaded on open (the view IS the diff) | — |
-| `*magit:log*` | `git log --oneline --graph --decorate -50` (count is currently hardcoded) | `<CR>` opens `*magit:commit:<sha>*`, a `git show <sha>` view, for the commit at cursor |
+| `*magit:status:<repo>*` | File paths + status labels (fast list view) | `=` loads `git diff --cached <path>` / `git diff <path>` per-file |
+| `*magit:diff:<repo>*` | Diff loaded on open (the view IS the diff) | — |
+| `*magit:log:<repo>*` | `git log --oneline --graph --decorate -50` (count is currently hardcoded) | `<CR>` opens `*magit:show:<repo>:<sha>*`, a `git show <sha>` view, for the commit at cursor |
 | `*magit:blame*` | Blame loaded on open (the view IS the blame) | `<CR>` shows the commit for the blamed line; `p` blames back one commit |
 | `*magit:blame-reverse:<rev>:<path>*` | Reverse blame loaded on open — for each line of `<rev>`'s version, the last commit it existed in | Same chords; `p` walks the starting revision back |
-| `*magit:commit*` | Staged diff loaded on open (the purpose of this view) | — |
+| `*magit:commit:<repo>*` | Staged diff loaded on open (the purpose of this view) | — |
 
 This is the single most important performance decision in the magit
 design — status opens in **10-50ms** regardless of repository size,
@@ -181,20 +230,32 @@ between.
 
 ### `C-x g` — open status
 
-Press `C-x g` from any buffer to open `*magit:status*` for the current
-repository. This is the primary entry point — the same way `C-x g` opens
-magit-status in Emacs.
+Press `C-x g` from any buffer to open the status of the repository that
+buffer belongs to — `*magit:status:<repo>*`. This is the primary entry
+point, the same way `C-x g` opens magit-status in Emacs.
 
-The command discovers the git repository by walking up from the current
-buffer's directory. If you're not in a git repository, the buffer shows
-"Not a git repository."
+The repository is discovered by walking up from the buffer's own file,
+so a file opened from another checkout gives you that checkout's status
+(see [which repository a magit buffer acts on](#which-repository-a-magit-buffer-acts-on)).
+With nothing open, or a buffer with no file, it falls back to the
+directory the editor was started in. If none of those is a git
+repository, the buffer shows "Not a git repository."
+
+`:magit-status` does exactly the same thing, from the same buffer — the
+`:` line and the chord are one command reached two ways.
 
 ### `C-c g` — dispatch transient
 
 Press `C-c g` from any buffer to open the **repo-level dispatch
 transient** — a grouped menu with one entry point per magit view:
 status, commit, log, branch, stash, rebase all genuinely open their
-buffer, from wherever you happen to be. `F` (pull) and `P` (push) are
+buffer, from wherever you happen to be — in the repository the buffer
+you pressed it over belongs to, which is also the repository `F` / `P` /
+`S` / `U` below act on.
+
+The menu's *rows* follow that repository too: the ways out of a stopped
+rebase, cherry-pick, merge or bisect appear only when **it** has one
+half-done. `F` (pull) and `P` (push) are
 also real: `F` runs `git fetch` + a fast-forward-only merge (it will
 never create a merge commit — if your branch has diverged it fails
 cleanly instead of merging), `P` runs `git push`. `S` stages every
@@ -221,6 +282,9 @@ on the file belonging to whatever buffer was active when you pressed
 the entry under the cursor there). If the active buffer has no file
 (a synthetic buffer, an empty scratch buffer, …) there's no path to
 resolve and the action does nothing.
+
+Because the target is the file, so is the repository: `C-c f s` on a
+file from another checkout stages it *there*.
 
 There is **no "which file?" prompt** — the one deliberate deviation
 from Emacs magit, which asks even though the default is always the file

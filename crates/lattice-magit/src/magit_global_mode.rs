@@ -2186,8 +2186,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 .get::<BufferStoreHandle>()?
                 .name_for(buffer_id)
                 .and_then(|n| base_branch_from_prompt_buffer_name(&n))?;
+            // MR.5: the branch operation belongs to the buffer's repository.
+            let workdir = crate::repo_scope::action_workdir(ctx);
             tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(".") else {
+                let Ok(repo) = Repository::discover(&workdir) else {
                     tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
                     return;
                 };
@@ -2253,8 +2255,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     text: "magit: revision is empty".to_string(),
                 });
             }
+            // MR.5: the branch operation belongs to the buffer's repository.
+            let workdir = crate::repo_scope::action_workdir(ctx);
             tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(".") else {
+                let Ok(repo) = Repository::discover(&workdir) else {
                     tracing::error!(target: "lattice_magit", "branch checkout: repo discover failed");
                     return;
                 };
@@ -2299,8 +2303,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 .and_then(|n| {
                     branch_from_prompt_buffer_name(&n, BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX)
                 })?;
+            // MR.5: the branch operation belongs to the buffer's repository.
+            let workdir = crate::repo_scope::action_workdir(ctx);
             tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(".") else {
+                let Ok(repo) = Repository::discover(&workdir) else {
                     tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
                     return;
                 };
@@ -2353,8 +2359,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     text: format!("magit: {old} unchanged"),
                 });
             }
+            // MR.5: the branch operation belongs to the buffer's repository.
+            let workdir = crate::repo_scope::action_workdir(ctx);
             tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(".") else {
+                let Ok(repo) = Repository::discover(&workdir) else {
                     tracing::error!(target: "lattice_magit", "branch rename: repo discover failed");
                     return;
                 };
@@ -2389,8 +2397,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // ex-command, which names its target. There is no cursor to
             // fall back to — the menu opens from anywhere.
             let name = crate::confirm::carried_target(ctx)?;
+            // MR.5: the branch operation belongs to the buffer's repository.
+            let workdir = crate::repo_scope::action_workdir(ctx);
             tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                let Ok(repo) = Repository::discover(".") else {
+                let Ok(repo) = Repository::discover(&workdir) else {
                     tracing::error!(target: "lattice_magit", "branch delete: repo discover failed");
                     return;
                 };

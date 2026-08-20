@@ -656,8 +656,8 @@ path to resolve and the key does nothing.
 | `s` | `git add <file>` |
 | `u` | `git reset HEAD -- <file>` (unstage, keep working-tree changes) |
 | `x` | `git checkout -- <file>` — **destructive**, asks `Discard changes to <path>?` first |
-| `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-diff-mode)) |
-| `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
+| `d` | Opens `*magit:diff:<repo>:<path>*` ([diff buffer](help:magit-diff-mode)) |
+| `l` | Opens `*magit:log:<repo>:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
 | `b` | Toggles [blame annotations](help:magit-blame-mode) on the file itself |
 | `v` | Opens this file [as it was at a revision](help:magit-file-revision-mode) you type |
 | `V` | From a file-at-revision, back to the **live** file at the same line |
@@ -702,7 +702,7 @@ answer. For a file you are **not** visiting, `:magit-find-file <rev>
 #### `V` — back to the live file
 
 `gj` / `gk` walk a blob's history; `V` walks back out. From
-`*magit:file:<rev>:<path>*` it opens the working-tree copy, landing on
+`*magit:file:<repo>:<rev>:<path>*` it opens the working-tree copy, landing on
 the same line you were reading.
 
 Same line is approximate on purpose: line numbers drift between
@@ -723,11 +723,11 @@ since gone away, and the commit named is the last one they survived in.
 
 It needs a revision to walk forward from, and it shows the file *as it
 was at that revision* — so it only works from a buffer that is already
-showing one: a `*magit:file:<rev>:<path>*` blob buffer, which `v` above
+showing one: a `*magit:file:<repo>:<rev>:<path>*` blob buffer, which `v` above
 opens directly, or `<CR>` on a log entry / a commit's file list, walked
 with `gj` / `gk`. Press `f` anywhere else and it says so rather than
 guessing.
-The index (`*magit:file:staged:…*`) is refused too — it is not a
+The index (`*magit:file:<repo>:staged:…*`) is refused too — it is not a
 commit, so there is no range.
 
 `p` walks the starting revision back one commit and re-blames in
@@ -1005,7 +1005,7 @@ a menu.
 ### Still to come
 
 Log's `--all` / count / path-filter. A log buffer's scope rides its
-*name* (`*magit:log:<path>*`), so its arguments need that channel
+*name* (`*magit:log:<repo>:<path>*`), so its arguments need that channel
 rather than this one.
 
 ---

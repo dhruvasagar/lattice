@@ -78,11 +78,11 @@ the text on screen.
 
 | Buffer | Opened by | `C-c C-c` runs | Pre-filled? |
 |---|---|---|---|
-| `*magit:commit*` | `cc`, `:magit-commit` | `git commit` | no |
-| `*magit:amend*` | `ca` | `git commit --amend` | previous message |
-| `*magit:reword*` | commit menu `w` | `git commit --amend --only` | previous message |
-| `*magit:augment:<sha>*` | commit menu `A`, `:magit-augment` | `git commit --squash=<sha>` | no |
-| `*magit:merge-edit:<branch>*` | merge menu `e` | `git merge <branch>` | no |
+| `*magit:commit:<repo>*` | `cc`, `:magit-commit` | `git commit` | no |
+| `*magit:amend:<repo>*` | `ca` | `git commit --amend` | previous message |
+| `*magit:reword:<repo>*` | commit menu `w` | `git commit --amend --only` | previous message |
+| `*magit:augment:<repo>:<sha>*` | commit menu `A`, `:magit-augment` | `git commit --squash=<sha>` | no |
+| `*magit:merge-edit:<repo>:<branch>*` | merge menu `e` | `git merge <branch>` | no |
 
 **Amend and reword are not the same.** Amend sweeps in whatever you
 have staged; reword passes `--only` and changes the message alone. If

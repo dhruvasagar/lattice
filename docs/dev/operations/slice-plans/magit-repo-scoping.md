@@ -18,7 +18,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | MR.3a | The name grammar + the parameterless views | ✅ |
 | MR.3b | The views that encode parameters (diff, log, file, …) | ✅ |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | ✅ |
-| MR.5 | The grep guard + docs | 📝 |
+| MR.5 | The grep guard + docs | ✅ |
+| MR.6 | The pickers + the project-diff opener | 📝 |
 
 MR.1→MR.2→MR.3 is the spine. MR.4 is the half that makes it *correct*
 rather than merely differently-wrong, so it is not optional polish.
@@ -358,13 +359,65 @@ an action body:
 MR.5's grep guard has to either cover these or state them as the
 exceptions, with the reason attached.
 
-## MR.5 — the guard + docs 📝
+## MR.5 — the guard + docs ✅
 
 - Grep guard: no `magit_workdir()` outside the resolver (design §4's
   anti-rot rule), same shape as `gr_is_declared_once.rs`.
 - User docs: `magit.md` on which repository a magit buffer acts on and
   what `:ls` now shows; the per-view pages where they name the buffer.
 - `sync-docs.sh` + `zola build`.
+
+### The guard greps the QUESTION, not the helper
+
+`crates/lattice-magit/tests/one_repo_resolver.rs`. It matches
+`magit_workdir()`, `discover(".")` **and** `std::env::current_dir()`,
+because the first spelling alone would have certified a magit that was
+still substantially cwd-bound: MR.3 and MR.4 both built their work lists
+by grepping the helper's name, and both lists were short.
+
+What it found on first run, all of it real:
+
+- **`magit-rebase-mode`'s `on_activate`** — an entire view, resolving
+  from the process's repository, through MR.3, the slice whose whole
+  subject was views. It spelled `Repository::discover(".")` out.
+- **`:magit-branch-create`** and **five branch-family finish handlers**
+  (create-from, checkout-at, create-no-checkout, rename, delete) — every
+  one creating or deleting branches in the process's repository.
+- **`spawn_gitignore`**, found during MR.4 by the same reasoning before
+  the guard existed.
+
+Eight production sites, none of which any behavioural test could catch:
+a test process has one checkout, so a cwd-bound site and a correct one
+are indistinguishable inside it. That is the argument for the test being
+a source grep, and it is written into the file's header.
+
+Exceptions are listed one per entry with a reason, and a second test
+asserts each reason is more than a token — an exception without an
+argument is a suppression wearing the guard's clothes. Two are genuine
+(`:magit-init` and `:magit-clone` seed prompts from the working
+directory, because there is no repository yet); three are MR.6's debt,
+recorded rather than hidden.
+
+## MR.6 — the pickers + the project-diff opener 📝
+
+Left cwd-bound by MR.4, and excepted **by name** in the guard so they
+cannot be forgotten:
+
+- **`picker_sources.rs`** — the branch / commit / stash / ref pickers
+  list the process's repository, so `C-c g b b` opened over another
+  checkout offers the wrong branches. Mechanical: `PickerContext` already
+  carries `active_buffer.buffer_id`, so each source takes the store +
+  scopes handles at registration (≈12 `::new()` sites) and resolves the
+  same way every other surface does.
+- **`providers::project_diff`'s opener** — reached through
+  `ProviderViewOpener`, whose `ModeActivator` exposes no active buffer.
+  The same gap `TransientContext` had before MR.4 gave it `buffer`, and
+  the fix is the same shape: a generic host primitive naming the buffer a
+  provider view is being opened over.
+- **`git_config::refresh`** — a process-wide config cache keyed by
+  nothing. Per-repository is a cache-shape change; it decides which
+  *labels* the menus show, not which repository they act on, so it is the
+  least urgent of the three.
 
 ---
 

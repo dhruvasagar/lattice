@@ -5,7 +5,7 @@ related: [magit, magit-transient, ex:magit-status]
 
 # magit-status-mode
 
-The `*magit:status*` buffer is the primary workhorse — a section-
+The `*magit:status:<repo>*` buffer is the primary workhorse — a section-
 collapsible view of your repository's current state. It shows every
 changed file organised into sections, lets you stage and unstage a
 whole file, a single hunk, or just the lines you select, commit, amend,
@@ -349,7 +349,7 @@ Hunk navigation only works for files whose diff is currently expanded
 ### New commit (`cc`)
 
 Press `cc` to open the [commit buffer](help:magit-commit-mode)
-(`*magit:commit*`). The commit buffer shows the staged diff as a read-
+(`*magit:commit:<repo>*`). The commit buffer shows the staged diff as a read-
 only preview and provides an editable message region. `C-c C-c` creates
 the commit; `C-c C-k` aborts.
 
@@ -387,9 +387,9 @@ which section the diff is in, because that is what the diff is against:
 
 | Section | `<CR>` opens |
 |---|---|
-| Staged changes | the **index** copy — `*magit:file:staged:<path>*`, what the diff's `+` side actually is |
+| Staged changes | the **index** copy — `*magit:file:<repo>:staged:<path>*`, what the diff's `+` side actually is |
 | Unstaged changes | the **working-tree** file, editable |
-| Recent commits (an expanded commit's patch) | the file **at that commit** — `*magit:file:<sha>:<path>*` |
+| Recent commits (an expanded commit's patch) | the file **at that commit** — `*magit:file:<repo>:<sha>:<path>*` |
 
 It lands on the code under the cursor — the right line *and* the right
 place along it, so the caret comes down on the same token you were

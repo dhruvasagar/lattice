@@ -2750,7 +2750,10 @@ fn register_ex_commands(
                         Ok(Args::String(trimmed.to_string()))
                     }
                 }),
-                apply: Arc::new(|ctx| {
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
                     let Args::String(ref name) = ctx.args else {
                         return Ok(Effect::Echo {
                             level: lattice_grammar::EchoLevel::Error,
@@ -2758,8 +2761,11 @@ fn register_ex_commands(
                         });
                     };
                     let name = name.clone();
+                    // MR.5: the branch is created in the repository the
+                    // command came from, not the process's.
+                    let workdir = repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id);
                     tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                        let Ok(repo) = lattice_vcs::Repository::discover(".") else {
+                        let Ok(repo) = lattice_vcs::Repository::discover(&workdir) else {
                             tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
                             return;
                         };
@@ -2771,7 +2777,8 @@ fn register_ex_commands(
                         level: lattice_grammar::EchoLevel::Info,
                         text: "magit: creating branch…".to_string(),
                     })
-                }),
+                })
+                },
                 args_schema: vec![ArgSpec::required(
                     "name",
                     lattice_grammar::ArgKind::String,

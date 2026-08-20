@@ -11,7 +11,8 @@ working tree, composed into one multibuffer you can edit.
 ## The gap it fills
 
 Magit already diffs in two shapes and neither is this one. The status
-buffer's sections are patch text built for staging; `*magit:diff:<path>*`
+buffer's sections are patch text built for staging;
+`*magit:diff:<repo>:<path>*`
 reads well but is one file at a time, and is still patch text. Missing
 was *every changed file at once, as real source you can edit* — you spot
 a typo in file 19 of a 30-file review, and otherwise you must leave the

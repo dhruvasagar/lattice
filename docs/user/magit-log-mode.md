@@ -31,7 +31,7 @@ nothing, which is the right answer: there is no commit there.
 ## File-scoped logs
 
 `l` in the [file dispatch transient](help:magit-transient) (`C-c f`)
-opens `*magit:log:<path>*` — the same mode, scoped to one file's
+opens `*magit:log:<repo>:<path>*` — the same mode, scoped to one file's
 history (`git log -- <path>`). A file with no commits touching it says
 so rather than leaving a blank buffer, which matters because an
 untracked or brand-new file is a common and legitimate case.

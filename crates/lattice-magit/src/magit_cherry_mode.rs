@@ -47,14 +47,19 @@ impl MagitCherryMode {
 /// Both ends are in the name because "cherries" is meaningless without
 /// them — the same buffer text describes a completely different question
 /// against a different upstream.
-pub(crate) fn cherry_buffer_name(upstream: &str, head: &str) -> String {
-    format!("*magit:cherry:{upstream}..{head}*")
+pub(crate) const CHERRY_VIEW: &str = "cherry";
+
+/// MR.3b: this view's `rest` — `<upstream>..<head>`, git's own range
+/// spelling, which is why `..` rather than a further `:` separates them.
+pub(crate) fn cherry_view_rest(upstream: &str, head: &str) -> String {
+    format!("{upstream}..{head}")
 }
 
 /// The `(upstream, head)` a cherry buffer's name carries.
 fn parse_name(name: &str) -> Option<(String, String)> {
-    let body = name.strip_prefix("*magit:cherry:")?.strip_suffix('*')?;
-    let (upstream, head) = body.split_once("..")?;
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    (parsed.view == CHERRY_VIEW).then_some(())?;
+    let (upstream, head) = parsed.rest?.split_once("..")?;
     (!upstream.is_empty() && !head.is_empty()).then(|| (upstream.to_string(), head.to_string()))
 }
 
@@ -147,10 +152,12 @@ impl Mode for MagitCherryMode {
                     let g = s.lock().ok()?;
                     g.rows.get(ctx.cursor.line as usize).cloned().flatten()?
                 };
-                Some(Effect::OpenSyntheticBuffer {
-                    name: format!("*magit:commit:{sha}*"),
-                    mode_id: "magit-revision-mode".to_string(),
-                })
+                Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                    ctx,
+                    crate::magit_revision_mode::SHOW_VIEW,
+                    "magit-revision-mode",
+                    Some(&sha),
+                ))
             }),
         }]
     }
@@ -165,7 +172,10 @@ impl Mode for MagitCherryMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             let (upstream, head) = store
                 .name_for(buffer_id)
@@ -363,7 +373,11 @@ mod tests {
 
     #[test]
     fn the_name_carries_both_ends_and_round_trips() {
-        let name = cherry_buffer_name("origin/main", "main");
+        let name = crate::workdir::magit_buffer_name_with(
+            CHERRY_VIEW,
+            "lattice",
+            &cherry_view_rest("origin/main", "main"),
+        );
         assert_eq!(
             parse_name(&name),
             Some(("origin/main".to_string(), "main".to_string()))

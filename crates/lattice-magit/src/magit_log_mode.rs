@@ -107,10 +107,12 @@ impl Mode for MagitLogMode {
                     let snap = handle.snapshot();
                     let line = snap.buffer.line(ctx.cursor.line)?;
                     let sha = extract_sha(&line)?;
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:commit:{sha}*"),
-                        mode_id: "magit-revision-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        crate::magit_revision_mode::SHOW_VIEW,
+                        "magit-revision-mode",
+                        Some(sha),
+                    ))
                 }),
             },
         ]
@@ -126,18 +128,20 @@ impl Mode for MagitLogMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
-            // "*magit:log:<path>*" scopes the history to one file
-            // (mirrors magit-blame/magit-diff's file-in-buffer-name
-            // pattern); bare "*magit:log*" stays repo-wide.
+            // MR.3b: `*magit:log:<repo>:<path>*` scopes the history to
+            // one file; `*magit:log:<repo>*` stays repo-wide. The path
+            // is this view's `rest` — read through the shared parser, so
+            // a repository whose label looks like a path cannot be
+            // mistaken for one.
             let buffer_name = store.name_for(buffer_id).unwrap_or_default();
-            let path: Option<std::path::PathBuf> = {
-                let s = buffer_name
-                    .strip_prefix("*magit:log:")
-                    .and_then(|s| s.strip_suffix('*'));
-                s.filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
-            };
+            let path: Option<std::path::PathBuf> = crate::workdir::parse_magit_name(&buffer_name)
+                .and_then(|n| n.rest)
+                .map(std::path::PathBuf::from);
 
             // MG.43h: arguments the `l` dispatch row collected before
             // this buffer existed — see `ViewArgsRequests`.

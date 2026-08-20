@@ -1893,9 +1893,26 @@ mod tests {
         // runs unconditionally) — that alone does NOT prove the handler
         // fired, which is exactly what made both bugs above invisible at
         // the dismiss level. The real proof is that the log buffer exists.
+        // MR.3: the log buffer is named for its repository
+        // (`*magit:log:<repo>*`). The repository is the checkout this
+        // test process runs in, so the expected name is derived the
+        // same way magit derives it rather than hardcoded.
+        // The repository ROOT's basename, not the cwd's: `cargo test`
+        // runs with the cwd at the package directory, and magit labels
+        // the buffer for the checkout that directory sits in.
+        let root = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git");
+        let root = String::from_utf8_lossy(&root.stdout).trim().to_string();
+        let repo = std::path::Path::new(&root)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let expected = format!("*magit:log:{repo}*");
         let mut found = false;
         for _ in 0..50 {
-            if app.editor.buffers.by_name("*magit:log*").is_some() {
+            if app.editor.buffers.by_name(&expected).is_some() {
                 found = true;
                 break;
             }
@@ -1903,7 +1920,7 @@ mod tests {
         }
         assert!(
             found,
-            "pressing 'l' must actually open *magit:log*, not just \
+            "pressing 'l' must actually open {expected}, not just \
              dismiss the transient with no effect"
         );
     }

@@ -261,7 +261,12 @@ fn diff_side_by_side(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
         });
     }
 
-    Some(side_by_side_effects(&git_ref, &path, absolute))
+    Some(side_by_side_effects(
+        &crate::repo_scope::label_of_buffer(&store, lattice_core::BufferId(ctx.buffer_id.0 as u32)),
+        &git_ref,
+        &path,
+        absolute,
+    ))
 }
 
 /// Which version is the left-hand side.
@@ -299,6 +304,7 @@ pub(crate) fn baseline_ref(
 /// working-tree copy would end up on the left and `do` / `dp` would
 /// silently mean the opposite of what the user intends.
 pub(crate) fn side_by_side_effects(
+    repo: &str,
     git_ref: &str,
     path: &std::path::Path,
     absolute: std::path::PathBuf,
@@ -306,7 +312,7 @@ pub(crate) fn side_by_side_effects(
     use lattice_grammar::Effect;
     Effect::Many(vec![
         Effect::OpenSyntheticBuffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name(git_ref, path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(repo, git_ref, path),
             mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id().to_string(),
         },
         Effect::Diffsplit {
@@ -542,6 +548,7 @@ mod tests {
     fn the_baseline_pane_is_opened_before_the_split() {
         use lattice_grammar::Effect;
         let effect = side_by_side_effects(
+            "lattice",
             "staged",
             std::path::Path::new("src/main.rs"),
             std::path::PathBuf::from("/repo/src/main.rs"),
@@ -552,7 +559,7 @@ mod tests {
         assert_eq!(effects.len(), 2);
         match &effects[0] {
             Effect::OpenSyntheticBuffer { name, mode_id } => {
-                assert_eq!(name, "*magit:file:staged:src/main.rs*");
+                assert_eq!(name, "*magit:file:lattice:staged:src/main.rs*");
                 assert_eq!(mode_id, "magit-file-revision-mode");
             }
             other => panic!("the baseline must be opened first, got {other:?}"),

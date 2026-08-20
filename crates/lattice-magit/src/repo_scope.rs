@@ -68,6 +68,29 @@ impl RepoScopes {
         self.by_name.lock().ok()?.get(name).cloned()
     }
 
+    /// MR.3b: the repository behind a *label*, recovered from any magit
+    /// buffer already recorded against it.
+    ///
+    /// This is what lets a view opened from *inside* another magit
+    /// buffer — `<CR>` on a commit in the log, a file at a revision —
+    /// name itself correctly without reaching for services it does not
+    /// have. Those producers sit in helpers holding only their own
+    /// buffer's state, so all they can carry across is the label their
+    /// own name already spells; this turns that label back into a path.
+    ///
+    /// Sound because labels are unique among *open* magit buffers by
+    /// construction: two checkouts sharing a basename qualify at the
+    /// trigger ([`RepoScopes::collides`]) precisely so that one label
+    /// never names two repositories at once.
+    pub fn workdir_for_label(&self, label: &str) -> Option<PathBuf> {
+        let map = self.by_name.lock().ok()?;
+        map.iter()
+            .find(|(name, _)| {
+                crate::workdir::parse_magit_name(name).and_then(|n| n.repo) == Some(label)
+            })
+            .map(|(_, workdir)| workdir.clone())
+    }
+
     /// Is `name` already recorded against a *different* repository?
     ///
     /// The collision question, asked by the trigger before it settles on
@@ -175,8 +198,39 @@ pub fn view_workdir(
         if let Some(recorded) = scopes.workdir_for(name) {
             return Some(recorded);
         }
+        // MR.3b: no record, but the name carries a label — this buffer
+        // was opened from inside another magit buffer, by a producer
+        // that had the label and no way to record a path. Recover the
+        // path from whichever sibling IS recorded against that label,
+        // and record it here so the buffer's own actions (MR.4) can read
+        // it like any other.
+        if let Some(recovered) = crate::workdir::parse_magit_name(name)
+            .and_then(|n| n.repo)
+            .and_then(|label| scopes.workdir_for_label(label))
+        {
+            scopes.record(name.clone(), recovered.clone());
+            return Some(recovered);
+        }
     }
     crate::workdir::magit_workdir()
+}
+
+/// MR.3b: the repository label a magit buffer's own name carries, for a
+/// producer that has the buffer store but no services.
+///
+/// Empty when the buffer is not a magit buffer or carries no label —
+/// which composes correctly with the name producers, since an empty
+/// label is the outside-a-repository form.
+pub fn label_of_buffer(
+    store: &lattice_mode::BufferStoreHandle,
+    buffer: lattice_core::BufferId,
+) -> String {
+    store
+        .name_for(buffer)
+        .and_then(|name| {
+            crate::workdir::parse_magit_name(&name).and_then(|n| n.repo.map(str::to_string))
+        })
+        .unwrap_or_default()
 }
 
 /// MR.3: [`open_repo_view`] for a view that encodes parameters of its

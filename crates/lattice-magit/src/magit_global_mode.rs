@@ -207,23 +207,6 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         };
     }
 
-    /// MR.3b: still fixed-name + working-directory. See `lib.rs`'s
-    /// `mk_fixed` for why these views move as a family rather than one
-    /// at a time.
-    macro_rules! open {
-        ($action_name:expr, $buffer_name:expr, $mode_id:expr) => {
-            contributions.push(ActionHandlerContribution {
-                action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: $buffer_name.to_string(),
-                        mode_id: $mode_id.to_string(),
-                    })
-                }),
-            });
-        };
-    }
-
     // MR.2: `C-x g` opens the status of the repository the buffer in
     // front of you belongs to, not the one the editor was started in.
     // The resolution, the naming and the record all live in
@@ -271,38 +254,38 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // the mode to take on activation (`ViewArgsRequests`) — the buffer
     // does not exist yet, so there is nothing else to hold them.
     macro_rules! open_view_with_args {
-        ($action_name:expr, $buffer_name:expr, $mode_id:expr, $flags:expr) => {
+        ($action_name:expr, $view:expr, $mode_id:expr, $flags:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    // MR.3b: the args are keyed by the buffer's name, so
+                    // the name has to be resolved FIRST — keying by the
+                    // old fixed one would leave the toggles under a name
+                    // no buffer has, and the view would open with the
+                    // menu's answers silently dropped.
+                    let effect = open_repo_view_from_action(ctx, $view, $mode_id);
                     let extra = crate::magit_core_mode::view_argv($flags, &ctx.args);
                     if !extra.is_empty()
+                        && let Effect::OpenSyntheticBuffer { ref name, .. } = effect
                         && let Some(reqs) = ctx
                             .services
                             .get::<crate::magit_diff_mode::ViewArgsRequestsHandle>()
                     {
-                        reqs.put($buffer_name.to_string(), extra);
+                        reqs.put(name.clone(), extra);
                     }
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: $buffer_name.to_string(),
-                        mode_id: $mode_id.to_string(),
-                    })
+                    Some(effect)
                 }),
             });
         };
     }
     open_view_with_args!(
         "action:magit-global-log",
-        "*magit:log*",
+        "log",
         "magit-log-mode",
         crate::magit_log_mode::LOG_ARGS
     );
     open_repo!("action:magit-global-branch", "branch", "magit-branch-mode");
-    open!(
-        "action:magit-global-stash",
-        "*magit:stash*",
-        "magit-stash-mode"
-    );
+    open_repo!("action:magit-global-stash", "stash", "magit-stash-mode");
     // MG.21d: `M` on the root dispatch, magit's own key for remote
     // management. It opens the remote BUFFER rather than a submenu —
     // see `magit_remote_mode`'s header for why the list needs a
@@ -320,18 +303,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         crate::magit_refs_mode::REFS_VIEW,
         "magit-refs-mode"
     );
-    open!(
-        "action:magit-global-rebase",
-        "*magit:rebase*",
-        "magit-rebase-mode"
-    );
+    open_repo!("action:magit-global-rebase", "rebase", "magit-rebase-mode");
     open_repo!("action:magit-global-amend", "amend", "magit-commit-mode");
     // MG.42-E1: magit's `w`. Same compose buffer, different intent —
     // the name selects it (see `CommitIntent::from_buffer_name`).
     open_repo!("action:magit-global-reword", "reword", "magit-commit-mode");
     open_view_with_args!(
         "action:magit-global-diff",
-        "*magit:diff*",
+        "diff",
         "magit-diff-mode",
         crate::magit_diff_mode::DIFF_ARGS
     );
@@ -839,7 +818,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // MG.43e: a prompt whose answer names a BUFFER rather than an
     // argv — for rows that show something instead of changing it.
     macro_rules! prompted_op_open {
-        ($entry:expr, $prompt:expr, $finish:expr, $name:expr, $mode_id:expr) => {
+        ($entry:expr, $prompt:expr, $finish:expr, $view:expr, $name:expr, $mode_id:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $entry,
                 handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
@@ -851,10 +830,15 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     if value.is_empty() {
                         return None;
                     }
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: ($name)(value),
-                        mode_id: $mode_id.to_string(),
-                    })
+                    // MR.3b: `$name` builds the view's own `rest`; the
+                    // repository in front of it is resolved from the
+                    // buffer the prompt was answered in.
+                    Some(open_repo_view_from_action_with(
+                        ctx,
+                        $view,
+                        $mode_id,
+                        Some(&($name)(value)),
+                    ))
                 }),
             });
         };
@@ -1029,7 +1013,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-merge-preview",
         "Preview merge with branch: ",
         "action:magit-global-merge-preview-finish",
-        |branch: &str| format!("*magit:diff:merge-preview:{branch}*"),
+        "diff",
+        |branch: &str| crate::magit_diff_mode::diff_view_rest(
+            &crate::magit_diff_mode::DiffScope::MergePreview(branch.to_string()),
+            None
+        ),
         "magit-diff-mode"
     );
 
@@ -1361,16 +1349,22 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 
     /// Open a file-scoped magit buffer named `<prefix><rel-path>*`
     /// in `mode_id` — the shape `C-c f`'s diff/log/blame items share.
+    /// MR.3b: open a view scoped to the active file. The repository
+    /// comes from the shared trigger body (which resolves it from that
+    /// same file), so the path lands in `rest` behind it rather than in
+    /// the repository's slot.
     macro_rules! file_open {
-        ($action_name:expr, $prefix:expr, $mode_id:expr) => {
+        ($action_name:expr, $view:expr, $mode_id:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let (_workdir, rel) = active_target(ctx)?;
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!(concat!($prefix, "{}*"), rel.display()),
-                        mode_id: $mode_id.to_string(),
-                    })
+                    Some(open_repo_view_from_action_with(
+                        ctx,
+                        $view,
+                        $mode_id,
+                        Some(&rel.display().to_string()),
+                    ))
                 }),
             });
         };
@@ -1447,16 +1441,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }
     );
 
-    file_open!(
-        "action:magit-global-file-diff",
-        "*magit:diff:",
-        "magit-diff-mode"
-    );
-    file_open!(
-        "action:magit-global-file-log",
-        "*magit:log:",
-        "magit-log-mode"
-    );
+    file_open!("action:magit-global-file-diff", "diff", "magit-diff-mode");
+    file_open!("action:magit-global-file-log", "log", "magit-log-mode");
     // MG.26b: blame no longer opens a buffer — it activates a minor on
     // the buffer you are already reading, so the file keeps its own
     // major, its parser and therefore its highlighting.
@@ -1535,9 +1521,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let rev = ctx.prompt_value?.trim().to_string();
             let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-            let path = ctx
-                .services
-                .get::<BufferStoreHandle>()?
+            let store = ctx.services.get::<BufferStoreHandle>()?;
+            let path = store
                 .name_for(buffer_id)
                 .and_then(|n| path_from_prompt_buffer_name(&n, "*magit:show-at:"))?;
             if rev.is_empty() {
@@ -1545,6 +1530,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             Some(Effect::OpenSyntheticBuffer {
                 name: crate::magit_file_revision_mode::blob_buffer_name(
+                    &crate::repo_scope::label_of_buffer(&store, buffer_id),
                     &rev,
                     std::path::Path::new(&path),
                 ),
@@ -1643,9 +1629,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-file-blame-reverse",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-            let parsed = ctx
-                .services
-                .get::<BufferStoreHandle>()?
+            let store = ctx.services.get::<BufferStoreHandle>()?;
+            // MR.3b: reverse blame re-opens the SAME blob, so it must
+            // re-name it in the same repository.
+            let label = crate::repo_scope::label_of_buffer(&store, buffer_id);
+            let parsed = store
                 .name_for(buffer_id)
                 .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n))
                 .filter(|(git_ref, _)| git_ref != "staged");
@@ -1659,7 +1647,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 // they are left as a request keyed by the buffer's
                 // name and consumed by `on_activate`.
                 Some((git_ref, path)) => {
-                    let name = crate::magit_file_revision_mode::blob_buffer_name(&git_ref, &path);
+                    let name =
+                        crate::magit_file_revision_mode::blob_buffer_name(&label, &git_ref, &path);
                     if let Some(requests) = ctx
                         .services
                         .get::<crate::magit_blame_mode::BlameRequestsHandle>()
@@ -1845,10 +1834,14 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if upstream.is_empty() {
                 return None;
             }
-            Some(Effect::OpenSyntheticBuffer {
-                name: crate::magit_cherry_mode::cherry_buffer_name(&upstream, "HEAD"),
-                mode_id: crate::MagitCherryMode::mode_id().as_str().to_string(),
-            })
+            Some(open_repo_view_from_action_with(
+                ctx,
+                crate::magit_cherry_mode::CHERRY_VIEW,
+                crate::MagitCherryMode::mode_id().as_str(),
+                Some(&crate::magit_cherry_mode::cherry_view_rest(
+                    &upstream, "HEAD",
+                )),
+            ))
         }),
     });
 
@@ -1864,10 +1857,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let at_cursor =
                 crate::buffer_state::view_for(ctx).and_then(|v| v.commit_at_cursor(ctx.cursor));
             Some(match at_cursor {
-                Some(commit) => Effect::OpenSyntheticBuffer {
-                    name: crate::magit_notes_mode::note_buffer_name(&commit),
-                    mode_id: crate::MagitNotesMode::mode_id().as_str().to_string(),
-                },
+                Some(commit) => open_repo_view_from_action_with(
+                    ctx,
+                    crate::magit_notes_mode::NOTE_VIEW,
+                    crate::MagitNotesMode::mode_id().as_str(),
+                    Some(&commit),
+                ),
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-edit".to_string()],
@@ -2028,10 +2023,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let at_cursor =
                 crate::buffer_state::view_for(ctx).and_then(|v| v.commit_at_cursor(ctx.cursor));
             Some(match at_cursor {
-                Some(commit) => Effect::OpenSyntheticBuffer {
-                    name: crate::magit_revision_mode::merged_buffer_name(&commit),
-                    mode_id: "magit-revision-mode".to_string(),
-                },
+                Some(commit) => open_repo_view_from_action_with(
+                    ctx,
+                    crate::magit_revision_mode::MERGED_VIEW,
+                    "magit-revision-mode",
+                    Some(&commit),
+                ),
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-log-merged".to_string()],
@@ -2052,16 +2049,16 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-edit-line-commit",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
-            Some(Effect::OpenSyntheticBuffer {
+            Some(open_repo_view_from_action_with(
+                ctx,
+                "rebase-edit",
+                crate::magit_rebase_mode::MagitRebaseMode::mode_id().as_str(),
                 // `git blame -L` counts from 1; the cursor from 0.
-                name: crate::magit_rebase_mode::edit_line_buffer_name(
+                Some(&crate::magit_rebase_mode::edit_line_rest(
                     ctx.cursor.line + 1,
                     &rel.to_string_lossy(),
-                ),
-                mode_id: crate::magit_rebase_mode::MagitRebaseMode::mode_id()
-                    .as_str()
-                    .to_string(),
-            })
+                )),
+            ))
         }),
     });
 

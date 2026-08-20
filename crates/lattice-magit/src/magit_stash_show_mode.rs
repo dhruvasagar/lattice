@@ -51,6 +51,10 @@ fn magit_stash_show_keymap_entries() -> &'static [KeymapEntry] {
 /// working directory is not, and a `git apply` needs one.
 pub struct StashShowState {
     workdir: std::path::PathBuf,
+    /// MR.3b: the repository label this buffer's own name carries —
+    /// held, not re-derived, for the qualified-label reason in
+    /// `RevisionState`.
+    repo: String,
     /// MG.22: which stash, so `<CR>` can name the ref it opens the
     /// file from. The buffer name carries it too, but a view that had
     /// to re-parse the name would make that format load-bearing in a
@@ -107,9 +111,13 @@ impl crate::buffer_state::MagitView for StashShowView {
         path: &std::path::Path,
         _cursor: lattice_protocol::position::Position,
     ) -> Option<Effect> {
-        let idx = self.0.lock().ok()?.index?;
+        let (idx, label) = {
+            let g = self.0.lock().ok()?;
+            (g.index?, g.repo.clone())
+        };
         Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(
+                &label,
                 &format!("stash@{{{idx}}}"),
                 path,
             ),
@@ -163,7 +171,10 @@ impl Mode for MagitStashShowMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
             let index = store
                 .name_for(buffer_id)
@@ -190,6 +201,7 @@ impl Mode for MagitStashShowMode {
                 buffer_id,
                 StashShowState {
                     workdir: workdir.clone(),
+                    repo: crate::repo_scope::label_of_buffer(&store, buffer_id),
                     index,
                 },
             );
@@ -231,15 +243,21 @@ impl Mode for MagitStashShowMode {
 /// rather than defaulting to 0 — showing stash@{0}'s patch under a
 /// name claiming some other stash is worse than saying nothing.
 fn parse_buffer_name(name: &str) -> Option<usize> {
-    let rest = name.strip_prefix("*magit:stash:")?;
-    let rest = rest.strip_suffix('*')?;
-    rest.parse().ok()
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    (parsed.view == "stash").then_some(())?;
+    // MR.3b: the index is this view's `rest`. It shares the `stash` view
+    // word with the stash LIST (`*magit:stash:<repo>*`), which is why it
+    // could not keep the old shape: with the repository absent, a list
+    // buffer and a show buffer were the same string with a different
+    // second segment, and only the parser's `usize` check told them
+    // apart — a repository called `3` would have been a stash.
+    parsed.rest?.parse().ok()
 }
 
-/// The buffer name for stash `index` — the single place the
-/// `<CR>` handler and this mode's parser agree on the format.
-pub fn buffer_name(index: usize) -> String {
-    format!("*magit:stash:{index}*")
+/// This view's `rest` for stash `index` — the single place the `<CR>`
+/// handler and this mode's parser agree on the format.
+pub fn stash_view_rest(index: usize) -> String {
+    index.to_string()
 }
 
 fn run_stash_show(workdir: &std::path::Path, index: usize) -> String {
@@ -280,14 +298,25 @@ mod tests {
 
     #[test]
     fn parse_buffer_name_extracts_the_index() {
-        assert_eq!(parse_buffer_name("*magit:stash:0*"), Some(0));
-        assert_eq!(parse_buffer_name("*magit:stash:12*"), Some(12));
+        assert_eq!(parse_buffer_name("*magit:stash:lattice:0*"), Some(0));
+        assert_eq!(parse_buffer_name("*magit:stash:lattice:12*"), Some(12));
+    }
+
+    /// MR.3b: the stash LIST shares this view word
+    /// (`*magit:stash:<repo>*`), and it must not parse as a stash to
+    /// show. Before the repository took segment 2 the two forms were
+    /// told apart only by whether the segment happened to be numeric —
+    /// so a checkout called `3` would have opened stash@{3}.
+    #[test]
+    fn the_stash_list_is_not_a_stash_to_show() {
+        assert_eq!(parse_buffer_name("*magit:stash:lattice*"), None);
+        assert_eq!(parse_buffer_name("*magit:stash:3*"), None);
     }
 
     #[test]
     fn parse_buffer_name_rejects_malformed_names() {
-        assert_eq!(parse_buffer_name("*magit:stash:*"), None);
-        assert_eq!(parse_buffer_name("*magit:stash:abc*"), None);
+        assert_eq!(parse_buffer_name("*magit:stash:lattice:*"), None);
+        assert_eq!(parse_buffer_name("*magit:stash:lattice:abc*"), None);
         assert_eq!(parse_buffer_name("*magit:stash*"), None);
         assert_eq!(parse_buffer_name("*magit:commit:a1b2c3d*"), None);
     }
@@ -298,7 +327,9 @@ mod tests {
     #[test]
     fn the_name_builder_and_the_parser_agree() {
         for idx in [0usize, 3, 42] {
-            assert_eq!(parse_buffer_name(&buffer_name(idx)), Some(idx));
+            let name =
+                crate::workdir::magit_buffer_name_with("stash", "lattice", &stash_view_rest(idx));
+            assert_eq!(parse_buffer_name(&name), Some(idx));
         }
     }
 }

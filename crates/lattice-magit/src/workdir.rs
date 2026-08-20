@@ -27,7 +27,24 @@ use lattice_vcs::Repository;
 /// outcome the hand-written copies produced.
 pub(crate) fn magit_workdir() -> Option<PathBuf> {
     let repo = Repository::discover(".").ok()?;
-    Some(repo.workdir()?.to_path_buf())
+    let workdir = repo.workdir()?.to_path_buf();
+    // MR.3b: discovery from `.` reports the workdir RELATIVE to the
+    // current directory, so an editor started in `crates/lattice-ui-tui`
+    // gets `../..`. That was harmless while the path was only ever
+    // handed to `git -C`; it is not harmless now that the path is
+    // labelled and compared:
+    //
+    //   - `repo_label("../..")` has no final component, so the buffer
+    //     came out as `*magit:log:../..*` — a name for no repository in
+    //     particular, and a different one from every other directory.
+    //   - the record compares workdir paths to detect a basename
+    //     collision, and `../..` and `/Users/…/lattice` are different
+    //     paths for the same checkout.
+    //
+    // Canonicalising here rather than at each caller keeps the one
+    // relative source in one place. Falls back to the raw path if the
+    // filesystem refuses, which is what it did before.
+    Some(std::fs::canonicalize(&workdir).unwrap_or(workdir))
 }
 
 /// The `(workdir, repo-relative-path)` pair for a file on disk.
@@ -377,6 +394,32 @@ mod tests {
     #[test]
     fn a_rootish_path_still_produces_a_label() {
         assert!(!repo_label(Path::new("/")).is_empty());
+    }
+
+    /// MR.3b: the working directory is absolute, whatever directory the
+    /// editor was started in.
+    ///
+    /// `gix` reports the workdir relative to where discovery started,
+    /// so running from `crates/lattice-ui-tui` yields `../..` — which
+    /// has no final component and labelled every buffer
+    /// `*magit:<view>:../..*`. This test runs with the cwd at its own
+    /// package directory (cargo's doing), so it exercises exactly that
+    /// case rather than simulating it.
+    #[test]
+    fn the_working_directory_is_absolute_even_from_a_subdirectory() {
+        let Some(workdir) = magit_workdir() else {
+            // Not in a repository at all; nothing to assert.
+            return;
+        };
+        assert!(
+            workdir.is_absolute(),
+            "workdir must be absolute, got {workdir:?}"
+        );
+        let label = repo_label(&workdir);
+        assert!(
+            !label.contains(".."),
+            "a relative workdir leaks into the buffer name: {label}"
+        );
     }
 
     // ── MR.2: the naming pair ────────────────────────────────────

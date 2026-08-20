@@ -115,7 +115,12 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
         let revisions = file_revisions(&workdir, &path);
         match blob_step(&revisions, &git_ref, step) {
             Some(next) => Some(Effect::OpenSyntheticBuffer {
-                name: blob_buffer_name(&next, &path),
+                // MR.3b: stay in the repository this blob came from.
+                name: blob_buffer_name(
+                    &crate::repo_scope::label_of_buffer(&store, buffer_id),
+                    &next,
+                    &path,
+                ),
                 mode_id: MagitFileRevisionMode::mode_id().to_string(),
             }),
             // Saying which end you are at beats a key that appears
@@ -190,7 +195,10 @@ impl Mode for MagitFileRevisionMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(None);
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
             let parsed = store
                 .name_for(buffer_id)
@@ -259,8 +267,21 @@ impl Mode for MagitFileRevisionMode {
 /// producer/parser split.
 ///
 /// `git_ref` is a commit-ish, the literal `staged`, or a `stash@{N}`.
-pub(crate) fn blob_buffer_name(git_ref: &str, path: &std::path::Path) -> String {
-    format!("*magit:file:{git_ref}:{}*", path.display())
+pub(crate) const FILE_VIEW: &str = "file";
+
+/// MR.3b: this view's `rest` — `<ref>:<path>`, behind the repository.
+pub(crate) fn file_view_rest(git_ref: &str, path: &std::path::Path) -> String {
+    format!("{git_ref}:{}", path.display())
+}
+
+/// The full name, for the producers that hold a repository label rather
+/// than a trigger's services — `<CR>` on a file row, a hunk, a picker
+/// result. They are all *inside* a magit buffer already, so the label
+/// they pass is the one their own name carries
+/// ([`crate::repo_scope::label_of_buffer`]), and the opened buffer
+/// recovers the path from it at activation.
+pub(crate) fn blob_buffer_name(repo: &str, git_ref: &str, path: &std::path::Path) -> String {
+    crate::workdir::magit_buffer_name_with(FILE_VIEW, repo, &file_view_rest(git_ref, path))
 }
 
 /// `"*magit:file:<ref>:<path>*"` → `(ref, path)`. `ref` never
@@ -270,9 +291,9 @@ pub(crate) fn blob_buffer_name(git_ref: &str, path: &std::path::Path) -> String 
 /// itself contains further `:` characters (rare on POSIX, but not
 /// disallowed).
 pub(crate) fn parse_buffer_name(name: &str) -> Option<(String, PathBuf)> {
-    let rest = name.strip_prefix("*magit:file:")?;
-    let rest = rest.strip_suffix('*')?;
-    let (git_ref, path) = rest.split_once(':')?;
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    (parsed.view == FILE_VIEW).then_some(())?;
+    let (git_ref, path) = parsed.rest?.split_once(':')?;
     if git_ref.is_empty() || path.is_empty() {
         return None;
     }
@@ -394,7 +415,7 @@ mod blob_name {
             ("HEAD", "a.txt"),
             ("feature/branch-name", "deep/nested/path.rs"),
         ] {
-            let name = blob_buffer_name(git_ref, std::path::Path::new(path));
+            let name = blob_buffer_name("lattice", git_ref, std::path::Path::new(path));
             let (back_ref, back_path) =
                 parse_buffer_name(&name).unwrap_or_else(|| panic!("`{name}` must parse back"));
             assert_eq!(back_ref, git_ref, "ref lost in {name}");
@@ -406,7 +427,7 @@ mod blob_name {
     /// splits on the FIRST colon precisely so it survives.
     #[test]
     fn a_path_containing_a_colon_survives_the_round_trip() {
-        let name = blob_buffer_name("HEAD", std::path::Path::new("weird:name.rs"));
+        let name = blob_buffer_name("lattice", "HEAD", std::path::Path::new("weird:name.rs"));
         let (r, p) = parse_buffer_name(&name).expect("parses");
         assert_eq!(r, "HEAD");
         assert_eq!(p, std::path::Path::new("weird:name.rs"));
@@ -419,22 +440,25 @@ mod tests {
 
     #[test]
     fn parse_buffer_name_splits_ref_and_path() {
-        let (r, p) = parse_buffer_name("*magit:file:a1b2c3d:src/main.rs*").unwrap();
+        let (r, p) = parse_buffer_name("*magit:file:lattice:a1b2c3d:src/main.rs*").unwrap();
         assert_eq!(r, "a1b2c3d");
         assert_eq!(p, PathBuf::from("src/main.rs"));
     }
 
     #[test]
     fn parse_buffer_name_handles_staged_pseudo_ref() {
-        let (r, p) = parse_buffer_name("*magit:file:staged:src/main.rs*").unwrap();
+        let (r, p) = parse_buffer_name("*magit:file:lattice:staged:src/main.rs*").unwrap();
         assert_eq!(r, "staged");
         assert_eq!(p, PathBuf::from("src/main.rs"));
     }
 
     #[test]
     fn parse_buffer_name_rejects_malformed_names() {
-        assert!(parse_buffer_name("*magit:file:*").is_none());
-        assert!(parse_buffer_name("*magit:file:onlyref*").is_none());
+        assert!(parse_buffer_name("*magit:file:lattice:*").is_none());
+        assert!(parse_buffer_name("*magit:file:lattice:onlyref*").is_none());
+        // MR.3b: a name with no `rest` is not a blob at all — there is
+        // no ref and no path, only a repository.
+        assert!(parse_buffer_name("*magit:file:lattice*").is_none());
         assert!(parse_buffer_name("not a magit buffer").is_none());
     }
 

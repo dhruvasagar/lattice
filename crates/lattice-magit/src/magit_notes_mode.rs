@@ -39,17 +39,17 @@ impl MagitNotesMode {
     }
 }
 
-/// The buffer name carrying the commit whose note is being edited.
-pub(crate) fn note_buffer_name(sha: &str) -> String {
-    format!("*magit:note:{sha}*")
-}
+/// MR.3b: this view's word. The commit rides in `rest`, behind the
+/// repository.
+pub(crate) const NOTE_VIEW: &str = "note";
 
 /// The commit a note buffer's name names. `None` for any other name,
 /// and for an empty sha — `git notes add` on an empty rev would act on
 /// HEAD, which is not what a malformed name asked for.
 fn sha_from_name(name: &str) -> Option<String> {
-    let sha = name.strip_prefix("*magit:note:")?.strip_suffix('*')?;
-    (!sha.is_empty()).then(|| sha.to_string())
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    (parsed.view == NOTE_VIEW).then_some(())?;
+    parsed.rest.map(str::to_string)
 }
 
 fn magit_notes_keymap_entries() -> &'static [KeymapEntry] {
@@ -177,7 +177,10 @@ impl Mode for MagitNotesMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
             let sha = store
                 .name_for(buffer_id)
                 .as_deref()
@@ -241,7 +244,8 @@ mod tests {
     #[test]
     fn the_name_carries_the_commit_and_round_trips() {
         let sha = "a1b2c3d4e5f6";
-        assert_eq!(sha_from_name(&note_buffer_name(sha)).as_deref(), Some(sha));
+        let name = crate::workdir::magit_buffer_name_with(NOTE_VIEW, "lattice", sha);
+        assert_eq!(sha_from_name(&name).as_deref(), Some(sha));
     }
 
     #[test]

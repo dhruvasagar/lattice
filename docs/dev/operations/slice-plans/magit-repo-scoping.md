@@ -16,7 +16,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | MR.1 | The resolver + the naming pair — **landed inside MR.2** | ✅ |
 | MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | ✅ |
 | MR.3a | The name grammar + the parameterless views | ✅ |
-| MR.3b | The views that encode parameters (diff, log, file, …) | 📝 |
+| MR.3b | The views that encode parameters (diff, log, file, …) | ✅ |
 | MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | 📝 |
 | MR.5 | The grep guard + docs | 📝 |
 
@@ -253,22 +253,46 @@ in, and is invisible until someone works across two. Plus the targeted
 commit form carrying repo *and* target, since those fail differently
 (wrong checkout vs. squash into nothing).
 
-## MR.3b — the views that encode parameters 📝
+## MR.3b — the views that encode parameters ✅
 
 **diff, log, stash (list + show), rebase (+ rebase-edit), file, note,
-merged, cherry.** Each has a producer/parser pair whose second segment is
-currently a parameter, and each moves whole: producer, parser, tests, and
-the ~30 call sites (16 of them `blob_buffer_name`, which every view
-reaches to visit a file at a revision).
+merged, cherry** — each moved whole: producer, parser, tests, and its
+call sites. Every view's `on_activate` now reads the record through
+`repo_scope::view_workdir`; no magit view resolves from the working
+directory any more. What is left calling `magit_workdir()` is exactly
+MR.4's list: action bodies and the transients.
 
-The parsers shift by one segment rather than being rewritten:
-`parse_magit_name` hands back `rest`, which is the exact string each
-parser reads today.
+The parsers shifted by one segment rather than being rewritten —
+`parse_magit_name` hands back `rest`, the exact string each parser
+already read.
 
-Still fixed-name and cwd-resolved until then, and deliberately marked as
-such in the code (`mk_fixed` in `lib.rs`, `open!` in
-`magit_global_mode.rs` — the repo-scoped peers are `mk` and
-`open_repo!`).
+### Three things this slice found
+
+- **A collision MR.3a had just introduced.** `magit-revision-mode`
+  showed a commit as `*magit:commit:<sha>*` while the compose buffer had
+  become `*magit:commit:<repo>*` — the same shape, so in a checkout named
+  like a sha they were one buffer with whichever mode reached it first.
+  The revision view took its own word: `*magit:show:<repo>:<sha>*`. This
+  is the ambiguity argument from MR.3a's carve, arriving as an actual
+  bug rather than a hypothetical, and it is why the stash list and
+  stash-show had to move together too.
+- **`magit_workdir()` was returning a RELATIVE path.** `gix` reports the
+  workdir relative to where discovery started, so an editor launched in
+  `crates/lattice-ui-tui` got `../..` — which has no final component, so
+  every buffer was named `*magit:<view>:../..*`, and the collision check
+  compared `../..` against absolute paths for the same checkout. Harmless
+  while the path only ever reached `git -C`; not harmless once it is
+  labelled and compared. `magit_workdir` canonicalises now. Found by a
+  TUI test, which is the only place the cwd is not the repo root.
+- **In-buffer producers cannot record.** `<CR>` on a commit, a hunk's
+  side-by-side split, `p`/`n` through a file's revisions — these build a
+  buffer name from inside a helper holding only its own view's state, so
+  they have a label but no way to write a record. Rather than thread
+  services through every one, `RepoScopes::workdir_for_label` recovers
+  the path from whichever sibling buffer IS recorded against that label,
+  and `view_workdir` records it on arrival. Sound because labels are
+  unique among open magit buffers by construction — that is what the
+  collision qualification at the trigger is for.
 
 ## MR.4 — action bodies 📝
 

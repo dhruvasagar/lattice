@@ -146,10 +146,12 @@ impl Mode for MagitRefsMode {
                         let g = s.lock().ok()?;
                         ref_at_cursor(&g, ctx.cursor)?
                     };
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:commit:{}*", entry.id),
-                        mode_id: "magit-revision-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        crate::magit_revision_mode::SHOW_VIEW,
+                        "magit-revision-mode",
+                        Some(&entry.id),
+                    ))
                 }),
             },
             ActionHandlerContribution {

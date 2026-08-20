@@ -211,8 +211,12 @@ impl crate::buffer_state::MagitView for CommitView {
         path: &std::path::Path,
         _cursor: lattice_protocol::position::Position,
     ) -> Option<Effect> {
+        let label = {
+            let g = self.0.lock().ok()?;
+            crate::repo_scope::label_of_buffer(&g.store, g.buffer_id)
+        };
         Some(Effect::OpenSyntheticBuffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", path),
             mode_id: "magit-file-revision-mode".to_string(),
         })
     }

@@ -906,58 +906,30 @@ fn register_ex_commands(
         magit_refs_mode::REFS_VIEW,
         "magit-refs-mode",
     );
-
-    // MR.3b: the views whose names ALSO encode parameters of their own
-    // (`*magit:diff:staged:<path>*`, `*magit:log:<path>*`,
-    // `*magit:stash:<n>*`). They cannot take a repository segment one at
-    // a time: `*magit:log:src*` would mean either the `src` repository
-    // or the log of the path `src`, and the answer has to be the same
-    // for every producer and parser of that view at once. They keep the
-    // fixed name and the working directory until their parsers move
-    // together.
-    let mut mk_fixed = |name: &'static str,
-                        doc: &'static str,
-                        buffer_name: &'static str,
-                        mode_id: &'static str| {
-        let mode_id = mode_id.to_string();
-        registry.register_ex_command(
-            name,
-            doc,
-            ExCommandSpec {
-                latency_class: LatencyClass::Reflex,
-                accepts_bang: false,
-                accepts_range: false,
-                parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
-                apply: Arc::new(move |_ctx| {
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: buffer_name.to_string(),
-                        mode_id: mode_id.clone(),
-                    })
-                }),
-                args_schema: Vec::new(),
-                surface_form: SurfaceForm::Keyword,
-            },
-        );
-    };
-
-    mk_fixed(
+    // MR.3b: these three also encode parameters of their own
+    // (`*magit:diff:<repo>:staged:<path>*`, `*magit:log:<repo>:<path>*`,
+    // `*magit:stash:<repo>:<n>*`). Their bare ex-command forms are
+    // ordinary repo-scoped views; the parameterised forms are produced
+    // by the handlers that know the parameter.
+    mk(
         "magit-diff",
-        "Open a dedicated side-by-side diff view against HEAD.",
-        "*magit:diff*",
+        "Diff the repository of the current buffer against HEAD.",
+        "diff",
         "magit-diff-mode",
     );
-    mk_fixed(
+    mk(
         "magit-log",
-        "Open the Magit commit history log.",
-        "*magit:log*",
+        "Open the commit history of the repository of the current buffer.",
+        "log",
         "magit-log-mode",
     );
-    mk_fixed(
+    mk(
         "magit-stash-list",
-        "Open the Magit stash list buffer.",
-        "*magit:stash*",
+        "Open the stash list of the repository of the current buffer.",
+        "stash",
         "magit-stash-mode",
     );
+
     // PD.3 (2026-08-12): the project-diff view — every changed file at
     // once, as editable source. Not `mk`-able: it opens a multibuffer,
     // not a synthetic Document, so it routes through the generic
@@ -1484,27 +1456,37 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let idx = match ctx.args {
-                        Args::String(ref s) if !s.trim().is_empty() => {
-                            s.trim().parse::<usize>().map_err(|_| {
-                                lattice_grammar::CommandError::BadArgs(format!(
-                                    "magit-stash-show: expected a stash index, got {s:?}"
-                                ))
-                            })?
-                        }
-                        _ => {
-                            return Ok(Effect::OpenPicker {
-                                source: picker_sources::STASH_PICK_SOURCE.to_string(),
-                                args: vec!["magit-stash-show".to_string()],
-                            });
-                        }
-                    };
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_stash_show_mode::buffer_name(idx),
-                        mode_id: "magit-stash-show-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let idx = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => {
+                                s.trim().parse::<usize>().map_err(|_| {
+                                    lattice_grammar::CommandError::BadArgs(format!(
+                                        "magit-stash-show: expected a stash index, got {s:?}"
+                                    ))
+                                })?
+                            }
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::STASH_PICK_SOURCE.to_string(),
+                                    args: vec!["magit-stash-show".to_string()],
+                                });
+                            }
+                        };
+                        Ok(Effect::OpenSyntheticBuffer {
+                            name: repo_scope::repo_view_name_with(
+                                "stash",
+                                Some(&magit_stash_show_mode::stash_view_rest(idx)),
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
+                            mode_id: "magit-stash-show-mode".to_string(),
+                        })
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::optional(
                     "stash",
                     lattice_grammar::ArgKind::String,
@@ -2068,23 +2050,33 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref spec) = ctx.args else {
-                        return Ok(find_file_usage());
-                    };
-                    match spec.split_once(char::is_whitespace) {
-                        Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
-                            Ok(Effect::OpenSyntheticBuffer {
-                                name: magit_file_revision_mode::blob_buffer_name(
-                                    rev,
-                                    std::path::Path::new(path.trim()),
-                                ),
-                                mode_id: "magit-file-revision-mode".to_string(),
-                            })
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref spec) = ctx.args else {
+                            return Ok(find_file_usage());
+                        };
+                        match spec.split_once(char::is_whitespace) {
+                            Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
+                                Ok(Effect::OpenSyntheticBuffer {
+                                    name: repo_scope::repo_view_name_with(
+                                        magit_file_revision_mode::FILE_VIEW,
+                                        Some(&magit_file_revision_mode::file_view_rest(
+                                            rev,
+                                            std::path::Path::new(path.trim()),
+                                        )),
+                                        &store,
+                                        &scopes,
+                                        ctx.buffer_id,
+                                    ),
+                                    mode_id: "magit-file-revision-mode".to_string(),
+                                })
+                            }
+                            _ => Ok(find_file_usage()),
                         }
-                        _ => Ok(find_file_usage()),
-                    }
-                }),
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "spec",
                     lattice_grammar::ArgKind::String,
@@ -2220,23 +2212,33 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref spec) = ctx.args else {
-                        return Ok(cherries_usage());
-                    };
-                    let spec = spec.trim();
-                    if spec.is_empty() {
-                        return Ok(cherries_usage());
-                    }
-                    let (upstream, head) = match spec.split_once(char::is_whitespace) {
-                        Some((u, h)) if !h.trim().is_empty() => (u, h.trim()),
-                        _ => (spec, "HEAD"),
-                    };
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_cherry_mode::cherry_buffer_name(upstream, head),
-                        mode_id: "magit-cherry-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref spec) = ctx.args else {
+                            return Ok(cherries_usage());
+                        };
+                        let spec = spec.trim();
+                        if spec.is_empty() {
+                            return Ok(cherries_usage());
+                        }
+                        let (upstream, head) = match spec.split_once(char::is_whitespace) {
+                            Some((u, h)) if !h.trim().is_empty() => (u, h.trim()),
+                            _ => (spec, "HEAD"),
+                        };
+                        Ok(Effect::OpenSyntheticBuffer {
+                            name: repo_scope::repo_view_name_with(
+                                magit_cherry_mode::CHERRY_VIEW,
+                                Some(&magit_cherry_mode::cherry_view_rest(upstream, head)),
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
+                            mode_id: "magit-cherry-mode".to_string(),
+                        })
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::required(
                     "spec",
                     lattice_grammar::ArgKind::String,
@@ -2259,19 +2261,29 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref commit) = ctx.args else {
-                        return Ok(note_usage("magit-note-edit"));
-                    };
-                    let commit = commit.trim();
-                    if commit.is_empty() {
-                        return Ok(note_usage("magit-note-edit"));
-                    }
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_notes_mode::note_buffer_name(commit),
-                        mode_id: "magit-notes-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref commit) = ctx.args else {
+                            return Ok(note_usage("magit-note-edit"));
+                        };
+                        let commit = commit.trim();
+                        if commit.is_empty() {
+                            return Ok(note_usage("magit-note-edit"));
+                        }
+                        Ok(Effect::OpenSyntheticBuffer {
+                            name: repo_scope::repo_view_name_with(
+                                magit_notes_mode::NOTE_VIEW,
+                                Some(commit),
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
+                            mode_id: "magit-notes-mode".to_string(),
+                        })
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::required(
                     "commit",
                     lattice_grammar::ArgKind::String,
@@ -2403,19 +2415,29 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref commit) = ctx.args else {
-                        return Ok(log_merged_usage());
-                    };
-                    let commit = commit.trim();
-                    if commit.is_empty() {
-                        return Ok(log_merged_usage());
-                    }
-                    Ok(Effect::OpenSyntheticBuffer {
-                        name: magit_revision_mode::merged_buffer_name(commit),
-                        mode_id: "magit-revision-mode".to_string(),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref commit) = ctx.args else {
+                            return Ok(log_merged_usage());
+                        };
+                        let commit = commit.trim();
+                        if commit.is_empty() {
+                            return Ok(log_merged_usage());
+                        }
+                        Ok(Effect::OpenSyntheticBuffer {
+                            name: repo_scope::repo_view_name_with(
+                                magit_revision_mode::MERGED_VIEW,
+                                Some(commit),
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
+                            mode_id: "magit-revision-mode".to_string(),
+                        })
                     })
-                }),
+                },
                 args_schema: vec![ArgSpec::required(
                     "commit",
                     lattice_grammar::ArgKind::String,
@@ -2443,15 +2465,28 @@ fn register_ex_commands(
                 // else.
                 apply: {
                     let requests = blame_requests.clone();
+                    let store = store.clone();
+                    let scopes = scopes.clone();
                     Arc::new(move |ctx| {
                         let Args::String(ref spec) = ctx.args else {
                             return Ok(reverse_blame_usage());
                         };
                         match spec.split_once(char::is_whitespace) {
                             Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
-                                let name = magit_file_revision_mode::blob_buffer_name(
-                                    rev,
-                                    std::path::Path::new(path.trim()),
+                                // MR.3b: resolved FIRST — the blame
+                                // request is keyed by the buffer's name,
+                                // so a name computed any other way would
+                                // leave the request unfindable and the
+                                // buffer would forward-blame instead.
+                                let name = repo_scope::repo_view_name_with(
+                                    magit_file_revision_mode::FILE_VIEW,
+                                    Some(&magit_file_revision_mode::file_view_rest(
+                                        rev,
+                                        std::path::Path::new(path.trim()),
+                                    )),
+                                    &store,
+                                    &scopes,
+                                    ctx.buffer_id,
                                 );
                                 requests.put(
                                     name.clone(),
@@ -2503,15 +2538,29 @@ fn register_ex_commands(
                         Ok(Args::String(trimmed.to_string()))
                     }
                 }),
-                apply: Arc::new(|ctx| {
-                    let name = if let Args::String(ref upstream) = ctx.args {
-                        format!("*magit:rebase:{}*", upstream)
-                    } else {
-                        "*magit:rebase*".to_string()
-                    };
-                    let mode_id = "magit-rebase-mode".to_string();
-                    Ok(Effect::OpenSyntheticBuffer { name, mode_id })
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        // MR.3b: the upstream is this view's `rest`, and
+                        // it now sits BEHIND the repository rather than
+                        // where the repository goes.
+                        let upstream = match ctx.args {
+                            Args::String(ref u) if !u.trim().is_empty() => Some(u.trim()),
+                            _ => None,
+                        };
+                        Ok(Effect::OpenSyntheticBuffer {
+                            name: repo_scope::repo_view_name_with(
+                                "rebase",
+                                upstream,
+                                &store,
+                                &scopes,
+                                ctx.buffer_id,
+                            ),
+                            mode_id: "magit-rebase-mode".to_string(),
+                        })
+                    })
+                },
                 args_schema: vec![ArgSpec::optional(
                     "upstream",
                     lattice_grammar::ArgKind::String,
@@ -5776,7 +5825,7 @@ mod tests {
     /// because `ToggleMode` carries only a mode name.
     #[test]
     fn reverse_blame_toggles_the_minor_on_the_blob_buffer_it_runs_in() {
-        match fire_reverse_blame_in("*magit:file:a1b2c3d:src/main.rs*") {
+        match fire_reverse_blame_in("*magit:file:lattice:a1b2c3d:src/main.rs*") {
             Some(Effect::ToggleMode { mode_name }) => {
                 assert_eq!(mode_name, "magit-blame-mode");
             }
@@ -5795,7 +5844,7 @@ mod tests {
     #[test]
     fn reverse_blame_says_why_when_there_is_no_revision_to_walk_from() {
         for name in [
-            "*magit:file:staged:src/main.rs*",
+            "*magit:file:lattice:staged:src/main.rs*",
             "*magit:status*",
             "src/main.rs",
         ] {

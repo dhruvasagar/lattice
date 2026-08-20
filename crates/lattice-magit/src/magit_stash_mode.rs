@@ -243,10 +243,12 @@ impl Mode for MagitStashMode {
                         StashTarget::At(idx) => idx,
                         StashTarget::Ask(effect) => return Some(effect),
                     };
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: crate::magit_stash_show_mode::buffer_name(idx),
-                        mode_id: "magit-stash-show-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        "stash",
+                        "magit-stash-show-mode",
+                        Some(&crate::magit_stash_show_mode::stash_view_rest(idx)),
+                    ))
                 }),
             },
             // create (z)
@@ -277,7 +279,10 @@ impl Mode for MagitStashMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
             // MG.14: install the headerline in the same synchronous
@@ -583,8 +588,12 @@ mod tests {
         let row = list_row(3, "WIP on main: deadbee something");
         let index = parse_index(&row).expect("a list row carries its index");
         assert_eq!(
-            crate::magit_stash_show_mode::buffer_name(index),
-            "*magit:stash:3*"
+            crate::workdir::magit_buffer_name_with(
+                "stash",
+                "lattice",
+                &crate::magit_stash_show_mode::stash_view_rest(index),
+            ),
+            "*magit:stash:lattice:3*"
         );
     }
 

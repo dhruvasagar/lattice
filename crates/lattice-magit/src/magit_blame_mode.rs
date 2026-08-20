@@ -404,10 +404,12 @@ impl Mode for MagitBlameMode {
                             text: "magit: this line is not committed yet".to_string(),
                         });
                     }
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:commit:{}*", chunk.sha),
-                        mode_id: "magit-revision-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        crate::magit_revision_mode::SHOW_VIEW,
+                        "magit-revision-mode",
+                        Some(&chunk.sha),
+                    ))
                 }),
             },
             // gq — stop blaming. Deactivating the mode is what removes

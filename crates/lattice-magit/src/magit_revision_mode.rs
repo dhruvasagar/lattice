@@ -34,6 +34,13 @@ impl MagitRevisionMode {
 
 pub struct RevisionState {
     sha: String,
+    /// MR.3b: the repository label this buffer's own name carries.
+    ///
+    /// Held rather than re-derived from `workdir`: on a basename
+    /// collision the trigger *qualified* the label (`work/api`), and
+    /// `repo_label(workdir)` would hand back the unqualified form — a
+    /// name pointing at the other checkout's buffer.
+    repo: String,
     /// MG.23g: where `a` / `-` apply the hunk under the cursor. Read
     /// from the repository at activation, because a `git apply` needs a
     /// directory and this buffer has no file of its own.
@@ -89,9 +96,12 @@ impl crate::buffer_state::MagitView for RevisionView {
         path: &std::path::Path,
         _cursor: lattice_protocol::position::Position,
     ) -> Option<Effect> {
-        let sha = self.0.lock().ok()?.sha.clone();
+        let (sha, label) = {
+            let g = self.0.lock().ok()?;
+            (g.sha.clone(), g.repo.clone())
+        };
         (!sha.is_empty()).then(|| Effect::OpenSyntheticBuffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name(&sha, path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(&label, &sha, path),
             mode_id: "magit-file-revision-mode".to_string(),
         })
     }
@@ -134,29 +144,37 @@ pub type RevisionStatesHandle = Arc<BufferStates<RevisionState>>;
 /// async seam, and one buffer open rather than two.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RevisionTarget {
-    /// `*magit:commit:<sha>*` — show this commit.
+    /// `*magit:show:<repo>:<sha>*` — show this commit.
     Commit(String),
-    /// `*magit:merged:<sha>*` — show the merge that brought `<sha>` into
+    /// `*magit:merged:<repo>:<sha>*` — show the merge that brought `<sha>` into
     /// HEAD. The sha in the name is the **source**; the commit shown is
     /// derived from it.
     Merged(String),
 }
 
-/// MG.34: the buffer name that asks "which merge brought `sha` in?".
-pub(crate) fn merged_buffer_name(sha: &str) -> String {
-    format!("*magit:merged:{sha}*")
-}
+/// MR.3b: the view word this mode's commit buffers use.
+///
+/// **Not `commit`.** That word belongs to the compose buffer
+/// (`*magit:commit:<repo>*`, `magit-commit-mode`), and once MR.3a put
+/// the repository in segment 2 the two shapes became the same string:
+/// showing commit `abc123` and composing a commit in a checkout called
+/// `abc123` would have been one buffer, with whichever mode got there
+/// first. `show` says what the buffer does and cannot collide.
+pub(crate) const SHOW_VIEW: &str = "show";
+/// MG.34: the view that asks "which merge brought `sha` in?".
+pub(crate) const MERGED_VIEW: &str = "merged";
 
 /// Which question a buffer name asks. `None` for a name this mode does
 /// not own — the caller shows the same "no commit sha given" text it
 /// showed before MG.34, rather than guessing.
 fn parse_target(name: &str) -> Option<RevisionTarget> {
-    let body = name.strip_suffix('*')?;
-    if let Some(sha) = body.strip_prefix("*magit:commit:") {
-        return (!sha.is_empty()).then(|| RevisionTarget::Commit(sha.to_string()));
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    let sha = parsed.rest?;
+    match parsed.view {
+        SHOW_VIEW => Some(RevisionTarget::Commit(sha.to_string())),
+        MERGED_VIEW => Some(RevisionTarget::Merged(sha.to_string())),
+        _ => None,
     }
-    let sha = body.strip_prefix("*magit:merged:")?;
-    (!sha.is_empty()).then(|| RevisionTarget::Merged(sha.to_string()))
 }
 
 /// MG.34: what a `*magit:merged:*` buffer says when nothing merged the
@@ -220,7 +238,10 @@ impl Mode for MagitRevisionMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
             // MG.34: which question the buffer name asks — a commit
             // directly, or the merge that brought one in.
@@ -253,6 +274,7 @@ impl Mode for MagitRevisionMode {
                 buffer_id,
                 RevisionState {
                     sha: sha.clone(),
+                    repo: crate::repo_scope::label_of_buffer(&store, buffer_id),
                     workdir: workdir.clone(),
                 },
             );
@@ -391,13 +413,36 @@ mod merged_target {
     /// confusion this form exists to avoid.
     #[test]
     fn the_two_name_forms_stay_distinct() {
+        let name = |view| crate::workdir::magit_buffer_name_with(view, "lattice", "abc123");
         assert_eq!(
-            parse_target("*magit:commit:abc123*"),
+            parse_target(&name(SHOW_VIEW)),
             Some(RevisionTarget::Commit("abc123".into()))
         );
         assert_eq!(
-            parse_target("*magit:merged:abc123*"),
+            parse_target(&name(MERGED_VIEW)),
             Some(RevisionTarget::Merged("abc123".into()))
+        );
+    }
+
+    /// MR.3b: `commit` is the COMPOSE buffer's view word, and this mode
+    /// must not answer to it.
+    ///
+    /// Once the repository took segment 2, `*magit:commit:<repo>*` (the
+    /// message you are writing) and `*magit:commit:<sha>*` (the commit
+    /// you are reading) became the same shape — one buffer, in a
+    /// checkout named like a sha, with whichever mode reached it first.
+    /// Renaming this view to `show` is what keeps them apart.
+    #[test]
+    fn the_compose_buffers_view_word_is_not_ours() {
+        assert_eq!(
+            parse_target(&crate::workdir::magit_buffer_name("commit", "lattice")),
+            None
+        );
+        assert_eq!(
+            parse_target(&crate::workdir::magit_buffer_name_with(
+                "commit", "lattice", "abc123"
+            )),
+            None
         );
     }
 
@@ -406,16 +451,21 @@ mod merged_target {
     /// commit and reads like a bug in the editor.
     #[test]
     fn names_without_a_sha_are_not_targets() {
-        assert_eq!(parse_target("*magit:commit:*"), None);
-        assert_eq!(parse_target("*magit:merged:*"), None);
-        assert_eq!(parse_target("*magit:log:main*"), None);
+        assert_eq!(parse_target("*magit:show:lattice:*"), None);
+        assert_eq!(parse_target("*magit:merged:lattice:*"), None);
+        assert_eq!(parse_target("*magit:show:lattice*"), None);
+        assert_eq!(parse_target("*magit:log:lattice:main*"), None);
         assert_eq!(parse_target("a.txt"), None);
     }
 
     #[test]
     fn the_builder_and_the_parser_agree() {
         assert_eq!(
-            parse_target(&merged_buffer_name("deadbeef")),
+            parse_target(&crate::workdir::magit_buffer_name_with(
+                MERGED_VIEW,
+                "lattice",
+                "deadbeef"
+            )),
             Some(RevisionTarget::Merged("deadbeef".into()))
         );
     }

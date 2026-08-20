@@ -63,7 +63,7 @@ fn magit_diff_keymap_entries() -> &'static [KeymapEntry] {
 /// status buffer's per-section `d` binding (against the index, for
 /// exactly one side of the working tree).
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DiffScope {
+pub(crate) enum DiffScope {
     /// `git diff HEAD` — staged + unstaged changes combined.
     Head,
     /// `git diff --cached` — index vs HEAD (the Staged section).
@@ -131,45 +131,65 @@ fn context_lines(config: &Option<std::sync::Arc<lattice_config::ConfigRegistry>>
         .unwrap_or(3)
 }
 
-/// Parse `"*magit:diff[:staged|:unstaged]:<path>*"` (or the bare
-/// unscoped `"*magit:diff*"`) into a `(scope, path)` pair. The
-/// `staged`/`unstaged` infix must be checked before the bare
-/// `"*magit:diff:"` prefix, since that prefix is itself a substring
-/// of both scoped forms.
+/// MR.3b: this view's half of the shared name grammar — everything
+/// after the repository segment.
+///
+/// ```text
+/// *magit:diff:<repo>*                        HEAD, whole tree
+/// *magit:diff:<repo>:<path>*                 HEAD, one file
+/// *magit:diff:<repo>:staged[:<path>]*        the index
+/// *magit:diff:<repo>:unstaged[:<path>]*      the working tree
+/// *magit:diff:<repo>:merge-preview:<branch>* what merging would bring
+/// ```
+///
+/// One producer ([`diff_view_rest`]) and one parser, both reading only
+/// the `rest` that `workdir::parse_magit_name` hands back — which is why
+/// the repository moving into the name did not have to be handled here
+/// at all.
+pub(crate) fn diff_view_rest(scope: &DiffScope, path: Option<&std::path::Path>) -> String {
+    let scope_word = match scope {
+        DiffScope::Head => String::new(),
+        DiffScope::Staged => "staged".to_string(),
+        DiffScope::Unstaged => "unstaged".to_string(),
+        // A merge preview is of a branch, never of a path — the branch
+        // takes the slot a path would.
+        DiffScope::MergePreview(branch) => return format!("merge-preview:{branch}"),
+    };
+    match (scope_word.is_empty(), path) {
+        (true, None) => String::new(),
+        (true, Some(p)) => p.display().to_string(),
+        (false, None) => scope_word,
+        (false, Some(p)) => format!("{scope_word}:{}", p.display()),
+    }
+}
+
 fn parse_buffer_name(name: &str) -> (DiffScope, Option<PathBuf>) {
-    // MG.43e: checked FIRST. The generic `*magit:diff:` arm below
-    // would otherwise match `merge-preview:<branch>` and read the
-    // whole thing as a PATH, silently diffing a file that does not
-    // exist instead of previewing a merge.
-    if let Some(s) = name
-        .strip_prefix("*magit:diff:merge-preview:")
-        .and_then(|s| s.strip_suffix('*'))
-        && !s.is_empty()
+    let Some(rest) = crate::workdir::parse_magit_name(name).and_then(|n| n.rest) else {
+        return (DiffScope::Head, None);
+    };
+    // MG.43e: checked FIRST. The path arm below would otherwise read
+    // `merge-preview:<branch>` as a PATH, silently diffing a file that
+    // does not exist instead of previewing a merge.
+    if let Some(branch) = rest.strip_prefix("merge-preview:")
+        && !branch.is_empty()
     {
-        return (DiffScope::MergePreview(s.to_string()), None);
+        return (DiffScope::MergePreview(branch.to_string()), None);
     }
-    if let Some(s) = name
-        .strip_prefix("*magit:diff:staged:")
-        .and_then(|s| s.strip_suffix('*'))
-    {
-        return (DiffScope::Staged, (!s.is_empty()).then(|| PathBuf::from(s)));
+    // The scope word must match WHOLE, or be followed by `:`. A bare
+    // `strip_prefix("staged")` would read a file called
+    // `staged-fixtures.rs` as an index-scoped diff of nothing.
+    for (word, scope) in [
+        ("staged", DiffScope::Staged),
+        ("unstaged", DiffScope::Unstaged),
+    ] {
+        if rest == word {
+            return (scope, None);
+        }
+        if let Some(path) = rest.strip_prefix(word).and_then(|t| t.strip_prefix(':')) {
+            return (scope, (!path.is_empty()).then(|| PathBuf::from(path)));
+        }
     }
-    if let Some(s) = name
-        .strip_prefix("*magit:diff:unstaged:")
-        .and_then(|s| s.strip_suffix('*'))
-    {
-        return (
-            DiffScope::Unstaged,
-            (!s.is_empty()).then(|| PathBuf::from(s)),
-        );
-    }
-    if let Some(s) = name
-        .strip_prefix("*magit:diff:")
-        .and_then(|s| s.strip_suffix('*'))
-    {
-        return (DiffScope::Head, (!s.is_empty()).then(|| PathBuf::from(s)));
-    }
-    (DiffScope::Head, None)
+    (DiffScope::Head, Some(PathBuf::from(rest)))
 }
 
 /// MG.43h: arguments a dispatch row collected for a view it is about
@@ -259,7 +279,10 @@ impl Mode for MagitDiffMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+            // MR.3: the repository the trigger resolved for THIS
+            // buffer, not the one the editor was started in.
+            let workdir =
+                crate::repo_scope::view_workdir(&ctx, buffer_id, &handle).unwrap_or_default();
 
             // "*magit:diff[:staged|:unstaged]:<path>*" scopes the view
             // to one file and (optionally) one baseline (mirrors
@@ -624,9 +647,10 @@ impl MagitView for DiffView {
         _cursor: lattice_protocol::position::Position,
     ) -> Option<Effect> {
         let g = self.0.lock().ok()?;
+        let label = crate::repo_scope::label_of_buffer(&g.store, g.buffer_id);
         match g.scope {
             DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
-                name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
+                name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", path),
                 mode_id: "magit-file-revision-mode".to_string(),
             }),
             DiffScope::Head | DiffScope::Unstaged | DiffScope::MergePreview(_) => {
@@ -789,14 +813,48 @@ mod tests {
 
     /// The buffer name is the only carrier of scope, so a parse that
     /// drifted would silently reclassify every hunk in the view.
+    ///
+    /// MR.3b: asserted through the producer rather than against literal
+    /// names — the repository sits between the view word and the scope
+    /// now, and a literal is exactly what drifts when that moves.
     #[test]
     fn the_scope_a_buffer_name_encodes_survives_the_round_trip() {
-        for (name, scope) in [
-            ("*magit:diff*", DiffScope::Head),
-            ("*magit:diff:staged:src/a.rs*", DiffScope::Staged),
-            ("*magit:diff:unstaged:src/a.rs*", DiffScope::Unstaged),
+        let path = std::path::Path::new("src/a.rs");
+        for (scope, path) in [
+            (DiffScope::Head, None),
+            (DiffScope::Head, Some(path)),
+            (DiffScope::Staged, Some(path)),
+            (DiffScope::Unstaged, Some(path)),
+            (DiffScope::Staged, None),
+            (DiffScope::MergePreview("feature/x".into()), None),
         ] {
-            assert_eq!(parse_buffer_name(name).0, scope, "{name}");
+            let name = crate::workdir::magit_buffer_name_with(
+                "diff",
+                "lattice",
+                &diff_view_rest(&scope, path),
+            );
+            let (parsed_scope, parsed_path) = parse_buffer_name(&name);
+            assert_eq!(parsed_scope, scope, "{name}");
+            assert_eq!(parsed_path.as_deref(), path, "{name}");
         }
+    }
+
+    /// A file whose name STARTS with a scope word is a path, not a
+    /// scope. `staged-fixtures.rs` is an ordinary filename, and reading
+    /// it as an index-scoped diff of nothing would show an empty buffer
+    /// with no way to tell why.
+    #[test]
+    fn a_path_that_starts_with_a_scope_word_is_still_a_path() {
+        let path = std::path::Path::new("staged-fixtures.rs");
+        let name = crate::workdir::magit_buffer_name_with(
+            "diff",
+            "lattice",
+            &diff_view_rest(&DiffScope::Head, Some(path)),
+        );
+        assert_eq!(
+            parse_buffer_name(&name),
+            (DiffScope::Head, Some(path.to_path_buf())),
+            "{name}"
+        );
     }
 }

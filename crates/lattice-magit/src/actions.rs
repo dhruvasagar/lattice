@@ -846,15 +846,18 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
 /// `MagitView::visit_at_cursor`. The `action:magit-visit` id is kept
 /// so an ex-command or a user keymap can still reach it directly.
 fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Effect> {
-    let sl = {
+    let (sl, label) = {
         let g = s.lock().ok()?;
-        classify_line(&g, line)?
+        (
+            classify_line(&g, line)?,
+            crate::repo_scope::label_of_buffer(&g.store, g.buffer_id),
+        )
     };
     match sl {
         StatusLine::File {
             path, staged: true, ..
         } => Some(Effect::OpenSyntheticBuffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name("staged", &path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", &path),
             mode_id: "magit-file-revision-mode".to_string(),
         }),
         StatusLine::File {
@@ -876,8 +879,17 @@ fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Eff
         // commit buffer", so status was the one inconsistent surface.
         // `=` still does the inline toggle for a quick look without
         // leaving the status buffer.
+        // MR.3b: `show`, not `commit` — the compose buffer owns that
+        // view word, and with the repository in segment 2 the two would
+        // be the same name in a checkout called like a sha. The label
+        // comes from THIS buffer's name, which is the status buffer of
+        // the repository whose commit is being shown.
         StatusLine::Commit { sha } => Some(Effect::OpenSyntheticBuffer {
-            name: format!("*magit:commit:{sha}*"),
+            name: crate::workdir::magit_buffer_name_with(
+                crate::magit_revision_mode::SHOW_VIEW,
+                &label,
+                &sha,
+            ),
             mode_id: "magit-revision-mode".to_string(),
         }),
     }
@@ -971,11 +983,21 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
             let StatusLine::File { path, staged, .. } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
             };
-            let scope = if staged { "staged" } else { "unstaged" };
-            Some(Effect::OpenSyntheticBuffer {
-                name: format!("*magit:diff:{scope}:{}*", path.display()),
-                mode_id: "magit-diff-mode".to_string(),
-            })
+            // MR.3b: the scope and the path are this view's `rest`;
+            // the repository in front of them comes from the buffer this
+            // fired in, which is the status buffer of the repo being
+            // diffed.
+            let scope = if staged {
+                crate::magit_diff_mode::DiffScope::Staged
+            } else {
+                crate::magit_diff_mode::DiffScope::Unstaged
+            };
+            Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                ctx,
+                "diff",
+                "magit-diff-mode",
+                Some(&crate::magit_diff_mode::diff_view_rest(&scope, Some(&path))),
+            ))
         });
     }
 
@@ -1426,11 +1448,17 @@ impl crate::buffer_state::MagitView for StatusView {
     /// the version `<CR>` shows and the tree a hunk stages to can never
     /// disagree.
     fn diff_target(&self, path: &std::path::Path, cursor: Position) -> Option<Effect> {
+        // MR.3b: the repository this buffer is showing, from its own
+        // name — the blob buffer must open the file in THAT checkout.
+        let label = {
+            let g = self.0.lock().ok()?;
+            crate::repo_scope::label_of_buffer(&g.store, g.buffer_id)
+        };
         match self.diff_source(cursor)? {
             // Staged: the index blob, which is what the diff describes.
             // The working-tree file may have moved on since.
             DiffSource::Staged => Some(Effect::OpenSyntheticBuffer {
-                name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
+                name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", path),
                 mode_id: "magit-file-revision-mode".to_string(),
             }),
             // Unstaged (and untracked): the diff IS against the working
@@ -1463,7 +1491,7 @@ impl crate::buffer_state::MagitView for StatusView {
                     }
                 })?;
                 Some(Effect::OpenSyntheticBuffer {
-                    name: crate::magit_file_revision_mode::blob_buffer_name(&sha, path),
+                    name: crate::magit_file_revision_mode::blob_buffer_name(&label, &sha, path),
                     mode_id: "magit-file-revision-mode".to_string(),
                 })
             }

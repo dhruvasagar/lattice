@@ -247,10 +247,12 @@ impl Mode for MagitRebaseMode {
                     let snap = handle.snapshot();
                     let line = snap.buffer.line(ctx.cursor.line)?;
                     let sha = extract_sha(&line)?;
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:commit:{sha}*"),
-                        mode_id: "magit-revision-mode".to_string(),
-                    })
+                    Some(crate::magit_global_mode::open_repo_view_from_action_with(
+                        ctx,
+                        crate::magit_revision_mode::SHOW_VIEW,
+                        "magit-revision-mode",
+                        Some(sha),
+                    ))
                 }),
             },
         ]
@@ -419,27 +421,34 @@ pub(crate) enum RebaseTarget {
 ///
 /// Line first so the split is unambiguous — a path may contain `:`, a
 /// line number may not.
-pub(crate) fn edit_line_buffer_name(line: u32, path: &str) -> String {
-    format!("*magit:rebase-edit:{line}:{path}*")
+pub(crate) fn edit_line_rest(line: u32, path: &str) -> String {
+    format!("{line}:{path}")
 }
 
 /// Which rebase a buffer name asks for. `None` for a name this mode does
 /// not own; the caller treats that as the bare `@{upstream}` form, which
 /// is what it has always meant.
 fn parse_target(name: &str) -> Option<RebaseTarget> {
-    let body = name.strip_suffix('*')?;
-    if let Some(rest) = body.strip_prefix("*magit:rebase-edit:") {
-        let (line, path) = rest.split_once(':')?;
-        let line: u32 = line.parse().ok()?;
-        return (!path.is_empty()).then(|| RebaseTarget::EditLine {
-            line,
-            path: path.to_string(),
-        });
+    let parsed = crate::workdir::parse_magit_name(name)?;
+    match parsed.view {
+        // MR.3b: `*magit:rebase-edit:<repo>:<line>:<path>*`. Line first
+        // so the split is unambiguous — a path may contain `:`, a line
+        // number may not.
+        "rebase-edit" => {
+            let (line, path) = parsed.rest?.split_once(':')?;
+            let line: u32 = line.parse().ok()?;
+            (!path.is_empty()).then(|| RebaseTarget::EditLine {
+                line,
+                path: path.to_string(),
+            })
+        }
+        // `*magit:rebase:<repo>*` is the bare `@{upstream}` form;
+        // `*magit:rebase:<repo>:<upstream>*` names one. Before MR.3b the
+        // upstream sat where the repository now does, which is exactly
+        // the collision the fixed position removes.
+        "rebase" => Some(RebaseTarget::Onto(parsed.rest.map(str::to_string))),
+        _ => None,
     }
-    let upstream = body.strip_prefix("*magit:rebase:")?;
-    Some(RebaseTarget::Onto(
-        (!upstream.is_empty()).then(|| upstream.to_string()),
-    ))
 }
 
 /// Resolve the upstream and build the todo-buffer text. Returns
@@ -837,19 +846,28 @@ mod tests {
     }
 
     /// The three name forms, and that they do not bleed into each
-    /// other. `rebase-edit:` shares a prefix with `rebase:` up to the
-    /// colon, so a naive `strip_prefix("*magit:rebase:")` ordering would
-    /// mis-parse one as the other and rebase onto a ref named
-    /// `-edit:12:src/a.rs`.
+    /// other. `rebase-edit` and `rebase` are distinct VIEW WORDS under
+    /// the MR.3 grammar, which is what keeps them apart; before it they
+    /// shared a prefix up to the colon and a naive ordering would rebase
+    /// onto a ref named `-edit:12:src/a.rs`.
     #[test]
     fn the_three_buffer_name_forms_stay_distinct() {
+        // MR.3b: the bare form is `*magit:rebase:<repo>*` — no upstream,
+        // which has always meant `@{upstream}`. It used to fall out as
+        // `None` (an unowned name) and the caller read that as the same
+        // thing; now it says so directly.
         assert_eq!(
-            parse_target("*magit:rebase*"),
-            None,
-            "bare name is not ours"
+            parse_target(&crate::workdir::magit_buffer_name("rebase", "lattice")),
+            Some(RebaseTarget::Onto(None)),
+            "no upstream named means @{{upstream}}"
         );
+        assert_eq!(parse_target("*messages*"), None, "not ours at all");
         assert_eq!(
-            parse_target("*magit:rebase:origin/main*"),
+            parse_target(&crate::workdir::magit_buffer_name_with(
+                "rebase",
+                "lattice",
+                "origin/main"
+            )),
             Some(RebaseTarget::Onto(Some("origin/main".into())))
         );
         assert_eq!(
@@ -857,7 +875,11 @@ mod tests {
             Some(RebaseTarget::Onto(None))
         );
         assert_eq!(
-            parse_target("*magit:rebase-edit:12:src/a.rs*"),
+            parse_target(&crate::workdir::magit_buffer_name_with(
+                "rebase-edit",
+                "lattice",
+                &edit_line_rest(12, "src/a.rs")
+            )),
             Some(RebaseTarget::EditLine {
                 line: 12,
                 path: "src/a.rs".into()
@@ -870,7 +892,11 @@ mod tests {
     /// on any such path, which is the reason for the ordering.
     #[test]
     fn a_path_containing_a_colon_still_parses() {
-        let name = edit_line_buffer_name(7, "weird:name.txt");
+        let name = crate::workdir::magit_buffer_name_with(
+            "rebase-edit",
+            "lattice",
+            &edit_line_rest(7, "weird:name.txt"),
+        );
         assert_eq!(
             parse_target(&name),
             Some(RebaseTarget::EditLine {

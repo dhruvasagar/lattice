@@ -1543,7 +1543,11 @@ impl PickerSourceGenerator for RefPickSource {
         let workdir = crate::workdir::magit_workdir()?;
         let text = crate::magit_file_revision_mode::preview_blob(&workdir, &rev, &path)?;
         Some(lattice_picker::PickerPreviewOutcome::Buffer {
-            name: crate::magit_file_revision_mode::blob_buffer_name(&rev, &path),
+            name: crate::magit_file_revision_mode::blob_buffer_name(
+                &crate::workdir::repo_label(&workdir),
+                &rev,
+                &path,
+            ),
             text,
             syntax_path: Some(path),
         })

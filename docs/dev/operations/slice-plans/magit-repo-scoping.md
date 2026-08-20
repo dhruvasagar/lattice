@@ -56,12 +56,74 @@ re-triggering must find the buffer you already have, not stack a second).
 > is "add a helper" has no warning-clean landing, so it is not a slice.
 > Pair it with its first consumer.
 
-## MR.2 — the per-buffer record 📝
+## MR.2 — the per-buffer record + the first trigger 📝
 
-- A per-buffer workdir entry written by the trigger, read by the view at
-  `on_activate` (the MG.26b blame-request shape — `on_activate` cannot
-  see what the trigger saw).
-- Cleared on `DocumentClosed`, like every other per-view magit entry.
+Absorbs MR.1 (see the note above). Scope: **status only** — the other
+views keep their fixed names and cwd resolution until MR.3, so this slice
+stays landable.
+
+- A workdir entry keyed by **buffer name**, written by the trigger and
+  read by the view at `on_activate` (the shape
+  `magit_diff_mode::ViewArgsRequests` and `magit_blame_mode::BlameRequests`
+  already use — the opener leaves values under the buffer's name, the
+  mode takes them when it activates). Keyed by name rather than id
+  because the buffer does not exist yet when the trigger runs, and
+  because `BufferStore::name_for` makes id → name → workdir a lookup
+  rather than a second map to keep in sync.
+- **Not** one-shot like `ViewArgsRequests`: MR.4's action bodies read it
+  for the buffer's whole life. Cleared on `DocumentClosed`.
+
+### The constraint that decides the mechanism (found 2026-08-20)
+
+**An ex-command cannot reach the buffer store, but an action handler
+can.** `lattice_grammar::ActionContext` (what an `ExCommandSpec::apply`
+receives) carries `buffer_id` and a `Buffer`, but no path and no
+services — deliberately, so `lattice-grammar` knows nothing about
+services. And capturing the handle at registration does not work either:
+`ServiceRegistry` is a plain `HashMap` (not `Arc`-shared, `register`
+takes `&mut self`), and the host registers `BufferStoreHandle` at
+`editor_boot.rs:1624` — *after* `lattice_magit::install` at `:630`.
+
+So `C-x g` (which can be an action) and `:magit-status` (which cannot)
+have different reach, and letting them diverge is not acceptable: the
+request was explicitly that both behave the same.
+
+**Chosen: magit caches the store handle in its own service.**
+`MagitGlobalMode` is `ActivationPolicy::Universal` with an empty
+`on_activate`, so it activates on the very first buffer at startup and
+can stash `ctx.service::<BufferStoreHandle>()` into a magit-owned
+`RepoScopes` service. Ex-command closures capture `RepoScopesHandle` at
+boot — the `blame_requests` precedent, already threaded through
+`register_ex_commands` for exactly this reason — and read the store at
+call time. One resolution path, both surfaces.
+
+Rejected alternatives, with reasons:
+
+- **Let the two surfaces diverge** (`C-x g` resolves from the active
+  buffer; `:magit-status` stays cwd-based unless given an argument).
+  Rejected: it makes the common case the one that needs an argument, and
+  the same command would mean two things depending on how it was reached.
+- **A host-side `ModeContext::activated_from`** carrying the buffer the
+  activation came from (the host already stashes it in
+  `prev_pane_for_popup`). Genuinely elegant — no trigger plumbing at all,
+  every view resolves at activation, both surfaces work for free. But it
+  adds a generic host API for one consumer, makes resolution implicit,
+  and is ambiguous for activations that are not triggers (`:b`, `<C-6>`).
+  Worth revisiting only if a second subsystem wants the same fact.
+
+### Then
+
+- `:magit-status` resolves → computes the name → records the workdir →
+  emits `OpenSyntheticBuffer` with the computed name.
+- `magit-status-mode::on_activate` reads the workdir by its buffer name,
+  falling back to `magit_workdir()` (a buffer reopened by `:b` after a
+  restart has no record).
+- The ~11 production sites naming `"*magit:status*"` (2 in
+  `lattice-magit/src/lib.rs`, 3 in `magit_global_mode.rs`, 1 each in
+  `magit_remote_mode.rs` / `magit_submodule_mode.rs`, 2 in
+  `lattice-ui-tui/src/app/magit_bindings.rs`, 2 in
+  `lattice-ui-tui/src/render.rs`) compute it instead, plus 4 in
+  `lattice-host/tests/synthetic_buffer_survives_command_line.rs`.
 
 **Tests.** The record survives the trigger→activation gap; closing the
 buffer drops it; a second trigger for the same repo overwrites rather

@@ -1842,100 +1842,14 @@ pub fn view_arguments_transient(ids: &MagitActionIds, ctx: &TransientContext) ->
     }
 }
 
-/// Whether a bisect is running in the current repository.
-///
-/// The one impure part of building this menu, isolated here so
-/// [`bisect_transient`] and [`dispatch_transient_with`] stay pure — and
-/// so the guards over them cannot depend on whether the *developer's*
-/// checkout happens to be mid-bisect while the suite runs, which is
-/// exactly the flake a stat inside the builder would have introduced.
-pub fn bisect_in_progress() -> bool {
-    crate::workdir::magit_workdir()
-        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .map(|repo| lattice_vcs::Bisect::in_progress(&repo))
-        .unwrap_or(false)
-}
-
-/// MG.39: is a `git am` stopped on a patch that would not apply?
-///
-/// Git records one as a `rebase-apply` directory in the gitdir — the
-/// same marker the legacy rebase backend uses, which is why
-/// `magit_rebase_mode::rebase_in_progress` checks it too. A stopped `am`
-/// therefore also shows the rebase abort as available, which is
-/// correct: `git rebase --abort` is what git itself suggests there.
-/// MG.42-E4: is a cherry-pick sequence stopped on a conflict?
-///
-/// Git drops `CHERRY_PICK_HEAD` in the gitdir while one is in flight
-/// and removes it on `--continue` / `--abort`, so the file's presence
-/// IS the state — no parsing, and it cannot go stale behind our back
-/// the way a cached flag would.
-pub fn cherry_pick_in_progress() -> bool {
-    in_flight() == Some(lattice_vcs::InFlightOp::CherryPick)
-}
-
-/// MG.42-E4: is a revert sequence stopped on a conflict?
-///
-/// Peer of [`cherry_pick_in_progress`]. Separate rather than one
-/// "sequencer running" flag because the two menus offer different ways
-/// IN — pick vs. revert — even though their ways OUT are identical.
-pub fn revert_in_progress() -> bool {
-    in_flight() == Some(lattice_vcs::InFlightOp::Revert)
-}
-
-/// Is a merge stopped on a conflict?
-///
-/// `MERGE_HEAD` was checked nowhere in the workspace before this — a
-/// stopped merge was the one mid-flight state with no representation
-/// at all.
-pub fn merge_in_progress() -> bool {
-    in_flight() == Some(lattice_vcs::InFlightOp::Merge)
-}
-
-/// The one detector every sequencer gate reads.
-///
-/// These used to be four independent marker checks here, which drifted
-/// from each other and from the status buffer: `am_in_progress` matched
-/// ANY `rebase-apply` (so a legacy-backend rebase reported `am` too),
-/// and `cherry_pick_in_progress` fired during an interactive rebase,
-/// which leaves `CHERRY_PICK_HEAD` behind as an implementation detail —
-/// offering `cherry-pick --continue` where only `rebase --continue`
-/// finishes the job. [`lattice_vcs::InFlightOp::detect`] resolves the
-/// precedence once, and the status headerline reads the same answer.
-fn in_flight() -> Option<lattice_vcs::InFlightOp> {
-    crate::workdir::magit_workdir()
-        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .and_then(|repo| lattice_vcs::InFlightOp::detect(&repo))
-}
-
-/// MG.41e: is a rebase stopped, mid-conflict or at an `edit` stop?
-///
-/// Read from the repository like its peers. Git uses two directories
-/// depending on the rebase backend — `rebase-merge` for the
-/// interactive/merge one, `rebase-apply` for the older am-based one —
-/// and checking only the first misses a whole class of stopped rebase.
-///
-/// `rebase-apply` is shared with `git am`, which is why
-/// [`am_in_progress`] looks at the same path: the two are
-/// distinguishable only by the `applying` marker file `am` leaves.
-pub fn rebase_in_progress() -> bool {
-    in_flight() == Some(lattice_vcs::InFlightOp::Rebase)
-}
-
-pub fn am_in_progress() -> bool {
-    in_flight() == Some(lattice_vcs::InFlightOp::ApplyPatch)
-}
-
-/// MG.37: is a `git notes merge` stopped on a conflict?
-///
-/// Peer of [`bisect_in_progress`], and read the same way — from the
-/// repository, so the menu reflects what git actually has half-done
-/// rather than what the editor last remembered doing.
-pub fn notes_merge_in_progress() -> bool {
-    crate::workdir::magit_workdir()
-        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
-        .map(|repo| lattice_vcs::Note::merge_in_progress(repo.gitdir()))
-        .unwrap_or(false)
-}
+// MR.4: the seven cwd-based gate readers that stood here are gone.
+//
+// Each answered "is a bisect / rebase / merge / … stopped" by probing
+// `magit_workdir()` — the process's repository — which is the wrong
+// question once a menu belongs to the buffer it was opened over. The
+// same seven answers now come from `DispatchGates::probe_in`, which
+// takes the repository as an argument, so there is nowhere left for a
+// row to read the working directory from.
 
 fn bisect_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     let items = if in_progress {
@@ -2130,8 +2044,21 @@ fn jump_transient(ids: &MagitActionIds) -> TransientSpec {
 /// it, both mirroring a predicate magit puts on its own dispatch — the
 /// `s` row's meaning ([`status_row`]) and the section-acting rows
 /// ([`applying_changes_items`]).
-pub fn dispatch_transient(ids: &MagitActionIds, ctx: &TransientContext) -> TransientSpec {
-    dispatch_transient_with(ids, ctx, DispatchGates::probe())
+pub fn dispatch_transient(
+    ids: &MagitActionIds,
+    ctx: &TransientContext,
+    workdir: &std::path::Path,
+) -> TransientSpec {
+    dispatch_transient_with(ids, ctx, DispatchGates::probe_in(workdir))
+}
+
+/// One repository question, asked once — the shape every gate above
+/// shares.
+fn repo_flag(workdir: &std::path::Path, ask: impl Fn(&lattice_vcs::Repository) -> bool) -> bool {
+    lattice_vcs::Repository::discover(workdir)
+        .ok()
+        .map(|repo| ask(&repo))
+        .unwrap_or(false)
 }
 
 /// The mid-flight git operations the menu gates rows on.
@@ -2167,15 +2094,28 @@ impl DispatchGates {
     /// this, deliberately: probing would make a test's row count depend
     /// on whether the developer's own checkout happened to be mid-bisect
     /// while the suite ran — a flake that reads as a real regression.
-    pub fn probe() -> Self {
+    /// MR.4: probed in `workdir`, which is the repository of the buffer
+    /// the menu was opened over — not the process's.
+    ///
+    /// This is what the rows are *about*: offering `rebase --continue`
+    /// because some other checkout is mid-rebase is a row that does
+    /// nothing here, and hiding it while THIS repository is stopped is
+    /// worse — the way out of a stopped rebase is missing from the menu
+    /// whose job is to show it.
+    pub fn probe_in(workdir: &std::path::Path) -> Self {
+        let flight = lattice_vcs::Repository::discover(workdir)
+            .ok()
+            .and_then(|repo| lattice_vcs::InFlightOp::detect(&repo));
         Self {
-            bisect: bisect_in_progress(),
-            notes_merge: notes_merge_in_progress(),
-            am: am_in_progress(),
-            rebase: rebase_in_progress(),
-            cherry_pick: cherry_pick_in_progress(),
-            revert: revert_in_progress(),
-            merge: merge_in_progress(),
+            bisect: repo_flag(workdir, lattice_vcs::Bisect::in_progress),
+            notes_merge: repo_flag(workdir, |repo| {
+                lattice_vcs::Note::merge_in_progress(repo.gitdir())
+            }),
+            am: flight == Some(lattice_vcs::InFlightOp::ApplyPatch),
+            rebase: flight == Some(lattice_vcs::InFlightOp::Rebase),
+            cherry_pick: flight == Some(lattice_vcs::InFlightOp::CherryPick),
+            revert: flight == Some(lattice_vcs::InFlightOp::Revert),
+            merge: flight == Some(lattice_vcs::InFlightOp::Merge),
         }
     }
 }
@@ -3272,7 +3212,8 @@ mod background_task_tests {
             let body = &src[idx..body_end];
             if delegating.contains(&name.as_str()) {
                 assert!(
-                    body.contains("spawn_git(") || body.contains("spawn_remote_op("),
+                    body.contains("spawn_git(crate::repo_scope::action_workdir(ctx), ")
+                        || body.contains("spawn_remote_op("),
                     "{name} is listed as delegating but calls neither spawner",
                 );
             } else {

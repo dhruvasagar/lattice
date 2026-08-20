@@ -339,7 +339,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     // MG.41g: no notification handle. The op publishes
                     // `BackgroundTaskFinished`; the notification layer
                     // subscribes. magit does not depend on it.
-                    Some(spawn_remote_op($op, &ctx.args))
+                    Some(spawn_remote_op(
+                        crate::repo_scope::action_workdir(ctx),
+                        $op,
+                        &ctx.args,
+                    ))
                 }),
             });
         };
@@ -363,7 +367,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                                 lattice_grammar::ArgValue::String(s) => Some(s.clone()),
                                 _ => None,
                             });
-                    Some(spawn_remote_op_to($op, &ctx.args, $target, prompted))
+                    Some(spawn_remote_op_to(
+                        crate::repo_scope::action_workdir(ctx),
+                        $op,
+                        &ctx.args,
+                        $target,
+                        prompted,
+                    ))
                 }),
             });
         };
@@ -509,8 +519,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $label:expr, $extra:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_git_sequence($label, stash_snapshot_steps($extra)))
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_git_sequence(
+                        crate::repo_scope::action_workdir(ctx),
+                        $label,
+                        stash_snapshot_steps($extra),
+                    ))
                 }),
             });
         };
@@ -627,7 +641,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // An empty prompt is a cancel, not a request to tag HEAD
             // with the empty string (which git would reject anyway,
             // loudly and confusingly).
-            (!name.is_empty()).then(|| spawn_git(tag_argv(name), "tag"))
+            (!name.is_empty()).then(|| {
+                spawn_git(
+                    crate::repo_scope::action_workdir(ctx),
+                    tag_argv(name),
+                    "tag",
+                )
+            })
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -643,7 +663,9 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-gitignore-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let pattern = ctx.prompt_value?.trim();
-            (!pattern.is_empty()).then(|| spawn_gitignore(pattern.to_string()))
+            (!pattern.is_empty()).then(|| {
+                spawn_gitignore(crate::repo_scope::action_workdir(ctx), pattern.to_string())
+            })
         }),
     });
     // MG.23d: file operations. Each reads `active_target`, so they act
@@ -656,7 +678,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // No confirm: the file stays on disk and only leaves the
             // index, which `git add` puts back. §12.13's bar is work
             // git cannot hand back.
-            Some(spawn_git(untrack_argv(&rel.to_string_lossy()), "untrack"))
+            Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
+                untrack_argv(&rel.to_string_lossy()),
+                "untrack",
+            ))
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -679,7 +705,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 Some(carried) => carried,
                 None => active_target(ctx)?.1.to_string_lossy().into_owned(),
             };
-            Some(spawn_git(delete_argv(&path), "delete"))
+            Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
+                delete_argv(&path),
+                "delete",
+            ))
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -714,7 +744,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // seeded value unchanged means — a cancel, not a git call
             // that would fail with "source and destination are the
             // same".
-            (!to.is_empty() && to != from).then(|| spawn_git(rename_argv(&from, &to), "rename"))
+            (!to.is_empty() && to != from).then(|| {
+                spawn_git(
+                    crate::repo_scope::action_workdir(ctx),
+                    rename_argv(&from, &to),
+                    "rename",
+                )
+            })
         }),
     });
 
@@ -774,7 +810,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // confirm exists to prevent. Both slots or nothing.
             let rev = ctx.arg_str(0)?;
             let path = ctx.arg_str(1)?;
-            Some(spawn_git(checkout_file_argv(rev, path), "checkout file"))
+            Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
+                checkout_file_argv(rev, path),
+                "checkout file",
+            ))
         }),
     });
 
@@ -800,7 +840,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-init-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let dir = ctx.prompt_value?.trim();
-            (!dir.is_empty()).then(|| spawn_git(init_argv(dir), "init"))
+            (!dir.is_empty()).then(|| {
+                spawn_git(
+                    crate::repo_scope::action_workdir(ctx),
+                    init_argv(dir),
+                    "init",
+                )
+            })
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -903,9 +949,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         return None;
                     }
                     let shown = format!("{} {branch}", $label);
-                    Some(spawn_computed($label, shown, move |wd| {
-                        crate::cherry_move::branch_spinoff(wd, &branch, $checkout)
-                    }))
+                    Some(spawn_computed(
+                        crate::repo_scope::action_workdir(ctx),
+                        $label,
+                        shown,
+                        move |wd| crate::cherry_move::branch_spinoff(wd, &branch, $checkout),
+                    ))
                 }),
             });
         };
@@ -939,10 +988,15 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                         return None;
                     }
                     let shown = format!("{} {commit} -> {branch}", $label);
-                    Some(spawn_computed($label, shown, move |wd| {
-                        let f: fn(&std::path::Path, &str, &str) -> Result<(), String> = $body;
-                        f(wd, &commit, &branch)
-                    }))
+                    Some(spawn_computed(
+                        crate::repo_scope::action_workdir(ctx),
+                        $label,
+                        shown,
+                        move |wd| {
+                            let f: fn(&std::path::Path, &str, &str) -> Result<(), String> = $body;
+                            f(wd, &commit, &branch)
+                        },
+                    ))
                 }),
             });
         };
@@ -996,8 +1050,9 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // MG.43f: magit's fetch `m` — fetch submodules too.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-fetch-submodules",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
             Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
                 ["fetch", "--recurse-submodules"]
                     .iter()
                     .map(|s| s.to_string())
@@ -1034,7 +1089,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             // Detached HEAD has no branch to merge or delete, so this
             // declines rather than acting on `HEAD`.
-            let Some(current) = current_branch() else {
+            let Some(current) = current_branch(&crate::repo_scope::action_workdir(ctx)) else {
                 return Some(Effect::Echo {
                     level: lattice_grammar::EchoLevel::Error,
                     text: "magit: not on a branch".to_string(),
@@ -1047,6 +1102,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 });
             }
             Some(spawn_git_sequence(
+                crate::repo_scope::action_workdir(ctx),
                 "merge into",
                 merge_into_steps(&current, &target),
             ))
@@ -1104,7 +1160,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     if second.is_empty() {
                         return None;
                     }
-                    Some(spawn_git($argv(&first, second), $what))
+                    Some(spawn_git(
+                        crate::repo_scope::action_workdir(ctx),
+                        $argv(&first, second),
+                        $what,
+                    ))
                 }),
             });
         };
@@ -1179,7 +1239,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     // configure row must be able to clear a setting,
                     // and blanking the prompt is how magit does it.
                     let value = ctx.prompt_value?.trim().to_string();
-                    Some(crate::git_config::set($config_key, &value))
+                    Some(crate::git_config::set(
+                        crate::repo_scope::action_workdir(ctx),
+                        $config_key,
+                        &value,
+                    ))
                 }),
             });
         };
@@ -1222,8 +1286,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $target:expr, $what:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_git(rebase_onto_argv($target), $what))
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_git(
+                        crate::repo_scope::action_workdir(ctx),
+                        rebase_onto_argv($target),
+                        $what,
+                    ))
                 }),
             });
         };
@@ -1248,8 +1316,9 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // message is deliberately left alone.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-commit-extend",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
             Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
                 ["commit", "--amend", "--no-edit"]
                     .iter()
                     .map(|s| s.to_string())
@@ -1297,6 +1366,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let target = crate::confirm::carried_target(ctx)?;
             Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
                 vec!["reset".to_string(), "--hard".to_string(), target.clone()],
                 "branch reset",
             ))
@@ -1337,7 +1407,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // would otherwise open `$EDITOR` for the merge message,
             // which inside lattice is a wait on a prompt that never
             // appears.
-            (!branch.is_empty()).then(|| spawn_git(merge_argv(branch), "merge"))
+            (!branch.is_empty()).then(|| {
+                spawn_git(
+                    crate::repo_scope::action_workdir(ctx),
+                    merge_argv(branch),
+                    "merge",
+                )
+            })
         }),
     });
     remote_op!("action:magit-global-stage-all", RemoteOp::STAGE_ALL);
@@ -1563,7 +1639,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n));
             Some(match parsed {
                 Some((_git_ref, path)) => {
-                    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+                    let workdir = crate::repo_scope::action_workdir(ctx);
                     let full = workdir.join(&path);
                     if full.exists() {
                         Effect::OpenBufferAt {
@@ -1746,7 +1822,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if line.is_empty() {
                 return None;
             }
-            Some(spawn_subtree_op(op, &line))
+            Some(spawn_subtree_op(
+                crate::repo_scope::action_workdir(ctx),
+                op,
+                &line,
+            ))
         }),
     });
 
@@ -1770,7 +1850,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     text: "magit: usage — :magit-am <patch>… [-3]".to_string(),
                 });
             };
-            Some(spawn_git(argv, "am"))
+            Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
+                argv,
+                "am",
+            ))
         }),
     });
 
@@ -1789,7 +1873,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // process directory: a scatter of `.patch` files somewhere
             // unexpected is tedious to undo, and the repo root is the
             // one directory the user can predict from here.
-            let root = crate::workdir::magit_workdir()
+            let root = Some(crate::repo_scope::action_workdir(ctx))
+                .filter(|p| !p.as_os_str().is_empty())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let Some(argv) = format_patch_argv(&range, (!root.is_empty()).then_some(root.as_str()))
@@ -1799,7 +1884,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                     text: "magit: usage — :magit-format-patch <range>".to_string(),
                 });
             };
-            Some(spawn_git(argv, "format-patch"))
+            Some(spawn_git(
+                crate::repo_scope::action_workdir(ctx),
+                argv,
+                "format-patch",
+            ))
         }),
     });
 
@@ -1807,8 +1896,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_remote_op($op, &lattice_grammar::Args::None))
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_remote_op(
+                        crate::repo_scope::action_workdir(ctx),
+                        $op,
+                        &lattice_grammar::Args::None,
+                    ))
                 }),
             });
         };
@@ -1880,7 +1973,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 // only the note, and it is one `T` away from being
                 // retyped. `prune` DOES ask — it can drop many at once
                 // and names none of them.
-                Some(commit) => spawn_note_remove(commit),
+                Some(commit) => spawn_note_remove(crate::repo_scope::action_workdir(ctx), commit),
                 None => Effect::OpenPicker {
                     source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
                     args: vec!["magit-note-remove".to_string()],
@@ -1904,15 +1997,21 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-note-prune-execute",
-        handler: Arc::new(|_ctx: &ActionContext<'_>| Some(spawn_note_prune())),
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            Some(spawn_note_prune(crate::repo_scope::action_workdir(ctx)))
+        }),
     });
 
     macro_rules! notes_merge_op {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(spawn_remote_op($op, &lattice_grammar::Args::None))
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_remote_op(
+                        crate::repo_scope::action_workdir(ctx),
+                        $op,
+                        &lattice_grammar::Args::None,
+                    ))
                 }),
             });
         };
@@ -1938,7 +2037,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             if spec.is_empty() {
                 return None;
             }
-            Some(spawn_note_merge(&spec))
+            Some(spawn_note_merge(
+                crate::repo_scope::action_workdir(ctx),
+                &spec,
+            ))
         }),
     });
 
@@ -2331,8 +2433,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 fn active_target(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     match ctx.arg_str(FILE_TARGET_SLOT) {
         Some(rel) => {
-            let workdir = crate::workdir::magit_workdir()?;
-            Some((workdir, std::path::PathBuf::from(rel)))
+            // MR.4: a path given as an ARGUMENT (the picker-routed rows)
+            // is relative to the buffer's repository, not the process's
+            // — the no-argument branch below already resolved from the
+            // file itself, and these two must agree.
+            let workdir = crate::repo_scope::action_workdir(ctx);
+            (!workdir.as_os_str().is_empty()).then(|| (workdir, std::path::PathBuf::from(rel)))
         }
         None => active_file(ctx),
     }
@@ -3140,8 +3246,11 @@ pub struct GitStep {
 ///    than the whole sequence. Per-step reporting would turn a
 ///    two-command operation into two notifications, which is how a
 ///    notification surface becomes noise.
-pub fn spawn_git_sequence(label: &'static str, steps: Vec<GitStep>) -> Effect {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+pub fn spawn_git_sequence(
+    workdir: std::path::PathBuf,
+    label: &'static str,
+    steps: Vec<GitStep>,
+) -> Effect {
     let shown = steps
         .first()
         .map(|s| format!("git {}", s.argv.join(" ")))
@@ -3174,17 +3283,22 @@ pub fn spawn_git_sequence(label: &'static str, steps: Vec<GitStep>) -> Effect {
 ///
 /// `message` is `Some` only for `reword`, where it is what git's
 /// reword step writes — see `run_rebase_with_message`.
-pub fn spawn_rebase_verb(label: &'static str, verb: &'static str, commit: &str) -> Effect {
-    spawn_rebase_verb_with(label, verb, commit, None)
+pub fn spawn_rebase_verb(
+    workdir: std::path::PathBuf,
+    label: &'static str,
+    verb: &'static str,
+    commit: &str,
+) -> Effect {
+    spawn_rebase_verb_with(workdir, label, verb, commit, None)
 }
 
 pub fn spawn_rebase_verb_with(
+    workdir: std::path::PathBuf,
     label: &'static str,
     verb: &'static str,
     commit: &str,
     message: Option<String>,
 ) -> Effect {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let commit = commit.to_string();
     let shown = format!("git rebase ({verb} {commit})");
     tokio::task::spawn(async move {
@@ -3211,11 +3325,15 @@ pub fn spawn_rebase_verb_with(
 /// actor thread would be git I/O on a keystroke, so the whole
 /// operation runs inside one `spawn_blocking` and reports once,
 /// exactly like a sequence does.
-pub fn spawn_computed<F>(label: &'static str, shown: String, f: F) -> Effect
+pub fn spawn_computed<F>(
+    workdir: std::path::PathBuf,
+    label: &'static str,
+    shown: String,
+    f: F,
+) -> Effect
 where
     F: FnOnce(&std::path::Path) -> Result<(), String> + Send + 'static,
 {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || f(&workdir).map(|()| String::new()))
             .await
@@ -3228,8 +3346,7 @@ where
     }
 }
 
-pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+pub fn spawn_git(workdir: std::path::PathBuf, argv: Vec<String>, what: &str) -> Effect {
     let shown = format!("git {}", argv.join(" "));
     let logged = shown.clone();
     let what = what.to_string();
@@ -3407,14 +3524,13 @@ pub(crate) fn subtree_argv(op: SubtreeOp, line: &str) -> Option<Vec<String>> {
 /// subtree operation rewrites history or touches a remote, so "did it
 /// work" is the question, and an echo written before it starts cannot
 /// answer it.
-pub fn spawn_subtree_op(op: SubtreeOp, line: &str) -> Effect {
+pub fn spawn_subtree_op(workdir: std::path::PathBuf, op: SubtreeOp, line: &str) -> Effect {
     let Some(argv) = subtree_argv(op, line) else {
         return Effect::Echo {
             level: lattice_grammar::EchoLevel::Error,
             text: format!("magit: usage — :{} {}", op.ex_command, op.usage()),
         };
     };
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let what = op.what;
     let shown = argv.join(" ");
     tokio::task::spawn(async move {
@@ -3460,8 +3576,9 @@ pub(crate) fn note_merge_argv(spec: &str) -> Option<Vec<String>> {
 }
 
 /// Remove one commit's note, off the actor thread.
-pub(crate) fn spawn_note_remove(commit: String) -> Effect {
+pub(crate) fn spawn_note_remove(workdir: std::path::PathBuf, commit: String) -> Effect {
     spawn_git(
+        workdir,
         vec![
             "notes".to_string(),
             "remove".to_string(),
@@ -3477,19 +3594,18 @@ pub(crate) fn spawn_note_remove(commit: String) -> Effect {
 /// A notification rather than `spawn_git`'s echo: prune's whole result
 /// is *what it removed*, and an echo written at fire time cannot carry
 /// it.
-pub(crate) fn spawn_note_prune() -> Effect {
-    spawn_remote_op(RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None)
+pub(crate) fn spawn_note_prune(workdir: std::path::PathBuf) -> Effect {
+    spawn_remote_op(workdir, RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None)
 }
 
 /// Merge a notes ref into the current one.
-pub(crate) fn spawn_note_merge(spec: &str) -> Effect {
+pub(crate) fn spawn_note_merge(workdir: std::path::PathBuf, spec: &str) -> Effect {
     let Some(argv) = note_merge_argv(spec) else {
         return Effect::Echo {
             level: lattice_grammar::EchoLevel::Error,
             text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]".to_string(),
         };
     };
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
@@ -3581,12 +3697,17 @@ pub fn spawn_clone(url: String, dest: String) -> Effect {
 /// and makes it harder to read, and the user pressing `i` twice on the
 /// same build artefact is an ordinary mistake rather than an intent to
 /// duplicate.
-pub fn spawn_gitignore(pattern: String) -> Effect {
+pub fn spawn_gitignore(workdir: std::path::PathBuf, pattern: String) -> Effect {
     let shown = pattern.clone();
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            let repo = Repository::discover(".").map_err(|e| e.to_string())?;
-            let workdir = repo.workdir().ok_or("bare repository")?.to_path_buf();
+            // MR.4: `.gitignore` is written in the repository the buffer
+            // belongs to. This discovered from `"."` — a cwd site the
+            // `magit_workdir()` sweep did not catch, because it spelled
+            // the discovery out rather than calling the helper.
+            if workdir.as_os_str().is_empty() {
+                return Err("not a git repository".to_string());
+            }
             let path = workdir.join(".gitignore");
             let existing = std::fs::read_to_string(&path).unwrap_or_default();
             let Some(out) = gitignore_append(&existing, &pattern) else {
@@ -3692,7 +3813,7 @@ fn spawn_bisect(
     let Some(views) = ctx.services.get::<crate::buffer_state::MagitViewsHandle>() else {
         return;
     };
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let workdir = crate::repo_scope::action_workdir(ctx);
     tokio::task::spawn(async move {
         let wd = workdir.clone();
         let outcome =
@@ -3839,11 +3960,10 @@ pub(crate) fn merge_into_steps(current: &str, target: &str) -> Vec<GitStep> {
 }
 
 /// The branch `HEAD` is on, for operations that act on "this branch".
-pub(crate) fn current_branch() -> Option<String> {
-    let workdir = crate::workdir::magit_workdir()?;
+pub(crate) fn current_branch(workdir: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&workdir)
+        .current_dir(workdir)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -4129,12 +4249,12 @@ pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> 
 /// somewhere the user did not choose, which is the one failure this
 /// row must not have.
 pub fn spawn_remote_op_to(
+    workdir: std::path::PathBuf,
     op: RemoteOp,
     args: &lattice_grammar::Args,
     target: RemoteTarget,
     prompted: Option<String>,
 ) -> Effect {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let base = op.argv(args);
     let what = op.what;
     let shown = base.join(" ");
@@ -4170,8 +4290,11 @@ pub fn spawn_remote_op_to(
     }
 }
 
-pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+pub fn spawn_remote_op(
+    workdir: std::path::PathBuf,
+    op: RemoteOp,
+    args: &lattice_grammar::Args,
+) -> Effect {
     let argv = op.argv(args);
     let shown = argv.join(" ");
     let logged = shown.clone();

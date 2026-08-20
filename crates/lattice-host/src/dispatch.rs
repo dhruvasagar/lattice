@@ -30659,6 +30659,7 @@ impl Editor {
                 .iter()
                 .map(|m| m.as_str().to_string())
                 .collect(),
+            buffer: Some(self.document_buffer_id),
         }
     }
 

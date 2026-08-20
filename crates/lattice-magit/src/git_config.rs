@@ -137,7 +137,7 @@ pub(crate) fn parse_config_z(text: &str) -> HashMap<String, String> {
 }
 
 /// Write a config value, then refresh so the menu reports the change.
-pub(crate) fn set(key: &str, value: &str) -> lattice_grammar::Effect {
+pub(crate) fn set(workdir: std::path::PathBuf, key: &str, value: &str) -> lattice_grammar::Effect {
     let argv = if value.is_empty() {
         // An empty value means "unset it", not "set it to the empty
         // string": magit's configure rows clear a value by leaving the
@@ -147,7 +147,7 @@ pub(crate) fn set(key: &str, value: &str) -> lattice_grammar::Effect {
     } else {
         vec!["config".to_string(), key.to_string(), value.to_string()]
     };
-    let effect = crate::magit_global_mode::spawn_git(argv, "git config");
+    let effect = crate::magit_global_mode::spawn_git(workdir, argv, "git config");
     refresh();
     effect
 }

@@ -302,7 +302,10 @@ fn rebase_verb_op(
                 });
             };
             Some(crate::magit_global_mode::spawn_rebase_verb(
-                label, verb, &commit,
+                crate::repo_scope::action_workdir(ctx),
+                label,
+                verb,
+                &commit,
             ))
         }),
     }
@@ -360,6 +363,7 @@ fn commit_sequence_op(
                 });
             };
             Some(crate::magit_global_mode::spawn_git_sequence(
+                crate::repo_scope::action_workdir(ctx),
                 label,
                 steps(&commit),
             ))

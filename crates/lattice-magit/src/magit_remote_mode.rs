@@ -396,7 +396,7 @@ fn spawn_remote_mutation(
 ) -> Option<()> {
     let states = ctx.services.get::<RemoteStatesHandle>()?;
     let targets = states.all();
-    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let workdir = crate::repo_scope::action_workdir(ctx);
     // No guard here: this task's own refreshes are what the
     // user sees, and each `refresh(target)` below raises and
     // clears the busy flag on its OWN row. Marking busy here

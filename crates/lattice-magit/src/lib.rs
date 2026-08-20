@@ -274,6 +274,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let other_file_dispatch_ids = dispatch_ids.clone();
     let view_args_ids_src = dispatch_ids.clone();
     let root_menu_ids = dispatch_ids.clone();
+    // MR.4: a menu's ROWS depend on what the buffer's repository has
+    // half-done, so the builders need the same two handles every trigger
+    // uses. Captured here for the same reason the ex-commands capture
+    // them: a transient builder receives a `TransientContext`, not a
+    // service registry.
+    let menu_store = boot.buffer_store().clone();
+    let menu_scopes = repo_scopes.clone();
+    let dispatch_store = menu_store.clone();
+    let dispatch_scopes = menu_scopes.clone();
     let transient_registry = lattice_picker::TransientSourceRegistry::new();
     // MG.49: each root menu is reachable BOTH from the dispatch and from
     // its own chord, and both go through `root_menu_spec` — so the menu
@@ -286,13 +295,25 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     for menu in transients::ROOT_MENUS {
         let ids = root_menu_ids.clone();
         let source = menu.source;
+        let store = menu_store.clone();
+        let scopes = menu_scopes.clone();
         transient_registry.register(source, move |ctx| {
             // Gates are probed per open, exactly as the dispatch does:
             // whether a rebase / bisect / cherry-pick is stopped decides
             // which rows the menu should show, and that can change
             // between two presses of the same chord.
-            transients::root_menu_spec(source, &ids, ctx, transients::DispatchGates::probe())
-                .expect("every ROOT_MENUS source has a spec")
+            //
+            // MR.4: probed in the repository of the buffer the menu was
+            // opened over. A menu built from the process's repository
+            // offers the way out of someone else's stopped rebase.
+            let workdir = menu_workdir(&store, &scopes, ctx);
+            transients::root_menu_spec(
+                source,
+                &ids,
+                ctx,
+                transients::DispatchGates::probe_in(&workdir),
+            )
+            .expect("every ROOT_MENUS source has a spec")
         });
     }
     // MG.23h: the root dispatch varies with where it was opened — see
@@ -310,7 +331,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         // next time it opens, which is why an unread value renders
         // `…` rather than blocking.
         git_config::refresh();
-        transients::dispatch_transient(&dispatch_ids, ctx)
+        let workdir = menu_workdir(&dispatch_store, &dispatch_scopes, ctx);
+        transients::dispatch_transient(&dispatch_ids, ctx, &workdir)
     });
     transient_registry.register("magit-file-dispatch", move |_| {
         transients::file_dispatch_transient(&file_dispatch_ids)
@@ -757,6 +779,23 @@ fn reverse_blame_usage() -> Effect {
     }
 }
 
+/// MR.4: the repository a transient menu's rows are about.
+///
+/// The menu is built over a buffer, and `TransientContext::buffer` is
+/// how the host says which. Falls back to the working directory when
+/// the context has none (mid-boot), which is the same direction the
+/// mode-gated rows degrade in.
+fn menu_workdir(
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &repo_scope::RepoScopes,
+    ctx: &lattice_picker::TransientContext,
+) -> std::path::PathBuf {
+    ctx.buffer
+        .map(|buffer| repo_scope::workdir_or_cwd(store, scopes, buffer))
+        .or_else(workdir::magit_workdir)
+        .unwrap_or_default()
+}
+
 /// MR.2: drop a magit buffer's recorded repository when the buffer
 /// closes.
 ///
@@ -1046,7 +1085,15 @@ fn register_ex_commands(
                     Ok(parse_remote_flags(op, line))
                 }),
                 apply: {
-                    Arc::new(move |ctx| Ok(magit_global_mode::spawn_remote_op(op, &ctx.args)))
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        Ok(magit_global_mode::spawn_remote_op(
+                            repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                            op,
+                            &ctx.args,
+                        ))
+                    })
                 },
                 args_schema: op.arg_specs(),
                 surface_form: SurfaceForm::Keyword,
@@ -1105,59 +1152,67 @@ fn register_ex_commands(
     // same prompt the menu row does, so `:magit-tag` and `C-c g t` are
     // the same operation reached two ways rather than two operations.
     {
-        let mut mk_prompted = |name: &'static str,
-                               doc: &'static str,
-                               arg: &'static str,
-                               arg_doc: &'static str,
-                               prompt_action: &'static str,
-                               run: fn(String) -> Effect| {
-            registry.register_ex_command(
-                name,
-                doc,
-                ExCommandSpec {
-                    latency_class: LatencyClass::Reflex,
-                    accepts_bang: false,
-                    accepts_range: false,
-                    parse_args: Arc::new(|line: &str, _bang: bool| {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            Ok(Args::None)
-                        } else {
-                            Ok(Args::String(trimmed.to_string()))
-                        }
-                    }),
-                    apply: Arc::new(move |ctx| {
-                        Ok(match ctx.args {
-                            Args::String(ref v) if !v.trim().is_empty() => {
-                                run(v.trim().to_string())
+        let mut mk_prompted =
+            |name: &'static str,
+             doc: &'static str,
+             arg: &'static str,
+             arg_doc: &'static str,
+             prompt_action: &'static str,
+             run: fn(std::path::PathBuf, String) -> Effect| {
+                // MR.4: the operation runs in the repository of the buffer
+                // the `:` line came from, so the handles are captured here
+                // and the workdir resolved at call time.
+                let store = store.clone();
+                let scopes = scopes.clone();
+                registry.register_ex_command(
+                    name,
+                    doc,
+                    ExCommandSpec {
+                        latency_class: LatencyClass::Reflex,
+                        accepts_bang: false,
+                        accepts_range: false,
+                        parse_args: Arc::new(|line: &str, _bang: bool| {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                Ok(Args::None)
+                            } else {
+                                Ok(Args::String(trimmed.to_string()))
                             }
-                            // No argument: ask, through the same action
-                            // the menu row fires, so there is one prompt
-                            // and one finish handler for both surfaces.
-                            _ => Effect::OpenPrompt {
-                                prompt: format!("{arg_doc}: "),
-                                initial: String::new(),
-                                on_submit_action: prompt_action.to_string(),
-                                buffer_name: None,
-                            },
-                        })
-                    }),
-                    args_schema: vec![ArgSpec::optional(
-                        arg,
-                        lattice_grammar::ArgKind::String,
-                        arg_doc,
-                    )],
-                    surface_form: SurfaceForm::Keyword,
-                },
-            );
-        };
+                        }),
+                        apply: Arc::new(move |ctx| {
+                            Ok(match ctx.args {
+                                Args::String(ref v) if !v.trim().is_empty() => run(
+                                    repo_scope::active_workdir(&store, &scopes, ctx.buffer_id)
+                                        .unwrap_or_default(),
+                                    v.trim().to_string(),
+                                ),
+                                // No argument: ask, through the same action
+                                // the menu row fires, so there is one prompt
+                                // and one finish handler for both surfaces.
+                                _ => Effect::OpenPrompt {
+                                    prompt: format!("{arg_doc}: "),
+                                    initial: String::new(),
+                                    on_submit_action: prompt_action.to_string(),
+                                    buffer_name: None,
+                                },
+                            })
+                        }),
+                        args_schema: vec![ArgSpec::optional(
+                            arg,
+                            lattice_grammar::ArgKind::String,
+                            arg_doc,
+                        )],
+                        surface_form: SurfaceForm::Keyword,
+                    },
+                );
+            };
         mk_prompted(
             "magit-tag",
             "Tag HEAD. With arg: the tag name; without, asks for it.",
             "name",
             "Tag name",
             "action:magit-global-tag-finish",
-            |name| magit_global_mode::spawn_git(magit_global_mode::tag_argv(&name), "tag"),
+            |wd, name| magit_global_mode::spawn_git(wd, magit_global_mode::tag_argv(&name), "tag"),
         );
         mk_prompted(
             "magit-merge",
@@ -1165,7 +1220,9 @@ fn register_ex_commands(
             "branch",
             "Merge branch",
             "action:magit-global-merge-finish",
-            |branch| magit_global_mode::spawn_git(magit_global_mode::merge_argv(&branch), "merge"),
+            |wd, branch| {
+                magit_global_mode::spawn_git(wd, magit_global_mode::merge_argv(&branch), "merge")
+            },
         );
         // MG.41e: merge / tag variants. Same prompt-then-finish shape
         // as their siblings above; only the argv differs.
@@ -1175,8 +1232,9 @@ fn register_ex_commands(
             "branch",
             "Merge branch (no commit)",
             "action:magit-global-merge-no-commit-finish",
-            |branch| {
+            |wd, branch| {
                 magit_global_mode::spawn_git(
+                    wd,
                     magit_global_mode::merge_no_commit_argv(&branch),
                     "merge --no-commit",
                 )
@@ -1188,8 +1246,9 @@ fn register_ex_commands(
             "branch",
             "Squash branch",
             "action:magit-global-merge-squash-finish",
-            |branch| {
+            |wd, branch| {
                 magit_global_mode::spawn_git(
+                    wd,
                     magit_global_mode::merge_squash_argv(&branch),
                     "merge --squash",
                 )
@@ -1201,8 +1260,12 @@ fn register_ex_commands(
             "name",
             "Delete tag",
             "action:magit-global-tag-delete-finish",
-            |name| {
-                magit_global_mode::spawn_git(magit_global_mode::tag_delete_argv(&name), "tag -d")
+            |wd, name| {
+                magit_global_mode::spawn_git(
+                    wd,
+                    magit_global_mode::tag_delete_argv(&name),
+                    "tag -d",
+                )
             },
         );
         mk_prompted(
@@ -1211,7 +1274,7 @@ fn register_ex_commands(
             "directory",
             "Initialize repository in",
             "action:magit-global-init-finish",
-            |dir| magit_global_mode::spawn_git(magit_global_mode::init_argv(&dir), "init"),
+            |wd, dir| magit_global_mode::spawn_git(wd, magit_global_mode::init_argv(&dir), "init"),
         );
         mk_prompted(
             "magit-gitignore",
@@ -1300,6 +1363,9 @@ fn register_ex_commands(
             // MG.43f: reset `w`.
             magit_global_mode::CommitOp::RESET_WORKTREE,
         ] {
+            // Cloned per iteration: each closure outlives the loop body.
+            let store = store.clone();
+            let scopes = scopes.clone();
             registry.register_ex_command(
                 op.ex_command,
                 // Leaked once at boot, from a `&'static` table — the
@@ -1335,10 +1401,11 @@ fn register_ex_commands(
                                 yes,
                                 commit,
                             ),
-                            None => {
-                                let workdir = workdir::magit_workdir().unwrap_or_default();
-                                magit_global_mode::spawn_commit_op(op, workdir, &commit)
-                            }
+                            None => magit_global_mode::spawn_commit_op(
+                                op,
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                &commit,
+                            ),
                         })
                     }),
                     args_schema: vec![ArgSpec::optional(
@@ -1394,45 +1461,52 @@ fn register_ex_commands(
                     parse_args: Arc::new(|line: &str, _bang: bool| {
                         Ok(Args::String(line.trim().to_string()))
                     }),
-                    apply: Arc::new(move |ctx| {
-                        let idx = match ctx.args {
-                            Args::String(ref s) if !s.trim().is_empty() => {
-                                match s.trim().parse::<usize>() {
-                                    Ok(i) => i,
-                                    Err(_) => {
-                                        return Err(lattice_grammar::CommandError::BadArgs(
-                                            format!("{name}: expected a stash index, got {s:?}"),
-                                        ));
+                    apply: {
+                        let store = store.clone();
+                        let scopes = scopes.clone();
+                        Arc::new(move |ctx| {
+                            let idx = match ctx.args {
+                                Args::String(ref s) if !s.trim().is_empty() => {
+                                    match s.trim().parse::<usize>() {
+                                        Ok(i) => i,
+                                        Err(_) => {
+                                            return Err(lattice_grammar::CommandError::BadArgs(
+                                                format!(
+                                                    "{name}: expected a stash index, got {s:?}"
+                                                ),
+                                            ));
+                                        }
                                     }
                                 }
+                                _ => {
+                                    return Ok(Effect::OpenPicker {
+                                        source: picker_sources::STASH_PICK_SOURCE.to_string(),
+                                        args: vec![name.to_string()],
+                                    });
+                                }
+                            };
+                            // MG.12: dropping is the one that cannot be
+                            // undone, so it asks — and the ask carries the
+                            // index, because a refresh between question and
+                            // answer renumbers every later stash.
+                            if verb == "drop" {
+                                return Ok(confirm::ask_target(
+                                    format!("Drop stash@{{{idx}}}?"),
+                                    "action:magit-stash-drop-execute",
+                                    idx.to_string(),
+                                ));
                             }
-                            _ => {
-                                return Ok(Effect::OpenPicker {
-                                    source: picker_sources::STASH_PICK_SOURCE.to_string(),
-                                    args: vec![name.to_string()],
-                                });
-                            }
-                        };
-                        // MG.12: dropping is the one that cannot be
-                        // undone, so it asks — and the ask carries the
-                        // index, because a refresh between question and
-                        // answer renumbers every later stash.
-                        if verb == "drop" {
-                            return Ok(confirm::ask_target(
-                                format!("Drop stash@{{{idx}}}?"),
-                                "action:magit-stash-drop-execute",
-                                idx.to_string(),
-                            ));
-                        }
-                        Ok(magit_global_mode::spawn_git(
-                            vec![
-                                "stash".to_string(),
-                                verb.to_string(),
-                                format!("stash@{{{idx}}}"),
-                            ],
-                            verb,
-                        ))
-                    }),
+                            Ok(magit_global_mode::spawn_git(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                vec![
+                                    "stash".to_string(),
+                                    verb.to_string(),
+                                    format!("stash@{{{idx}}}"),
+                                ],
+                                verb,
+                            ))
+                        })
+                    },
                     args_schema: vec![ArgSpec::optional(
                         "stash",
                         lattice_grammar::ArgKind::String,
@@ -1523,18 +1597,27 @@ fn register_ex_commands(
                     parse_args: Arc::new(|line: &str, _bang: bool| {
                         Ok(Args::String(line.trim().to_string()))
                     }),
-                    apply: Arc::new(move |ctx| {
-                        let commit = match ctx.args {
-                            Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
-                            _ => {
-                                return Ok(Effect::OpenPicker {
-                                    source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
-                                    args: vec![name.to_string()],
-                                });
-                            }
-                        };
-                        Ok(magit_global_mode::spawn_rebase_verb(label, verb, &commit))
-                    }),
+                    apply: {
+                        let store = store.clone();
+                        let scopes = scopes.clone();
+                        Arc::new(move |ctx| {
+                            let commit = match ctx.args {
+                                Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                                _ => {
+                                    return Ok(Effect::OpenPicker {
+                                        source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                        args: vec![name.to_string()],
+                                    });
+                                }
+                            };
+                            Ok(magit_global_mode::spawn_rebase_verb(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                label,
+                                verb,
+                                &commit,
+                            ))
+                        })
+                    },
                     args_schema: vec![ArgSpec::optional(
                         "commit",
                         lattice_grammar::ArgKind::String,
@@ -1661,25 +1744,30 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref name) = ctx.args else {
-                        return Ok(Effect::Echo {
-                            level: lattice_grammar::EchoLevel::Error,
-                            text: "magit: usage — :magit-checkout <branch>".to_string(),
-                        });
-                    };
-                    let name = name.trim().to_string();
-                    if name.is_empty() {
-                        return Ok(Effect::Echo {
-                            level: lattice_grammar::EchoLevel::Error,
-                            text: "magit: usage — :magit-checkout <branch>".to_string(),
-                        });
-                    }
-                    Ok(magit_global_mode::spawn_git(
-                        vec!["checkout".to_string(), name],
-                        "checkout",
-                    ))
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref name) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: "magit: usage — :magit-checkout <branch>".to_string(),
+                            });
+                        };
+                        let name = name.trim().to_string();
+                        if name.is_empty() {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: "magit: usage — :magit-checkout <branch>".to_string(),
+                            });
+                        }
+                        Ok(magit_global_mode::spawn_git(
+                            repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                            vec!["checkout".to_string(), name],
+                            "checkout",
+                        ))
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "branch",
                     lattice_grammar::ArgKind::String,
@@ -1758,30 +1846,38 @@ fn register_ex_commands(
                     parse_args: Arc::new(|line: &str, _bang: bool| {
                         Ok(Args::String(line.trim().to_string()))
                     }),
-                    apply: Arc::new(move |ctx| {
-                        let Args::String(ref b) = ctx.args else {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <branch>"),
-                            });
-                        };
-                        let b = b.trim().to_string();
-                        if b.is_empty() {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <branch>"),
-                            });
-                        }
-                        Ok(if confirms {
-                            crate::confirm::ask_target(
-                                format!("git reset --hard {b} — discard uncommitted changes?"),
-                                "action:magit-global-branch-reset-execute",
-                                b,
-                            )
-                        } else {
-                            magit_global_mode::spawn_git(argv(&b), what)
+                    apply: {
+                        let store = store.clone();
+                        let scopes = scopes.clone();
+                        Arc::new(move |ctx| {
+                            let Args::String(ref b) = ctx.args else {
+                                return Ok(Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: format!("magit: usage — :{name} <branch>"),
+                                });
+                            };
+                            let b = b.trim().to_string();
+                            if b.is_empty() {
+                                return Ok(Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: format!("magit: usage — :{name} <branch>"),
+                                });
+                            }
+                            Ok(if confirms {
+                                crate::confirm::ask_target(
+                                    format!("git reset --hard {b} — discard uncommitted changes?"),
+                                    "action:magit-global-branch-reset-execute",
+                                    b,
+                                )
+                            } else {
+                                magit_global_mode::spawn_git(
+                                    repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                    argv(&b),
+                                    what,
+                                )
+                            })
                         })
-                    }),
+                    },
                     args_schema: vec![ArgSpec::required(
                         "branch",
                         lattice_grammar::ArgKind::String,
@@ -1829,56 +1925,65 @@ fn register_ex_commands(
                     parse_args: Arc::new(|line: &str, _bang: bool| {
                         Ok(Args::String(line.trim().to_string()))
                     }),
-                    apply: Arc::new(move |ctx| {
-                        let Args::String(ref b) = ctx.args else {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <branch>"),
-                            });
-                        };
-                        let b = b.trim().to_string();
-                        if b.is_empty() {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <branch>"),
-                            });
-                        }
-                        Ok(match name {
-                            "magit-merge-absorb" => magit_global_mode::spawn_git_sequence(
-                                "merge and delete",
-                                magit_global_mode::merge_absorb_steps(&b),
-                            ),
-                            // No git call: the merge runs when the
-                            // commit buffer is confirmed, which is the
-                            // whole point of the "edit message" variant.
-                            "magit-merge-edit" => repo_scope::open_repo_view_with(
-                                "merge-edit",
-                                "magit-commit-mode",
-                                &b,
-                                &store,
-                                &scopes,
-                                ctx.buffer_id,
-                            ),
-                            // Merging the CURRENT branch into another
-                            // needs to know which one that is, and
-                            // detached HEAD has no answer. Declines
-                            // rather than acting on `HEAD`.
-                            _ => match magit_global_mode::current_branch() {
-                                None => Effect::Echo {
+                    apply: {
+                        let store = store.clone();
+                        let scopes = scopes.clone();
+                        Arc::new(move |ctx| {
+                            let Args::String(ref b) = ctx.args else {
+                                return Ok(Effect::Echo {
                                     level: lattice_grammar::EchoLevel::Error,
-                                    text: "magit: not on a branch".to_string(),
-                                },
-                                Some(current) if current == b => Effect::Echo {
+                                    text: format!("magit: usage — :{name} <branch>"),
+                                });
+                            };
+                            let b = b.trim().to_string();
+                            if b.is_empty() {
+                                return Ok(Effect::Echo {
                                     level: lattice_grammar::EchoLevel::Error,
-                                    text: "magit: cannot merge a branch into itself".to_string(),
-                                },
-                                Some(current) => magit_global_mode::spawn_git_sequence(
-                                    "merge into",
-                                    magit_global_mode::merge_into_steps(&current, &b),
+                                    text: format!("magit: usage — :{name} <branch>"),
+                                });
+                            }
+                            Ok(match name {
+                                "magit-merge-absorb" => magit_global_mode::spawn_git_sequence(
+                                    repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                    "merge and delete",
+                                    magit_global_mode::merge_absorb_steps(&b),
                                 ),
-                            },
+                                // No git call: the merge runs when the
+                                // commit buffer is confirmed, which is the
+                                // whole point of the "edit message" variant.
+                                "magit-merge-edit" => repo_scope::open_repo_view_with(
+                                    "merge-edit",
+                                    "magit-commit-mode",
+                                    &b,
+                                    &store,
+                                    &scopes,
+                                    ctx.buffer_id,
+                                ),
+                                // Merging the CURRENT branch into another
+                                // needs to know which one that is, and
+                                // detached HEAD has no answer. Declines
+                                // rather than acting on `HEAD`.
+                                _ => match magit_global_mode::current_branch(
+                                    &repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                ) {
+                                    None => Effect::Echo {
+                                        level: lattice_grammar::EchoLevel::Error,
+                                        text: "magit: not on a branch".to_string(),
+                                    },
+                                    Some(current) if current == b => Effect::Echo {
+                                        level: lattice_grammar::EchoLevel::Error,
+                                        text: "magit: cannot merge a branch into itself"
+                                            .to_string(),
+                                    },
+                                    Some(current) => magit_global_mode::spawn_git_sequence(
+                                        repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                        "merge into",
+                                        magit_global_mode::merge_into_steps(&current, &b),
+                                    ),
+                                },
+                            })
                         })
-                    }),
+                    },
                     args_schema: vec![ArgSpec::required(
                         "branch",
                         lattice_grammar::ArgKind::String,
@@ -1919,22 +2024,30 @@ fn register_ex_commands(
                     parse_args: Arc::new(|line: &str, _bang: bool| {
                         Ok(Args::String(line.trim().to_string()))
                     }),
-                    apply: Arc::new(move |ctx| {
-                        let Args::String(ref v) = ctx.args else {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <name>"),
-                            });
-                        };
-                        let v = v.trim().to_string();
-                        if v.is_empty() {
-                            return Ok(Effect::Echo {
-                                level: lattice_grammar::EchoLevel::Error,
-                                text: format!("magit: usage — :{name} <name>"),
-                            });
-                        }
-                        Ok(magit_global_mode::spawn_git(argv(&v), what))
-                    }),
+                    apply: {
+                        let store = store.clone();
+                        let scopes = scopes.clone();
+                        Arc::new(move |ctx| {
+                            let Args::String(ref v) = ctx.args else {
+                                return Ok(Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: format!("magit: usage — :{name} <name>"),
+                                });
+                            };
+                            let v = v.trim().to_string();
+                            if v.is_empty() {
+                                return Ok(Effect::Echo {
+                                    level: lattice_grammar::EchoLevel::Error,
+                                    text: format!("magit: usage — :{name} <name>"),
+                                });
+                            }
+                            Ok(magit_global_mode::spawn_git(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                argv(&v),
+                                what,
+                            ))
+                        })
+                    },
                     args_schema: vec![ArgSpec::required(
                         "name",
                         lattice_grammar::ArgKind::String,
@@ -2012,22 +2125,29 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref r) = ctx.args else {
-                        return Ok(Effect::Echo {
-                            level: lattice_grammar::EchoLevel::Error,
-                            text: "magit: usage — :magit-note-merge <ref>".to_string(),
-                        });
-                    };
-                    let r = r.trim().to_string();
-                    if r.is_empty() {
-                        return Ok(Effect::Echo {
-                            level: lattice_grammar::EchoLevel::Error,
-                            text: "magit: usage — :magit-note-merge <ref>".to_string(),
-                        });
-                    }
-                    Ok(magit_global_mode::spawn_note_merge(&r))
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref r) = ctx.args else {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: "magit: usage — :magit-note-merge <ref>".to_string(),
+                            });
+                        };
+                        let r = r.trim().to_string();
+                        if r.is_empty() {
+                            return Ok(Effect::Echo {
+                                level: lattice_grammar::EchoLevel::Error,
+                                text: "magit: usage — :magit-note-merge <ref>".to_string(),
+                            });
+                        }
+                        Ok(magit_global_mode::spawn_note_merge(
+                            repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                            &r,
+                        ))
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "ref",
                     lattice_grammar::ArgKind::String,
@@ -2091,6 +2211,8 @@ fn register_ex_commands(
         // order.
         {
             let mut mk_subtree = |op: magit_global_mode::SubtreeOp, doc: &'static str| {
+                let store = store.clone();
+                let scopes = scopes.clone();
                 registry.register_ex_command(
                     op.ex_command,
                     doc,
@@ -2106,7 +2228,11 @@ fn register_ex_commands(
                                 Args::String(ref l) => l.clone(),
                                 _ => String::new(),
                             };
-                            Ok(magit_global_mode::spawn_subtree_op(op, &line))
+                            Ok(magit_global_mode::spawn_subtree_op(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                op,
+                                &line,
+                            ))
                         }),
                         args_schema: vec![ArgSpec::required(
                             "spec",
@@ -2149,18 +2275,26 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref line) = ctx.args else {
-                        return Ok(am_usage());
-                    };
-                    match magit_global_mode::am_argv(
-                        line,
-                        magit_global_mode::am_wants_three_way(line),
-                    ) {
-                        Some(argv) => Ok(magit_global_mode::spawn_git(argv, "am")),
-                        None => Ok(am_usage()),
-                    }
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref line) = ctx.args else {
+                            return Ok(am_usage());
+                        };
+                        match magit_global_mode::am_argv(
+                            line,
+                            magit_global_mode::am_wants_three_way(line),
+                        ) {
+                            Some(argv) => Ok(magit_global_mode::spawn_git(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                argv,
+                                "am",
+                            )),
+                            None => Ok(am_usage()),
+                        }
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "patches",
                     lattice_grammar::ArgKind::String,
@@ -2179,21 +2313,31 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref range) = ctx.args else {
-                        return Ok(format_patch_usage());
-                    };
-                    let root = workdir::magit_workdir()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    match magit_global_mode::format_patch_argv(
-                        range,
-                        (!root.is_empty()).then_some(root.as_str()),
-                    ) {
-                        Some(argv) => Ok(magit_global_mode::spawn_git(argv, "format-patch")),
-                        None => Ok(format_patch_usage()),
-                    }
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref range) = ctx.args else {
+                            return Ok(format_patch_usage());
+                        };
+                        // MR.4: patches are written to the repository
+                        // root of the buffer the command came from.
+                        let root = repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id)
+                            .to_string_lossy()
+                            .into_owned();
+                        match magit_global_mode::format_patch_argv(
+                            range,
+                            (!root.is_empty()).then_some(root.as_str()),
+                        ) {
+                            Some(argv) => Ok(magit_global_mode::spawn_git(
+                                repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                                argv,
+                                "format-patch",
+                            )),
+                            None => Ok(format_patch_usage()),
+                        }
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "range",
                     lattice_grammar::ArgKind::String,
@@ -2302,16 +2446,23 @@ fn register_ex_commands(
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref commit) = ctx.args else {
-                        return Ok(note_usage("magit-note-remove"));
-                    };
-                    let commit = commit.trim();
-                    if commit.is_empty() {
-                        return Ok(note_usage("magit-note-remove"));
-                    }
-                    Ok(magit_global_mode::spawn_note_remove(commit.to_string()))
-                }),
+                apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref commit) = ctx.args else {
+                            return Ok(note_usage("magit-note-remove"));
+                        };
+                        let commit = commit.trim();
+                        if commit.is_empty() {
+                            return Ok(note_usage("magit-note-remove"));
+                        }
+                        Ok(magit_global_mode::spawn_note_remove(
+                            repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                            commit.to_string(),
+                        ))
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "commit",
                     lattice_grammar::ArgKind::String,
@@ -2331,6 +2482,8 @@ fn register_ex_commands(
                     Ok(Args::String(line.trim().to_string()))
                 }),
                 apply: {
+                    let store = store.clone();
+                    let scopes = scopes.clone();
                     Arc::new(move |ctx| {
                         let Args::String(ref spec) = ctx.args else {
                             return Ok(note_merge_usage());
@@ -2338,7 +2491,10 @@ fn register_ex_commands(
                         if spec.trim().is_empty() {
                             return Ok(note_merge_usage());
                         }
-                        Ok(magit_global_mode::spawn_note_merge(spec))
+                        Ok(magit_global_mode::spawn_note_merge(
+                            repo_scope::workdir_or_cwd(&store, &scopes, ctx.buffer_id),
+                            spec,
+                        ))
                     })
                 },
                 args_schema: vec![ArgSpec::required(
@@ -3996,6 +4152,12 @@ mod tests {
     }
 
     /// MG.23h: `C-c g` pressed in an ordinary file buffer.
+    /// The repository the suite is running in — what these tests probed
+    /// implicitly before MR.4 made the workdir explicit.
+    fn probe_here() -> std::path::PathBuf {
+        workdir::magit_workdir().unwrap_or_default()
+    }
+
     fn outside_magit() -> lattice_picker::TransientContext {
         lattice_picker::TransientContext::default()
     }
@@ -4005,6 +4167,7 @@ mod tests {
         lattice_picker::TransientContext {
             major_mode: Some(MagitStatusMode::mode_id().as_str().to_string()),
             minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
+            buffer: None,
         }
     }
 
@@ -4014,6 +4177,7 @@ mod tests {
         lattice_picker::TransientContext {
             major_mode: Some(MagitLogMode::mode_id().as_str().to_string()),
             minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
+            buffer: None,
         }
     }
 
@@ -4300,7 +4464,7 @@ mod tests {
         let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log()] {
-            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx, &probe_here()));
             for k in ["a", "-", "x"] {
                 assert!(
                     keys.contains(&k.to_string()),
@@ -4309,7 +4473,11 @@ mod tests {
             }
         }
 
-        let keys = top_level_keys(&transients::dispatch_transient(&ids, &outside_magit()));
+        let keys = top_level_keys(&transients::dispatch_transient(
+            &ids,
+            &outside_magit(),
+            &probe_here(),
+        ));
         for k in ["a", "-", "x"] {
             assert!(
                 !keys.contains(&k.to_string()),
@@ -4320,7 +4488,7 @@ mod tests {
         // ...while the repo-wide pair is there in every context, which
         // is where we are deliberately more permissive than magit.
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
-            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx, &probe_here()));
             assert!(keys.contains(&"S".to_string()) && keys.contains(&"U".to_string()));
         }
     }
@@ -4342,7 +4510,7 @@ mod tests {
         let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
-            let item = transients::dispatch_transient(&ids, &ctx)
+            let item = transients::dispatch_transient(&ids, &ctx, &probe_here())
                 .groups
                 .iter()
                 .flat_map(|g| &g.items)
@@ -4482,6 +4650,7 @@ mod tests {
         let in_diff = lattice_picker::TransientContext {
             major_mode: Some("magit-diff-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
+            buffer: None,
         };
         let diff_keys = keys(&in_diff);
         for k in ["-w", "-s", "-U", "g"] {
@@ -4495,6 +4664,7 @@ mod tests {
         let in_log = lattice_picker::TransientContext {
             major_mode: Some("magit-log-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
+            buffer: None,
         };
         let log_keys = keys(&in_log);
         for k in ["-a", "-n", "-A", "g"] {
@@ -4668,7 +4838,7 @@ mod tests {
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
 
-        let item = transients::dispatch_transient(&ids, &outside_magit())
+        let item = transients::dispatch_transient(&ids, &outside_magit(), &probe_here())
             .groups
             .iter()
             .flat_map(|g| &g.items)
@@ -4763,7 +4933,7 @@ mod tests {
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
 
-        let item = transients::dispatch_transient(&ids, &outside_magit())
+        let item = transients::dispatch_transient(&ids, &outside_magit(), &probe_here())
             .groups
             .iter()
             .flat_map(|g| &g.items)
@@ -4839,7 +5009,7 @@ mod tests {
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
 
-        let item = transients::dispatch_transient(&ids, &outside_magit())
+        let item = transients::dispatch_transient(&ids, &outside_magit(), &probe_here())
             .groups
             .iter()
             .flat_map(|g| &g.items)
@@ -4910,7 +5080,7 @@ mod tests {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
-        let root = transients::dispatch_transient(&ids, &outside_magit());
+        let root = transients::dispatch_transient(&ids, &outside_magit(), &probe_here());
 
         let mut checked = 0;
         for item in root.groups.iter().flat_map(|g| &g.items) {
@@ -4942,7 +5112,7 @@ mod tests {
         let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
-            let item = transients::dispatch_transient(&ids, &ctx)
+            let item = transients::dispatch_transient(&ids, &ctx, &probe_here())
                 .groups
                 .iter()
                 .flat_map(|g| &g.items)
@@ -5158,7 +5328,7 @@ mod tests {
         let ids = transients::MagitActionIds::resolve(&registry);
 
         let row = |ctx: &lattice_picker::TransientContext| {
-            transients::dispatch_transient(&ids, ctx)
+            transients::dispatch_transient(&ids, ctx, &probe_here())
                 .groups
                 .iter()
                 .flat_map(|g| &g.items)
@@ -5200,7 +5370,7 @@ mod tests {
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
-            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx, &probe_here()));
             let mut seen = std::collections::HashSet::new();
             for k in &keys {
                 assert!(seen.insert(k.clone()), "duplicate key `{k}` in {keys:?}");
@@ -5218,7 +5388,7 @@ mod tests {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
         let ids = transients::MagitActionIds::resolve(&registry);
-        let spec = transients::dispatch_transient(&ids, &in_magit_status());
+        let spec = transients::dispatch_transient(&ids, &in_magit_status(), &probe_here());
         let jump = spec
             .groups
             .iter()
@@ -5473,7 +5643,7 @@ mod tests {
     fn the_project_diff_is_reachable_from_the_dispatch_and_the_diff_menu() {
         let ids = transients::MagitActionIds::default();
         let ctx = lattice_picker::TransientContext::default();
-        let spec = transients::dispatch_transient(&ids, &ctx);
+        let spec = transients::dispatch_transient(&ids, &ctx, &probe_here());
         let top_level = spec
             .groups
             .iter()
@@ -6346,7 +6516,7 @@ mod tests {
         // exist in the magit-buffer one, so checking a single context
         // would leave whichever rows the other adds unverified.
         for ctx in [&outside_magit(), &in_magit_status()] {
-            assert_no_inert_items(&transients::dispatch_transient(&ids, ctx));
+            assert_no_inert_items(&transients::dispatch_transient(&ids, ctx, &probe_here()));
         }
     }
 
@@ -6392,6 +6562,7 @@ mod tests {
             &transients::dispatch_transient(
                 &transients::MagitActionIds::resolve(&registry),
                 &in_magit_status(),
+                &probe_here(),
             ),
             "dispatch",
         );

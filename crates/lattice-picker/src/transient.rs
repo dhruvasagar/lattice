@@ -374,6 +374,17 @@ pub struct TransientContext {
     /// here: a magit buffer is one where `magit-core-mode` is active,
     /// whatever its major happens to be.
     pub minor_modes: Vec<String>,
+    /// MR.4: the buffer the menu was opened over.
+    ///
+    /// A builder whose rows depend on something the buffer *owns* —
+    /// magit's dispatch offers `rebase --continue` only while a rebase
+    /// is stopped, and which repository that is depends on the buffer —
+    /// cannot answer from the mode axes alone. `None` mid-boot, where
+    /// the builder degrades exactly as it does for the mode fields.
+    ///
+    /// Still not the cursor or the selection: a row's own action
+    /// receives those at fire time, when they are current.
+    pub buffer: Option<lattice_core::BufferId>,
 }
 
 impl TransientContext {
@@ -635,6 +646,7 @@ mod tests {
         let in_status = TransientContext {
             major_mode: Some("magit-status-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
+            buffer: None,
         };
         assert_eq!(
             registry.build("ctx", &in_status).unwrap().title,
@@ -659,6 +671,7 @@ mod tests {
         let ctx = TransientContext {
             major_mode: Some("magit-status-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
+            buffer: None,
         };
         assert!(ctx.is_major("magit-status-mode"));
         assert!(!ctx.is_major("magit-core-mode"), "a minor is not the major");
@@ -673,6 +686,7 @@ mod tests {
         let in_log = TransientContext {
             major_mode: Some("magit-log-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
+            buffer: None,
         };
         assert!(in_log.has_minor("magit-core-mode"));
         assert!(!in_log.is_major("magit-status-mode"));

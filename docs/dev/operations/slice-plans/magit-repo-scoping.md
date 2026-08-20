@@ -17,7 +17,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | MR.2 | Per-buffer workdir record + the first trigger (absorbs MR.1) | ✅ |
 | MR.3a | The name grammar + the parameterless views | ✅ |
 | MR.3b | The views that encode parameters (diff, log, file, …) | ✅ |
-| MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | 📝 |
+| MR.4 | Action bodies read the buffer's repo (`magit_global_mode`, transients) | ✅ |
 | MR.5 | The grep guard + docs | 📝 |
 
 MR.1→MR.2→MR.3 is the spine. MR.4 is the half that makes it *correct*
@@ -294,15 +294,69 @@ already read.
   unique among open magit buffers by construction — that is what the
   collision qualification at the trigger is for.
 
-## MR.4 — action bodies 📝
+## MR.4 — action bodies ✅
 
-The 14 `magit_workdir()` sites in `magit_global_mode.rs` plus the 3 in
-`transients.rs` read **the buffer's** repo. Per design §4 this is what
-separates "fixed" from "worse": a status buffer showing repo B whose `s`
-stages into repo A is data-loss-shaped.
+The `magit_workdir()` sites in `magit_global_mode.rs` and `transients.rs`
+read **the buffer's** repo. Per design §4 this is what separates "fixed"
+from "worse": a status buffer showing repo B whose `s` stages into repo A
+is data-loss-shaped.
 
 **Tests.** Stage / commit / checkout invoked in repo B's buffer touch
 repo B, with the cwd pointed at repo A throughout.
+
+### Landed 2026-08-20
+
+`repo_scope::active_workdir` is the one answer to "which repository does
+this act on", with `action_workdir(ctx)` for handlers and
+`workdir_or_cwd(store, scopes, buffer)` for ex-commands. Its three
+questions are design §2's, with the first one *read* from the record
+rather than re-resolved — re-resolving is exactly the bug.
+
+Every operation helper (`spawn_git`, `spawn_git_sequence`,
+`spawn_computed`, `spawn_remote_op`, `spawn_remote_op_to`,
+`spawn_subtree_op`, `spawn_note_merge`, `spawn_note_prune`,
+`spawn_note_remove`, `spawn_rebase_verb`, `spawn_gitignore`,
+`current_branch`, `git_config::set`) now **takes** its workdir instead of
+finding one. That is the part with teeth: a wrong-repo push is not
+recoverable the way a wrong-repo buffer is, and a helper that can still
+ask the process where it is will eventually be called from somewhere that
+should not have.
+
+Also here:
+
+- **The dispatch menus' ROWS.** `DispatchGates::probe()` became
+  `probe_in(workdir)`, and `TransientContext` gained `buffer` — the
+  buffer the menu was opened over. Without it a menu built over repo B
+  offered the way out of repo A's stopped rebase, and hid it when repo B
+  was the one stopped. The seven cwd-based gate readers in
+  `transients.rs` are deleted rather than rewired: with the workdir
+  passed in there is nowhere left for a row to read the process's
+  repository from.
+- **`active_target`'s argument branch** — the picker-routed `C-c f` rows,
+  where the path arrives as an argument. The no-argument branch already
+  resolved from the file; these two disagreed.
+- **`spawn_gitignore`** wrote `.gitignore` into `Repository::discover(".")`
+  — a cwd site the `magit_workdir()` sweep never saw, because it spelled
+  the discovery out rather than calling the helper. Worth remembering
+  when MR.5's grep guard is written: the guard must look for the
+  *discovery*, not only for the helper's name.
+
+### Not converted, and why
+
+Three `magit_workdir()` callers remain outside the resolver, none of them
+an action body:
+
+- `git_config::refresh` — a process-wide config cache, keyed by nothing.
+  Making it per-repository is a cache-shape change, not a scoping one.
+- `providers::project_diff`'s opener — reached through
+  `ProviderViewOpener`, whose `ModeActivator` exposes no active buffer.
+  Same gap `TransientContext` had; the fix is the same shape and belongs
+  with whoever needs it next.
+- `picker_sources`' revision preview — a preview buffer, built where no
+  buffer id is in scope.
+
+MR.5's grep guard has to either cover these or state them as the
+exceptions, with the reason attached.
 
 ## MR.5 — the guard + docs 📝
 

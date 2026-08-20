@@ -114,6 +114,7 @@ fn run_on_stash(
         });
     }
     Some(crate::magit_global_mode::spawn_git(
+        crate::repo_scope::action_workdir(ctx),
         vec![
             "stash".to_string(),
             verb.to_string(),

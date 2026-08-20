@@ -111,7 +111,10 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
         let (git_ref, path) = store
             .name_for(buffer_id)
             .and_then(|name| parse_buffer_name(&name))?;
-        let workdir = crate::workdir::magit_workdir()?;
+        // MR.4: the revisions walked are this blob's repository's, not
+        // the process's — `p` / `n` must stay inside the checkout the
+        // buffer came from.
+        let workdir = crate::repo_scope::action_workdir(ctx);
         let revisions = file_revisions(&workdir, &path);
         match blob_step(&revisions, &git_ref, step) {
             Some(next) => Some(Effect::OpenSyntheticBuffer {

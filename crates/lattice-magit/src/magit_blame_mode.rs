@@ -474,7 +474,13 @@ impl Mode for MagitBlameMode {
             // What to blame: the buffer's own file, or — for the blob
             // buffer the reverse path opens — the path in its name.
             let buffer_name = store.name_for(buffer_id).unwrap_or_default();
-            let Some((workdir, path)) = blame_target(&store, buffer_id, &buffer_name) else {
+            let scopes = ctx.service::<crate::repo_scope::RepoScopesHandle>();
+            let Some((workdir, path)) = blame_target(
+                &store,
+                scopes.as_deref().map(|s| &**s),
+                buffer_id,
+                &buffer_name,
+            ) else {
                 // A scratch buffer, or a file outside any repository.
                 // Nothing to annotate; the mode activates as a no-op
                 // rather than failing, and `q` turns it back off.
@@ -539,6 +545,7 @@ impl Mode for MagitBlameMode {
 /// `magit-file-revision-mode` and `lattice-multibuffer` use.
 fn blame_target(
     store: &BufferStoreHandle,
+    scopes: Option<&crate::repo_scope::RepoScopes>,
     buffer_id: lattice_core::BufferId,
     buffer_name: &str,
 ) -> Option<(std::path::PathBuf, String)> {
@@ -546,8 +553,18 @@ fn blame_target(
         let (workdir, rel) = crate::workdir::workdir_for_file(&p)?;
         return Some((workdir, rel.to_string_lossy().into_owned()));
     }
+    // MR.4: a blob buffer has no file on disk, so its repository comes
+    // from the name it was opened under rather than from the process.
     let rel = crate::magit_file_revision_mode::parse_buffer_name(buffer_name)?.1;
-    let workdir = crate::workdir::magit_workdir()?;
+    let workdir = scopes
+        .and_then(|s| {
+            s.workdir_for(buffer_name).or_else(|| {
+                crate::workdir::parse_magit_name(buffer_name)
+                    .and_then(|n| n.repo)
+                    .and_then(|label| s.workdir_for_label(label))
+            })
+        })
+        .or_else(crate::workdir::magit_workdir)?;
     Some((workdir, rel.to_string_lossy().into_owned()))
 }
 

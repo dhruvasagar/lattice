@@ -233,6 +233,81 @@ pub fn label_of_buffer(
         .unwrap_or_default()
 }
 
+/// MR.4: **the repository an action acts on** — the one question every
+/// magit action body asks, answered in one place.
+///
+/// Design §4 is emphatic about this and about why: the entry points and
+/// the action bodies are two populations, and fixing only the first is
+/// worse than fixing neither. A status buffer showing repo B whose `s`
+/// stages into repo A is data-loss-shaped, and it is exactly what a
+/// half-migration produces.
+///
+/// The three questions are design §2's, with the first one *read* rather
+/// than re-resolved:
+///
+/// 1. The active buffer is a magit buffer → the repository it was
+///    recorded against (or, for a buffer opened from inside another one,
+///    recovered from its label). **Never re-derived from the cwd**: the
+///    whole point is that this buffer's repository is not the process's.
+/// 2. The active buffer has a file → that file's repository. This is the
+///    `C-c g` -from-a-file case: the dispatch was opened over a file, so
+///    the operation belongs to that file's checkout.
+/// 3. Otherwise the working directory — unchanged, and still the answer
+///    for a fresh editor with nothing open.
+pub fn active_workdir(
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+) -> Option<PathBuf> {
+    let from_magit_buffer = store
+        .name_for(active)
+        .filter(|name| crate::workdir::is_magit_buffer_name(name))
+        .and_then(|name| {
+            scopes.workdir_for(&name).or_else(|| {
+                crate::workdir::parse_magit_name(&name)
+                    .and_then(|n| n.repo)
+                    .and_then(|label| scopes.workdir_for_label(label))
+            })
+        });
+    crate::workdir::repo_for_trigger(from_magit_buffer, store.path_for(active).as_deref())
+}
+
+/// [`active_workdir`] with the working directory as the fall-back — the
+/// form the operation helpers want, since they need *a* directory to run
+/// git in and "not in a repository" is git's error to report, not ours.
+pub fn workdir_or_cwd(
+    store: &lattice_mode::BufferStoreHandle,
+    scopes: &RepoScopes,
+    active: lattice_core::BufferId,
+) -> PathBuf {
+    active_workdir(store, scopes, active)
+        .or_else(crate::workdir::magit_workdir)
+        .unwrap_or_default()
+}
+
+/// [`active_workdir`] for an action handler, which carries the services
+/// rather than the handles.
+///
+/// Returns the working directory when either service is missing (a
+/// harness that wired neither), which is what magit did everywhere
+/// before MR.4 — the operation still runs, in the process's repository.
+pub fn action_workdir(ctx: &lattice_mode::ActionContext<'_>) -> PathBuf {
+    let resolved = ctx
+        .services
+        .get::<lattice_mode::BufferStoreHandle>()
+        .zip(ctx.services.get::<RepoScopesHandle>())
+        .and_then(|(store, scopes)| {
+            active_workdir(
+                &store,
+                &scopes,
+                lattice_core::BufferId(ctx.buffer_id.raw() as u32),
+            )
+        });
+    resolved
+        .or_else(crate::workdir::magit_workdir)
+        .unwrap_or_default()
+}
+
 /// MR.3: [`open_repo_view`] for a view that encodes parameters of its
 /// own — the commit family's target (`*magit:augment:<repo>:<sha>*`) and,
 /// from MR.3b, the path- and revision-scoped views.
@@ -280,19 +355,7 @@ pub fn repo_view_name_with(
         None => workdir::magit_buffer_name(view, label),
     };
 
-    // Question 1 (design §2): the active buffer is itself a magit
-    // buffer, so it already knows which repository it is showing.
-    // Reading it from the record rather than re-resolving is what stops
-    // `C-x g` inside repo B's log from walking you back to the cwd repo.
-    let from_magit_buffer = store
-        .name_for(active)
-        .filter(|name| workdir::is_magit_buffer_name(name))
-        .and_then(|name| scopes.workdir_for(&name));
-    // Question 2: the file in front of you. Question 3 (the working
-    // directory) is inside the resolver.
-    let active_file = store.path_for(active);
-
-    let Some(repo) = workdir::repo_for_trigger(from_magit_buffer, active_file.as_deref()) else {
+    let Some(repo) = active_workdir(store, scopes, active) else {
         // Not in a repository from any of the three directions. The
         // unqualified name is what magit always used, and the view says
         // "Not a git repository." exactly as it did before.
@@ -650,6 +713,82 @@ mod tests {
             "the intent must survive the repository being in the name"
         );
         assert!(scopes.workdir_for(&name).is_some(), "…and be recorded");
+    }
+
+    // ── MR.4: what the action bodies act on ──────────────────────
+
+    /// **The slice's whole point.** An operation fired in a magit buffer
+    /// runs in the repository that buffer is showing — not the one the
+    /// editor was started in.
+    ///
+    /// Asserted with the working directory pointed somewhere else
+    /// entirely, because "it worked on my machine" here means "the two
+    /// repositories happened to be the same one". A status buffer
+    /// showing repo B whose `s` stages into repo A is the data-loss
+    /// shape design §4 names, and this is the assertion that fails if it
+    /// comes back.
+    #[test]
+    fn an_action_acts_on_the_repository_its_buffer_shows() {
+        let scopes = RepoScopes::default();
+        scopes.record("*magit:status:api*", PathBuf::from("/work/api"));
+        let store = store_showing(Some("*magit:status:api*"), None);
+
+        assert_eq!(
+            active_workdir(&store, &scopes, active()),
+            Some(PathBuf::from("/work/api")),
+            "the buffer's recorded repository, never the process's"
+        );
+    }
+
+    /// A magit buffer opened from inside another one has a label and no
+    /// record of its own — `<CR>` on a commit, a file at a revision. The
+    /// operation still belongs to that label's repository.
+    #[test]
+    fn an_action_in_a_buffer_opened_from_another_follows_its_label() {
+        let scopes = RepoScopes::default();
+        // The sibling that WAS recorded, by its own trigger.
+        scopes.record("*magit:status:api*", PathBuf::from("/work/api"));
+        let store = store_showing(Some("*magit:show:api:abc123*"), None);
+
+        assert_eq!(
+            active_workdir(&store, &scopes, active()),
+            Some(PathBuf::from("/work/api"))
+        );
+    }
+
+    /// Fired over a FILE — the `C-c g` -from-a-file case. The operation
+    /// belongs to that file's checkout, which is the same answer the
+    /// trigger would have given for opening a view over it.
+    #[test]
+    fn an_action_over_a_file_acts_on_that_files_repository() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("api");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_init(&repo);
+        let file = repo.join("a.rs");
+        std::fs::write(&file, "\n").unwrap();
+
+        let scopes = RepoScopes::default();
+        let store = store_showing(Some("a.rs"), Some(file));
+
+        assert_eq!(
+            active_workdir(&store, &scopes, active()).and_then(|w| w.canonicalize().ok()),
+            repo.canonicalize().ok()
+        );
+    }
+
+    /// Nothing open: the working directory, unchanged. MR.4 narrows
+    /// *which* repository an operation runs in; it does not remove the
+    /// answer for an editor that has nothing to narrow from.
+    #[test]
+    fn with_no_buffer_to_go_on_an_action_still_has_a_repository() {
+        let scopes = RepoScopes::default();
+        let store = empty_store();
+
+        assert_eq!(
+            active_workdir(&store, &scopes, active()),
+            crate::workdir::magit_workdir()
+        );
     }
 
     /// `C-x g` and `:magit-status` must land on the same buffer from the

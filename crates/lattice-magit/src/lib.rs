@@ -2601,6 +2601,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Visit this file at the next revision",
     );
 
+    // magit-project-diff-mode (PD.7c). Its own action, not
+    // `action:magit-refresh`: that one dispatches through the
+    // `MagitView` trait to a per-buffer published view, and the
+    // project-diff multibuffer is a provider view instead — refreshed
+    // by re-running its provider.
+    reg(
+        crate::providers::project_diff::REFRESH_ACTION,
+        "Re-scan the project diff (the same comparison it already shows)",
+    );
+
     // magit-core-mode
     reg("action:magit-refresh", "Refresh the current magit buffer");
     reg("action:magit-close", "Close the magit buffer (bury)");

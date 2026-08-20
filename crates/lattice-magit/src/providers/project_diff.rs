@@ -36,8 +36,8 @@ use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId, DocumentBuilder};
 use lattice_grammar::{Args, CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
-    CapabilitySet, Keymap, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
-    ModeRegistry,
+    ActionContext, ActionHandlerContribution, CapabilitySet, Keymap, LifecycleFuture, Mode,
+    ModeActivator, ModeContext, ModeId, ModeKind, ModeRegistry,
 };
 use lattice_multibuffer::view::create_multibuffer_view;
 use lattice_multibuffer::{
@@ -216,6 +216,55 @@ impl Mode for MagitProjectDiffMode {
     /// them here would be the duplication the standing rule forbids.
     fn implies(&self) -> &[ModeId] {
         magit_core_implies()
+    }
+
+    /// PD.7c: what `gr` actually does here.
+    ///
+    /// `refreshable-view-mode` binds the chord and resolves it to
+    /// whichever active mode declared this — so implying that mode
+    /// without declaring an action, which is what PD.9 left behind,
+    /// bound `gr` in this view to nothing at all. The comment on
+    /// `implies` said "`refreshable-view-mode` supplies `gr`"; it
+    /// supplied the binding, and there was no target.
+    ///
+    /// Found while giving the headerline a "gr to refresh" note to point
+    /// at, which is the only reason it surfaced — a chord that resolves
+    /// to nothing produces no error, no log line and no failing test.
+    /// `refreshable_views_declare_their_refresh.rs` now guards the class.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some(REFRESH_ACTION)
+    }
+
+    /// The refresh body, in the crate that owns the view — the other
+    /// half of the mode-ownership rule. Re-running the provider IS the
+    /// refresh: `open_project_diff` already clears the view and rescans
+    /// (it has to, since the same view is reused across triggers), so
+    /// there is no second rebuild path to keep in step with the first.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![ActionHandlerContribution {
+            action_name: REFRESH_ACTION,
+            handler: Arc::new(|ctx: &ActionContext<'_>| {
+                let view = BufferId(ctx.buffer_id.0 as u32);
+                // Re-open with the comparison this view already holds.
+                // Reading it back matters: `gr` in a staged view must
+                // not silently turn it into a working-tree view.
+                let args = ctx
+                    .services
+                    .get::<ProjectDiffServiceHandle>()
+                    .and_then(|svc| svc.state(view))
+                    .map(|state| match state.comparison {
+                        ProjectDiffComparison::WorkingTree => Args::None,
+                        ProjectDiffComparison::Staged => Args::String("staged".to_string()),
+                    })
+                    .unwrap_or(Args::None);
+                Some(lattice_grammar::Effect::AppAction(
+                    lattice_grammar::app_effect::AppEffect::OpenProviderView {
+                        provider: PROVIDER_NAME.to_string(),
+                        args,
+                    },
+                ))
+            }),
+        }]
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -718,6 +767,16 @@ pub fn scan_changed_files(
 /// `:magit-project-diff` and the Diff transient's `e` row — name it.
 pub const PROVIDER_NAME: &str = "magit-project-diff";
 
+/// PD.7c: the action `gr` resolves to in this view, declared by
+/// [`MagitProjectDiffMode::refresh_action`] and handled by the same
+/// mode.
+///
+/// Its own id rather than `action:magit-refresh`: that one dispatches
+/// through the `MagitView` trait to a per-buffer published view, which
+/// this multibuffer is not — it is a provider view, refreshed by
+/// re-running its provider.
+pub const REFRESH_ACTION: &str = "action:magit-project-diff-refresh";
+
 /// The view's buffer name. Stable, so re-triggering finds the buffer
 /// the user already has open instead of stacking a second one beside it
 /// under the same name (which would make `:b *magit:project-diff*`
@@ -1105,6 +1164,104 @@ mod tests {
             !ProjectDiffComparison::Staged.is_editable(),
             "an index blob is not a file; an edit has nowhere to land"
         );
+    }
+
+    /// PD.7c: `gr` in this view had nothing to resolve to.
+    ///
+    /// `refreshable-view-mode` binds the chord and dispatches whatever
+    /// an active mode *declared*; PD.9 moved this view onto that mode
+    /// and left the declaration behind, so the comment said `gr` was
+    /// supplied while the key did nothing. Nothing failed — an
+    /// unresolved chord is silent — which is why the guard is a test in
+    /// `lattice-host` over the booted registry as well as this one.
+    #[test]
+    fn gr_resolves_to_this_views_own_refresh() {
+        let m = MagitProjectDiffMode;
+        assert!(
+            m.implies()
+                .contains(&lattice_mode::RefreshableViewMode::mode_id()),
+            "the chord arrives through the cascade"
+        );
+        assert_eq!(
+            m.refresh_action(),
+            Some(REFRESH_ACTION),
+            "…and it must have a target"
+        );
+        assert!(
+            m.action_handlers()
+                .iter()
+                .any(|c| c.action_name == REFRESH_ACTION),
+            "the mode that declares the target also supplies its body — \
+             declaring it and leaving the handler to the host is the \
+             half-migration the standing rule forbids"
+        );
+    }
+
+    /// The refresh must re-run the comparison the view already shows.
+    /// Defaulting to the working tree would mean `gr` silently turns a
+    /// staged diff into a different view — a refresh that resets its own
+    /// arguments.
+    ///
+    /// Runs the registered handler, so the service lookup and the
+    /// arg translation are both under test rather than restated.
+    #[test]
+    fn refreshing_re_runs_the_comparison_the_view_already_shows() {
+        fn refresh_args_for(state: Option<ProjectDiffState>) -> Args {
+            let mut services = lattice_mode::ServiceRegistry::new();
+            let svc: ProjectDiffServiceHandle = Arc::new(ProjectDiffService::new());
+            let view = BufferId(4242);
+            if let Some(state) = state {
+                svc.set_state(view, state);
+            }
+            services.register::<ProjectDiffServiceHandle>(svc);
+            let events = lattice_runtime::EventBus::new();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(view.0 as u64),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: Args::None,
+            };
+            let handler = MagitProjectDiffMode
+                .action_handlers()
+                .into_iter()
+                .find(|c| c.action_name == REFRESH_ACTION)
+                .expect("the mode contributes its refresh handler")
+                .handler;
+            match (handler)(&ctx) {
+                Some(lattice_grammar::Effect::AppAction(
+                    lattice_grammar::app_effect::AppEffect::OpenProviderView { provider, args },
+                )) => {
+                    assert_eq!(provider, PROVIDER_NAME, "re-runs THIS provider");
+                    args
+                }
+                other => panic!("expected an OpenProviderView effect, got {other:?}"),
+            }
+        }
+
+        let staged = refresh_args_for(Some(ProjectDiffState {
+            workdir: PathBuf::from("/tmp"),
+            comparison: ProjectDiffComparison::Staged,
+        }));
+        assert!(
+            matches!(staged, Args::String(ref s) if s == "staged"),
+            "a staged view must refresh as staged; got {staged:?}"
+        );
+
+        let working = refresh_args_for(Some(ProjectDiffState {
+            workdir: PathBuf::from("/tmp"),
+            comparison: ProjectDiffComparison::WorkingTree,
+        }));
+        assert!(matches!(working, Args::None), "got {working:?}");
+
+        // No state (the service was never told about this view — a
+        // stripped harness, or a view whose state was dropped): the
+        // working tree is the honest default, and refusing to refresh
+        // at all would leave `gr` dead again.
+        let unknown = refresh_args_for(None);
+        assert!(matches!(unknown, Args::None), "got {unknown:?}");
     }
 
     /// The mode joins the magit family rather than copying its chords —

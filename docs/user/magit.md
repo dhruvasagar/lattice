@@ -428,12 +428,13 @@ default, the log does default to `-50` entries, blame dates are
 relative, …) but today it's hardcoded — treat that list as a roadmap
 for options that should exist, not ones that do.
 
-**Two are real**, and they are the first magit registers:
+**Three are real**, and they are the ones magit registers:
 
 | Option | Default | What it does |
 |---|---|---|
 | `magit.hunk.context-lines` | `3` | Unchanged lines of context around each hunk in every patch magit generates — the status buffer's inline `=`, `:magit-diff`, and a commit's detail view. `D` overrides it for one view. |
 | `magit.hunk.syntax-highlight` | `on` | Syntax-highlight the code inside a diff, with the `+` / `-` colouring layered over it. Off gives the flat per-line colouring — every added line one green, every removed line one red — and skips the parse. |
+| `magit.revision-preview` | `on` | Show the file's content while choosing a revision in `C-c f v`. Runs `git show` on the input thread — debounced, so scrolling the picker costs nothing and only settling on a revision fetches. Blobs over 256 KiB are refused with a note. |
 | `ui.diff.line-backgrounds` | `true` | Tint whole rows by what the diff did to them. `false` leaves foreground colouring only, for themes where a full-row wash fights the syntax colours underneath. |
 
 `ui.diff.line-backgrounds` is **not** under `magit.*` on purpose: the

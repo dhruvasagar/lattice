@@ -122,6 +122,9 @@ fn built_in_picker_registry(
     theme_registry: lattice_theme::ThemeRegistryHandle,
 ) -> PickerRegistry {
     let mut reg = PickerRegistry::new();
+    // MG.54: magit's revision picker reads `magit.revision-preview` at
+    // preview time, so it needs its own handle on the registry.
+    let magit_config = Arc::clone(&config);
     for generator in lattice_picker::picker_sources::first_party_generators(
         command_registry,
         config,
@@ -131,7 +134,7 @@ fn built_in_picker_registry(
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
-    lattice_magit::picker_sources::register(&mut reg);
+    lattice_magit::picker_sources::register(&mut reg, Some(magit_config));
     // T.12a: the live-preview theme picker (`:colorscheme` no-arg).
     // Holds a clone of the host's `ThemeRegistryHandle` so it can
     // enumerate registered theme names + drive live preview.

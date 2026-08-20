@@ -67,6 +67,27 @@ lattice_config::options! {
     /// `magit.hunk.context-lines` has.
     #[name("magit.hunk.syntax-highlight")]
     pub MagitHunkSyntaxHighlight: bool = true;
+
+    /// MG.54: show the file's content while choosing a revision in the
+    /// `C-c f v` picker (`:magit-find-file`). On by default.
+    ///
+    /// **This runs `git show <rev>:<path>` on the input thread**, so the
+    /// trade-off is visible here rather than discovered as jank. It is
+    /// affordable because it is *debounced*: arrowing through revisions
+    /// runs nothing at all, and the fetch happens only once the
+    /// selection has sat still for a moment — so a scroll through fifty
+    /// revisions costs one `git show`, not fifty. The cost you can feel
+    /// is a keystroke arriving while that one fetch is in flight, which
+    /// waits for it. Blobs over 256 KiB are refused with a note in the
+    /// pane instead of being fetched.
+    ///
+    /// Turn it off and the picker behaves as it did before: a list of
+    /// revisions, with the file shown only once you accept one.
+    ///
+    /// Read per selection, not at picker-open, so `:set` takes effect
+    /// without reopening the picker.
+    #[name("magit.revision-preview")]
+    pub MagitRevisionPreview: bool = true;
 }
 
 #[cfg(test)]

@@ -279,15 +279,21 @@ pub(crate) fn parse_buffer_name(name: &str) -> Option<(String, PathBuf)> {
     Some((git_ref.to_string(), PathBuf::from(path)))
 }
 
-/// `git show <ref>:<path>` — or, for the `staged` pseudo-ref, `git
-/// show :<path>` (git's own syntax for "stage 0 of the index", i.e.
-/// the staged blob).
-fn run_show_file(workdir: &Path, git_ref: &str, path: &Path) -> String {
-    let spec = if git_ref == "staged" {
+/// The object git wants for "this path at this ref" — or, for the
+/// `staged` pseudo-ref, `:<path>`, git's own syntax for "stage 0 of the
+/// index" (the staged blob). One producer, because the preview path and
+/// the open path must ask git for the same object.
+fn blob_spec(git_ref: &str, path: &Path) -> String {
+    if git_ref == "staged" {
         format!(":{}", path.display())
     } else {
         format!("{git_ref}:{}", path.display())
-    };
+    }
+}
+
+/// `git show <ref>:<path>`.
+fn run_show_file(workdir: &Path, git_ref: &str, path: &Path) -> String {
+    let spec = blob_spec(git_ref, path);
     std::process::Command::new("git")
         .args(["show", &spec])
         .current_dir(workdir)
@@ -296,6 +302,75 @@ fn run_show_file(workdir: &Path, git_ref: &str, path: &Path) -> String {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| format!("Could not show {spec}\n"))
+}
+
+/// MG.54: the biggest blob worth fetching **synchronously** for a
+/// preview. Matches the host's own bounded preview read, so a blob and a
+/// file of the same size cost the same peek.
+const PREVIEW_MAX_BYTES: u64 = 256 * 1024;
+
+/// MG.54: the same blob, fetched for a PREVIEW rather than to open.
+///
+/// Three things separate it from [`run_show_file`], and each is the
+/// reason it is not simply that function with a cap bolted on:
+///
+/// - **It asks the size first.** `git cat-file -s` reads the object
+///   header, not the object, so refusing a 40MB blob costs nothing —
+///   whereas capping the output of `git show` would already have paid
+///   for it. Over the limit it returns a note, which is a preview pane
+///   saying why it is empty rather than an editor that stopped
+///   responding.
+/// - **It never returns raw bytes.** A blob at a revision can be a PNG;
+///   its escape sequences would reach the terminal and corrupt the
+///   alternate screen. NUL ⇒ binary placeholder, control characters
+///   stripped otherwise (tab kept).
+/// - **It is bounded in lines as well as bytes**, since a 200k-line
+///   minified file is under the byte cap and still nothing anyone reads.
+///
+/// Returns `None` when git has no such object — a file that did not
+/// exist at that revision is the ordinary case (it is why you are
+/// looking), and an error pane would be noise. The caller leaves the
+/// previous preview up.
+pub(crate) fn preview_blob(workdir: &Path, git_ref: &str, path: &Path) -> Option<String> {
+    const MAX_LINES: usize = 2000;
+    let spec = blob_spec(git_ref, path);
+    let size = std::process::Command::new("git")
+        .args(["cat-file", "-s", &spec])
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())?;
+    if size > PREVIEW_MAX_BYTES {
+        return Some(format!(
+            "{spec}\n\n{} KiB — too large to preview.\n\
+             Accept the revision to open it, or raise nothing: the limit \
+             exists so choosing a revision never blocks on a fetch.\n",
+            size / 1024
+        ));
+    }
+    let out = std::process::Command::new("git")
+        .args(["show", &spec])
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    if out.stdout.contains(&0) {
+        return Some(format!("{spec}\n\n<binary file — no preview>\n"));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(
+        text.lines()
+            .take(MAX_LINES)
+            .map(|line| {
+                line.chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 #[cfg(test)]
@@ -477,5 +552,104 @@ mod blob_navigation_round_trip {
         // The earlier revision is the file's first, so there is no
         // further step back.
         assert!(blob_step(&revs, &earlier, BlobStep::Previous).is_none());
+    }
+
+    // ── MG.54: the preview fetch and its guards ──────────────────
+
+    /// The ordinary case: the content as it was, not as it is.
+    #[test]
+    fn preview_shows_the_blob_at_that_revision() {
+        let dir = three_commit_repo();
+        let p = dir.path();
+        let revs = file_revisions(p, Path::new("a.txt"));
+        let earlier = blob_step(&revs, &rev(p, "HEAD"), BlobStep::Previous).expect("an earlier");
+
+        assert_eq!(
+            preview_blob(p, &earlier, Path::new("a.txt"))
+                .expect("the blob exists at that revision")
+                .trim(),
+            "one"
+        );
+        assert_eq!(
+            preview_blob(p, "HEAD", Path::new("a.txt"))
+                .expect("HEAD has it too")
+                .trim(),
+            "two"
+        );
+    }
+
+    /// A file that did not exist at that revision is the ORDINARY case —
+    /// it is often why you are looking. `None` (leave the previous
+    /// preview up) rather than an error pane full of git's wording.
+    #[test]
+    fn a_path_absent_at_that_revision_previews_nothing() {
+        let dir = three_commit_repo();
+        let p = dir.path();
+        assert!(
+            preview_blob(p, "HEAD", Path::new("never-existed.txt")).is_none(),
+            "no object ⇒ no preview, not an error pane"
+        );
+    }
+
+    /// The size guard reads the object HEADER (`cat-file -s`), so
+    /// refusing costs nothing — the point is that the big blob is never
+    /// fetched, on a path that runs synchronously on the actor thread.
+    #[test]
+    fn an_oversized_blob_is_refused_with_a_note_instead_of_fetched() {
+        let dir = three_commit_repo();
+        let p = dir.path();
+        let big = "x".repeat(PREVIEW_MAX_BYTES as usize + 1024);
+        std::fs::write(p.join("big.txt"), &big).unwrap();
+        git_ok(p, &["add", "big.txt"]);
+        git_ok(p, &["commit", "-m", "big"]);
+
+        let out = preview_blob(p, "HEAD", Path::new("big.txt")).expect("a note, not nothing");
+        assert!(
+            out.contains("too large to preview"),
+            "the pane must say why it is empty; got {out:?}"
+        );
+        assert!(
+            !out.contains("xxxx"),
+            "the blob itself must not have been fetched"
+        );
+    }
+
+    /// A blob at a revision can be a PNG. Its bytes would reach the
+    /// terminal and corrupt the alternate screen, so binary gets a
+    /// placeholder — the same answer the host's file preview gives.
+    #[test]
+    fn a_binary_blob_previews_as_a_placeholder() {
+        let dir = three_commit_repo();
+        let p = dir.path();
+        std::fs::write(p.join("bin.dat"), [0x89u8, 0x50, 0x00, 0x1b, 0x5b, 0x41]).unwrap();
+        git_ok(p, &["add", "bin.dat"]);
+        git_ok(p, &["commit", "-m", "bin"]);
+
+        let out = preview_blob(p, "HEAD", Path::new("bin.dat")).expect("a placeholder");
+        assert!(out.contains("binary"), "got {out:?}");
+        assert!(
+            !out.contains('\u{1b}'),
+            "an escape byte must never reach the pane"
+        );
+    }
+
+    /// Control characters in a *text* blob are stripped too — a "text"
+    /// file carrying a stray escape is the case that leaves garbage on
+    /// screen precisely because it passes the binary check.
+    #[test]
+    fn escape_bytes_in_a_text_blob_are_stripped() {
+        let dir = three_commit_repo();
+        let p = dir.path();
+        std::fs::write(p.join("sneaky.txt"), "before\u{1b}[31mafter\n\tkept\n").unwrap();
+        git_ok(p, &["add", "sneaky.txt"]);
+        git_ok(p, &["commit", "-m", "sneaky"]);
+
+        let out = preview_blob(p, "HEAD", Path::new("sneaky.txt")).expect("text");
+        // Only the ESC byte is removed; `[31m` is printable and stays,
+        // which is the same trade the host's own bounded file preview
+        // makes — the terminal is protected, the text is not rewritten.
+        assert!(!out.contains('\u{1b}'), "escape stripped; got {out:?}");
+        assert!(out.contains("before[31mafter"), "the text itself survives");
+        assert!(out.contains('\t'), "tabs are kept — they are layout");
     }
 }

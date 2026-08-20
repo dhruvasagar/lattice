@@ -9,7 +9,7 @@ related: [magit, magit-file-revision]
 
 | How | What |
 |---|---|
-| `C-c f` then `v` | The file you are visiting, at a revision you type |
+| `C-c f` then `v` | The file you are visiting, at a revision you pick |
 | `:magit-find-file <rev> <path>` | Any file, at any revision |
 | `<CR>` on a file in a diff / revision view | That file at that view's revision |
 | `gj` / `gk` once here | Walk to the next / previous revision of it |
@@ -28,6 +28,33 @@ The headerline reads `src/main.rs  @  a1b2c3d`, or `@  index` for a
 staged blob. That row is load-bearing here: this buffer's *content*
 looks exactly like the live file, so without the header there is
 nothing on screen to tell you you're not editing the real thing.
+
+## Choosing the revision, with the file in front of you
+
+`C-c f v` opens a picker over revisions — branches and tags first, then
+recent commits. As you move down it, **the pane shows the file as it was
+at the highlighted revision**, so you can tell two candidates apart
+without accepting either. Accept and that same content becomes the real
+buffer; `<Esc>` and the pane snaps back to what you were reading, which
+was never disturbed.
+
+The preview waits for you to stop moving. Arrowing quickly through
+twenty revisions runs nothing at all; land on one, pause, and the
+content appears. That is deliberate — the fetch is a `git show` on the
+input thread, and doing it per keypress is what a scroll would cost
+otherwise. The one moment you can feel it is a keystroke arriving while
+that single fetch is in flight.
+
+| Situation | What the pane shows |
+|---|---|
+| The file did not exist at that revision | the previous preview stays up — nothing to show is not an error |
+| The blob is over 256 KiB | a note saying so; accept the revision to open it properly |
+| The blob is binary at that revision | `<binary file — no preview>` |
+
+Turn it off with `:set magit.revision-preview=off` — the picker then
+behaves as it did before: a list of revisions, and the file only once
+you accept one. The setting is read as the selection moves, so it takes
+effect without reopening the picker.
 
 ## How you get here
 

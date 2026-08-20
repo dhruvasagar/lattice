@@ -9,6 +9,7 @@
 //! `action:magit-branch-create-finish` (registered in
 //! `magit_global_mode`) to read back.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_completion::{CandidateKind, RawCandidate};
@@ -385,7 +386,16 @@ pub(crate) fn picked_line(command: &str, value: &str) -> String {
 /// is host-owned and populated by name at boot (no generic
 /// `SubsystemBoot` seam for pickers today), so this is the
 /// established shape for a feature crate to contribute a source.
-pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
+/// MG.54: `config` reaches the revision source so it can read
+/// `magit.revision-preview` at preview time. Passed in rather than
+/// looked up because the picker registry is populated at boot, before
+/// any service registry the source could consult exists — and because
+/// the option is this crate's, so this crate reads it (the host learns
+/// nothing about magit's options).
+pub fn register(
+    picker_registry: &mut lattice_picker::PickerRegistry,
+    config: Option<Arc<lattice_config::ConfigRegistry>>,
+) {
     picker_registry.register_generator(Arc::new(BranchPickBaseSource::new()));
     picker_registry.register_generator(Arc::new(BranchCheckoutSource::new()));
     // MG.32: the rest of the branch transient's picker-backed rows.
@@ -404,7 +414,12 @@ pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Tags)));
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Remotes)));
     picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::AllRefs)));
-    picker_registry.register_generator(Arc::new(RefPickSource::new(RefScope::Revisions)));
+    // MG.54: the revision scope is the one that previews (`C-c f v`), so
+    // it is the one that needs the config handle.
+    picker_registry.register_generator(Arc::new(RefPickSource::with_config(
+        RefScope::Revisions,
+        config,
+    )));
 }
 
 /// MG.23j: `:picker magit-commit <ex-command>` — pick a commit, then
@@ -779,7 +794,7 @@ mod tests {
     #[test]
     fn magit_registers_exactly_the_sources_its_rows_open() {
         let mut registry = lattice_picker::PickerRegistry::new();
-        register(&mut registry);
+        register(&mut registry, None);
         let mut ids: Vec<&str> = registry.ids().collect();
         ids.sort_unstable();
 
@@ -852,7 +867,7 @@ mod tests {
     #[test]
     fn a_source_that_needs_an_ex_command_declares_it() {
         let mut registry = lattice_picker::PickerRegistry::new();
-        register(&mut registry);
+        register(&mut registry, None);
         let buffer = lattice_core::Buffer::empty();
         let ctx = empty_picker_ctx(&buffer);
         let ids: Vec<String> = registry.ids().map(str::to_string).collect();
@@ -947,6 +962,90 @@ mod tests {
             "cmd x {}",
             "one pick fills one slot"
         );
+    }
+
+    /// MG.54: the preview answers `magit-find-file` and nothing else.
+    ///
+    /// The same `magit-revision` source fills `magit-checkout` (moves
+    /// HEAD) and `magit-file-checkout` (overwrites the working tree).
+    /// Showing a file's content beside either invites reading the pane
+    /// as "this is what you'll get", when what you get is that content
+    /// written over uncommitted work. This is the guard, so it is pinned
+    /// against every line the menu rows actually build.
+    #[test]
+    fn only_the_find_file_line_is_previewable() {
+        use super::find_file_preview_target;
+        let (rev, path) =
+            find_file_preview_target("magit-find-file abc123 src/main.rs").expect("previewable");
+        assert_eq!(rev, "abc123");
+        assert_eq!(path, std::path::Path::new("src/main.rs"));
+
+        // The lines the other two rows build, verbatim from
+        // `magit_global_mode` (`picked_line` has already substituted).
+        assert!(
+            find_file_preview_target("magit-checkout main").is_none(),
+            "a checkout is an action, not a question about a file"
+        );
+        assert!(
+            find_file_preview_target("magit-file-checkout abc123 src/main.rs").is_none(),
+            "file-checkout OVERWRITES that path — previewing it reads as a promise"
+        );
+        // Malformed / partial lines refuse rather than fetching `HEAD:`.
+        assert!(find_file_preview_target("magit-find-file abc123").is_none());
+        assert!(find_file_preview_target("magit-find-file  ").is_none());
+        assert!(find_file_preview_target("magit-find-files x y").is_none());
+    }
+
+    /// A path with spaces survives: everything after the revision is the
+    /// path, because splitting on every space would truncate it.
+    #[test]
+    fn a_path_with_spaces_is_kept_whole() {
+        let (rev, path) = super::find_file_preview_target("magit-find-file HEAD my dir/a b.rs")
+            .expect("previewable");
+        assert_eq!(rev, "HEAD");
+        assert_eq!(path, std::path::Path::new("my dir/a b.rs"));
+    }
+
+    /// The window and the fetch are gated by the SAME switch. If they
+    /// could disagree, turning the option off would still arm a timer on
+    /// every arrow key (or worse, leave the fetch reachable inline).
+    #[test]
+    fn the_option_gates_the_window_and_the_fetch_together() {
+        use super::{RefPickSource, RefScope};
+        use lattice_picker::PickerSourceGenerator;
+
+        let config = std::sync::Arc::new(lattice_config::ConfigRegistry::new());
+        // `options! { … }` is a compile-time declaration; this is what
+        // makes it a runtime fact in a registry.
+        config.init_from_linkme();
+        let src =
+            RefPickSource::with_config(RefScope::Revisions, Some(std::sync::Arc::clone(&config)));
+        assert!(
+            src.preview_debounce().is_some(),
+            "on by default ⇒ the settle window is declared"
+        );
+
+        config
+            .set_typed::<crate::options::MagitRevisionPreview>(false)
+            .expect("option is registered");
+        assert!(
+            src.preview_debounce().is_none(),
+            "off ⇒ no window, so no timer per selection move either"
+        );
+    }
+
+    /// The other scopes never preview, whatever the option says — they
+    /// list tags / remotes / refs, and none of those is a file.
+    #[test]
+    fn only_the_revision_scope_declares_a_settle_window() {
+        use super::{RefPickSource, RefScope};
+        use lattice_picker::PickerSourceGenerator;
+        for scope in [RefScope::Tags, RefScope::Remotes, RefScope::AllRefs] {
+            assert!(
+                RefPickSource::new(scope).preview_debounce().is_none(),
+                "{scope:?} has nothing to preview"
+            );
+        }
     }
 
     #[test]
@@ -1210,6 +1309,12 @@ impl PickerSourceGenerator for BranchPickSource {
 pub struct RefPickSource {
     spec: PickerSourceSpec,
     which: RefScope,
+    /// MG.54: read at PREVIEW time for `magit.revision-preview`, so
+    /// `:set` lands on the next selection rather than the next picker.
+    /// `None` in a stripped harness (no config registry), which resolves
+    /// to the option's own default — a test rig should behave like a
+    /// default install.
+    config: Option<Arc<lattice_config::ConfigRegistry>>,
 }
 
 /// What a [`RefPickSource`] lists.
@@ -1244,6 +1349,13 @@ pub const REVISION_PICK_SOURCE: &str = "magit-revision";
 
 impl RefPickSource {
     pub fn new(which: RefScope) -> Self {
+        Self::with_config(which, None)
+    }
+
+    pub fn with_config(
+        which: RefScope,
+        config: Option<Arc<lattice_config::ConfigRegistry>>,
+    ) -> Self {
         let (id, doc, noun) = match which {
             RefScope::Tags => (
                 TAG_PICK_SOURCE,
@@ -1270,6 +1382,7 @@ impl RefPickSource {
         Self {
             spec: takes_ex_command(id, doc, noun),
             which,
+            config,
         }
     }
 
@@ -1281,6 +1394,34 @@ impl RefPickSource {
             RefScope::Revisions => REVISION_PICK_SOURCE,
         }
     }
+
+    /// MG.54: is the revision preview switched on? A missing config
+    /// registry resolves to the option's default, not `false`.
+    fn preview_enabled(&self) -> bool {
+        self.config
+            .as_ref()
+            .and_then(|c| c.get_typed::<crate::options::MagitRevisionPreview>())
+            .map(|v| *v)
+            .unwrap_or(true)
+    }
+}
+
+/// MG.54: the ex-line this picker will run, split into the revision and
+/// the file — but ONLY for `magit-find-file`, the one command whose
+/// answer is a file's content.
+///
+/// The same `magit-revision` source also fills `magit-checkout` and
+/// `magit-file-checkout`. Those are *actions*: one moves HEAD, the other
+/// overwrites the working tree. Previewing a checkout would mean showing
+/// a file the command is about to replace, which invites reading the
+/// pane as "this is what you'll get" when what you get is the file
+/// written over your uncommitted work. Matching on the command name is
+/// what keeps the preview to the question it can actually answer.
+fn find_file_preview_target(line: &str) -> Option<(String, PathBuf)> {
+    let rest = line.strip_prefix("magit-find-file ")?;
+    let (rev, path) = rest.trim().split_once(char::is_whitespace)?;
+    let path = path.trim();
+    (!rev.is_empty() && !path.is_empty()).then(|| (rev.to_string(), PathBuf::from(path)))
 }
 
 impl PickerSourceGenerator for RefPickSource {
@@ -1372,5 +1513,54 @@ impl PickerSourceGenerator for RefPickSource {
                 self.id()
             )),
         }
+    }
+
+    /// MG.54: `C-c f v` used to show nothing until you accepted, so
+    /// choosing between two revisions meant accepting one, looking,
+    /// going back, and accepting the other. This answers the question
+    /// the picker is asking.
+    ///
+    /// Synchronous `git show`, which is only sound because the host does
+    /// not call this while the selection is moving — see
+    /// [`Self::preview_debounce`]. The blob fetch itself is guarded
+    /// (size, binary, line count) by `preview_blob`.
+    ///
+    /// The preview buffer takes the name `magit-find-file` would give
+    /// the real one, so what the pane says while you are choosing is
+    /// what the buffer is called once you accept.
+    fn preview(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> Option<lattice_picker::PickerPreviewOutcome> {
+        if self.which != RefScope::Revisions || !self.preview_enabled() {
+            return None;
+        }
+        let RoutingPayload::InvokeCommand { id, .. } = routing else {
+            return None;
+        };
+        let (rev, path) = find_file_preview_target(id)?;
+        let workdir = crate::workdir::magit_workdir()?;
+        let text = crate::magit_file_revision_mode::preview_blob(&workdir, &rev, &path)?;
+        Some(lattice_picker::PickerPreviewOutcome::Buffer {
+            name: crate::magit_file_revision_mode::blob_buffer_name(&rev, &path),
+            text,
+            syntax_path: Some(path),
+        })
+    }
+
+    /// MG.54: never while the user is still moving.
+    ///
+    /// `git show` on every arrow key would be a subprocess per keystroke
+    /// on the actor thread. Declaring the window means a scroll through
+    /// fifty revisions spawns nothing at all, and the one fetch that
+    /// does run is for the revision the user stopped on — so there is
+    /// nothing to cancel and no stale result to discard.
+    ///
+    /// `None` when the feature is off, so a user who turns it off pays
+    /// for no timers either. The other scopes never previewed.
+    fn preview_debounce(&self) -> Option<std::time::Duration> {
+        (self.which == RefScope::Revisions && self.preview_enabled())
+            .then(|| std::time::Duration::from_millis(150))
     }
 }

@@ -59,6 +59,7 @@ mod tests {
             range: None,
             register: Register::default(),
             count: Count::default(),
+            buffer_id: lattice_core::BufferId::default(),
             cancel: CancellationToken::new(),
         }
     }

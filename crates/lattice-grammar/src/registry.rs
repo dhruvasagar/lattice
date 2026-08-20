@@ -371,6 +371,24 @@ pub struct ExCommandContext {
     pub range: Option<crate::range::Range>,
     pub register: Register,
     pub count: Count,
+    /// The buffer the `:` line was submitted from (MR.2) — the same
+    /// fact [`ActionContext::buffer_id`] carries, filled from the same
+    /// place in [`crate::dispatcher::execute`].
+    ///
+    /// It was absent, and the absence was an asymmetry rather than a
+    /// decision: vim's ex-commands are buffer-scoped by definition
+    /// (`:w`, `:%s`, `:bd`), the `:` line is a parser front-end onto the
+    /// one dispatcher (design §5.2.1), and a command reached that way
+    /// was seeing strictly less than the same command reached by a
+    /// chord. `:magit-status` is what found it: it must open the
+    /// repository of the buffer you are looking at, and via `:` it could
+    /// not name that buffer at all.
+    ///
+    /// Deliberately just the id: an ex-command that needs the buffer's
+    /// text, path or name resolves it through a handle it captured at
+    /// boot (`SubsystemBoot::buffer_store`), which keeps this context
+    /// free of services and keeps `lattice-grammar` unaware of them.
+    pub buffer_id: BufferId,
     pub cancel: crate::CancellationToken,
 }
 
@@ -1164,6 +1182,7 @@ mod tests {
             range: None,
             register: Register::default(),
             count: Count::default(),
+            buffer_id: BufferId::default(),
             cancel: crate::CancellationToken::new(),
         };
         match (spec.apply)(&ctx) {

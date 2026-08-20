@@ -111,6 +111,7 @@ fn invoke(commands: &CommandRegistryHandle, name: &str, arg: Option<&str>) -> Ef
         range: None,
         register: Register::default(),
         count: Count(1),
+        buffer_id: lattice_core::BufferId::default(),
         cancel: CancellationToken::never(),
     };
     (spec.apply)(&ctx).expect("apply returns an effect")

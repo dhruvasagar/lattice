@@ -102,7 +102,7 @@ pub fn execute_with_env(
             cancel,
             env,
         ),
-        CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
+        CommandKind::ExCommand => execute_ex_command(&invocation, buffer_id, entry, cancel),
         CommandKind::Action => {
             execute_action(document, buffer_id, cursor, &invocation, entry, cancel, env)
         }
@@ -190,6 +190,7 @@ pub fn execute_motion_only(
 
 fn execute_ex_command(
     invocation: &CommandInvocation,
+    buffer_id: BufferId,
     entry: &CommandEntry,
     cancel: &CancellationToken,
 ) -> GrammarResult<Effect> {
@@ -200,6 +201,12 @@ fn execute_ex_command(
         range: invocation.range.clone(),
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
+        // MR.2: the buffer the `:` line was submitted from — the same
+        // `buffer_id` the Action arm above passes on, from the same
+        // parameter. An ex-command that acts on "the thing in front of
+        // you" (`:magit-status` and the magit views after it) has no
+        // other way to ask.
+        buffer_id,
         cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)
@@ -868,6 +875,62 @@ mod tests {
             Effect::AppAction(AppEffect::Quit) => {}
             other => panic!("expected Effect::AppAction(Quit), got {other:?}"),
         }
+    }
+
+    /// MR.2: an ex-command sees the buffer its `:` line was submitted
+    /// from — the same id the Action arm beside it receives, from the
+    /// same parameter.
+    ///
+    /// Asserted through `execute` rather than by building a context by
+    /// hand: the fact was *available* here all along and simply not
+    /// forwarded, so the only thing worth pinning is the forwarding. A
+    /// test that constructed the context itself would pass on the broken
+    /// version too.
+    ///
+    /// Non-zero on purpose: `BufferId::default()` is 0, so a wiring that
+    /// dropped the value and defaulted it would still match.
+    #[test]
+    fn an_ex_command_sees_the_buffer_it_was_invoked_from() {
+        let seen: Arc<std::sync::Mutex<Option<lattice_core::BufferId>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        let mut registry = CommandRegistry::new();
+        let id = registry.register_ex_command(
+            "test:which-buffer",
+            "records the buffer it fired in",
+            crate::registry::ExCommandSpec {
+                latency_class: crate::command::LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|_line, _bang| Ok(crate::args::Args::None)),
+                apply: {
+                    let seen = seen.clone();
+                    Arc::new(move |ctx| {
+                        *seen.lock().unwrap() = Some(ctx.buffer_id);
+                        Ok(Effect::None)
+                    })
+                },
+                args_schema: vec![],
+                surface_form: crate::registry::SurfaceForm::Keyword,
+            },
+        );
+
+        let mut doc = lattice_core::Document::empty();
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(42),
+            Position::ZERO,
+            CommandInvocation::of(id.0),
+            &CancellationToken::never(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(lattice_core::BufferId(42)),
+            "the ex-command must be told which buffer it ran in"
+        );
     }
 
     /// `require_action`'s kind-mismatch path: dispatching a motion

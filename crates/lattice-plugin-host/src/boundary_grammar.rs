@@ -296,6 +296,7 @@ mod tests {
             range: None,
             register: Register::Unnamed,
             count: Count(1),
+            buffer_id: lattice_core::BufferId::default(),
             cancel: CancellationToken::never(),
         };
         let wit = project_ex_command_context(&ctx).unwrap();

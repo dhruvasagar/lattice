@@ -29525,6 +29525,15 @@ impl Editor {
     /// runs the generic open, so no provider-specific host method is needed. The
     /// mode must be registered at boot.
     pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        // Was this buffer already around? `ensure_named_synthetic_document`
+        // returns an existing buffer by name WITHOUT re-activating its major,
+        // so the mode's `on_activate` — which is what fills the buffer — runs
+        // on the first open only. For a view whose content is a snapshot of
+        // external state that made every later open a time capsule: `C-x g`
+        // on an open `*magit:status*` showed the repo as it was when the
+        // buffer was created. Asked before the ensure, since after it the
+        // two cases are indistinguishable.
+        let reused = self.buffers.by_name(name).is_some();
         let id = self.ensure_named_synthetic_document(
             name,
             lattice_mode::ModeId::new(mode_id),
@@ -29557,6 +29566,84 @@ impl Editor {
             });
         }
         self.activate_buffer(id);
+        if reused {
+            self.refresh_reopened_view(id);
+        }
+    }
+
+    /// Re-run a reopened view's refresh, when its mode asked for that
+    /// via [`Mode::refresh_on_open`](lattice_mode::Mode::refresh_on_open).
+    ///
+    /// Reuses the machinery `gr` already uses — `resolve_refresh_action`
+    /// walks the buffer's active modes for the declared target, and the
+    /// handler registry holds the body. So a mode gets refresh-on-open
+    /// by declaring one bool beside the action it already declares; the
+    /// host learns nothing about what any particular view refreshes.
+    ///
+    /// **The body must be self-contained.** This path has no
+    /// `DispatchOutcome` to route renderer-coupled effects through
+    /// (`OpenBuffer`, `OpenPicker`, …), and half-applying them
+    /// host-side is the trap that silently no-op'd `<CR>` after M.10.3.
+    /// A refresh that returns an effect is therefore a wiring error and
+    /// is logged as one rather than partially honoured — the contract is
+    /// documented on `refresh_on_open`, and magit's refresh (which
+    /// spawns its git work and returns `None`) satisfies it.
+    fn refresh_reopened_view(&mut self, buffer_id: BufferId) {
+        let wants = self
+            .active_modes
+            .get(&buffer_id)
+            .map(|modes| {
+                let registry = self.mode_registry.load();
+                modes
+                    .minors()
+                    .iter()
+                    .copied()
+                    .chain(modes.major())
+                    .filter_map(|id| registry.get(id))
+                    .any(|m| m.refresh_on_open())
+            })
+            .unwrap_or(false);
+        if !wants {
+            return;
+        }
+        let Some(command) = self.resolve_refresh_action(buffer_id) else {
+            // Declared `refresh_on_open` with no `refresh_action` to run.
+            // The two are read together, so this is a mode-wiring gap
+            // rather than a user-visible failure — say so once, here,
+            // instead of leaving a silently inert declaration.
+            tracing::debug!(
+                ?buffer_id,
+                "refresh_on_open declared but no refresh_action resolves; nothing to re-run"
+            );
+            return;
+        };
+        let Some(handlers) = self
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()
+        else {
+            return;
+        };
+        let Some(handler) = handlers.lookup(command) else {
+            return;
+        };
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(buffer_id.0 as u64),
+            cursor: self.cursor,
+            selection: None,
+            services: &self.services,
+            events: &self.event_bus,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+        if let Some(effect) = handler(&ctx) {
+            tracing::warn!(
+                ?buffer_id,
+                ?effect,
+                "a refresh-on-open body returned an effect; refresh-on-open bodies must be \
+                 self-contained (spawn their own work and return None) because this path has \
+                 no dispatch outcome to route renderer-coupled effects through"
+            );
+        }
     }
 
     /// `:ai-log [provider]` -- open the AI log buffer. 0 known

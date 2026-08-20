@@ -1277,6 +1277,32 @@ impl Mode for MagitCoreMode {
         Some("action:magit-refresh")
     }
 
+    /// Re-opening a magit buffer re-runs that refresh.
+    ///
+    /// Every magit view's content is a snapshot of the repository, and
+    /// synthetic buffers are created once and reused by name — so the
+    /// mode's `on_activate`, which fills the buffer, ran on the first
+    /// open only. `C-x g` on an already-open `*magit:status*` therefore
+    /// showed the repo as it was when the buffer was first created:
+    /// commits made since, files staged in a terminal, a branch switch,
+    /// none of it visible, and nothing on screen saying the view was
+    /// old. Reported from use, and the failure is quiet by nature — a
+    /// stale status buffer looks exactly like a current one.
+    ///
+    /// Declared here rather than per-view for the same reason
+    /// `refresh_action` is: it is true of every magit buffer (status,
+    /// log, branch, stash, diff, …), and the copied-set gap this rule
+    /// prevents is precisely the one where a view is left out and nobody
+    /// notices.
+    ///
+    /// The body satisfies the self-contained contract: `trigger_refresh`
+    /// spawns the git work off-thread and returns no effect, so nothing
+    /// on this path needs the dispatch outcome — and the refresh costs
+    /// the actor thread nothing.
+    fn refresh_on_open(&self) -> bool {
+        true
+    }
+
     /// MG.13: every magit-core chord, registered once at boot.
     ///
     /// None of these need per-buffer state — they read the buffer

@@ -419,6 +419,42 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// Should re-opening this view **re-run its refresh**?
+    ///
+    /// A synthetic buffer is created once and reused: the host's
+    /// `ensure_named_synthetic_document` returns the existing buffer by
+    /// name, so a mode's `on_activate` — which is what fills the buffer
+    /// — runs on the FIRST open only. For a view whose content is a
+    /// snapshot of external state, that makes every later open a time
+    /// capsule: `C-x g` on an already-open `*magit:status*` showed the
+    /// repository as it was when the buffer was first created, with
+    /// nothing on screen saying so.
+    ///
+    /// Returning `true` makes the host dispatch this mode's declared
+    /// [`refresh_action`](Self::refresh_action) after an open that
+    /// **reused** an existing buffer. First opens are untouched:
+    /// `on_activate` has just built the content, and refreshing again
+    /// would be a second scan for the same answer.
+    ///
+    /// **Opt-in, and only for content derived from outside the editor.**
+    /// A view whose content is authored in the editor (a help page, a
+    /// transcript, `*messages*`) has nothing to re-derive, and refreshing
+    /// it would discard scroll position for no gain.
+    ///
+    /// **The contract on the body:** a refresh reached this way must be
+    /// self-contained — spawn its own work and return no `Effect`. This
+    /// path has no dispatch outcome to route renderer-coupled effects
+    /// through (`OpenBuffer`, `OpenPicker`, …), so a returned effect is
+    /// logged as a wiring error rather than half-applied. Magit's
+    /// refresh satisfies this: it spawns the git work and returns
+    /// `None`.
+    ///
+    /// Declaring `true` without a `refresh_action` does nothing; the two
+    /// are read together.
+    fn refresh_on_open(&self) -> bool {
+        false
+    }
+
     /// MA.1: a *minor* mode's default auto-activation policy
     /// (mode-architecture.md §7.4). The host's minor-activation
     /// resolver reads this for every registered minor when a buffer
@@ -504,6 +540,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
     fn refresh_action(&self) -> Option<&'static str>;
+    fn refresh_on_open(&self) -> bool;
     fn activation_policy(&self) -> ActivationPolicy;
     fn editable_tail(&self) -> Option<EditableTail>;
 
@@ -562,6 +599,9 @@ impl<M: Mode> DynMode for M {
     }
     fn refresh_action(&self) -> Option<&'static str> {
         <M as Mode>::refresh_action(self)
+    }
+    fn refresh_on_open(&self) -> bool {
+        <M as Mode>::refresh_on_open(self)
     }
     fn activation_policy(&self) -> ActivationPolicy {
         <M as Mode>::activation_policy(self)

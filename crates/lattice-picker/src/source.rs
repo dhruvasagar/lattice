@@ -429,11 +429,40 @@ pub trait PickerSourceGenerator: Send + Sync {
     /// a candidate (before accept). Default None = no preview. A source
     /// returns an outcome the host applies immediately for a live preview;
     /// the host restores prior state on <Esc>.
+    ///
+    /// **This runs on the editor's actor thread, synchronously.** Read
+    /// what is already in hand and return; a source that must *do*
+    /// something to answer (spawn git, read a file, walk an index)
+    /// declares [`preview_debounce`](Self::preview_debounce) so the host
+    /// asks only once the selection has settled.
     fn preview(
         &self,
         _ctx: &PickerContext<'_>,
         _routing: &RoutingPayload,
-    ) -> Option<crate::outcome::PickerAcceptOutcome> {
+    ) -> Option<crate::outcome::PickerPreviewOutcome> {
+        None
+    }
+
+    /// MG.54: how long the selection must sit still before the host
+    /// calls [`preview`](Self::preview). `None` (the default) = call it
+    /// inline on every selection move, which is right for a source whose
+    /// preview is a cheap projection of data it already holds.
+    ///
+    /// **What this buys is not a faster call — it is no call at all.**
+    /// Arrowing through candidates restarts the timer; a source that
+    /// spawns a subprocess to answer therefore spawns ZERO of them while
+    /// the user is scrolling, and exactly one when they stop. That is
+    /// what makes a synchronous, subprocess-backed preview viable: there
+    /// is never an in-flight call to cancel and never a stale result to
+    /// race, because the only call ever made is for the candidate the
+    /// user is already sitting on.
+    ///
+    /// The residual cost is real and deliberate: a keystroke arriving
+    /// while the settled fetch is running waits for it. Bounded to one
+    /// fetch per settle, never a queue. A source declaring this owes its
+    /// user an option to turn the feature off, and a guard on how much
+    /// work the fetch can be.
+    fn preview_debounce(&self) -> Option<std::time::Duration> {
         None
     }
 }

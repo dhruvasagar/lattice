@@ -60,7 +60,7 @@ pub use mru::{
     DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, MruPersistError,
     PickerMruIndex, bonus_of, default_persist_path, routing_identity,
 };
-pub use outcome::{FillTarget, OpenTarget, PickerAcceptOutcome};
+pub use outcome::{FillTarget, OpenTarget, PickerAcceptOutcome, PickerPreviewOutcome};
 pub use picker_sources::{FILE_PICK_SOURCE, YANK_RING_SOURCE};
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,
@@ -482,6 +482,20 @@ pub struct Picker {
     /// could be walked to with `<C-n>` and fired with `<CR>`, and did
     /// nothing at all when its own keys were pressed.
     pub transient_prefix: String,
+    /// MG.54: when this picker's DEFERRED preview is due.
+    ///
+    /// Set only for a source that declares
+    /// [`PickerSourceGenerator::preview_debounce`](source::PickerSourceGenerator::preview_debounce)
+    /// — a source whose preview costs real work, which the settle window
+    /// lets the host skip entirely while the selection is moving.
+    ///
+    /// **It lives on the picker, not on the host.** A deadline is only
+    /// ever meaningful for the selection that armed it, so tying its
+    /// lifetime to the picker's makes "a settle fired into the picker
+    /// that replaced mine" unrepresentable rather than something two
+    /// host-side clear sites have to remember. Dismiss drops the picker
+    /// and the deadline goes with it.
+    preview_settle_until: Option<std::time::Instant>,
 }
 
 impl Picker {
@@ -505,7 +519,43 @@ impl Picker {
             transient_stack: Vec::new(),
             transient_selected: 0,
             transient_prefix: String::new(),
+            preview_settle_until: None,
         }
+    }
+
+    /// MG.54: (re)start this picker's preview settle window.
+    ///
+    /// Called on every selection move for a source that declares a
+    /// window. Each call pushes the deadline out, so a burst of moves
+    /// leaves exactly one due time — the moment the user stopped.
+    ///
+    /// The host still schedules the wake (it owns the runtime), but the
+    /// policy and the state are the picker's, so every picker — first
+    /// party, plugin, one written next year — gets the same behaviour
+    /// from declaring the window alone.
+    pub fn arm_preview_settle(&mut self, delay: std::time::Duration) {
+        self.preview_settle_until = Some(std::time::Instant::now() + delay);
+    }
+
+    /// MG.54: has the settle window elapsed? Consumes the deadline when
+    /// it has, so the preview runs once per settle no matter how many
+    /// wakes arrive — a burst of N moves schedules N wakes, and the N-1
+    /// superseded ones find the deadline still in the future.
+    pub fn take_due_preview_settle(&mut self, now: std::time::Instant) -> bool {
+        match self.preview_settle_until {
+            Some(deadline) if now >= deadline => {
+                self.preview_settle_until = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// MG.54: whether a deferred preview is waiting on this picker.
+    /// Read by tests and by the host's "is anything pending" checks; the
+    /// deadline itself is deliberately not exposed.
+    pub fn preview_settle_pending(&self) -> bool {
+        self.preview_settle_until.is_some()
     }
 
     /// Unwind one level of transient state: a half-typed multi-key row

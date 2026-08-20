@@ -67,6 +67,55 @@ pub enum OpenTarget {
     Tab,
 }
 
+/// MG.54: result of [`PickerSourceGenerator::preview`], the hook that
+/// fires as the SELECTION moves rather than on `<CR>`.
+///
+/// **Deliberately not [`PickerAcceptOutcome`]**, which it used to be.
+/// That enum answers "what does accepting this candidate do", and it
+/// worked as a preview vocabulary only by the accident that
+/// `ApplyColorscheme` happens to mean the same thing in both contexts.
+/// Showing text in a pane does not: it is a projection the host tears
+/// down on `<Esc>`, never something a `<CR>` performs. Adding it to the
+/// accept enum would have put a variant there that no accept path can
+/// honour — and the next preview-only payload would have compounded it.
+///
+/// A plugin source implementing `preview` therefore gets a type whose
+/// every variant is valid where it is returned (paramount #2).
+///
+/// [`PickerSourceGenerator::preview`]: crate::source::PickerSourceGenerator::preview
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerPreviewOutcome {
+    /// T.12: apply the named theme while the selection sits on it. The
+    /// host snapshots the pre-open theme on the first preview and
+    /// restores it on `<Esc>`. Swaps the GLOBAL theme, not a buffer, so
+    /// it is orthogonal to the buffer projection below.
+    Colorscheme { name: String },
+    /// MG.54: show `text` in the active pane as a read-only projection
+    /// — the pane's committed buffer is untouched and snaps back when
+    /// the picker closes.
+    ///
+    /// For content that has no file to read: a git blob at a revision,
+    /// a generated listing, a plugin's rendering. `syntax_path` is the
+    /// path the content *would* have (`src/main.rs` for
+    /// `git show HEAD:src/main.rs`) and drives language detection only;
+    /// nothing reads it from disk. `None` previews as plain text.
+    ///
+    /// The source hands over text it has ALREADY fetched. Whatever it
+    /// costs to produce is the source's problem, and a source whose
+    /// production is expensive says so via
+    /// [`PickerSourceGenerator::preview_debounce`] so the host only
+    /// asks once the selection settles.
+    ///
+    /// [`PickerSourceGenerator::preview_debounce`]: crate::source::PickerSourceGenerator::preview_debounce
+    Buffer {
+        /// Synthetic buffer name, shown wherever a buffer's name is
+        /// (`*magit:file:HEAD:src/main.rs*`).
+        name: String,
+        text: String,
+        syntax_path: Option<PathBuf>,
+    },
+}
+
 /// Result of `PickerSourceGenerator::accept`. The host
 /// pattern-matches and runs the corresponding mutation.
 ///

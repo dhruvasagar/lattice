@@ -16381,6 +16381,9 @@ impl Editor {
         // Last App-resident drain to migrate; both peers now reach
         // every per-tick drain through this aggregator.
         signals.extend(self.drain_pending_live_picker_query());
+        // MG.54: the selection-settle peer of the query debounce above —
+        // fires a deferred preview once the user stops arrowing.
+        signals.extend(self.drain_pending_preview_settle());
         // IDE-protocol I1.1: run mode-registered per-tick drain closures
         // (the generic tick-callback registry) and apply their effects.
         // No-op until a mode registers one (e.g. the Claude Code IDE
@@ -22554,7 +22557,92 @@ impl Editor {
     /// picker sources not yet migrated to set the field —
     /// slices 9-17), reverts to the pre-7g buffer-switcher-
     /// only path keyed on `RoutingPayload::Buffer`.
+    /// MG.54: selection-move entry point. A source that declares
+    /// [`preview_debounce`](lattice_picker::PickerSourceGenerator::preview_debounce)
+    /// gets its preview DEFERRED to
+    /// [`Self::drain_pending_preview_settle`]; everything else previews
+    /// inline, exactly as before.
+    ///
+    /// The deferred path deliberately leaves the pane showing the
+    /// PREVIOUS preview while the user scrolls rather than clearing it:
+    /// clearing would snap the pane back to its committed buffer on
+    /// every arrow key and back out again 150ms later, which is flicker
+    /// on unedited content — the UX rule vetoes it. A preview one
+    /// candidate stale for a sixth of a second is the cheaper wrong.
     pub fn preview_picker_selection(&mut self) -> Vec<RendererSignal> {
+        if self.arm_preview_settle() {
+            return Vec::new();
+        }
+        self.preview_selection_now()
+    }
+
+    /// MG.54: if the seated source wants a settle window, (re)arm the
+    /// picker's deadline and schedule the wake; `true` means the caller
+    /// must not preview now.
+    ///
+    /// The host's whole share of this is the WAKE — it owns the runtime;
+    /// the window and the deadline belong to
+    /// [`Picker`](lattice_picker::Picker), so any picker gets the
+    /// behaviour by declaring a window and none of it is per-source
+    /// host wiring.
+    ///
+    /// The wake is the same shape as [`Self::bump_live_picker_debounce`]
+    /// and for the same reason: the actor loop is event-driven, so a
+    /// deadline reached while it is parked would sit unfired until the
+    /// next keystroke — and "it works, but only after I press something"
+    /// is exactly the async-landing bug the inbound primitive exists to
+    /// prevent. `async_landed` lands on the actor's own select arm,
+    /// which ticks `run_tick_pending` and republishes, so the preview
+    /// reaches the screen with no key pressed.
+    fn arm_preview_settle(&mut self) -> bool {
+        let Some(source_id) = self.picker.as_ref().and_then(|p| p.source_id.clone()) else {
+            return false;
+        };
+        let Some(delay) = self
+            .picker_registry
+            .load()
+            .generator(&source_id)
+            .and_then(|g| g.preview_debounce())
+        else {
+            return false;
+        };
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        picker.arm_preview_settle(delay);
+        let async_landed = self.async_landed.clone();
+        lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+            tokio::time::sleep(delay).await;
+            async_landed.notify_one();
+        });
+        true
+    }
+
+    /// MG.54: fire a deferred preview whose settle window has elapsed.
+    ///
+    /// Every armed wake reaches here, including the ones superseded by a
+    /// later keystroke — those find the deadline still in the future and
+    /// no-op, so a burst of N moves costs N cheap comparisons and ONE
+    /// preview.
+    ///
+    /// A picker that closed inside its own window takes its deadline
+    /// with it (the state is on the picker), so there is nothing here to
+    /// clear on dismiss and no way for a settle to fire into the picker
+    /// that replaced the one which armed it.
+    pub fn drain_pending_preview_settle(&mut self) -> Vec<RendererSignal> {
+        let now = std::time::Instant::now();
+        let due = self
+            .picker
+            .as_mut()
+            .map(|p| p.take_due_preview_settle(now))
+            .unwrap_or(false);
+        if !due {
+            return Vec::new();
+        }
+        self.preview_selection_now()
+    }
+
+    fn preview_selection_now(&mut self) -> Vec<RendererSignal> {
         // No matches (e.g. the query filtered everything out) → there is no
         // candidate to preview. PI.3: clear the active pane's preview
         // projection so the last match's preview doesn't linger as stale
@@ -22628,24 +22716,34 @@ impl Editor {
         self.preview_in_active_pane(id, None)
     }
 
-    /// T.12a helper: apply a `PickerAcceptOutcome` returned by a
+    /// T.12a helper: apply a [`PickerPreviewOutcome`] returned by a
     /// source's live-preview hook (`PickerSourceGenerator::preview`).
-    /// Today only `ApplyColorscheme` is previewable; other outcomes
-    /// are inert in preview context (buffer / jump previews go through
-    /// the `accept_action` path in `preview_picker_selection`).
+    /// Buffer / jump previews do NOT come through here — those ride the
+    /// candidate's typed `accept_action` in `preview_selection_now`.
     ///
-    /// On the FIRST `ApplyColorscheme` preview it snapshots the active
+    /// On the FIRST `Colorscheme` preview it snapshots the active
     /// theme into `pending_theme_preview_restore` so `<Esc>` (in
     /// `do_picker_dismiss`) can revert to the theme active when the
     /// picker opened; subsequent previews reuse that snapshot. Then it
     /// applies the previewed theme + signals `ThemeChanged`.
+    ///
+    /// [`PickerPreviewOutcome`]: lattice_picker::PickerPreviewOutcome
     fn apply_picker_preview_outcome(
         &mut self,
-        outcome: lattice_picker::PickerAcceptOutcome,
+        outcome: lattice_picker::PickerPreviewOutcome,
     ) -> Vec<RendererSignal> {
-        use lattice_picker::PickerAcceptOutcome;
+        use lattice_picker::PickerPreviewOutcome;
         match outcome {
-            PickerAcceptOutcome::ApplyColorscheme { name } => {
+            // MG.54: content with no file to read — a git blob at a
+            // revision today. Goes through the same ephemeral-buffer +
+            // pane-override path `do_preview` uses for an unopened file,
+            // so dismiss / GC / isolation are the one mechanism.
+            PickerPreviewOutcome::Buffer {
+                name,
+                text,
+                syntax_path,
+            } => self.preview_text_in_active_pane(&name, &text, syntax_path.as_deref(), None),
+            PickerPreviewOutcome::Colorscheme { name } => {
                 let Some(reg) = self.services.get::<crate::ui::theme::ThemeRegistryHandle>() else {
                     return Vec::new();
                 };
@@ -22662,7 +22760,6 @@ impl Editor {
                     Vec::new()
                 }
             }
-            _ => Vec::new(),
         }
     }
 
@@ -22747,7 +22844,33 @@ impl Editor {
             // as-is; the candidate stays selectable.
             return Vec::new();
         };
-        let new_doc = lattice_core::Document::from_text(&text);
+        self.preview_text_in_active_pane("*preview*", &text, Some(&path), target_line)
+    }
+
+    /// MG.54: materialise `text` as an ephemeral buffer and preview it in
+    /// the active pane. The tail [`Self::do_preview`] has always run,
+    /// lifted so content that has no file behind it can reach the same
+    /// path — a git blob at a revision is the first such source.
+    ///
+    /// `syntax_path` is what the content would be called on disk; it
+    /// drives language detection ONLY and is never read (a blob at
+    /// `HEAD` is not what is on disk at that path — using it as a file
+    /// would preview the working copy and quietly answer a different
+    /// question). `None` previews as plain text.
+    ///
+    /// No `DocumentOpened` publish, so no LSP attach: this is a peek.
+    /// The buffer is `ephemeral`, unlisted and hidden, and the previous
+    /// one is collected by `preview_in_active_pane` before this becomes
+    /// the live preview — so arrowing through a hundred candidates
+    /// leaves one buffer behind, not a hundred.
+    fn preview_text_in_active_pane(
+        &mut self,
+        name: &str,
+        text: &str,
+        syntax_path: Option<&std::path::Path>,
+        target_line: Option<u32>,
+    ) -> Vec<RendererSignal> {
+        let new_doc = lattice_core::Document::from_text(text);
         let new_id = lattice_core::BufferId::next();
         let new_handle = lattice_runtime::spawn_document(new_id, new_doc, self.registry.clone());
         let new_handle_arc: std::sync::Arc<dyn lattice_runtime::Document> =
@@ -22765,12 +22888,17 @@ impl Editor {
                     handle: std::sync::Arc::clone(&new_handle_arc),
                 },
             ),
-            name: Some("*preview*".to_string()),
+            name: Some(name.to_string()),
         });
         self.seed_empty_document_locals(new_id);
         // Detect the language from the PREVIEW PATH + stash the parsed
-        // handle into `buffer_locals[new_id].DocumentSyntax`.
-        self.install_inmemory_syntax(new_id, &text, &path);
+        // handle into `buffer_locals[new_id].DocumentSyntax` — the isolated
+        // (non-active) preview pane highlights via `document_syntax_for`,
+        // never the active `self.syntax` slot, which stays pointed at the
+        // committed buffer A.
+        if let Some(path) = syntax_path {
+            self.install_inmemory_syntax(new_id, text, path);
+        }
         // Preview the fresh buffer. `preview_in_active_pane` unmounts the
         // previous override first and GC's the previous ephemeral preview
         // buffer if there was one (it reads `self.preview_buffer` BEFORE we

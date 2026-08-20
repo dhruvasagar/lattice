@@ -301,7 +301,8 @@ impl CandidateGenerator for CustomizeNamesGenerator {
 /// A trait-driven [`PickerSourceGenerator`] holding a clone of the
 /// [`ThemeRegistryHandle`] so it can enumerate registered theme names
 /// at `init` time. Arrowing through candidates LIVE-PREVIEWS each
-/// theme (the host applies the [`PickerAcceptOutcome::ApplyColorscheme`]
+/// theme (the host applies the
+/// [`PickerPreviewOutcome::Colorscheme`](lattice_picker::PickerPreviewOutcome::Colorscheme)
 /// the [`Self::preview`] hook returns); `<Esc>` restores the theme
 /// active when the picker opened; `<CR>` keeps the highlighted theme.
 ///
@@ -358,10 +359,10 @@ impl PickerSourceGenerator for ThemePickerSource {
         &self,
         _ctx: &PickerContext<'_>,
         routing: &RoutingPayload,
-    ) -> Option<PickerAcceptOutcome> {
+    ) -> Option<lattice_picker::PickerPreviewOutcome> {
         match routing {
             RoutingPayload::Colorscheme { name } => {
-                Some(PickerAcceptOutcome::ApplyColorscheme { name: name.clone() })
+                Some(lattice_picker::PickerPreviewOutcome::Colorscheme { name: name.clone() })
             }
             _ => None,
         }

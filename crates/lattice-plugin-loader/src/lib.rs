@@ -64,11 +64,16 @@
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
 //! `docs/dev/operations/slice-plans/plugin-loader.md`.
 
+pub mod build;
 pub mod discovery;
 mod ex_commands;
 pub mod install;
 pub mod watch;
 
+pub use build::{
+    BuildOutcome, CargoComponentBuilder, ComponentBuilder, artifact_path, build_plugin,
+    source_stamp,
+};
 pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir, discover,
     discover_one,

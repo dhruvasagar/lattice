@@ -872,7 +872,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7 ✅ (a + b) · PM.8 📝.**
+**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7 ✅ (a + b) · PM.8 ✅ (a + b). **User track complete.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -1074,13 +1074,57 @@ host crate's build.rs exports to its own compilation and not the loader's — so
 both real tests passed by silently skipping. They resolve the fixture by path
 now, as `init_config.rs` already did.
 
-#### PM.8 — `:plugins` source/build columns + rebuild chord  📝
-The `lattice-plugin-manager` view gains **source** (`bundled`/`local`/`git@rev`/
-`prebuilt`) + **build state** (`cached`/`building…`/`build-failed`/`stale`) columns
-and a **rebuild** chord (force-build the plugin under the cursor). Async-build
-progress surfaces via the buffer headerline (async-buffer-status-in-headerline
-rule). **Exit:** the view shows each plugin's source + build state; the rebuild
-chord forces a fresh build off-thread.
+#### PM.8 — `:plugins` source/build columns + rebuild chord  ✅ (2026-08-21)
+
+Landed as **PM.8a** (columns) then **PM.8b** (chord + in-flight states). The
+ordering was forced rather than chosen: the rebuild chord cannot re-clone a git
+plugin without its url and rev, and on the next boot the plugin loads from the
+on-disk scan where nothing has seen a `require` — so persisting the source had
+to come first.
+
+**PM.8a — SOURCE + BUILD columns.** A `.source` marker travels with the
+artifact, beside PM.5's `.build-stamp`; together they answer the view's two
+questions (where from, is it current). `cargo xtask build-core-plugins` writes
+one too, so a core plugin reads `bundled`.
+- **Persisted, not derived.** In-memory source would render `local` for a git
+  plugin on the second boot — confidently wrong, worse than blank.
+- **`Unknown` is a state, not a fallback to `Local`.** A hand-installed plugin
+  reads `—`; claiming a source we do not know would put a wrong path in the
+  column and offer a rebuild that cannot succeed.
+- **`BuildState` is recomputed per snapshot**, because the interesting
+  transition happens *while the editor runs*: edit a local plugin, see `stale`
+  without restarting.
+- Columns sit between TIER and CAPABILITIES because CAPABILITIES is the only
+  variable-length cell (it trails `(denied: …)`), so anything after it would
+  not align. A test pins that.
+
+**PM.8b — `b` rebuilds.** Distinct from `r` (reload) on purpose: reload
+re-instantiates what is on disk, rebuild produces it first, and collapsing them
+would make a casually-pressed `r` occasionally take minutes. The stamp is
+dropped before building so the build is unconditional — the user asked, the
+staleness check does not get a vote. A failed rebuild never unloads a working
+plugin (PM.5's `StaleKept` keeps the artifact and the reload comes from it).
+- `building…` / `build-failed` are the only build states **not** derived from
+  disk, and are deliberately not persisted: a build interrupted by a crash is
+  not still running after a restart, and a failure since fixed should not greet
+  the user next boot. In-flight wins over the disk answer — reporting `cached`
+  during a rebuild would say the keypress did nothing.
+- The count is duplicated as a **lock-free atomic** because the headerline's
+  `version()` is polled every tick and the trait forbids blocking there; it is
+  recounted under the same lock the map is mutated under, so the two cannot
+  disagree.
+- Progress goes in the **headerline**, hidden while idle
+  (async-buffer-status-in-headerline).
+- A non-buildable row (bundled / prebuilt / unknown) echoes why rather than
+  starting a build that cannot work — PM.8a's marker earning its keep.
+
+*Tests:* 13 (PM.8a) + 4 (PM.8b).
+
+> **Known gap, not part of PM.8.** `enable_mode` is carried faithfully from
+> WIT through to `RequiredSpec` and tested, but nothing consumes it yet: the
+> CI.5 `on-plugin-loaded` → `enable-mode` desugaring is unwired, so a
+> `require` with `enable-mode` installs and loads the plugin without enabling
+> its mode. Small, and the natural next follow-up.
 
 ### Sequencing
 

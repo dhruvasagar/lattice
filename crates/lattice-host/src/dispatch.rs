@@ -25039,9 +25039,12 @@ impl Editor {
     ///
     /// `cmd_line` = `None` → user's `$SHELL` (or `/bin/sh`).
     /// `Some("cargo test")` → tokenized on whitespace and
-    /// exec'd as program + args. T4 will respect
-    /// `terminal.shell` / `terminal.cwd` typed options;
-    /// T1 uses sensible defaults.
+    /// exec'd as program + args. T4 will respect a `terminal.shell`
+    /// typed option; T1 uses sensible defaults.
+    ///
+    /// PR.3: the spawn cwd is the active buffer's project root
+    /// (`docs/dev/architecture/project-resolution.md`), not the active
+    /// file's directory as it was through T1–T4.
     ///
     /// Side effects:
     /// - Insert a new `BufferEntry { kind: Terminal, data:
@@ -25068,12 +25071,19 @@ impl Editor {
             }
         };
 
-        // Spawn cwd: parent of active document's file path
-        // when known, else process cwd.
-        let cwd = self
-            .document
-            .path()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+        // PR.3: spawn at the active buffer's PROJECT root.
+        //
+        // This was `dirname(active file)`, so `:terminal` with
+        // `crates/lattice-host/src/dispatch.rs` open landed you in
+        // `crates/lattice-host/src/` — matching neither vim (editor cwd)
+        // nor emacs (project root), and leaving you to `cd ../..` before
+        // running anything.
+        //
+        // Binding here is what makes several projects co-exist: each
+        // `:terminal` gets its own buffer, and `Command::cwd` applies at
+        // spawn, so a shell already running is the OS's business and
+        // nothing we later resolve can move it.
+        let cwd = Some(self.active_buffer_project().root);
 
         // Spawn size: prefer per-pane viewport (populated by
         // renderers that fire `SetPaneViewport` — GPUI does, TUI

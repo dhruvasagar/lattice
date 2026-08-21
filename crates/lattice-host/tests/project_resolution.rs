@@ -168,3 +168,75 @@ fn project_root_reports_the_marker_that_decided_it() {
     );
     cleanup(&base);
 }
+
+// ── PR.3: the terminal ─────────────────────────────────────────────────────
+
+/// The presenting bug. `:terminal` used to spawn at `dirname(active
+/// file)`, so opening `crates/lattice-host/src/dispatch.rs` and hitting
+/// `:terminal` landed you in `crates/lattice-host/src/`.
+///
+/// This asserts the value `do_terminal_spawn` feeds to
+/// `SpawnConfig.cwd` rather than spawning a PTY: the spawn itself is
+/// `Command::cwd(...)`, which is the OS's job, and a real PTY in a unit
+/// test buys nothing but flake. What can regress is the resolution, and
+/// the `assert_ne` is the half that fails on the old behaviour — an
+/// equality-only test would pass on any code that happened to return
+/// the repo root for an unrelated reason.
+#[test]
+fn a_terminal_roots_at_the_project_not_the_files_directory() {
+    let base = tempdir();
+    let repo = mkdirs(&base, "repo");
+    mkdirs(&repo, ".git");
+    let deep = mkdirs(&repo, "crates/thing/src");
+    let file = deep.join("lib.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+
+    let editor = Editor::boot(
+        lattice_core::DocumentBuilder::default()
+            .with_path(file)
+            .with_text("fn main() {}\n")
+            .build(),
+    );
+
+    let project = editor.active_buffer_project();
+    assert_eq!(project.root, repo, "a terminal should open at the project");
+    assert_ne!(
+        project.root, deep,
+        "the pre-PR.3 behaviour — the file's own directory"
+    );
+    cleanup(&base);
+}
+
+/// Two buffers in two checkouts each answer for themselves, so two
+/// terminals opened from them get different roots. This is the
+/// "multiple projects co-exist" property at the level a user meets it.
+#[test]
+fn terminals_from_different_checkouts_get_different_roots() {
+    let base = tempdir();
+    let a = mkdirs(&base, "a");
+    mkdirs(&a, ".git");
+    let b = mkdirs(&base, "b");
+    mkdirs(&b, ".git");
+
+    let mut roots = Vec::new();
+    for repo in [&a, &b] {
+        let file = repo.join("src/main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "\n").unwrap();
+        let editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(file)
+                .with_text("\n")
+                .build(),
+        );
+        roots.push(editor.active_buffer_project().root);
+    }
+
+    assert_eq!(roots[0], a);
+    assert_eq!(roots[1], b);
+    assert_ne!(
+        roots[0], roots[1],
+        "projects must not bleed into each other"
+    );
+    cleanup(&base);
+}

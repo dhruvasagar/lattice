@@ -1,6 +1,6 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.2 ✅; PR.3–PR.6 planned;
+> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.3 ✅; PR.4–PR.6 planned;
 > PR.7 has its own spec. Sequencing companion to the design fragment
 > [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
@@ -115,7 +115,7 @@ core (`set_markers` re-points and drops stale answers).
 PR.2 ships. Terminal and compilation are NOT converted yet, so the page
 does not claim they root at the project.
 
-### PR.3 — terminal 📝
+### PR.3 — terminal ✅ (2026-08-21)
 
 `dispatch.rs:25045` — `dirname(active file)` → project root. The
 presenting bug.
@@ -124,13 +124,18 @@ Already-open terminals are unaffected structurally: `SpawnConfig.cwd`
 reaches `Command::cwd` at spawn (`spawner.rs:129`), so a running shell's
 cwd is the OS's state.
 
-Respects the existing `terminal.cwd` typed option where set — the option
-is an explicit user override and outranks the derived root.
+**There is no `terminal.cwd` option.** The plan said this slice would
+respect one; it does not exist — `terminal.shell` / `terminal.cwd` are
+named only in a `do_terminal_spawn` doc comment as a future T4 plan.
+The stale comment is corrected rather than the option invented.
 
-*Tests:* spawn cwd is the project root, not the file's directory, with
-the test process's cwd set elsewhere (a test run from the workspace root
-passes on the broken version too — this is the same hole
-`test_helpers::settle` was added for).
+*Tests:* 2 — a terminal roots at the project and **not** at the file's
+directory (the `assert_ne` is the half that fails on the old
+behaviour; equality alone would pass on any code that happened to
+return the repo root), and two buffers in two checkouts yield two
+different roots. Both assert the value fed to `SpawnConfig.cwd` rather
+than spawning a PTY: the spawn is `Command::cwd`, which is the OS's
+job, and a real PTY in a unit test buys only flake.
 
 ### PR.4 — compilation, search, picker, ACP/MCP 📝
 
@@ -190,7 +195,7 @@ dependency is visible.
 |---|---|
 | PR.1 core resolver | ✅ |
 | PR.2 `ActionContext::project()` + retire `workspace_root_from_cwd` | ✅ |
-| PR.3 terminal | 📝 |
+| PR.3 terminal | ✅ |
 | PR.4 compilation / search / picker / ACP | 📝 |
 | PR.5 magit cwd fallback | 📝 |
 | PR.6 WIT seam | 📝 |

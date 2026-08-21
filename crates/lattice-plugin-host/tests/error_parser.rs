@@ -1,0 +1,150 @@
+//! CM.6 — the plugin-contributed compilation-parser seam, through a real guest.
+//!
+//! The fixture recognises a two-line format no native parser knows:
+//!
+//! ```text
+//! ERR something broke
+//!   at src/thing.q:12:5
+//! ```
+//!
+//! Two lines on purpose. A single-line format would be satisfied by a regex
+//! and would not exercise what the seam has to support: pending state carried
+//! across `feed` calls, and `reset` dropping it.
+//!
+//! Skips when the fixture wasn't built (no `wasm32-wasip2` target).
+
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use lattice_mode::CapabilitySet;
+use lattice_plugin_host::{PluginBudget, PluginHost, PluginManifest, TrustTier};
+use lattice_protocol::error_list::ErrorSeverity;
+use tempfile::TempDir;
+
+const PLUGIN_ID: &str = "error-parser-fixture";
+
+fn guest_wasm() -> Option<&'static str> {
+    let path = env!("ERROR_PARSER_GUEST_WASM");
+    (!path.is_empty()).then_some(path)
+}
+
+fn parser(dir: &TempDir) -> Option<lattice_plugin_host::error_parser_host::WasmErrorParser> {
+    let wasm = guest_wasm()?;
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+        .expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile error-parser fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+    Some(
+        host.spawn_error_parser(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::grammar(),
+        )
+        .expect("spawn error parser"),
+    )
+}
+
+#[test]
+fn a_plugin_parses_a_format_no_native_parser_knows() {
+    let dir = TempDir::new().unwrap();
+    let Some(mut p) = parser(&dir) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+
+    // The header completes nothing — it primes the guest's pending state.
+    assert!(
+        p.feed("ERR something broke").is_empty(),
+        "a header alone is not a diagnostic"
+    );
+
+    // The locator completes it.
+    let entries = p.feed("  at src/thing.q:12:5");
+    assert_eq!(entries.len(), 1, "got {entries:?}");
+    let e = &entries[0];
+    assert_eq!(e.path, std::path::PathBuf::from("src/thing.q"));
+    assert_eq!(e.line, 11, "the guest converts 1-based → 0-based");
+    assert_eq!(e.col, 4);
+    assert_eq!(e.severity, ErrorSeverity::Error);
+    assert_eq!(e.message, "something broke");
+}
+
+#[test]
+fn severity_crosses_the_boundary() {
+    let dir = TempDir::new().unwrap();
+    let Some(mut p) = parser(&dir) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+    p.feed("WARN mind the gap");
+    let entries = p.feed("  at a/b.q:1:1");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].severity, ErrorSeverity::Warning);
+    assert_eq!((entries[0].line, entries[0].col), (0, 0));
+}
+
+/// `reset` drops pending state, which is what stops a build interrupted
+/// mid-diagnostic from leaking a half-parsed entry into the next run.
+#[test]
+fn reset_drops_pending_state_between_runs() {
+    let dir = TempDir::new().unwrap();
+    let Some(mut p) = parser(&dir) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+    p.feed("ERR interrupted");
+    p.reset();
+    assert!(
+        p.feed("  at leaked.q:1:1").is_empty(),
+        "a locator with no header after a reset must complete nothing"
+    );
+}
+
+/// Lines the plugin does not recognise are simply not its business — it
+/// returns nothing and the native parsers still see the same line.
+#[test]
+fn unrecognised_lines_yield_nothing() {
+    let dir = TempDir::new().unwrap();
+    let Some(mut p) = parser(&dir) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+    for line in [
+        "   Compiling foo v0.1.0",
+        "warning: unused variable `x`",
+        "",
+        "at malformed",
+    ] {
+        assert!(
+            p.feed(line).is_empty(),
+            "line {line:?} should match nothing"
+        );
+    }
+}
+
+/// Two instances keep separate pending state.
+///
+/// The guest holds it in a `thread_local!`, so this is really asserting that
+/// the host gives each parser its own `Store` — if they shared one, one
+/// build's half-diagnostic would complete against another's locator.
+#[test]
+fn two_parsers_do_not_share_pending_state() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let (Some(mut a), Some(mut b)) = (parser(&dir_a), parser(&dir_b)) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+    a.feed("ERR belongs to a");
+    // `b` never saw a header, so a locator completes nothing for it.
+    assert!(
+        b.feed("  at b.q:1:1").is_empty(),
+        "state leaked between parser instances"
+    );
+    // …and `a`'s pending diagnostic is still its own.
+    let entries = a.feed("  at a.q:2:2");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].message, "belongs to a");
+}

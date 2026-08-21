@@ -99,6 +99,13 @@ fn main() {
         "plugin-manager-guest",
         "PLUGIN_MANAGER_GUEST_WASM",
     );
+    // CM.6: the error-parser fixture — a two-line bespoke diagnostic format,
+    // so the multi-line pending state the seam exists for is exercised.
+    build_guest(
+        &fixtures.join("error-parser-guest"),
+        "error-parser-guest",
+        "ERROR_PARSER_GUEST_WASM",
+    );
     // AP.1 spike: a single component providing grammar + modes + config, loaded
     // once per seam by `tests/multiseam.rs` to prove multi-seam plugins work.
     build_guest(

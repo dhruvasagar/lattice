@@ -149,6 +149,9 @@ pub enum PluginSeam {
     /// option, and `provides` is where that difference is visible to a user
     /// reading the manifest.
     PluginManager,
+    /// CM.6 — a compilation-output parser (`error-parser-plugin` world). Sync,
+    /// fed one captured line at a time by the compilation reader.
+    ErrorParser,
 }
 
 impl PluginSeam {
@@ -167,6 +170,7 @@ impl PluginSeam {
             PluginSeam::Keymap => "keymap",
             PluginSeam::Logging => "logging",
             PluginSeam::PluginManager => "plugin-manager",
+            PluginSeam::ErrorParser => "error-parser",
         }
     }
 }
@@ -194,6 +198,7 @@ impl FromStr for PluginSeam {
             "keymap" => PluginSeam::Keymap,
             "logging" => PluginSeam::Logging,
             "plugin-manager" => PluginSeam::PluginManager,
+            "error-parser" => PluginSeam::ErrorParser,
             _ => return Err(()),
         })
     }

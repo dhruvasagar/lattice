@@ -153,8 +153,10 @@ pub trait CompilationParser: Send {
 
 /// The active set of parsers. Feeds each line to every parser and
 /// concatenates their entries. The `Vec<Box<dyn CompilationParser>>`
-/// is the extensibility seam: built-in parsers today, WASM-contributed
-/// parsers in Phase 7.
+/// is the extensibility seam: built-in parsers, plus (CM.6) WASM-contributed
+/// ones — a plugin implementing the `error-parser` world is registered here
+/// as one more `Box<dyn CompilationParser>` and is indistinguishable from a
+/// native parser downstream.
 pub struct ParserRegistry {
     parsers: Vec<Box<dyn CompilationParser>>,
 }
@@ -180,8 +182,27 @@ impl ParserRegistry {
 
     /// Add a parser to the active set. Order is preserved; each line
     /// is fed to parsers in registration order.
+    ///
+    /// CM.6: plugin parsers register **before** [`Self::with_builtins`]'s
+    /// catch-all would claim a line, but after the format-specific natives.
+    /// The dedup in [`Self::feed`] is first-entry-wins per location, so a
+    /// plugin that recognises a line rustc also recognises does not displace
+    /// rustc's richer entry — and a line only the plugin understands is still
+    /// its own.
     pub fn register(&mut self, parser: Box<dyn CompilationParser>) {
         self.parsers.push(parser);
+    }
+
+    /// CM.6: register a plugin parser, placed ahead of the catch-all.
+    ///
+    /// `with_builtins` ends with `GeneralParser`, whose job is to salvage a
+    /// `file:line:col` out of anything. If a plugin registered after it, the
+    /// catch-all's thin `Info` entry would win the dedup for every location
+    /// the plugin also matched, and the plugin's severity and message would
+    /// be silently discarded — the plugin would look like it did nothing.
+    pub fn register_before_catch_all(&mut self, parser: Box<dyn CompilationParser>) {
+        let at = self.parsers.len().saturating_sub(1);
+        self.parsers.insert(at, parser);
     }
 
     /// Feed one line to every registered parser and concatenate the
@@ -211,6 +232,94 @@ impl ParserRegistry {
 impl Default for ParserRegistry {
     fn default() -> Self {
         Self::with_builtins()
+    }
+}
+
+#[cfg(test)]
+mod cm6_tests {
+    use super::*;
+
+    /// A stand-in for a plugin parser: recognises one bespoke shape.
+    struct FakePlugin;
+    impl CompilationParser for FakePlugin {
+        fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
+            line.strip_prefix("QQ ")
+                .map(|rest| {
+                    vec![ErrorEntry {
+                        path: std::path::PathBuf::from(rest),
+                        line: 0,
+                        col: 0,
+                        severity: ErrorSeverity::Error,
+                        message: "from the plugin".into(),
+                    }]
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    /// A parser that claims the same location the catch-all would, so the
+    /// ordering is observable.
+    struct ClaimsMainRs;
+    impl CompilationParser for ClaimsMainRs {
+        fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
+            if line.contains("main.rs:10:5") {
+                vec![ErrorEntry {
+                    path: std::path::PathBuf::from("main.rs"),
+                    line: 9,
+                    col: 4,
+                    severity: ErrorSeverity::Warning,
+                    message: "the plugin's richer message".into(),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    #[test]
+    fn a_registered_plugin_parser_contributes_entries() {
+        let mut r = ParserRegistry::with_builtins();
+        r.register_before_catch_all(Box::new(FakePlugin));
+        let got = r.feed("QQ weird/format.q");
+        assert_eq!(got.len(), 1, "got {got:?}");
+        assert_eq!(got[0].message, "from the plugin");
+    }
+
+    #[test]
+    fn a_plugin_parser_beats_the_catch_all_for_the_same_location() {
+        // The ordering this exists for. Registered after `GeneralParser`, the
+        // catch-all's thin Info entry would win the first-entry-wins dedup and
+        // the plugin would appear to do nothing.
+        let mut r = ParserRegistry::with_builtins();
+        r.register_before_catch_all(Box::new(ClaimsMainRs));
+        let got = r.feed("something main.rs:10:5 something");
+        assert_eq!(got.len(), 1, "deduped by location: {got:?}");
+        assert_eq!(
+            got[0].message, "the plugin's richer message",
+            "the plugin's entry must win over the catch-all's salvage"
+        );
+        assert_eq!(got[0].severity, ErrorSeverity::Warning);
+    }
+
+    #[test]
+    fn a_plugin_parser_does_not_displace_a_format_specific_native() {
+        // The other half of the ordering: a native parser that understands
+        // the format properly still wins, because it registers first.
+        let mut r = ParserRegistry::with_builtins();
+        r.register_before_catch_all(Box::new(ClaimsMainRs));
+        let got = r.feed("main.rs:10:5: error: real gnu-style diagnostic");
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].message, "real gnu-style diagnostic",
+            "the gnu parser understands this line better than the plugin: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_silent_plugin_parser_costs_nothing() {
+        let mut r = ParserRegistry::with_builtins();
+        r.register_before_catch_all(Box::new(FakePlugin));
+        assert!(r.feed("   Compiling foo v0.1.0").is_empty());
     }
 }
 

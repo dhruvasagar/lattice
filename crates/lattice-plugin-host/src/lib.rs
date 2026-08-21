@@ -73,6 +73,7 @@ pub mod context_task;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
+pub mod error_parser_host;
 pub mod event_task;
 pub mod events_host;
 pub mod grammar_host;

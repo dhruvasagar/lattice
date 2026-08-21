@@ -664,6 +664,25 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
+                    // CM.6: the seam is built and proven end-to-end
+                    // (`lattice_plugin_host::error_parser_host` + the
+                    // `error_parser` host test), but it is not yet reachable
+                    // from a live build, so declaring it is an honest
+                    // `NotWired` rather than a silent no-op load.
+                    //
+                    // What is missing is a FACTORY, not a call. The
+                    // compilation `ParserRegistry` is built per pipe reader —
+                    // stdout and stderr each get one — and a `WasmErrorParser`
+                    // owns a `Store`, so it cannot be shared between them;
+                    // each reader must instantiate its own (which is also
+                    // semantically right: the two streams have independent
+                    // pending state). That needs a factory trait owned by
+                    // `lattice-compilation` and a new `loader → compilation`
+                    // crate edge — a cross-crate boundary decision, not a
+                    // wiring detail.
+                    PluginSeam::ErrorParser => {
+                        return Err(PluginLoaderError::NotWired("error-parser"));
+                    }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
                                               // (PL8.E closed the last, decorations). A new seam variant
                                               // must add its drain here — the compiler enforces it rather

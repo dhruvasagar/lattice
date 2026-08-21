@@ -1,0 +1,23 @@
+# CM.6 error-parser fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `error-parser-plugin` world. Parses a two-line bespoke
+# format (a `WARN|ERR <msg>` header, then an `at <file>:<line>:<col>` locator)
+# so the fixture exercises the multi-line pending state the seam exists for,
+# not just a regex that fits on one line. Standalone workspace so it targets
+# wasm32-wasip2 without inheriting the host toolchain.
+[package]
+name = "error-parser-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

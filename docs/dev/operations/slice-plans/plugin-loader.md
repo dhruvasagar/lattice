@@ -872,7 +872,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track (PM.5–PM.8) 📝.**
+**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7–PM.8 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -960,22 +960,76 @@ the mode-ownership + config gate, and now the core-plugin shipping path.
 
 ### User track — use-package (`require` + build)
 
-#### PM.5 — the build service (source dir → cached wasm)  📝
-`build(source_dir, name) → <user-root>/<name>/<name>.wasm`: invoke the
-`wasm32-wasip2` component build via `spawn_blocking` (never boot/actor thread);
-a `.build-stamp` records the source rev/mtime so an unchanged source is a pure
-load (build iff missing/stale, unless `pinned`). Graceful: a build failure is a
-logged skip surfaced in `:plugins`; a failed *stale* rebuild keeps the previous
-artifact loading. **Exit:** a local source dir builds once, caches, and a warm
-re-load does not rebuild; a broken source logs + skips, never fails boot.
+#### PM.5 — the build service (source dir → cached wasm)  ✅ (2026-08-21)
+`crates/lattice-plugin-loader/src/build.rs`. `build_plugin(builder, source_dir,
+name, user_root, pinned) -> BuildOutcome`, blocking (callers use
+`spawn_blocking`).
 
-#### PM.6 — source resolver (`Local` → `Git` → `Prebuilt`)  📝
-`resolve(source) → source_dir`: `Local(path)` (in place); `Git{url, rev}` (clone/
-fetch into `~/.cache/lattice/sources/<name>/`, checkout `rev`); `Prebuilt{url}`
-(download the `.wasm` straight to the user root, no build). **Exit:** each source
-kind resolves to a loadable plugin; a re-resolve of an unchanged Git rev is a no-op.
+**Exit met.** A local source builds once and caches; a warm re-resolve is a pure
+load that invokes no toolchain at all — so a machine with no Rust still boots
+every already-built plugin. A broken source logs + skips.
 
-#### PM.7 — the `require` seam + init.rs bootstrapping  📝
+Four outcomes, and `StaleKept` is the one worth naming: when a *stale* rebuild
+fails but a previous artifact exists, the old artifact keeps loading. Pushing a
+broken revision costs you the new code, not the editor you had.
+
+Two decisions the design left open:
+- **The stamp counts files as well as max mtime.** mtimes only move forward, so
+  a *deletion* would otherwise leave a stale artifact looking current.
+- **The stamp is written last, only on full success.** A stamp that outlived its
+  artifact would suppress the very rebuild that fixes a half-staged install.
+
+The toolchain sits behind a `ComponentBuilder` trait — the interesting behaviour
+is the caching and failure logic, and none of it should be untestable on a
+machine that cannot compile a component. `CargoComponentBuilder` scrubs the same
+inherited env (`RUSTFLAGS`/target/rustc-wrapper) as the plugin-host `build.rs`
+and `cargo xtask build-core-plugins`; this is the third site to need it.
+
+*Tests:* 13. *Bench:* n/a (off-thread, and dominated by cargo).
+
+#### PM.6 — source resolver (`Local` → `Git` → `Prebuilt`)  ✅ (2026-08-21)
+`crates/lattice-plugin-loader/src/resolve.rs`. `resolve(...) -> Resolved`, where
+`Resolved` is `Source(dir)` **or** `Artifact(path)` — an enum, not a path,
+because `Prebuilt` deliberately does not end in a build and collapsing the two
+answers would force it to invent a source tree it does not have.
+
+**Exit met.** All three kinds resolve; a re-resolve at an unchanged Git rev
+issues `rev-parse` and nothing else — the warm-boot rule applied to the network.
+
+Decisions taken during the build:
+- **Git is a subprocess, not `gix`.** `gix` is in the workspace with read-only
+  features only; enabling `blocking-network-client` would pull TLS and a network
+  stack into a crate that has neither, to replace a binary every developer using
+  a Git source already has. Same bargain PM.5 strikes with `cargo`.
+- **A pinned rev clones full; an unpinned one clones `--depth 1`.** A shallow
+  clone may not contain the pinned commit, so pinning opts out of the cheap path.
+- **`Prebuilt` added `ureq`** (blocking, rustls) rather than waiting for
+  lighthouse LH.0.1's `http-fetch`. Decided by Dhruva. When that capability-gated
+  host service lands, **this is the call site to unify** — do not mint a third
+  HTTP path.
+- **A prebuilt gets a synthesised manifest with no capabilities**, and an
+  existing manifest is never overwritten. A downloaded binary is the least-known
+  code the editor runs; a plugin needing more ships a real `plugin.toml` through
+  `Local`/`Git`, where the user can read what it asked for first.
+
+*Tests:* 12 — network and toolchain behind `Fetcher` / `GitRunner` traits, plus
+one end-to-end against a **real local git repository** (a fake can only prove the
+shape of the interaction, not that the commands are right).
+
+#### PM.7 — the `require` seam + init.rs bootstrapping  📝 (next)
+
+> **Scoping note (2026-08-21).** PM.5 + PM.6 gave PM.7 everything below the
+> boundary: `resolve(...)` then `build_plugin(...)` is the whole pipeline body,
+> and a `Resolved::Artifact` short-circuits the build. What remains is the
+> boundary itself, and it is a **public plugin API** change with a long verify
+> loop — a new `wit/plugin-manager.wit` interface, `bindgen!` regeneration in
+> `lattice-plugin-host`, `add_to_linker` wiring (the `host-services` impl at
+> `lib.rs:818` is the shape to copy), a `PluginState` sink recording specs during
+> `register`, a `wasm32-wasip2` guest fixture built through `build.rs`, and the
+> CI per-call overhead gates. Budget it as its own session; do not start it
+> without room to land the fixture green, because a half-wired WIT surface is the
+> worst thing to leave behind.
+
 A `plugin-manager` WIT interface (`require(spec)`; `plugin-source` variant) the
 init world imports; the host records specs during init's register export, drains
 them after, and runs resolve→build→load off-thread. init.rs itself is built by the

@@ -45,7 +45,7 @@ independent of RV.2 and can land either side of it.
 
 ---
 
-## RV.1 — The seam 📝
+## RV.1 — The seam ✅
 
 - `lattice-mode`: `fn refresh_action(&self) -> Option<ActionId>` on the
   `Mode` trait, defaulting to `None`. Mirror it on the object-safe

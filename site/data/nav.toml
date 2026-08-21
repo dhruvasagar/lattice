@@ -87,6 +87,7 @@ docs = [
   "completion",
   "folding",
   "compilation-mode",
+  "project",
   "error-list",
 ]
 
@@ -335,6 +336,7 @@ docs = [
 "narrow-mode"          = "Narrow"
 "lsp-mode"             = "The lsp-mode gate"
 "compilation-mode"     = "Compilation"
+"project"              = "Projects"
 "error-list"           = "The error list"
 "magit-status-mode"    = "The status buffer"
 "magit-transient"      = "Transient menus"

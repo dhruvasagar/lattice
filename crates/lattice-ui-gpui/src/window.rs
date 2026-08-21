@@ -5081,7 +5081,7 @@ pub fn run(document: Document) -> Result<()> {
         let (decorations, start_maximized) = {
             let reg = lattice_config::ConfigRegistry::new();
             reg.init_from_linkme();
-            let root = lattice_host::editor::Editor::workspace_root_from_cwd();
+            let root = lattice_core::project::root_from_cwd();
             let _ = lattice_config::load_default_paths(&reg, root.as_deref(), &[]);
             let decorations = reg
                 .get_typed::<lattice_config::WindowDecorationsOption>()

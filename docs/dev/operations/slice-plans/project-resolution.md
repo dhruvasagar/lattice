@@ -1,6 +1,6 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** PR.1 ✅; PR.2–PR.6 planned;
+> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.2 ✅; PR.3–PR.6 planned;
 > PR.7 has its own spec. Sequencing companion to the design fragment
 > [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
@@ -69,7 +69,7 @@ every directory the walk passed; `invalidate` after a mid-session
 `Send + Sync` under eight concurrent threads; the totality property; and
 the relative-path regression above, verified to fail without the fix.
 
-### PR.2 — `ActionContext::project()` + retire `workspace_root_from_cwd` 📝
+### PR.2 — `ActionContext::project()` + retire `workspace_root_from_cwd` ✅ (2026-08-21)
 
 `lattice-mode`: `ActionContext::project()`, composing core's `for_path`
 with `BufferStore::path_for`, pwd for pathless buffers.
@@ -87,7 +87,33 @@ derives a workspace root independently.
 
 **Cross-renderer:** both peers in the same patch, per the standing rule.
 
-*Doc:* `docs/user/project.md` + nav entry + site sync.
+**`project()` is a method, not a field** — so no dispatch site changes
+and the host answers nothing it is not asked.
+
+**The config-ordering knot, recorded because it reads as laziness
+otherwise.** The persistent-config loader finds `.lattice/config.toml`
+*by resolving a project root*, so the resolver must exist before the
+config that configures it has been read. It is built with the defaults
+and re-pointed by an `OptionChanged` subscription — TOML at startup and
+`:set` later take the same path. That is why `set_markers` sits on the
+trait beside `set_pwd` rather than the markers being fixed at
+construction.
+
+`Effect::PrintProjectRoot` is classified in both renderers in the same
+patch (verified with `--features gui`) and is host-only at the WIT
+boundary — a plugin reads the root through the `project` import (PR.6)
+rather than echoing to the host's message line.
+
+*Tests:* 14 — 6 host wiring (service under the handle ALIAS not the
+concrete type, whose failure is silent; `:cd` re-points the pwd
+fallback; a marker-rooted buffer ignores `:cd`; `:project-root` resolves
+by the name a user types and names the marker) + 7 option (round-trip,
+empty-set refused, default sourced from core rather than restated) + 1
+core (`set_markers` re-points and drops stale answers).
+
+*Doc:* `docs/user/project.md` + nav entry + site sync — scoped to what
+PR.2 ships. Terminal and compilation are NOT converted yet, so the page
+does not claim they root at the project.
 
 ### PR.3 — terminal 📝
 
@@ -163,7 +189,7 @@ dependency is visible.
 | Slice | Status |
 |---|---|
 | PR.1 core resolver | ✅ |
-| PR.2 `ActionContext::project()` + retire `workspace_root_from_cwd` | 📝 |
+| PR.2 `ActionContext::project()` + retire `workspace_root_from_cwd` | ✅ |
 | PR.3 terminal | 📝 |
 | PR.4 compilation / search / picker / ACP | 📝 |
 | PR.5 magit cwd fallback | 📝 |

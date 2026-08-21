@@ -110,6 +110,17 @@ pub trait ProjectResolver: Send + Sync + std::fmt::Debug {
     /// fell back to the old pwd are now wrong.
     fn set_pwd(&self, pwd: PathBuf);
 
+    /// Replace the marker set. Called when `project.root-markers`
+    /// changes, and at boot once config has been applied.
+    ///
+    /// The markers cannot be fixed at construction because of a
+    /// genuine ordering knot: the persistent-config loader finds
+    /// `.lattice/config.toml` *by resolving a project root*, so the
+    /// resolver has to exist before the config that configures it has
+    /// been read. It is built with the defaults and re-pointed here —
+    /// which is also why this drops the cache.
+    fn set_markers(&self, markers: Vec<String>);
+
     /// Drop every cached answer — `:project-refresh`, after a `git init`
     /// mid-session. The cache is an optimisation and never a source of
     /// truth, so this changes latency and nothing else.
@@ -120,9 +131,37 @@ pub trait ProjectResolver: Send + Sync + std::fmt::Debug {
 /// under this exact alias.
 pub type ProjectResolverHandle = Arc<dyn ProjectResolver>;
 
+/// The project root containing the process's working directory, over
+/// the default markers.
+///
+/// The **boot-time** answer, for the persistent-config loader: it runs
+/// before any buffer exists (so there is nothing to resolve from) and
+/// before config has been read (so `project.root-markers` is not
+/// available yet — that config is what this call is on the way to
+/// loading). Everything after boot goes through the registered
+/// [`ProjectResolverHandle`] instead, which is buffer-aware and honours
+/// both `:cd` and the configured markers.
+///
+/// PR.2: this replaces `Editor::workspace_root_from_cwd`, which
+/// hand-walked for `.git` / `.lattice` and which each renderer called
+/// independently. Living here rather than on the host is the point —
+/// a renderer should not own a rule about where projects begin.
+///
+/// `None` only when the working directory itself is unreadable.
+pub fn root_from_cwd() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    Some(
+        MarkerResolver::with_default_markers(cwd.clone())
+            .for_path(&cwd)
+            .root,
+    )
+}
+
 /// The built-in [`ProjectResolver`]: walk up for a marker, else pwd.
 pub struct MarkerResolver {
-    markers: Vec<String>,
+    /// Guarded because `project.root-markers` re-points it; see
+    /// [`ProjectResolver::set_markers`].
+    markers: Mutex<Vec<String>>,
     /// Guarded because `:cd` re-points it; see
     /// [`ProjectResolver::set_pwd`].
     pwd: Mutex<PathBuf>,
@@ -135,7 +174,10 @@ pub struct MarkerResolver {
 impl std::fmt::Debug for MarkerResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MarkerResolver")
-            .field("markers", &self.markers.len())
+            .field(
+                "markers",
+                &self.markers.lock().map(|m| m.len()).unwrap_or_default(),
+            )
             .field(
                 "cached",
                 &self.cache.lock().map(|c| c.len()).unwrap_or_default(),
@@ -155,7 +197,7 @@ impl MarkerResolver {
     /// `Vec<String>`.
     pub fn new(markers: Vec<String>, pwd: PathBuf) -> Self {
         Self {
-            markers,
+            markers: Mutex::new(markers),
             pwd: Mutex::new(pwd),
             cache: Mutex::new(HashMap::new()),
         }
@@ -212,14 +254,16 @@ impl MarkerResolver {
     /// process's working directory, which is never what was asked.
     /// Belt and braces on the same bug, because the cost is one
     /// comparison and the failure is silent.
-    fn marker_in(&self, dir: &Path) -> Option<&str> {
+    fn marker_in(&self, dir: &Path) -> Option<String> {
         if !dir.is_absolute() {
             return None;
         }
         self.markers
+            .lock()
+            .ok()?
             .iter()
             .find(|m| dir.join(m.as_str()).exists())
-            .map(|m| m.as_str())
+            .cloned()
     }
 
     fn fallback(&self) -> Project {
@@ -256,7 +300,7 @@ impl ProjectResolver for MarkerResolver {
             if let Some(marker) = self.marker_in(dir) {
                 found = Some(Project {
                     root: dir.to_path_buf(),
-                    kind: ProjectKind::Marker(marker.to_string()),
+                    kind: ProjectKind::Marker(marker),
                 });
                 break;
             }
@@ -286,6 +330,13 @@ impl ProjectResolver for MarkerResolver {
     fn set_pwd(&self, pwd: PathBuf) {
         if let Ok(mut p) = self.pwd.lock() {
             *p = pwd;
+        }
+        self.invalidate();
+    }
+
+    fn set_markers(&self, markers: Vec<String>) {
+        if let Ok(mut m) = self.markers.lock() {
+            *m = markers;
         }
         self.invalidate();
     }
@@ -582,6 +633,32 @@ mod tests {
         assert_eq!(r.for_path(&repo.join("a.rs")).root, repo);
         r.set_pwd(elsewhere);
         assert_eq!(r.for_path(&repo.join("a.rs")).root, repo);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn set_markers_repoints_the_walk_and_drops_stale_answers() {
+        // The ordering knot this exists for: the persistent-config
+        // loader finds `.lattice/config.toml` BY resolving a project
+        // root, so the resolver is built with defaults before the
+        // config that configures it has been read, then re-pointed.
+        let base = tempdir();
+        let proj = mkdirs(&base, "proj");
+        touch(&proj, "WORKSPACE.bazel");
+        let deep = mkdirs(&proj, "src");
+
+        let r = resolver(&base);
+        // Not a default marker, so this falls back to pwd first.
+        assert_eq!(r.for_path(&deep.join("a.cc")).kind, ProjectKind::Pwd);
+
+        r.set_markers(vec!["WORKSPACE.bazel".to_string()]);
+        let got = r.for_path(&deep.join("a.cc"));
+        assert_eq!(got.root, proj, "the cached pwd answer must not survive");
+        assert_eq!(got.kind, ProjectKind::Marker("WORKSPACE.bazel".to_string()));
+
+        // And the reverse: dropping a marker un-roots what it rooted.
+        r.set_markers(vec![".git".to_string()]);
+        assert_eq!(r.for_path(&deep.join("a.cc")).kind, ProjectKind::Pwd);
         cleanup(&base);
     }
 

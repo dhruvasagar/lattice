@@ -277,6 +277,22 @@ impl OptionGroup for Modeline {
         "Modeline (bottom per-pane status row): per-zone element layout + separator.";
 }
 
+/// Project-resolution options. PR.2 (2026-08-21): `project.root-markers`,
+/// the marker set every buffer's project root is discovered by
+/// (`docs/dev/architecture/project-resolution.md` §4).
+///
+/// Its own group rather than a field of an existing one because a
+/// project is not a property of the UI, the editor, or any one
+/// subsystem — terminal, compilation, search and the file picker all
+/// root from it, so a user opening `:customize project` is asking one
+/// question about the whole editor.
+pub struct Project;
+impl OptionGroup for Project {
+    const NAME: &'static str = "project";
+    const DOC: &'static str =
+        "Project resolution: the marker set a buffer's project root is discovered by.";
+}
+
 /// Mouse-reporting options. MO.1 (2026-08-21): `ui.mouse`, the single
 /// switch that decides whether the editor asks the terminal for mouse
 /// events at all.

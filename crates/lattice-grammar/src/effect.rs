@@ -503,6 +503,11 @@ pub enum Effect {
     ChangeDir(Option<String>),
     /// `:pwd` -- print the current working directory.
     PrintWorkingDir,
+    /// PR.2: `:project-root` -- print the active buffer's project root
+    /// and which marker decided it. The introspection affordance for
+    /// project resolution: "why is my terminal opening here" is
+    /// otherwise only answerable by reading the source.
+    PrintProjectRoot,
     /// `:b` with no arg -- open the vertico-style buffer switcher
     /// (DESIGN.md §5.9.7). The user types to filter, `<CR>` to
     /// switch. Type-aware completion in the cmdline can pre-fill

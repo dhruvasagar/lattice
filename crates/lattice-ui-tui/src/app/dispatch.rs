@@ -1031,7 +1031,8 @@ impl App {
             | Effect::Edits(_)
             // Host-applied cd/pwd effects.
             | Effect::ChangeDir(_)
-            | Effect::PrintWorkingDir => {}
+            | Effect::PrintWorkingDir
+            | Effect::PrintProjectRoot => {}
             // 5.5.E.7.7: `Edits` migrated to `Editor::handle_effect`;
             // routed through the grouped no-op above. `handle_edits`
             // and `publish_document_changed` wrappers retired in the
@@ -1460,7 +1461,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::RecordJump
         | Effect::OpenDashboard
         | Effect::ChangeDir(_)
-        | Effect::PrintWorkingDir => false,
+        | Effect::PrintWorkingDir
+        | Effect::PrintProjectRoot => false,
     }
 }
 
@@ -1607,7 +1609,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::RecordJump
         | Effect::OpenDashboard
         | Effect::ChangeDir(_)
-        | Effect::PrintWorkingDir => false,
+        | Effect::PrintWorkingDir
+        | Effect::PrintProjectRoot => false,
     }
 }
 

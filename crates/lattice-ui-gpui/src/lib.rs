@@ -462,7 +462,7 @@ impl GpuiApp {
         let _ = editor.activate_major_for_buffer_kind(doc_id, BufferKind::Document);
         editor.publish_document_opened_for_active();
         editor.ensure_subsystem_buffers();
-        let workspace_root = Editor::workspace_root_from_cwd();
+        let workspace_root = lattice_core::project::root_from_cwd();
         let _ = editor.load_persistent_config(workspace_root.as_deref());
         editor.apply_per_language_toml_overrides();
         // built-ins 2026-06-13: load embedded + user snippet packs
@@ -1276,7 +1276,8 @@ impl GpuiApp {
             | Effect::RecordJump
             // Host-applied cd/pwd effects (GPUI parity with TUI peer).
             | Effect::ChangeDir(_)
-            | Effect::PrintWorkingDir => {}
+            | Effect::PrintWorkingDir
+            | Effect::PrintProjectRoot => {}
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force, scope } => {
                 self.mutate_editor(move |e| e.do_quit(force, scope))

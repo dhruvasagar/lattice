@@ -860,6 +860,13 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::PrintWorkingDir => {
             return Err("Effect::PrintWorkingDir is host-only (`:pwd`)".to_string());
         }
+        // PR.2: host-only by intent, not pending a mirror. A plugin that
+        // wants the project root reads it directly through the
+        // `project` import (PR.6) rather than echoing it into the
+        // host's message line.
+        NativeEffect::PrintProjectRoot => {
+            return Err("Effect::PrintProjectRoot is host-only (`:project-root`)".to_string());
+        }
         NativeEffect::ListErrors => {
             return Err(
                 "Effect::ListErrors is host-only (`:clist` opens a host-owned picker)".to_string(),
@@ -1144,6 +1151,7 @@ mod tests {
         // intent rather than pending one.
         let unmirrored = vec![
             (NativeEffect::PrintWorkingDir, "PrintWorkingDir"),
+            (NativeEffect::PrintProjectRoot, "PrintProjectRoot"),
             (NativeEffect::ListErrors, "ListErrors"),
             (
                 NativeEffect::ChangeDir(Some("/tmp".to_string())),

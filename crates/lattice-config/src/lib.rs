@@ -77,6 +77,8 @@ pub mod loader;
 mod modeline_zone;
 mod pane_options;
 mod plugin_options;
+// PR.2: the `project.root-markers` list option.
+mod root_markers;
 mod signcolumn;
 mod window_options;
 // `option` is `pub` so the proc macros' generated code can name
@@ -133,16 +135,17 @@ pub use core_options::{
     HelpListDisplay, HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
     LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
     ModelinePadding, ModelineRight, ModelineSeparator, MouseEnabled, NoFile, Number,
-    PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Shiftwidth, Sidescroll,
-    Sidescrolloff, SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop,
-    TerminalEscExits, TerminalScrollbackLines, TransientMaxRows, Whitespace, WhitespaceEol,
-    WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+    PickerResultDisplay, ProjectRootMarkers, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
+    Shiftwidth, Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay, TablineShowOption,
+    Tabstop, TerminalEscExits, TerminalScrollbackLines, TransientMaxRows, Whitespace,
+    WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
     Lsp, Magit, Messages, Modeline, Mouse, Notifications, Oil, OptionGroup, OptionGroupMetadata,
-    Pane, Picker, Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
+    Pane, Picker, Plugin, Project, Search, Snippet, Tabline, Terminal, Window,
+    ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,
@@ -151,6 +154,10 @@ pub use loader::{
 // ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
 // right}`). The first list-valued option; see `modeline_zone`.
 pub use modeline_zone::ModelineZone;
+// PR.2: the `project.root-markers` value type. Note `Project` above is
+// the option GROUP marker (`:customize project`), not `lattice_core::Project`
+// — the resolved root. Different crates, different jobs.
+pub use root_markers::RootMarkers;
 // L4a: inline-diagnostics option value types (`ui.diagnostics.*`).
 pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
 // PO.4.3: the `plugin.trace-level` option value + decl type — the global default

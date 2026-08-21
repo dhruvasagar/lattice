@@ -1621,6 +1621,57 @@ impl Editor {
                 std::sync::Mutex::new(std::env::current_dir().ok()),
             ),
         );
+        // PR.2: the project resolver — "which project does this buffer
+        // belong to", the one answer terminal / compilation / search /
+        // the file picker all root from.
+        //
+        // Registered in Phase B, ahead of every subsystem `install`, so
+        // no consumer can be installed before the service it resolves
+        // through exists. Under the exact `ProjectResolverHandle` alias
+        // per the ServiceRegistry Arc/TypeId rule — registering the
+        // concrete `Arc<MarkerResolver>` would key it under the wrong
+        // TypeId and every `get` would silently return `None`.
+        //
+        // Built with the DEFAULT markers, not the configured ones, and
+        // that ordering is forced rather than lazy: the persistent-config
+        // loader finds `.lattice/config.toml` by resolving a project
+        // root, so the resolver must exist before the config that
+        // configures it has been read. The subscription below re-points
+        // it the moment `project.root-markers` resolves to anything else
+        // — from TOML at startup or from `:set` later, the same path.
+        let project_resolver: lattice_core::ProjectResolverHandle =
+            std::sync::Arc::new(lattice_core::MarkerResolver::with_default_markers(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            ));
+        {
+            let resolver = project_resolver.clone();
+            let (markers_tx, mut markers_rx) = tokio::sync::mpsc::unbounded_channel();
+            event_bus.subscribe(
+                lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::OptionChanged),
+                lattice_runtime::SubscriptionTarget::Channel(markers_tx),
+            );
+            boot.runtime_handle().spawn(async move {
+                while let Some(event) = markers_rx.recv().await {
+                    let lattice_protocol::Event::OptionChanged { name, new, .. } = event else {
+                        continue;
+                    };
+                    if name != "project.root-markers" {
+                        continue;
+                    }
+                    // Parse rather than carry the typed value: the event
+                    // ships the new value as a string, so this needs no
+                    // `lattice-config` value-type coupling on the async
+                    // side (the `plugin.trace-level` precedent).
+                    match <lattice_config::RootMarkers as lattice_config::OptionType>::parse(&new) {
+                        Ok(markers) => resolver.set_markers(markers.to_vec()),
+                        Err(e) => {
+                            tracing::warn!(value = %new, error = %e, "ignoring project.root-markers")
+                        }
+                    }
+                }
+            });
+        }
+        boot.register_service::<lattice_core::ProjectResolverHandle>(project_resolver);
         // T-mode-1 (2026-05-27): TerminalStoreHandle so `TerminalNormalMode`
         // can install / clear the SyntheticDoc on a TerminalBuffer from its
         // lifecycle hooks. Same `BufferRegistry` backs both stores — cheap

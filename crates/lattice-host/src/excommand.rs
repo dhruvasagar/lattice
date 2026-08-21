@@ -627,6 +627,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("cd", "ex:cd"),
     ("chdir", "ex:cd"),
     ("pwd", "ex:pwd"),
+    // PR.2. Dashed, not collapsed, and no 1-2 letter short: those slots
+    // are scarce and reserved for vim-canonical commands.
+    ("project-root", "ex:project-root"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

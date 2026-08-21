@@ -3377,6 +3377,14 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // Canonicalize to resolve symlinks / `.` / `..`.
             let canonical = target.canonicalize().unwrap_or(target);
             editor.current_dir = Some(canonical.clone());
+            // PR.2: re-point the project resolver's pwd fallback. Only
+            // buffers with no project in their tree are affected — a
+            // marker-rooted answer does not follow `:cd` around — but
+            // those buffers must not keep reporting the old directory,
+            // and `set_pwd` drops the cache to guarantee it.
+            if let Some(resolver) = editor.services.get::<lattice_core::ProjectResolverHandle>() {
+                resolver.set_pwd(canonical.clone());
+            }
             // Update the CurrentDirHandle service so mode-owned
             // handlers (e.g. search `gr` refresh) pick up the new pwd.
             #[cfg(feature = "search")]
@@ -3389,6 +3397,26 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 *dir = Some(canonical.clone());
             }
             editor.set_message(EchoLevel::Info, canonical.display().to_string());
+        }
+        Effect::PrintProjectRoot => {
+            // Reports the marker too, because "where is my project root"
+            // and "why is it there" are the same question in practice —
+            // a root one directory higher than expected is almost always
+            // a stray `Cargo.toml` or `package.json`, and naming it
+            // turns a puzzling answer into an obvious one.
+            let project = editor.active_buffer_project();
+            let msg = match &project.kind {
+                lattice_core::ProjectKind::Marker(m) => {
+                    format!("{} ({m})", project.root.display())
+                }
+                lattice_core::ProjectKind::Pwd => {
+                    format!(
+                        "{} (no project marker; working directory)",
+                        project.root.display()
+                    )
+                }
+            };
+            editor.set_message(EchoLevel::Info, msg);
         }
         Effect::PrintWorkingDir => {
             let cwd = editor
@@ -32008,26 +32036,46 @@ impl Editor {
     /// the active buffer (transient state during boot before the
     /// first [`Self::recompute_options_for_buffer`]). Cheap: 9
     /// typed reads.
-    /// Walk up from `std::env::current_dir()` looking for a
-    /// `.git` directory or a `.lattice/` directory. Returns the
-    /// first match, or the CWD itself if neither marker is
-    /// found. `None` only when the CWD itself is unreadable.
+    /// PR.2: the project the active buffer belongs to.
     ///
-    /// Phase 5.8.AA.u: hoisted from the TUI runtime so both
-    /// renderer peers reach the same workspace-root semantics.
-    pub fn workspace_root_from_cwd() -> Option<std::path::PathBuf> {
-        let cwd = std::env::current_dir().ok()?;
-        let mut cursor = cwd.as_path();
-        loop {
-            if cursor.join(".git").exists() || cursor.join(".lattice").exists() {
-                return Some(cursor.to_path_buf());
-            }
-            match cursor.parent() {
-                Some(parent) => cursor = parent,
-                None => return Some(cwd),
-            }
+    /// The host-side peer of `ActionContext::project()`, for effect arms
+    /// and other host code holding an `&Editor` rather than an action
+    /// context. A generic primitive, not a per-feature helper: it
+    /// exposes the registered resolver and branches on nothing.
+    ///
+    /// **Total**, like the resolver itself. A buffer with no path
+    /// (scratch, `*messages*`, a terminal) has no tree to walk, so the
+    /// working directory stands in; a harness with no resolver
+    /// registered falls back to the process working directory, which is
+    /// what every consumer did before PR.2.
+    pub fn active_buffer_project(&self) -> lattice_core::Project {
+        let Some(resolver) = self.services.get::<lattice_core::ProjectResolverHandle>() else {
+            tracing::debug!("no project resolver registered; falling back to the process cwd");
+            return lattice_core::Project {
+                root: self
+                    .current_dir
+                    .clone()
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or_else(|| std::path::PathBuf::from(".")),
+                kind: lattice_core::ProjectKind::Pwd,
+            };
+        };
+        match self.document.path() {
+            Some(path) => resolver.for_path(&path),
+            // An empty relative path resolves against the resolver's own
+            // pwd, so a pathless buffer's answer stays consistent with
+            // `:cd` rather than reading the process cwd directly.
+            None => resolver.for_path(std::path::Path::new("")),
         }
     }
+
+    // PR.2: `workspace_root_from_cwd` lived here. It hand-walked for
+    // `.git` / `.lattice` from `std::env::current_dir()` — a fourth
+    // independent root notion, and one each renderer reached for
+    // separately. It is now `lattice_core::project::root_from_cwd`, so
+    // a `.lattice/config.toml` is found by the same rule that decides
+    // where `:terminal` opens, and no renderer owns a rule about where
+    // projects begin.
 
     /// Read a structural section the loader bucketed and remove
     /// it from `pending_config_structural_sections`. Subsequent
@@ -37124,7 +37172,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::TerminalInput(_)
         | Effect::AppAction(_)
         | Effect::ChangeDir(_)
-        | Effect::PrintWorkingDir => false,
+        | Effect::PrintWorkingDir
+        | Effect::PrintProjectRoot => false,
     }
 }
 
@@ -37271,7 +37320,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::TerminalInput(_)
         | Effect::AppAction(_)
         | Effect::ChangeDir(_)
-        | Effect::PrintWorkingDir => false,
+        | Effect::PrintWorkingDir
+        | Effect::PrintProjectRoot => false,
     }
 }
 

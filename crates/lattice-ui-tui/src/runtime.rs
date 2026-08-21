@@ -78,7 +78,7 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     // Phase 5.8.AA.u: workspace-root discovery + persistent-config
     // loading both live on the host so GPUI gets the same boot
     // behaviour. The TUI runtime is now a thin wrapper.
-    let workspace_root = lattice_host::editor::Editor::workspace_root_from_cwd();
+    let workspace_root = lattice_core::project::root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     app.apply_per_language_toml_overrides();
     // built-ins 2026-06-13: load embedded + user snippet packs once
@@ -102,8 +102,10 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     result
 }
 
-// Phase 5.8.AA.u: `workspace_root_from_cwd` migrated to
-// `lattice_host::dispatch::Editor::workspace_root_from_cwd`.
+// Phase 5.8.AA.u hoisted this out of the TUI runtime onto the host;
+// PR.2 moved it again, to `lattice_core::project::root_from_cwd` —
+// so both renderers and every other consumer share one rule about
+// where a project begins.
 
 // Phase 5.5.LSP.1: the shared LSP runtime + spawn helper now
 // live in `lattice_runtime::runtime` so host-side dispatchers

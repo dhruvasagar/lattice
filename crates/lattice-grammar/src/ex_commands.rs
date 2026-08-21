@@ -139,6 +139,9 @@ pub struct ExBuiltins {
     pub reload_snippets: ExCommandId,
     pub cd: ExCommandId,
     pub pwd: ExCommandId,
+    /// PR.2: `:project-root` — the introspection affordance for project
+    /// resolution.
+    pub project_root: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -2370,6 +2373,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let project_root = registry.register_ex_command(
+        "ex:project-root",
+        "Print the active buffer's project root and the marker that decided it (`:project-root`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::PrintProjectRoot)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let help = registry.register_ex_command(
         "ex:help",
         "Open the topic index or a named help topic (`:help [topic]`).",
@@ -2478,6 +2494,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         reload_snippets,
         cd,
         pwd,
+        project_root,
     }
 }
 

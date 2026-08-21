@@ -115,6 +115,51 @@ impl ActionContext<'_> {
         }
     }
 
+    /// PR.2: the project this action is acting in.
+    ///
+    /// Design: `docs/dev/architecture/project-resolution.md` §5. This is
+    /// a method rather than a field so that "which project" is a
+    /// question every action handler can ask without the host having to
+    /// answer it on every dispatch — resolution is cached and most
+    /// handlers never ask.
+    ///
+    /// **Total**, matching `ProjectResolver::for_path`: a handler that
+    /// cannot express "no project" cannot get it wrong. The degradations
+    /// are both real answers, not errors:
+    ///
+    /// - a buffer with no path (scratch, `*messages*`, a terminal) has
+    ///   no tree to walk, so the working directory stands in;
+    /// - a partially-wired harness with no resolver registered falls
+    ///   back to the process working directory, which is what every
+    ///   consumer did before this existed.
+    pub fn project(&self) -> lattice_core::Project {
+        let Some(resolver) = self.services.get::<lattice_core::ProjectResolverHandle>() else {
+            // Not `warn!`: a test harness that wires only the services
+            // it exercises is the common caller, and this is exactly
+            // the pre-PR.2 behaviour rather than a degradation.
+            tracing::debug!("no project resolver registered; falling back to the process cwd");
+            return lattice_core::Project {
+                root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                kind: lattice_core::ProjectKind::Pwd,
+            };
+        };
+        // `ActionContext` carries a `lattice_protocol::BufferId`;
+        // `BufferStore` speaks `lattice_core::BufferId`. Distinct types
+        // over the same u32 — the `repl_mode` conversion precedent.
+        let path = self
+            .services
+            .get::<crate::buffer_store::BufferStoreHandle>()
+            .and_then(|store| store.path_for(lattice_core::BufferId(self.buffer_id.0 as u32)));
+        match path {
+            Some(path) => resolver.for_path(&path),
+            // No path to walk from. `for_path` on a relative empty path
+            // would resolve against pwd anyway, but going through the
+            // resolver keeps the pwd answer consistent with `:cd`
+            // rather than reading the process cwd directly.
+            None => resolver.for_path(std::path::Path::new("")),
+        }
+    }
+
     /// The string argument at `index`, or `None` when absent or empty.
     /// Empty is treated as absent because a transient argument left at
     /// its default renders as an empty string.

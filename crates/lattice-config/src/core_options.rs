@@ -1005,6 +1005,31 @@ crate::options! {
     pub TerminalScrollbackLines: i64 = 10_000;
 }
 
+// PR.2 (2026-08-21): project group. One option — the ordered marker set
+// `lattice_core::MarkerResolver` walks upward for. Extending it is what
+// a new ecosystem needs instead of a release, which is most of what a
+// detector-plugin seam would have bought
+// (`docs/dev/architecture/project-resolution.md` §9).
+crate::options! {
+    group = crate::Project;
+
+    /// Filenames or directory names whose presence marks a project
+    /// root, in priority order. The walk starts at the buffer's own
+    /// directory and stops at the **first** directory containing any of
+    /// these, so a crate inside a Cargo workspace is its own project.
+    ///
+    /// Order decides which marker is *reported* when a directory holds
+    /// several: with the default list a git repository that is also a
+    /// crate reports `.git`.
+    ///
+    /// Replaces rather than extends — `:set project.root-markers?`
+    /// shows the full current list, which is what you are editing. A
+    /// buffer whose tree contains no marker at all roots at the working
+    /// directory.
+    #[name("project.root-markers")]
+    pub ProjectRootMarkers: crate::RootMarkers = crate::RootMarkers::default();
+}
+
 // ML.5 (2026-06-21): modeline group — per-zone element layout +
 // separator for the configurable element-system modeline
 // (`docs/dev/architecture/modeline.md` §11). The three zone options

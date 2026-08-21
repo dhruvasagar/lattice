@@ -37,6 +37,8 @@ pub const DESCRIBE: &str = "action:plugins-describe";
 pub const REFRESH: &str = "action:plugins-refresh";
 pub const TRACE: &str = "action:plugins-trace";
 pub const TRACE_LEVEL: &str = "action:plugins-trace-level";
+/// PM.8b: force a fresh build of the plugin under the cursor.
+pub const REBUILD: &str = "action:plugins-rebuild";
 
 /// Register the four `action:plugins-*` commands (dead-body — the mode's handler
 /// closures do the work) so the keymap's `cmd:` names resolve at boot. The
@@ -63,6 +65,10 @@ pub fn register_actions(commands: &mut CommandRegistry) {
         (
             TRACE_LEVEL,
             "plugins: cycle the trace verbosity of the plugin under the cursor (mode-owned).",
+        ),
+        (
+            REBUILD,
+            "plugins: force a fresh build of the plugin under the cursor (mode-owned).",
         ),
     ] {
         commands.register_action(
@@ -128,6 +134,50 @@ pub fn reload_handler() -> ActionHandler {
         Some(Effect::Echo {
             level: EchoLevel::Info,
             text: format!("reloading `{name}`…"),
+        })
+    })
+}
+
+/// `b` — force a fresh build of the plugin under the cursor, then reload.
+///
+/// Distinct from `r` (reload), which re-instantiates whatever artifact is on
+/// disk. `b` rebuilds that artifact from source first — the thing you want
+/// after editing a local plugin, and the thing `r` cannot do.
+///
+/// A row whose source is not buildable (bundled, prebuilt, unknown) echoes why
+/// rather than starting a build that cannot work.
+pub fn rebuild_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let name = plugin_name_at(ctx)?;
+        let loader = ctx.services.get::<PluginLoaderHandle>()?;
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return Some(Effect::Echo {
+                level: EchoLevel::Error,
+                text: "no runtime available to build on".to_string(),
+            });
+        };
+        let name_c = name.clone();
+        runtime.spawn(async move {
+            let result = loader.rebuild(&name_c).await;
+            // Re-render either way: on success the row's BUILD flips back to
+            // `cached`, on failure it reads `build-failed` — both are the
+            // answer the user pressed `b` to get.
+            if let Some(handle) = store.handle_for(buffer_id) {
+                let text = render::render_status(&loader.plugin_status());
+                crate::mode::write_all(&handle, text).await;
+            }
+            match result {
+                Ok(()) => tracing::info!(plugin = %name_c, "plugin rebuilt"),
+                Err(error) => tracing::warn!(plugin = %name_c, %error, "plugin rebuild failed"),
+            }
+        });
+        // The row flips to `building…` on the next render; echo so the
+        // keypress is acknowledged immediately even before that lands.
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: format!("rebuilding `{name}`…"),
         })
     })
 }
@@ -206,6 +256,17 @@ pub fn trace_level_handler() -> ActionHandler {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn rebuild_is_registered_and_distinct_from_reload() {
+        // `r` re-instantiates what is on disk; `b` rebuilds that first. Two
+        // commands, because collapsing them would make `r` occasionally take
+        // minutes.
+        let mut commands = CommandRegistry::new();
+        register_actions(&mut commands);
+        assert!(commands.id_by_name(REBUILD).is_some());
+        assert_ne!(REBUILD, RELOAD);
+    }
 
     #[test]
     fn register_actions_registers_the_action_commands() {

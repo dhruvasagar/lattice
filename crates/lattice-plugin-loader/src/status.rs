@@ -39,6 +39,29 @@ impl PluginHealth {
     }
 }
 
+#[cfg(test)]
+mod build_state_tests {
+    use super::BuildState;
+
+    #[test]
+    fn every_state_has_a_distinct_label() {
+        // Two states rendering the same cell would make the column useless
+        // exactly when it matters — `stale` vs `build-failed` are different
+        // problems with different fixes.
+        let labels = [
+            BuildState::NotBuilt.label(),
+            BuildState::Cached.label(),
+            BuildState::Stale.label(),
+            BuildState::Building.label(),
+            BuildState::Failed.label(),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for l in labels {
+            assert!(seen.insert(l), "duplicate build label: {l}");
+        }
+    }
+}
+
 /// A read-only snapshot of one loaded plugin for the manager view. Cloned out of
 /// the loader's loaded-set under its lock (never a live borrow), so the view
 /// renders a stable frame while loads/unloads proceed.
@@ -83,6 +106,22 @@ pub enum BuildState {
     /// The source has changed since the artifact was built. The plugin is
     /// running old code until the next build.
     Stale,
+    /// A build is running right now.
+    ///
+    /// The one state that is NOT derived from disk. Everything else here is a
+    /// fact about files that outlives the process; this is a fact about the
+    /// process, so it lives in memory and disappears with it — which is
+    /// correct, because a build interrupted by a crash is not still running
+    /// after a restart.
+    Building,
+    /// The last build attempted this session failed. The plugin is running
+    /// whatever it was running before (or nothing, if it never built).
+    ///
+    /// Also in-memory: on the next boot the artifact either exists — and the
+    /// stamp says whether it is stale — or it does not. Persisting a failure
+    /// would mean showing a user an error about a build they may since have
+    /// fixed.
+    Failed,
 }
 
 impl BuildState {
@@ -92,6 +131,8 @@ impl BuildState {
             BuildState::NotBuilt => "—",
             BuildState::Cached => "cached",
             BuildState::Stale => "stale",
+            BuildState::Building => "building…",
+            BuildState::Failed => "build-failed",
         }
     }
 }

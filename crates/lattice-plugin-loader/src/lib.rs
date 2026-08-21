@@ -166,6 +166,13 @@ struct LoadedRecord {
     source: crate::source_record::SourceRecord,
 }
 
+/// PM.8b: what a build for one plugin is doing right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuildActivity {
+    Running,
+    Failed,
+}
+
 /// PM.8a: is this plugin's artifact current with its source?
 ///
 /// Recomputed from disk per snapshot rather than cached at load, because the
@@ -173,7 +180,16 @@ struct LoadedRecord {
 /// local plugin's source and wants the view to say `stale` without a restart.
 /// It is two small file reads per row, on the `:plugins` refresh path, not a
 /// per-frame cost.
-fn build_state_of(record: &LoadedRecord) -> BuildState {
+fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> BuildState {
+    // PM.8b: an in-flight or just-failed build is the more current answer —
+    // the artifact on disk describes the *previous* build, and reporting
+    // `cached` while a rebuild is running would tell the user their `b` did
+    // nothing.
+    match activity {
+        Some(BuildActivity::Running) => return BuildState::Building,
+        Some(BuildActivity::Failed) => return BuildState::Failed,
+        None => {}
+    }
     let Some(source) = record.source.as_plugin_source() else {
         return BuildState::NotBuilt;
     };
@@ -309,6 +325,25 @@ pub struct PluginLoader {
     /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
     /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
+    /// PM.8b: builds running (or failed) **this session**, keyed by plugin
+    /// name.
+    ///
+    /// The only piece of build state not derived from disk. It is
+    /// deliberately not persisted: a build interrupted by a crash is not
+    /// still running after a restart, and a failure the user has since fixed
+    /// should not greet them on the next boot. On a fresh start the artifact
+    /// either exists — with a stamp saying whether it is stale — or it does
+    /// not, and that is the whole truth.
+    building: Mutex<std::collections::HashMap<String, BuildActivity>>,
+    /// PM.8b: how many builds are running, as a lock-free counter.
+    ///
+    /// Duplicated from `building` on purpose. The headerline's `version()` is
+    /// polled by the cells worker on **every tick** and the trait's contract
+    /// says it must not block; taking a mutex there — even an uncontended one
+    /// — puts a lock on a per-tick path for a number that is almost always
+    /// zero. The map stays the source of truth for *which* plugin is doing
+    /// what; this is the cheap "is anything happening" the tick asks.
+    building_count: std::sync::atomic::AtomicUsize,
     /// PM.7b: specs declared via `plugin-manager.require`, accumulated as
     /// config guests load and drained once by the boot task.
     ///
@@ -422,6 +457,8 @@ impl PluginLoader {
             host,
             env: LoaderServices::default(),
             loaded: Mutex::new(Vec::new()),
+            building: Mutex::new(std::collections::HashMap::new()),
+            building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
         }
     }
@@ -435,6 +472,8 @@ impl PluginLoader {
             host,
             env: services,
             loaded: Mutex::new(Vec::new()),
+            building: Mutex::new(std::collections::HashMap::new()),
+            building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
         }
     }
@@ -716,6 +755,10 @@ impl PluginLoader {
     /// manager view (PL8.H.2/.3). Cloned out under the loaded-set lock, so the
     /// view renders a stable frame while loads/unloads proceed.
     pub fn plugin_status(&self) -> Vec<PluginStatus> {
+        // Snapshot the in-flight set once, outside the loaded-set lock: two
+        // locks held at once is how a deadlock gets written, and the build
+        // task takes `building` while the view takes `loaded`.
+        let activity = self.building.lock().map(|m| m.clone()).unwrap_or_default();
         let mut rows: Vec<PluginStatus> = self
             .loaded
             .lock()
@@ -729,7 +772,7 @@ impl PluginLoader {
                 denied: r.denied.clone(),
                 health: r.health.clone(),
                 source: r.source.clone(),
-                build: build_state_of(r),
+                build: build_state_of(r, activity.get(&r.name)),
             })
             .collect();
         // Stable, name-sorted order (not raw load order). The `:plugins` view keys
@@ -908,6 +951,130 @@ impl PluginLoader {
     ) -> Result<PluginId, PluginLoaderError> {
         let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
         self.load_discovered(&plugin, tier).await
+    }
+
+    /// PM.8b: how many builds are running right now.
+    ///
+    /// The `:plugins` headerline reads this, per the
+    /// async-buffer-status-in-headerline rule — a build takes seconds to
+    /// minutes and the user needs to see it is happening somewhere other than
+    /// a status line that the next echo will overwrite.
+    pub fn builds_in_flight(&self) -> usize {
+        self.building_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn set_build_activity(&self, name: &str, activity: Option<BuildActivity>) {
+        if let Ok(mut map) = self.building.lock() {
+            match activity {
+                Some(a) => {
+                    map.insert(name.to_string(), a);
+                }
+                None => {
+                    map.remove(name);
+                }
+            }
+            // Recount under the same lock the map was mutated under, so the
+            // counter can never disagree with it.
+            let running = map
+                .values()
+                .filter(|a| matches!(a, BuildActivity::Running))
+                .count();
+            self.building_count
+                .store(running, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// PM.8b: force a fresh build of `name` from its recorded source, then
+    /// reload it.
+    ///
+    /// "Force" is the difference from an ordinary load: the build service
+    /// short-circuits on a matching stamp, which is exactly what you do NOT
+    /// want when a user pressed rebuild. The stamp is removed first so the
+    /// build is unconditional — the user asked, not the staleness check.
+    ///
+    /// Returns the error when the rebuild could not happen or did not
+    /// succeed, having left the plugin as it was. A failed rebuild never
+    /// unloads a working plugin: PM.5's `StaleKept` keeps the old artifact,
+    /// and this reloads from it.
+    ///
+    /// Blocking work runs on `spawn_blocking`; only the reload is awaited.
+    pub async fn rebuild(&self, name: &str) -> Result<(), String> {
+        let (source, dir) = {
+            let loaded = self
+                .loaded
+                .lock()
+                .map_err(|_| "plugin registry unavailable".to_string())?;
+            let record = loaded
+                .iter()
+                .find(|r| r.name == name)
+                .ok_or_else(|| format!("`{name}` is not loaded"))?;
+            (record.source.clone(), record.source_dir.clone())
+        };
+        if !source.is_buildable() {
+            // Bundled ships prebuilt and Unknown has nowhere to build from.
+            // Saying so beats running a build that cannot work.
+            return Err(format!(
+                "`{name}` has no buildable source ({})",
+                source.label()
+            ));
+        }
+        let Some(plugin_source) = source.as_plugin_source() else {
+            return Err(format!("`{name}` has no recorded source"));
+        };
+        let Some(user_root) = default_plugins_dir() else {
+            return Err("no config directory for the plugin cache".to_string());
+        };
+
+        self.set_build_activity(name, Some(BuildActivity::Running));
+        // Drop the stamp so the build is unconditional — see above.
+        if let Some(dir) = &dir {
+            let _ = std::fs::remove_file(dir.join(".build-stamp"));
+        }
+
+        let spec = pipeline::RequiredSpec {
+            name: name.to_string(),
+            source: plugin_source,
+            enable_mode: None,
+            pinned: false,
+        };
+        let cache_root = default_source_cache_dir();
+        let install = tokio::task::spawn_blocking(move || {
+            pipeline::install_required(
+                &resolve::SystemGit,
+                &resolve::HttpFetcher,
+                &build::CargoComponentBuilder,
+                &spec,
+                &cache_root,
+                &user_root,
+            )
+        })
+        .await
+        .map_err(|e| format!("rebuild task failed: {e}"))?;
+
+        match install {
+            pipeline::Install::Ready {
+                stale: Some(err), ..
+            } => {
+                self.set_build_activity(name, Some(BuildActivity::Failed));
+                Err(err)
+            }
+            pipeline::Install::Skipped { error, .. } => {
+                self.set_build_activity(name, Some(BuildActivity::Failed));
+                Err(error)
+            }
+            pipeline::Install::Ready { .. } => {
+                // Clear before the reload, not after: the reload republishes
+                // status, and a row still reading `building…` after its build
+                // finished is the kind of stuck indicator users stop trusting.
+                self.set_build_activity(name, None);
+                let tier = TrustTier::UserInstalled;
+                self.reload(name, tier)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("rebuilt, but reload failed: {e}"))
+            }
+        }
     }
 
     /// PM.7b: take the plugins declared via `require` so far, leaving the

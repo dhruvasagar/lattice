@@ -187,6 +187,26 @@ mod tests {
     }
 
     #[test]
+    fn the_in_flight_states_render_distinctly() {
+        // `building…` and `build-failed` are what a user sees after pressing
+        // `b`; if either rendered as `—` the chord would look inert.
+        let out = render_status(&[
+            sourced(
+                "busy",
+                SourceRecord::Local("/x".into()),
+                BuildState::Building,
+            ),
+            sourced(
+                "broke",
+                SourceRecord::Local("/y".into()),
+                BuildState::Failed,
+            ),
+        ]);
+        assert!(out.contains("building…"), "got: {out}");
+        assert!(out.contains("build-failed"), "got: {out}");
+    }
+
+    #[test]
     fn capabilities_stay_last_so_the_table_stays_aligned() {
         // CAPABILITIES is the only variable-length cell (it trails a
         // `(denied: …)` note), so a column added after it would not line up.

@@ -31,6 +31,64 @@ use lattice_runtime::{Document, EventFilter, SubscriptionTarget};
 use crate::actions;
 use crate::render::{PLUGINS_MODE_ID, render_status};
 
+/// PM.8b: the headerline provider id for the build-progress row.
+pub const BUILD_HEADERLINE_PROVIDER_ID: u64 = 0x706c_7567_6862_0800; // "plug-hb"
+
+/// PM.8b: a sticky row reporting builds in flight.
+///
+/// `version()` is polled by the cells worker on every tick and the trait
+/// forbids blocking there, so it reads the loader's lock-free counter and
+/// bumps a local version only when the count actually changes — the row is
+/// re-rendered on a transition, not on a tick.
+struct BuildHeaderline {
+    loader: PluginLoaderHandle,
+    last_count: std::sync::atomic::AtomicUsize,
+    version: std::sync::atomic::AtomicU64,
+}
+
+impl BuildHeaderline {
+    fn new(loader: PluginLoaderHandle) -> Self {
+        Self {
+            loader,
+            last_count: std::sync::atomic::AtomicUsize::new(0),
+            version: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
+impl lattice_cells::Headerline for BuildHeaderline {
+    fn version(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        let now = self.loader.builds_in_flight();
+        if self.last_count.swap(now, Ordering::Relaxed) != now {
+            self.version.fetch_add(1, Ordering::Release);
+        }
+        self.version.load(Ordering::Acquire)
+    }
+
+    fn render(&self) -> Option<lattice_cells::HeaderlineRow> {
+        let n = self.loader.builds_in_flight();
+        if n == 0 {
+            // Hidden while idle — the row exists only while there is
+            // something to say.
+            return None;
+        }
+        let text = if n == 1 {
+            "building 1 plugin…".to_string()
+        } else {
+            format!("building {n} plugins…")
+        };
+        let cells: Vec<lattice_cells::Cell> = text
+            .chars()
+            .map(|ch| lattice_cells::Cell::with_codepoint(ch as u32))
+            .collect();
+        Some(lattice_cells::HeaderlineRow {
+            cells: cells.into(),
+            bg: None,
+        })
+    }
+}
+
 /// The `*plugins*` buffer's major mode.
 pub struct PluginManagerMode;
 
@@ -156,6 +214,10 @@ impl Mode for PluginManagerMode {
                 action_name: actions::TRACE_LEVEL,
                 handler: actions::trace_level_handler(),
             },
+            ActionHandlerContribution {
+                action_name: actions::REBUILD,
+                handler: actions::rebuild_handler(),
+            },
         ]
     }
 
@@ -181,6 +243,27 @@ impl Mode for PluginManagerMode {
                 runtime.spawn(async move {
                     write_all(&handle_seed, text).await;
                 });
+            }
+
+            // PM.8b: a build takes seconds to minutes, so its progress goes in
+            // the buffer's headerline — not a status line the next echo
+            // overwrites (the async-buffer-status-in-headerline rule). The
+            // row hides itself when nothing is building, so the common case
+            // costs a virtual row that is never drawn.
+            if let (Some(registrar), Some(loader)) = (
+                ctx.service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>(),
+                ctx.service::<PluginLoaderHandle>(),
+            ) {
+                let registrar: Arc<dyn lattice_mode::VirtualRowRegistrar> = (*registrar).clone();
+                let provider = Arc::new(lattice_cells::HeaderlineProvider::new(
+                    BUILD_HEADERLINE_PROVIDER_ID,
+                    Arc::new(BuildHeaderline::new((*loader).clone())),
+                ));
+                registrar.unregister(buffer_id, BUILD_HEADERLINE_PROVIDER_ID);
+                registrar.register(
+                    buffer_id,
+                    provider as Arc<dyn lattice_cells::VirtualRowProvider>,
+                );
             }
 
             // Live health: re-render when any plugin crashes while the view is
@@ -249,6 +332,14 @@ fn plugins_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "T",
                 doc: "plugins: cycle the trace verbosity of the plugin under the cursor",
                 cmd: "action:plugins-trace-level"
+            },
+            // PM.8b: `b` for build. Distinct from `r` (reload), which
+            // re-instantiates whatever is on disk — `b` rebuilds that from
+            // source first.
+            keymap_entry! {
+                mode: Normal, chord: "b",
+                doc: "plugins: force a fresh build of the plugin under the cursor",
+                cmd: "action:plugins-rebuild"
             },
         ]
     })

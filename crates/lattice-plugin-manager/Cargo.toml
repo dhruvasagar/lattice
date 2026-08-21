@@ -28,6 +28,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+# PM.8b: the sticky headerline row reporting builds in flight.
+lattice-cells = { path = "../lattice-cells" }
 # The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
 # `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,
 # `BufferStoreHandle`, `OptionOverrideSet`).

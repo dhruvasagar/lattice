@@ -872,7 +872,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7a ✅ · PM.7b–PM.8 📝.**
+**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7 ✅ (a + b) · PM.8 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -1046,36 +1046,33 @@ Decisions taken during the build:
 *Tests:* 2 end-to-end through a real `wasm32-wasip2` guest + 4 unit (name gate,
 drain-once) + 7 pipeline (failure policy, ordering) = **13**.
 
-#### PM.7b — init.rs built by the service + boot wiring  📝 (next)
+#### PM.7b — init.rs built by the service + boot wiring  ✅ (2026-08-21)
 
-The two halves of PM.7a are complete and tested; what is **not** started is the
-integration between them, which is the rest of design §6:
+The open question the scoping note flagged — `load_path` does not retain the
+compiled `Component`, so keep it or compile init twice? — turned out to be a
+false choice. **`plugin-manager` became a `PluginSeam`**, so the drain happens
+inside `load_discovered`'s existing per-seam dispatch and reuses the component
+that function already compiled. No retained state, no second spawn.
 
-1. **Build init.rs through the PM.5 service.** Its source dir is
-   `<config>/lattice/init/` (`discovery::default_init_dir`), and today it must
-   be pre-built by hand. One build primitive, two callers — the PL8.D.4 init
-   watcher already re-loads a rebuilt `init.wasm`; here the *rebuild* becomes
-   the editor's job.
-2. **Wire the drain into the boot ordering.** `install.rs` already has the
-   sequence (core plugins → init.rs → on-disk plugins) at the `spawn` around
-   line 189. PM.7b inserts: after init.rs loads, spawn it a second time as a
-   plugin-manager guest to drain its specs, run `install_all` on
-   `spawn_blocking`, then load each `Install::Ready` artifact and honour
-   `enable_mode` via the CI.5 `on-plugin-loaded` → `enable-mode` path.
+It is its own seam rather than folded into `config` because declaring software
+to install is a strictly larger authority than setting an option, and
+`provides` is where a user reading a manifest can see the difference.
 
-The open question worth settling first: `loader.load_path` does not currently
-retain the compiled `Component`, so draining `require` means either keeping it
-or compiling init twice. Prefer retaining it — compiling a component twice per
-boot to read a list is the kind of thing that looks fine until someone's
-init.rs grows.
+**init.rs is built by the PM.5 service.** Its source dir is a cargo project
+like any other, so an edited init.rs rebuilds on the next boot and an unchanged
+one is a pure load — which removes the "run cargo by hand first" step §6 called
+out. A dir holding a hand-built `init.wasm` and no `Cargo.toml` still loads
+as-is, so existing setups do not break; a build failure is a skip that leaves
+the user an editor and their previous build.
 
-A `plugin-manager` WIT interface (`require(spec)`; `plugin-source` variant) the
-init world imports; the host records specs during init's register export, drains
-them after, and runs resolve→build→load off-thread. init.rs itself is built by the
-PM.5 service (its source dir `<config>/lattice/init/`) — one build primitive, init
-+ plugins. Ordering per design §6. **Exit:** an init.rs `require`ing a `Local`/`Git`
-plugin gets it built + loaded a frame or two after boot; init.rs source rebuilds on
-change.
+**Ordering:** required plugins install *before* the on-disk scan, so a plugin
+just staged into the user root is discovered this boot rather than the next.
+
+*Tests:* 3 end-to-end + 2 conversion. One harness trap recorded in the commit:
+the first cut read `PLUGIN_MANAGER_GUEST_WASM` via `option_env!`, which the
+host crate's build.rs exports to its own compilation and not the loader's — so
+both real tests passed by silently skipping. They resolve the fixture by path
+now, as `init_config.rs` already did.
 
 #### PM.8 — `:plugins` source/build columns + rebuild chord  📝
 The `lattice-plugin-manager` view gains **source** (`bundled`/`local`/`git@rev`/

@@ -25,6 +25,12 @@ pub mod indent;
 pub mod indent_blocks;
 // SS.1: the shared on-disk fingerprint (autoread + multibuffer sources).
 pub mod on_disk;
+// PR.1: which project a path belongs to. Here rather than in a crate of
+// its own (heuristic #6: it carves out no dependency surface — the whole
+// mechanism is `std::path` + `std::fs::exists`) and here rather than in
+// `lattice-host` (no subsystem crate depends on the host, so terminal /
+// compilation / magit / multibuffer would each be a cycle away).
+pub mod project;
 pub mod search;
 pub mod ui;
 pub mod undo;
@@ -40,6 +46,10 @@ pub use crate::folding::{
 };
 pub use crate::indent::{IndentMethod, IndentUnit};
 pub use crate::indent_blocks::LineShape;
+pub use crate::project::{
+    DEFAULT_ROOT_MARKERS, MarkerResolver, Project, ProjectKind, ProjectResolver,
+    ProjectResolverHandle,
+};
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
 

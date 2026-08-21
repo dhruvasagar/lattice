@@ -872,7 +872,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7–PM.8 📝.**
+**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track PM.5 ✅ · PM.6 ✅ · PM.7a ✅ · PM.7b–PM.8 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -1016,19 +1016,58 @@ Decisions taken during the build:
 one end-to-end against a **real local git repository** (a fake can only prove the
 shape of the interaction, not that the commands are right).
 
-#### PM.7 — the `require` seam + init.rs bootstrapping  📝 (next)
+#### PM.7a — the `require` seam + install pipeline  ✅ (2026-08-21)
 
-> **Scoping note (2026-08-21).** PM.5 + PM.6 gave PM.7 everything below the
-> boundary: `resolve(...)` then `build_plugin(...)` is the whole pipeline body,
-> and a `Resolved::Artifact` short-circuits the build. What remains is the
-> boundary itself, and it is a **public plugin API** change with a long verify
-> loop — a new `wit/plugin-manager.wit` interface, `bindgen!` regeneration in
-> `lattice-plugin-host`, `add_to_linker` wiring (the `host-services` impl at
-> `lib.rs:818` is the shape to copy), a `PluginState` sink recording specs during
-> `register`, a `wasm32-wasip2` guest fixture built through `build.rs`, and the
-> CI per-call overhead gates. Budget it as its own session; do not start it
-> without room to land the fixture green, because a half-wired WIT surface is the
-> worst thing to leave behind.
+`wit/plugin-manager.wit` (interface + the `plugin-manager-plugin` world),
+`lattice-plugin-host/src/plugin_manager_host.rs` (sink, name gate,
+`spawn_plugin_manager_plugin`), and
+`lattice-plugin-loader/src/pipeline.rs` (`install_required` / `install_all`).
+
+**`require` records and returns** — no resolve, no clone, no build, no
+download inside the guest call. A `require` that resolved inline would put a
+clone and a compile on the boot path (paramount goal #1) and hang a cold first
+boot on a network the machine may not have. Pinned by a test that fails *the
+way it would really fail*: the fixture names `example.invalid`, so an inline
+resolver times out on DNS instead of returning promptly against an untouched
+cache.
+
+Decisions taken during the build:
+- **Its own world**, not an import added to an existing one. A plugin that
+  contributes a grammar has no business holding the capability to install
+  software; worlds keep that true by construction.
+- **An unsafe `name` returns `false`, it does not trap.** The name becomes a
+  directory under two roots, so `../../.ssh` is a traversal write with the
+  editor's authority. Same gate the untrusted `manifest.id` already gets. A
+  rejection costs that entry, not the whole config.
+- **Types are mirrored across the boundary**, not shared: the dependency runs
+  `loader → host`, and a WIT-facing type reshaped by a loader refactor would
+  break a public API on an internal edit.
+
+*Tests:* 2 end-to-end through a real `wasm32-wasip2` guest + 4 unit (name gate,
+drain-once) + 7 pipeline (failure policy, ordering) = **13**.
+
+#### PM.7b — init.rs built by the service + boot wiring  📝 (next)
+
+The two halves of PM.7a are complete and tested; what is **not** started is the
+integration between them, which is the rest of design §6:
+
+1. **Build init.rs through the PM.5 service.** Its source dir is
+   `<config>/lattice/init/` (`discovery::default_init_dir`), and today it must
+   be pre-built by hand. One build primitive, two callers — the PL8.D.4 init
+   watcher already re-loads a rebuilt `init.wasm`; here the *rebuild* becomes
+   the editor's job.
+2. **Wire the drain into the boot ordering.** `install.rs` already has the
+   sequence (core plugins → init.rs → on-disk plugins) at the `spawn` around
+   line 189. PM.7b inserts: after init.rs loads, spawn it a second time as a
+   plugin-manager guest to drain its specs, run `install_all` on
+   `spawn_blocking`, then load each `Install::Ready` artifact and honour
+   `enable_mode` via the CI.5 `on-plugin-loaded` → `enable-mode` path.
+
+The open question worth settling first: `loader.load_path` does not currently
+retain the compiled `Component`, so draining `require` means either keeping it
+or compiling init twice. Prefer retaining it — compiling a component twice per
+boot to read a list is the kind of thing that looks fine until someone's
+init.rs grows.
 
 A `plugin-manager` WIT interface (`require(spec)`; `plugin-source` variant) the
 init world imports; the host records specs during init's register export, drains

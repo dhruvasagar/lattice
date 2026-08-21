@@ -4,8 +4,8 @@
 > plus the CM.3d headerline / kill / location-highlighting and CM.3e
 > catch-all + test-panic + stdout follow-ups below), and **CM.5 (ANSI)
 > landed 2026-08-21**. The plan stays **active** (not archived) because
-> CM.6 (WASM-contributable parsers) is genuinely ⛔ deferred, now on a
-> sequencing argument rather than a capability one — per the archiving
+> CM.6's live wiring is still open (its seam landed 2026-08-21; the
+> per-reader factory + crate edge remain) — per the archiving
 > rule, a plan with any open slice is not archived. Sequencing companion to the
 > design fragments
 > [`../../architecture/compilation-mode.md`](../../architecture/compilation-mode.md)
@@ -268,25 +268,52 @@ palette). *Bench:* `compilation_ansi`, three shapes — uncoloured
 ~597 MiB/s after bulk-copying runs between control bytes (-79% vs. the
 per-scalar first cut). *Doc:* design §8b + user `compilation-mode.md`.
 
-### CM.6 — WASM-contributable parsers ⛔ deferred (reason sharpened 2026-08-21)
+### CM.6 — WASM-contributable parsers 🚧 seam ✅, live wiring 📝 (2026-08-21)
 
-The seam is ready and Phase 7 unblocked it: `CompilationParser` is a
-one-method trait and `ParserRegistry::register` already takes a
-`Box<dyn CompilationParser>`, so a WASM-backed impl slots in with no
-change to the compilation crate.
+**The seam is built and proven end-to-end.** `wit/error-parser.wit` +
+`lattice_plugin_host::error_parser_host` + a real `wasm32-wasip2` fixture
+guest; `PluginSeam::ErrorParser` exists and the loader's exhaustive match
+covers it.
 
-It stays deferred on a **sequencing** argument rather than a technical
-one. Shipping it means a new WIT world, a capability, a host task, a
-loader drain, guest SDK support and a fixture plugin — and until the
-plugin-manager **user track (PM.5–PM.8)** lands there is no way for
-anyone to *install* a plugin that would implement it. A parser seam
-with no reachable users is a WIT surface frozen before its first real
-consumer has exercised it, which is the specific mistake the
-build-order argument in `implementation.md` ("designing WIT after we
-see five concrete patterns") exists to avoid.
+Decisions worth keeping:
 
-Revisit when PM.5–PM.8 are done. See
-[`plugin-loader.md`](plugin-loader.md) for that track.
+- **The WIT world mirrors the native `CompilationParser` trait** — feed one
+  line, return what it completed, reset between runs — rather than inventing a
+  second shape for the same job.
+- **Sync, not async.** The async seams here exist because their work is
+  genuinely concurrent; parsing one line is a pure function of the line plus
+  pending state, called in arrival order by a single reader. An async call per
+  line would buy nothing and cost a suspend per line of build output. It runs
+  off the UI/actor threads but *is* on a fast producer's critical path, so it
+  carries the Reflex-class budget, not the lifecycle default.
+- **Guest output is untrusted**: empty path or out-of-range position is logged
+  and dropped; a trap poisons that parser for the session while the build keeps
+  streaming.
+- **Registration ordering, with a test each way.** Plugin parsers go *before*
+  the catch-all `GeneralParser` and *after* the format-specific natives.
+  After the catch-all, its thin salvaged `Info` entry wins the
+  first-entry-wins dedup and the plugin's severity/message are silently
+  discarded — the plugin looks inert. Before the natives, it displaces a parser
+  that understands the format better.
+
+*Tests:* 5 end-to-end + 4 validation + 4 ordering.
+
+#### CM.6b — live wiring 📝 (next)
+
+Declaring the seam currently returns `PluginLoaderError::NotWired("error-parser")`
+— honest, not a silent no-op load.
+
+**What is missing is a factory, not a call.** `ParserRegistry` is built **per
+pipe reader** (`service.rs` — stdout and stderr each construct one) and a
+`WasmErrorParser` owns a `Store`, so it cannot be shared between them. Each
+reader must instantiate its own, which is also semantically right: the two
+streams carry independent pending state (pinned by
+`two_parsers_do_not_share_pending_state`).
+
+That needs a factory trait owned by `lattice-compilation` — the loader
+implements it over the compiled component — plus a **new `loader →
+compilation` crate edge**, which does not exist today. A cross-crate boundary
+decision, so it wants confirming rather than making in passing.
 
 ## Cross-renderer note
 

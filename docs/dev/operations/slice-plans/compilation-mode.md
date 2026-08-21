@@ -1,11 +1,12 @@
 # Compilation mode — slice plan
 
-> **Status: 🚧 ACTIVE (2026-07-23).** All core slices are ✅ (CM.1–CM.8
+> **Status: 🚧 ACTIVE (2026-08-21).** All core slices are ✅ (CM.1–CM.8
 > plus the CM.3d headerline / kill / location-highlighting and CM.3e
-> catch-all + test-panic + stdout follow-ups below). The plan stays
-> **active** (not archived) because CM.5 (ANSI) and CM.6 (WASM parsers)
-> are genuinely ⛔ deferred — per the archiving rule, a plan with any
-> open slice is not archived. Sequencing companion to the
+> catch-all + test-panic + stdout follow-ups below), and **CM.5 (ANSI)
+> landed 2026-08-21**. The plan stays **active** (not archived) because
+> CM.6 (WASM-contributable parsers) is genuinely ⛔ deferred, now on a
+> sequencing argument rather than a capability one — per the archiving
+> rule, a plan with any open slice is not archived. Sequencing companion to the
 > design fragments
 > [`../../architecture/compilation-mode.md`](../../architecture/compilation-mode.md)
 > (the runner + `*compilation*`/`*problems*`) and
@@ -222,10 +223,70 @@ green; ship doc + bench + test + graceful-error together.
 > project-wide diagnostic list is wanted (vim's location-list model would
 > be the substrate-faithful home, reusing `QuickfixList`).
 
-## Phase 5 — polish / extensibility (deferred)
+## Phase 5 — polish / extensibility
 
-- **CM.5 — ANSI-SGR → decorations** over captured text. ⛔ deferred.
-- **CM.6 — WASM-contributable parsers** (Phase 7 plugin host / WIT). ⛔ deferred.
+### CM.5 — ANSI-SGR over captured text ✅ (2026-08-21)
+
+Landed as a **correctness** fix, which is not how it was filed. The
+plan called it polish because captured output is a pipe and cargo /
+rustc therefore disable colour on their own. What that framing missed
+is the second place the escapes land when anything forces colour on
+(`--color=always`, `CLICOLOR_FORCE=1`, a tool probing `TERM` instead of
+isatty): **in front of the parser regexes**. A colourised
+`ESC[1mESC[31merror[E0308]ESC[0m` does not match the `error` pattern,
+so the diagnostic silently never reaches the error list and `:cnext`
+skips a real error. Stripping therefore runs in the pipe reader ahead
+of `ParserRegistry::feed`, and is unconditional.
+
+Delivered: `ansi.rs` (streaming SGR splitter, state carried across
+lines per pipe); 17 registered `compilation.ansi.*` theme elements;
+spans carried on `OutputChunk::Append` beside the text they describe;
+publication through the existing `PendingSyntheticHighlights` seam, so
+**neither renderer needed a change**.
+
+Two findings worth keeping:
+
+- **The palette had to be late-bound.** `lattice_compilation::install`
+  runs at `editor_boot.rs:610`; `ThemeRegistryHandle` is not registered
+  until line 1754. Resolving the palette in `install` compiles clean and
+  returns `None` forever. It is filled from the mode's `on_activate`
+  through a `CompilationAnsiSlot` (`Arc<OnceLock<_>>`) instead. Another
+  instance of the ServiceRegistry ordering hazard in CLAUDE.md — this
+  time ordering rather than TypeId.
+- **Span/text alignment is the load-bearing invariant.** The span list
+  must stay exactly as long as the buffer, or a later coloured line
+  paints over the wrong row — silent when introduced, visible only
+  further down the log. Flushes pad to their appended line count, and a
+  wholly uncoloured flush publishes nothing while banking its lines as
+  *debt*, paid as leading empty rows by the next flush that has colour.
+  That is what keeps the common case at zero publishes and zero
+  renderer wakes.
+
+*Tests:* 29 (splitter) + 7 (alignment) + 2 (end-to-end: a colourised
+diagnostic still populates the error list; stripping happens without a
+palette). *Bench:* `compilation_ansi`, three shapes — uncoloured
+~597 MiB/s after bulk-copying runs between control bytes (-79% vs. the
+per-scalar first cut). *Doc:* design §8b + user `compilation-mode.md`.
+
+### CM.6 — WASM-contributable parsers ⛔ deferred (reason sharpened 2026-08-21)
+
+The seam is ready and Phase 7 unblocked it: `CompilationParser` is a
+one-method trait and `ParserRegistry::register` already takes a
+`Box<dyn CompilationParser>`, so a WASM-backed impl slots in with no
+change to the compilation crate.
+
+It stays deferred on a **sequencing** argument rather than a technical
+one. Shipping it means a new WIT world, a capability, a host task, a
+loader drain, guest SDK support and a fixture plugin — and until the
+plugin-manager **user track (PM.5–PM.8)** lands there is no way for
+anyone to *install* a plugin that would implement it. A parser seam
+with no reachable users is a WIT surface frozen before its first real
+consumer has exercised it, which is the specific mistake the
+build-order argument in `implementation.md` ("designing WIT after we
+see five concrete patterns") exists to avoid.
+
+Revisit when PM.5–PM.8 are done. See
+[`plugin-loader.md`](plugin-loader.md) for that track.
 
 ## Cross-renderer note
 

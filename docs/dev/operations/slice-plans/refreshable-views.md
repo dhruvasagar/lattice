@@ -1,9 +1,15 @@
 # Refreshable views — slice plan
 
-> **Status: Active.** Opened 2026-08-10. Implements
+> **Status: ✅ COMPLETE (RV.1–RV.3, closed 2026-08-21).** Opened
+> 2026-08-10. Implements
 > [`mode-architecture.md`](../../architecture/mode-architecture.md) §5.5:
 > `gr` as one shared chord over a `Mode::refresh_action()` declaration,
-> replacing three copied keymap entries.
+> replacing the copied keymap entries.
+>
+> Archivable. The "Deferred" section at the foot is **not** an open
+> slice: `q`-as-a-second-shared-chord was evaluated and explicitly
+> declined ("do not assume it generalises because `gr` did"), which is a
+> rejected alternative, not postponed work.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
@@ -12,8 +18,18 @@ Design owns *what* and *why*; this file owns *when* and *in what order*.
 | Slice | Title | Status |
 |---|---|---|
 | RV.1 | `Mode::refresh_action()` + `refreshable-view-mode` + generic dispatch | ✅ |
-| RV.2 | Retrofit the three existing copies | 📝 |
-| RV.3 | Close the gaps — `*problems*`, narrow | 📝 |
+| RV.2 | Retrofit the existing copies (five, not three — see below) | ✅ |
+| RV.3 | Close the gaps — `*problems*`, narrow | ✅ |
+
+> **This table read `📝` for RV.2 and RV.3 until 2026-08-21, while both
+> sections below already read ✅ and both were implemented.** Verified
+> against source: `Mode::refresh_action` (`lattice-mode/src/mode.rs`),
+> `refreshable_view_mode.rs`, the auto-activation in `registry.rs`, the
+> seven consumers that declare a target, and
+> `lattice-host/tests/gr_is_declared_once.rs`. Recorded rather than
+> quietly fixed, because a status table that disagrees with its own body
+> is the failure mode the archiving rule warns about — icons drift, and
+> the drift is what makes a plan look open when it is done.
 
 > **RV.1 landed 2026-08-10.** Two things the design got wrong and the
 > code corrected (both fixed in `mode-architecture.md` §5.5):

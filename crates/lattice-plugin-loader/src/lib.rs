@@ -750,6 +750,30 @@ impl PluginLoader {
         });
     }
 
+    /// PM.7/PM.8 follow-up: honour a `require`'s `enable-mode` sugar.
+    ///
+    /// Publishes the same `ModeEnablementRequested` the manifest
+    /// `default_mode` gate publishes — one mechanism, two ways of asking for
+    /// it (a plugin declaring its own default, or a user's `init.rs` asking
+    /// for it at the call site).
+    ///
+    /// The host never learns the mode-id statically: it arrives in the spec
+    /// and is forwarded as an opaque string, so the mode stays the plugin's
+    /// own surface (`feedback_mode_owns_its_surface`).
+    ///
+    /// A missing bus is a silent skip — the same degradation every other
+    /// event publisher here uses when the editor is not fully wired (tests,
+    /// headless harnesses).
+    pub fn request_mode_enablement(&self, mode: &str) {
+        let Some(bus) = self.env.bus.as_ref() else {
+            return;
+        };
+        bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+            mode: mode.to_string(),
+            enabled: true,
+        });
+    }
+
     /// PL8.H.1: a read-only snapshot of every loaded plugin — identity, trust
     /// tier, capabilities granted/denied, and health — for the `:plugins`
     /// manager view (PL8.H.2/.3). Cloned out under the loaded-set lock, so the

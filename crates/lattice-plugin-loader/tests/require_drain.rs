@@ -166,3 +166,44 @@ async fn a_guest_without_the_seam_queues_nothing() {
         "an editor with no init.rs must not queue any install work"
     );
 }
+
+/// The `enable-mode` sugar reaches the event bus.
+///
+/// It travelled faithfully from WIT to `RequiredSpec` from PM.7 onward, but
+/// nothing consumed it — a `require` with `enable-mode` installed and loaded
+/// the plugin and left its mode off. This pins the last hop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enable_mode_publishes_a_mode_enablement_request() {
+    use lattice_protocol::{Event, EventKind};
+    use lattice_runtime::{EventFilter, SubscriptionTarget};
+
+    let base = tempfile::tempdir().unwrap();
+    let bus = Arc::new(EventBus::new());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
+    let loader = Arc::new(PluginLoader::with_services(
+        host,
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(bus.clone()),
+            ..Default::default()
+        },
+    ));
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    bus.subscribe(
+        EventFilter::kind(EventKind::ModeEnablementRequested),
+        SubscriptionTarget::Channel(tx),
+    );
+
+    loader.request_mode_enablement("demo-mode");
+
+    match rx.try_recv() {
+        Ok(Event::ModeEnablementRequested { mode, enabled }) => {
+            assert_eq!(mode, "demo-mode", "the mode-id arrives opaque and intact");
+            assert!(enabled, "a require asks to enable, never to disable");
+        }
+        other => panic!("expected a ModeEnablementRequested, got {other:?}"),
+    }
+}

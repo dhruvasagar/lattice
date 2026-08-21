@@ -342,7 +342,12 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
 
     for install in installs {
         match install {
-            crate::pipeline::Install::Ready { name, stale, .. } => {
+            crate::pipeline::Install::Ready {
+                name,
+                stale,
+                enable_mode,
+                ..
+            } => {
                 if let Some(error) = stale {
                     tracing::warn!(
                         plugin = %name,
@@ -356,7 +361,14 @@ async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) 
                 let dir = user_root.join(&name);
                 match loader.load_path(&dir, TrustTier::UserInstalled).await {
                     Ok(id) => {
-                        tracing::info!(plugin = %name, id = id.0, "required plugin loaded")
+                        tracing::info!(plugin = %name, id = id.0, "required plugin loaded");
+                        // use-package's `enable-mode` sugar. Requested only
+                        // AFTER a successful load: asking to enable a mode
+                        // belonging to a plugin that failed to load would be
+                        // a request nothing can satisfy.
+                        if let Some(mode) = enable_mode {
+                            loader.request_mode_enablement(&mode);
+                        }
                     }
                     Err(err) => tracing::warn!(
                         plugin = %name,

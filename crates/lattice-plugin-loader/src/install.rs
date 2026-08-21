@@ -208,6 +208,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             // 1. init.rs next — AWAITED, so its subscriptions are live before
             //    step 2 loads plugins that fire `plugin-loaded`.
             if let Some(init_dir) = init_dir {
+                // PM.7b: build init.rs before loading it. It is a
+                // `wasm32-wasip2` component like any other, so the PM.5
+                // service builds it — one build primitive, two callers
+                // (design §6). This is what removes the "run cargo by hand
+                // first" step: an edited init.rs rebuilds on the next boot,
+                // and an unchanged one is a pure load that never invokes a
+                // toolchain.
+                //
+                // Failure is a skip. A user whose init.rs stopped compiling
+                // must still get an editor — with their previous init.wasm if
+                // one exists (`StaleKept`), and without config if not.
+                build_init_if_needed(&init_dir).await;
                 match loader.load_path(&init_dir, TrustTier::Bundled).await {
                     Ok(id) => tracing::info!(
                         id = id.0,
@@ -220,6 +232,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                         "no user init.rs loaded"
                     ),
                 }
+                // PM.7b: whatever init.rs `require`d is now queued. Resolve,
+                // build and load it BEFORE step 2's on-disk scan, so a plugin
+                // that was just installed into the user root is discovered by
+                // that scan rather than waiting for the next boot.
+                install_required_plugins(&loader).await;
             }
             // 2. Then the plugins the init.rs handlers react to.
             if let Some(dir) = plugins_dir {
@@ -231,5 +248,128 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                 }
             }
         });
+    }
+}
+
+/// PM.7b: build the user's `init.rs` if its source changed.
+///
+/// A no-op when the directory holds no cargo project — the common case today
+/// is a hand-built `init.wasm` dropped in place, and that must keep working.
+/// The build stages into the same directory the loader then discovers, so
+/// nothing downstream needs to know a build happened.
+///
+/// Runs on `spawn_blocking`: a cold component build is seconds to minutes and
+/// this is inside the boot task, which shares the async runtime with the
+/// editor (paramount goal #1 / #4).
+async fn build_init_if_needed(init_dir: &std::path::Path) {
+    if !init_dir.join("Cargo.toml").is_file() {
+        tracing::debug!(
+            dir = %init_dir.display(),
+            "init dir is not a cargo project; loading any prebuilt init.wasm as-is"
+        );
+        return;
+    }
+    let dir = init_dir.to_path_buf();
+    let outcome = match tokio::task::spawn_blocking(move || {
+        let parent = dir.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        crate::build::build_plugin(
+            &crate::build::CargoComponentBuilder,
+            &dir,
+            "init",
+            &parent,
+            false,
+        )
+    })
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "init.rs build task failed to run");
+            return;
+        }
+    };
+    match outcome.error() {
+        Some(error) => tracing::warn!(
+            dir = %init_dir.display(),
+            %error,
+            "init.rs build failed; using the previous build if there is one"
+        ),
+        None => tracing::debug!(dir = %init_dir.display(), "init.rs is current"),
+    }
+}
+
+/// PM.7b: resolve, build and load everything `init.rs` declared via `require`.
+///
+/// Each spec is independent: one broken source costs that plugin and nothing
+/// else. The whole pipeline runs on `spawn_blocking` — it clones, downloads
+/// and compiles — and only the final load returns to the async context.
+async fn install_required_plugins(loader: &std::sync::Arc<crate::PluginLoader>) {
+    let specs = loader.take_required();
+    if specs.is_empty() {
+        return;
+    }
+    let Some(user_root) = crate::default_plugins_dir() else {
+        tracing::warn!("require: no config dir; cannot install declared plugins");
+        return;
+    };
+    let cache_root = crate::default_source_cache_dir();
+    tracing::info!(
+        count = specs.len(),
+        "installing plugins declared by init.rs"
+    );
+
+    let installs = match tokio::task::spawn_blocking({
+        let user_root = user_root.clone();
+        move || {
+            crate::pipeline::install_all(
+                &crate::resolve::SystemGit,
+                &crate::resolve::HttpFetcher,
+                &crate::build::CargoComponentBuilder,
+                &specs,
+                &cache_root,
+                &user_root,
+            )
+        }
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "require: install task failed to run");
+            return;
+        }
+    };
+
+    for install in installs {
+        match install {
+            crate::pipeline::Install::Ready { name, stale, .. } => {
+                if let Some(error) = stale {
+                    tracing::warn!(
+                        plugin = %name,
+                        %error,
+                        "plugin is running a previous build (rebuild failed)"
+                    );
+                }
+                // The artifact is staged in the user root; load it through the
+                // ordinary discovery path so a `require`d plugin and a
+                // hand-installed one take exactly the same route in.
+                let dir = user_root.join(&name);
+                match loader.load_path(&dir, TrustTier::UserInstalled).await {
+                    Ok(id) => {
+                        tracing::info!(plugin = %name, id = id.0, "required plugin loaded")
+                    }
+                    Err(err) => tracing::warn!(
+                        plugin = %name,
+                        error = %err,
+                        "required plugin built but failed to load"
+                    ),
+                }
+            }
+            crate::pipeline::Install::Skipped { name, error } => tracing::warn!(
+                plugin = %name,
+                %error,
+                "required plugin skipped"
+            ),
+        }
     }
 }

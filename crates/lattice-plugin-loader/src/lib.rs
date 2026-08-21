@@ -77,11 +77,11 @@ pub use build::{
     source_stamp,
 };
 pub use discovery::{
-    DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir, discover,
-    discover_one,
+    DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
+    default_source_cache_dir, discover, discover_one,
 };
 pub use install::{disable_autoload, install};
-pub use pipeline::{Install, RequiredSpec, install_all, install_required};
+pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
 };
@@ -264,6 +264,15 @@ pub struct PluginLoader {
     /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
     /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
+    /// PM.7b: specs declared via `plugin-manager.require`, accumulated as
+    /// config guests load and drained once by the boot task.
+    ///
+    /// It lives here rather than being returned from `load_discovered`
+    /// because the seam is one of several a guest may provide — an init.rs
+    /// that also contributes a keymap goes down the same path — and threading
+    /// a second return value through every arm to serve one of them would put
+    /// the cost on all of them.
+    required: Mutex<Vec<pipeline::RequiredSpec>>,
 }
 
 /// Why a plugin failed to load. Every variant is graceful-degradation input for
@@ -368,6 +377,7 @@ impl PluginLoader {
             host,
             env: LoaderServices::default(),
             loaded: Mutex::new(Vec::new()),
+            required: Mutex::new(Vec::new()),
         }
     }
 
@@ -380,6 +390,7 @@ impl PluginLoader {
             host,
             env: services,
             loaded: Mutex::new(Vec::new()),
+            required: Mutex::new(Vec::new()),
         }
     }
 
@@ -557,6 +568,17 @@ impl PluginLoader {
                     // well-formed `provides`, and the import is wired into the
                     // linker for every async world regardless. A malformed manifest
                     // that lists it drains nothing (no-op), never an error.
+                    // PM.7b: the `require` seam. Drained during the ordinary
+                    // load, so the component compiled at the top of this
+                    // function is reused — the alternative (spawning the
+                    // guest a second time to read its specs) would compile
+                    // init.rs twice on every boot to fetch a list.
+                    PluginSeam::PluginManager => {
+                        let id = self
+                            .drain_require(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
                                               // (PL8.E closed the last, decorations). A new seam variant
                                               // must add its drain here — the compiler enforces it rather
@@ -838,6 +860,19 @@ impl PluginLoader {
     ) -> Result<PluginId, PluginLoaderError> {
         let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
         self.load_discovered(&plugin, tier).await
+    }
+
+    /// PM.7b: take the plugins declared via `require` so far, leaving the
+    /// queue empty.
+    ///
+    /// Drained exactly once per boot by the install task. Draining rather than
+    /// reading is what stops a second call from resolving, building and
+    /// loading the same set twice.
+    pub fn take_required(&self) -> Vec<pipeline::RequiredSpec> {
+        self.required
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
     }
 
     /// Unload the plugin named `target` (its manifest id, or its numeric plugin
@@ -1500,6 +1535,45 @@ impl PluginLoader {
     /// `register-theme-elements` export once, and record the namespaced element
     /// names for teardown. No actor and no registry RCU: elements are declared
     /// synchronously into the shared registry, like config options.
+    /// PM.7b: run a config guest's `register-plugins` export and record the
+    /// plugins it declared.
+    ///
+    /// The specs are *declarations*. Nothing is resolved, cloned, built or
+    /// downloaded here — see `plugin_manager_host` for why that split is
+    /// load-bearing. The boot task drains them via
+    /// [`PluginLoader::take_required`] and runs the pipeline off-thread.
+    ///
+    /// A guest that declares the seam and requires nothing is fine: the drain
+    /// is empty and the load still counts (the plugin loaded, it just asked
+    /// for no company).
+    async fn drain_require(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        _record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let (id, specs) = self
+            .host
+            .spawn_plugin_manager_plugin(component, manifest, PluginBudget::default(), tier)
+            .await?;
+        tracing::debug!(
+            plugin = %manifest.id,
+            count = specs.len(),
+            "config guest declared plugins via require"
+        );
+        if !specs.is_empty()
+            && let Ok(mut queue) = self.required.lock()
+        {
+            queue.extend(specs.into_iter().map(pipeline::to_required_spec));
+        }
+        // The seam contributes no registry entries, so there is nothing for
+        // teardown to reverse — unloading the guest cannot un-install the
+        // plugins it asked for, any more than removing a package list
+        // uninstalls the packages.
+        Ok(id)
+    }
+
     async fn drain_theme(
         &self,
         component: &lattice_plugin_host::Component,

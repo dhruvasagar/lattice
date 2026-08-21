@@ -106,6 +106,10 @@ impl PluginHost {
     /// Instantiate `component` as a plugin-manager guest, call its
     /// `register-plugins` export, and return the specs it declared.
     ///
+    /// Returns the host-issued id alongside the specs — the `spawn_mode_plugin`
+    /// shape — so the loader can record the guest as loaded even when it
+    /// declared nothing.
+    ///
     /// The specs are *declarations*, not loaded plugins: the caller runs
     /// resolve → build → load off-thread (§5).
     pub async fn spawn_plugin_manager_plugin(
@@ -114,7 +118,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         budget: PluginBudget,
         trust: TrustTier,
-    ) -> Result<Vec<RequiredPlugin>, PluginHostError> {
+    ) -> Result<(crate::PluginId, Vec<RequiredPlugin>), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, trust);
         for denied in &outcome.denied {
             tracing::warn!(
@@ -142,7 +146,7 @@ impl PluginHost {
                 kind: classify_trap(&source),
                 source: source.into(),
             })?;
-        Ok(store.data_mut().require_contributions.take())
+        Ok((plugin_id, store.data_mut().require_contributions.take()))
     }
 }
 

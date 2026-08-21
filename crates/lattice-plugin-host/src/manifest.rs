@@ -141,6 +141,14 @@ pub enum PluginSeam {
     /// native trait seam — the guest's own narrative, host-captured into the same
     /// tracer as the boundary trace.
     Logging,
+    /// PM.7 — the `require` seam (`plugin-manager-plugin` world). A config
+    /// guest (the user's `init.rs`) declares the plugins it wants; the host
+    /// records the specs and the loader resolves/builds/loads them off-thread.
+    /// Deliberately its own seam rather than folded into `config`: declaring
+    /// software to install is a strictly larger authority than setting an
+    /// option, and `provides` is where that difference is visible to a user
+    /// reading the manifest.
+    PluginManager,
 }
 
 impl PluginSeam {
@@ -158,6 +166,7 @@ impl PluginSeam {
             PluginSeam::Theme => "theme",
             PluginSeam::Keymap => "keymap",
             PluginSeam::Logging => "logging",
+            PluginSeam::PluginManager => "plugin-manager",
         }
     }
 }
@@ -184,6 +193,7 @@ impl FromStr for PluginSeam {
             "theme" => PluginSeam::Theme,
             "keymap" => PluginSeam::Keymap,
             "logging" => PluginSeam::Logging,
+            "plugin-manager" => PluginSeam::PluginManager,
             _ => return Err(()),
         })
     }

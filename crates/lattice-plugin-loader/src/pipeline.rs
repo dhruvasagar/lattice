@@ -46,6 +46,27 @@ pub struct RequiredSpec {
     pub pinned: bool,
 }
 
+/// Convert a host-side `RequiredPlugin` into the loader's mirror.
+///
+/// The one `match` the mirroring costs. Worth it: without it, the WIT-facing
+/// type and the loader's would be the same type, and a loader refactor could
+/// reshape a published plugin API.
+pub fn to_required_spec(
+    p: lattice_plugin_host::plugin_manager_host::RequiredPlugin,
+) -> RequiredSpec {
+    use lattice_plugin_host::plugin_manager_host::RequiredSource as Host;
+    RequiredSpec {
+        name: p.name,
+        source: match p.source {
+            Host::Local(path) => PluginSource::Local(PathBuf::from(path)),
+            Host::Git { url, rev } => PluginSource::Git { url, rev },
+            Host::Prebuilt { url } => PluginSource::Prebuilt { url },
+        },
+        enable_mode: p.enable_mode,
+        pinned: p.pinned,
+    }
+}
+
 /// What happened to one required plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Install {
@@ -412,6 +433,60 @@ mod tests {
         assert!(
             matches!(out[2], Install::Ready { .. }),
             "a failure must not abort the specs after it"
+        );
+    }
+
+    #[test]
+    fn the_host_to_loader_conversion_preserves_every_field() {
+        // The one cost of mirroring the types across the boundary. If it
+        // drifts, a user's `pinned` or `enable-mode` silently stops working
+        // with nothing failing to compile — so it gets a test rather than a
+        // reviewer's attention.
+        use lattice_plugin_host::plugin_manager_host::{RequiredPlugin, RequiredSource};
+        let got = to_required_spec(RequiredPlugin {
+            name: "demo".into(),
+            source: RequiredSource::Git {
+                url: "https://example.invalid/d.git".into(),
+                rev: Some("abc".into()),
+            },
+            enable_mode: Some("demo-mode".into()),
+            pinned: true,
+        });
+        assert_eq!(
+            got,
+            RequiredSpec {
+                name: "demo".into(),
+                source: PluginSource::Git {
+                    url: "https://example.invalid/d.git".into(),
+                    rev: Some("abc".into()),
+                },
+                enable_mode: Some("demo-mode".into()),
+                pinned: true,
+            }
+        );
+    }
+
+    #[test]
+    fn every_source_kind_survives_the_conversion() {
+        use lattice_plugin_host::plugin_manager_host::{RequiredPlugin, RequiredSource};
+        let spec = |source| RequiredPlugin {
+            name: "d".into(),
+            source,
+            enable_mode: None,
+            pinned: false,
+        };
+        assert_eq!(
+            to_required_spec(spec(RequiredSource::Local("/tmp/x".into()))).source,
+            PluginSource::Local(PathBuf::from("/tmp/x"))
+        );
+        assert_eq!(
+            to_required_spec(spec(RequiredSource::Prebuilt {
+                url: "https://example.invalid/x.wasm".into()
+            }))
+            .source,
+            PluginSource::Prebuilt {
+                url: "https://example.invalid/x.wasm".into()
+            }
         );
     }
 

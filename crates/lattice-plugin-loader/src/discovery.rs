@@ -101,6 +101,20 @@ pub fn default_init_dir() -> Option<PathBuf> {
     config_root().map(|d| d.join("lattice").join("init"))
 }
 
+/// PM.6/PM.7b: the git source cache — `~/.cache/lattice/sources/`.
+///
+/// A *cache*, not config: a deleted checkout is re-cloned, so it belongs under
+/// the cache root rather than beside the user's `plugin.toml`s. Falls back to
+/// the config root when the platform has no cache dir, which keeps the
+/// resolver working rather than failing on an unusual platform.
+pub fn default_source_cache_dir() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .or_else(config_root)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lattice")
+        .join("sources")
+}
+
 /// Scan `dir` for plugin subdirectories, returning every one that parses. A
 /// missing `dir` yields an empty list (no plugins installed — normal). Each
 /// subdirectory needs a `plugin.toml` + exactly one `.wasm`; anything else is

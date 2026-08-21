@@ -44,7 +44,7 @@ async fn a_guest_declares_plugins_across_all_three_source_kinds() {
         .expect("compile require fixture");
     let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
 
-    let specs = host
+    let (_id, specs) = host
         .spawn_plugin_manager_plugin(
             &component,
             &manifest,
@@ -120,7 +120,7 @@ async fn require_records_without_resolving_building_or_downloading() {
     let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
 
     let started = std::time::Instant::now();
-    let specs = host
+    let (_id, specs) = host
         .spawn_plugin_manager_plugin(
             &component,
             &manifest,

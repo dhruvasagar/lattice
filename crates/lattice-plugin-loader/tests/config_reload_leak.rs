@@ -64,6 +64,7 @@ fn rig(base: &std::path::Path, config: Arc<ConfigRegistry>) -> PluginLoader {
     PluginLoader::with_services(
         host,
         LoaderServices {
+            parser_factories: Some(lattice_compilation::CompilationParserFactories::new_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             picker_registry: Some(pickers),

@@ -154,6 +154,30 @@ same column LSP diagnostics use), and every line that holds a
 navigable `file:line:col` gets a subtle **background tint**, so the
 jump targets stand out from surrounding prose as you scroll the log.
 
+### Teaching Lattice a new diagnostic format
+
+Out of the box, four built-in parsers read the output: rustc/cargo's
+multi-line diagnostics, the gcc/clang/eslint `path:line:col: severity:
+message` form, Rust test panics, and a catch-all that finds a
+`file:line:col` anywhere in a line. That last one is why most tools
+work with no configuration at all — if your linter prints a location,
+it is already navigable.
+
+For a tool whose format the catch-all cannot read — or one whose
+severity and message you want carried through properly — a **plugin can
+contribute its own parser**. A plugin declaring `error-parser` in its
+`provides` is fed every captured line and returns the diagnostics it
+recognised; its entries land in the error list beside the built-in ones
+and behave identically for `:next-error`, `<CR>`, the gutter marks, and
+`:problems`.
+
+Plugin parsers are consulted *after* the format-specific built-ins and
+*before* the catch-all, so they never displace a parser that understands
+the format better, and they are never drowned out by the catch-all's
+thinner guess. If such a plugin misbehaves, it costs only itself: a
+parser that fails to start, or that crashes mid-build, is dropped with a
+warning and your build keeps streaming.
+
 ---
 
 ## The `*problems*` view

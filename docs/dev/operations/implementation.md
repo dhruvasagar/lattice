@@ -6224,8 +6224,12 @@ What's done:
   one list (step / pick / group). Generic multibuffer `<CR>` jump-to-source
   + excerpt motions apply.
 
-Deferred (⛔): CM.5 ANSI-SGR → decorations; CM.6 WASM-contributable
-parsers (Phase 7 plugin host).
+Both former deferrals landed 2026-08-21: **CM.5** (ANSI-SGR → captured-line
+decorations) and **CM.6/CM.6b** (WASM-contributable parsers — the
+`error-parser` seam plus its live wiring, a plugin-registered
+`CompilationParserFactory` that each pipe reader mints its own parser
+from). See
+[`slice-plans/compilation-mode.md`](slice-plans/compilation-mode.md).
 
 ---
 

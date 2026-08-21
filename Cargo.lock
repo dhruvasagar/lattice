@@ -5569,6 +5569,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "lattice-cells",
+ "lattice-compilation",
  "lattice-completion",
  "lattice-config",
  "lattice-core",
@@ -5602,6 +5603,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dirs 5.0.1",
+ "lattice-compilation",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

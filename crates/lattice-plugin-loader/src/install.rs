@@ -97,6 +97,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         theme_registry: boot
             .service::<lattice_theme::ThemeRegistryHandle>()
             .map(|h| (*h).clone()),
+        // CM.6b: registered by `lattice_compilation::install`, which runs
+        // early in Phase B — well before this line.
+        parser_factories: boot
+            .service::<lattice_compilation::CompilationParserFactoriesHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

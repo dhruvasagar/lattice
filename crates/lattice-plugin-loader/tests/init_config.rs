@@ -57,6 +57,7 @@ fn loader(base: &std::path::Path, keymap: KeymapHandle) -> PluginLoaderHandle {
     Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {
+            parser_factories: Some(lattice_compilation::CompilationParserFactories::new_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(commands_with_builtins()),

@@ -213,8 +213,55 @@ stream clobbering the other. Parsing runs **in the readers'
 `spawn_blocking`-spawned OS threads**, off the UI thread. A parser that
 fails to match a line simply skips it (log at `debug!` on a
 malformed-but-claimed match, never panic, never swallow silently).
-Phase 7 opens parser contribution to WASM plugins via this same
-`Vec<Box<dyn CompilationParser>>` seam.
+
+### Plugin-contributed parsers register a *factory*, not a parser
+
+A WASM plugin declaring the `error-parser` seam joins that same
+`Vec<Box<dyn CompilationParser>>` and is indistinguishable from a native
+parser downstream — the WIT world mirrors the native one-method trait
+rather than inventing a second shape for the same job.
+
+What the plugin registers, though, is a **`CompilationParserFactory`**:
+something that mints a parser, not a parser itself. The reason is the
+two readers above. A `CompilationParser` carries pending multi-line
+state behind `&mut self`, and the two streams are independent — a header
+line on stderr must not prime a diagnostic that a stdout line then
+completes. A shared instance would fuse them. For a WASM-backed parser
+it could not be shared regardless, since each owns a `wasmtime::Store`.
+So each reader calls `create_all()` once at the top of its loop and owns
+what it gets back for the run, exactly as it already owns its own
+`ParserRegistry::with_builtins()`.
+
+The contract, in full:
+
+- **Registration is RCU** behind `Arc<ArcSwap<CompilationParserFactories>>`
+  — the picker registry's wait-free-read / rare-write idiom. Reads happen
+  once per **run**, not per line, so a plugin loaded mid-build joins the
+  *next* build. That is the honest behaviour: a parser starting halfway
+  through a stream has no pending state for the lines it missed.
+- **Placement is before the catch-all, after the format-specific
+  natives** (`register_before_catch_all`). After `GeneralParser`, its thin
+  salvaged `Info` entry would win the first-entry-wins de-dup for every
+  location the plugin also matched, silently discarding the plugin's
+  severity and message — the plugin would look inert. Before the natives,
+  it would displace a parser that understands the format better.
+- **Instantiation is verified at load.** `PluginHost::error_parser_factory`
+  spawns one instance and throws it away, so a component that cannot start
+  fails the *load* rather than reporting success and then contributing
+  nothing to every build forever.
+- **A later failure costs only the plugin.** A factory that cannot mint an
+  instance is logged and skipped; a guest that traps is poisoned for the
+  session and yields nothing further. The build keeps streaming and the
+  other parsers, native and plugin, carry on.
+- **Teardown is by provenance, not by token.** The registry keys entries by
+  the host-issued plugin id, so `PluginTeardown::unload` removes them the
+  way it removes commands — there is no per-contribution `Vec` to record,
+  and therefore none to forget.
+
+Zero registered factories is the overwhelmingly common case and costs a
+single `is_empty()` check per run; the per-line path is byte-identical to
+the no-plugin one, which is why this carries no bench of its own — the
+existing `compilation_parse` bench already measures the shape that runs.
 
 Matched lines in `*compilation*` gain a severity gutter decoration and
 a **location-line background tint** (theme element

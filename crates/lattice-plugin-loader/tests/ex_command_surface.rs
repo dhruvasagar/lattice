@@ -64,6 +64,7 @@ fn loader_with_ex_commands(base: &std::path::Path) -> (PluginLoaderHandle, Comma
     let loader: PluginLoaderHandle = Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {
+            parser_factories: Some(lattice_compilation::CompilationParserFactories::new_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(

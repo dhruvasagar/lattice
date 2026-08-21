@@ -249,9 +249,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // the plugin loader, which runs long after boot and reaches it by
     // service lookup — there is nothing to resolve at install time, only
     // an empty registry to publish.
-    let parser_factories: CompilationParserFactoriesHandle = Arc::new(
-        arc_swap::ArcSwap::from_pointee(CompilationParserFactories::new()),
-    );
+    let parser_factories = CompilationParserFactories::new_handle();
     boot.register_service::<CompilationParserFactoriesHandle>(parser_factories.clone());
 
     let svc: CompilationServiceHandle = Arc::new(

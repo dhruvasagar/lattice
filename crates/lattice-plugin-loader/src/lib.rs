@@ -270,6 +270,10 @@ pub struct LoaderServices {
     /// SAME one builtins use, so a plugin element is themeable and
     /// `:customize`-able like any other.
     pub theme_registry: Option<lattice_theme::ThemeRegistryHandle>,
+    /// CM.6b: the compilation parser-factory registry an `error-parser`
+    /// plugin's factory RCU-registers into. The compilation service reads
+    /// the same handle once per run to mint each pipe reader's parser.
+    pub parser_factories: Option<lattice_compilation::CompilationParserFactoriesHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -294,6 +298,8 @@ pub struct WiredSeams {
     pub decoration_registry: bool,
     pub context_registry: bool,
     pub theme_registry: bool,
+    /// CM.6b: the compilation parser-factory registry.
+    pub parser_factories: bool,
 }
 
 impl WiredSeams {
@@ -312,6 +318,7 @@ impl WiredSeams {
             && self.decoration_registry
             && self.context_registry
             && self.theme_registry
+            && self.parser_factories
     }
 }
 
@@ -505,6 +512,7 @@ impl PluginLoader {
             decoration_registry: self.env.decoration_registry.is_some(),
             context_registry: self.env.context_registry.is_some(),
             theme_registry: self.env.theme_registry.is_some(),
+            parser_factories: self.env.parser_factories.is_some(),
         }
     }
 
@@ -664,24 +672,16 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
-                    // CM.6: the seam is built and proven end-to-end
-                    // (`lattice_plugin_host::error_parser_host` + the
-                    // `error_parser` host test), but it is not yet reachable
-                    // from a live build, so declaring it is an honest
-                    // `NotWired` rather than a silent no-op load.
-                    //
-                    // What is missing is a FACTORY, not a call. The
-                    // compilation `ParserRegistry` is built per pipe reader —
-                    // stdout and stderr each get one — and a `WasmErrorParser`
-                    // owns a `Store`, so it cannot be shared between them;
-                    // each reader must instantiate its own (which is also
-                    // semantically right: the two streams have independent
-                    // pending state). That needs a factory trait owned by
-                    // `lattice-compilation` and a new `loader → compilation`
-                    // crate edge — a cross-crate boundary decision, not a
-                    // wiring detail.
+                    // CM.6b: live. The registry holds a FACTORY rather than a
+                    // parser because the compilation `ParserRegistry` is built
+                    // per pipe reader — stdout and stderr each get one — and a
+                    // `WasmErrorParser` owns a `Store`, so it cannot be shared
+                    // between them. Each reader mints its own, which is also
+                    // semantically right: the two streams carry independent
+                    // pending state.
                     PluginSeam::ErrorParser => {
-                        return Err(PluginLoaderError::NotWired("error-parser"));
+                        let id = self.drain_error_parser(&component, manifest, tier)?;
+                        loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
                                               // (PL8.E closed the last, decorations). A new seam variant
@@ -1251,6 +1251,7 @@ impl PluginLoader {
             Some(deco_h),
             Some(ctx_h),
             Some(theme_h),
+            Some(parsers_h),
         ) = (
             self.env.command_registry.as_ref(),
             self.env.picker_registry.as_ref(),
@@ -1261,6 +1262,7 @@ impl PluginLoader {
             self.env.decoration_registry.as_ref(),
             self.env.context_registry.as_ref(),
             self.env.theme_registry.as_ref(),
+            self.env.parser_factories.as_ref(),
         )
         else {
             tracing::warn!(
@@ -1286,6 +1288,11 @@ impl PluginLoader {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &**theme_h,
+                // CM.6b: RCU'd inside `unload` (it holds the `ArcSwap`
+                // handle directly rather than a `&mut` snapshot), because a
+                // compilation run may be reading it concurrently and the
+                // common case removes nothing at all.
+                parsers: parsers_h,
             };
             teardown.unload(&mut reg)
         };
@@ -1855,6 +1862,49 @@ impl PluginLoader {
             "theme plugin registered its elements"
         );
         record.teardown.theme_elements = elements;
+        Ok(id)
+    }
+
+    /// CM.6b — the `error-parser` seam's drain.
+    ///
+    /// Mints the factory (which instantiates once, so a component that
+    /// cannot start fails the load rather than silently contributing
+    /// nothing to every build) and RCU-registers it into the compilation
+    /// parser-factory registry.
+    ///
+    /// Takes no `record`: teardown is by **provenance**, not by token —
+    /// `PluginTeardown` removes every factory carrying this plugin's
+    /// host-issued id, exactly as it does for commands. There is no list
+    /// to record and therefore none to forget.
+    fn drain_error_parser(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .parser_factories
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("error-parser"))?;
+
+        // The Reflex-class budget, not the lifecycle default: `feed` runs
+        // once per captured line on a fast producer's critical path.
+        let (id, factory) =
+            self.host
+                .error_parser_factory(component, manifest, tier, PluginBudget::grammar())?;
+
+        let factory: Arc<dyn lattice_compilation::CompilationParserFactory> = Arc::new(factory);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(factory.clone());
+            Arc::new(next)
+        });
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            "error-parser plugin registered its parser factory"
+        );
         Ok(id)
     }
     /// so there is no `connect` spec round-trip.

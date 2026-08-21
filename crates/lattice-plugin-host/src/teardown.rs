@@ -26,6 +26,11 @@
 //! loop. **Decoration** (PL8.E) *does* have a registry — the loader RCU-registers
 //! its producer into the [`GutterDecorationSourceRegistry`] — so its teardown
 //! unregisters by producer id, like the picker surface.
+//!
+//! **Error parsers** (CM.6b) have a registry too, but no token: the compilation
+//! parser-factory registry keys entries by the host-issued plugin id, so
+//! reversal is by provenance like the command surface, and there is no
+//! per-contribution `Vec` on [`PluginTeardown`] to populate or to forget.
 
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
@@ -175,6 +180,20 @@ impl PluginTeardown {
                 report.theme_elements += 1;
             }
         }
+        // CM.6b: compilation parser factories, reversed by PROVENANCE like
+        // the command surface above — there is no per-factory token to
+        // record or forget, because the registry already keys them by the
+        // host-issued plugin id. Guarded on non-empty so the overwhelmingly
+        // common unload (no error-parser plugin anywhere) does not churn the
+        // `ArcSwap` a compilation run reads.
+        let snapshot = reg.parsers.load();
+        if !snapshot.is_empty() {
+            let mut next = (**snapshot).clone();
+            report.parser_factories = next.unregister_plugin(self.plugin_id.0 as u64);
+            if report.parser_factories > 0 {
+                reg.parsers.store(std::sync::Arc::new(next));
+            }
+        }
 
         report
     }
@@ -200,6 +219,9 @@ pub struct TeardownRegistries<'a> {
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).
     pub theme: &'a dyn lattice_theme::ThemeRegistry,
+    /// CM.6b: the compilation parser-factory registry (`unregister_plugin`
+    /// by host-issued id, RCU'd like the other `ArcSwap`-held registries).
+    pub parsers: &'a lattice_compilation::CompilationParserFactoriesHandle,
 }
 
 /// Count of what an [`unload`](PluginTeardown::unload) actually removed, per
@@ -222,6 +244,8 @@ pub struct TeardownReport {
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
     pub theme_elements: usize,
+    /// CM.6b: compilation parser factories unregistered.
+    pub parser_factories: usize,
 }
 
 #[cfg(test)]
@@ -319,6 +343,7 @@ mod tests {
         let mut decorations = GutterDecorationSourceRegistry::new();
         let mut contexts = ContextSourceRegistry::new();
         let theme_reg = lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette());
+        let parsers = lattice_compilation::CompilationParserFactories::new_handle();
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -330,6 +355,7 @@ mod tests {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &theme_reg,
+                parsers: &parsers,
             };
             teardown.unload(&mut reg)
         };
@@ -350,6 +376,7 @@ mod tests {
                 decoration_sources: 0,
                 context_sources: 0,
                 theme_elements: 0,
+                parser_factories: 0,
             }
         );
 
@@ -379,6 +406,7 @@ mod tests {
             decorations: &mut decorations,
             contexts: &mut contexts,
             theme: &theme_reg,
+            parsers: &parsers,
         };
         assert_eq!(teardown.unload(&mut reg), TeardownReport::default());
     }

@@ -89,6 +89,7 @@ fn rig(base: &std::path::Path) -> Rig {
     let loader = PluginLoader::with_services(
         temp_host(base),
         LoaderServices {
+            parser_factories: Some(lattice_compilation::CompilationParserFactories::new_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             picker_registry: Some(pickers),

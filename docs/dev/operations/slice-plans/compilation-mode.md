@@ -1,12 +1,11 @@
 # Compilation mode — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** All core slices are ✅ (CM.1–CM.8
-> plus the CM.3d headerline / kill / location-highlighting and CM.3e
-> catch-all + test-panic + stdout follow-ups below), and **CM.5 (ANSI)
-> landed 2026-08-21**. The plan stays **active** (not archived) because
-> CM.6's live wiring is still open (its seam landed 2026-08-21; the
-> per-reader factory + crate edge remain) — per the archiving
-> rule, a plan with any open slice is not archived. Sequencing companion to the
+> **Status: ✅ COMPLETE (2026-08-21).** Every slice is ✅ — CM.1–CM.8 plus
+> the CM.3d headerline / kill / location-highlighting and CM.3e
+> catch-all + test-panic + stdout follow-ups below, **CM.5 (ANSI)**, and
+> **CM.6 including its live wiring (CM.6b)**, all landed 2026-08-21. With
+> no slice left open (none deferred ⛔, none planned 📝), this plan is
+> ready to archive. Sequencing companion to the
 > design fragments
 > [`../../architecture/compilation-mode.md`](../../architecture/compilation-mode.md)
 > (the runner + `*compilation*`/`*problems*`) and
@@ -268,7 +267,7 @@ palette). *Bench:* `compilation_ansi`, three shapes — uncoloured
 ~597 MiB/s after bulk-copying runs between control bytes (-79% vs. the
 per-scalar first cut). *Doc:* design §8b + user `compilation-mode.md`.
 
-### CM.6 — WASM-contributable parsers 🚧 seam ✅, live wiring 📝 (2026-08-21)
+### CM.6 — WASM-contributable parsers ✅ (2026-08-21)
 
 **The seam is built and proven end-to-end.** `wit/error-parser.wit` +
 `lattice_plugin_host::error_parser_host` + a real `wasm32-wasip2` fixture
@@ -298,22 +297,64 @@ Decisions worth keeping:
 
 *Tests:* 5 end-to-end + 4 validation + 4 ordering.
 
-#### CM.6b — live wiring 📝 (next)
+#### CM.6b — live wiring ✅ (2026-08-21)
 
-Declaring the seam currently returns `PluginLoaderError::NotWired("error-parser")`
-— honest, not a silent no-op load.
+Declaring the seam used to return `PluginLoaderError::NotWired("error-parser")`
+— honest, but inert. What was missing was a **factory**, not a call:
+`ParserRegistry` is built per pipe reader (`service.rs` — stdout and stderr
+each construct one) and a `WasmErrorParser` owns a `Store`, so it cannot be
+shared. Each reader mints its own, which is also semantically right (pinned
+by `two_parsers_do_not_share_pending_state`).
 
-**What is missing is a factory, not a call.** `ParserRegistry` is built **per
-pipe reader** (`service.rs` — stdout and stderr each construct one) and a
-`WasmErrorParser` owns a `Store`, so it cannot be shared between them. Each
-reader must instantiate its own, which is also semantically right: the two
-streams carry independent pending state (pinned by
-`two_parsers_do_not_share_pending_state`).
+The boundary question — where the factory trait lives and who tears it down —
+was decided as **option (B): both crate edges, teardown in `PluginTeardown`**.
+`loader → compilation` is not a novel edge; it is the seventh instance of the
+loader naming a native registry crate it contributes into (picker, completion,
+config, grammar, keymap, theme). `plugin-host → compilation` follows the same
+precedent and is what lets the compiler enforce the reversal. Rejected: a
+single shared guest behind a channel (merges the two streams' pending state,
+serialises the readers, adds a channel hop per line of build output).
 
-That needs a factory trait owned by `lattice-compilation` — the loader
-implements it over the compiled component — plus a **new `loader →
-compilation` crate edge**, which does not exist today. A cross-crate boundary
-decision, so it wants confirming rather than making in passing.
+Landed in three commits, each green on its own:
+
+- **CM.6b-i** (`lattice-compilation`) — `CompilationParserFactory` +
+  `CompilationParserFactories` + the `Arc<ArcSwap<_>>` handle, registered as
+  a boot service; the service snapshots it once per run and each reader
+  `create_all()`s its own parsers ahead of the catch-all.
+- **CM.6b-ii** (`lattice-plugin-host`) — `impl CompilationParser for
+  WasmErrorParser` + `WasmErrorParserFactory`. Teardown deliberately *not*
+  in this commit: the `TeardownRegistries` field needs the loader's
+  construction site to supply it, so splitting it here would have left a
+  commit that does not build.
+- **CM.6b-iii** (`lattice-plugin-loader` + teardown) — `drain_error_parser`
+  replacing the `NotWired` arm, `LoaderServices.parser_factories` +
+  `WiredSeams` flag captured in `install`, and reversal by provenance in
+  `PluginTeardown::unload`.
+
+Decisions worth keeping:
+
+- **Verify at load.** `PluginHost::error_parser_factory` instantiates once and
+  drops the result, so a component that cannot start fails the *load* instead
+  of reporting success and contributing nothing to every build forever.
+- **Snapshot per run, not per line.** A plugin loaded mid-build joins the next
+  build — a parser starting halfway through a stream has no pending state for
+  what it missed.
+- **Teardown by provenance.** The registry keys factories by host-issued
+  plugin id, so there is no per-contribution token to record or forget —
+  the same shape the command surface uses.
+- **The all-or-nothing teardown gate bit back.** Adding a tenth required
+  handle to `run_teardown`'s tuple match turned every partially-wired test
+  harness into a silent full-teardown skip, and `config_reload_leak` caught
+  it. Fixed by wiring a real handle in each harness (production always has
+  one — `lattice_compilation::install` runs early in Phase B), not by making
+  the field optional.
+
+*Tests:* 6 registry/service (CM.6b-i) + 1 host factory over the real guest
+(CM.6b-ii) + 3 loader drain, including unload removal (CM.6b-iii). *Bench:*
+none of its own — with zero factories the per-line path is byte-identical to
+the no-plugin one, which `compilation_parse` already measures; the added cost
+is one `is_empty()` per run. *Doc:* design §5 ("Plugin-contributed parsers
+register a *factory*, not a parser").
 
 ## Cross-renderer note
 

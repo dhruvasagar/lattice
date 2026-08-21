@@ -78,6 +78,7 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
     let loader = PluginLoader::with_services(
         host,
         LoaderServices {
+            parser_factories: Some(lattice_compilation::CompilationParserFactories::new_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(commands.clone()),

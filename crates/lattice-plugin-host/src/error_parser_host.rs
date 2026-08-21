@@ -254,6 +254,42 @@ fn validate(plugin: &str, e: wit::Entry) -> Option<ErrorEntry> {
 }
 
 impl PluginHost {
+    /// CM.6b: allocate this plugin's identity and hand back the factory
+    /// the compilation readers mint from.
+    ///
+    /// Instantiates **once** here and throws the result away. That costs
+    /// one store at load and buys a load that fails loudly: an
+    /// `error-parser` component that cannot instantiate is a broken
+    /// plugin, and the alternative is a load that reports success and
+    /// then contributes nothing to every build forever — the exact
+    /// silent no-op the `NotWired` placeholder existed to avoid.
+    ///
+    /// Takes `&Arc<Self>` because the factory outlives the call: a reader
+    /// asks it for an instance at the start of every compilation run,
+    /// long after load.
+    pub fn error_parser_factory(
+        self: &std::sync::Arc<Self>,
+        component: &Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        budget: PluginBudget,
+    ) -> Result<(crate::PluginId, WasmErrorParserFactory), PluginHostError> {
+        let probe = self.spawn_error_parser(component, manifest, tier, budget)?;
+        drop(probe);
+        let id = self.alloc_id();
+        Ok((
+            id,
+            WasmErrorParserFactory::new(
+                self.clone(),
+                component.clone(),
+                manifest.clone(),
+                tier,
+                budget,
+                id.0 as u64,
+            ),
+        ))
+    }
+
     /// CM.6: instantiate `component` as an error-parser and hand back a
     /// parser the compilation reader can drive.
     ///

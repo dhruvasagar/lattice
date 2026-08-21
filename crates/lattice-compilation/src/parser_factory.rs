@@ -97,6 +97,15 @@ impl CompilationParserFactories {
     pub fn is_empty(&self) -> bool {
         self.factories.is_empty()
     }
+
+    /// A fresh empty [`CompilationParserFactoriesHandle`].
+    ///
+    /// Exists so consumers — the plugin host's teardown tests, the
+    /// loader's harness — do not each have to name `arc_swap` just to
+    /// build the handle this crate defines.
+    pub fn new_handle() -> CompilationParserFactoriesHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(Self::new()))
+    }
 }
 
 /// The runtime-mutable handle, registered as a boot service under this

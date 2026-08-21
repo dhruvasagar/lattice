@@ -132,17 +132,17 @@ pub use core_options::{
     FoldMethodOption, FormatOnSave, FormatPrg, HelpAproposDisplay, HelpDescribeDisplay,
     HelpListDisplay, HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
     LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
-    ModelinePadding, ModelineRight, ModelineSeparator, NoFile, Number, PickerResultDisplay,
-    ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff,
-    SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits,
-    TerminalScrollbackLines, TransientMaxRows, Whitespace, WhitespaceEol, WhitespaceLeading,
-    WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+    ModelinePadding, ModelineRight, ModelineSeparator, MouseEnabled, NoFile, Number,
+    PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Shiftwidth, Sidescroll,
+    Sidescrolloff, SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop,
+    TerminalEscExits, TerminalScrollbackLines, TransientMaxRows, Whitespace, WhitespaceEol,
+    WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
-    Lsp, Magit, Messages, Modeline, Notifications, Oil, OptionGroup, OptionGroupMetadata, Pane,
-    Picker, Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
+    Lsp, Magit, Messages, Modeline, Mouse, Notifications, Oil, OptionGroup, OptionGroupMetadata,
+    Pane, Picker, Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,

@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::cursor::SetCursorStyle;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -132,7 +135,42 @@ fn setup() -> Result<Terminal<TermBackend>> {
     Terminal::new(backend).context("create terminal")
 }
 
+/// MO.1: turn terminal mouse reporting on or off, following `ui.mouse`.
+///
+/// Kept out of [`setup`] because it is the one terminal capability the
+/// editor asks for that **takes something away**: while capture is on,
+/// the terminal emulator stops seeing the mouse, so click-drag text
+/// selection and middle-click paste no longer work (some terminals
+/// offer Shift-drag as an escape hatch; not all do). That is why the
+/// option defaults off and why this is toggleable at runtime rather
+/// than decided once at startup — `:set ui.mouse` takes effect on the
+/// next loop iteration, and the user can turn it back off the moment
+/// they want to copy something.
+///
+/// Failures are logged and swallowed: a terminal that rejects the
+/// escape sequence should leave the editor running without mouse
+/// support, not refuse to start.
+fn set_mouse_capture(on: bool) {
+    let mut stdout = std::io::stdout();
+    let result = if on {
+        execute!(stdout, EnableMouseCapture)
+    } else {
+        execute!(stdout, DisableMouseCapture)
+    };
+    if let Err(e) = result {
+        tracing::debug!(error = %e, enable = on, "terminal rejected mouse-capture toggle");
+    }
+}
+
 fn teardown(terminal: &mut Terminal<TermBackend>) -> Result<()> {
+    // Unconditional, and harmless when capture was never enabled: the
+    // sequence is a no-op for a terminal that is not reporting. Leaving
+    // a terminal in reporting mode after exit is the failure worth
+    // avoiding — the user's shell would receive mouse escape codes as
+    // garbage input.
+    execute!(terminal.backend_mut(), DisableMouseCapture)
+        .context("disable mouse capture")
+        .unwrap_or_else(|e| tracing::debug!(error = %e, "disable mouse capture"));
     // Restore the user's default cursor shape before tearing down the
     // alt screen -- otherwise the shell prompt inherits whatever the
     // editor was rendering.
@@ -456,7 +494,25 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
     // `:wq`, `:qa!`) which republishes at its tail, so the next
     // iteration's load sees the new value.
     // Slice 3c.final.E.4: read through App-cached `render_state`.
+    // MO.1: mirrors `ui.mouse` into the terminal's reporting state.
+    // Checked once per iteration (an O(1) typed-option read, not work
+    // proportional to content) and acted on only when it *changes*, so
+    // `:set ui.mouse` takes effect without a restart while the steady
+    // state costs one lookup and no escape sequences.
+    let mut mouse_capture = false;
     while !app.render_state.load().lifecycle.should_quit {
+        let want_mouse = app
+            .render_state
+            .load()
+            .options
+            .config
+            .get_typed::<lattice_config::MouseEnabled>()
+            .map(|a| *a)
+            .unwrap_or(false);
+        if want_mouse != mouse_capture {
+            set_mouse_capture(want_mouse);
+            mouse_capture = want_mouse;
+        }
         // Phase 5.8.AF.5 / Slice X1: `run_tick_pending` no longer
         // runs per-frame here. It moved to `App::apply`'s tail
         // (`crates/lattice-ui-tui/src/app/dispatch.rs`) so the

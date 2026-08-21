@@ -1055,6 +1055,31 @@ crate::options! {
     pub ModelinePadding: i64 = 1;
 }
 
+// MO.1 (2026-08-21): mouse reporting.
+crate::options! {
+    group = crate::group::Mouse;
+
+    /// Whether the editor captures mouse events from the terminal.
+    ///
+    /// **Default `false`, and deliberately so.** Turning capture on
+    /// takes the mouse away from the terminal emulator, which means
+    /// click-drag text selection and middle-click paste — capabilities
+    /// every terminal user has today — stop working inside Lattice
+    /// unless the terminal offers a Shift-drag override, and not all
+    /// do. Defaulting on would trade something everyone already relies
+    /// on for something few have asked for, so it is opt-in until
+    /// mouse support is broad enough to be worth the swap.
+    ///
+    /// With it on: modeline elements that declare an `on_click` are
+    /// clickable. Editor-body click/drag and terminal passthrough are
+    /// not built yet; both will read this same option.
+    ///
+    /// Ignored by the GPUI peer, which owns its window's input and
+    /// therefore takes nothing away by listening for mouse events.
+    #[name("ui.mouse")]
+    pub MouseEnabled: bool = false;
+}
+
 // L4 (2026-06-21): diagnostics group — inline end-of-line diagnostic
 // summary presentation (`lsp-architecture.md` §15). `inline` scopes the
 // summary (off / cursor-line / all); `inline-min-severity` filters which
@@ -1233,5 +1258,29 @@ mod tests {
         r.init_from_linkme();
         assert_eq!(r.lookup("ai.log").unwrap().name(), "ai.log");
         assert_eq!(r.lookup("ai.log_level").unwrap().name(), "ai.log_level");
+    }
+
+    /// MO.1. The default is the whole point of the option, not an
+    /// incidental choice: capture takes the mouse away from the
+    /// terminal, so click-drag selection and middle-click paste stop
+    /// working while it is on. Defaulting to `true` would silently
+    /// remove a capability every terminal user has. Pinned so a later
+    /// "sensible defaults" sweep has to argue with a test.
+    #[test]
+    fn mouse_defaults_off() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert!(!*r.get_typed::<MouseEnabled>().unwrap());
+    }
+
+    #[test]
+    fn mouse_is_settable_by_name() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        assert_eq!(r.lookup("ui.mouse").unwrap().name(), "ui.mouse");
+        r.parse_and_set_command("ui.mouse=true").unwrap();
+        assert!(*r.get_typed::<MouseEnabled>().unwrap());
+        r.parse_and_set_command("ui.mouse=false").unwrap();
+        assert!(!*r.get_typed::<MouseEnabled>().unwrap());
     }
 }

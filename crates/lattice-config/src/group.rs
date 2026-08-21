@@ -277,6 +277,22 @@ impl OptionGroup for Modeline {
         "Modeline (bottom per-pane status row): per-zone element layout + separator.";
 }
 
+/// Mouse-reporting options. MO.1 (2026-08-21): `ui.mouse`, the single
+/// switch that decides whether the editor asks the terminal for mouse
+/// events at all.
+///
+/// It is its own group rather than a field of `Modeline` because the
+/// modeline is only the first consumer — terminal mouse passthrough
+/// (T4.2) and editor-body click/drag want the same switch, and a
+/// user reading `:customize mouse` is asking one question about the
+/// whole editor, not about a status row.
+pub struct Mouse;
+impl OptionGroup for Mouse {
+    const NAME: &'static str = "mouse";
+    const DOC: &'static str =
+        "Mouse reporting: whether the editor captures mouse events from the terminal.";
+}
+
 /// Diagnostics presentation options. L4 (2026-06-21):
 /// `ui.diagnostics.inline` + `ui.diagnostics.inline-min-severity` drive
 /// the inline end-of-line diagnostic summary (`lsp-architecture.md`
@@ -381,6 +397,9 @@ static SNIPPET_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_grou
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static MODELINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Modeline>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static MOUSE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Mouse>();
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =

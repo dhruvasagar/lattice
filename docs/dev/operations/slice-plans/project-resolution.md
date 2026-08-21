@@ -1,6 +1,6 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.4 ✅; PR.5–PR.6 planned;
+> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.5 ✅; PR.6 planned;
 > PR.7 has its own spec. Sequencing companion to the design fragment
 > [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
@@ -183,7 +183,7 @@ different feature, not this line.
 handed a different one (the `*compilation*`-is-pathless case), and the
 boot-order pin.
 
-### PR.5 — magit delegates its cwd fallback 📝
+### PR.5 — magit delegates its cwd fallback ✅ (2026-08-21)
 
 `workdir.rs::magit_workdir`'s cwd fallback delegates to the resolver.
 
@@ -196,6 +196,28 @@ marker-walk-vs-gix divergence is load-bearing.
 
 Not a half-migration: the split is the documented design, per
 `documented-splits-are-not-half-migrations`.
+
+**The bug this actually fixes.** Step 3 was `Repository::discover(".")`
+— the **process's** working directory. `:cd` sets
+`editor.current_dir` and never calls `set_current_dir`, so after
+`:cd /other/repo` a fresh `C-x g` still opened the repository the editor
+was *launched* in. Step 3 now discovers from the resolver's answer.
+
+`start` is where discovery *begins*, not the answer: magit needs a git
+worktree specifically and a project root need not be one, so `gix` still
+walks up and still returns `None` outside a repository.
+
+**Option (b): the resolver lives on `RepoScopes`.** That handle is
+already carried to all ~15 `workdir_or_cwd` call sites, so threading a
+second one alongside it would spend fifteen edits restating what the
+type already is. It widens `RepoScopes` from "which repository each
+buffer acts on" to "the context magit resolves repositories in" — which
+is what `repo_for_trigger`'s three-step resolution has always been.
+
+*Tests:* 1 — the fallback discovers from the directory it is handed. The
+`assert_ne` against `magit_workdir()` is the half that fails without the
+fix: the suite always runs inside a repository, so an equality-only
+assertion would pass on the broken version.
 
 ### PR.6 — the WIT seam 📝
 
@@ -228,6 +250,6 @@ dependency is visible.
 | PR.2 `ActionContext::project()` + retire `workspace_root_from_cwd` | ✅ |
 | PR.3 terminal | ✅ |
 | PR.4 compilation / search / picker / ACP | ✅ |
-| PR.5 magit cwd fallback | 📝 |
+| PR.5 magit cwd fallback | ✅ |
 | PR.6 WIT seam | 📝 |
 | PR.7 plugin | ⛔ own spec |

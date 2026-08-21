@@ -37,6 +37,20 @@ use lattice_protocol::ids::DocumentId;
 pub struct RepoScopes {
     by_name: Mutex<HashMap<String, PathBuf>>,
     by_document: Mutex<HashMap<DocumentId, String>>,
+    /// PR.5: the editor's project resolver, for the step-3 fallback.
+    ///
+    /// Here rather than threaded through [`active_workdir`] /
+    /// [`workdir_or_cwd`] because this handle is already carried to
+    /// every one of their ~15 call sites — threading a second one
+    /// alongside it would spend fifteen edits restating what this type
+    /// already is. This widens `RepoScopes` from "which repository each
+    /// buffer acts on" to "the context magit resolves repositories in",
+    /// which is what the three-step resolution in
+    /// [`crate::workdir::repo_for_trigger`] has always described.
+    ///
+    /// `None` in a harness that registered no resolver; the fallback
+    /// then behaves exactly as it did before PR.5.
+    resolver: Mutex<Option<lattice_core::ProjectResolverHandle>>,
 }
 
 impl std::fmt::Debug for RepoScopes {
@@ -48,6 +62,35 @@ impl std::fmt::Debug for RepoScopes {
 }
 
 impl RepoScopes {
+    /// PR.5: hand the resolver over at boot.
+    ///
+    /// Separate from construction because `RepoScopes` is built in
+    /// magit's `install`, and the resolver is a service looked up from
+    /// the same `boot` — a constructor argument would just move the
+    /// `Option` to the call site.
+    pub fn set_resolver(&self, resolver: lattice_core::ProjectResolverHandle) {
+        if let Ok(mut slot) = self.resolver.lock() {
+            *slot = Some(resolver);
+        }
+    }
+
+    /// PR.5: where step 3 starts discovering from.
+    ///
+    /// The bug this fixes: magit's fallback was
+    /// `Repository::discover(".")` — the **process's** working
+    /// directory. `:cd` sets `editor.current_dir` and never calls
+    /// `set_current_dir`, so after `:cd /other/repo` a fresh `C-x g`
+    /// still opened the repository the editor was *launched* in.
+    ///
+    /// Returns a directory to discover *from*, not an answer: magit
+    /// needs a git worktree specifically, and the project root may not
+    /// be one. `gix` walking up from here preserves "None when not in a
+    /// repository" exactly as before.
+    pub fn discovery_start(&self) -> Option<PathBuf> {
+        let resolver = self.resolver.lock().ok()?.clone()?;
+        Some(resolver.for_path(std::path::Path::new("")).root)
+    }
+
     /// Record (or re-point) the repository `name` acts on.
     ///
     /// Overwrites rather than accumulating: re-triggering `C-x g` for a
@@ -269,7 +312,11 @@ pub fn active_workdir(
                     .and_then(|label| scopes.workdir_for_label(label))
             })
         });
-    crate::workdir::repo_for_trigger(from_magit_buffer, store.path_for(active).as_deref())
+    crate::workdir::repo_for_trigger(
+        from_magit_buffer,
+        store.path_for(active).as_deref(),
+        scopes.discovery_start().as_deref(),
+    )
 }
 
 /// [`active_workdir`] with the working directory as the fall-back — the
@@ -281,7 +328,14 @@ pub fn workdir_or_cwd(
     active: lattice_core::BufferId,
 ) -> PathBuf {
     active_workdir(store, scopes, active)
-        .or_else(crate::workdir::magit_workdir)
+        .or_else(|| {
+            crate::workdir::magit_workdir_from(
+                scopes
+                    .discovery_start()
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new(".")),
+            )
+        })
         .unwrap_or_default()
 }
 

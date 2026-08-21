@@ -236,6 +236,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // ex-command closures below, which have no service registry to
     // reach — one map, both surfaces.
     let repo_scopes: repo_scope::RepoScopesHandle = Arc::new(repo_scope::RepoScopes::default());
+    // PR.5: hand magit the project resolver so its step-3 fallback
+    // discovers from a `:cd`-aware directory instead of the process's
+    // working directory. Registered ahead of every subsystem install in
+    // `editor_boot`, so this lookup is reliable rather than hopeful.
+    if let Some(resolver) = boot.service::<lattice_core::ProjectResolverHandle>() {
+        repo_scopes.set_resolver((*resolver).clone());
+    } else {
+        tracing::debug!("no project resolver at magit install; `C-x g` falls back to process cwd");
+    }
     boot.register_service::<repo_scope::RepoScopesHandle>(repo_scopes.clone());
     // The store handle exists on `boot` from Phase A; the *service*
     // entry for it is registered after this install runs, so the
@@ -792,7 +801,15 @@ fn menu_workdir(
 ) -> std::path::PathBuf {
     ctx.buffer
         .map(|buffer| repo_scope::workdir_or_cwd(store, scopes, buffer))
-        .or_else(workdir::magit_workdir)
+        .or_else(|| {
+            // PR.5: same `:cd`-aware start as every other fallback.
+            workdir::magit_workdir_from(
+                scopes
+                    .discovery_start()
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new(".")),
+            )
+        })
         .unwrap_or_default()
 }
 

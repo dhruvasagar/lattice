@@ -26,7 +26,24 @@ use lattice_vcs::Repository;
 /// subsequent git call fail and the buffer say so, which is the same
 /// outcome the hand-written copies produced.
 pub(crate) fn magit_workdir() -> Option<PathBuf> {
-    let repo = Repository::discover(".").ok()?;
+    magit_workdir_from(Path::new("."))
+}
+
+/// [`magit_workdir`] discovering from `start` rather than the process's
+/// working directory.
+///
+/// PR.5: the no-arg form discovers from `"."`, which is the **process**
+/// cwd — and `:cd` sets `editor.current_dir` without ever calling
+/// `set_current_dir`, so after `:cd /other/repo` a fresh `C-x g` still
+/// opened the repository the editor was launched in. Callers that can
+/// reach the project resolver pass its answer here instead
+/// (`RepoScopes::discovery_start`).
+///
+/// `start` is where discovery *begins*, not the answer: magit needs a
+/// git worktree specifically and a project root need not be one, so
+/// `gix` still walks up and still returns `None` outside a repository.
+pub(crate) fn magit_workdir_from(start: &Path) -> Option<PathBuf> {
+    let repo = Repository::discover(start).ok()?;
     let workdir = repo.workdir()?.to_path_buf();
     // MR.3b: discovery from `.` reports the workdir RELATIVE to the
     // current directory, so an editor started in `crates/lattice-ui-tui`
@@ -87,6 +104,7 @@ pub(crate) fn workdir_for_file(path: &Path) -> Option<(PathBuf, PathBuf)> {
 pub(crate) fn repo_for_trigger(
     from_magit_buffer: Option<PathBuf>,
     active_file: Option<&Path>,
+    fallback_start: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(workdir) = from_magit_buffer {
         return Some(workdir);
@@ -96,7 +114,10 @@ pub(crate) fn repo_for_trigger(
     {
         return Some(workdir);
     }
-    magit_workdir()
+    // PR.5: step 3 discovers from the project resolver's answer when one
+    // is reachable, so `:cd` is honoured. `None` keeps the pre-PR.5
+    // behaviour for harnesses with no resolver registered.
+    magit_workdir_from(fallback_start.unwrap_or(Path::new(".")))
 }
 
 /// MR.1: the human-readable repository label that goes in a magit
@@ -301,7 +322,7 @@ mod tests {
 
         let showing = PathBuf::from("/somewhere/else");
         assert_eq!(
-            repo_for_trigger(Some(showing.clone()), Some(&file)),
+            repo_for_trigger(Some(showing.clone()), Some(&file), None),
             Some(showing),
             "the buffer in front of you decides, not the file underneath it"
         );
@@ -319,7 +340,7 @@ mod tests {
         let file = p.join("src").join("main.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
 
-        let resolved = repo_for_trigger(None, Some(&file)).expect("the file is in a repo");
+        let resolved = repo_for_trigger(None, Some(&file), None).expect("the file is in a repo");
         // `canonicalize` because a tempdir under /var is a symlink to
         // /private/var on macOS, and git reports the resolved form —
         // comparing the raw paths fails for a reason that has nothing to
@@ -337,9 +358,43 @@ mod tests {
     #[test]
     fn with_neither_it_falls_back_to_the_working_directory() {
         assert_eq!(
-            repo_for_trigger(None, None),
+            repo_for_trigger(None, None, None),
             magit_workdir(),
             "the fallback IS the old behaviour, unchanged"
+        );
+    }
+
+    /// PR.5: the fallback discovers from where it is TOLD, not from the
+    /// process's working directory.
+    ///
+    /// This is the bug. `:cd` sets `editor.current_dir` and never calls
+    /// `set_current_dir`, so before PR.5 step 3 was
+    /// `Repository::discover(".")` — after `:cd /other/repo`, a fresh
+    /// `C-x g` still opened the repository the editor was *launched* in.
+    #[test]
+    fn the_fallback_discovers_from_the_directory_it_is_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&repo)
+            .output()
+            .expect("git init");
+        let canonical = std::fs::canonicalize(&repo).expect("canonicalize");
+
+        let got = repo_for_trigger(None, None, Some(&canonical)).expect("a repo was found");
+        assert_eq!(
+            got, canonical,
+            "step 3 must use the directory it was handed, not the process cwd"
+        );
+        // And the pre-PR.5 path is genuinely different — otherwise this
+        // would pass without the fix whenever the suite runs inside a
+        // repository, which it always does.
+        assert_ne!(
+            got,
+            magit_workdir().expect("the suite runs inside a repository"),
+            "the process cwd must not coincidentally be the same repo"
         );
     }
 
@@ -358,8 +413,8 @@ mod tests {
         // gives the same answer as no file at all, rather than being
         // more fatal than having opened nothing.
         assert_eq!(
-            repo_for_trigger(None, Some(&orphan)),
-            repo_for_trigger(None, None),
+            repo_for_trigger(None, Some(&orphan), None),
+            repo_for_trigger(None, None, None),
             "a file we cannot place must fall through, not refuse"
         );
     }

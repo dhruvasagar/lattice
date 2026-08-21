@@ -319,6 +319,11 @@ impl<'a> FrameView<'a> {
 /// geometry the runtime reconstructs (`popup_feedback_inner_dims`).
 #[must_use]
 pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Option<(u32, u32)> {
+    // ML.4: last frame's click regions describe a layout that is about
+    // to be overwritten. Clearing here rather than in the modeline
+    // painter is what makes a pane that stops painting a modeline
+    // (closed split, full-screen popup) stop being clickable too.
+    app.modeline_hits.borrow_mut().clear();
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open in
     // minibuffer mode, an extra row band sits below the cmdline
@@ -3501,22 +3506,68 @@ fn draw_pane_status_line(
     if width == 0 {
         return;
     }
-    let spans = modeline_spans(app, pane, is_active, width);
+    let segments = modeline_segments(app, pane, is_active, width);
+    // ML.4: record before painting, from the same run list the painter
+    // consumes, so the click map and the pixels come from one source.
+    record_modeline_hits(&mut app.modeline_hits.borrow_mut(), area, &segments);
+    let spans = segments_to_spans(app, &segments, is_active);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// One styled run within the modeline: text + its theme role (`None` =
-/// neutral padding / separator, painted as the bar base only).
-type ModelineSeg = (String, Option<lattice_mode::ModelineRole>);
+/// One styled run within the modeline: text, its theme role (`None` =
+/// neutral padding / separator, painted as the bar base only), and
+/// (ML.4) the command a click on it dispatches.
+///
+/// This was a bare `(String, Option<ModelineRole>)` tuple until ML.4.
+/// It had to grow identity because a terminal has no element tree to
+/// hang a listener on: the only way to know what the user clicked is to
+/// remember which columns each element painted into, which means the
+/// run has to carry its element's action all the way through layout
+/// and truncation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelineSeg {
+    text: String,
+    role: Option<lattice_mode::ModelineRole>,
+    /// `None` for padding, separators, and elements that declared no
+    /// `on_click` — i.e. almost everything.
+    click: Option<lattice_protocol::CommandId>,
+}
+
+impl ModelineSeg {
+    /// A neutral run: padding, separator, or filler. Never clickable.
+    fn filler(text: String) -> Self {
+        Self {
+            text,
+            role: None,
+            click: None,
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.text.chars().count()
+    }
+}
 
 /// Flatten an element's content into role-tagged runs, dropping empty
 /// spans.
-fn content_to_runs(content: lattice_mode::ElementContent) -> Vec<ModelineSeg> {
+///
+/// ML.4: every run of one element carries that element's `on_click`, so
+/// clicking anywhere on a multi-span element (an icon plus its label,
+/// say) fires the same command — which is what a user means by
+/// "clicking the element".
+fn content_to_runs(
+    content: lattice_mode::ElementContent,
+    click: Option<lattice_protocol::CommandId>,
+) -> Vec<ModelineSeg> {
     content
         .spans
         .into_iter()
         .filter(|s| !s.text.is_empty())
-        .map(|s| (s.text, Some(s.role)))
+        .map(|s| ModelineSeg {
+            text: s.text,
+            role: Some(s.role),
+            click,
+        })
         .collect()
 }
 
@@ -3527,12 +3578,12 @@ fn content_to_runs(content: lattice_mode::ElementContent) -> Vec<ModelineSeg> {
 /// Extracted from [`draw_pane_status_line`] so tests can assert span text +
 /// style without a frame. The whole row sits on the active/inactive
 /// bar; per-role foregrounds compose over it.
-fn modeline_spans(
+fn modeline_segments(
     app: &App,
     pane: &crate::pane::PaneState,
     is_active: bool,
     width: usize,
-) -> Vec<Span<'static>> {
+) -> Vec<ModelineSeg> {
     let rs = app.render_state.load();
     let snap = &rs.modeline_elements;
     // The file-tree / oil / help custom label (M.4 provider mechanism) is
@@ -3588,9 +3639,14 @@ fn modeline_spans(
             // Configured separator between elements within a zone
             // (`ui.modeline.separator`, default a single space).
             if !runs.is_empty() && !sep.is_empty() {
-                runs.push((sep.clone(), None));
+                runs.push(ModelineSeg::filler(sep.clone()));
             }
-            runs.extend(content_to_runs(content));
+            // ML.4: the descriptor's declared click target rides along
+            // with its runs. The separator above deliberately does not
+            // get one — the gap between two elements belongs to
+            // neither.
+            let click = el.interaction.as_ref().and_then(|i| i.on_click);
+            runs.extend(content_to_runs(content, click));
         }
         runs
     };
@@ -3599,16 +3655,50 @@ fn modeline_spans(
     let center = resolve_zone(&layout.center);
     let right = resolve_zone(&layout.right);
 
-    let segments = compose_modeline_segments(width, layout.padding, left, center, right);
+    compose_modeline_segments(width, layout.padding, left, center, right)
+}
+
+/// Paint a composed run list as ratatui spans.
+fn segments_to_spans(app: &App, segments: &[ModelineSeg], is_active: bool) -> Vec<Span<'static>> {
     segments
-        .into_iter()
-        .map(|(text, role)| {
+        .iter()
+        .map(|seg| {
             let style = app
                 .theme
-                .modeline_style(role.as_ref().map(|r| r.as_str()), is_active);
-            Span::styled(text, style)
+                .modeline_style(seg.role.as_ref().map(|r| r.as_str()), is_active);
+            Span::styled(seg.text.clone(), style)
         })
         .collect()
+}
+
+/// ML.4: record every clickable run's absolute cell span into `hits`.
+///
+/// Walks the composed runs left to right accumulating columns, which is
+/// exactly how the painter lays them down — so the recorded regions
+/// cannot disagree with what the user sees unless the painter itself
+/// changes. `area` is the modeline's own `Rect`, so this handles splits
+/// (each pane's modeline records its own column range on its own row)
+/// with no extra work.
+fn record_modeline_hits(
+    hits: &mut lattice_host::modeline::ModelineHitMap,
+    area: Rect,
+    segments: &[ModelineSeg],
+) {
+    let mut col = area.x;
+    for seg in segments {
+        let w = seg.width() as u16;
+        if let Some(action) = seg.click {
+            hits.push(lattice_host::modeline::ModelineHitZone {
+                row: area.y,
+                col_start: col,
+                // Clip to the pane's own width: a run can only be
+                // clicked where it was actually painted.
+                col_end: col.saturating_add(w).min(area.x + area.width),
+                action,
+            });
+        }
+        col = col.saturating_add(w);
+    }
 }
 
 /// Truncate `s` to at most `max` display columns (char count), adding a
@@ -3631,23 +3721,32 @@ fn truncate_to(s: &str, max: usize) -> String {
 
 /// Total display width (char count) of a run list.
 fn runs_width(runs: &[ModelineSeg]) -> usize {
-    runs.iter().map(|(t, _)| t.chars().count()).sum()
+    runs.iter().map(|s| s.width()).sum()
 }
 
 /// Truncate a run list to at most `max` columns, ellipsising the run that
-/// straddles the boundary (preserving its role). Never panics.
+/// straddles the boundary (preserving its role and its click target).
+/// Never panics.
+///
+/// ML.4: the ellipsised remnant keeps its `click`. A half-visible
+/// element is still that element — refusing the click on the grounds
+/// that it got shortened would make clickability depend on pane width,
+/// which the user experiences as the modeline randomly not working.
 fn truncate_runs(runs: Vec<ModelineSeg>, max: usize) -> Vec<ModelineSeg> {
     let mut out: Vec<ModelineSeg> = Vec::new();
     let mut used = 0usize;
-    for (text, role) in runs {
-        let w = text.chars().count();
+    for seg in runs {
+        let w = seg.width();
         if used + w <= max {
             used += w;
-            out.push((text, role));
+            out.push(seg);
         } else {
             let remaining = max - used;
             if remaining > 0 {
-                out.push((truncate_to(&text, remaining), role));
+                out.push(ModelineSeg {
+                    text: truncate_to(&seg.text, remaining),
+                    ..seg
+                });
             }
             break;
         }
@@ -3682,9 +3781,9 @@ fn compose_modeline_segments(
     if pad > 0 {
         let inner = compose_modeline_segments(width - 2 * pad, 0, left, center, right);
         let mut out: Vec<ModelineSeg> = Vec::with_capacity(inner.len() + 2);
-        out.push((" ".repeat(pad), None));
+        out.push(ModelineSeg::filler(" ".repeat(pad)));
         out.extend(inner);
-        out.push((" ".repeat(pad), None));
+        out.push(ModelineSeg::filler(" ".repeat(pad)));
         return out;
     }
     // Left is highest-priority: keep as much as fits.
@@ -3708,15 +3807,15 @@ fn compose_modeline_segments(
     if used_c > 0 {
         let offset = (region_w - used_c) / 2;
         if offset > 0 {
-            out.push((" ".repeat(offset), None));
+            out.push(ModelineSeg::filler(" ".repeat(offset)));
         }
         out.extend(center);
         let after = region_w - used_c - offset;
         if after > 0 {
-            out.push((" ".repeat(after), None));
+            out.push(ModelineSeg::filler(" ".repeat(after)));
         }
     } else if region_w > 0 {
-        out.push((" ".repeat(region_w), None));
+        out.push(ModelineSeg::filler(" ".repeat(region_w)));
     }
     out.extend(right);
     out
@@ -12248,11 +12347,19 @@ mod tests {
 
     /// A role-less run, for layout tests where the role is irrelevant.
     fn run(text: &str) -> ModelineSeg {
-        (text.to_string(), None)
+        ModelineSeg::filler(text.to_string())
+    }
+    /// ML.4: a run carrying a click target.
+    fn clickable(text: &str, action: u64) -> ModelineSeg {
+        ModelineSeg {
+            text: text.to_string(),
+            role: None,
+            click: Some(lattice_protocol::CommandId(action)),
+        }
     }
     /// Concatenated text of a composed segment list.
     fn seg_text(segs: &[ModelineSeg]) -> String {
-        segs.iter().map(|(t, _)| t.as_str()).collect()
+        segs.iter().map(|s| s.text.as_str()).collect()
     }
 
     #[test]
@@ -12283,6 +12390,128 @@ mod tests {
         assert_eq!(row.chars().count(), 20, "row still fills width");
         assert!(row.starts_with("  L"), "2-col left margin: {row:?}");
         assert!(row.ends_with("R  "), "2-col right margin: {row:?}");
+    }
+
+    // --- ML.4: click regions ------------------------------------------
+    //
+    // The property these pin is that the recorded regions agree with
+    // where the runs were painted. They are asserted against the SAME
+    // composed list the painter consumes, so a layout change that moved
+    // an element without moving its click target would fail here.
+
+    use lattice_host::modeline::ModelineHitMap;
+
+    fn hits_for(area: Rect, segs: &[ModelineSeg]) -> ModelineHitMap {
+        let mut map = ModelineHitMap::new();
+        record_modeline_hits(&mut map, area, segs);
+        map
+    }
+
+    #[test]
+    fn a_clickable_run_records_exactly_the_columns_it_paints() {
+        let area = Rect::new(0, 23, 20, 1);
+        let segs = compose_modeline_segments(
+            20,
+            0,
+            vec![run("ab"), clickable("CLICK", 7)],
+            vec![],
+            vec![],
+        );
+        let hits = hits_for(area, &segs);
+        // "ab" occupies 0..2, so the clickable run is 2..7.
+        assert_eq!(hits.hit(1, 23), None, "the run before it is not clickable");
+        assert_eq!(hits.hit(2, 23), Some(lattice_protocol::CommandId(7)));
+        assert_eq!(hits.hit(6, 23), Some(lattice_protocol::CommandId(7)));
+        assert_eq!(hits.hit(7, 23), None, "one past the last painted column");
+    }
+
+    #[test]
+    fn padding_shifts_the_recorded_region_with_the_paint() {
+        // The regression this guards: recording from the zone lists
+        // rather than the composed row would put the region two
+        // columns left of the glyphs under `ui.modeline.padding=2`.
+        let area = Rect::new(0, 5, 20, 1);
+        let segs = compose_modeline_segments(20, 2, vec![clickable("X", 3)], vec![], vec![]);
+        let hits = hits_for(area, &segs);
+        assert_eq!(hits.hit(1, 5), None, "inside the left margin");
+        assert_eq!(hits.hit(2, 5), Some(lattice_protocol::CommandId(3)));
+        assert_eq!(hits.hit(3, 5), None);
+    }
+
+    #[test]
+    fn a_pane_offset_by_a_split_records_absolute_columns() {
+        // A right-hand pane in a vertical split: its modeline starts at
+        // column 40, so its regions must too.
+        let area = Rect::new(40, 23, 20, 1);
+        let segs = compose_modeline_segments(20, 0, vec![clickable("X", 9)], vec![], vec![]);
+        let hits = hits_for(area, &segs);
+        assert_eq!(hits.hit(0, 23), None, "the other pane's columns");
+        assert_eq!(hits.hit(40, 23), Some(lattice_protocol::CommandId(9)));
+    }
+
+    #[test]
+    fn an_ellipsised_run_stays_clickable() {
+        // Half-visible is still that element. If clickability depended
+        // on pane width the modeline would appear to randomly stop
+        // working as the user resizes.
+        let segs = truncate_runs(vec![clickable("verylongelement", 4)], 5);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "very…");
+        assert_eq!(segs[0].click, Some(lattice_protocol::CommandId(4)));
+
+        let hits = hits_for(Rect::new(0, 1, 10, 1), &segs);
+        assert_eq!(hits.hit(4, 1), Some(lattice_protocol::CommandId(4)));
+    }
+
+    #[test]
+    fn separators_and_padding_are_not_clickable() {
+        let segs = compose_modeline_segments(
+            12,
+            0,
+            vec![clickable("A", 1)],
+            vec![],
+            vec![clickable("B", 2)],
+        );
+        let hits = hits_for(Rect::new(0, 1, 12, 1), &segs);
+        assert_eq!(hits.hit(0, 1), Some(lattice_protocol::CommandId(1)));
+        assert_eq!(hits.hit(11, 1), Some(lattice_protocol::CommandId(2)));
+        for col in 1..11 {
+            assert_eq!(hits.hit(col, 1), None, "filler at column {col} is dead");
+        }
+    }
+
+    #[test]
+    fn an_element_without_on_click_records_nothing() {
+        let segs = compose_modeline_segments(10, 0, vec![run("plain")], vec![], vec![]);
+        let hits = hits_for(Rect::new(0, 1, 10, 1), &segs);
+        assert!(
+            hits.is_empty(),
+            "the overwhelmingly common case must cost no regions"
+        );
+    }
+
+    #[test]
+    fn every_run_of_a_multi_span_element_shares_one_click_target() {
+        // An icon plus its label is one element to the user; clicking
+        // either half must fire the same command.
+        let content = lattice_mode::ElementContent {
+            spans: vec![
+                lattice_mode::Span {
+                    text: "\u{f05a} ".into(),
+                    role: lattice_mode::ModelineRole::new("x"),
+                },
+                lattice_mode::Span {
+                    text: "label".into(),
+                    role: lattice_mode::ModelineRole::new("x"),
+                },
+            ],
+        };
+        let runs = content_to_runs(content, Some(lattice_protocol::CommandId(5)));
+        assert_eq!(runs.len(), 2);
+        assert!(
+            runs.iter()
+                .all(|r| r.click == Some(lattice_protocol::CommandId(5)))
+        );
     }
 
     #[test]
@@ -12339,7 +12568,7 @@ mod tests {
         use ratatui::style::{Color, Modifier};
         let app = app_with("hello", 10);
         let pane = *app.panes().tree.active();
-        let spans = modeline_spans(&app, &pane, true, 60);
+        let spans = segments_to_spans(&app, &modeline_segments(&app, &pane, true, 60), true);
 
         // ML.5d: lean 3-letter tag (no brackets).
         let mode = spans
@@ -12370,7 +12599,7 @@ mod tests {
     fn modeline_inactive_spans_are_uniformly_muted() {
         let app = app_with("hello", 10);
         let pane = *app.panes().tree.active();
-        let spans = modeline_spans(&app, &pane, false, 60);
+        let spans = segments_to_spans(&app, &modeline_segments(&app, &pane, false, 60), false);
         let muted = app.theme.modeline_inactive;
         assert!(!spans.is_empty());
         assert!(

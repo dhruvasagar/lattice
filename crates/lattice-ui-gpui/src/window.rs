@@ -63,7 +63,8 @@ use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, App, AppContext, Application, Bounds, Context, FocusHandle, Focusable,
     FontFeatures, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, Styled, TextRun, Window, WindowBounds, WindowOptions, div, font, px, rgb, size,
+    SharedString, StatefulInteractiveElement, Styled, TextRun, Window, WindowBounds, WindowOptions,
+    div, font, px, rgb, size,
 };
 use lattice_core::Document;
 use lattice_core::ui::pane::{PaneNode, PaneState};
@@ -996,6 +997,34 @@ struct EnsureGateCache {
 /// The renderer-side composition root rendered as a GPUI
 /// `Entity`. Holds the [`GpuiApp`] + a [`FocusHandle`] so the
 /// window's key events actually route to our dispatcher.
+/// ML.4: the hover tooltip for a modeline element.
+///
+/// GPUI-only by design. A terminal has no hover, so the TUI peer
+/// ignores `HoverSpec` rather than approximating it with an echo-line
+/// hint — both peers honour `on_click`, and only this one surface
+/// diverges (modeline.md §9, "graceful degradation, not a parity
+/// break").
+///
+/// Deliberately plain: it reads its colours from the same resolved
+/// theme roles the modeline itself uses, so a retuned theme moves the
+/// tooltip with it.
+struct ModelineTooltip {
+    text: String,
+}
+
+impl Render for ModelineTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        const TIP_BG: u32 = 0x0031_3244; // palette `surface0`
+        const TIP_FG: u32 = 0x00cd_d6f4; // palette `text`
+        div()
+            .bg(rgb(TIP_BG))
+            .text_color(rgb(TIP_FG))
+            .px_2()
+            .py_1()
+            .child(self.text.clone())
+    }
+}
+
 struct EditorView {
     app: GpuiApp,
     focus_handle: FocusHandle,
@@ -1192,6 +1221,7 @@ impl EditorView {
         active_idx: usize,
         row_px: f32,
         pane_rows: &std::collections::HashMap<usize, u32>,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
         // 2026-05-27: split branches drop `.size_full()`. With both
         // `.flex_grow()` and `.size_full()`, the split's hypothetical
@@ -1237,7 +1267,7 @@ impl EditorView {
         const RATIO_SCALE: f32 = 1_000_000.0;
         match node {
             PaneNode::Leaf(idx) => {
-                self.paint_pane(*idx, theme, *idx == active_idx, row_px, pane_rows)
+                self.paint_pane(*idx, theme, *idx == active_idx, row_px, pane_rows, cx)
             }
             PaneNode::HorizontalSplit { top, bottom, ratio } => {
                 let ratio = ratio.clamp(0.05, 0.95);
@@ -1246,7 +1276,7 @@ impl EditorView {
                     .flex_col()
                     .flex_grow()
                     .child(
-                        self.paint_pane_tree(top, theme, active_idx, row_px, pane_rows)
+                        self.paint_pane_tree(top, theme, active_idx, row_px, pane_rows, cx)
                             .flex_grow()
                             .flex_basis(px(ratio * RATIO_SCALE))
                             .min_h(px(0.0))
@@ -1254,7 +1284,7 @@ impl EditorView {
                             .border_color(rgb(theme.popup_border)),
                     )
                     .child(
-                        self.paint_pane_tree(bottom, theme, active_idx, row_px, pane_rows)
+                        self.paint_pane_tree(bottom, theme, active_idx, row_px, pane_rows, cx)
                             .flex_grow()
                             .flex_basis(px((1.0 - ratio) * RATIO_SCALE))
                             .min_h(px(0.0)),
@@ -1267,7 +1297,7 @@ impl EditorView {
                     .flex_row()
                     .flex_grow()
                     .child(
-                        self.paint_pane_tree(left, theme, active_idx, row_px, pane_rows)
+                        self.paint_pane_tree(left, theme, active_idx, row_px, pane_rows, cx)
                             .flex_grow()
                             .flex_basis(px(ratio * RATIO_SCALE))
                             .min_w(px(0.0))
@@ -1275,7 +1305,7 @@ impl EditorView {
                             .border_color(rgb(theme.popup_border)),
                     )
                     .child(
-                        self.paint_pane_tree(right, theme, active_idx, row_px, pane_rows)
+                        self.paint_pane_tree(right, theme, active_idx, row_px, pane_rows, cx)
                             .flex_grow()
                             .flex_basis(px((1.0 - ratio) * RATIO_SCALE))
                             .min_w(px(0.0)),
@@ -1314,6 +1344,7 @@ impl EditorView {
         pane: &PaneState,
         is_active: bool,
         rs: &lattice_host::render_state::RenderState,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
         const FALLBACK_FG: u32 = 0x00cd_d6f4; // palette `text`
         const FALLBACK_BAR: u32 = 0x001e_1e2e; // palette `base`
@@ -1340,8 +1371,24 @@ impl EditorView {
         // the TUI's `resolve_zone`, parity in lockstep.
         let layout = lattice_host::modeline::resolve_layout(&snap.registry, &rs.options.config);
         let sep = layout.separator.clone();
-        let zone_runs = |els: &[&lattice_mode::ModelineElement]| -> Vec<(String, Option<lattice_mode::ModelineRole>)> {
-            let mut runs: Vec<(String, Option<lattice_mode::ModelineRole>)> = Vec::new();
+        // ML.4: each run carries its element's declared `on_click` and
+        // `hover`, so the styled-run builder below can attach a listener
+        // and a tooltip. The TUI reaches the same behaviour by recording
+        // painted column ranges — a terminal has no element tree to hang
+        // a listener on — which is the mechanism split modeline.md §9
+        // specifies rather than a parity gap.
+        type Run = (
+            String,
+            Option<lattice_mode::ModelineRole>,
+            Option<lattice_grammar::CommandId>,
+            // (tooltip text, owning element id). The id makes the
+            // hoverable run's gpui `ElementId` stable across frames,
+            // which is what keeps a tooltip from flickering while the
+            // modeline repaints under the pointer.
+            Option<(String, String)>,
+        );
+        let zone_runs = |els: &[&lattice_mode::ModelineElement]| -> Vec<Run> {
+            let mut runs: Vec<Run> = Vec::new();
             for el in els {
                 // §7: Global-scope elements (e.g. the diff summary) render
                 // only on the active pane; PaneLocal is the default.
@@ -1355,7 +1402,9 @@ impl EditorView {
                     // Pushed elements (modes / plugins, ML.3): resolved
                     // per the descriptor's scope against this pane's
                     // buffer (PaneLocal) or the global slot.
-                    snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
+                    snap.resolve(el, pane.buffer_id)
+                        .cloned()
+                        .unwrap_or_default()
                 };
                 if content.is_empty() {
                     continue;
@@ -1363,11 +1412,29 @@ impl EditorView {
                 // Configured separator between elements within a zone
                 // (`ui.modeline.separator`, default a single space).
                 if !runs.is_empty() && !sep.is_empty() {
-                    runs.push((sep.clone(), None));
+                    // The gap between two elements belongs to neither,
+                    // so it is never clickable.
+                    runs.push((sep.clone(), None, None, None));
                 }
+                let click = el.interaction.as_ref().and_then(|i| i.on_click);
+                // Tooltip text is the hover spec's content flattened —
+                // every run of one element shares it, so hovering any
+                // part of a multi-span element shows the same tip.
+                let hover: Option<(String, String)> = el.interaction.as_ref().and_then(|i| {
+                    i.hover.as_ref().map(|h| {
+                        (
+                            h.content
+                                .spans
+                                .iter()
+                                .map(|s| s.text.as_str())
+                                .collect::<String>(),
+                            el.id.as_str().to_string(),
+                        )
+                    })
+                });
                 for span in content.spans {
                     if !span.text.is_empty() {
-                        runs.push((span.text, Some(span.role)));
+                        runs.push((span.text, Some(span.role), click, hover.clone()));
                     }
                 }
             }
@@ -1382,45 +1449,80 @@ impl EditorView {
         // (the old `px_2` chrome in `pane_chrome` is dropped in favour of
         // this configurable, cell-uniform margin).
         if layout.padding > 0 {
-            let pad = (" ".repeat(layout.padding), None);
+            let pad = (" ".repeat(layout.padding), None, None, None);
             left.insert(0, pad.clone());
             right.push(pad);
         }
 
         // Style one run: inactive → uniform muted; active → per-role fg.
-        let styled_run =
-            move |text: String, role: Option<lattice_mode::ModelineRole>| -> gpui::Div {
-                use lattice_host::modeline as ml;
-                let style = if is_active {
-                    // Per-role element id (inferred type; inline to avoid
-                    // naming `lattice_theme::ElementId` here).
-                    let id = match role.as_ref().map(|r| r.as_str()) {
-                        Some(ml::ROLE_MODE) => ids.modeline_mode,
-                        Some(ml::ROLE_PATH) => ids.modeline_path,
-                        Some(ml::ROLE_POSITION) => ids.modeline_position,
-                        Some(ml::ROLE_LANG) => ids.modeline_lang,
-                        Some(ml::ROLE_MODE_ITEM) => ids.modeline_mode_item,
-                        // Padding / unknown: text-ish on the bar.
-                        _ => ids.modeline_path,
-                    };
-                    resolved.get(id)
-                } else {
-                    resolved.get(ids.modeline_inactive)
+        let styled_run = |text: String, role: Option<lattice_mode::ModelineRole>| -> gpui::Div {
+            use lattice_host::modeline as ml;
+            let style = if is_active {
+                // Per-role element id (inferred type; inline to avoid
+                // naming `lattice_theme::ElementId` here).
+                let id = match role.as_ref().map(|r| r.as_str()) {
+                    Some(ml::ROLE_MODE) => ids.modeline_mode,
+                    Some(ml::ROLE_PATH) => ids.modeline_path,
+                    Some(ml::ROLE_POSITION) => ids.modeline_position,
+                    Some(ml::ROLE_LANG) => ids.modeline_lang,
+                    Some(ml::ROLE_MODE_ITEM) => ids.modeline_mode_item,
+                    // Padding / unknown: text-ish on the bar.
+                    _ => ids.modeline_path,
                 };
-                let fg = style
-                    .fg
-                    .map(|c| c.to_rgb_u32(FALLBACK_FG))
-                    .unwrap_or(FALLBACK_FG);
-                let mut span = div().text_color(rgb(fg)).child(text);
-                if style.modifiers.bold {
-                    span = span.font_weight(gpui::FontWeight::BOLD);
-                }
-                span
+                resolved.get(id)
+            } else {
+                resolved.get(ids.modeline_inactive)
             };
-        let zone_div = |runs: Vec<(String, Option<lattice_mode::ModelineRole>)>| -> gpui::Div {
+            let fg = style
+                .fg
+                .map(|c| c.to_rgb_u32(FALLBACK_FG))
+                .unwrap_or(FALLBACK_FG);
+            let mut span = div().text_color(rgb(fg)).child(text);
+            if style.modifiers.bold {
+                span = span.font_weight(gpui::FontWeight::BOLD);
+            }
+            span
+        };
+        let zone_div = |runs: Vec<Run>| -> gpui::Div {
             let mut z = div().flex().flex_row();
-            for (text, role) in runs {
-                z = z.child(styled_run(text, role));
+            for (text, role, click, hover) in runs {
+                let mut run = styled_run(text, role);
+                // ML.4: dispatch the element's declared command through
+                // the ordinary invocation path — the same one a
+                // keystroke bound to that command takes. The handler
+                // body lives in the mode or plugin that registered the
+                // element; this is pure routing (modeline.md §6, §9).
+                if let Some(command) = click {
+                    run = run.cursor_pointer().on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.app
+                                .dispatch_action(lattice_host::action::Action::Invoke(
+                                    lattice_grammar::CommandInvocation::of(command),
+                                ));
+                            cx.notify();
+                        }),
+                    );
+                }
+                // GPUI-only, by design: a terminal has no hover, so the
+                // TUI ignores this rather than approximating it. Both
+                // peers honour `on_click`; only `hover` diverges, which
+                // §9 calls graceful degradation, not a parity break.
+                // `.id(..)` turns the Div into a `Stateful<Div>` — a
+                // different type — so the hoverable case branches here
+                // rather than reassigning `run`.
+                match hover {
+                    Some((tip, element_id)) => {
+                        let tipped = run
+                            .id(SharedString::from(format!("modeline-{element_id}")))
+                            .tooltip(move |_window, cx: &mut App| {
+                                let tip = tip.clone();
+                                cx.new(|_| ModelineTooltip { text: tip }).into()
+                            });
+                        z = z.child(tipped);
+                    }
+                    None => z = z.child(run),
+                }
             }
             z
         };
@@ -1490,6 +1592,7 @@ impl EditorView {
         is_active: bool,
         row_px: f32,
         pane_rows: &std::collections::HashMap<usize, u32>,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
         // Slice 3c.final.E.swap: paint reads route through the
         // App's own `render_state` Arc (cloned from
@@ -1552,7 +1655,7 @@ impl EditorView {
             );
             // ML.2: terminal panes get the same zone/per-Span modeline as
             // every other kind (shared resolver) — no kind-specific status.
-            let status_row = Self::modeline_row(pane, is_active, &rs_guard);
+            let status_row = Self::modeline_row(pane, is_active, &rs_guard, cx);
             return Self::pane_chrome(
                 inner,
                 status_row,
@@ -2707,7 +2810,7 @@ impl EditorView {
             glyph_resolver: self.glyph_resolver.clone(),
         };
 
-        let status_row = Self::modeline_row(pane, render_active, &rs_guard);
+        let status_row = Self::modeline_row(pane, render_active, &rs_guard, cx);
         Self::pane_chrome(
             editor_element.into_any_element(),
             status_row,
@@ -3629,6 +3732,7 @@ impl Render for EditorView {
                 active_idx,
                 estimated_row_px,
                 &pane_row_map,
+                cx,
             )
             .flex_grow()
             // Defensive: never let pane content (a terminal's flex_shrink_0

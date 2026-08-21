@@ -118,6 +118,38 @@ Two knobs control breathing room:
   Default `1`; set `0` to flush content to the pane edges, or a larger
   number for a roomier bar.
 
+## Clicking modeline elements
+
+An element can declare a command to run when you click it. Built-in
+elements declare none — nothing in the default modeline is clickable —
+but modes and plugins can, and when they do, both the terminal and the
+GPUI window honour it.
+
+In the terminal you have to opt in first:
+
+```
+:set ui.mouse
+```
+
+It's off by default on purpose. While the editor is reading the mouse,
+your **terminal** isn't — click-drag text selection and middle-click
+paste stop working inside Lattice. Some terminals let you hold Shift to
+get them back; not all do. Rather than take that away from everyone for
+a feature few use yet, you turn it on when you want it. `:set noui.mouse`
+turns it back off immediately, so it's reasonable to flip on when you
+need it and off when you want to copy something.
+
+The GPUI window ignores this option entirely — it owns its own input, so
+listening for clicks costs you nothing there.
+
+Only the left button acts. Clicking a separator, the padding, or an
+element that declared no command does nothing at all. An element that
+got shortened to fit a narrow pane is still clickable — half a label is
+still that element.
+
+In the GPUI window, elements that declare hover text also show a tooltip.
+Terminals have no hover, so there is nothing to show there.
+
 ## See also
 
 - [Options and configuration](help:options) — `:set`, `:customize`, the

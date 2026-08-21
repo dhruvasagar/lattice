@@ -366,6 +366,17 @@ pub struct App {
     /// output cell the App keeps a clone of now.
     pub syntax_static_overlay_quads_cell:
         std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::StaticOverlayQuads>>,
+    /// ML.4: where each clickable modeline element was painted, rebuilt
+    /// every frame and read when a mouse click arrives.
+    ///
+    /// `RefCell` because the paint path takes `&App` and this is the
+    /// one thing it produces rather than consumes. It is renderer-local
+    /// by nature — a record of where THIS terminal put THIS frame's
+    /// pixels — so it lives on the TUI's `App` rather than in
+    /// `RenderState`, which is the renderer-neutral publication the
+    /// GPUI peer reads too. GPUI needs no equivalent: its elements are
+    /// real `div`s and the window system does the hit test.
+    pub modeline_hits: std::cell::RefCell<lattice_host::modeline::ModelineHitMap>,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.

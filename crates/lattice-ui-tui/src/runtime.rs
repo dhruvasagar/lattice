@@ -328,6 +328,32 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
         Event::Resize(_, _) => {
             // next iteration's top-of-loop setup reads the new size
         }
+        // ML.4: a left-click on a modeline element dispatches the
+        // element's declared command. Mouse events only arrive at all
+        // when `ui.mouse` is on (MO.1), so no gate is needed here.
+        //
+        // The host is a router and nothing more: the handler body lives
+        // in the mode or plugin that registered the element, reached
+        // through the same `CommandInvocation` path a keystroke takes
+        // (modeline.md §6, §9). No per-element handler, and no new
+        // `Action` variant.
+        Event::Mouse(m) => {
+            if !matches!(
+                m.kind,
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            ) {
+                return;
+            }
+            let hit = app.modeline_hits.borrow().hit(m.column, m.row);
+            if let Some(command) = hit {
+                app.apply(Action::Invoke(lattice_grammar::CommandInvocation::of(
+                    command,
+                )));
+                if perf_input {
+                    *last_input_at = Some(Instant::now());
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -831,6 +857,114 @@ mod tests {
             "applied input must arm the perf timer"
         );
         assert_eq!(app.ad().modal, ModalState::Insert, "`i` must enter Insert");
+    }
+
+    // --- ML.4: modeline clicks ----------------------------------------
+
+    /// Build a left-button press at `(col, row)`.
+    fn click(col: u16, row: u16) -> Event {
+        Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A click that lands on a recorded region dispatches that region's
+    /// command through the ordinary invocation path — the same one a
+    /// keystroke bound to the action would take.
+    #[test]
+    fn a_click_on_a_recorded_region_invokes_its_command() {
+        let mut app = App::new(Document::from_text("hello world\n"));
+        // `:` opens the command line — a visible, cheap-to-assert effect
+        // reachable from a CommandId without standing up a mode.
+        let command = app.editor.builtins.word_forward.0;
+        app.modeline_hits
+            .borrow_mut()
+            .push(lattice_host::modeline::ModelineHitZone {
+                row: 23,
+                col_start: 4,
+                col_end: 9,
+                action: command,
+            });
+
+        let mut last_input_at = None;
+        apply_event(&mut app, click(5, 23), true, &mut last_input_at);
+
+        assert_eq!(
+            app.ad().cursor.byte,
+            6,
+            "the click must dispatch the element's command (w → next word)"
+        );
+        assert!(
+            last_input_at.is_some(),
+            "a click that did something is real input"
+        );
+    }
+
+    /// A click on dead space is a no-op — not a swallowed key, not a
+    /// spurious perf-timer arm.
+    #[test]
+    fn a_click_outside_every_region_does_nothing() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let command = app.editor.builtins.word_forward.0;
+        app.modeline_hits
+            .borrow_mut()
+            .push(lattice_host::modeline::ModelineHitZone {
+                row: 23,
+                col_start: 4,
+                col_end: 9,
+                action: command,
+            });
+
+        let mut last_input_at = None;
+        apply_event(&mut app, click(20, 23), true, &mut last_input_at);
+
+        assert_eq!(app.ad().cursor.byte, 0, "cursor must not move");
+        assert!(
+            last_input_at.is_none(),
+            "a click on nothing must not be counted as input"
+        );
+    }
+
+    /// Only the left button acts. Right / middle are reserved (a context
+    /// menu is a plausible future) and wheel events must never be
+    /// mistaken for clicks — scrolling over a modeline would otherwise
+    /// fire its command repeatedly.
+    #[test]
+    fn non_left_button_events_are_ignored() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let command = app.editor.builtins.word_forward.0;
+        app.modeline_hits
+            .borrow_mut()
+            .push(lattice_host::modeline::ModelineHitZone {
+                row: 23,
+                col_start: 4,
+                col_end: 9,
+                action: command,
+            });
+
+        let mut last_input_at = None;
+        for kind in [
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            crossterm::event::MouseEventKind::ScrollDown,
+            crossterm::event::MouseEventKind::Moved,
+        ] {
+            apply_event(
+                &mut app,
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind,
+                    column: 5,
+                    row: 23,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                true,
+                &mut last_input_at,
+            );
+            assert_eq!(app.ad().cursor.byte, 0, "{kind:?} must not dispatch");
+        }
     }
 
     /// I.3: a `Repaint` wake (forwarded from `paint_request`) drives the

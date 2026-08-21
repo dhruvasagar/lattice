@@ -26,6 +26,8 @@ use lattice_config::{
     ModelineSeparator, ModelineZone,
 };
 use lattice_core::ui::pane::PaneState;
+use lattice_protocol::CommandId;
+
 use lattice_mode::{
     ElementContent, ElementId, ModelineElement, ModelineRegistry, ModelineRole, ModelineService,
     Zone,
@@ -425,6 +427,175 @@ pub fn resolve_layout<'a>(
     }
 }
 
+/// ML.4: one clickable region of a painted modeline row.
+///
+/// Coordinates are **absolute terminal cells**, not pane- or
+/// zone-relative, because that is the space a mouse event arrives in
+/// and translating once at record time beats translating at every
+/// hit test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelineHitZone {
+    /// Terminal row the modeline occupies.
+    pub row: u16,
+    /// First column of the region.
+    pub col_start: u16,
+    /// One past the last column.
+    pub col_end: u16,
+    /// The command a click dispatches. The handler body lives in the
+    /// mode or plugin that registered the element — the host routes
+    /// and nothing more (modeline.md §6, §9).
+    pub action: CommandId,
+}
+
+/// ML.4: every clickable region on screen, rebuilt each frame.
+///
+/// This is the TUI's half of the interaction contract. The GPUI peer
+/// needs no equivalent — its elements are real `div`s with their own
+/// `on_mouse_down` listeners, so the window system does the hit test.
+/// The two peers therefore reach the same behaviour by different
+/// mechanisms, which is what modeline.md §9 specifies rather than an
+/// accident of implementation: a terminal has no element tree to
+/// attach a listener to.
+///
+/// Later zones win a tie. Nothing in the layout produces overlapping
+/// regions today, but "last write wins" is the rule a painter follows,
+/// so a hit test that disagreed with what is on screen would be the
+/// bug.
+#[derive(Debug, Clone, Default)]
+pub struct ModelineHitMap {
+    zones: Vec<ModelineHitZone>,
+}
+
+impl ModelineHitMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every recorded region. Called at the top of each frame —
+    /// a stale map would dispatch clicks against a layout that is no
+    /// longer painted.
+    pub fn clear(&mut self) {
+        self.zones.clear();
+    }
+
+    pub fn push(&mut self, zone: ModelineHitZone) {
+        // An empty or inverted region can never be hit; keeping it
+        // would only make the map longer to walk.
+        if zone.col_end > zone.col_start {
+            self.zones.push(zone);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.zones.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.zones.len()
+    }
+
+    /// The command at `(col, row)`, if any.
+    pub fn hit(&self, col: u16, row: u16) -> Option<CommandId> {
+        self.zones
+            .iter()
+            .rev()
+            .find(|z| z.row == row && col >= z.col_start && col < z.col_end)
+            .map(|z| z.action)
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::*;
+
+    fn zone(row: u16, start: u16, end: u16, action: u64) -> ModelineHitZone {
+        ModelineHitZone {
+            row,
+            col_start: start,
+            col_end: end,
+            action: CommandId(action),
+        }
+    }
+
+    #[test]
+    fn a_click_inside_a_region_finds_its_command() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(23, 4, 10, 7));
+        assert_eq!(map.hit(4, 23), Some(CommandId(7)), "left edge is inside");
+        assert_eq!(map.hit(9, 23), Some(CommandId(7)), "last column is inside");
+    }
+
+    #[test]
+    fn the_end_column_is_exclusive() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(23, 4, 10, 7));
+        assert_eq!(map.hit(10, 23), None, "col_end belongs to the next region");
+        assert_eq!(map.hit(3, 23), None);
+    }
+
+    #[test]
+    fn a_click_on_another_row_misses() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(23, 4, 10, 7));
+        assert_eq!(map.hit(5, 22), None);
+        assert_eq!(map.hit(5, 24), None);
+    }
+
+    #[test]
+    fn adjacent_regions_do_not_bleed() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(1, 0, 5, 100));
+        map.push(zone(1, 5, 9, 200));
+        assert_eq!(map.hit(4, 1), Some(CommandId(100)));
+        assert_eq!(map.hit(5, 1), Some(CommandId(200)));
+    }
+
+    #[test]
+    fn separate_panes_keep_separate_rows_and_columns() {
+        // A vertical split: two modelines on the same row, different
+        // column spans. Clicking one must not reach the other.
+        let mut map = ModelineHitMap::new();
+        map.push(zone(23, 2, 8, 1));
+        map.push(zone(23, 42, 48, 2));
+        assert_eq!(map.hit(5, 23), Some(CommandId(1)));
+        assert_eq!(map.hit(45, 23), Some(CommandId(2)));
+        assert_eq!(map.hit(20, 23), None, "the gap between panes is dead");
+    }
+
+    #[test]
+    fn empty_and_inverted_regions_are_not_recorded() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(1, 5, 5, 1));
+        map.push(zone(1, 9, 4, 2));
+        assert!(map.is_empty());
+        assert_eq!(map.hit(5, 1), None);
+    }
+
+    #[test]
+    fn clear_drops_the_previous_frames_regions() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(1, 0, 5, 1));
+        map.clear();
+        assert_eq!(
+            map.hit(2, 1),
+            None,
+            "a stale map would dispatch against a layout no longer painted"
+        );
+    }
+
+    #[test]
+    fn a_later_region_wins_an_overlap() {
+        let mut map = ModelineHitMap::new();
+        map.push(zone(1, 0, 10, 1));
+        map.push(zone(1, 4, 6, 2));
+        assert_eq!(
+            map.hit(5, 1),
+            Some(CommandId(2)),
+            "last painted wins, matching what is on screen"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +620,59 @@ mod tests {
 
     fn zone_ids(els: &[&ModelineElement]) -> Vec<String> {
         els.iter().map(|e| e.id.as_str().to_string()).collect()
+    }
+
+    /// ML.4 parity contract. Both renderer peers reach a click target
+    /// the same way — `el.interaction.on_click` on the descriptors
+    /// `resolve_layout` hands back — and differ only in what they do
+    /// with it (TUI records painted column ranges; GPUI hangs an
+    /// `on_mouse_down` on the element's own `div`). Pinning it here,
+    /// upstream of both, is what makes "both peers honour on_click" a
+    /// property of the shared resolver rather than two implementations
+    /// that happen to agree today.
+    #[test]
+    fn resolve_layout_preserves_a_declared_click_target() {
+        let svc = ModelineService::new();
+        register_builtin_elements(&svc);
+        svc.register(
+            ModelineElement::new(ElementId::new("clicky"), Zone::Right, 5).with_interaction(
+                lattice_mode::Interaction {
+                    on_click: Some(CommandId(42)),
+                    hover: None,
+                },
+            ),
+        );
+        let registry = svc.snapshot().registry;
+        let cfg = modeline_config();
+        let layout = resolve_layout(&registry, &cfg);
+
+        let el = layout
+            .right
+            .iter()
+            .find(|e| e.id.as_str() == "clicky")
+            .expect("the registered element is placed in its zone");
+        assert_eq!(
+            el.interaction.as_ref().and_then(|i| i.on_click),
+            Some(CommandId(42)),
+            "the descriptor both peers read must carry the click target"
+        );
+    }
+
+    /// The overwhelmingly common case: an element that declared no
+    /// interaction stays inert, so neither peer records a region or
+    /// attaches a listener for it.
+    #[test]
+    fn builtins_declare_no_click_target() {
+        let registry = builtin_registry();
+        let cfg = modeline_config();
+        let layout = resolve_layout(&registry, &cfg);
+        for el in layout.left.iter().chain(layout.right.iter()) {
+            assert!(
+                el.interaction.is_none(),
+                "{} must not be clickable by default",
+                el.id.as_str()
+            );
+        }
     }
 
     /// No config (all zones `Auto`) ⇒ the pre-ML.5 descriptor layout,

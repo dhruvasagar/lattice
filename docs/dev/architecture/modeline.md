@@ -285,6 +285,52 @@ pub struct HoverSpec { pub content: ElementContent }   // markdown body later
   echo-line hint on click). This is graceful degradation, not a parity
   break — both peers honour `on_click`; only `hover` is GPUI-only.
 
+#### 9.1 As built (ML.4, 2026-08-21)
+
+Both peers honour `on_click`; the mechanisms differ because a terminal
+has no element tree to hang a listener on. That divergence is the design
+above, not drift — what is shared is the thing that matters, which is
+where the click target *comes from*: `el.interaction.on_click` on the
+descriptors `resolve_layout` returns, pinned by
+`resolve_layout_preserves_a_declared_click_target` upstream of both
+renderers.
+
+- **Prerequisite.** Terminal mouse reporting did not exist. `ui.mouse`
+  (MO.1) adds it, **off by default** — capture takes the mouse away from
+  the terminal emulator, so click-drag selection and middle-click paste
+  stop working, and that is too much to spend on modeline clicks alone.
+  The GPUI peer ignores the option: it owns its window's input and
+  takes nothing away by listening.
+- **TUI.** `ModelineSeg` stopped being a `(String, Option<ModelineRole>)`
+  tuple and became a struct carrying its element's `on_click`, because
+  the run has to keep its identity through layout *and* truncation.
+  Regions are recorded from the **composed** row (post-padding,
+  post-centring, in absolute terminal cells) rather than from the zone
+  lists, so the map cannot disagree with the paint; a split's right-hand
+  pane records its own absolute columns for free. The map is cleared at
+  the top of `draw_frame`, so a pane that stops painting a modeline
+  stops being clickable.
+- **GPUI.** Each run becomes a `div` with `on_mouse_down` and, when the
+  element declared `hover`, an `.id(..)`-stabilised `.tooltip(..)`. The
+  stable id is what stops the tooltip flickering as the modeline
+  repaints under the pointer.
+- **Routing.** Both peers dispatch `Action::Invoke(CommandInvocation::of(id))`
+  — the same path a keystroke bound to that command takes. No per-element
+  handler, no new `Action` variant, no host-side body: the handler lives
+  in the mode or plugin that registered the element (§6).
+
+Two behaviours worth stating because they are choices, not fallout:
+
+- **An ellipsised run stays clickable.** Half-visible is still that
+  element; making clickability depend on pane width would read as the
+  modeline randomly not working as you resize.
+- **Separators and padding are never clickable.** The gap between two
+  elements belongs to neither.
+
+Only the **left** button acts. Right and middle are reserved (a context
+menu is plausible later), and wheel events are explicitly excluded —
+scrolling over a modeline would otherwise fire its command repeatedly.
+
 ---
 
 ## 10. Cross-renderer parity

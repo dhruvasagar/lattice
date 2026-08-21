@@ -324,18 +324,39 @@ measures the `resolve_layout` path. *doc* — design §11 + §11.1; user
 malformed/empty → blank zone, padding clamped, truncation saturates;
 never panic. **Deps:** ML.3.
 
-### ML.4 — interaction (click + hover)  ⛔ deferred (API designed in ML.0)
-**Design:** §9. **Deferred per request**; the `Interaction` data model
-ships in ML.0 so this is additive, no model churn.
-**Change:** GPUI — per-element `on_mouse_down` → dispatch the element's
-`ActionId`; `.tooltip(…)` from `hover`. TUI — record per-element x-ranges
-+ hit-test ratatui `MouseEvent::Down` → same `ActionId`; hover degrades
-(ignored / echo hint). Handler bodies live in the registering mode/plugin
-(§6) — host only routes; zero host `Action` variants added.
-**Artefacts:** *test* — click on an element fires its `ActionId` (both
-peers); hover tooltip (GPUI); TUI hover-absent degrade. *doc* — §9.
-*parity* — both peers honour `on_click`. *error handling* — click on a
-no-interaction element is a no-op. **Deps:** ML.3 (registered elements).
+### ML.4 — interaction (click + hover)  ✅ (2026-08-21)
+**Design:** §9, §9.1 (as-built). The `Interaction` data model shipped in
+ML.0, so this was additive with no model churn, as planned.
+
+**Blocked on a primitive the plan did not name.** Terminal mouse
+reporting did not exist anywhere in the tree — nothing ever called
+`EnableMouseCapture`, so `Event::Mouse` fell through `apply_event`'s
+catch-all. That landed first as **MO.1** (`ui.mouse`, default off; the
+commit explains why off is the substantive choice). T4.2 (terminal
+mouse passthrough) is the second consumer of the same primitive.
+
+**Landed:**
+- *TUI* — `ModelineSeg` converted from a `(String, Option<ModelineRole>)`
+  tuple to a struct carrying its element's `on_click`, so identity
+  survives layout and truncation; `record_modeline_hits` walks the
+  **composed** row and records absolute-cell regions into a per-frame
+  `ModelineHitMap`; `Event::Mouse` hit-tests and dispatches.
+- *GPUI* — per-run `on_mouse_down` plus an `.id(..)`-stabilised
+  `.tooltip(..)` from `hover`; `cx` threaded through
+  `paint_pane_tree` → `paint_pane` → `modeline_row`.
+- *Routing* — `Action::Invoke(CommandInvocation::of(id))` in both peers.
+  Zero host `Action` variants, zero host-side handler bodies, as the
+  design required.
+
+**Artefacts:** *tests* — 8 (`ModelineHitMap`, host) + 7 (TUI recording:
+column exactness, padding shift, split offset, ellipsis, filler-is-dead,
+no-interaction-is-free, multi-span sharing) + 3 (TUI dispatch: hit, miss,
+non-left-button) + 2 (host parity contract) = **20**. *doc* — design
+§9.1, user `modeline.md`. *parity* — both peers read
+`el.interaction.on_click` from the shared resolver; audit grep clean.
+*error handling* — a click on a no-interaction element, on filler, or on
+dead space is a no-op that does not arm the perf timer. **Deps:** ML.3,
+MO.1.
 
 ### ML.6 — WIT plugin API  ⛔ deferred (plugin phase)
 **Design:** §6 (plugin row). Plugins register/update/remove elements +
@@ -348,12 +369,14 @@ Plugin Architecture phase (mirrors LSP M.10). **Deps:** ML.4 + plugin host.
 
 ```
 ML.0a ─► ML.0b-1 ─► ML.0b-2 ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
-                                                 └► ML.4 (deferred) ─► ML.6 (deferred)
+                                                 └► MO.1 ─► ML.4 ✅ ─► ML.6 (deferred)
 ```
 
-Land ML.0–ML.3 + ML.5 for the configurable, themed, event-driven,
-zone-based modeline; ML.4 (interaction) and ML.6 (plugins) follow on the
-already-shipped `Interaction` model.
+ML.0–ML.3 + ML.5 landed the configurable, themed, event-driven,
+zone-based modeline; **ML.4 (interaction) landed 2026-08-21** on the
+`Interaction` model ML.0 shipped, once MO.1 supplied the terminal mouse
+primitive. **ML.6 (WIT plugin API) remains ⛔** — it needs the plugin
+phase, so this plan stays active.
 
 ---
 

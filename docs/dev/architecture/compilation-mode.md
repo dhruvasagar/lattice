@@ -8,15 +8,17 @@ offending source. The emacs `compilation-mode` / `M-x recompile` and
 vim `:make` + quickfix workflows, unified on Lattice's substrate.
 
 This is a **native built-in** (a Rust crate wired through the
-`SubsystemBoot` install seam), not a plugin. Error-format *parsers*
-are the extensibility seam (built-in cargo/rustc + gnu-style today;
-WASM-contributable in Phase 7).
+`SubsystemBoot` install seam), not a plugin. Error-format *parsers* are
+the extensibility seam: four built-ins (cargo/rustc, gnu-style, test
+panics, and an unanchored catch-all) plus WASM-contributed ones, which a
+plugin registers as a factory through the `error-parser` seam and which
+are indistinguishable from the natives downstream (§5).
 
 Companion to `design.md` (§5.1 buffer model, §5.1.1 position history,
 §5.9 everything-is-a-buffer, §5.10 events) and to `terminal-as-document.md`
 (the sibling "run a process into a buffer" surface) and
 `multibuffer-views.md` (the grouped problems view). Sequencing lives in
-`../operations/slice-plans/compilation-mode.md`.
+`../operations/slice-plans/archive/compilation-mode.md`.
 
 ## 1. The three separable concerns
 

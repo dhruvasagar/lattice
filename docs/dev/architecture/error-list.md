@@ -11,7 +11,7 @@ the `q`-chords are preserved as aliases for muscle memory.
 Companion to `compilation-mode.md` (the first producer) and
 `design.md` §5.1.1 (position history — a sibling core navigation
 substrate). Sequencing lives in
-`../operations/slice-plans/compilation-mode.md` (slices CM.2, CM.7, CM.8)
+`../operations/slice-plans/archive/compilation-mode.md` (slices CM.2, CM.7, CM.8)
 and, for the multi-producer work of §3.1–§3.3,
 `../operations/slice-plans/archive/error-list-producers.md` (EP series).
 

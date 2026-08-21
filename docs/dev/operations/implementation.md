@@ -6172,7 +6172,7 @@ Design fragments:
 (the runner + `*compilation*` / `*problems*`) and
 [`../architecture/error-list.md`](../architecture/error-list.md) (the
 core error-list / quickfix substrate). Slice plan + status:
-[`slice-plans/compilation-mode.md`](slice-plans/compilation-mode.md).
+[`slice-plans/compilation-mode.md`](slice-plans/archive/compilation-mode.md).
 Native built-in (`lattice-compilation` crate + `SubsystemBoot` install
 seam); Option C — streaming buffer primary, error-list navigation,
 `*problems*` multibuffer secondary.
@@ -6229,7 +6229,7 @@ decorations) and **CM.6/CM.6b** (WASM-contributable parsers — the
 `error-parser` seam plus its live wiring, a plugin-registered
 `CompilationParserFactory` that each pipe reader mints its own parser
 from). See
-[`slice-plans/compilation-mode.md`](slice-plans/compilation-mode.md).
+[`slice-plans/compilation-mode.md`](slice-plans/archive/compilation-mode.md).
 
 ---
 

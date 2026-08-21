@@ -92,6 +92,13 @@ fn main() {
         "emacs-keys-guest",
         "EMACS_KEYS_GUEST_WASM",
     );
+    // PM.7: the `require` seam's fixture — declares one plugin of each source
+    // kind plus an unsafe name the host must reject.
+    build_guest(
+        &fixtures.join("plugin-manager-guest"),
+        "plugin-manager-guest",
+        "PLUGIN_MANAGER_GUEST_WASM",
+    );
     // AP.1 spike: a single component providing grammar + modes + config, loaded
     // once per seam by `tests/multiseam.rs` to prove multi-seam plugins work.
     build_guest(

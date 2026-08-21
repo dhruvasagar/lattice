@@ -1,0 +1,24 @@
+# PM.7 plugin-manager fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `plugin-manager-plugin` world: from its `register-plugins`
+# export it declares plugins via the imported `plugin-manager.require`, one of
+# each source kind plus one with an unsafe name the host must reject. The host
+# test then inspects the drained specs. Standalone workspace (`[workspace]`
+# below) so it targets wasm32-wasip2 without inheriting the host toolchain —
+# mirrors the sibling `modes-guest` fixture.
+[package]
+name = "plugin-manager-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

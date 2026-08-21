@@ -84,6 +84,7 @@ pub mod mode_host;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
+pub mod plugin_manager_host;
 pub mod teardown;
 // TC.4 — the `theme` element-registration seam. Guest imports `register-element`
 // and the host inserts into the SAME registry builtins live in.
@@ -773,6 +774,12 @@ struct PluginState {
     /// `Some` once an async instantiate/spawn path stamps it ([`LogCtx`]); `None`
     /// for the sync grammar guest and any pre-tracer path (a `log` debug-drops).
     log_ctx: Option<LogCtx>,
+    /// PM.7: plugins this guest declared via `plugin-manager.require` during
+    /// `register-plugins`. Recorded here, drained by
+    /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
+    /// the host resolves/builds/loads them off-thread, never inside the guest
+    /// call. Empty for every world that does not import `plugin-manager`.
+    require_contributions: plugin_manager_host::RequireContributions,
 }
 
 /// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
@@ -851,6 +858,50 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
                 );
             }
         }
+    }
+}
+
+/// Host impl of the `plugin-manager` guest→host seam (PM.7).
+///
+/// `require` **records and returns**. It performs no resolution, no clone, no
+/// build and no load — see the module docs for why that split is load-bearing
+/// rather than merely tidy.
+///
+/// A rejected spec returns `false` instead of trapping: one bad entry in a
+/// user's `init.rs` must not take the whole config down, which is the same
+/// graceful-degradation clause every other seam here follows.
+impl crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager::Host
+    for PluginState
+{
+    fn require(
+        &mut self,
+        spec: crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager::PluginSpec,
+    ) -> bool {
+        use crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager::PluginSource as WitSource;
+        if !plugin_manager_host::is_safe_plugin_name(&spec.name) {
+            tracing::warn!(
+                name = %spec.name,
+                "require ignored: plugin name is not a single safe path component"
+            );
+            return false;
+        }
+        let source = match spec.source {
+            WitSource::Local(path) => plugin_manager_host::RequiredSource::Local(path),
+            WitSource::Git(g) => plugin_manager_host::RequiredSource::Git {
+                url: g.url,
+                rev: g.rev,
+            },
+            WitSource::Prebuilt(url) => plugin_manager_host::RequiredSource::Prebuilt { url },
+        };
+        tracing::debug!(name = %spec.name, "require recorded");
+        self.require_contributions
+            .record(plugin_manager_host::RequiredPlugin {
+                name: spec.name,
+                source,
+                enable_mode: spec.enable_mode,
+                pinned: spec.pinned,
+            });
+        true
     }
 }
 
@@ -1820,6 +1871,15 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // PM.7: the `plugin-manager` (`require`) seam. A sync host func — it
+        // only records into `PluginState` — and inert for every world that
+        // does not import `plugin-manager`, which is all of them but the
+        // config/init world.
+        crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The `events` guest→host subscription seam (PH7.8b). Wired into the
         // ASYNC linker — the events-plugin world's `on-event` delivery is async
         // (off the keystroke path), unlike the sync grammar seam. `subscribe` is
@@ -2173,6 +2233,7 @@ impl PluginHost {
             // the id is allocated; `None` here + for the sync grammar guest (which
             // never imports `logging`) → a guest `log` is a debug-drop.
             log_ctx: None,
+            require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);
         store

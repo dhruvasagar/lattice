@@ -68,6 +68,7 @@ pub mod build;
 pub mod discovery;
 mod ex_commands;
 pub mod install;
+pub mod pipeline;
 pub mod resolve;
 pub mod watch;
 
@@ -80,6 +81,7 @@ pub use discovery::{
     discover_one,
 };
 pub use install::{disable_autoload, install};
+pub use pipeline::{Install, RequiredSpec, install_all, install_required};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
 };

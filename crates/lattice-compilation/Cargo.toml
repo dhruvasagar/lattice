@@ -14,6 +14,11 @@ thiserror = { workspace = true }
 # through the fast RE2 engine); used to match rustc/cargo + gnu-style
 # diagnostic lines. Regexes are compiled once via `OnceLock`.
 fancy-regex = { workspace = true }
+# CM.6b: the plugin parser-factory registry is `Arc<ArcSwap<_>>` — reads
+# happen once per compilation run, writes only on plugin load/unload, so
+# the picker registry's wait-free-read / copy-on-write-RCU idiom applies
+# unchanged.
+arc-swap = { workspace = true }
 # `lattice_protocol::register_event!` expands to a
 # `#[linkme::distributed_slice(...)]` static, so this crate needs
 # `linkme` as a direct dependency (the macro can't route the path

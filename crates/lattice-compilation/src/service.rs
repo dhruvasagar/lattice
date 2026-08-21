@@ -111,6 +111,11 @@ pub struct DefaultCompilationService {
     /// the right degradation, because escape sequences must never
     /// reach the buffer whether or not anyone can colour them.
     ansi: Option<crate::CompilationAnsiSlot>,
+    /// CM.6b: plugin-contributed parser factories, snapshotted once per
+    /// run. `None` in a stripped harness that registered no handle;
+    /// empty in the common case where no `error-parser` plugin is
+    /// loaded. Either way every native parser still runs.
+    parser_factories: Option<crate::CompilationParserFactoriesHandle>,
 }
 
 impl std::fmt::Debug for DefaultCompilationService {
@@ -132,6 +137,7 @@ impl DefaultCompilationService {
             state: Arc::new(Mutex::new(RunState::default())),
             qf_bus,
             ansi: None,
+            parser_factories: None,
         }
     }
 
@@ -142,6 +148,20 @@ impl DefaultCompilationService {
     /// without one is still correct, just monochrome.
     pub fn with_ansi_slot(mut self, slot: crate::CompilationAnsiSlot) -> Self {
         self.ansi = Some(slot);
+        self
+    }
+
+    /// CM.6b: read plugin-contributed parser factories from `handle`
+    /// when a run starts.
+    ///
+    /// Separate from [`Self::new`] for the same reason the ANSI slot is:
+    /// a stripped harness registers no handle, and a service without one
+    /// is still correct — it just runs the built-in parsers only.
+    pub fn with_parser_factories(
+        mut self,
+        handle: crate::CompilationParserFactoriesHandle,
+    ) -> Self {
+        self.parser_factories = Some(handle);
         self
     }
 
@@ -207,6 +227,16 @@ impl CompilationService for DefaultCompilationService {
         // against; stripping still happens, colouring does not.
         let ansi: Option<crate::ansi::AnsiPalette> =
             self.ansi.as_ref().and_then(|slot| slot.get().copied());
+        // CM.6b: snapshot the plugin factories once per run, not per
+        // reader and certainly not per line. A plugin loaded mid-build
+        // therefore joins the NEXT build — which is the honest
+        // behaviour, since a parser that starts halfway through a
+        // stream has no pending state for what it missed.
+        let factories: Option<Arc<crate::CompilationParserFactories>> = self
+            .parser_factories
+            .as_ref()
+            .map(|h| h.load_full())
+            .filter(|set| !set.is_empty());
         self.runtime.spawn_blocking(move || {
             let mut command = Command::new("sh");
             command
@@ -276,14 +306,30 @@ impl CompilationService for DefaultCompilationService {
             let out_events = events.clone();
             let out_qf = qf_bus.clone();
             let out_shared = shared.clone();
+            let out_factories = factories.clone();
             let out_reader = std::thread::spawn(move || {
-                read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared, ansi.as_ref())
+                read_parsed_pipe(
+                    stdout,
+                    &out_events,
+                    &out_qf,
+                    &out_shared,
+                    ansi.as_ref(),
+                    out_factories.as_deref(),
+                )
             });
             let err_events = events.clone();
             let err_qf = qf_bus.clone();
             let err_shared = shared.clone();
+            let err_factories = factories.clone();
             let err_reader = std::thread::spawn(move || {
-                read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared, ansi.as_ref())
+                read_parsed_pipe(
+                    stderr,
+                    &err_events,
+                    &err_qf,
+                    &err_shared,
+                    ansi.as_ref(),
+                    err_factories.as_deref(),
+                )
             });
             let _ = out_reader.join();
             let _ = err_reader.join();
@@ -366,12 +412,20 @@ fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
 /// (a producer may open a colour on one line and close it on the
 /// next). It is per-pipe, never shared — stdout and stderr are
 /// independent streams.
+///
+/// CM.6b: `factories` mints this reader's **own** plugin parsers. Each
+/// reader gets fresh instances for exactly the reason the `sgr` state
+/// above is per-pipe: the two streams carry independent pending state,
+/// and a WASM-backed parser could not be shared regardless (it owns a
+/// `Store`). They register ahead of the catch-all — see
+/// [`ParserRegistry::register_before_catch_all`].
 fn read_parsed_pipe<R: std::io::Read>(
     pipe: Option<R>,
     events: &Arc<EventBus>,
     qf_bus: &InboundBus<Vec<ErrorEntry>>,
     shared: &Mutex<Vec<ErrorEntry>>,
     ansi: Option<&crate::ansi::AnsiPalette>,
+    factories: Option<&crate::CompilationParserFactories>,
 ) {
     let Some(pipe) = pipe else {
         return;
@@ -381,6 +435,11 @@ fn read_parsed_pipe<R: std::io::Read>(
     let mut batch_spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
     let mut lines_in_batch = 0usize;
     let mut registry = ParserRegistry::with_builtins();
+    if let Some(factories) = factories {
+        for parser in factories.create_all() {
+            registry.register_before_catch_all(parser);
+        }
+    }
     let mut sgr = crate::ansi::SgrState::default();
     for line in reader.lines() {
         let raw = match line {
@@ -468,13 +527,26 @@ mod tests {
         cmdline: Option<String>,
         dur: Duration,
     ) -> (Vec<OutputChunk>, Vec<ErrorEntry>) {
+        collect_run_with_factories(cmdline, dur, None)
+    }
+
+    /// Like [`collect_run_with_qf`] but with CM.6b plugin parser
+    /// factories registered on the service.
+    fn collect_run_with_factories(
+        cmdline: Option<String>,
+        dur: Duration,
+        factories: Option<crate::CompilationParserFactoriesHandle>,
+    ) -> (Vec<OutputChunk>, Vec<ErrorEntry>) {
         let bus = Arc::new(EventBus::new());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
         bus.subscribe_typed::<CompilationOutputPushed>(tx);
 
         let (qf_bus, mut qf_drain, latest) = qf_capture();
-        let svc =
+        let mut svc =
             DefaultCompilationService::new(bus.clone(), tokio::runtime::Handle::current(), qf_bus);
+        if let Some(handle) = factories {
+            svc = svc.with_parser_factories(handle);
+        }
         svc.run(cmdline, None);
 
         // Drain until quiescent (no new chunk within a short window)
@@ -653,6 +725,103 @@ mod tests {
             }
             other => panic!("expected Reset, got {other:?}"),
         }
+    }
+
+    /// CM.6b: a factory registered on the service reaches the error
+    /// list for a line no built-in parser understands.
+    #[derive(Debug)]
+    struct QqFactory {
+        created: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct QqParser;
+
+    impl crate::CompilationParser for QqParser {
+        fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
+            line.strip_prefix("QQ ")
+                .map(|rest| {
+                    vec![ErrorEntry {
+                        path: std::path::PathBuf::from(rest),
+                        line: 7,
+                        col: 3,
+                        severity: ErrorSeverity::Warning,
+                        message: "from a plugin".to_string(),
+                    }]
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    impl crate::CompilationParserFactory for QqFactory {
+        fn plugin_id(&self) -> u64 {
+            42
+        }
+        fn create(&self) -> Option<Box<dyn crate::CompilationParser>> {
+            self.created
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(Box::new(QqParser))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_registered_factory_contributes_entries() {
+        let created = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut set = crate::CompilationParserFactories::new();
+        set.register(Arc::new(QqFactory {
+            created: created.clone(),
+        }));
+        let handle: crate::CompilationParserFactoriesHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(set));
+
+        let created_probe = created.clone();
+        let (_chunks, entries) = tokio::task::spawn_blocking(move || {
+            collect_run_with_factories(
+                Some("echo 'QQ src/plugin.rs'".to_string()),
+                Duration::from_secs(3),
+                Some(handle),
+            )
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.path == std::path::PathBuf::from("src/plugin.rs")
+                    && e.severity == ErrorSeverity::Warning
+                    && e.message == "from a plugin"),
+            "the plugin parser's entry should reach the error list: {entries:?}"
+        );
+        // One instance per reader — the property the factory exists for.
+        assert_eq!(
+            created_probe.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "stdout and stderr each mint their own parser"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_registered_factory_leaves_the_builtins_alone() {
+        // The common case: no `error-parser` plugin loaded. The
+        // built-in parsers must behave exactly as before — a
+        // gnu-style line still lands.
+        let (_chunks, entries) = tokio::task::spawn_blocking(|| {
+            collect_run_with_factories(
+                Some("echo 'src/a.rs:3:5: error: boom'".to_string()),
+                Duration::from_secs(3),
+                None,
+            )
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.path == std::path::PathBuf::from("src/a.rs")),
+            "built-in parsing is unaffected by the factory seam: {entries:?}"
+        );
     }
 
     #[test]

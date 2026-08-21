@@ -30,6 +30,7 @@ mod ex_commands;
 mod headerline;
 mod mode;
 mod parser;
+mod parser_factory;
 mod parsers;
 mod service;
 
@@ -43,6 +44,9 @@ pub use mode::{CompilationMode, apply_chunk};
 pub use parser::{
     CompilationLocation, CompilationParser, ParserRegistry, match_severity, parse_location_line,
     scan_location_lines, scan_severities,
+};
+pub use parser_factory::{
+    CompilationParserFactories, CompilationParserFactoriesHandle, CompilationParserFactory,
 };
 pub use service::{CompilationService, CompilationServiceHandle, DefaultCompilationService};
 
@@ -240,13 +244,24 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let ansi_slot: CompilationAnsiSlot = Arc::new(std::sync::OnceLock::new());
     boot.register_service::<CompilationAnsiSlot>(ansi_slot.clone());
 
+    // CM.6b: the plugin parser-factory registry. Registered here (rather
+    // than filled by the mode, like the ANSI slot) because its writer is
+    // the plugin loader, which runs long after boot and reaches it by
+    // service lookup — there is nothing to resolve at install time, only
+    // an empty registry to publish.
+    let parser_factories: CompilationParserFactoriesHandle = Arc::new(
+        arc_swap::ArcSwap::from_pointee(CompilationParserFactories::new()),
+    );
+    boot.register_service::<CompilationParserFactoriesHandle>(parser_factories.clone());
+
     let svc: CompilationServiceHandle = Arc::new(
         DefaultCompilationService::new(
             boot.event_bus().clone(),
             boot.runtime_handle().clone(),
             qf_bus,
         )
-        .with_ansi_slot(ansi_slot),
+        .with_ansi_slot(ansi_slot)
+        .with_parser_factories(parser_factories),
     );
     boot.register_service::<CompilationServiceHandle>(svc);
 

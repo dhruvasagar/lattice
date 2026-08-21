@@ -111,7 +111,12 @@ pub struct ProjectSearchOptions {
 impl Default for ProjectSearchOptions {
     fn default() -> Self {
         Self {
-            root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            // PR.4: the project containing the working directory, not
+            // the working directory itself. The host overrides this
+            // with a per-buffer root before every `:search`; this is
+            // the answer a direct constructor gets, and it should be
+            // the same KIND of answer rather than a different one.
+            root: lattice_core::project::root_from_cwd().unwrap_or_else(|| PathBuf::from(".")),
             case_sensitive: false,
             max_files: None,
             max_hits_per_file: 100,

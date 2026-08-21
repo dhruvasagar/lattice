@@ -1,6 +1,6 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.3 ✅; PR.4–PR.6 planned;
+> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.4 ✅; PR.5–PR.6 planned;
 > PR.7 has its own spec. Sequencing companion to the design fragment
 > [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
@@ -137,7 +137,7 @@ different roots. Both assert the value fed to `SpawnConfig.cwd` rather
 than spawning a PTY: the spawn is `Command::cwd`, which is the OS's
 job, and a real PTY in a unit test buys only flake.
 
-### PR.4 — compilation, search, picker, ACP/MCP 📝
+### PR.4 — compilation, search, picker, ACP/MCP ✅ (2026-08-21)
 
 - **compilation** — `:compile` defaults to the project root;
   `:recompile` reuses the root captured at run start, stored beside
@@ -149,8 +149,39 @@ job, and a real PTY in a unit test buys only flake.
   host.
 - **ACP / MCP** — `acp/supervisor.rs:786`, `mcp/install.rs:77`.
 
-May split if the diff gets unwieldy; each bullet is independently
-testable.
+**Two things this slice found.**
+
+*A fifth root notion.* `PickerContext.workspace_root` was
+`dirname(active file)` — the same answer `:terminal` had, in a field
+already named "workspace root". The file picker therefore listed only
+the directory you were in, which the source's own comment already
+called out as behaving "unintuitively for projects spread across many
+subdirectories". Fixed at `picker_workspace_root_path` so both picker
+sources inherit it, rather than each growing a resolver lookup.
+
+*A boot-ordering bug in PR.2.* The resolver was registered at
+`editor_boot.rs:1674`, AFTER the subsystem installs at 569–641 — while
+PR.2's own comment claimed it was "ahead of every subsystem install".
+Nothing caught it because every consumer so far looks the handle up
+lazily at action time, so the editor worked and the ordering was wrong
+only for a subsystem not yet written. Moved ahead of the installs and
+pinned by position, since the symptom (a `None` lookup that degrades
+silently) would otherwise appear far from the cause.
+
+`:recompile` reuses the directory captured at the last real run rather
+than re-resolving: by the time it fires the active buffer is
+`*compilation*`, which has no path, so re-resolving would rebuild the
+wrong project while looking like it worked. Stored beside
+`last_cmdline` in `RunState` — same lifetime, same owner.
+
+ACP and MCP take the **cwd-anchored** `root_from_cwd()` rather than a
+per-buffer root: both are process-scoped and established once, so there
+is no buffer to resolve from. One agent per checkout would be a
+different feature, not this line.
+
+*Tests:* 2 — `:recompile` reuses the first run's directory even when
+handed a different one (the `*compilation*`-is-pathless case), and the
+boot-order pin.
 
 ### PR.5 — magit delegates its cwd fallback 📝
 
@@ -196,7 +227,7 @@ dependency is visible.
 | PR.1 core resolver | ✅ |
 | PR.2 `ActionContext::project()` + retire `workspace_root_from_cwd` | ✅ |
 | PR.3 terminal | ✅ |
-| PR.4 compilation / search / picker / ACP | 📝 |
+| PR.4 compilation / search / picker / ACP | ✅ |
 | PR.5 magit cwd fallback | 📝 |
 | PR.6 WIT seam | 📝 |
 | PR.7 plugin | ⛔ own spec |

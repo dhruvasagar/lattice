@@ -240,3 +240,40 @@ fn terminals_from_different_checkouts_get_different_roots() {
     );
     cleanup(&base);
 }
+
+/// PR.4: the resolver must be registered BEFORE the subsystem installs
+/// that capture handles at install time.
+///
+/// It first landed after them, which nothing caught: every consumer so
+/// far looks the handle up lazily at action time, so the editor worked
+/// and the ordering was wrong only for a subsystem that had not been
+/// written yet. That is precisely the class of boot-order regression
+/// `boot_regression_pins` exists for — a `None` lookup that degrades
+/// silently instead of failing.
+///
+/// Pinned by position rather than by outcome because the outcome is
+/// invisible until a future subsystem captures at install time, and by
+/// then the cause is far from the symptom.
+#[test]
+fn the_resolver_is_registered_before_subsystem_installs() {
+    let src = include_str!("../src/editor_boot.rs");
+    let register = src
+        .find("boot.register_service::<lattice_core::ProjectResolverHandle>")
+        .expect("the resolver registration must exist");
+    for subsystem in [
+        "lattice_ai::install(&mut boot)",
+        "lattice_terminal::install(&mut boot)",
+        "lattice_compilation::install(&mut boot)",
+        "lattice_multibuffer::install(&mut boot)",
+        "lattice_magit::install(&mut boot)",
+    ] {
+        let at = src
+            .find(subsystem)
+            .unwrap_or_else(|| panic!("{subsystem} should be in editor_boot"));
+        assert!(
+            register < at,
+            "the project resolver must be registered before `{subsystem}`, \
+             or a subsystem capturing the handle at install time gets None"
+        );
+    }
+}

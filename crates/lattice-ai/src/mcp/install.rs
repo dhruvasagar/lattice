@@ -74,8 +74,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 /// shape — adding/owning this is the crate's concern, not `editor_boot`'s.
 fn default_config() -> ServerConfig {
     ServerConfig {
-        workspace_folders: std::env::current_dir()
-            .ok()
+        // PR.4: the project root, so claude's IDE peer sees the whole
+        // workspace rather than whichever directory the editor started
+        // in. Process-scoped like the ACP session above, hence the
+        // cwd-anchored form.
+        workspace_folders: lattice_core::project::root_from_cwd()
             .map(|p| vec![p.display().to_string()])
             .unwrap_or_default(),
         lock_dir: lockfile::default_lock_dir().unwrap_or_else(std::env::temp_dir),

@@ -88,6 +88,18 @@ const READER_BATCH_LINES: usize = 1;
 #[derive(Default)]
 struct RunState {
     last_cmdline: Option<String>,
+    /// PR.4: the directory the last run was launched in, so
+    /// `:recompile` repeats it.
+    ///
+    /// Captured here rather than re-derived because by the time
+    /// `:recompile` fires, the active buffer is `*compilation*` itself —
+    /// which has no path, so re-resolving would silently fall back to
+    /// the working directory and rebuild the wrong project. "Do that
+    /// again" has to mean where, not just what.
+    ///
+    /// Lives beside `last_cmdline` for the same reason it does: this
+    /// state's lifetime is the service's, not the editor's.
+    last_cwd: Option<PathBuf>,
     child: Option<Child>,
 }
 
@@ -172,10 +184,10 @@ impl DefaultCompilationService {
 
 impl CompilationService for DefaultCompilationService {
     fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>) {
-        // Resolve the cmdline, record it for `:recompile`, and kill
-        // any prior child — all under one lock so a rapid
-        // recompile can't race two live children.
-        let cmd = {
+        // Resolve the cmdline AND the directory, record both for
+        // `:recompile`, and kill any prior child — all under one lock so
+        // a rapid recompile can't race two live children.
+        let (cmd, cwd) = {
             let mut st = match self.state.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
@@ -186,10 +198,18 @@ impl CompilationService for DefaultCompilationService {
             let resolved = match cmdline {
                 Some(s) if !s.trim().is_empty() => {
                     st.last_cmdline = Some(s.clone());
-                    s
+                    // A fresh `:compile` re-binds the directory too: the
+                    // caller resolved it from the buffer the command
+                    // fired in, which is the answer we want to repeat.
+                    st.last_cwd = cwd.clone();
+                    (s, cwd)
                 }
+                // `:recompile` / bare `:make`. The caller's `cwd` is
+                // discarded on purpose — it was resolved from whatever
+                // is active NOW, and after the first run that is the
+                // pathless `*compilation*` buffer.
                 _ => match st.last_cmdline.clone() {
-                    Some(prev) => prev,
+                    Some(prev) => (prev, st.last_cwd.clone()),
                     None => {
                         drop(st);
                         self.publish(OutputChunk::Reset {
@@ -822,6 +842,80 @@ mod tests {
                 .any(|e| e.path == std::path::PathBuf::from("src/a.rs")),
             "built-in parsing is unaffected by the factory seam: {entries:?}"
         );
+    }
+
+    /// PR.4: `:recompile` repeats WHERE, not just what.
+    ///
+    /// By the time it fires, the active buffer is `*compilation*`,
+    /// which has no path — so the host resolves a project root from it
+    /// and gets the working directory. If the service took that value,
+    /// a recompile would rebuild the wrong project while looking like
+    /// it worked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recompile_reuses_the_directory_of_the_last_real_run() {
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-recompile-cwd-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+
+        let bus = Arc::new(EventBus::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
+        bus.subscribe_typed::<CompilationOutputPushed>(tx);
+        let (qf_bus, _drain, _latest) = qf_capture();
+        let svc =
+            DefaultCompilationService::new(bus.clone(), tokio::runtime::Handle::current(), qf_bus);
+
+        let collect = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<CompilationOutputPushed>| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut text = String::new();
+            let mut saw_finish = false;
+            while std::time::Instant::now() < deadline && !saw_finish {
+                match rx.try_recv() {
+                    Ok(ev) => match ev.chunk {
+                        OutputChunk::Append { text: t, .. } => text.push_str(&t),
+                        OutputChunk::Finished { .. } => saw_finish = true,
+                        OutputChunk::Reset { .. } => {}
+                    },
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            text
+        };
+
+        // A real run, in `dir`.
+        svc.run(Some("pwd".to_string()), Some(canonical.clone()));
+        let first = tokio::task::spawn_blocking({
+            let mut rx = rx;
+            move || {
+                let t = collect(&mut rx);
+                (t, rx)
+            }
+        })
+        .await
+        .unwrap();
+        let (first_text, mut rx) = first;
+        assert!(
+            first_text.contains(&canonical.display().to_string()),
+            "the first run should be in {canonical:?}, got {first_text:?}"
+        );
+
+        // `:recompile` — no cmdline, and a DIFFERENT cwd, standing in for
+        // the pathless `*compilation*` buffer resolving to somewhere else.
+        svc.run(None, Some(std::env::temp_dir()));
+        let second = tokio::task::spawn_blocking(move || collect(&mut rx))
+            .await
+            .unwrap();
+        assert!(
+            second.contains(&canonical.display().to_string()),
+            "recompile must reuse the first run's directory, got {second:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

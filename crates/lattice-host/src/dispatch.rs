@@ -9141,11 +9141,12 @@ impl Editor {
                             lattice_multibuffer::providers::search::SearchContextSize,
                         >(self.active_pane_buffer_id());
                         let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
-                        let root = self
-                            .current_dir
-                            .clone()
-                            .or_else(|| std::env::current_dir().ok())
-                            .unwrap_or_else(|| std::path::PathBuf::from("."));
+                        // PR.4: scan the project, not the working
+                        // directory. `:search` from a file in another
+                        // checkout searches THAT checkout — which is the
+                        // point of resolving per buffer rather than
+                        // holding one editor-wide root.
+                        let root = self.active_buffer_project().root;
                         let options =
                             lattice_multibuffer::providers::search::ProjectSearchOptions {
                                 root,
@@ -9194,7 +9195,16 @@ impl Editor {
             // + process lifecycle; the host arm is generic glue
             // (ensure buffer → activate → repaint → echo).
             AppEffect::CompileRun { cmdline } => {
-                let cwd = self.current_dir.clone();
+                // PR.4: the project root, resolved from the buffer the
+                // command fired in — read BEFORE `start_compilation`,
+                // which activates `*compilation*` and would otherwise
+                // move what "active buffer" means out from under this.
+                //
+                // `:recompile` passes `cmdline: None` and the service
+                // discards this value in favour of the one it captured
+                // at the last real run: by then the active buffer IS
+                // `*compilation*`, which has no path.
+                let cwd = Some(self.active_buffer_project().root);
                 // Compilation owns provisioning its buffer: `start_compilation`
                 // creates + activates `*compilation*` through the `&mut`-backed
                 // `ModeActivator::ensure_named_document` seam (establishing the
@@ -12737,22 +12747,30 @@ impl Editor {
         }
     }
 
-    /// Best-effort workspace root for picker sources. Active
-    /// document's parent if it has one; current working directory
-    /// otherwise; `.` if cwd resolution fails. Returned owned so
-    /// the context's `workspace_root` field has a stable home
-    /// regardless of fallback. Phase 5.8.AA.s: hoisted from TUI
-    /// App so both peers reach the picker through the same code.
+    /// The project root picker sources scan from.
+    ///
+    /// PR.4: this was the active document's *parent directory* — a
+    /// fifth independent root notion, and the same
+    /// `dirname(active file)` answer `:terminal` had. It meant the file
+    /// finder listed only the directory you happened to be in, which
+    /// the source's own comment already called out as behaving
+    /// "unintuitively for projects spread across many subdirectories".
+    ///
+    /// Resolved from the snapshot's path (not the active buffer) because
+    /// the caller may be building a context for a buffer other than the
+    /// focused one; a pathless snapshot falls through to the resolver's
+    /// working directory.
     pub fn picker_workspace_root_path(
         &self,
         snap: &lattice_runtime::DocumentSnapshot,
     ) -> std::path::PathBuf {
-        if let Some(arc) = snap.path.as_ref()
-            && let Some(parent) = arc.parent()
-        {
-            return parent.to_path_buf();
+        let Some(resolver) = self.services.get::<lattice_core::ProjectResolverHandle>() else {
+            return std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        };
+        match snap.path.as_ref() {
+            Some(arc) => resolver.for_path(arc.as_ref()).root,
+            None => resolver.for_path(std::path::Path::new("")).root,
         }
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     }
 
     /// Build the snapshot the picker primitive hands to source

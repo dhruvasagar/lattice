@@ -783,7 +783,15 @@ async fn start_provider(
         auto_accept,
     ));
 
-    let cwd = std::env::current_dir()
+    // PR.4: root the agent session at the PROJECT, not the directory the
+    // editor was launched from. An agent handed `crates/lattice-host`
+    // cannot see the rest of the workspace.
+    //
+    // The cwd-anchored form, deliberately: an ACP session is
+    // process-scoped and established once, so there is no buffer to
+    // resolve from and no `:cd` to honour. Per-session-per-project would
+    // be a different feature (one agent per checkout), not this line.
+    let cwd = lattice_core::project::root_from_cwd()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
     let session_id = crate::acp::session::handshake(&conn, &cwd).await?;

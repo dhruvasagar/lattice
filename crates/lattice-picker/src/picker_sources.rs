@@ -462,7 +462,7 @@ impl PickerSourceGenerator for FilesSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
         // Default to the process's current working directory
         // (recursive). This matches what users typically
         // expect from `:files` -- the same root `:e` paths
@@ -471,10 +471,12 @@ impl PickerSourceGenerator for FilesSource {
         // unintuitively for projects spread across many
         // subdirectories. Users who want a different root
         // pass it explicitly: `:picker files <path>`.
+        // PR.4: the project root the host resolved, not the process
+        // working directory. An explicit `:picker files <path>` still
+        // wins — it is the user saying "not that project, this one".
         let root: std::path::PathBuf = match args.first() {
             Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => std::env::current_dir()
-                .map_err(|e| format!("files: failed to read current directory: {e}"))?,
+            _ => ctx.workspace_root.clone(),
         };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = walk_files_for_picker(&canonical_root);
@@ -601,12 +603,12 @@ impl PickerSourceGenerator for FilePickSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // PR.4: as above — the resolved project root, with an explicit
+        // argument still winning.
         let root: std::path::PathBuf = match args.first() {
             Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => std::env::current_dir().map_err(|e| {
-                format!("{FILE_PICK_SOURCE}: failed to read current directory: {e}")
-            })?,
+            _ => ctx.workspace_root.clone(),
         };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let entries = walk_files_for_picker(&canonical_root);

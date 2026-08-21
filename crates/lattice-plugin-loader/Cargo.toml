@@ -29,6 +29,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+# PM.6: `Prebuilt{url}` source downloads.
+ureq = { workspace = true }
 # The Phase-7 runtime: the wasmtime engine, the WIT API, the capability/fuel/
 # crash model, and every extension seam. PL8.A drives its lifecycle spine
 # (`compile` / `instantiate_plugin` / `activate`); PL8.B spawns its seam actors.

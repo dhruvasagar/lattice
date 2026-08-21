@@ -68,6 +68,7 @@ pub mod build;
 pub mod discovery;
 mod ex_commands;
 pub mod install;
+pub mod resolve;
 pub mod watch;
 
 pub use build::{
@@ -79,6 +80,9 @@ pub use discovery::{
     discover_one,
 };
 pub use install::{disable_autoload, install};
+pub use resolve::{
+    Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
+};
 
 use std::sync::{Arc, Mutex};
 

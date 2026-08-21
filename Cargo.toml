@@ -137,6 +137,13 @@ globset = "0.4"
 # (no `max-pure` / `max-performance` toggles — the simple
 # defaults are fast enough for magit workloads).
 gix = "0.86"
+# PM.6: HTTP for `Prebuilt{url}` plugin sources — download a ready-built
+# `.wasm` component with no toolchain. Blocking + rustls (no OpenSSL, no
+# system TLS): the resolver already runs on `spawn_blocking`, so an async
+# client would buy nothing and cost a runtime. rustls is already in the
+# lock file transitively, so this widens the dep graph less than the
+# version number suggests.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 # 5.8.AF.5 Slice 2: `.gitignore` / `.ignore` aware matching for
 # the LSP file-watcher's source-side filter. Built by ripgrep's

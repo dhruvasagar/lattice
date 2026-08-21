@@ -97,6 +97,13 @@ lattice-cells = { path = "../lattice-cells" }
 # TC.4: the `theme` seam registers plugin elements into the SAME registry
 # builtins use, so the host names the registry + `StyleSpec` directly.
 lattice-theme = { path = "../lattice-theme" }
+# CM.6b: the `error-parser` seam's native side. `WasmErrorParser` implements
+# `lattice_compilation::CompilationParser` and `WasmErrorParserFactory`
+# implements `CompilationParserFactory`, so a plugin parser is
+# indistinguishable from a native one downstream. Same shape as the picker /
+# completion / theme edges above: the host names the native registry crate its
+# seam contributes into (a foreign-type impl would otherwise be illegal here).
+lattice-compilation = { path = "../lattice-compilation" }
 tree-sitter = { workspace = true }
 # TS.2: tree-sitter 0.24's `QueryMatches` is a `StreamingIterator` (borrows the
 # cursor per step) — needed to iterate `run-query` matches host-side.

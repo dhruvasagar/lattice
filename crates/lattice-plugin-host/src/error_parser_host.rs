@@ -100,6 +100,12 @@ impl WasmErrorParser {
         }
     }
 
+    /// The plugin this parser came from — for logs and for
+    /// [`WasmErrorParserFactory`]'s provenance.
+    pub fn plugin(&self) -> &str {
+        &self.plugin
+    }
+
     fn poison(&mut self, func: &str, error: &wasmtime::Error) {
         self.poisoned = true;
         tracing::warn!(
@@ -108,6 +114,102 @@ impl WasmErrorParser {
             error = %error,
             "error-parser plugin trapped; it will contribute nothing further this session"
         );
+    }
+}
+
+/// CM.6b: a plugin parser IS a [`CompilationParser`] — the compilation
+/// crate's registry, its dedup, and its ordering treat it exactly like a
+/// native one, which is the whole point of mirroring the native trait in
+/// the WIT world.
+///
+/// [`WasmErrorParser::reset`] has no counterpart here because the factory
+/// below mints a fresh instance per run: there is never pending state to
+/// drop. `reset` stays on the inherent impl because it is part of the WIT
+/// world's contract (a future host that pools instances needs it) and the
+/// `error_parser` host test drives it.
+impl lattice_compilation::CompilationParser for WasmErrorParser {
+    fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
+        WasmErrorParser::feed(self, line)
+    }
+}
+
+/// CM.6b: mints a [`WasmErrorParser`] per compilation pipe reader.
+///
+/// Holds everything `spawn_error_parser` needs, so a reader can ask for an
+/// instance long after load. `Component` is `Arc`-backed, so cloning it per
+/// run is a refcount bump, not a recompile — the expensive Cranelift work
+/// happened once at load.
+///
+/// Why a factory at all: see
+/// [`lattice_compilation::CompilationParserFactory`]. The short version is
+/// that a `Store` cannot be shared across the two reader threads.
+pub struct WasmErrorParserFactory {
+    host: std::sync::Arc<PluginHost>,
+    component: Component,
+    manifest: PluginManifest,
+    tier: TrustTier,
+    budget: PluginBudget,
+    /// Host-issued plugin id — teardown removes this plugin's factories by
+    /// it (provenance IS the token).
+    plugin_id: u64,
+}
+
+impl std::fmt::Debug for WasmErrorParserFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmErrorParserFactory")
+            .field("plugin", &self.manifest.id)
+            .field("plugin_id", &self.plugin_id)
+            .finish()
+    }
+}
+
+impl WasmErrorParserFactory {
+    /// Bundle a compiled `error-parser` component with what it takes to
+    /// instantiate one.
+    pub fn new(
+        host: std::sync::Arc<PluginHost>,
+        component: Component,
+        manifest: PluginManifest,
+        tier: TrustTier,
+        budget: PluginBudget,
+        plugin_id: u64,
+    ) -> Self {
+        Self {
+            host,
+            component,
+            manifest,
+            tier,
+            budget,
+            plugin_id,
+        }
+    }
+}
+
+impl lattice_compilation::CompilationParserFactory for WasmErrorParserFactory {
+    fn plugin_id(&self) -> u64 {
+        self.plugin_id
+    }
+
+    fn create(&self) -> Option<Box<dyn lattice_compilation::CompilationParser>> {
+        match self
+            .host
+            .spawn_error_parser(&self.component, &self.manifest, self.tier, self.budget)
+        {
+            Ok(parser) => Some(Box::new(parser)),
+            Err(e) => {
+                // A build must never fail because a plugin would not
+                // instantiate. `warn!` and not `info!`/`error!`: it is
+                // once per reader per run, user-actionable, and the run
+                // itself is unharmed.
+                tracing::warn!(
+                    plugin = %self.manifest.id,
+                    error = %e,
+                    "error-parser plugin failed to instantiate; \
+                     this compilation runs without it"
+                );
+                None
+            }
+        }
     }
 }
 

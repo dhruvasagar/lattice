@@ -148,3 +148,55 @@ fn two_parsers_do_not_share_pending_state() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].message, "belongs to a");
 }
+
+/// CM.6b — the factory, over the same real guest.
+///
+/// One compiled component, two parsers, from the two calls a compilation
+/// run's stdout and stderr readers make. This is the assertion the factory
+/// shape exists for; `two_parsers_do_not_share_pending_state` above proves
+/// the same property for two separately *spawned* parsers, and this proves
+/// the factory does not quietly hand back the same one twice.
+#[test]
+fn a_factory_mints_independent_parsers_from_one_component() {
+    use lattice_compilation::{CompilationParser, CompilationParserFactory};
+
+    let dir = TempDir::new().unwrap();
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+    let host = std::sync::Arc::new(
+        PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+            .expect("host builds"),
+    );
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile error-parser fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+    let factory = lattice_plugin_host::error_parser_host::WasmErrorParserFactory::new(
+        host,
+        component,
+        manifest,
+        TrustTier::Bundled,
+        PluginBudget::grammar(),
+        7,
+    );
+
+    assert_eq!(factory.plugin_id(), 7, "provenance is the teardown token");
+
+    let mut out_side: Box<dyn CompilationParser> =
+        factory.create().expect("stdout reader's parser");
+    let mut err_side: Box<dyn CompilationParser> =
+        factory.create().expect("stderr reader's parser");
+
+    // The stdout reader primes a diagnostic; the stderr reader must not be
+    // able to complete it.
+    out_side.feed("ERR on stdout");
+    assert!(
+        err_side.feed("  at stderr.q:1:1").is_empty(),
+        "the two readers' parsers share a Store"
+    );
+    let entries = out_side.feed("  at stdout.q:2:2");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].message, "on stdout");
+}

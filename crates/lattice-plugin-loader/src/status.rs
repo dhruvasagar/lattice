@@ -13,6 +13,8 @@
 
 use lattice_plugin_host::{Capability, TrustTier};
 
+use crate::source_record::SourceRecord;
+
 /// A loaded plugin's health — the quarantine/reload surface the manager view
 /// shows. A component trap taints its instance irrecoverably (wasmtime offers no
 /// rollback), so the instance is dead-until-reload; [`Event::PluginCrashed`]
@@ -58,4 +60,38 @@ pub struct PluginStatus {
     pub denied: Vec<Capability>,
     /// Whether the plugin is running or quarantined after a crash.
     pub health: PluginHealth,
+    /// PM.8a: where the plugin came from, read from its on-disk `.source`
+    /// marker. Persisted rather than remembered, so it is still right on the
+    /// boot *after* the one that installed it.
+    pub source: SourceRecord,
+    /// PM.8a: whether the cached artifact matches its source.
+    pub build: BuildState,
+}
+
+/// PM.8a: how current a plugin's built artifact is.
+///
+/// Answered from the `.build-stamp` PM.5 writes, so it survives a restart
+/// like the source does. Only meaningful for a buildable source — there is no
+/// such thing as a stale prebuilt or a stale bundled plugin, which is why
+/// [`BuildState::NotBuilt`] exists rather than reporting those as `Cached`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildState {
+    /// Nothing the editor builds: bundled, prebuilt, or an unknown source.
+    NotBuilt,
+    /// The artifact was built from the source as it stands.
+    Cached,
+    /// The source has changed since the artifact was built. The plugin is
+    /// running old code until the next build.
+    Stale,
+}
+
+impl BuildState {
+    /// The view's BUILD cell.
+    pub fn label(&self) -> &'static str {
+        match self {
+            BuildState::NotBuilt => "—",
+            BuildState::Cached => "cached",
+            BuildState::Stale => "stale",
+        }
+    }
 }

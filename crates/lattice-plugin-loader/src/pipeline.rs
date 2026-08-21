@@ -127,6 +127,11 @@ pub fn install_required(
         // A prebuilt is already the artifact — no toolchain is consulted at
         // all, which is the point of the kind.
         Resolved::Artifact(artifact) => {
+            // PM.8a: remember where it came from, so the view can say so and
+            // a later re-download knows the URL.
+            if let Some(dir) = artifact.parent() {
+                crate::source_record::write(dir, &spec.source);
+            }
             return Install::Ready {
                 name: spec.name.clone(),
                 artifact,
@@ -137,7 +142,16 @@ pub fn install_required(
         Resolved::Source(dir) => dir,
     };
 
-    match build_plugin(builder, &source_dir, &spec.name, user_root, spec.pinned) {
+    let outcome = build_plugin(builder, &source_dir, &spec.name, user_root, spec.pinned);
+    // PM.8a: the marker goes beside the artifact whenever there IS one —
+    // including the stale-kept case, where knowing the source is exactly what
+    // lets the user retry the build that failed.
+    if let Some(artifact) = outcome.artifact()
+        && let Some(dir) = artifact.parent()
+    {
+        crate::source_record::write(dir, &spec.source);
+    }
+    match outcome {
         BuildOutcome::Cached { artifact } | BuildOutcome::Fresh { artifact } => Install::Ready {
             name: spec.name.clone(),
             artifact,

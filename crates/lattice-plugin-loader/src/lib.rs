@@ -70,6 +70,7 @@ mod ex_commands;
 pub mod install;
 pub mod pipeline;
 pub mod resolve;
+pub mod source_record;
 pub mod watch;
 
 pub use build::{
@@ -85,6 +86,7 @@ pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_requ
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
 };
+pub use source_record::SourceRecord;
 
 use std::sync::{Arc, Mutex};
 
@@ -109,7 +111,7 @@ use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
 mod status;
-pub use status::{PluginHealth, PluginStatus};
+pub use status::{BuildState, PluginHealth, PluginStatus};
 
 /// The service handle other layers reach the loader through — the ex-command
 /// surface (PL8.C), the plugin-manager view (PL8.H). Per the `ServiceRegistry`
@@ -160,6 +162,49 @@ struct LoadedRecord {
     /// ([`PluginLoader::subscribe_mode_gates`]) can map a changed `<id>.enabled`
     /// back to the mode to (de)activate. `None` ⇒ no default mode.
     default_mode: Option<String>,
+    /// PM.8a: where the plugin came from (its `.source` marker at load time).
+    source: crate::source_record::SourceRecord,
+}
+
+/// PM.8a: is this plugin's artifact current with its source?
+///
+/// Recomputed from disk per snapshot rather than cached at load, because the
+/// interesting transition happens *while the editor runs* — a user edits a
+/// local plugin's source and wants the view to say `stale` without a restart.
+/// It is two small file reads per row, on the `:plugins` refresh path, not a
+/// per-frame cost.
+fn build_state_of(record: &LoadedRecord) -> BuildState {
+    let Some(source) = record.source.as_plugin_source() else {
+        return BuildState::NotBuilt;
+    };
+    if matches!(source, crate::resolve::PluginSource::Prebuilt { .. }) {
+        // A prebuilt is downloaded, never built, so it has no staleness.
+        return BuildState::NotBuilt;
+    }
+    let Some(dir) = record.source_dir.as_ref() else {
+        return BuildState::NotBuilt;
+    };
+    // The stamp records what the artifact was built from; the source is what
+    // it stands at now. PM.5 owns both halves of that comparison.
+    let stamp_path = dir.join(".build-stamp");
+    let Ok(stamped) = std::fs::read_to_string(&stamp_path) else {
+        // No stamp: the artifact was placed by hand or by a lattice predating
+        // PM.5. Nothing to compare against, so nothing to claim.
+        return BuildState::NotBuilt;
+    };
+    let build_dir = match &source {
+        crate::resolve::PluginSource::Local(p) => p.clone(),
+        // A git plugin builds out of its source-cache checkout.
+        _ => crate::default_source_cache_dir().join(&record.name),
+    };
+    if !build_dir.is_dir() {
+        return BuildState::NotBuilt;
+    }
+    if stamped.trim() == crate::build::source_stamp(&build_dir) {
+        BuildState::Cached
+    } else {
+        BuildState::Stale
+    }
 }
 
 /// The editor-side runtime environment the loader drives seams against —
@@ -490,6 +535,7 @@ impl PluginLoader {
             denied,
             health: PluginHealth::Healthy,
             default_mode: manifest.default_mode.clone(),
+            source: plugin.source.clone(),
         };
         let mut loaded_id: Option<PluginId> = None;
 
@@ -682,6 +728,8 @@ impl PluginLoader {
                 granted: r.granted.clone(),
                 denied: r.denied.clone(),
                 health: r.health.clone(),
+                source: r.source.clone(),
+                build: build_state_of(r),
             })
             .collect();
         // Stable, name-sorted order (not raw load order). The `:plugins` view keys

@@ -91,17 +91,30 @@ pub fn render_status(plugins: &[PluginStatus]) -> String {
         .chain(std::iter::once("TIER".len()))
         .max()
         .unwrap_or(7);
+    // PM.8a: SOURCE + BUILD. They sit between TIER and CAPABILITIES rather
+    // than at the end because CAPABILITIES is the one variable-length cell
+    // (it trails a `(denied: …)` note), so anything after it would not line
+    // up down the table.
+    let source_w = plugins
+        .iter()
+        .map(|p| p.source.label().len())
+        .chain(std::iter::once("SOURCE".len()))
+        .max()
+        .unwrap_or(6);
+    let build_w = "build-failed".len();
 
     out.push_str(&format!(
-        "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  CAPABILITIES\n",
-        "NAME", "HEALTH", "TIER",
+        "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  {:<source_w$}  {:<build_w$}  CAPABILITIES\n",
+        "NAME", "HEALTH", "TIER", "SOURCE", "BUILD",
     ));
     for p in plugins {
         out.push_str(&format!(
-            "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  {}{}\n",
+            "  {:<name_w$}  {:<health_w$}  {:<tier_w$}  {:<source_w$}  {:<build_w$}  {}{}\n",
             p.name,
             health_label(&p.health),
             tier_label(p.tier),
+            p.source.label(),
+            p.build.label(),
             caps_cell(&p.granted, &p.denied),
             crash_suffix(&p.health),
         ));
@@ -113,6 +126,7 @@ pub fn render_status(plugins: &[PluginStatus]) -> String {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use lattice_plugin_loader::{BuildState, SourceRecord};
 
     fn status(name: &str, tier: TrustTier, health: PluginHealth) -> PluginStatus {
         PluginStatus {
@@ -122,7 +136,70 @@ mod tests {
             granted: vec![],
             denied: vec![],
             health,
+            source: SourceRecord::Unknown,
+            build: BuildState::NotBuilt,
         }
+    }
+
+    /// A row with a known source + build state, for the PM.8a column tests.
+    fn sourced(name: &str, source: SourceRecord, build: BuildState) -> PluginStatus {
+        PluginStatus {
+            source,
+            build,
+            ..status(name, TrustTier::UserInstalled, PluginHealth::Healthy)
+        }
+    }
+
+    #[test]
+    fn the_source_and_build_columns_render_their_labels() {
+        let out = render_status(&[
+            sourced(
+                "from-git",
+                SourceRecord::Git {
+                    url: "https://example.invalid/p.git".into(),
+                    rev: Some("abc1234def".into()),
+                },
+                BuildState::Stale,
+            ),
+            sourced("shipped", SourceRecord::Bundled, BuildState::NotBuilt),
+        ]);
+        assert!(out.contains("SOURCE"), "the header names the column: {out}");
+        assert!(out.contains("BUILD"));
+        assert!(out.contains("git@abc1234"), "short rev in the cell: {out}");
+        assert!(out.contains("stale"));
+        assert!(out.contains("bundled"));
+    }
+
+    #[test]
+    fn an_unknown_source_renders_a_dash_not_a_blank() {
+        // A blank cell reads as a rendering bug; an em dash reads as "we do
+        // not know", which is the truth for a hand-installed plugin.
+        let out = render_status(&[sourced(
+            "hand-installed",
+            SourceRecord::Unknown,
+            BuildState::NotBuilt,
+        )]);
+        let row = out
+            .lines()
+            .find(|l| l.contains("hand-installed"))
+            .expect("row present");
+        assert!(row.contains('—'), "got: {row:?}");
+    }
+
+    #[test]
+    fn capabilities_stay_last_so_the_table_stays_aligned() {
+        // CAPABILITIES is the only variable-length cell (it trails a
+        // `(denied: …)` note), so a column added after it would not line up.
+        let out = render_status(&[sourced(
+            "p",
+            SourceRecord::Local("/x".into()),
+            BuildState::Cached,
+        )]);
+        let header = out.lines().nth(2).expect("column header");
+        let src_at = header.find("SOURCE").expect("SOURCE present");
+        let build_at = header.find("BUILD").expect("BUILD present");
+        let caps_at = header.find("CAPABILITIES").expect("CAPABILITIES present");
+        assert!(src_at < build_at && build_at < caps_at, "got: {header:?}");
     }
 
     #[test]

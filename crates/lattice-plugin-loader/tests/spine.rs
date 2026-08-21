@@ -36,6 +36,7 @@ fn manifest(id: &str) -> PluginManifest {
 /// scan) so the spine proof drives the load path directly.
 fn discovered(bytes: Vec<u8>, manifest: PluginManifest) -> DiscoveredPlugin {
     DiscoveredPlugin {
+        source: lattice_plugin_loader::SourceRecord::Unknown,
         manifest,
         component_bytes: bytes,
         dir: std::path::PathBuf::from("<in-memory>"),

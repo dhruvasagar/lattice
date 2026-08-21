@@ -79,6 +79,13 @@ fn build_core_plugins() -> Result<(), String> {
             .map_err(|e| format!("stage component: {e}"))?;
         std::fs::copy(plugin_dir.join("plugin.toml"), dest.join("plugin.toml"))
             .map_err(|e| format!("stage plugin.toml: {e}"))?;
+        // PM.8a: mark it bundled. The `:plugins` SOURCE column reads this
+        // marker like it reads a required plugin's, so a core plugin says
+        // `bundled` rather than `—`; and `is_buildable() == false` is what
+        // stops the rebuild chord offering to build something the editor
+        // ships prebuilt and cannot rebuild from here.
+        std::fs::write(dest.join(".source"), "kind = bundled\n")
+            .map_err(|e| format!("stage source marker: {e}"))?;
         println!("  staged → {}", dest.display());
     }
 

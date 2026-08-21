@@ -29,6 +29,11 @@ pub struct DiscoveredPlugin {
     pub manifest: PluginManifest,
     pub component_bytes: Vec<u8>,
     pub dir: PathBuf,
+    /// PM.8a: where this plugin came from, read from its `.source` marker.
+    /// [`SourceRecord::Unknown`] for a hand-installed plugin or one staged by
+    /// a lattice predating the marker — the honest answer, rather than
+    /// guessing `Local` and putting a wrong path in the view.
+    pub source: crate::source_record::SourceRecord,
 }
 
 /// The default plugins directory: `~/.config/lattice/plugins/` on Linux AND
@@ -189,6 +194,7 @@ fn load_one(plugin_dir: &Path) -> Result<Option<DiscoveredPlugin>, String> {
         manifest,
         component_bytes,
         dir: plugin_dir.to_path_buf(),
+        source: crate::source_record::read(plugin_dir),
     }))
 }
 

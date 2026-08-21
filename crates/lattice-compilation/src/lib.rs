@@ -24,6 +24,7 @@
 //! - [`ex_commands`] — `:compile` / `:recompile` / `:make`.
 //! - [`install`] — the crate-owned `SubsystemBoot` entry point.
 
+mod ansi;
 mod events;
 mod ex_commands;
 mod headerline;
@@ -32,6 +33,7 @@ mod parser;
 mod parsers;
 mod service;
 
+pub use ansi::{AnsiPalette, CleanLine, SgrState, clean_line};
 pub use events::{CompilationOutputPushed, OutputChunk};
 pub use ex_commands::register_compilation_ex_commands;
 pub use headerline::{
@@ -79,6 +81,20 @@ pub type CompilationLocationBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, u32,
 /// resolved `(bg, fg)` once during activation; the handler maps to
 /// [`AppEffect::CompilationThemeColors`].
 pub type CompilationThemeColorsBusHandle = Arc<InboundBus<(u32, u32)>>;
+
+/// CM.5: write-once slot holding the interned `compilation.ansi.*`
+/// element ids the pipe readers paint captured SGR with.
+///
+/// Registered empty by [`install`] and filled by
+/// [`CompilationMode`]'s `on_activate`. The split exists because the
+/// two halves are available at different times: the service is built
+/// during Phase-B boot, and a `ThemeRegistry` is not registered until
+/// well after that, whereas mode activation happens long after boot
+/// with the full registry in hand.
+///
+/// An unfilled slot is not a failure mode — output still streams and
+/// is still escape-stripped, just uncoloured.
+pub type CompilationAnsiSlot = Arc<std::sync::OnceLock<AnsiPalette>>;
 
 /// CM.3c: map the parser-native [`ErrorSeverity`] onto the renderer-
 /// facing [`GutterSeverityLevel`] (`Error→Error`, `Warning→Warning`,
@@ -210,11 +226,28 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     });
     boot.register_service::<CompilationThemeColorsBusHandle>(Arc::new(theme_colors_bus));
 
-    let svc: CompilationServiceHandle = Arc::new(DefaultCompilationService::new(
-        boot.event_bus().clone(),
-        boot.runtime_handle().clone(),
-        qf_bus,
-    ));
+    // CM.5: the slot the interned `compilation.ansi.*` element ids
+    // land in.
+    //
+    // It is a slot rather than a value because of boot ordering: this
+    // `install` runs in Phase B, well before the host registers
+    // `ThemeRegistryHandle`, so resolving the palette here would
+    // silently yield `None` forever — a build that compiles clean and
+    // never colours anything. `CompilationMode::on_activate` fills it
+    // instead, which is where a theme registry is reachable (the
+    // headerline colours are already resolved there) and which
+    // `start_compilation` guarantees runs before the first run.
+    let ansi_slot: CompilationAnsiSlot = Arc::new(std::sync::OnceLock::new());
+    boot.register_service::<CompilationAnsiSlot>(ansi_slot.clone());
+
+    let svc: CompilationServiceHandle = Arc::new(
+        DefaultCompilationService::new(
+            boot.event_bus().clone(),
+            boot.runtime_handle().clone(),
+            qf_bus,
+        )
+        .with_ansi_slot(ansi_slot),
+    );
     boot.register_service::<CompilationServiceHandle>(svc);
 
     // Streamed output arrives off-keystroke; wake the editor so the

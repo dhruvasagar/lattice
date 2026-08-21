@@ -109,6 +109,31 @@ Lines that don't contain a location (progress bars, summaries,
 backtraces) stream into the buffer untouched — only recognised
 locations become error-list entries.
 
+### Coloured output
+
+Most tools turn their colours off when their output is captured rather
+than shown in a terminal, so a typical build arrives plain. When a tool
+insists on colour anyway — `cargo build --color=always`, `CLICOLOR_FORCE=1`,
+`ls --color=always` — Lattice reads it and paints the buffer to match,
+rather than showing you the raw escape codes.
+
+Progress lines that redraw themselves in place (`Building [===>  ] 41/1000`)
+show their final state, not every frame concatenated together.
+
+The colours are themeable like everything else: they resolve through
+seventeen theme elements named `compilation.ansi.red`,
+`compilation.ansi.bright-blue`, `compilation.ansi.bold` and so on. If a
+tool's idea of "red" is hard to read against your background, retune
+that element rather than turning colour off:
+
+```
+:set ui.compilation.ansi.red=#d20f39
+```
+
+Bold text that also carries a colour is shown in that colour's bright
+variant, which is what terminals do — it's why `cargo`'s bold-red
+`error:` reads as bright red here.
+
 ---
 
 ## Jumping to errors

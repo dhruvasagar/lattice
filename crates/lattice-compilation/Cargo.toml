@@ -52,5 +52,13 @@ harness = false
 name = "compilation_parse"
 harness = false
 
+# CM.5: escape stripping + span construction runs ahead of the parsers
+# on every captured line, in the pipe reader's thread. Benched in three
+# shapes because the uncoloured case is the one nearly every real build
+# takes and it must stay close to free.
+[[bench]]
+name = "compilation_ansi"
+harness = false
+
 [lints]
 workspace = true

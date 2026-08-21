@@ -296,6 +296,88 @@ Read-only, `NoFile`; `:q` never warns unsaved, `:w` is a no-op (mode
   event-bus → tick-drain; the build runs as an isolated task with
   kill-on-recompile lifecycle.
 
+## 8b. ANSI escapes in captured output (CM.5)
+
+Captured stdout/stderr is a pipe, and a pipe is not a tty, so cargo,
+rustc and most well-behaved tools turn colour off by themselves. That
+makes escape handling look optional. It is not — it is a **correctness**
+requirement, and the display half is the smaller half.
+
+The moment anything forces colour on — `cargo build --color=always`,
+`CLICOLOR_FORCE=1`, `ls --color=always`, or any tool that probes `TERM`
+instead of isatty — raw `ESC[…m` bytes arrive in the stream. They land
+in two places, and the second is the damaging one:
+
+1. In the buffer text, where they render as garbage.
+2. **In front of the parser regexes.** A colourised rustc line is
+   `ESC[1mESC[31merror[E0308]ESC[0m: …`, which the `error` pattern does
+   not match. The diagnostic silently never reaches the error list, and
+   `:cnext` skips a real error with no indication anything went wrong.
+
+So **stripping is unconditional and happens first**, in the pipe reader,
+before either the parsers or the buffer see a line. Everything
+downstream — `ParserRegistry::feed`, `scan_severities`,
+`scan_location_lines`, the `<CR>` jump — operates on text that has never
+contained an escape sequence, and needs no knowledge that escapes exist.
+
+Having parsed the SGR parameters in order to remove them, turning them
+into spans is nearly free, so the reader also emits per-line
+`StyledSpan`s. Those travel **with** the text on `OutputChunk::Append`
+rather than on a parallel channel, for the reason the highlight drain
+gives about diff signs: one thing being spliced cannot desynchronise
+from itself.
+
+**What is modelled, and what is not.** Foreground colour from the
+16-colour palette, plus bold. Not background (`StyledSpan` carries a
+foreground `Style`; backgrounds are the separate `RefineSpan` axis with
+different precedence), not 256-colour beyond the first 16 slots, not
+truecolor, and not italic/underline/reverse — `Style` is one value per
+span, not a set, and the colour is the information-bearing half. Every
+unmodelled parameter is still *parsed*, so it cannot desynchronise the
+parameter walk and silently change how a later parameter is read. This
+is not a narrow subset in practice: anstyle, which cargo is built on,
+emits nothing outside it.
+
+**Bold is bright.** `SGR 1` with a normal colour resolves to that
+colour's bright slot, which is how terminals have rendered
+bold-plus-colour since the hardware did. It is also the only way to keep
+both attributes of cargo's `bold red` `error:` prefix, given one `Style`
+per span.
+
+**Colours are theme elements, not literals.** The reader emits
+`Style::Element(id)` over 17 registered elements (`compilation.ansi.red`
+… `compilation.ansi.bright-white`, `compilation.ansi.bold`), so a theme
+retunes captured colour by name like any other element — which matters
+most on light themes, where a terminal's default red can be unreadable.
+Defaults are `ColorRef::Literal(Color::Named(..))` rather than palette
+references: the `ansi.*` palette family already exists, but all 21
+builtin palettes define its entries as the same pass-through
+`Color::Named`, so per-theme keys would be 21 identical copies of one
+value. Promoting these to a core `ansi.*` **element** family is the
+upgrade path if a second consumer (terminal, agent output) appears.
+
+**`\r` restarts the line.** A bare carriage return mid-line discards
+what preceded it, as a terminal does. Without this a cargo build streams
+every intermediate `Building [===>   ] 41/1000` state concatenated into
+one unreadable row.
+
+**Span/text alignment is the subtle invariant.** The published span list
+must stay exactly as long as the buffer's text, or a later coloured line
+splices over the wrong row — a failure that is silent at the moment it
+is introduced and only shows up further down the log. Two mechanisms
+maintain it: a flush pads its spans to the line count it actually
+appends (batches mix reader output with editor-generated summaries), and
+a wholly uncoloured flush publishes nothing at all but banks its line
+count as *debt*, paid as leading empty rows by the next flush that has
+colour to show. The debt is what makes the common case — no colour
+anywhere — cost zero publishes and zero renderer wakes without
+sacrificing alignment.
+
+**Where it runs.** In the pipe reader's own thread, off the UI/actor
+thread, ahead of the parse it protects. Benched in three shapes
+(`compilation_ansi`): uncoloured ~600 MiB/s, which is the path nearly
+every real build takes.
+
 ## 9. Rejected alternatives
 
 - **Multibuffer as the primary artefact.** Rejected: a multibuffer
@@ -305,8 +387,8 @@ Read-only, `NoFile`; `:q` never warns unsaved, `:w` is a no-op (mode
 - **PTY-backed capture (reuse terminal).** Rejected for the primary:
   a PTY yields a cell grid, not a rope-backed text Document, so
   `:cnext` navigation and line parsing become far harder. Pipe-capture
-  matches emacs and keeps the log parseable. (ANSI-SGR → decorations is
-  a later polish over the captured text.)
+  matches emacs and keeps the log parseable. (ANSI-SGR is handled over
+  the captured text instead — §8b.)
 - **Error list owned by `compilation-mode`.** Rejected: its consumer
   is *generic* host dispatch (`:next-error`), so by the substrate-vs-mode
   rule it is core state; a mode-private list would block project search /

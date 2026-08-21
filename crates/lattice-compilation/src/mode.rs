@@ -21,7 +21,8 @@ use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
     BufferStoreHandle, CapabilitySet, CompilationSeverityData, DecorationCtx, GutterDecoration,
     Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    Subscription, VirtualRowRegistrar, keymap_entry,
+    PendingSyntheticHighlights, PendingSyntheticHighlightsHandle, Subscription,
+    VirtualRowRegistrar, keymap_entry,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::error_list::ErrorSeverity;
@@ -104,7 +105,9 @@ fn compilation_keymap_entries() -> &'static [KeymapEntry] {
 pub fn apply_chunk(current: &str, chunk: &OutputChunk) -> String {
     match chunk {
         OutputChunk::Reset { header } => header.clone(),
-        OutputChunk::Append { text } => {
+        // `apply_chunk` answers "what is the buffer's text after this
+        // chunk"; spans are a parallel concern the drain applies.
+        OutputChunk::Append { text, .. } => {
             let mut s = String::with_capacity(current.len() + text.len());
             s.push_str(current);
             s.push_str(text);
@@ -132,6 +135,66 @@ async fn append_at_end(handle: &Arc<dyn Document>, text: String) {
     let last_line = snap.buffer.line(last).unwrap_or_default();
     let pos = Position::new(last, last_line.len() as u32);
     let _ = handle.apply_edit_batch(vec![Edit::insert(pos, text)]).await;
+}
+
+/// CM.5: splice one flush's worth of ANSI spans onto the buffer's
+/// highlight list, or bank them as debt when there is nothing to show.
+///
+/// `spans` holds the spans the reader produced (one entry per coloured
+/// line it saw); `text_lines` is how many lines the flush actually
+/// appends. The two differ whenever the batch mixed reader output with
+/// editor-generated text (a run summary), so `spans` is padded to
+/// `text_lines` before publishing — a span list shorter than the text
+/// would leave every later line splicing one row too high.
+///
+/// When the whole flush is uncoloured, nothing is published and the
+/// lines are added to `debt` instead. `debt` is then paid as leading
+/// empty rows by the next flush that does carry colour, which keeps
+/// the span list index-aligned with the buffer without waking the
+/// renderer for output that has nothing to paint.
+fn publish_spans(
+    highlights: Option<&PendingSyntheticHighlights>,
+    buffer_id: lattice_core::BufferId,
+    start_line: u32,
+    mut spans: Vec<Vec<lattice_cells::StyledSpan>>,
+    text_lines: usize,
+    debt: &mut usize,
+) {
+    let Some(highlights) = highlights else {
+        return;
+    };
+    if text_lines == 0 {
+        return;
+    }
+    spans.truncate(text_lines);
+    spans.resize(text_lines, Vec::new());
+    if spans.iter().all(|line| line.is_empty()) {
+        *debt = debt.saturating_add(text_lines);
+        return;
+    }
+    let owed = std::mem::take(debt);
+    if owed > 0 {
+        let mut padded = vec![Vec::new(); owed];
+        padded.append(&mut spans);
+        spans = padded;
+    }
+    highlights.insert_at_and_wake(buffer_id, start_line.saturating_sub(owed as u32), spans);
+}
+
+/// CM.5: drop the prior run's spans when a `Reset` replaces the buffer.
+///
+/// `header_lines` is how many lines the replacement header occupies —
+/// it is editor-generated and never coloured, so the list is reset to
+/// exactly that many empty rows rather than emptied, keeping it
+/// aligned with the text the reset just wrote.
+fn clear_spans(
+    highlights: Option<&PendingSyntheticHighlights>,
+    buffer_id: lattice_core::BufferId,
+    header_lines: usize,
+) {
+    if let Some(highlights) = highlights {
+        highlights.store_and_wake(buffer_id, vec![Vec::new(); header_lines]);
+    }
 }
 
 /// Replace the whole buffer with `header` as one edit.
@@ -256,6 +319,12 @@ impl Mode for CompilationMode {
                 .service::<ThemeRegistryHandle>()
                 .map(|outer| (*outer).clone())
             {
+                // CM.5: intern the ANSI elements and hand them to the
+                // service. Idempotent, so a re-activation is free.
+                if let Some(slot) = ctx.service::<crate::CompilationAnsiSlot>() {
+                    let _ = slot.set(crate::AnsiPalette::register(&*theme));
+                }
+
                 let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
                 let loc_id = theme.register(
                     ElementName::from_static("compilation.location"),
@@ -398,10 +467,28 @@ impl Mode for CompilationMode {
             // at `next_line` then advances by its newline count). The
             // FULL index is shipped through `gutter_bus` / `location_bus`
             // whenever it changes (the send bakes in the editor wake).
+            // CM.5: the off-thread span publisher. Absent in a stripped
+            // test harness, in which case output still streams (and is
+            // still stripped) — just uncoloured.
+            let highlights: Option<PendingSyntheticHighlightsHandle> = ctx
+                .service::<PendingSyntheticHighlightsHandle>()
+                .map(|outer| (*outer).clone());
+
             let drain_state = hl_state.clone();
             let drain_version = hl_version.clone();
             runtime.spawn(async move {
                 let mut next_line: u32 = 0;
+                // CM.5: lines appended since the last span publish.
+                //
+                // Uncoloured output — every build that has not had
+                // colour forced on, which is nearly all of them —
+                // publishes nothing at all, and this counter is what
+                // makes that safe. The span list must stay the same
+                // length as the buffer or a later coloured chunk
+                // splices over the wrong rows, so the skipped lines
+                // are carried here and paid as empty padding by the
+                // first publish that actually has colour to show.
+                let mut span_debt: usize = 0;
                 let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
                 let mut location_lines: Vec<(u32, u32, u32)> = Vec::new();
                 while let Some(first) = rx.recv().await {
@@ -410,11 +497,26 @@ impl Mode for CompilationMode {
                         batch.push(more);
                     }
                     let mut pending = String::new();
+                    // CM.5: the spans for `pending`, and the buffer line
+                    // its first line lands on. Tracked together with the
+                    // text so a flush splices one aligned pair — the same
+                    // one-thing-being-spliced rule the highlight drain
+                    // states for diff signs.
+                    let mut pending_spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
+                    let mut pending_start = next_line;
                     let mut dirty = false;
                     for event in batch {
                         match event.chunk {
                             OutputChunk::Reset { ref header } => {
                                 let flush = std::mem::take(&mut pending);
+                                // The pending spans are deliberately
+                                // dropped rather than published: the
+                                // reset below replaces the buffer, and
+                                // `clear_spans` re-seeds the list to
+                                // match. Publishing them first would
+                                // be a wake for content about to be
+                                // overwritten.
+                                pending_spans.clear();
                                 append_at_end(&handle, flush).await;
                                 reset_to(&handle, header).await;
                                 // CM.3d: update headerline state — extract
@@ -439,20 +541,38 @@ impl Mode for CompilationMode {
                                 location_lines.clear();
                                 location_lines.extend(scan_location_lines(0, header));
                                 next_line = count_newlines(header);
+                                // The reset replaced the buffer, so the
+                                // prior run's spans are gone with it.
+                                // The header is editor-generated and
+                                // never carries escapes, hence empty.
+                                clear_spans(highlights.as_deref(), buffer_id, next_line as usize);
+                                span_debt = 0;
+                                pending_start = next_line;
                                 dirty = true;
                             }
-                            OutputChunk::Append { text } => {
+                            OutputChunk::Append { text, spans } => {
                                 severities.extend(scan_severities(next_line, &text));
                                 location_lines.extend(scan_location_lines(next_line, &text));
                                 next_line = next_line.saturating_add(count_newlines(&text));
+                                if pending.is_empty() {
+                                    pending_start = next_line.saturating_sub(count_newlines(&text));
+                                }
                                 pending.push_str(&text);
+                                pending_spans.extend(spans);
                                 dirty = true;
                             }
                             OutputChunk::Finished { summary } => {
                                 severities.extend(scan_severities(next_line, &summary));
                                 location_lines.extend(scan_location_lines(next_line, &summary));
+                                if pending.is_empty() {
+                                    pending_start = next_line;
+                                }
                                 next_line = next_line.saturating_add(count_newlines(&summary));
                                 pending.push_str(&summary);
+                                // The summary is editor-generated and
+                                // carries no escapes; its lines are
+                                // padded at flush like any other
+                                // uncoloured text.
                                 // CM.3d: update headerline with final counts.
                                 // errors = count of Error severity; warnings = count of Warning.
                                 let errors = severities
@@ -473,7 +593,20 @@ impl Mode for CompilationMode {
                             }
                         }
                     }
+                    // Text first, spans second: a span list is indexed
+                    // by buffer line, so publishing it ahead of the
+                    // edit would briefly describe rows that do not
+                    // exist yet.
+                    let flushed_lines = count_newlines(&pending) as usize;
                     append_at_end(&handle, pending).await;
+                    publish_spans(
+                        highlights.as_deref(),
+                        buffer_id,
+                        pending_start,
+                        std::mem::take(&mut pending_spans),
+                        flushed_lines,
+                        &mut span_debt,
+                    );
                     // Ship the full per-buffer index off-keystroke. Best-effort:
                     // a stopped subsystem (dropped drain) just drops the send.
                     if dirty {
@@ -543,6 +676,153 @@ impl Mode for CompilationMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── CM.5: span/text alignment ───────────────────────────────
+    //
+    // The property under test is that the published span list stays
+    // the same length as the buffer's text. It is worth pinning
+    // directly because the failure is silent and delayed: nothing
+    // looks wrong until some *later* coloured line appears, and then
+    // it is painted over the wrong row.
+
+    use lattice_cells::{Style, StyledSpan};
+    use lattice_theme::ElementId;
+
+    fn span(start: usize, end: usize) -> StyledSpan {
+        StyledSpan {
+            start,
+            end,
+            style: Style::Element(ElementId(1)),
+        }
+    }
+
+    /// The spans currently stored for `id`, as line lengths.
+    fn stored(h: &PendingSyntheticHighlights, id: lattice_core::BufferId) -> Option<Vec<usize>> {
+        let map = h.map.lock().ok()?;
+        let update = map.get(&id)?;
+        match &update.op {
+            lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
+                spans, ..
+            } => Some(spans.iter().map(|l| l.len()).collect()),
+            lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
+                Some(spans.iter().map(|l| l.len()).collect())
+            }
+            _ => None,
+        }
+    }
+
+    fn start_line_of(h: &PendingSyntheticHighlights, id: lattice_core::BufferId) -> Option<u32> {
+        let map = h.map.lock().ok()?;
+        match &map.get(&id)?.op {
+            lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
+                start_line,
+                ..
+            } => Some(*start_line),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn uncoloured_flush_publishes_nothing_and_banks_debt() {
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        publish_spans(Some(&h), id, 0, vec![Vec::new(); 3], 3, &mut debt);
+        assert_eq!(debt, 3, "three uncoloured lines are owed");
+        assert!(
+            stored(&h, id).is_none(),
+            "nothing to paint means nothing published — and no renderer wake"
+        );
+    }
+
+    #[test]
+    fn a_coloured_flush_pays_the_banked_debt_as_empty_rows() {
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        // Five uncoloured lines, then one coloured line at line 5.
+        publish_spans(Some(&h), id, 0, vec![Vec::new(); 5], 5, &mut debt);
+        publish_spans(Some(&h), id, 5, vec![vec![span(0, 4)]], 1, &mut debt);
+
+        assert_eq!(debt, 0, "the debt was paid");
+        assert_eq!(
+            stored(&h, id),
+            Some(vec![0, 0, 0, 0, 0, 1]),
+            "five empty rows precede the coloured one so the list \
+             length matches the six lines of text"
+        );
+        assert_eq!(
+            start_line_of(&h, id),
+            Some(0),
+            "the splice anchors where the skipped lines began, not where the colour did"
+        );
+    }
+
+    #[test]
+    fn spans_are_padded_when_the_flush_has_more_text_than_spans() {
+        // The batch mixed reader output (one coloured line) with an
+        // editor-generated summary (two more lines, no spans).
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        publish_spans(Some(&h), id, 0, vec![vec![span(0, 2)]], 3, &mut debt);
+        assert_eq!(
+            stored(&h, id),
+            Some(vec![1, 0, 0]),
+            "the summary's lines get empty span rows"
+        );
+    }
+
+    #[test]
+    fn spans_are_truncated_when_they_outrun_the_text() {
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        publish_spans(
+            Some(&h),
+            id,
+            0,
+            vec![vec![span(0, 2)], vec![span(0, 2)], vec![span(0, 2)]],
+            2,
+            &mut debt,
+        );
+        assert_eq!(stored(&h, id), Some(vec![1, 1]));
+    }
+
+    #[test]
+    fn an_empty_flush_publishes_nothing_and_owes_nothing() {
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        publish_spans(Some(&h), id, 0, Vec::new(), 0, &mut debt);
+        assert_eq!(debt, 0);
+        assert!(stored(&h, id).is_none());
+    }
+
+    #[test]
+    fn without_a_highlights_service_publishing_is_a_no_op() {
+        let mut debt = 0;
+        publish_spans(None, lattice_core::BufferId(1), 0, Vec::new(), 4, &mut debt);
+        assert_eq!(
+            debt, 0,
+            "no consumer means no debt to track — the counter must not grow unboundedly"
+        );
+    }
+
+    #[test]
+    fn reset_replaces_the_list_with_the_headers_empty_rows() {
+        let h = PendingSyntheticHighlights::new();
+        let id = lattice_core::BufferId(1);
+        let mut debt = 0;
+        publish_spans(Some(&h), id, 0, vec![vec![span(0, 3)]], 1, &mut debt);
+        clear_spans(Some(&h), id, 2);
+        assert_eq!(
+            stored(&h, id),
+            Some(vec![0, 0]),
+            "a reset drops the prior run's spans and re-seeds one empty \
+             row per header line"
+        );
+    }
 
     #[test]
     fn mode_id_is_compilation_mode() {
@@ -639,12 +919,7 @@ mod tests {
 
     #[test]
     fn apply_chunk_append_and_finished_concatenate() {
-        let a = apply_chunk(
-            "hdr\n",
-            &OutputChunk::Append {
-                text: "line1\n".into(),
-            },
-        );
+        let a = apply_chunk("hdr\n", &OutputChunk::append("line1\n"));
         assert_eq!(a, "hdr\nline1\n");
         let b = apply_chunk(
             &a,

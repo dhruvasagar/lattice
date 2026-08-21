@@ -103,6 +103,14 @@ pub struct DefaultCompilationService {
     /// maps it to `AppEffect::SetErrorList`. `send` wakes the editor so
     /// the list reaches the screen off-keystroke.
     qf_bus: InboundBus<Vec<ErrorEntry>>,
+    /// CM.5: the interned `compilation.ansi.*` elements captured
+    /// colour is painted with, filled by the mode during activation
+    /// (see [`crate::CompilationAnsiSlot`] for why it is late-bound).
+    ///
+    /// An empty slot leaves stripping in place and skips the spans —
+    /// the right degradation, because escape sequences must never
+    /// reach the buffer whether or not anyone can colour them.
+    ansi: Option<crate::CompilationAnsiSlot>,
 }
 
 impl std::fmt::Debug for DefaultCompilationService {
@@ -123,7 +131,18 @@ impl DefaultCompilationService {
             runtime,
             state: Arc::new(Mutex::new(RunState::default())),
             qf_bus,
+            ansi: None,
         }
+    }
+
+    /// CM.5: read the ANSI palette from `slot` when a run starts.
+    ///
+    /// Separate from [`Self::new`] because a stripped test harness
+    /// stands up neither a theme registry nor the slot — and a service
+    /// without one is still correct, just monochrome.
+    pub fn with_ansi_slot(mut self, slot: crate::CompilationAnsiSlot) -> Self {
+        self.ansi = Some(slot);
+        self
     }
 
     fn publish(&self, chunk: OutputChunk) {
@@ -183,6 +202,11 @@ impl CompilationService for DefaultCompilationService {
         let events = self.events.clone();
         let state = self.state.clone();
         let qf_bus = self.qf_bus.clone();
+        // Resolve the palette once per run rather than per line. An
+        // unfilled slot means the mode had no theme registry to intern
+        // against; stripping still happens, colouring does not.
+        let ansi: Option<crate::ansi::AnsiPalette> =
+            self.ansi.as_ref().and_then(|slot| slot.get().copied());
         self.runtime.spawn_blocking(move || {
             let mut command = Command::new("sh");
             command
@@ -253,13 +277,13 @@ impl CompilationService for DefaultCompilationService {
             let out_qf = qf_bus.clone();
             let out_shared = shared.clone();
             let out_reader = std::thread::spawn(move || {
-                read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared)
+                read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared, ansi.as_ref())
             });
             let err_events = events.clone();
             let err_qf = qf_bus.clone();
             let err_shared = shared.clone();
             let err_reader = std::thread::spawn(move || {
-                read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared)
+                read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared, ansi.as_ref())
             });
             let _ = out_reader.join();
             let _ = err_reader.join();
@@ -331,28 +355,43 @@ fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
 /// reader does NOT stop on a single bad byte (prior behaviour lost the
 /// rest of the pipe). Flushes a partial batch on EOF.
 ///
+/// CM.5: every line is passed through [`crate::ansi::clean_line`]
+/// **before** anything else sees it, so the escape sequences are gone
+/// from both the text that reaches the buffer and the text the
+/// parsers match against. That ordering is the point: a coloured
+/// `error[E0308]` carries `ESC[1m` in front of `error`, and matching
+/// the raw line would silently miss it.
+///
+/// `sgr` carries the active attributes across lines within this pipe
+/// (a producer may open a colour on one line and close it on the
+/// next). It is per-pipe, never shared — stdout and stderr are
+/// independent streams.
 fn read_parsed_pipe<R: std::io::Read>(
     pipe: Option<R>,
     events: &Arc<EventBus>,
     qf_bus: &InboundBus<Vec<ErrorEntry>>,
     shared: &Mutex<Vec<ErrorEntry>>,
+    ansi: Option<&crate::ansi::AnsiPalette>,
 ) {
     let Some(pipe) = pipe else {
         return;
     };
     let reader = std::io::BufReader::new(pipe);
     let mut batch = String::new();
+    let mut batch_spans: Vec<Vec<lattice_cells::StyledSpan>> = Vec::new();
     let mut lines_in_batch = 0usize;
     let mut registry = ParserRegistry::with_builtins();
+    let mut sgr = crate::ansi::SgrState::default();
     for line in reader.lines() {
-        let l = match line {
+        let raw = match line {
             Ok(l) => l,
             Err(e) => {
                 tracing::debug!(error = %e, "compilation: pipe read error; skipping line");
                 continue;
             }
         };
-        let new_entries = registry.feed(&l);
+        let clean = crate::ansi::clean_line(&raw, &mut sgr, ansi);
+        let new_entries = registry.feed(&clean.text);
         if !new_entries.is_empty() {
             let mut guard = match shared.lock() {
                 Ok(g) => g,
@@ -361,21 +400,29 @@ fn read_parsed_pipe<R: std::io::Read>(
             guard.extend(new_entries);
             let _ = qf_bus.send(guard.clone());
         }
-        batch.push_str(&l);
+        batch.push_str(&clean.text);
         batch.push('\n');
+        batch_spans.push(clean.spans);
         lines_in_batch += 1;
         if lines_in_batch >= READER_BATCH_LINES {
             publish(
                 events,
                 OutputChunk::Append {
                     text: std::mem::take(&mut batch),
+                    spans: std::mem::take(&mut batch_spans),
                 },
             );
             lines_in_batch = 0;
         }
     }
     if !batch.is_empty() {
-        publish(events, OutputChunk::Append { text: batch });
+        publish(
+            events,
+            OutputChunk::Append {
+                text: batch,
+                spans: batch_spans,
+            },
+        );
     }
 }
 
@@ -467,7 +514,7 @@ mod tests {
             .iter()
             .map(|c| match c {
                 OutputChunk::Reset { header } => header.clone(),
-                OutputChunk::Append { text } => text.clone(),
+                OutputChunk::Append { text, .. } => text.clone(),
                 OutputChunk::Finished { summary } => summary.clone(),
             })
             .collect();
@@ -508,6 +555,83 @@ mod tests {
         assert_eq!(e.col, 4, "1-based 5 → 0-based 4");
         assert_eq!(e.severity, ErrorSeverity::Error);
         assert_eq!(e.message, "bad thing");
+    }
+
+    /// CM.5, and the reason CM.5 is a correctness fix rather than a
+    /// cosmetic one: a colourised diagnostic carries `ESC[…m` in front
+    /// of `error`, so a parser fed the raw line matches nothing and the
+    /// entry silently never reaches the error list. This is the same
+    /// diagnostic as `stderr_diagnostics_populate_the_error_list`,
+    /// wearing the escapes a `--color=always` build would put on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn colourised_diagnostics_still_populate_the_error_list() {
+        let (chunks, entries) = tokio::task::spawn_blocking(|| {
+            collect_run_with_qf(
+                Some(
+                    "printf '\\033[1m\\033[31mmain.c:10:5: error:\\033[0m bad thing\\n' 1>&2"
+                        .to_string(),
+                ),
+                Duration::from_secs(3),
+            )
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected one parsed entry from colourised output, got {entries:?}"
+        );
+        let e = &entries[0];
+        assert_eq!(e.path, PathBuf::from("main.c"));
+        assert_eq!(e.line, 9);
+        assert_eq!(e.col, 4);
+        assert_eq!(e.severity, ErrorSeverity::Error);
+
+        // And the text that reached the buffer carries no escapes.
+        let appended: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                OutputChunk::Append { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !appended.contains('\u{1b}'),
+            "escape sequences must not reach the buffer, got {appended:?}"
+        );
+        assert!(appended.contains("main.c:10:5: error: bad thing"));
+    }
+
+    /// The palette slot is unfilled in this harness (no theme
+    /// registry), so colouring is off — but stripping is not
+    /// conditional on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stripping_happens_without_a_palette() {
+        let chunks = tokio::task::spawn_blocking(|| {
+            collect_run(
+                Some("printf '\\033[32mgreen\\033[0m\\n'".to_string()),
+                Duration::from_secs(3),
+            )
+        })
+        .await
+        .unwrap();
+
+        let appended: String = chunks
+            .iter()
+            .filter_map(|c| match c {
+                OutputChunk::Append { text, spans } => {
+                    assert!(
+                        spans.iter().all(|l| l.is_empty()),
+                        "no palette was interned, so no spans should be produced"
+                    );
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(appended.contains("green"));
+        assert!(!appended.contains('\u{1b}'));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

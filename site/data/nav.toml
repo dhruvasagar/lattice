@@ -26,8 +26,15 @@
 #
 #   REFERENCE holds per-surface keymap tables — one buffer kind, one minor
 #   mode, one language grammar. You arrive by search or cross-link, not by
-#   browsing. 74 of the 113 topics live here; keeping them out of the main
+#   browsing. 94 of the 136 topics live here; keeping them out of the main
 #   sidebar is the single biggest readability win in this layout.
+#
+#   That ratio keeps climbing — it was 74 of 113 when this file was written,
+#   and every per-mode doc added since has landed in Reference. It is still
+#   the right split (nobody browses a keymap table), but Reference is now
+#   more than two-thirds of the corpus, so its GROUPS are what readers
+#   actually navigate. Keep them meaningful; a group past ~25 entries wants
+#   splitting rather than another row.
 
 # ---------------------------------------------------------------------------
 # Guides

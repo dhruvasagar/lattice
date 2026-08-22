@@ -3,7 +3,7 @@
 **Design fragment:**
 [`../../architecture/plugin-languages.md`](../../architecture/plugin-languages.md).
 
-**Status:** LG.0–LG.6 📝. Nothing started.
+**Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -33,7 +33,7 @@ be the expensive order.
 
 | Slice | Description | Status |
 |---|---|---|
-| LG.0 | Prove `wasmtime-c-api` 36 and `wasmtime` 46 coexist | 📝 |
+| LG.0 | Prove `wasmtime-c-api` 36 and `wasmtime` 46 coexist | ✅ |
 | LG.1 | Bench: wasm grammar vs native parse | 📝 |
 | LG.2 | `Lang::Plugin(LanguageId)` + runtime language registry | 📝 |
 | LG.3 | `language` WIT seam, loader drain, teardown | 📝 |
@@ -43,7 +43,7 @@ be the expensive order.
 
 ---
 
-### LG.0 — the two-wasmtime gate 📝
+### LG.0 — the two-wasmtime gate ✅ (2026-08-22)
 
 tree-sitter's `wasm` feature pulls `wasmtime-c-api 36`; the plugin host
 runs `wasmtime 46`. Both install `SIGSEGV`/`SIGBUS` handlers for
@@ -65,6 +65,16 @@ runtimes still behave.
   a wasmtime bump on either side must re-run it.
 - *doc:* record the outcome in the design fragment §3, whichever way it
   goes. A failed gate is worth writing down more than a passing one.
+
+**Outcome: (a) — they coexist.** Both link; a real guest trap is still
+caught and quarantined with tree-sitter's runtime live; proven in BOTH
+initialisation orders, since handler registration is order-dependent.
+Three tests, kept as the regression guard for the next wasmtime bump.
+
+**Residual, stated rather than glossed:** no wasm *grammar* has been
+parsed yet — that needs the tree-sitter CLI toolchain and is LG.1's
+job. LG.0 settles stability; performance is still open, which is now
+the only thing that can send this track to §6's fallback.
 
 ### LG.1 — the parse-cost bench 📝
 

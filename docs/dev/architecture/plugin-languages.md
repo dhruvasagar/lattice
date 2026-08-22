@@ -115,12 +115,39 @@ the problem, not the reassurance:
 - **Binary size.** Two full Cranelift copies.
 - **Divergence.** The two versions drift on their own schedules.
 
-**This is a gate, not a footnote.** LG.0 (§ slice plan) exists to answer
-it before anything is built on top, and its acceptable outcomes are:
-tree-sitter's C API can be pointed at an engine we own; or the two
-runtimes provably coexist; or the whole approach is abandoned for §6's
-alternative. Building the seam first and discovering this later would be
-the expensive order.
+**This is a gate, not a footnote.** LG.0 exists to answer it before
+anything is built on top. Building the seam first and discovering this
+later would be the expensive order.
+
+### 3.1 Outcome (LG.0, 2026-08-22): they coexist
+
+**Answered: the two runtimes coexist.** `crates/lattice-plugin-host/tests/two_wasmtime_runtimes.rs`,
+behind `--features lg0-wasm-grammar-spike`.
+
+- Both link. `wasmtime 46` and `wasmtime-c-api 36` (with its own
+  Cranelift) compile into one test binary.
+- **A real guest trap is still caught with tree-sitter's runtime live.**
+  The `grammar-guest` fixture's `traps` motion executes `unreachable`;
+  the host still classifies it, trips the quarantine, and returns
+  `CommandError::Plugin` rather than aborting the process.
+- **Both initialisation orders.** Signal-handler registration is
+  order-dependent, so it is tested tree-sitter-first AND host-first —
+  the two ways a real session can bring them up (a plugin loading before
+  any file is opened, or after).
+
+The tests stay. A wasmtime bump on either side re-opens the question,
+and this is what re-answers it.
+
+**What LG.0 did NOT answer**, and is honest to name: no wasm *grammar*
+has been parsed yet, because building one needs the tree-sitter CLI
+toolchain. So "the runtimes coexist" is settled; "a wasm grammar parses
+correctly and fast enough" is LG.1's job, and remains open. The residual
+risk is now performance, not stability.
+
+**The cost stands regardless.** Two Cranelift copies is real binary
+size, and the eventual product build must decide whether the `wasm`
+feature is always on or gated behind a cargo feature the way the GPUI
+peer is. Deferred to LG.3; noted here so it is not forgotten.
 
 ## 4. Performance
 

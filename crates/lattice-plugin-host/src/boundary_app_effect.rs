@@ -329,9 +329,17 @@ impl WitBoundary for NativeAppEffect {
             // YR.5: both put text into, or open a picker over, whichever
             // HOST surface is focused — a place a plugin cannot name.
             // Representable once the fill targets themselves cross.
-            NativeAppEffect::InsertRegister(_) | NativeAppEffect::OpenYankPicker => {
+            // YR.6 joins them: the argument picker names a `:`-line slot,
+            // which is the same unnameable-host-surface problem. A plugin
+            // that wants an argument picker declares one in its
+            // `args_schema` (`ArgSpec.picker`, which DOES cross) rather
+            // than emitting this effect.
+            NativeAppEffect::InsertRegister(_)
+            | NativeAppEffect::OpenYankPicker
+            | NativeAppEffect::OpenArgPicker => {
                 return Err(
-                    "insert-register / open-yank-picker are host-internal, not representable over WIT"
+                    "insert-register / open-yank-picker / open-arg-picker are host-internal, \
+                     not representable over WIT"
                         .into(),
                 );
             }

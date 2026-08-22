@@ -199,6 +199,21 @@ pub struct ArgSpec {
     /// (free-form text). Wire-form is the source name (not its
     /// runtime id) so the schema is constructable as a literal.
     pub completion: Option<Cow<'static, str>>,
+    /// YR.6: name of a registered **picker** source offered for this
+    /// argument (`magit-revision`, `magit-branch`, ...). `None` = no
+    /// picker.
+    ///
+    /// Deliberately a second field rather than a variant of
+    /// [`Self::completion`], because the two name entries in two
+    /// registries and that split is a decision, not an accident:
+    /// `completion` names a `CandidateGenerator` (engine shape —
+    /// prefix, buffer, command registry), `picker` names a
+    /// `PickerSourceGenerator` (surface shape — needs `PickerContext`).
+    /// `completion-pipeline-unification.md` slice 7d.1 chose to keep
+    /// both rather than bloat one context or type-erase it, so an
+    /// argument can legitimately have both: `<Tab>` completes inline,
+    /// the picker opens the richer surface for the same question.
+    pub picker: Option<Cow<'static, str>>,
 }
 
 impl ArgSpec {
@@ -215,6 +230,7 @@ impl ArgSpec {
             prompt: Cow::Borrowed(""),
             default: ArgDefault::Required,
             completion: None,
+            picker: None,
         }
     }
 
@@ -231,12 +247,23 @@ impl ArgSpec {
             prompt: Cow::Borrowed(""),
             default: ArgDefault::None,
             completion: None,
+            picker: None,
         }
     }
 
     /// Builder helper: attach a completion source by registered name.
     pub fn with_completion(mut self, source_name: impl Into<Cow<'static, str>>) -> Self {
         self.completion = Some(source_name.into());
+        self
+    }
+
+    /// Builder helper: attach a **picker** source by registered name.
+    ///
+    /// Composable with [`Self::with_completion`] — an argument may offer
+    /// inline completion on `<Tab>` and a picker on `<C-x><C-o>`, and
+    /// several magit arguments do exactly that.
+    pub fn with_picker(mut self, source_name: impl Into<Cow<'static, str>>) -> Self {
+        self.picker = Some(source_name.into());
         self
     }
 }

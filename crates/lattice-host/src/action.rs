@@ -302,6 +302,9 @@ pub enum Action {
     InsertRegister(char),
     /// YR.5: open the yank-ring picker over the current surface.
     OpenYankPicker,
+    /// YR.6: open the picker registered for the `:`-line argument under
+    /// the cursor, filling the pick back into that argument.
+    OpenArgPicker,
     // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed.
     // `<C-x><C-s>` is mode-owned now (`snippet-mode`'s `keymap()` +
     // `action_handlers()` emit `Effect::ExpandSnippet`); no host

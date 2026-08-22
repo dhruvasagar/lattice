@@ -1785,11 +1785,14 @@ fn register_ex_commands(
                         ))
                     })
                 },
-                args_schema: vec![ArgSpec::required(
-                    "branch",
-                    lattice_grammar::ArgKind::String,
-                    "the branch to check out",
-                )],
+                args_schema: vec![
+                    ArgSpec::required(
+                        "branch",
+                        lattice_grammar::ArgKind::String,
+                        "the branch to check out",
+                    )
+                    .with_picker(picker_sources::BRANCH_PICK_SOURCE),
+                ],
                 surface_form: SurfaceForm::Keyword,
             },
         );
@@ -1895,11 +1898,14 @@ fn register_ex_commands(
                             })
                         })
                     },
-                    args_schema: vec![ArgSpec::required(
-                        "branch",
-                        lattice_grammar::ArgKind::String,
-                        "the branch to operate on",
-                    )],
+                    args_schema: vec![
+                        ArgSpec::required(
+                            "branch",
+                            lattice_grammar::ArgKind::String,
+                            "the branch to operate on",
+                        )
+                        .with_picker(picker_sources::BRANCH_PICK_SOURCE),
+                    ],
                     surface_form: SurfaceForm::Keyword,
                 },
             );
@@ -2001,11 +2007,14 @@ fn register_ex_commands(
                             })
                         })
                     },
-                    args_schema: vec![ArgSpec::required(
-                        "branch",
-                        lattice_grammar::ArgKind::String,
-                        "the branch to operate on",
-                    )],
+                    args_schema: vec![
+                        ArgSpec::required(
+                            "branch",
+                            lattice_grammar::ArgKind::String,
+                            "the branch to operate on",
+                        )
+                        .with_picker(picker_sources::BRANCH_PICK_SOURCE),
+                    ],
                     surface_form: SurfaceForm::Keyword,
                 },
             );
@@ -2119,7 +2128,8 @@ fn register_ex_commands(
                     ))
                 }),
                 args_schema: vec![
-                    ArgSpec::required("rev", lattice_grammar::ArgKind::String, "the revision"),
+                    ArgSpec::required("rev", lattice_grammar::ArgKind::String, "the revision")
+                        .with_picker(picker_sources::REVISION_PICK_SOURCE),
                     ArgSpec::required("path", lattice_grammar::ArgKind::String, "the file"),
                 ],
                 surface_form: SurfaceForm::Keyword,
@@ -2165,11 +2175,14 @@ fn register_ex_commands(
                         ))
                     })
                 },
-                args_schema: vec![ArgSpec::required(
-                    "ref",
-                    lattice_grammar::ArgKind::String,
-                    "the notes ref to merge",
-                )],
+                args_schema: vec![
+                    ArgSpec::required(
+                        "ref",
+                        lattice_grammar::ArgKind::String,
+                        "the notes ref to merge",
+                    )
+                    .with_picker(picker_sources::REF_PICK_SOURCE),
+                ],
                 surface_form: SurfaceForm::Keyword,
             },
         );
@@ -2445,11 +2458,14 @@ fn register_ex_commands(
                         })
                     })
                 },
-                args_schema: vec![ArgSpec::required(
-                    "commit",
-                    lattice_grammar::ArgKind::String,
-                    "the commit whose note to edit",
-                )],
+                args_schema: vec![
+                    ArgSpec::required(
+                        "commit",
+                        lattice_grammar::ArgKind::String,
+                        "the commit whose note to edit",
+                    )
+                    .with_picker(picker_sources::COMMIT_PICK_SOURCE),
+                ],
                 surface_form: SurfaceForm::Keyword,
             },
         );
@@ -2480,11 +2496,14 @@ fn register_ex_commands(
                         ))
                     })
                 },
-                args_schema: vec![ArgSpec::required(
-                    "commit",
-                    lattice_grammar::ArgKind::String,
-                    "the commit whose note to remove",
-                )],
+                args_schema: vec![
+                    ArgSpec::required(
+                        "commit",
+                        lattice_grammar::ArgKind::String,
+                        "the commit whose note to remove",
+                    )
+                    .with_picker(picker_sources::COMMIT_PICK_SOURCE),
+                ],
                 surface_form: SurfaceForm::Keyword,
             },
         );
@@ -2611,11 +2630,14 @@ fn register_ex_commands(
                         })
                     })
                 },
-                args_schema: vec![ArgSpec::required(
-                    "commit",
-                    lattice_grammar::ArgKind::String,
-                    "the commit whose merge to find",
-                )],
+                args_schema: vec![
+                    ArgSpec::required(
+                        "commit",
+                        lattice_grammar::ArgKind::String,
+                        "the commit whose merge to find",
+                    )
+                    .with_picker(picker_sources::COMMIT_PICK_SOURCE),
+                ],
                 surface_form: SurfaceForm::Keyword,
             },
         );

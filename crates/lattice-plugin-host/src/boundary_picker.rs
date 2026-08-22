@@ -290,6 +290,7 @@ impl WitBoundary for NativeArgSpec {
             prompt: self.prompt.to_string(),
             default: self.default.to_wit()?,
             completion: self.completion.as_deref().map(str::to_string),
+            picker: self.picker.as_deref().map(str::to_string),
         })
     }
 
@@ -304,6 +305,7 @@ impl WitBoundary for NativeArgSpec {
             prompt: wit.prompt.into(),
             default: NativeArgDefault::from_wit(wit.default)?,
             completion: wit.completion.map(Into::into),
+            picker: wit.picker.map(Into::into),
         })
     }
 }
@@ -720,6 +722,7 @@ mod tests {
             prompt: "root:".into(),
             default: NativeArgDefault::Literal(NativeArgValue::String("/tmp".into())),
             completion: Some("gen:files".into()),
+            picker: None,
         };
         let back = NativeArgSpec::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.name, "root");
@@ -745,6 +748,7 @@ mod tests {
                 prompt: "root:".into(),
                 default: NativeArgDefault::None,
                 completion: Some("gen:files".into()),
+                picker: None,
             }],
             args_hint: "[root]".into(),
             live: false,

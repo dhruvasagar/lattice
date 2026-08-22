@@ -872,6 +872,20 @@ pub struct Editor {
     /// `FillCaller` arriving against it is a wiring bug the host reports
     /// rather than swallows.
     pub picker_fill_target: Option<lattice_picker::FillTarget>,
+    /// YR.6: the byte range on the `:` line a `FillCaller` should
+    /// REPLACE rather than insert before.
+    ///
+    /// An argument picker is opened while the user is part-way through
+    /// typing that argument (`:magit-checkout ma`), so the picked value
+    /// has to take the place of `ma`. A plain insert — which is right
+    /// for YR.5's `<C-r><C-r>`, where nothing was being replaced —
+    /// would produce `mamain`, silently, and only for users who typed a
+    /// prefix before opening the picker.
+    ///
+    /// Captured at open for the same reason the fill target is: by
+    /// accept time the cursor has moved and the slot that identified
+    /// the range is gone. `None` = insert at the cursor.
+    pub picker_fill_replace: Option<(usize, usize)>,
     /// YR.5b: the picker the yank picker was opened *over*.
     ///
     /// `do_picker_accept` takes `self.picker` before applying the

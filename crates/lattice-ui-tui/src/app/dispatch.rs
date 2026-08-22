@@ -624,7 +624,9 @@ impl App {
             // YR.5: both are handled host-side in `handle_action` — the
             // TUI has nothing renderer-coupled to add.
             | Action::InsertRegister(_)
-            | Action::OpenYankPicker => {}
+            | Action::OpenYankPicker
+            // YR.6: same — `do_open_arg_picker` is entirely host-side.
+            | Action::OpenArgPicker => {}
             // SN.3c.1 (2026-06-14): `Action::SnippetExpand` removed;
             // `<C-x><C-s>` is mode-owned (`Effect::ExpandSnippet`).
             // 5.5.G.8: `SnippetNextPlaceholder` / `SnippetPrevPlaceholder`

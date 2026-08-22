@@ -444,6 +444,7 @@ impl FilesSource {
                     prompt: "root:".into(),
                     default: ArgDefault::None,
                     completion: Some("gen:files".into()),
+                    picker: None,
                 }],
                 live: false,
             },
@@ -588,6 +589,7 @@ impl FilePickSource {
                     prompt: "root:".into(),
                     default: ArgDefault::None,
                     completion: Some("gen:files".into()),
+                    picker: None,
                 }],
                 live: false,
             },
@@ -1811,6 +1813,7 @@ impl GrepSource {
                     prompt: "pattern:".into(),
                     default: ArgDefault::None,
                     completion: None,
+                    picker: None,
                 }],
                 // Slice 3: live source. Picker bypasses fuzzy
                 // refilter (`run_grep` IS the filter); host
@@ -2661,6 +2664,7 @@ mod tests {
             prompt: "".into(),
             default: ArgDefault::Required,
             completion: None,
+            picker: None,
         };
         let optional = ArgSpec {
             default: ArgDefault::None,

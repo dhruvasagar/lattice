@@ -699,6 +699,9 @@ pub enum AppEffect {
     /// YR.5: `<C-r><C-r>` — open the yank-ring picker, filling whichever
     /// surface it was opened from.
     OpenYankPicker,
+    /// YR.6: open the picker registered for the `:`-line argument under
+    /// the cursor (`ArgSpec.picker`), filling the pick back into it.
+    OpenArgPicker,
     /// Active-snippet overlay: jump to the next placeholder
     /// (`<Tab>`). Promoted from
     /// `Action::SnippetNextPlaceholder` in slice 8.i.4.e.

@@ -121,6 +121,11 @@ fn command_line_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Insert, chord: "<S-Tab>", doc: "Previous candidate", cmd: "action:command-line-complete-prev" },
             keymap_entry! { mode: Insert, chord: "<C-h>", doc: "Describe command / arg under cursor", cmd: "action:command-line-describe-under-cursor" },
             keymap_entry! { mode: Insert, chord: "<C-x><C-e>", doc: "Expand the `:` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:command-line-toggle-expand" },
+            // YR.6: vim's omni-completion chord, and it means the same
+            // thing here — ask whatever knows about this position.
+            // `<Tab>` stays inline completion from `ArgSpec.completion`;
+            // this opens the picker from `ArgSpec.picker`.
+            keymap_entry! { mode: Insert, chord: "<C-x><C-o>", doc: "Open the picker for the argument under the cursor", cmd: "action:open-arg-picker" },
             // MB.2: also from the expanded band's Normal mode, so collapse
             // works without first re-entering Insert.
             keymap_entry! { mode: Normal, chord: "<C-x><C-e>", doc: "Collapse the mini-buffer band back to the one-row `:` line", cmd: "action:command-line-toggle-expand" },

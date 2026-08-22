@@ -3249,6 +3249,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             editor.do_completion_accept_then_insert(c, _out);
         }
         Action::InsertRegister(c) => editor.do_insert_register(c),
+        Action::OpenArgPicker => {
+            let signals = editor.do_open_arg_picker();
+            _out.renderer_signals.extend(signals);
+        }
         Action::OpenYankPicker => {
             let signals = editor.do_open_yank_picker();
             _out.renderer_signals.extend(signals);
@@ -8316,6 +8320,10 @@ impl Editor {
     fn fill_captured_target(&mut self, text: &str) {
         use lattice_picker::FillTarget;
         let Some(target) = self.picker_fill_target.take() else {
+            // Note: `picker_fill_replace` is deliberately NOT taken here.
+            // It is consumed inside the `CommandLine` arm below, and
+            // cleared alongside the target on every abandon path — so an
+            // outcome arriving with no target leaves nothing behind.
             // Nowhere to put it. A wiring bug rather than a user error —
             // a source emitted `FillCaller` for a picker that was opened
             // to act, not to answer. Saying so beats a `<CR>` that
@@ -8342,7 +8350,15 @@ impl Editor {
             // whatever `apply_edit_blocking` would target right now.
             FillTarget::CommandLine => {
                 if self.ensure_command_line_focus() {
-                    self.insert_at_cursor(text);
+                    // YR.6: an argument picker records the range its
+                    // value replaces (the prefix already typed for that
+                    // argument). YR.5's `<C-r><C-r>` records nothing and
+                    // inserts, which is right for it — nothing was being
+                    // replaced there.
+                    match self.picker_fill_replace.take() {
+                        Some((start, end)) => self.replace_command_line_range(start, end, text),
+                        None => self.insert_at_cursor(text),
+                    }
                 } else {
                     self.report_vanished_caller("the `:` line");
                 }
@@ -8444,6 +8460,7 @@ impl Editor {
         if self.picker.is_none() {
             self.picker = self.stashed_picker.take();
             self.picker_fill_target = None;
+            self.picker_fill_replace = None;
         }
         signals
     }
@@ -8460,6 +8477,118 @@ impl Editor {
                 byte: at.byte + text.len() as u32,
             };
         }
+    }
+
+    /// YR.6: replace `[start, end)` on the `:` line with `text`.
+    ///
+    /// The argument-picker fill. Distinct from `insert_at_cursor`
+    /// because the user has usually typed part of the argument before
+    /// opening the picker, and the pick takes its place.
+    fn replace_command_line_range(&mut self, start: usize, end: usize, text: &str) {
+        let len = self.command_line().len();
+        // The line can have changed between open and accept (the picker
+        // is modal, but nothing in the type system says so). Clamp
+        // rather than panic on a slice out of range, and fall back to a
+        // plain insert if the range no longer makes sense — a value in
+        // the wrong place beats a crash or a silently dropped pick.
+        let start = start.min(len);
+        let end = end.min(len);
+        if start > end {
+            self.insert_at_cursor(text);
+            return;
+        }
+        let range = lattice_protocol::position::Range {
+            start: lattice_protocol::position::Position {
+                line: 0,
+                byte: start as u32,
+            },
+            end: lattice_protocol::position::Position {
+                line: 0,
+                byte: end as u32,
+            },
+        };
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, text))
+            .is_ok()
+        {
+            self.cursor = lattice_protocol::position::Position {
+                line: 0,
+                byte: (start + text.len()) as u32,
+            };
+        }
+    }
+
+    /// YR.6: open the picker registered for the argument under the
+    /// cursor on the `:` line (`<C-x><C-o>`).
+    ///
+    /// The second `FillCaller` consumer, and the reason YR.3 captured
+    /// its target at open rather than resolving it at accept.
+    ///
+    /// `<C-x><C-o>` is vim's omni-completion chord, and the meaning
+    /// carries over exactly: "ask whatever knows about this position".
+    /// `<Tab>` still runs inline completion from `ArgSpec.completion`;
+    /// this opens the richer surface from `ArgSpec.picker`. An argument
+    /// may declare both — they answer the same question at different
+    /// weights.
+    #[must_use]
+    pub fn do_open_arg_picker(&mut self) -> Vec<RendererSignal> {
+        use lattice_picker::FillTarget;
+        if !self.command_line_active() {
+            self.set_message(
+                EchoLevel::Warn,
+                "argument picker: only available on the `:` line".to_string(),
+            );
+            return Vec::new();
+        }
+        let line = self.command_line();
+        let cursor = line.len();
+        let alias_resolver = |short: &str| {
+            crate::excommand::aliases()
+                .get(short)
+                .map(|s| (*s).to_string())
+        };
+        let reg = self.registry.load();
+        let slot = lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
+        let lattice_completion::CommandLineSlot::Arg {
+            arg_spec,
+            prefix,
+            replace_start,
+            ..
+        } = &slot
+        else {
+            self.set_message(
+                EchoLevel::Warn,
+                "argument picker: the cursor is not on a command argument".to_string(),
+            );
+            return Vec::new();
+        };
+        let Some(source) = arg_spec.picker.as_deref().map(str::to_string) else {
+            // Named, because "nothing happened" is indistinguishable from
+            // a broken binding — the same reasoning as
+            // `report_vanished_caller`.
+            self.set_message(
+                EchoLevel::Info,
+                format!("argument picker: `{}` has no picker", arg_spec.name),
+            );
+            return Vec::new();
+        };
+        // Both captured HERE, at open, for YR.3's reason: by accept time
+        // the picker has been dismissed and neither question has the
+        // same answer.
+        let replace = (*replace_start, replace_start + prefix.len());
+        drop(reg);
+        self.picker_fill_target = Some(FillTarget::CommandLine);
+        self.picker_fill_replace = Some(replace);
+        let signals = self.open_picker(source, Vec::new());
+        // `open_picker` reports a refusal by echoing and leaving
+        // `self.picker` as it found it — `None` here. Roll the capture
+        // back, or the next unrelated `FillCaller` consumes a target and
+        // a range that belong to a picker that never opened.
+        if self.picker.is_none() {
+            self.picker_fill_target = None;
+            self.picker_fill_replace = None;
+        }
+        signals
     }
 
     /// YR.3: the caller named at open is no longer there.
@@ -9059,6 +9188,7 @@ impl Editor {
             }
             AppEffect::InsertRegister(c) => out.next_actions.push(Action::InsertRegister(c)),
             AppEffect::OpenYankPicker => out.next_actions.push(Action::OpenYankPicker),
+            AppEffect::OpenArgPicker => out.next_actions.push(Action::OpenArgPicker),
             // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
             // navigation is now mode-owned. `active-snippet-mode`
             // registers `ActionContext -> Effect` handlers on the
@@ -30651,6 +30781,15 @@ impl Editor {
     /// (SMR queue advance, event-bus publish, preview-origin
     /// restore) consolidated host-side.
     pub fn do_picker_dismiss(&mut self) -> Vec<RendererSignal> {
+        // YR.6: a picker opened to ANSWER and then abandoned must not
+        // leave its capture behind. `picker_fill_target`'s own docs say
+        // `None` means "opened to act, and a `FillCaller` here is a
+        // wiring bug" — which was not true on this path before, so a
+        // dismissed fill-picker could hand its target to an unrelated
+        // one that emits `FillCaller` without setting a target of its
+        // own. Cleared first so every `return` below inherits it.
+        self.picker_fill_target = None;
+        self.picker_fill_replace = None;
         // YR.5b: a yank picker opened over another picker restores it on
         // Esc. Closing both would lose the list the user was filtering,
         // which they never asked to leave — they asked to abandon the

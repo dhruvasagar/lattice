@@ -100,6 +100,7 @@ fn string_arg(name: &'static str, doc: &'static str, prompt: &'static str) -> Ve
         prompt: prompt.into(),
         default: ArgDefault::None,
         completion: None,
+        picker: None,
     }]
 }
 

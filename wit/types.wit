@@ -834,7 +834,17 @@ interface types {
         doc: string,
         prompt: string,
         default: arg-default,
+        /// A registered COMPLETION source (`gen:files`, ...) — inline
+        /// candidates as the user types this argument.
         completion: option<string>,
+        /// YR.6: a registered PICKER source offered for this argument.
+        ///
+        /// Two fields because they name two registries, which is a
+        /// decision rather than an oversight: a completion source is
+        /// engine-shaped, a picker source is surface-shaped and needs
+        /// `PickerContext`. An argument may set both — `<Tab>` completes
+        /// inline, `<C-x><C-o>` opens the picker on the same question.
+        picker: option<string>,
     }
     /// Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source
     /// out of the picker's fuzzy refilter (the source owns filtering).

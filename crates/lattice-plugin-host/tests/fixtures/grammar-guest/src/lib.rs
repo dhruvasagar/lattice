@@ -26,6 +26,7 @@ use lattice::plugin_host::grammar;
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Effect, EchoLevel, EchoPayload, ExCommandContext,
+    OpenPickerPayload,
     MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
     TextObjectSpec,
 };
@@ -92,6 +93,18 @@ impl Guest for Component {
             },
             5,
         );
+        // PH7.4e: "utilize an existing picker" — the guest asks the host to
+        // open a picker source it did not define. `apply-action(6)` returns
+        // `Effect::OpenPicker`, which is how a plugin reuses a native
+        // picker (or another plugin's) rather than shipping its own.
+        grammar::register_action(
+            "open-files-picker",
+            "open the host's `files` picker (fixture)",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            6,
+        );
     }
 }
 
@@ -152,6 +165,13 @@ impl Callbacks for Component {
                     text: format!("{text}@{}:{}", start.line, start.byte),
                 })])
             }
+            // PH7.4e: reuse a picker the guest does not own. The args are
+            // non-empty and ordered so the test can prove the payload
+            // crossed intact rather than just that *a* picker opened.
+            6 => Ok(vec![Effect::OpenPicker(OpenPickerPayload {
+                source: "files".to_string(),
+                args: vec!["src".to_string(), "*.rs".to_string()],
+            })]),
             other => Err(format!("fixture: unknown action callback {other}")),
         }
     }

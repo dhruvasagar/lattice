@@ -62,12 +62,13 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
-    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 1 action
-    // (read-at-cursor, AP.0.1).
+    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 2 actions
+    // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e).
     assert_eq!(
         set.len(),
-        5,
-        "guest contributed down-n + to-cursor + fails + traps + read-at-cursor"
+        6,
+        "guest contributed down-n + to-cursor + fails + traps + read-at-cursor \
+         + open-files-picker"
     );
 
     let mut registry = CommandRegistry::new();
@@ -394,4 +395,52 @@ fn a_trapping_motion_quarantines_and_short_circuits() {
         "one trap record from the trip, none from the re-trip"
     );
     assert_eq!(traps[0].level, TraceLevel::Error);
+}
+
+/// PH7.4e — "utilize an existing picker": a plugin opens a picker source
+/// it does not own.
+///
+/// The conversion layer was already unit-tested in both directions
+/// (`boundary_effect`'s round-trip), and `Effect::OpenPicker` was already
+/// expressible. What was unproven is the thing the slice is named for:
+/// that a **real guest** can produce it and the host receives it intact.
+///
+/// The args are non-empty and ordered on purpose — an assertion that
+/// merely saw `OpenPicker` would pass on a payload that arrived empty or
+/// reversed.
+#[test]
+fn a_plugin_can_open_a_picker_source_it_does_not_own() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, _) = load(&dir);
+    let action_id = registry
+        .id_by_name("open-files-picker")
+        .expect("the guest registered the action");
+
+    let mut document = lattice_core::Document::from_text("hello\n");
+    let cancel = CancellationToken::never();
+    let effect = lattice_grammar::dispatcher::execute(
+        &registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(action_id),
+        &cancel,
+    )
+    .expect("the plugin action dispatches through the sync trampoline");
+
+    match effect {
+        lattice_grammar::effect::Effect::OpenPicker { source, args } => {
+            assert_eq!(source, "files", "the guest names a HOST-owned source");
+            assert_eq!(
+                args,
+                vec!["src".to_string(), "*.rs".to_string()],
+                "the payload crossed intact and in order"
+            );
+        }
+        other => panic!("expected OpenPicker from the plugin action, got {other:?}"),
+    }
 }

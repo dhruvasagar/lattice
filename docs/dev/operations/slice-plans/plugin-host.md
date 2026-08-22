@@ -548,10 +548,27 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   > seams (zero bespoke host code, zero `Editor::` methods, zero `Action` variants); overhead is
   > benched. PH7.5 turns the benches into CI-gated ratchets. **Depends:** PH7.4c.
 
-  #### PH7.4e — "Utilize an existing picker" seam 📝
+  #### PH7.4e — "Utilize an existing picker" seam ✅ (2026-08-22)
   Formalise/validate the guest→host open-picker path (a plugin opens/reuses an existing
-  source). Largely expressible today via `Effect::OpenPicker`; this slice proves it end-to-end
-  and adds any missing surface. Post-exit (the exit gate doesn't require it). **Depends:** PH7.4c.
+  source). **No surface was missing** — the honest outcome of a slice scoped as "prove it and
+  add anything absent". `Effect::OpenPicker` already converted in both directions with a
+  `boundary_effect` round-trip unit test, so the conversion layer was done.
+
+  What was NOT proven, and is what the slice is named for: that a **real guest** can produce
+  it. The `grammar-guest` fixture gains `open-files-picker` (`apply-action(6)`), returning
+  `Effect::OpenPicker { source: "files", args: ["src", "*.rs"] }` — a source the guest does
+  not own — and a host test asserts the payload arrives intact through the sync trampoline.
+  Args are non-empty and ordered on purpose: an assertion that merely saw `OpenPicker` would
+  pass on a payload that arrived empty or reversed.
+
+  **Reusing another *plugin's* source needs nothing extra.** `OpenPicker` names a source by
+  string id and the picker registry does not distinguish native from plugin entries, so the
+  case falls out of PH7.4c's registration rather than needing its own surface.
+
+  The contribution-count pin in `plugin_grammar_registers_with_host_stamped_plugin_provenance`
+  caught the new action (5 → 6), which is the pin doing its job.
+
+  *Tests:* 1 new (+1 pin updated). **Depends:** PH7.4c.
 
 ### PH7.5 — Perf gates + CI ratchet ✅ (2026-07-12)
 The CI gate on the §7 plugin budgets. The ratchet is a **test** (not a criterion compare),

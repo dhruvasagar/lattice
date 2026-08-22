@@ -8576,6 +8576,7 @@ impl Editor {
         // the picker has been dismissed and neither question has the
         // same answer.
         let replace = (*replace_start, replace_start + prefix.len());
+        let prefix = prefix.clone();
         drop(reg);
         self.picker_fill_target = Some(FillTarget::CommandLine);
         self.picker_fill_replace = Some(replace);
@@ -8587,8 +8588,45 @@ impl Editor {
         if self.picker.is_none() {
             self.picker_fill_target = None;
             self.picker_fill_replace = None;
+            return signals;
         }
+        self.seed_arg_picker_query(&prefix);
         signals
+    }
+
+    /// YR.6 follow-up: open the argument picker already filtered by what
+    /// the user had typed, so the chord continues their typing instead of
+    /// discarding it.
+    ///
+    /// **Only for non-live sources.** A live source owns its own
+    /// filtering and refetches through `on_query_changed`; setting its
+    /// query here without firing that would paint a query the list has
+    /// not been filtered by — worse than an empty one, because it looks
+    /// applied.
+    ///
+    /// **A prefix that matches nothing is dropped rather than honoured.**
+    /// Stranding the user on an empty list, one keystroke after they
+    /// asked to see their options, is the opposite of what the chord is
+    /// for — and a sha fragment or a typo that the fuzzy matcher does not
+    /// like is exactly when someone reaches for the picker.
+    fn seed_arg_picker_query(&mut self, prefix: &str) {
+        if prefix.is_empty() {
+            return;
+        }
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        if picker.is_live_source_mode() {
+            return;
+        }
+        picker.query = prefix.to_string();
+        picker.query_cursor = prefix.len();
+        picker.refilter();
+        if picker.candidates.is_empty() {
+            picker.query.clear();
+            picker.query_cursor = 0;
+            picker.refilter();
+        }
     }
 
     /// YR.3: the caller named at open is no longer there.

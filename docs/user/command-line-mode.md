@@ -38,6 +38,10 @@ replaces what you had typed for that argument:
 :magit-checkout main             → after picking
 ```
 
+The picker opens **already filtered by what you had typed**, so the chord
+picks your typing up rather than throwing it away — unless nothing
+matches it, in which case you get the full list instead of an empty one.
+
 It is vim's omni-completion chord, and it means the same thing here: ask
 whatever knows about this position. An argument can offer both — `<Tab>`
 for the quick inline answer, `<C-x><C-o>` for the richer surface — and

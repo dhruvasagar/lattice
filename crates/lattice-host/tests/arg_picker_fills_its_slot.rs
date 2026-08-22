@@ -201,3 +201,60 @@ fn magit_revision_arguments_declare_a_picker() {
         "the rev argument offers the revision picker"
     );
 }
+
+/// YR.6 follow-up: the chord continues the user's typing rather than
+/// discarding it — the picker opens already filtered by the prefix.
+#[test]
+fn the_typed_prefix_seeds_the_pickers_query() {
+    let mut editor = boot();
+    // Two entries so filtering is observable: only one matches `ma`.
+    editor.store_yank(
+        lattice_grammar::Register::Unnamed,
+        "other".to_string(),
+        lattice_grammar::YankKind::Charwise,
+        true,
+    );
+    type_cmdline(&mut editor, "yr6-with ma");
+
+    let _ = editor.do_open_arg_picker();
+    let picker = editor.picker.as_ref().expect("the picker opened");
+    assert_eq!(
+        picker.query, "ma",
+        "the picker opens filtered by what was typed"
+    );
+    assert!(
+        picker
+            .candidates
+            .iter()
+            .any(|c| c.raw.text.contains("main")),
+        "and `main` survives that filter"
+    );
+    assert!(
+        !picker
+            .candidates
+            .iter()
+            .any(|c| c.raw.text.contains("other")),
+        "while `other` does not"
+    );
+}
+
+/// A prefix the source cannot match must not strand the user on an empty
+/// list one keystroke after they asked to see their options — which is
+/// exactly when a sha fragment or a typo sends someone to the picker.
+#[test]
+fn a_prefix_that_matches_nothing_opens_the_full_list() {
+    let mut editor = boot();
+    type_cmdline(&mut editor, "yr6-with zzzzzz");
+
+    let _ = editor.do_open_arg_picker();
+    let picker = editor.picker.as_ref().expect("the picker opened");
+    assert!(
+        picker.query.is_empty(),
+        "the unmatchable prefix is dropped, got {:?}",
+        picker.query
+    );
+    assert!(
+        !picker.candidates.is_empty(),
+        "and the user sees the whole list rather than nothing"
+    );
+}

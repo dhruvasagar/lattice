@@ -212,9 +212,18 @@ the broken version**, so the prefix case is pinned separately.
 Also fixed: `do_picker_dismiss` cleared `picker_fill_target` only on the
 stashed-picker branch, so a dismissed fill-picker left its capture set.
 
-*Not done:* seeding the picker's query with the already-typed prefix, so
-the list opens pre-filtered. Wanted, and the range needed for it is
-already captured — a follow-up, not a gap in the seam.
+**Follow-up landed the same day:** the picker opens already filtered by
+the typed prefix, so the chord continues the user's typing instead of
+discarding it. Two constraints, both of which are the interesting part:
+
+- **Non-live sources only.** A live source owns its filtering and
+  refetches via `on_query_changed`; a query set without firing that
+  would paint a filter the list has not been filtered by — worse than
+  an empty query, because it looks applied.
+- **An unmatchable prefix is dropped, not honoured.** Stranding someone
+  on an empty list one keystroke after they asked to see their options
+  inverts the whole point, and a sha fragment or a typo the fuzzy
+  matcher dislikes is exactly when people reach for the picker.
 
 ---
 

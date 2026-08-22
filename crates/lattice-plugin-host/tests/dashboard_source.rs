@@ -157,3 +157,35 @@ fn sections_are_independent_instances() {
         "getting-started renders its own block"
     );
 }
+
+/// A section is rendered on EVERY compose, for the editor's lifetime. Fuel is
+/// a per-call budget, so it has to be re-armed per call — arming once at
+/// instantiate makes a section work for the first few composes and then trap
+/// on exhaustion, permanently, with no user-visible cause.
+///
+/// Caught by `benches/dashboard_section.rs`: the render benched at 9ns, which
+/// is the poisoned early-return, not a wasm call. A test that renders two or
+/// three times passes against the broken version, so this one renders enough
+/// to drain any plausible one-shot budget.
+#[test]
+fn a_section_survives_being_rendered_many_times() {
+    let dir = TempDir::new().unwrap();
+    let Some(all) = sections(&dir) else {
+        eprintln!("SKIP: dashboard fixture guest not built");
+        return;
+    };
+    let recent = find(&all, "recent").expect("recent");
+
+    let first = recent.render(&ctx(false));
+    assert!(!first.rows.is_empty(), "sanity: the first render works");
+
+    for i in 0..2_000 {
+        let f = recent.render(&ctx(false));
+        assert_eq!(
+            f.rows.len(),
+            first.rows.len(),
+            "section stopped rendering after {i} composes — fuel is not being \
+             re-armed per call"
+        );
+    }
+}

@@ -181,6 +181,9 @@ pub struct WasmDashboardSection {
     spec: DashboardSectionSpec,
     plugin: String,
     plugin_id: u64,
+    /// Re-armed before EVERY render. Fuel is a per-call budget, not a
+    /// per-instance one — see [`WasmDashboardSection::render`].
+    budget: PluginBudget,
 }
 
 struct SectionGuest {
@@ -250,6 +253,25 @@ impl lattice_dashboard::DashboardSection for WasmDashboardSection {
             bindings,
             poisoned,
         } = &mut *guest;
+        // Re-arm the per-call budget. THIS IS NOT OPTIONAL and it is the one
+        // thing about this seam that differs from `help`: fuel is spent per
+        // call, and a section is called on every compose for the editor's
+        // lifetime. Arming once at instantiate (which is right for a
+        // declare-once seam like `config` or `help`) makes a section work for
+        // the first ~1000 composes and then trap on exhaustion — permanently,
+        // and with no cause a user could see. Every other repeated-call seam
+        // here does the same thing at the same point: `grammar_trampoline`,
+        // `completion_task`, `context_task`, `decoration_task`, `event_task`.
+        if let Err(e) = crate::arm_store(store, self.budget) {
+            *poisoned = true;
+            tracing::warn!(
+                plugin = %self.plugin,
+                id = %self.spec.id,
+                error = %e,
+                "could not re-arm a dashboard section's budget; it will render nothing further"
+            );
+            return DashboardFragment::new();
+        }
         match bindings.call_render_section(&mut *store, &self.spec.id, &wit_ctx) {
             Ok(fragment) => fragment_from_wit(&self.plugin, fragment),
             Err(e) => {
@@ -307,6 +329,7 @@ impl PluginHost {
                 spec,
                 plugin: manifest.id.clone(),
                 plugin_id: id.0 as u64,
+                budget,
             });
         }
         Ok((id, sections))

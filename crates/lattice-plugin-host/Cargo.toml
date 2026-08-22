@@ -205,5 +205,13 @@ harness = false
 name = "tree_enclosing"
 harness = false
 
+# CR.4: the actor-thread guest call a plugin dashboard section costs per
+# compose, plus its one-time spawn. The design fragment argues the call is
+# acceptable because composition is Display-class; this is the number that
+# makes the argument falsifiable.
+[[bench]]
+name = "dashboard_section"
+harness = false
+
 [lints]
 workspace = true

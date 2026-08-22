@@ -14,7 +14,7 @@ above this seam.
 Companion to `design.md` (§5.1 buffer model, §5.12 configuration) and to
 `magit-repo-scoping.md`, which solves the same problem for git
 specifically and whose three-step resolution predates this. Sequencing
-lives in `../operations/slice-plans/project-resolution.md`.
+lives in `../operations/slice-plans/archive/project-resolution.md`.
 
 ## 1. The problem: four roots, none of them shared
 

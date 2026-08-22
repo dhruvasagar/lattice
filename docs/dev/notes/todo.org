@@ -71,6 +71,7 @@
 - [X] indent guide
 - [ ] notification should have icons & color coding
 - [X] `C-x g` should also trigger refresh so we see latest changes, gated by an option
+- [ ] tmux pane zoom
 
 * Plugins
 - [X] plugin manager

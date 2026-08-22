@@ -1,9 +1,10 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-22).** PR.1–PR.6 ✅; PR.7 has its own spec.
-> The native track is complete;
+> **Status: ✅ COMPLETE (2026-08-22).** PR.1–PR.6 ✅, PR.7 **retired**
+> (see below) — no slice is open, planned, or deferred, so this plan is
+> archived.
 > PR.7 has its own spec. Sequencing companion to the design fragment
-> [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
+> [`../../../architecture/project-resolution.md`](../../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
 > status*. User docs: `docs/user/project.md` (PR.2).
 
@@ -259,19 +260,47 @@ a path with no project is `pwd` with an empty marker. Host-side unit
 tests of the conversion cannot prove any of this — what is under test is
 that a real component reaches the import and the linker satisfies it.
 
-### PR.7 — the project.el-style plugin ⛔ (own spec)
+### PR.7 — the project.el-style plugin ⊘ RETIRED (2026-08-22)
 
-Switch, project list + persistence, `project-buffers`, the `C-x p`
-prefix keymap, multi-project actions.
+**Not deferred — retired.** Deferring would keep it visible as work
+someone should eventually do; it is not.
 
-Blocked on seams that do not exist yet and are **out of scope for this
-plan**: `spawn-terminal-payload` carries no `cwd`,
-`open-picker-payload` carries no root, and no compilation effect exists
-at all. Those payload extensions get designed against real usage once
-PR.3–PR.5 have shown which roots each action actually needs.
+The plugin was scoped when "project" was a thing Lattice did not have.
+By PR.6 the native surface had absorbed the reason for it:
 
-Gets its own design fragment and slice plan. Listed here only so the
-dependency is visible.
+| project.el | Lattice |
+|---|---|
+| `project-find-file` | `:files` (PR.4) |
+| `project-compile` | `:compile` (PR.4) |
+| `project-shell` | `:terminal` (PR.3) |
+| `project-search` | `:search` (PR.4) |
+| `project-switch-project` | — |
+| `project-buffers` | — |
+
+Two genuine gaps remain — a switcher over known projects, and a
+project-scoped `:ls`. Both are small, and both are now **native**
+questions rather than plugin ones: a switcher is a picker source over
+recently-seen roots, and scoping `:ls` is a filter on a list the host
+already owns. Neither is sliced, deliberately. "Switch project" in a
+derived model is just *open a file there*, which `:e` and `:files`
+already do, so the gap is only felt for a project with no file open —
+and that is a real want but not an evidenced one yet. It gets sliced
+when someone hits it, not on the strength of another editor's command
+list (heuristic #2).
+
+**The consequence worth recording: the WIT payload extensions are not
+needed.** PR.7 was going to require `cwd` on `spawn-terminal-payload`, a
+root on `open-picker-payload`, and a compilation effect that does not
+exist. All three were public API we would have added on spec, for a
+plugin that turned out to be unnecessary. Not adding them is the win.
+
+**And an honest note on PR.6's sequencing.** It was ordered after PR.5
+on the argument that converting the native consumers would tell us which
+seams the plugin needed. With no plugin, that rationale is moot. The
+seam still stands on its own — any project-aware plugin (a linter, a
+test runner) needs the root, and it cannot be a contribution seam for
+the layering reasons in design §6 — but it was not, in the end, needed
+*for this*.
 
 ## Status table
 
@@ -283,4 +312,4 @@ dependency is visible.
 | PR.4 compilation / search / picker / ACP | ✅ |
 | PR.5 magit cwd fallback | ✅ |
 | PR.6 WIT seam | ✅ |
-| PR.7 plugin | ⛔ own spec |
+| PR.7 plugin | ⊘ retired — native surface absorbed it |

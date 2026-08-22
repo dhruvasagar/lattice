@@ -53,6 +53,9 @@ pub struct WasmErrorParser {
     store: wasmtime::Store<crate::PluginState>,
     bindings: bindings::ErrorParserPlugin,
     plugin: String,
+    /// Re-armed before EVERY `feed` / `reset`. Fuel is a per-call budget, not
+    /// a per-instance one.
+    budget: PluginBudget,
     /// Set once the guest traps. A trapped component is dead until reloaded
     /// (wasmtime offers no rollback), and continuing to call it would trap
     /// once per line for the rest of the build.
@@ -69,9 +72,37 @@ impl std::fmt::Debug for WasmErrorParser {
 }
 
 impl WasmErrorParser {
+    /// Re-arm the per-call budget.
+    ///
+    /// **Fuel is spent per call, and a parser is fed every captured line of a
+    /// build.** Arming once at instantiate — which is correct for a
+    /// declare-once seam — makes the parser work for the first stretch of a
+    /// build and then trap on exhaustion, after which it silently drops every
+    /// remaining diagnostic. The cliff is far enough out that short builds
+    /// never reach it, which is exactly what made this survive review: the
+    /// bug only shows on the large, noisy builds where the error list matters
+    /// most.
+    ///
+    /// Returns false when re-arming failed (the parser is then poisoned).
+    fn rearm(&mut self) -> bool {
+        if let Err(e) = crate::arm_store(&mut self.store, self.budget) {
+            self.poisoned = true;
+            tracing::warn!(
+                plugin = %self.plugin,
+                error = %e,
+                "could not re-arm an error-parser's budget; it will contribute nothing further"
+            );
+            return false;
+        }
+        true
+    }
+
     /// Drop pending multi-line state — the start of a compilation run.
     pub fn reset(&mut self) {
         if self.poisoned {
+            return;
+        }
+        if !self.rearm() {
             return;
         }
         if let Err(e) = self.bindings.call_reset(&mut self.store) {
@@ -86,6 +117,9 @@ impl WasmErrorParser {
     /// (native and plugin) carry on.
     pub fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
         if self.poisoned {
+            return Vec::new();
+        }
+        if !self.rearm() {
             return Vec::new();
         }
         match self.bindings.call_feed(&mut self.store, line) {
@@ -324,6 +358,7 @@ impl PluginHost {
             store,
             bindings,
             plugin: manifest.id.clone(),
+            budget,
             poisoned: false,
         })
     }

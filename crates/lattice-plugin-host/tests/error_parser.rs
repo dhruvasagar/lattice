@@ -200,3 +200,35 @@ fn a_factory_mints_independent_parsers_from_one_component() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].message, "on stdout");
 }
+
+/// A parser is fed EVERY captured line of a build. Fuel is a per-call budget,
+/// so it must be re-armed per `feed` — arming once at instantiate makes the
+/// parser work for the first ~1000 lines of a build and then poison itself,
+/// silently dropping every diagnostic after that point.
+///
+/// A real `cargo build` emits far more than 1000 lines, so this is the common
+/// case rather than an edge one. Found while fixing the same bug in the CR.4
+/// dashboard seam, which shares the arm-once shape.
+#[test]
+fn a_parser_survives_a_long_build() {
+    let dir = TempDir::new().unwrap();
+    let Some(mut p) = parser(&dir) else {
+        eprintln!("SKIP: error-parser fixture guest not built");
+        return;
+    };
+
+    // Noise lines, as a long build is mostly noise.
+    for _ in 0..150_000 {
+        let _ = p.feed("   Compiling something v0.1.0");
+    }
+
+    // The parser must still recognise its format after all that.
+    assert!(p.feed("ERR something broke").is_empty());
+    let entries = p.feed("  at src/thing.q:12:5");
+    assert_eq!(
+        entries.len(),
+        1,
+        "the parser stopped recognising diagnostics partway through the build \
+         — fuel is not being re-armed per feed"
+    );
+}

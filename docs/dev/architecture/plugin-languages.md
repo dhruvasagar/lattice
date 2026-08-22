@@ -93,12 +93,27 @@ the `help` seam (CR.3) rather than `dashboard`'s live sections.
 
 ### 2.3 `Lang` stops being a closed enum
 
-The one genuinely invasive change. `Lang` is a `Copy` enum matched in
-four crates; a runtime-registered language cannot be a variant. The
-migration is `Lang::Plugin(LanguageId)` — an interned id — with the
-existing variants kept, so every native `match` arm stays valid and the
-new arm is one fallthrough per site. Sixteen sites across four files
-(measured against `Lang::Lua`).
+The one genuinely invasive change. `Lang` is a `Copy + Eq + Hash` enum
+matched across several crates; a runtime-registered language cannot be a
+variant. The migration is `Lang::Plugin(LanguageId)` where `LanguageId`
+is a `Copy` newtype over an intern index — **`Lang`'s derives constrain
+the payload**, so an owned `String` here is not an option. Existing
+variants stay, so every native `match` arm remains valid and the new arm
+is one fallthrough per exhaustive site.
+
+**Size, measured rather than guessed (2026-08-22).** An earlier draft of
+this section said "sixteen sites across four files"; that figure counted
+mentions of `Lang::Lua` — one language — and was the wrong measurement
+for this question. Adding a probe variant and letting rustc enumerate
+gives **4 non-exhaustive matches in `lattice-syntax` alone** (3 in
+`lang.rs`, 1 in `modes.rs`). That is a **lower bound**: cargo stops at
+the first failing crate, so `indent.rs`, `lattice-format/spec.rs` and
+the host's own matches were never reached. The true total needs the
+layers fixed one at a time — which is LG.2 itself.
+
+The encouraging half: most of the ~150 `Lang::` occurrences across the
+tree are *constructions* or `matches!` guards, not exhaustive matches,
+so the arm-adding is far narrower than the raw grep count suggests.
 
 ## 3. The risk that decides this
 

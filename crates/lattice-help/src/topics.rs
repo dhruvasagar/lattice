@@ -13,10 +13,12 @@
 //!   inflated on first open and cached, so a session that never opens
 //!   `:help` never decompresses anything.
 //! - [`HelpTopicBody::Static`] embeds compile-time markdown directly.
+//! - [`HelpTopicBody::Owned`] holds runtime markdown — what a plugin's
+//!   pages land as, having crossed the WASM boundary as a `String`.
 //! - [`HelpTopicBody::Dynamic`] takes a closure that produces text
 //!   on demand -- this is the seam for LSP-driven topics
-//!   (`:help symbol::Foo`), in-process introspection that can't be
-//!   captured at compile time, or any plugin-supplied source.
+//!   (`:help symbol::Foo`) and in-process introspection that can't be
+//!   captured at compile time.
 //!
 //! **Runtime-writable (CR.1).** The host holds this as a
 //! [`HelpTopicRegistryHandle`] — copy-on-write RCU behind an
@@ -86,6 +88,7 @@ impl std::fmt::Debug for HelpTopic {
                 "body_kind",
                 &match &self.body {
                     HelpTopicBody::Static(_) => "static",
+                    HelpTopicBody::Owned(_) => "owned",
                     HelpTopicBody::Compressed { .. } => "compressed",
                     HelpTopicBody::Dynamic(_) => "dynamic",
                 },
@@ -98,14 +101,23 @@ impl std::fmt::Debug for HelpTopic {
 ///
 /// - `Static` — a compile-time `&'static str`. Used by tests and by
 ///   any caller registering a topic from a string it already holds.
+/// - `Owned` — runtime markdown the registry owns. What a plugin's
+///   pages land as (CR.3): the body crossed the WASM boundary as an
+///   owned `String` and there is no `'static` to borrow from. Chosen
+///   over leaking the string — a leak would survive unload, and a
+///   plugin reloaded repeatedly would accumulate a copy of its manual
+///   each time.
 /// - `Compressed` — deflate-compressed markdown embedded at build
 ///   time. Every builtin topic is one of these. Decompressed on first
 ///   render and cached, so a session that never opens `:help` never
 ///   decompresses anything and the second open of a topic is free.
 /// - `Dynamic` — a closure invoked on every open (the seam for LSP /
-///   introspection / plugin-supplied content).
+///   introspection). NOT what plugin pages use: it re-invokes on every
+///   open, and a help plugin's guest is dropped once its bodies are
+///   across.
 pub enum HelpTopicBody {
     Static(&'static str),
+    Owned(String),
     Compressed {
         /// Raw deflate stream (no zlib/gzip wrapper).
         packed: &'static [u8],
@@ -121,6 +133,7 @@ impl HelpTopicBody {
     pub fn render(&self) -> String {
         match self {
             HelpTopicBody::Static(s) => s.to_string(),
+            HelpTopicBody::Owned(s) => s.clone(),
             HelpTopicBody::Compressed {
                 packed,
                 raw_len,
@@ -458,14 +471,7 @@ mod tests {
             HelpTopicBody::Compressed { cache, .. } => {
                 assert!(cache.get().is_some(), "render must populate the cache");
             }
-            other => panic!(
-                "builtin topics must be compressed, got {other:?}",
-                other = match other {
-                    HelpTopicBody::Static(_) => "static",
-                    HelpTopicBody::Dynamic(_) => "dynamic",
-                    HelpTopicBody::Compressed { .. } => unreachable!(),
-                }
-            ),
+            _ => panic!("builtin topics must be compressed"),
         }
     }
 
@@ -1019,14 +1025,7 @@ mod tests {
                 Some(inflated.as_str()),
                 "the clone must share the already-filled cache, not a fresh OnceLock"
             ),
-            other => panic!(
-                "builtin bodies are compressed, got {other:?}",
-                other = match other {
-                    HelpTopicBody::Static(_) => "static",
-                    HelpTopicBody::Dynamic(_) => "dynamic",
-                    HelpTopicBody::Compressed { .. } => unreachable!(),
-                }
-            ),
+            _ => panic!("builtin bodies are compressed"),
         }
     }
 }

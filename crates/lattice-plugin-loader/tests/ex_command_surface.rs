@@ -87,6 +87,7 @@ fn loader_with_ex_commands(base: &std::path::Path) -> (PluginLoaderHandle, Comma
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
             tracer: None,
+            ..Default::default()
         },
     ));
     loader.register_ex_commands();

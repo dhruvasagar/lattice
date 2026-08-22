@@ -1,0 +1,27 @@
+# CR.3 help fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `help-plugin` world. Its `register-help-topics` export declares four
+# topics covering the shapes that can go wrong: an empty name (which must land
+# at the bare plugin id rather than `id.id`), an ordinary namespaced page, a
+# name that deliberately collides with a builtin topic (which namespacing must
+# defuse), and an empty body (which the host must reject without failing the
+# load). Two bodies are `include_str!`'d, which is the seam's whole premise:
+# a plugin's docs are compiled into its own component. Built to a component by
+# the host crate's build.rs. Standalone workspace so it targets wasm32-wasip2
+# without inheriting the host toolchain's lints/target.
+[package]
+name = "help-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

@@ -81,6 +81,7 @@ fn rig(base: &std::path::Path, config: Arc<ConfigRegistry>) -> PluginLoader {
             )),
             tracer: None,
             meta_sink: None,
+            ..Default::default()
         },
     )
 }

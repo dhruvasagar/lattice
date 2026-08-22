@@ -152,6 +152,10 @@ pub enum PluginSeam {
     /// CM.6 — a compilation-output parser (`error-parser-plugin` world). Sync,
     /// fed one captured line at a time by the compilation reader.
     ErrorParser,
+    /// CR.3 — plugin-contributed `:help` pages (`help-plugin` world). The
+    /// markdown ships inside the component and crosses once, at load; the
+    /// topic then lives in the same registry the builtin docs do.
+    Help,
 }
 
 impl PluginSeam {
@@ -171,6 +175,7 @@ impl PluginSeam {
             PluginSeam::Logging => "logging",
             PluginSeam::PluginManager => "plugin-manager",
             PluginSeam::ErrorParser => "error-parser",
+            PluginSeam::Help => "help",
         }
     }
 }
@@ -199,6 +204,7 @@ impl FromStr for PluginSeam {
             "logging" => PluginSeam::Logging,
             "plugin-manager" => PluginSeam::PluginManager,
             "error-parser" => PluginSeam::ErrorParser,
+            "help" => PluginSeam::Help,
             _ => return Err(()),
         })
     }

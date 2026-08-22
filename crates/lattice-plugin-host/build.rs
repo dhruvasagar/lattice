@@ -72,6 +72,13 @@ fn main() {
         "theme-guest",
         "THEME_GUEST_WASM",
     );
+    // CR.3: the help topic-registration fixture. Its markdown is
+    // `include_str!`'d into the component, which is the seam's premise.
+    build_guest(
+        &fixtures.join("help-guest"),
+        "help-guest",
+        "HELP_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("config-guest"),
         "config-guest",
@@ -196,6 +203,16 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
         "cargo:rerun-if-changed={}",
         guest_dir.join("Cargo.toml").display()
     );
+    // CR.3: a guest that bakes data files in with `include_str!` (the help
+    // fixture's markdown) must rebuild when those files change. Cargo tracks
+    // `include_str!` *inside* the guest's own build, but this script is what
+    // starts that build, and it never re-runs unless the path is declared
+    // here — so an edited doc would otherwise be tested in its stale form,
+    // silently and for as long as nothing else in the guest changed.
+    let doc_dir = guest_dir.join("doc");
+    if doc_dir.is_dir() {
+        println!("cargo:rerun-if-changed={}", doc_dir.display());
+    }
 
     // The guest builds into its own workspace `target/`, pinned explicitly so a
     // leaked `CARGO_TARGET_DIR` can't redirect the output out from under the

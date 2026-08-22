@@ -78,6 +78,8 @@ pub mod event_task;
 pub mod events_host;
 pub mod grammar_host;
 pub mod grammar_trampoline;
+/// CR.3: the `help` guest→host topic-registration seam.
+pub mod help_host;
 pub mod host_services;
 pub mod keymap_host;
 pub mod manifest;
@@ -829,6 +831,11 @@ struct PluginState {
     /// TC.4: namespaced element names this plugin registered — the teardown
     /// tokens, mirroring `config_contributions`.
     theme_contributions: Vec<String>,
+    /// CR.3: topics this plugin declared through `help.register-topic`,
+    /// drained by `spawn_help_plugin` after the export returns. Plain data —
+    /// the loader turns them into `HelpTopic`s, so this crate never depends
+    /// on `lattice-help`.
+    help_contributions: Vec<help_host::HelpTopicSpec>,
     /// The plugin's manifest id (e.g. `"auto-pair"`). Set by every spawn/
     /// instantiate path from the manifest. Used to **auto-namespace** the
     /// plugin's config options — a `register-option("style")` registers
@@ -1673,6 +1680,41 @@ impl crate::theme_host::bindings::lattice::plugin_host::theme::Host for PluginSt
     }
 }
 
+/// CR.3: the `help` seam's single host func.
+///
+/// Validation and namespacing live in [`help_host`] as free functions so they
+/// are unit-testable without a `Store` (the `config_host` / `theme_host`
+/// precedent). This body is the thin part: derive the namespace from the
+/// manifest id the HOST holds — never from anything the guest passed — and
+/// record.
+///
+/// A rejection is an `Err` back to the guest, not a trap. One malformed page
+/// costs itself; the plugin's other pages still register, and the load still
+/// succeeds. That matches how every other declaration seam here treats bad
+/// guest data.
+impl crate::help_host::bindings::lattice::plugin_host::help::Host for PluginState {
+    fn register_topic(
+        &mut self,
+        name: String,
+        summary: String,
+        body: String,
+        related_commands: Vec<String>,
+    ) -> Result<(), String> {
+        let plugin_id = self.plugin_name.clone().unwrap_or_default();
+        match crate::help_host::validate_topic(&plugin_id, &name, &summary, &body, related_commands)
+        {
+            Ok(spec) => {
+                self.help_contributions.push(spec);
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(topic = %name, %err, "register-topic rejected");
+                Err(err)
+            }
+        }
+    }
+}
+
 impl crate::config_host::bindings::lattice::plugin_host::config::Host for PluginState {
     fn register_option(
         &mut self,
@@ -2096,6 +2138,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // CR.3: the `help` guest→host topic-registration seam. Sync host func
+        // (`register-topic` only records into `PluginState`), inert for worlds
+        // that don't import `help`.
+        crate::help_host::bindings::lattice::plugin_host::help::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The `modes` guest→host mode-declaration seam (PH7.11a). Sync host func
         // (`register-mode` only records into `PluginState`), inert for worlds that
         // don't import `modes`.
@@ -2217,6 +2267,17 @@ impl PluginHost {
         // sync path; leaving it out simply made the whole component fail to
         // load, which is how this was found.
         crate::theme_host::bindings::lattice::plugin_host::theme::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // CR.3, for the TC.6 reason above: a multi-seam component providing
+        // BOTH `grammar` and `help` is instantiated against this sync linker
+        // for its grammar seam, and instantiation must satisfy EVERY import
+        // the world declares, not only the ones that seam uses. Recording a
+        // topic touches `PluginState` and nothing else, so it is safe here;
+        // leaving it out would make the whole component fail to load.
+        crate::help_host::bindings::lattice::plugin_host::help::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )
@@ -2443,6 +2504,7 @@ impl PluginHost {
             config_contributions: Vec::new(),
             theme_registry: None,
             theme_contributions: Vec::new(),
+            help_contributions: Vec::new(),
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).
             mode_contributions: mode_host::ModeContributions::default(),

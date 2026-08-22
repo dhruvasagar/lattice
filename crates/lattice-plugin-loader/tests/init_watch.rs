@@ -100,6 +100,7 @@ async fn rewriting_the_init_artifact_auto_reloads() {
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
             tracer: None,
+            ..Default::default()
         },
     ));
 

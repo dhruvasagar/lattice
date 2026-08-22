@@ -81,6 +81,7 @@ fn loader(base: &std::path::Path, keymap: KeymapHandle) -> PluginLoaderHandle {
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
             tracer: None,
+            ..Default::default()
         },
     ))
 }

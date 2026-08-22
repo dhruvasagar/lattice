@@ -112,6 +112,7 @@ fn rig(base: &std::path::Path) -> Rig {
             )),
             tracer: None,
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
+            ..Default::default()
         },
     );
     Rig { loader, contexts }

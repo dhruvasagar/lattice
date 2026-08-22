@@ -274,6 +274,10 @@ pub struct LoaderServices {
     /// plugin's factory RCU-registers into. The compilation service reads
     /// the same handle once per run to mint each pipe reader's parser.
     pub parser_factories: Option<lattice_compilation::CompilationParserFactoriesHandle>,
+    /// CR.3: the help-topic registry a `help` plugin's pages RCU-register
+    /// into — the SAME one the builtin docs live in, so a plugin page opens,
+    /// completes and cross-links like any other.
+    pub help_topics: Option<lattice_help::topics::HelpTopicRegistryHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -300,6 +304,8 @@ pub struct WiredSeams {
     pub theme_registry: bool,
     /// CM.6b: the compilation parser-factory registry.
     pub parser_factories: bool,
+    /// CR.3: the help-topic registry.
+    pub help_topics: bool,
 }
 
 impl WiredSeams {
@@ -319,6 +325,7 @@ impl WiredSeams {
             && self.context_registry
             && self.theme_registry
             && self.parser_factories
+            && self.help_topics
     }
 }
 
@@ -513,6 +520,7 @@ impl PluginLoader {
             context_registry: self.env.context_registry.is_some(),
             theme_registry: self.env.theme_registry.is_some(),
             parser_factories: self.env.parser_factories.is_some(),
+            help_topics: self.env.help_topics.is_some(),
         }
     }
 
@@ -681,6 +689,13 @@ impl PluginLoader {
                     // pending state.
                     PluginSeam::ErrorParser => {
                         let id = self.drain_error_parser(&component, manifest, tier)?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    // CR.3: the plugin's `:help` pages. Data, not a live
+                    // guest — the bodies cross once here and the store is
+                    // dropped, so reading `:help` never touches wasm.
+                    PluginSeam::Help => {
+                        let id = self.drain_help(&component, manifest, tier).await?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
@@ -1241,6 +1256,25 @@ impl PluginLoader {
     /// reference. A missing registry handle (a partially-wired test loader)
     /// downgrades to a logged no-op reversal, never a panic.
     fn run_teardown(&self, teardown: &PluginTeardown) -> TeardownReport {
+        // CR.3: the help registry is reversed FIRST, and deliberately outside
+        // the all-or-nothing `let-else` below.
+        //
+        // Two reasons. It lives in `lattice-help`, so `PluginTeardown::unload`
+        // — which is in `lattice-plugin-host` — cannot touch it without
+        // pulling that crate across the boundary for one field. And it shares
+        // nothing with the handles the `let-else` demands, so gating it on
+        // them would mean an under-wired loader leaves a plugin's `:help`
+        // pages behind after `:plugin-unload` reported success. Stale docs
+        // for code that is gone is a worse failure than the partial teardown
+        // that caused it, and a quieter one.
+        let mut help_topics_removed = 0;
+        if let Some(help_h) = self.env.help_topics.as_ref() {
+            help_h.rcu(|current| {
+                let mut next = (**current).clone();
+                help_topics_removed = next.unregister_plugin(teardown.plugin_id.0 as u64);
+                Arc::new(next)
+            });
+        }
         let (
             Some(cmd_h),
             Some(pick_h),
@@ -1268,7 +1302,10 @@ impl PluginLoader {
             tracing::warn!(
                 "plugin teardown skipped: loader missing a registry handle (partial unload)"
             );
-            return TeardownReport::default();
+            return TeardownReport {
+                help_topics: help_topics_removed,
+                ..TeardownReport::default()
+            };
         };
 
         // Owned snapshots of the ArcSwap registries for the `&mut` unload needs.
@@ -1302,6 +1339,8 @@ impl PluginLoader {
         mode_h.store(Arc::new(modes));
         deco_h.store(Arc::new(decorations));
         ctx_h.store(Arc::new(contexts));
+        let mut report = report;
+        report.help_topics = help_topics_removed;
         report
     }
 
@@ -1904,6 +1943,68 @@ impl PluginLoader {
             plugin = %manifest.id,
             id = id.0,
             "error-parser plugin registered its parser factory"
+        );
+        Ok(id)
+    }
+
+    /// CR.3 — the `help` seam's drain.
+    ///
+    /// Drives `register-help-topics` once, then RCU-registers what the guest
+    /// declared into the help registry, each topic stamped with this plugin's
+    /// host-issued id. Teardown is by that provenance
+    /// (`HelpTopicRegistry::unregister_plugin`), so — like `error-parser` —
+    /// there is no list to record on `record` and therefore none to forget.
+    ///
+    /// The guest is dropped when `spawn_help_plugin` returns: the bodies are
+    /// already across as owned `String`s, so nothing about the plugin needs to
+    /// be alive for `:help` to render its pages.
+    ///
+    /// A plugin that declared no topics still loads. It is a strange plugin,
+    /// not a broken one, and failing the load would be a worse answer than a
+    /// debug line.
+    async fn drain_help(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .help_topics
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("help"))?;
+
+        let (id, specs) = self
+            .host
+            .spawn_help_plugin(component, manifest, tier, PluginBudget::default())
+            .await?;
+
+        let count = specs.len();
+        if count > 0 {
+            registry.rcu(|current| {
+                let mut next = (**current).clone();
+                for spec in &specs {
+                    next.register(lattice_help::topics::HelpTopic {
+                        name: spec.name.clone(),
+                        summary: spec.summary.clone(),
+                        // `Static` needs a `&'static str` and a plugin's body
+                        // is runtime data, so the owned-`String` variant is
+                        // the one that fits. `Dynamic` would be the wrong
+                        // shape twice over: it re-invokes a closure on every
+                        // open, and the guest it would have to call is gone.
+                        body: lattice_help::topics::HelpTopicBody::Owned(spec.body.clone()),
+                        related_command_patterns: spec.related_command_patterns.clone(),
+                        plugin_id: Some(id.0 as u64),
+                    });
+                }
+                Arc::new(next)
+            });
+        }
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            topics = count,
+            "help plugin registered its topics"
         );
         Ok(id)
     }

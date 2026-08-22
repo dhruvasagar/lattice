@@ -138,6 +138,10 @@ criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Hermetic per-test dir for the module-cache hit/miss test.
 tempfile = { workspace = true }
+# CR.3: `tests/help_source.rs` asserts the fixture's colliding topic name is a
+# REAL builtin, so the namespacing test cannot pass by colliding with nothing.
+# Dev-only — the crate itself never depends on lattice-help (see help_host.rs).
+lattice-help = { path = "../lattice-help" }
 # PH7.8b.3: the e2e test acts as a cross-plugin CONSUMER — it shares the guest's
 # `PluginEvent` type (via the SDK derive) and decodes the emitted payload,
 # proving the contract round-trips guest→host.

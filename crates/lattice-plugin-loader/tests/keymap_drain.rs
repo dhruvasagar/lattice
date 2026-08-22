@@ -103,6 +103,7 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
             tracer: None,
+            ..Default::default()
         },
     );
 

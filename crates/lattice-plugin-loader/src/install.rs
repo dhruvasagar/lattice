@@ -121,6 +121,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         parser_factories: boot
             .service::<lattice_compilation::CompilationParserFactoriesHandle>()
             .map(|h| (*h).clone()),
+        // CR.3: registered by the host in Phase A (the `builtin_topics()`
+        // hoist), so it is present well before this line.
+        help_topics: boot
+            .service::<lattice_help::topics::HelpTopicRegistryHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

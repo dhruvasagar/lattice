@@ -100,6 +100,7 @@ fn rig(base: &std::path::Path) -> Rig {
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
             tracer: None,
+            ..Default::default()
         },
     );
     Rig {

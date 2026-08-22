@@ -73,6 +73,12 @@ lattice-keymap = { path = "../lattice-keymap" }
 lattice-protocol = { path = "../lattice-protocol" }
 # TC.4: the theme seam's drain hands the plugin the SAME registry builtins use.
 lattice-theme = { path = "../lattice-theme" }
+# CR.3: the `help` seam's drain builds `HelpTopic`s from the plain specs the
+# host hands back and RCU-registers them into the SAME registry the builtin
+# docs live in. The host crate deliberately does NOT depend on this — a help
+# body is inert data on both sides of the boundary, so the conversion belongs
+# on the editor-facing side.
+lattice-help = { path = "../lattice-help" }
 # PR.6: `ProjectResolverHandle` — the loader hands the host the resolver the
 # guest `project` seam answers from. A leaf crate already in the graph; named
 # directly now `install` looks the service up by that exact alias.

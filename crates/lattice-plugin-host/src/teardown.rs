@@ -246,6 +246,14 @@ pub struct TeardownReport {
     pub theme_elements: usize,
     /// CM.6b: compilation parser factories unregistered.
     pub parser_factories: usize,
+    /// CR.3: `:help` topics unregistered.
+    ///
+    /// Filled by the LOADER after `unload` returns, not by `unload` itself —
+    /// the help registry lives in `lattice-help`, and reversing it here would
+    /// pull that crate into the host purely to name a field. The seam crosses
+    /// plain data in both directions, so nothing else about help belongs on
+    /// this side of the line.
+    pub help_topics: usize,
 }
 
 #[cfg(test)]
@@ -377,6 +385,10 @@ mod tests {
                 context_sources: 0,
                 theme_elements: 0,
                 parser_factories: 0,
+                // CR.3: always 0 from `unload` — the loader fills this after
+                // reversing the help registry, which lives on its side of the
+                // crate boundary.
+                help_topics: 0,
             }
         );
 

@@ -3,7 +3,7 @@
 **Design fragment:**
 [`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
 
-**Status:** CR.1–CR.5 📝.
+**Status:** CR.1 ✅, CR.2 ✅, CR.3–CR.5 📝.
 
 Closes HD.6 (`help-docs.md`) and DB.8 (`dashboard.md`) — both were
 blocked on the same missing mechanism, so they are sequenced here as one
@@ -28,15 +28,15 @@ green CR.1 can ship before CR.2 is started.
 
 | Slice | Description | Status |
 |---|---|---|
-| CR.1 | `HelpTopicRegistryHandle` — topics behind `Arc`, RCU handle, Phase-A service | 📝 |
-| CR.2 | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | 📝 |
+| CR.1 | `HelpTopicRegistryHandle` — topics behind `Arc`, RCU handle, Phase-A service | ✅ |
+| CR.2 | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | ✅ |
 | CR.3 | `help` WIT seam — `help-plugin` world, namespaced topics, drain + teardown | 📝 |
 | CR.4 | `dashboard` WIT seam — `dashboard-plugin` world, `WasmDashboardSection`, drain + teardown | 📝 |
 | CR.5 | User docs, bench, ledger, source-plan closeout | 📝 |
 
 ---
 
-### CR.1 — `HelpTopicRegistryHandle` 📝
+### CR.1 — `HelpTopicRegistryHandle` ✅ (2026-08-22)
 
 Make the help registry writable after boot. **No plugin surface in this
 slice** — it is pure substrate, and it lands green on its own.
@@ -71,7 +71,7 @@ assert the clone does not re-inflate).
 *doc:* design §2; `topics.rs` module docs lose the "known limit"
 paragraph.
 
-### CR.2 — `DashboardRegistryHandle` 📝
+### CR.2 — `DashboardRegistryHandle` ✅ (2026-08-22)
 
 Same treatment for the dashboard, plus the shadow-restore that
 replace-by-id forces.

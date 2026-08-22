@@ -6032,7 +6032,7 @@ accurate bounded-and-structurally-sealed picture.
 
 ---
 
-## Contributable registries (CR.1–CR.4 ✅, CR.5 🚧 — 2026-08-22)
+## Contributable registries (CR.1–CR.5 ✅ complete, 2026-08-22)
 
 Design:
 [`../architecture/contributable-registries.md`](../architecture/contributable-registries.md).
@@ -6055,7 +6055,7 @@ the idiom the tree already carried four times over.
 | **CR.2** | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | ✅ |
 | **CR.3** | the `help` WIT seam — bodies `include_str!`'d into the component, namespaced topics | ✅ |
 | **CR.4** | the `dashboard` WIT seam — live budgeted render, `WasmDashboardSection` | ✅ |
-| **CR.5** | user docs, benches, ledger, source-plan closeout | 🚧 |
+| **CR.5** | user docs, benches, ledger, source-plan closeout | ✅ |
 
 **The two seams differ in shape, deliberately.** A help topic is *data* — its
 body does not change between load and read, so the guest hands over a string

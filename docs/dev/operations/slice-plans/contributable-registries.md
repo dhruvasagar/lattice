@@ -3,7 +3,7 @@
 **Design fragment:**
 [`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
 
-**Status:** CR.1–CR.4 ✅, CR.5 🚧 (2026-08-22).
+**Status:** complete — CR.1–CR.5 ✅ (2026-08-22).
 
 Closes HD.6 (`help-docs.md`) and DB.8 (`dashboard.md`) — both were
 blocked on the same missing mechanism, so they are sequenced here as one
@@ -32,7 +32,7 @@ green CR.1 can ship before CR.2 is started.
 | CR.2 | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | ✅ |
 | CR.3 | `help` WIT seam — `help-plugin` world, namespaced topics, drain + teardown | ✅ |
 | CR.4 | `dashboard` WIT seam — `dashboard-plugin` world, `WasmDashboardSection`, drain + teardown | ✅ |
-| CR.5 | User docs, bench, ledger, source-plan closeout | 🚧 |
+| CR.5 | User docs, bench, ledger, source-plan closeout | ✅ |
 
 ---
 
@@ -172,7 +172,7 @@ or three passes against the broken build, which is how it got written.
 See `rearm-fuel-per-guest-call` and the CR.4 section of
 `benchmarks.md`.
 
-### CR.5 — docs, bench, ledger 🚧
+### CR.5 — docs, bench, ledger ✅ (2026-08-22)
 
 - `docs/user/plugins.md`: both seams, with the `include_str!` pattern
   for help bodies spelled out — it is the non-obvious half.

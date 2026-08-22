@@ -101,32 +101,72 @@ panics.
 
 ## The seams
 
-Status legend: **usable** = a real guest drives it end-to-end today (in a
-host-crate test); **partial** = wired with a named deferred piece;
-**type-mirror** = the WIT types exist but the interface has no functions yet.
+`wit/` **is** the API, and the catalog `:describe-plugin-api` reads is parsed
+from it at build time — so that command can never disagree with the WIT. This
+table can, which is why it says what each seam is *for* and leaves signatures
+to the catalog.
+
+Status legend: **usable** = a real guest drives it end to end in a host-crate
+test; **partial** = wired with a named deferred piece; **type-mirror** = the
+WIT types exist but the interface has no functions yet.
+
+### Contribution seams — what you put in `provides`
 
 | Seam / world | Status | You implement / call |
 |---|---|---|
-| `picker-source` (`picker-source-plugin`) | **usable** | Export `spec` / `init` / `accept`; produce candidates, route an accept to an editor action. *Deferred:* reading buffer text (the `document` borrow) and live/stream sources. |
-| `grammar` (`grammar-plugin`) | **usable** | Call `register-motion` / `register-operator` / `register-text-object` / `register-action` / `register-ex-command` from `activate`; the `apply` callback runs **synchronously** on the keystroke under a sub-frame budget. |
+| `grammar` (`grammar-plugin`) | **usable** | `register-motion` / `register-operator` / `register-text-object` / `register-action` / `register-ex-command`. The `apply` callback runs **synchronously on the keystroke** — see below. |
+| `picker-source` (`picker-source-plugin`) | **usable** | Export `spec` / `init` / `accept`; produce candidates, route an accept to an editor action. |
+| `completion-source` | **partial** | Export `generate` (async, off-keystroke — the LSP pattern). `Matcher` / `Ranker` / `Annotator` are type-mirrored; matching and ranking stay native. |
 | `events` (`events-plugin`) | **usable** | `subscribe` to typed events; your sink is invoked off the hot path. |
-| `config` (`config-plugin`) | **usable** | `register-option` / `get-option` against the same registry `:set` reads. |
-| `modes` (`modes-plugin`) | **usable** | `register-mode` (kind, policy, capabilities, keymap) into the mode registry. Full modes-as-components is Phase 8. |
-| `completion-source` | **partial** | Export `generate` (async, off-keystroke — the LSP pattern). `Matcher` / `Ranker` / `Annotator` are type-mirrored; matching/ranking stay native for now. |
-| `decorations` | **partial** | Produce gutter decorations as an off-render producer. *Deferred:* the renderer *reading* the decoration cache (Phase-8 boot-wiring) — your producer runs, but nothing paints it yet. |
-| `host-services` | **partial** | Call back into the editor. Only `walk` (capability-gated filesystem enumeration) is implemented; `emit-event` / `register-event` exist but no-op without a wired bus. `net` / `proc` / tree-sitter host-services are not implemented. |
+| `config` (`config-plugin`) | **usable** | `register-option` / `get-option` against the same registry `:set` reads. Auto-namespaced by your plugin id. |
+| `modes` (`modes-plugin`) | **usable** | `register-mode` (kind, policy, capabilities, keymap). The editor auto-generates the `:<mode>` toggle, and it shows in `:list-modes` / `:describe-mode`. |
+| `keymap` (`keymap-plugin`) | **usable** | Bind user keys above the built-in grammar — the `init.rs` keybinding path. |
+| `decorations` | **usable** | Produce gutter decorations as an off-render producer. The host refreshes them off the render path and the gutter repaints off-keystroke (PL8.E). |
+| `context` (`context-plugin`) | **usable** | The sticky-context producer — walks a handed `tree-snapshot`, host-cached per parse version. |
+| `theme` (`theme-plugin`) | **usable** | `register-element` with a default style. Your element lands in the registry builtins use, so themes override it and `:customize` edits it. Auto-namespaced. |
+| `error-parser` (`error-parser-plugin`) | **usable** | `feed` one compilation-output line at a time, `reset` between runs — teach lattice a build tool's diagnostic format. **Sync**, and on a fast producer's critical path. |
+| `help` (`help-plugin`) | **usable** | `register-topic` — ship your own `:help` pages. Bodies are `include_str!`'d into your component; names are auto-namespaced. |
+| `dashboard` (`dashboard-plugin`) | **usable** | `register-section` + `render-section` — add or replace a `:dashboard` block, rendered from the live ctx on every compose. **Sync**, on the compositor. |
+| `plugin-manager` (`plugin-manager-plugin`) | **usable** | `require` — declare the plugins you want; the host resolves, builds and loads them off-thread. A config-guest seam (`init.rs`), and a strictly larger authority than setting an option. |
+
+### Host APIs — you import these, they are not `provides` entries
+
+| Interface | Status | What it gives you |
+|---|---|---|
+| `host-services` | **partial** | Capability-gated callbacks. Only `walk` (filesystem enumeration) is implemented; `emit-event` / `register-event` exist but no-op without a wired bus. |
+| `project` | **usable** | Resolve a buffer or path to its project root. Walks the filesystem on a cache miss — which is why `error-parser-plugin` deliberately does **not** import it. |
+| `tree-sitter` | **usable** | Query the parse tree through a handed `tree-snapshot` borrow. |
+| `buffer` | **usable** | Read buffer text through a `document` borrow. |
+| `logging` | **usable** | Emit your own log narrative into the boundary trace (Layer 2) — see below. |
 | `command`, `ui` | **type-mirror** | Reserved. `ui` types (`ui-segment`, `ui-notification`, `ui-zone`) exist; the emit functions do not. |
 
-Run `:describe-plugin-api <seam>` for exact signatures.
+Run `:describe-plugin-api <seam>` for exact signatures, `:list-plugin-apis`
+for the whole set, and `:export-plugin-api` to dump it as Markdown or JSON.
 
-### The one synchronous seam: `grammar`
+### Sync or async, and why it matters
 
-Every seam is async / off-keystroke **except grammar**. A plugin motion,
-operator, or text object must resolve *synchronously* so it composes with its
-operator (`d` + plugin-motion) and keeps dot-repeat and macros synchronous. The
-host runs the grammar `apply` through a sync trampoline under a tight "Reflex"
-fuel budget (~10M fuel / 50 epoch ticks; measured ~340 ns release round-trip).
-The renderer itself never calls WASM — that invariant is absolute.
+Most seams are async and off the keystroke path. **Three are synchronous**,
+each for its own reason, and they share one linker:
+
+- `grammar` — a plugin motion must resolve synchronously so it composes with
+  its operator (`d` + plugin-motion) and keeps dot-repeat and macros
+  synchronous.
+- `error-parser` — parsing one line is a pure function of the line plus
+  pending state, called in arrival order by a single reader. An async call per
+  line would buy nothing and cost a suspend per line of build output.
+- `dashboard` — `render-section` runs inside the compositor, which is building
+  a page that is about to paint.
+
+All three carry the Reflex-class fuel budget rather than the generous
+lifecycle default, and **all three re-arm that budget per call** — fuel is
+spent per call, so a seam invoked repeatedly must re-arm or it works for a
+while and then traps permanently.
+
+The grammar `apply` runs through a sync trampoline under that budget
+(~10M fuel / 50 epoch ticks; measured ~340 ns release round-trip). **The
+renderer itself never calls WASM** — that invariant is absolute, and it is why
+`dashboard`'s render is on the *compositor* (which builds content) rather than
+in a paint path.
 
 ## The runtime contract you author against
 

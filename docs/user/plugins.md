@@ -24,11 +24,11 @@ feature uses — it is not a second-class bolt-on.
 > `:plugin-load` / `:plugin-unload` / `:plugin-reload` commands, the `:plugins`
 > manager view, the `init.rs` config path, and the full boundary-trace
 > observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging).
-> **`auto-pair` now ships as the first *core plugin*** — prebuilt, discovered at
-> boot, on by default (see [`core-plugins`](help:core-plugins)). The frontier is
-> more core plugins (`git-gutter`, rainbow-delimiters) plus the **use-package
-> layer** — declaring *user* plugins from a git/local source and building them on
-> first boot (the plugin-manager PM.5–PM.8 slices).
+> **Two *core plugins* ship today** — `auto-pair` and `treesitter-context`:
+> prebuilt, discovered at boot, on by default, and each carrying its own
+> `:help` page inside its component (see
+> [`core-plugins`](help:core-plugins)). The frontier is more core plugins
+> (`git-gutter`, rainbow-delimiters).
 
 ---
 
@@ -169,10 +169,16 @@ path are the same code shape.
 | **grammar** | Register new vim motions, operators, text objects, actions, and ex-commands — extending the modal grammar itself. This is the one seam that runs *synchronously* on a keystroke (so an operator can compose with a plugin motion), under a strict sub-frame budget. A plugin's ex-commands become first-class the moment it loads: they appear in `:`-line `<Tab>` completion, `:describe-command`, `:apropos`, and `:list-commands` (and disappear when it unloads). |
 | **events / hooks** | Subscribe to typed editor events (the unified autocmd/hook bus) and react off the hot path. |
 | **decorations** | Produce gutter/line decorations as an off-render producer (the `git-gutter`-style seam). |
-| **config** | Register typed options into the same registry `:set` reads. |
+| **config** | Register typed options into the same registry `:set` reads, auto-namespaced by the plugin's id. |
+| **theme** | Declare theme elements with default styles. A plugin's element lands in the same registry built-in ones do, so your colourscheme restyles it and `:customize` edits it. |
+| **context** | Produce the sticky scope headers pinned above the text (what `treesitter-context` uses). |
+| **error-parser** | Teach lattice to recognise diagnostics from a build tool it has never heard of — fed one line of compilation output at a time. |
+| **plugin-manager** | Declare the plugins you want (`require`), which the editor then fetches, builds and loads. This is the `init.rs` seam; declaring software to install is a larger authority than setting an option, which is why it is its own entry in a manifest's `provides`. |
 | **modes** | Declare a major/minor mode (kind, keymap, capabilities) that registers into the mode registry. The editor auto-generates a `:<mode-name>` toggle command for it (exactly like a built-in mode), and it shows in `:list-modes` / `:describe-mode`. |
 | **keymap** | Bind user keys above the built-in grammar (the `init.rs` keybinding path). |
 | **host-services** | Call back into the editor for capability-gated services (e.g. filesystem enumeration). |
+| **project** | Ask which project a buffer or path belongs to, and where its root is. |
+| **tree-sitter** | Query the parse tree of a buffer through a borrowed snapshot. |
 | **help** | Ship its own `:help` pages. The markdown is compiled into the plugin's own `.wasm` (see below); the topic then opens, `<Tab>`-completes and cross-links exactly like a built-in doc. |
 | **dashboard** | Add — or replace — a section on the `:dashboard` launch page, rendered from the live pane width, icon palette and editor version. |
 | **logging** | Emit the plugin's own log narrative into the boundary trace (Layer 2). |
@@ -180,6 +186,10 @@ path are the same code shape.
 Run `:describe-plugin-api <seam>` for the exact function signatures of any of
 these; `:list-plugin-apis` lists them all, and `:export-plugin-api` dumps the
 whole catalog as Markdown or JSON (useful for scaffolding).
+
+That catalog is parsed from the WIT package at build time, so it can never
+disagree with the actual API — if this table and `:list-plugin-apis` ever
+differ, believe the command.
 
 ### A plugin's docs live inside the plugin
 

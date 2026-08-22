@@ -529,7 +529,20 @@ fn translate_picker(chord: KeyChord) -> Action {
         };
     }
     match chord.key {
-        KeyKind::Special(SpecialKey::Esc) => Action::PickerDismiss,
+        // MG.29: `<Esc>` UNWINDS one submenu level before it closes
+        // anything — `TransientDismiss`, not `PickerDismiss`.
+        //
+        // The unwind logic and its dispatch arm shipped with MG.29 and
+        // were unit-tested; nothing ever emitted the action, so `<Esc>`
+        // kept closing the whole chain and only `<BS>` popped. The arm's
+        // own comment described the behaviour as if it were live, which
+        // is how it went unnoticed.
+        //
+        // Safe for a plain picker: `transient_unwind` returns false when
+        // there is no transient, and the arm then does exactly what
+        // `PickerDismiss` does. `<C-c>` stays a hard close, so there is
+        // still one key that leaves a deep chain in a single press.
+        KeyKind::Special(SpecialKey::Esc) => Action::TransientDismiss,
         KeyKind::Special(SpecialKey::Enter) => Action::PickerAccept,
         KeyKind::Special(SpecialKey::Backspace) => Action::PickerBackspace,
         KeyKind::Special(SpecialKey::Up) => Action::PickerSelectPrev,

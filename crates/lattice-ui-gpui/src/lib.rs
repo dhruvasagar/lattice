@@ -1060,6 +1060,33 @@ impl GpuiApp {
                 }
                 return outcome;
             }
+            // MG.29 lockstep: `<Esc>` routes here now, and this peer
+            // intercepts the dismiss family rather than letting it reach
+            // the generic path — so without this arm the unwind would
+            // work in the TUI and do nothing in GPUI.
+            Action::TransientDismiss => {
+                let signals = self.mutate_editor_with(|e| {
+                    let popped = e
+                        .picker
+                        .as_mut()
+                        .map(|p| p.transient_unwind())
+                        .unwrap_or(false);
+                    if popped {
+                        Vec::new()
+                    } else {
+                        e.do_picker_dismiss()
+                    }
+                });
+                let outcome = DispatchOutcome {
+                    consumed: true,
+                    renderer_signals: signals.clone(),
+                    ..Default::default()
+                };
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+                return outcome;
+            }
             Action::PickerDismiss => {
                 let signals = self.mutate_editor_with(|e| e.do_picker_dismiss());
                 let outcome = DispatchOutcome {

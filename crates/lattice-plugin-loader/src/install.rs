@@ -70,6 +70,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // plugin's `log_ctx` and the guest `logging` seam (Layer 2) routes into the
     // same ring as the boundary trace.
     host.set_tracer(tracer.clone());
+    // PR.6: hand the host what the guest `project` seam answers from. Both
+    // halves are required — the resolver turns a path into a project, the
+    // buffer store turns a `buffer` id into that path — so an absent either
+    // leaves the seam answering `none` rather than half-answering.
+    if let (Some(resolver), Some(buffers)) = (
+        boot.service::<lattice_core::ProjectResolverHandle>(),
+        boot.service::<lattice_mode::BufferStoreHandle>(),
+    ) {
+        host.set_project_context((*resolver).clone(), (*buffers).clone());
+    } else {
+        tracing::debug!("project seam unwired: no resolver or buffer store at plugin install");
+    }
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.

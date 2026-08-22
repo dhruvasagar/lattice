@@ -775,6 +775,9 @@ struct PluginState {
     /// `Some` once an async instantiate/spawn path stamps it ([`LogCtx`]); `None`
     /// for the sync grammar guest and any pre-tracer path (a `log` debug-drops).
     log_ctx: Option<LogCtx>,
+    /// PR.6: what the guest `project` seam resolves through. `None` in a
+    /// harness that wired no resolver; the seam then answers `none`.
+    project: Option<ProjectCtx>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -903,6 +906,80 @@ impl crate::plugin_manager_host::bindings::lattice::plugin_host::plugin_manager:
                 pinned: spec.pinned,
             });
         true
+    }
+}
+
+/// PR.6: what the guest `project` seam needs to answer.
+///
+/// Both halves are required: the resolver turns a path into a project, and
+/// the buffer store turns a `buffer` id into that path. Bundled so
+/// `PluginState` carries one `Option` rather than two that could disagree
+/// about whether the seam is wired.
+#[derive(Clone)]
+pub(crate) struct ProjectCtx {
+    pub(crate) resolver: lattice_core::ProjectResolverHandle,
+    pub(crate) buffers: lattice_mode::BufferStoreHandle,
+}
+
+/// PR.6: host impl of the `project` guest→host seam.
+///
+/// Design: `docs/dev/architecture/project-resolution.md` §6. The host answers,
+/// the guest asks — core never depends on a plugin being alive.
+///
+/// Both funcs return `option`, unlike the total native
+/// `ProjectResolver::for_path`, and the two `none`s mean different things:
+/// `root-for-buffer` returns it for an id the host does not know (untrusted
+/// input from the guest), `root-for-path` only when no resolver is wired at all
+/// (a stripped harness). A buffer that *exists* always resolves — one with no
+/// path on disk reports the working directory with `kind = pwd`.
+///
+/// Sync host funcs. Resolution can walk the filesystem on a cache miss, but it
+/// runs on the plugin's own store and task — never the UI or actor thread.
+impl crate::lattice::plugin_host::project::Host for PluginState {
+    fn root_for_buffer(
+        &mut self,
+        buffer: u64,
+    ) -> Option<crate::lattice::plugin_host::project::ProjectInfo> {
+        let ctx = self.project.as_ref()?;
+        // A guest-supplied id is untrusted: `path_for` returning `None` is
+        // ambiguous between "no such buffer" and "buffer has no path", so ask
+        // the store whether it knows the buffer at all first. `name_for`
+        // answers for every registered buffer, pathless ones included.
+        let id = lattice_core::BufferId(buffer as u32);
+        ctx.buffers.name_for(id)?;
+        let path = ctx.buffers.path_for(id);
+        Some(to_wire(match path {
+            Some(path) => ctx.resolver.for_path(&path),
+            // Pathless (scratch, terminal): an empty relative path resolves
+            // against the resolver's own pwd, so the answer stays consistent
+            // with `:cd` rather than reading the process cwd.
+            None => ctx.resolver.for_path(std::path::Path::new("")),
+        }))
+    }
+
+    fn root_for_path(
+        &mut self,
+        path: String,
+    ) -> Option<crate::lattice::plugin_host::project::ProjectInfo> {
+        let ctx = self.project.as_ref()?;
+        Some(to_wire(ctx.resolver.for_path(std::path::Path::new(&path))))
+    }
+}
+
+/// Native [`lattice_core::Project`] → the wire record.
+fn to_wire(p: lattice_core::Project) -> crate::lattice::plugin_host::project::ProjectInfo {
+    use crate::lattice::plugin_host::project as wit;
+    let (kind, marker) = match &p.kind {
+        lattice_core::ProjectKind::Marker(m) => (wit::ProjectKind::Marker, m.clone()),
+        // Empty rather than a sentinel word: a guest checking `kind` has the
+        // answer already, and a guest rendering `marker` should show nothing
+        // rather than the string "pwd".
+        lattice_core::ProjectKind::Pwd => (wit::ProjectKind::Pwd, String::new()),
+    };
+    wit::ProjectInfo {
+        root: p.root.display().to_string(),
+        kind,
+        marker,
     }
 }
 
@@ -1804,6 +1881,13 @@ pub struct PluginHost {
     // through the shared `Arc<PluginHost>` without a constructor reorder. `None`
     // (unset) → a guest `log` degrades to a debug-drop, like `event_emit`.
     tracer: std::sync::OnceLock<crate::trace::PluginTracerHandle>,
+    // PR.6: what the guest `project` seam answers from. Set once by boot
+    // (`set_project_context`) after the resolver is registered; the host is
+    // constructed first, so `OnceLock` gives set-once storage through the
+    // shared `Arc<PluginHost>` without a constructor reorder — the `tracer`
+    // precedent above. Unset → `root-for-*` returns `none`, which a real
+    // editor never does and a stripped harness always does.
+    project: std::sync::OnceLock<ProjectCtx>,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
@@ -1936,6 +2020,15 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // PR.6: the `project` guest→host seam. Sync host funcs (a cached
+        // directory walk), wired here beside `logging` and inert for worlds
+        // that don't import it. Shared across the async-seam worlds via the
+        // bindgen `with`-reuse of this one generated module.
+        crate::lattice::plugin_host::project::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // Multi-seam support (AP.1 spike): a single plugin `.wasm` may `provide`
         // grammar AND async seams (auto-pair: grammar + modes + config). Its
         // import set is fixed, so the async linker (used for the mode/config
@@ -2038,6 +2131,7 @@ impl PluginHost {
             data_dir_base: data_dir_base.into(),
             next_id: AtomicU32::new(0),
             tracer: std::sync::OnceLock::new(),
+            project: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -2059,6 +2153,18 @@ impl PluginHost {
             plugin: id.0,
             tracer: tracer.clone(),
         })
+    }
+
+    /// PR.6: hand the host what the guest `project` seam answers from.
+    ///
+    /// Called once at boot after the resolver is registered. Idempotent —
+    /// a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_project_context(
+        &self,
+        resolver: lattice_core::ProjectResolverHandle,
+        buffers: lattice_mode::BufferStoreHandle,
+    ) {
+        let _ = self.project.set(ProjectCtx { resolver, buffers });
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -2234,6 +2340,10 @@ impl PluginHost {
             // the id is allocated; `None` here + for the sync grammar guest (which
             // never imports `logging`) → a guest `log` is a debug-drop.
             log_ctx: None,
+            // PR.6: stamped for every store below, not per-spawn-path like
+            // `log_ctx` — resolution needs no plugin id, so there is nothing
+            // to wait for and no path that can forget it.
+            project: self.project.get().cloned(),
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

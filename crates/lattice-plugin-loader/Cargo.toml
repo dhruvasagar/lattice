@@ -73,6 +73,10 @@ lattice-keymap = { path = "../lattice-keymap" }
 lattice-protocol = { path = "../lattice-protocol" }
 # TC.4: the theme seam's drain hands the plugin the SAME registry builtins use.
 lattice-theme = { path = "../lattice-theme" }
+# PR.6: `ProjectResolverHandle` — the loader hands the host the resolver the
+# guest `project` seam answers from. A leaf crate already in the graph; named
+# directly now `install` looks the service up by that exact alias.
+lattice-core = { path = "../lattice-core" }
 # CM.6b: the compilation parser-factory registry an `error-parser` plugin's
 # `WasmErrorParserFactory` RCU-registers into. Each compilation pipe reader
 # mints its own parser from it at the start of a run.

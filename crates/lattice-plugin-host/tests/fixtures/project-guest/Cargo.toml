@@ -1,0 +1,27 @@
+# PR.6 project fixture guest — a minimal `wasm32-wasip2` component implementing
+# the base `plugin` lifecycle world. From `activate` it calls the imported
+# `project.root-for-buffer` / `root-for-path` and reports what came back through
+# `logging.log`, which the host test (`tests/project_seam.rs`) reads out of the
+# `PluginTracer`. Logging is the reporting channel because the base `plugin`
+# world has no other way for a guest to hand a value back.
+#
+# Standalone workspace (`[workspace]` below) so it is NOT part of the parent
+# workspace — it targets wasm32-wasip2 and must not inherit the host toolchain's
+# lints/target. Mirrors the sibling `logging-guest` fixture's setup.
+[package]
+name = "project-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

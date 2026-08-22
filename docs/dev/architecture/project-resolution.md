@@ -209,11 +209,18 @@ filesystem question.
 ```wit
 interface project {
 	enum project-kind { marker, pwd }
-	record project-info { root: string, kind: project-kind }
+	record project-info {
+		root: string,
+		kind: project-kind,
+		marker: string,   // the deciding marker, empty when kind = pwd
+	}
 	root-for-buffer: func(buffer: u64) -> option<project-info>;
 	root-for-path:   func(path: string) -> option<project-info>;
 }
 ```
+
+`marker` rides along because "why is my root here" is the question that
+follows "where is it" — the same reason `:project-root` reports it.
 
 An import, so **core never depends on a plugin being alive.** Were this
 a contribution seam, terminal / compilation / search would each need a
@@ -222,12 +229,26 @@ ordering would become load-bearing for correctness rather than for
 features — the failure mode that keeps recurring in this codebase.
 
 `option<project-info>` at the boundary, unlike the total native
-signature, because a buffer id from a guest is untrusted input: `none`
-means "no such buffer", not "no project".
+signature — and the two `none`s mean different things. `root-for-buffer`
+returns it for an id the host never issued (untrusted input from the
+guest); `root-for-path` only when no resolver is wired at all. A buffer
+that *exists* always resolves: one with no path reports the working
+directory with `kind = pwd`. So a guest can tell "no such buffer" from
+"not in a project", which are different questions.
 
-Sync, available in every world. It can do a filesystem walk on a cache
-miss, but it runs on the plugin's own store and task — never the UI or
-actor thread.
+Sync, and imported by every **async** world — the eleven that already
+import `logging`, wired into the same linker beside it.
+
+**Not the sync linker, and that is the point.** `grammar` and
+`error-parser` instantiate against the host's sync linker, and `grammar`
+IS the keystroke path. Resolution can walk the filesystem on a cache
+miss, so exposing it there would put a directory walk one guest call
+away from a keystroke — paramount goal #1. An error-parser that wants
+the project root is a real want, and it needs a sync-safe answer (a
+pre-resolved root handed in), not this seam.
+
+Everywhere else it runs on the plugin's own store and task, never the UI
+or actor thread.
 
 ## 7. Consumers
 

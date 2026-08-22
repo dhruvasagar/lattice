@@ -1,6 +1,7 @@
 # Project resolution — slice plan
 
-> **Status: 🚧 ACTIVE (2026-08-21).** PR.1–PR.5 ✅; PR.6 planned;
+> **Status: 🚧 ACTIVE (2026-08-22).** PR.1–PR.6 ✅; PR.7 has its own spec.
+> The native track is complete;
 > PR.7 has its own spec. Sequencing companion to the design fragment
 > [`../../architecture/project-resolution.md`](../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
@@ -219,14 +220,44 @@ is what `repo_for_trigger`'s three-step resolution has always been.
 fix: the suite always runs inside a repository, so an equality-only
 assertion would pass on the broken version.
 
-### PR.6 — the WIT seam 📝
+### PR.6 — the WIT seam ✅ (2026-08-22)
 
 `wit/project.wit` — a host **import**, `root-for-buffer` /
 `root-for-path`, root resolution only. Host sink, linker wiring in every
 world (like `logging`), fixture guest, host test.
 
 `option<project-info>` at the boundary although the native signature is
-total: a guest's buffer id is untrusted input.
+total — and the two `none`s differ: `root-for-buffer` returns it for an
+id the host never issued (untrusted input), `root-for-path` only when no
+resolver is wired. A buffer that *exists* always resolves, pathless ones
+as `kind = pwd`, so a guest can tell "no such buffer" from "not in a
+project".
+
+`project-info` carries the deciding `marker` as well as the root,
+because "why is my root here" is the question that follows "where is
+it" — the same reason `:project-root` reports it.
+
+**Imported by the eleven ASYNC worlds, not by `error-parser`.** That
+world instantiates against the host's sync linker, shared with
+`grammar`, which is the keystroke path — and resolution can walk the
+filesystem on a cache miss. Wiring it there would put a directory walk
+one guest call away from a keystroke (paramount #1). An error-parser
+wanting the project root is a real want and needs a sync-safe answer
+handed in, not this seam. The refusal is recorded in `error-parser.wit`
+itself so the next person does not "fix" the omission.
+
+`PluginState` carries one `ProjectCtx { resolver, buffers }` rather than
+two Options that could disagree about whether the seam is wired, stamped
+in `new_store` — every store, not per-spawn-path like `log_ctx`, because
+resolution needs no plugin id and so there is no path that can forget it.
+
+*Tests:* 3, through a real `wasm32-wasip2` guest that calls both funcs
+from `activate` and reports each answer back via `logging.log` (the base
+world's `activate` returns nothing). A buffer resolves to its repository
+root with the marker attached; an id the host never issued is `none`;
+a path with no project is `pwd` with an empty marker. Host-side unit
+tests of the conversion cannot prove any of this — what is under test is
+that a real component reaches the import and the linker satisfies it.
 
 ### PR.7 — the project.el-style plugin ⛔ (own spec)
 
@@ -251,5 +282,5 @@ dependency is visible.
 | PR.3 terminal | ✅ |
 | PR.4 compilation / search / picker / ACP | ✅ |
 | PR.5 magit cwd fallback | ✅ |
-| PR.6 WIT seam | 📝 |
+| PR.6 WIT seam | ✅ |
 | PR.7 plugin | ⛔ own spec |

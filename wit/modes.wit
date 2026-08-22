@@ -109,5 +109,10 @@ interface modes {
 world modes-plugin {
     import modes;
     import logging;
+
+    /// PR.6: guest→host project resolution. An IMPORT — the host answers,
+    /// the guest asks — so core never depends on a plugin being alive.
+    /// Inert for guests that don't call it.
+    import project;
     export register-modes: func();
 }

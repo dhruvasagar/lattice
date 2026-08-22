@@ -128,6 +128,14 @@ fn main() {
         "logging-guest",
         "LOGGING_GUEST_WASM",
     );
+    // PR.6: the project-seam fixture — calls `root-for-buffer` /
+    // `root-for-path` from `activate` and reports each answer through
+    // `logging.log`, which the host test reads back out of the tracer.
+    build_guest(
+        &fixtures.join("project-guest"),
+        "project-guest",
+        "PROJECT_GUEST_WASM",
+    );
     // AP.1: the first bundled plugin — a multi-seam component (grammar + modes +
     // config). Built here so the loader integration test (loaded by known path,
     // like the mode/config drains) and the eventual bundling (AP.4) have the

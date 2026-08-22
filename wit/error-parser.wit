@@ -70,6 +70,16 @@ interface error-parser {
 world error-parser-plugin {
     import error-parser;
     import logging;
+
+    /// PR.6 deliberately does NOT import `project` here. This world
+    /// instantiates against the host's SYNC linker (shared with `grammar`,
+    /// which is the keystroke path), and project resolution can walk the
+    /// filesystem on a cache miss. Exposing it on that linker would put a
+    /// directory walk one guest call away from a keystroke — paramount goal
+    /// #1. An error-parser wanting the project root is a real want; it needs
+    /// its own sync-safe answer (a pre-resolved root passed in), not this
+    /// seam.
+
     use error-parser.{entry};
 
     /// Drop any pending multi-line state. Called at the start of a run.

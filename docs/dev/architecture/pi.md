@@ -7,7 +7,7 @@ Pi's native TUI in a terminal buffer with a `pi-mode` marker minor — the same
 **terminal topology** as `:opencode` and `:claude`.
 
 Slice plan (the *when* / *in what order*):
-[`../operations/slice-plans/pi.md`](../operations/slice-plans/pi.md).
+[`../operations/slice-plans/archive/pi.md`](../operations/slice-plans/archive/pi.md).
 This fragment owns *what* and *why*.
 
 ## 1. Why Pi

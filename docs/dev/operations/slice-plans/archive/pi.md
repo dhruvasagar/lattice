@@ -1,9 +1,20 @@
 # Slice plan — Pi agent integration (PI)
 
-**Design home:** [`../../architecture/pi.md`](../../architecture/pi.md).
+**Design home:** [`../../../architecture/pi.md`](../../../architecture/pi.md).
 That fragment owns *what* and *why*; this file owns *when* and *in what order*.
 Authoritative per-slice status lives in
-[`../implementation.md`](../implementation.md).
+[`../../implementation.md`](../../implementation.md).
+
+> **Status: ✅ COMPLETE (verified against source 2026-08-22).** Both
+> slices were already implemented; the icons read `📝` until this audit,
+> which is exactly the drift the archiving rule warns about — the plan
+> said "not started" while `crates/lattice-ai/src/pi/` had been shipping
+> `:pi` for some time. Verified by reading the source, not the icons:
+> `pi/{mod,commands,modes}.rs` exist, `:pi` registers an ex-command
+> returning `SpawnTerminal { cmd_line: "pi", activate_minor: "pi-mode" }`,
+> `crate::pi::install(boot)` is wired in `lattice-ai/src/install.rs:39`,
+> and all three tests pass (`pi_spawns_terminal_and_activates_mode`,
+> `id_kind_and_policy`, `registers_without_conflict`).
 
 ## Why
 
@@ -18,7 +29,7 @@ into the crate root (PI.2) — each slice landing green on its own.
 
 ## Slices
 
-### PI.1 — pi module (commands + modes + install + tests)  📝
+### PI.1 — pi module (commands + modes + install + tests)  ✅
 
 Create `crates/lattice-ai/src/pi/` with three files, mirroring `opencode/`:
 
@@ -42,7 +53,7 @@ ModeRegistry.
   rejects non-empty input. If `pi` binary is missing, the PTY spawn fails and
   the terminal reports the error; no new error path in lattice.
 
-### PI.2 — wiring into crate install  📝
+### PI.2 — wiring into crate install  ✅
 
 One line in `crates/lattice-ai/src/install.rs`:
 

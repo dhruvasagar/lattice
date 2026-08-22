@@ -55,6 +55,7 @@ same surface).
 |   — listing presentation   | [`directory-listing-mode`](help:directory-listing-mode) | ✅      |
 | Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
 |   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
+| Projects and roots         | [`project`](help:project)                | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |

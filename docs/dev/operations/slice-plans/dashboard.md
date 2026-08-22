@@ -211,7 +211,7 @@ boundary is right; built when the plugin host / remap seam are ready.
 [`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md)
 and sliced as CR.2 (the `DashboardRegistryHandle`) + CR.4 (the
 `dashboard` WIT seam) in
-[`contributable-registries.md`](contributable-registries.md). The
+[`contributable-registries.md`](archive/contributable-registries.md). The
 theme-remap half of this slice stays with `theme-system.md` and is not
 part of that track.
 - *paramount:* #2.

@@ -131,4 +131,4 @@ offline-works property unconditionally.
 - Build script: `crates/lattice-help/build.rs`
 - Registry + tests: `crates/lattice-help/src/topics.rs`
 - Bench: `crates/lattice-help/benches/topics.rs`
-- Slice plan: `slice-plans/help-docs.md`
+- Slice plan: `slice-plans/archive/help-docs.md`

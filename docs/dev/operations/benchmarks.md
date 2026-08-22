@@ -1077,7 +1077,7 @@ signals the byte-range restriction stopped bounding the scan — check that
 
 Contributable registries, slice CR.4 (design:
 `../architecture/contributable-registries.md` §3.2; slice plan:
-`slice-plans/contributable-registries.md`). CR.4 put a **synchronous guest
+`slice-plans/archive/contributable-registries.md`). CR.4 put a **synchronous guest
 call on the actor thread**, inside `Editor::compose_dashboard_sections`. The
 design argues that is acceptable because composition is a
 `LatencyClass::Display` action — `:dashboard`, startup, or a DB.6 recompose —

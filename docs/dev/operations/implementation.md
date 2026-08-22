@@ -6037,7 +6037,7 @@ accurate bounded-and-structurally-sealed picture.
 Design:
 [`../architecture/contributable-registries.md`](../architecture/contributable-registries.md).
 Slice plan:
-[`slice-plans/contributable-registries.md`](slice-plans/contributable-registries.md).
+[`slice-plans/archive/contributable-registries.md`](slice-plans/archive/contributable-registries.md).
 
 Closes **HD.6** and the plugin half of **DB.8**, which were two deferred
 slices blocked on one missing thing: `HelpTopicRegistry` and

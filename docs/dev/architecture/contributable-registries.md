@@ -1,9 +1,9 @@
 # Contributable registries — help topics and dashboard sections
 
 **Status:** design. Slice plan:
-[`../operations/slice-plans/contributable-registries.md`](../operations/slice-plans/contributable-registries.md).
+[`../operations/slice-plans/archive/contributable-registries.md`](../operations/slice-plans/archive/contributable-registries.md).
 Supersedes the runtime-doc-directory half of HD.6
-([`help-docs`](../operations/slice-plans/help-docs.md)) and specifies
+([`help-docs`](../operations/slice-plans/archive/help-docs.md)) and specifies
 DB.8 ([`dashboard`](dashboard.md) §10).
 
 ## 1. The gap

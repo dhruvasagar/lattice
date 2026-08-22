@@ -231,7 +231,7 @@ def rewrite_links(body, topic_section, dev_pages, is_user_doc):
 # Writers
 # --------------------------------------------------------------------------
 
-def reset_generated_dirs(sections):
+def reset_generated_dirs(sections, dev_sections):
     """Remove previously generated trees so renamed/moved docs cannot linger.
 
     This matters more than it looks: without it, a topic that changes section
@@ -243,10 +243,13 @@ def reset_generated_dirs(sections):
     for stale in glob.glob(os.path.join(DOCS_DST, '*.md')):
         if os.path.basename(stale) != '_index.md':
             os.remove(stale)
+    # The pre-manifest layout mirrored docs/dev/'s subdirs; the manifest
+    # layout is by section. Remove BOTH so a re-sync after this change does
+    # not leave every dev page published at two URLs.
     for sub in DEV_SUBDIRS:
-        for stale in glob.glob(os.path.join(DEV_DST, sub, '*.md')):
-            if os.path.basename(stale) != '_index.md':
-                os.remove(stale)
+        shutil.rmtree(os.path.join(DEV_DST, sub), ignore_errors=True)
+    for sec in dev_sections:
+        shutil.rmtree(os.path.join(DEV_DST, sec['slug']), ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
@@ -379,6 +382,67 @@ def write_search_index(sections, meta, labels, headings):
     print(f'  static/docs-search.json ({len(entries)} entries)')
 
 
+def load_dev_nav():
+    """Return (sections, page_section, labels) for the developer docs.
+
+    `page_section` maps `<subdir>/<stem>` -> (section slug, group title). A
+    section may mix subdirs on purpose: a newcomer asking "how do plugins
+    work" wants the guide, the design fragment and the audit together, and
+    does not care that they live in three directories.
+    """
+    path = os.path.join(site_dir, 'data', 'dev-nav.toml')
+    with open(path, 'rb') as fh:
+        nav = tomllib.load(fh)
+
+    sections = nav.get('section', [])
+    labels = nav.get('labels', {})
+    page_section = {}
+
+    for sec in sections:
+        slug = sec['slug']
+        for group in sec.get('group', []):
+            for page in group['docs']:
+                if page in page_section:
+                    die(f'{page!r} listed twice in dev-nav.toml')
+                page_section[page] = (slug, group.get('title', ''))
+
+    return sections, page_section, labels
+
+
+def validate_dev_nav(page_section, labels, dev_pages):
+    """dev-nav.toml and docs/dev/ must agree exactly, in both directions.
+
+    This is the property the manifest exists for. A grouping that merely
+    *describes* the docs decays the first time someone adds one; a grouping
+    the build refuses to proceed without cannot.
+    """
+    listed = set(page_section)
+    missing = sorted(dev_pages - listed)
+    phantom = sorted(listed - dev_pages)
+    bad_labels = sorted(set(labels) - dev_pages)
+
+    problems = []
+    if missing:
+        problems.append(
+            'docs/dev/ pages absent from site/data/dev-nav.toml — add each to '
+            'the section a reader would look for it in:\n    '
+            + '\n    '.join(missing)
+        )
+    if phantom:
+        problems.append(
+            'site/data/dev-nav.toml lists pages with no docs/dev/ file — the '
+            'doc was renamed, deleted, or archived:\n    '
+            + '\n    '.join(phantom)
+        )
+    if bad_labels:
+        problems.append(
+            'site/data/dev-nav.toml [labels] name unknown pages:\n    '
+            + '\n    '.join(bad_labels)
+        )
+    if problems:
+        die('\n\n  '.join(problems))
+
+
 def collect_dev_pages():
     pages = set()
     for sub in DEV_SUBDIRS:
@@ -387,27 +451,63 @@ def collect_dev_pages():
     return pages
 
 
-def sync_dev_docs(topic_section, dev_pages):
+def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labels):
+    """Write each dev page into its dev-nav SECTION rather than its subdir.
+
+    The source tree stays organised by kind (architecture / guides /
+    operations / ...) because that is what contributors edit; the site is
+    organised by question, because that is what a newcomer browses. The
+    manifest is the mapping between the two, so neither has to compromise.
+    """
+    # Section landing pages, in manifest order — `weight` is what gives the
+    # sidebar a reading order instead of an alphabet.
+    for i, sec in enumerate(dev_sections, start=1):
+        d = os.path.join(DEV_DST, sec['slug'])
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, '_index.md'), 'w', encoding='utf-8') as fh:
+            fh.write(
+                f'+++\ntitle = "{toml_escape(sec["title"])}"\n'
+                f'description = "{toml_escape(sec.get("description", ""))}"\n'
+                f'weight = {i * 10}\nsort_by = "weight"\n+++\n'
+            )
+
+    # Per-section counters so each page's weight preserves manifest order.
+    order = {}
+    for sec in dev_sections:
+        for group in sec.get('group', []):
+            for page in group['docs']:
+                order[page] = len(order)
+
+    counts = {}
     for sub in DEV_SUBDIRS:
         src_dir = os.path.join(DEV_SRC, sub)
         if not os.path.isdir(src_dir):
             print(f'  SKIP: {src_dir} not found')
             continue
-        count = 0
         for f in sorted(glob.glob(os.path.join(src_dir, '*.md'))):
             name = os.path.basename(f)
+            key = f'{sub}/{name[:-3]}'
+            slug, _group = page_section[key]
             with open(f, encoding='utf-8') as fh:
                 raw = fh.read()
             title = make_title(raw, name[:-3])
             body = strip_frontmatter(raw)
             body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
             body = rewrite_links(body, topic_section, dev_pages, is_user_doc=False)
-            dst = os.path.join(DEV_DST, sub, name)
+            # The sidebar label overrides the H1 only where the manifest says
+            # so; the page's own <h1> keeps the doc's real title.
+            nav_title = dev_labels.get(key, title)
+            dst = os.path.join(DEV_DST, slug, name)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, 'w', encoding='utf-8') as fh:
-                fh.write(f'+++\ntitle = "{toml_escape(title)}"\n+++\n\n{body}')
-            count += 1
-        print(f'  dev/{sub}/ ({count} pages)')
+                fh.write(
+                    f'+++\ntitle = "{toml_escape(nav_title)}"\n'
+                    f'weight = {order[key]}\n+++\n\n{body}'
+                )
+            counts[slug] = counts.get(slug, 0) + 1
+
+    for sec in dev_sections:
+        print(f'  dev/{sec["slug"]}/ ({counts.get(sec["slug"], 0)} pages)')
 
 
 def main():
@@ -425,7 +525,10 @@ def main():
     write_version_data()
 
     dev_pages = collect_dev_pages()
-    reset_generated_dirs(sections)
+    dev_sections, page_section, dev_labels = load_dev_nav()
+    validate_dev_nav(page_section, dev_labels, dev_pages)
+    print(f'  {len(page_section)} dev pages across {len(dev_sections)} sections')
+    reset_generated_dirs(sections, dev_sections)
 
     print('Syncing user docs...')
     meta, headings = sync_user_docs(topic_section, labels, dev_pages)
@@ -433,7 +536,7 @@ def main():
     write_search_index(sections, meta, labels, headings)
 
     print('Syncing dev docs...')
-    sync_dev_docs(topic_section, dev_pages)
+    sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labels)
 
     print('\nDone.')
 

@@ -36,7 +36,10 @@ site/content/docs/**/*.md
 !site/content/docs/_index.md
 site/content/dev/**/*.md
 !site/content/dev/_index.md
-!site/content/dev/*/_index.md
+# The per-section `_index.md` used to be hand-authored, one per docs/dev/
+# subdir. They are generated from site/data/dev-nav.toml now — title,
+# description and order all come from the manifest — so they are build output
+# like the user-doc section landings above, not content to edit here.
 site/static/docs-search.json
 site/data/version.toml
 

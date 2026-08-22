@@ -1,0 +1,252 @@
+# Website navigation manifest for the DEVELOPER docs.
+#
+# `docs/dev/` is organised by *kind* — architecture / guides / operations /
+# audit / notes — because that is what the repo needs: a design fragment and a
+# slice plan are different artefacts with different lifetimes (CLAUDE.md, "Doc
+# organisation"). That shape is right for contributors editing files and wrong
+# for a website, where 95 alphabetised architecture pages present a newcomer
+# with `acp-ux-enhancements` first and no hint that `design.md` is the spine.
+#
+# This file is the site's navigation layer over that corpus, exactly as
+# `nav.toml` is for the user docs. It decides three things and nothing else:
+#
+#   * which section a page lands in  (-> its URL, /dev/<slug>/<page>/)
+#   * what order pages appear in     (-> sidebar + section landing order)
+#   * what the sidebar calls it      (-> [labels], only where the doc's own H1
+#                                       reads badly out of context)
+#
+# `site/scripts/sync-docs.sh` reads this file and FAILS if a page under
+# `docs/dev/` is missing here, or if an entry here names a page that does not
+# exist. That is the whole point: the reason `nav.toml` has not rotted is that
+# forgetting it breaks the build, and a manifest without that property is just
+# a second thing to forget.
+#
+# Entries are `<subdir>/<stem>` — the same key the sync uses internally — so a
+# section can mix architecture, guides and operations pages. Onboarding does
+# not care which directory a doc lives in; it cares what question the doc
+# answers.
+
+# ---------------------------------------------------------------------------
+# The onboarding path. Deliberately short: five pages, in reading order.
+# ---------------------------------------------------------------------------
+
+[[section]]
+slug = "start-here"
+title = "Start here"
+description = "Read these five, in this order, before anything else."
+[[section.group]]
+docs = [
+  "guides/developing-lattice",
+  "architecture/design",
+  "architecture/diagrams",
+  "architecture/input-pipeline",
+  "architecture/boot-composition",
+]
+
+[[section]]
+slug = "foundations"
+title = "Foundations"
+description = "The substrate everything else composes from: modes, keymaps, buffers, the actor seam, configuration."
+[[section.group]]
+docs = [
+  "architecture/mode-architecture",
+  "architecture/keymap-architecture",
+  "architecture/kind-agnostic-buffers",
+  "architecture/typed-motion-dispatch",
+  "architecture/actor-seam-discipline",
+  "architecture/host-provider-boundary",
+  "architecture/buffer-local-options",
+  "architecture/config-and-init",
+  "architecture/cancellation",
+  "architecture/session-persistence",
+  "notes/mode-keymap-authoring",
+]
+
+[[section]]
+slug = "editing"
+title = "Editing & motions"
+description = "The vim grammar as implemented: operators, text objects, indentation, registers."
+[[section.group]]
+docs = [
+  "architecture/auto-indent",
+  "architecture/surround-mode",
+  "architecture/select-mode",
+  "architecture/search-operator",
+  "architecture/narrow-mode",
+  "architecture/fold-architecture",
+  "architecture/treesitter-motions",
+  "architecture/tree-sitter-text-objects",
+  "architecture/yank-ring",
+  "architecture/clipboard",
+  "architecture/which-key",
+  "architecture/emacs-keys",
+]
+
+[[section]]
+slug = "rendering"
+title = "Rendering & display"
+description = "How a buffer becomes pixels — the cell grid, display lines, spans, theme resolution, and the two renderer peers."
+[[section.group]]
+docs = [
+  "architecture/cell-grid-renderer",
+  "architecture/display-line",
+  "architecture/soft-wrap",
+  "architecture/horizontal-scroll",
+  "architecture/virtual-rows",
+  "architecture/span-layering",
+  "architecture/incremental-highlight",
+  "architecture/indent-guides",
+  "architecture/ligatures",
+  "architecture/theme-system",
+  "architecture/headerline",
+  "architecture/modeline",
+  "architecture/marginalia",
+  "architecture/decoration-retention",
+  "architecture/owner-write-caret",
+  "architecture/gpui-window-chrome",
+]
+
+[[section]]
+slug = "buffers-and-views"
+title = "Buffers, panes & views"
+description = "Everything-is-a-buffer in practice: multibuffers, panes, pickers, popups, terminals, synthetic views."
+[[section.group]]
+docs = [
+  "architecture/multibuffer-views",
+  "architecture/multibuffer-is-a-regular-buffer",
+  "architecture/multibuffer-stale-sources",
+  "architecture/multibuffer-syntax",
+  "architecture/pane-groups",
+  "architecture/pane-buffer-history",
+  "architecture/picker",
+  "architecture/picker-preview-highlight",
+  "architecture/preview-isolation",
+  "architecture/popup-api",
+  "architecture/popup-unification",
+  "architecture/rich-minibuffer",
+  "architecture/directory-listing-mode",
+  "architecture/terminal-as-document",
+  "architecture/terminal-mode",
+  "architecture/notifications",
+  "architecture/dashboard",
+  "architecture/tutor-mode",
+  "architecture/autoread",
+]
+
+[[section]]
+slug = "language-intelligence"
+title = "Language intelligence"
+description = "LSP, completion, tree-sitter context, diagnostics and the compile loop."
+[[section.group]]
+docs = [
+  "architecture/lsp-architecture",
+  "notes/lsp-features",
+  "architecture/insert-completion",
+  "architecture/completion-pipeline-unification",
+  "architecture/treesitter-context",
+  "architecture/error-list",
+  "architecture/compilation-mode",
+  "architecture/ide-protocol",
+  "architecture/project-resolution",
+]
+
+[[section]]
+slug = "git"
+title = "Git & diffs"
+description = "The diff engine and the magit port built on it."
+[[section.group]]
+docs = [
+  "architecture/diff-system",
+  "architecture/diff-extraction",
+  "architecture/diff-refinement",
+  "architecture/n-way-diff-membership",
+  "architecture/magit",
+  "architecture/magit-blame",
+  "architecture/magit-hunk-mode",
+  "architecture/magit-hunk-staging",
+  "architecture/magit-project-diff",
+  "architecture/magit-repo-scoping",
+]
+
+[[section]]
+slug = "plugins"
+title = "Plugins & extensibility"
+description = "The WASM host, the seams, and how a plugin contributes to the same registries the builtins use."
+[[section.group]]
+docs = [
+  "guides/plugin-authoring",
+  "architecture/plugin-host",
+  "architecture/contributable-registries",
+  "architecture/plugin-manager",
+  "architecture/plugin-observability",
+  "architecture/plugin-treesitter-seam",
+  "architecture/plugin-auto-pair",
+  "audit/plugin-host-architecture",
+  "audit/plugin-observability-review",
+]
+
+[[section]]
+slug = "ai"
+title = "AI & agents"
+description = "The agent protocol, its UI surface, and using AI to develop lattice itself."
+[[section.group]]
+docs = [
+  "architecture/ai-agent-protocol",
+  "architecture/agent-integration",
+  "architecture/agent-ui",
+  "architecture/acp-ux-enhancements",
+  "architecture/pi",
+  "notes/ai-assisted-development",
+]
+
+[[section]]
+slug = "operations"
+title = "Operations"
+description = "The ledgers, the benchmark record, and how a release is cut."
+[[section.group]]
+docs = [
+  "operations/implementation",
+  "operations/benchmarks",
+  "operations/verify",
+  "operations/releasing",
+  "architecture/release-pipeline",
+  "operations/embedded-docs-budget",
+  "architecture/lighthouse",
+]
+
+[[section]]
+slug = "reviews"
+title = "Reviews & notes"
+description = "Point-in-time audits and working notes. Historical context rather than current design."
+[[section.group]]
+docs = [
+  "audit/README",
+  "architecture/keymap-api-review",
+  "architecture/comparison-zed",
+  "audit/effect-dispatch",
+  "audit/terminal-wide-char-ghosting",
+]
+
+# ---------------------------------------------------------------------------
+# Sidebar labels — only where the doc's own H1 reads badly out of context.
+# ---------------------------------------------------------------------------
+
+[labels]
+"architecture/design" = "The design spec"
+"architecture/diagrams" = "Architecture diagrams"
+"guides/developing-lattice" = "Contributor setup"
+"guides/plugin-authoring" = "Writing a plugin"
+"notes/mode-keymap-authoring" = "Authoring a mode's keymap"
+"notes/lsp-features" = "LSP feature reference"
+"notes/ai-assisted-development" = "AI-assisted development"
+"operations/implementation" = "Implementation ledger"
+"operations/benchmarks" = "Benchmark record"
+"operations/verify" = "Verification checklist"
+"operations/releasing" = "Cutting a release"
+"audit/README" = "About these audits"
+"audit/plugin-host-architecture" = "Plugin host audit"
+"audit/plugin-observability-review" = "Plugin observability review"
+"audit/effect-dispatch" = "Note: effect dispatch"
+"audit/terminal-wide-char-ghosting" = "Note: wide-char ghosting"
+"architecture/pi" = "Pi integration"
+"architecture/comparison-zed" = "Comparison: Zed"

@@ -20,6 +20,10 @@ lattice-protocol = { path = "../lattice-protocol" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-completion = { path = "../lattice-completion" }
 miniz_oxide = { workspace = true }
+# CR.1: `HelpTopicRegistryHandle = Arc<ArcSwap<HelpTopicRegistry>>` — the
+# copy-on-write RCU handle a plugin's `:help` pages register through. Same
+# idiom as the command / picker / compilation-parser registries.
+arc-swap = { workspace = true }
 # HP.1: help buffers align their tables at content-build time via
 # `lattice_mode::modes::table::layout`, which table-mode will share.
 lattice-mode = { path = "../lattice-mode" }

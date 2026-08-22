@@ -18,11 +18,15 @@
 //!   (`:help symbol::Foo`), in-process introspection that can't be
 //!   captured at compile time, or any plugin-supplied source.
 //!
-//! **Known limit:** the host holds this as a plain
-//! `Arc<HelpTopicRegistry>` built once at boot, so nothing can add a
-//! topic at runtime — a plugin cannot ship a `:help` page today. That
-//! is the gap the runtime-directory slice closes; see
-//! `docs/dev/operations/embedded-docs-budget.md`.
+//! **Runtime-writable (CR.1).** The host holds this as a
+//! [`HelpTopicRegistryHandle`] — copy-on-write RCU behind an
+//! `ArcSwap`, the same idiom the command / picker / compilation-parser
+//! registries use. Reads are wait-free snapshots taken once per
+//! `:help` invocation; writes happen only on plugin load and unload.
+//! That is what lets a plugin ship a `:help` page: its markdown is
+//! baked into its own component and registered through the `help` WIT
+//! seam (CR.3). See
+//! `docs/dev/architecture/contributable-registries.md`.
 //!
 //! Topics also carry an optional list of substring patterns that
 //! match command names; `:describe-command` walks these to emit a
@@ -45,6 +49,30 @@ pub struct HelpTopic {
     /// command name (case-sensitive), the describe view emits a
     /// "See also" link to this topic.
     pub related_command_patterns: Vec<String>,
+    /// CR.1: the host-issued plugin id that contributed this topic,
+    /// `None` for builtins. Provenance IS the teardown token — unload
+    /// is [`HelpTopicRegistry::unregister_plugin`], so there is no
+    /// per-load list to record and therefore none to forget.
+    pub plugin_id: Option<u64>,
+}
+
+impl HelpTopic {
+    /// A builtin topic: no plugin provenance, no related-command
+    /// patterns. The shape most callers want; the struct literal stays
+    /// available for the two that need more.
+    pub fn builtin(
+        name: impl Into<String>,
+        summary: impl Into<String>,
+        body: HelpTopicBody,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            summary: summary.into(),
+            body,
+            related_command_patterns: Vec::new(),
+            plugin_id: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for HelpTopic {
@@ -53,6 +81,7 @@ impl std::fmt::Debug for HelpTopic {
             .field("name", &self.name)
             .field("summary", &self.summary)
             .field("related_command_patterns", &self.related_command_patterns)
+            .field("plugin_id", &self.plugin_id)
             .field(
                 "body_kind",
                 &match &self.body {
@@ -117,33 +146,69 @@ fn inflate(packed: &[u8], raw_len: usize) -> String {
     }
 }
 
-/// Catalogue of every registered topic, keyed by name. Plugins +
-/// future LSP integrations register through `register`. Held by
-/// the App as `Arc<RwLock<HelpTopicRegistry>>` would let plugins
-/// add topics at runtime; v1 holds `Arc<HelpTopicRegistry>` since
-/// the built-in set is fixed at startup.
-#[derive(Debug, Default)]
+/// Catalogue of every registered topic, keyed by name. Plugins and
+/// future LSP integrations register through
+/// [`register`](HelpTopicRegistry::register).
+///
+/// Topics are held behind `Arc` so the registry is cheap to `Clone`,
+/// which is what the [`HelpTopicRegistryHandle`] RCU write path needs
+/// (clone → mutate → store). The `Arc` earns its place beyond clone
+/// cost: [`HelpTopicBody::Compressed`] carries a `OnceLock`
+/// decompression cache, and sharing the topic means an RCU write does
+/// not throw away every already-inflated body.
+#[derive(Debug, Default, Clone)]
 pub struct HelpTopicRegistry {
-    by_name: HashMap<String, HelpTopic>,
+    by_name: HashMap<String, Arc<HelpTopic>>,
     /// Insertion order so the index can list topics in the order
     /// the host registered them (built-ins first).
     order: Vec<String>,
 }
+
+/// The runtime-mutable handle, registered as a boot service under this
+/// exact alias (the `ServiceRegistry` Arc/TypeId convention).
+///
+/// Copy-on-write RCU: reads are wait-free `.load()` snapshots taken
+/// once per `:help` invocation, writes happen only on plugin load and
+/// unload. A plugin registering mid-lookup affects the *next* lookup,
+/// never half of this one.
+pub type HelpTopicRegistryHandle = Arc<arc_swap::ArcSwap<HelpTopicRegistry>>;
 
 impl HelpTopicRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Wrap this registry in a fresh [`HelpTopicRegistryHandle`].
+    ///
+    /// Exists so consumers — the host's boot, the loader's drain, their
+    /// tests — do not each have to name `arc_swap` just to build the
+    /// handle this crate defines.
+    pub fn into_handle(self) -> HelpTopicRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(self))
+    }
+
     pub fn register(&mut self, topic: HelpTopic) {
         if !self.by_name.contains_key(&topic.name) {
             self.order.push(topic.name.clone());
         }
-        self.by_name.insert(topic.name.clone(), topic);
+        self.by_name.insert(topic.name.clone(), Arc::new(topic));
+    }
+
+    /// Drop every topic contributed by `plugin_id`, returning how many
+    /// were removed. Idempotent: a second call reports zero, which is
+    /// what the teardown contract requires of a double-unload.
+    ///
+    /// Builtins carry `plugin_id: None` and are therefore untouchable
+    /// through this path — no plugin's unload can remove a core page.
+    pub fn unregister_plugin(&mut self, plugin_id: u64) -> usize {
+        let before = self.order.len();
+        self.by_name.retain(|_, t| t.plugin_id != Some(plugin_id));
+        self.order.retain(|n| self.by_name.contains_key(n));
+        before - self.order.len()
     }
 
     pub fn lookup(&self, name: &str) -> Option<&HelpTopic> {
-        self.by_name.get(name)
+        self.by_name.get(name).map(|t| &**t)
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -151,7 +216,10 @@ impl HelpTopicRegistry {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &HelpTopic> {
-        self.order.iter().filter_map(|n| self.by_name.get(n))
+        self.order
+            .iter()
+            .filter_map(|n| self.by_name.get(n))
+            .map(|t| &**t)
     }
 
     pub fn len(&self) -> usize {
@@ -184,13 +252,19 @@ impl HelpTopicRegistry {
 /// for the v1 popup; future polish can introduce a richer
 /// `HelpTopic` variant if summaries need to flow through the
 /// matcher / annotator pipeline.
+///
+/// CR.1: holds the **handle**, not a snapshot. A snapshot taken at boot
+/// would enumerate the builtin set forever, so a plugin's pages would
+/// exist and open by name but never appear in `:help <Tab>` — the same
+/// gap one level down, and a quieter one.
 pub struct HelpTopicsGenerator {
-    pub topics: Arc<HelpTopicRegistry>,
+    pub topics: HelpTopicRegistryHandle,
 }
 
 impl CandidateGenerator for HelpTopicsGenerator {
     fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
         self.topics
+            .load()
             .iter()
             .map(|t| RawCandidate {
                 text: t.name.clone(),
@@ -219,7 +293,11 @@ include!(concat!(env!("OUT_DIR"), "/help_topics.rs"));
 /// so the binary stays self-contained — no runtime filesystem
 /// dependency. Adding a doc requires **no change here**: drop the
 /// `.md` into `docs/user/` and it registers automatically.
-pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
+/// CR.1: returns the registry by value. The caller wraps it in a
+/// [`HelpTopicRegistryHandle`] via [`HelpTopicRegistry::into_handle`] —
+/// the builtin set is the *initial* contents of a runtime-writable
+/// registry now, not the whole of it.
+pub fn builtin_topics() -> HelpTopicRegistry {
     let mut r = HelpTopicRegistry::new();
     for &(name, summary, related, packed, raw_len) in HELP_TOPICS {
         r.register(HelpTopic {
@@ -231,9 +309,10 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
                 cache: OnceLock::new(),
             },
             related_command_patterns: related.iter().map(|s| (*s).to_string()).collect(),
+            plugin_id: None,
         });
     }
-    Arc::new(r)
+    r
 }
 
 #[cfg(test)]
@@ -808,15 +887,14 @@ mod tests {
         let mut r = HelpTopicRegistry::new();
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let counter_clone = counter.clone();
-        r.register(HelpTopic {
-            name: "dynamic".into(),
-            summary: "test".into(),
-            body: HelpTopicBody::Dynamic(Box::new(move || {
+        r.register(HelpTopic::builtin(
+            "dynamic",
+            "test",
+            HelpTopicBody::Dynamic(Box::new(move || {
                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 "rendered".to_string()
             })),
-            related_command_patterns: Vec::new(),
-        });
+        ));
         let t = r.lookup("dynamic").expect("dynamic topic");
         let _ = t.body.render();
         let _ = t.body.render();
@@ -826,19 +904,129 @@ mod tests {
     #[test]
     fn registering_same_name_replaces_without_dup_in_order() {
         let mut r = HelpTopicRegistry::new();
-        r.register(HelpTopic {
-            name: "x".into(),
-            summary: "one".into(),
-            body: HelpTopicBody::Static(""),
-            related_command_patterns: Vec::new(),
-        });
-        r.register(HelpTopic {
-            name: "x".into(),
-            summary: "two".into(),
-            body: HelpTopicBody::Static(""),
-            related_command_patterns: Vec::new(),
-        });
+        r.register(HelpTopic::builtin("x", "one", HelpTopicBody::Static("")));
+        r.register(HelpTopic::builtin("x", "two", HelpTopicBody::Static("")));
         assert_eq!(r.len(), 1);
         assert_eq!(r.lookup("x").expect("x").summary, "two");
+    }
+
+    // ── CR.1: the runtime-writable handle ────────────────────────────
+
+    fn plugin_topic(name: &str, summary: &str, plugin_id: u64) -> HelpTopic {
+        HelpTopic {
+            plugin_id: Some(plugin_id),
+            ..HelpTopic::builtin(name, summary, HelpTopicBody::Static("body"))
+        }
+    }
+
+    /// The property the whole handle exists for: a holder that captured
+    /// the handle before a plugin loaded still sees the plugin's topic.
+    #[test]
+    fn an_rcu_write_is_visible_through_a_handle_captured_beforehand() {
+        let handle = builtin_topics().into_handle();
+        let captured = handle.clone();
+        assert!(captured.load().lookup("plug.usage").is_none());
+
+        handle.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(plugin_topic("plug.usage", "how to plug", 7));
+            Arc::new(next)
+        });
+
+        assert_eq!(
+            captured
+                .load()
+                .lookup("plug.usage")
+                .expect("registered")
+                .summary,
+            "how to plug"
+        );
+    }
+
+    /// Coherence: a snapshot taken before the write keeps reading the
+    /// set it was taken from. A `:help` render mid-load must not see
+    /// half a plugin.
+    #[test]
+    fn a_snapshot_taken_before_a_write_still_reads_the_old_set() {
+        let handle = builtin_topics().into_handle();
+        let before = handle.load_full();
+
+        handle.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(plugin_topic("plug.usage", "how to plug", 7));
+            Arc::new(next)
+        });
+
+        assert!(before.lookup("plug.usage").is_none());
+        assert!(handle.load().lookup("plug.usage").is_some());
+    }
+
+    #[test]
+    fn unregister_plugin_removes_only_that_plugins_topics() {
+        let mut r = HelpTopicRegistry::new();
+        r.register(HelpTopic::builtin(
+            "buffers",
+            "core",
+            HelpTopicBody::Static(""),
+        ));
+        r.register(plugin_topic("a.one", "a1", 1));
+        r.register(plugin_topic("a.two", "a2", 1));
+        r.register(plugin_topic("b.one", "b1", 2));
+
+        assert_eq!(r.unregister_plugin(1), 2);
+        assert_eq!(r.len(), 2);
+        assert!(r.lookup("a.one").is_none());
+        assert!(r.lookup("b.one").is_some());
+        // A builtin is untouchable through this path — no plugin's
+        // unload can remove a core page.
+        assert!(r.lookup("buffers").is_some());
+        // Idempotent: the teardown contract's double-unload case.
+        assert_eq!(r.unregister_plugin(1), 0);
+    }
+
+    /// `order` drives `iter()` / `names()`, so a stale entry left behind
+    /// by an unload would resurrect a removed topic in `:help <Tab>`
+    /// while `lookup` reported it gone.
+    #[test]
+    fn unregister_plugin_leaves_no_orphan_in_the_display_order() {
+        let mut r = HelpTopicRegistry::new();
+        r.register(HelpTopic::builtin(
+            "buffers",
+            "core",
+            HelpTopicBody::Static(""),
+        ));
+        r.register(plugin_topic("a.one", "a1", 1));
+        r.unregister_plugin(1);
+
+        assert_eq!(r.names().collect::<Vec<_>>(), vec!["buffers"]);
+        assert_eq!(r.iter().count(), 1);
+    }
+
+    /// The reason topics live behind `Arc`: an RCU write clones the
+    /// registry, and a clone that duplicated the `OnceLock` would make
+    /// every plugin load throw away every already-inflated body.
+    #[test]
+    fn cloning_the_registry_shares_the_decompression_cache() {
+        let r = builtin_topics();
+        let name = r.names().next().expect("at least one builtin").to_string();
+        let inflated = r.lookup(&name).expect("topic").body.render();
+
+        let clone = r.clone();
+        let topic = clone.lookup(&name).expect("topic in the clone");
+        match &topic.body {
+            HelpTopicBody::Compressed { cache, .. } => assert_eq!(
+                cache.get().map(String::as_str),
+                Some(inflated.as_str()),
+                "the clone must share the already-filled cache, not a fresh OnceLock"
+            ),
+            other => panic!(
+                "builtin bodies are compressed, got {other:?}",
+                other = match other {
+                    HelpTopicBody::Static(_) => "static",
+                    HelpTopicBody::Dynamic(_) => "dynamic",
+                    HelpTopicBody::Compressed { .. } => unreachable!(),
+                }
+            ),
+        }
     }
 }

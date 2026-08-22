@@ -766,7 +766,13 @@ impl Editor {
         // enumerate built-in + plugin-supplied topics through
         // the same pipeline `:e <Tab>` and `:describe-command <Tab>`
         // use.
-        let help_topics = crate::help_topics::builtin_topics();
+        // CR.1: the builtin set is the registry's *initial* contents, not
+        // the whole of it — wrap it in the RCU handle the `help` plugin
+        // seam registers through, and hand the same handle to the
+        // candidate generator so `:help <Tab>` enumerates plugin topics
+        // too (a boot-time snapshot there would list the builtins
+        // forever).
+        let help_topics = crate::help_topics::builtin_topics().into_handle();
         completion_registry.register_generator(
             "gen:help-topics",
             "Every registered free-form help topic (`:help <topic>`).",
@@ -774,6 +780,12 @@ impl Editor {
                 topics: help_topics.clone(),
             },
         );
+        // CR.1: published as a service so `lattice_plugin_loader::install`
+        // (further down this function) can RCU a `help` plugin's topics
+        // in. Ordering is load-bearing, not incidental — a handle
+        // registered after the loader is a silent no-contribution, which
+        // is what `PluginLoaderError::NotWired` exists to make loud.
+        boot.register_service::<lattice_help::topics::HelpTopicRegistryHandle>(help_topics.clone());
 
         // Subscribe the editor's cascade-handler channel to
         // `OptionChanged` events on the bus. The receiver lives

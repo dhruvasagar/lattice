@@ -37,7 +37,7 @@ use lattice_config::{ConfigRegistry, OptionOverrideSet, ResolvedOptions};
 use lattice_core::ui::popup::PopupPlacement;
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
-use lattice_help::topics::HelpTopicRegistry;
+use lattice_help::topics::HelpTopicRegistryHandle;
 use lattice_lsp::cache::{
     CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, DocumentHighlightCache, FormatOutcome, HoverOutcome,
@@ -1167,7 +1167,14 @@ pub struct Editor {
     /// `docs/user/*.md` at build time. Plugins / future LSP
     /// integrations register additional topics through the
     /// same registry.
-    pub help_topics: Arc<HelpTopicRegistry>,
+    ///
+    /// CR.1: a copy-on-write RCU handle, not a fixed `Arc`. Every read
+    /// site takes one `.load()` snapshot for the duration of its work,
+    /// so a plugin loading mid-render affects the next `:help`, never
+    /// half of this one. Also registered as a boot service under
+    /// `HelpTopicRegistryHandle` so the plugin loader's drain can reach
+    /// it without a host method.
+    pub help_topics: HelpTopicRegistryHandle,
     /// T.4: builtin element ids interned once at boot from the
     /// `ThemeRegistryHandle` (looked up from [`Self::services`]).
     /// Snapshotted (Copy) into `RenderState` so a renderer read is

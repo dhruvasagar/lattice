@@ -5327,6 +5327,7 @@ dependencies = [
 name = "lattice-help"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "criterion",
  "lattice-completion",
  "lattice-core",

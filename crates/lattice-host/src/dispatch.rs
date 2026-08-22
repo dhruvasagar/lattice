@@ -27680,7 +27680,10 @@ impl Editor {
             Some((n, a)) => (n.to_string(), Some(a.to_string())),
             None => (raw.to_string(), None),
         };
-        let registry = self.help_topics.clone();
+        // CR.1: one snapshot for the whole render. A plugin loading while
+        // this page builds lands in the next `:help`, not halfway through
+        // this one.
+        let registry = self.help_topics.load_full();
         let Some(t) = registry.lookup(&name) else {
             self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
             return Vec::new();
@@ -33639,8 +33642,8 @@ impl Editor {
             })
             .collect();
         let mut lines = rendered.lines;
-        let topics: Vec<String> = self
-            .help_topics
+        let help_topics = self.help_topics.load();
+        let topics: Vec<String> = help_topics
             .topics_for_command(&spec.name)
             .map(|t| lattice_help::topic_link(&t.name))
             .collect();
@@ -35694,7 +35697,7 @@ impl Editor {
         // common failure. The topic is named after the mode id, so the
         // link is a registry hit away; modes with no prose doc yet
         // simply get no line rather than a dead link.
-        if self.help_topics.lookup(name).is_some() {
+        if self.help_topics.load().lookup(name).is_some() {
             lines.push(format!(
                 "See also: [{name}](help:{name}) — what this mode is for, \
                  with worked examples.",
@@ -35809,9 +35812,11 @@ impl Editor {
         };
 
         lines.push(format!("{icon} [{mode_id}](help:{mode_id})"));
-        if let Some(topic) = self.help_topics.lookup(mode_id.as_str()) {
+        let help_topics = self.help_topics.load();
+        if let Some(topic) = help_topics.lookup(mode_id.as_str()) {
             lines.push(format!("    {}", topic.summary));
         }
+        drop(help_topics);
 
         let rows = self.mode_chord_rows(&mode);
         if rows.is_empty() {

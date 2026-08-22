@@ -40,6 +40,7 @@ wit_bindgen::generate!({
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::config::OptionType;
+use lattice::plugin_host::help;
 // TS.1: the tree-snapshot handle rides `apply-action` (unused until AP.3's
 // manual style queries `enclosing`; the `auto` style reads only raw text).
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
@@ -382,6 +383,23 @@ impl Guest for Component {
                 bind("<BS>", "auto-pair-backspace"),
             ],
         });
+    }
+
+    /// CR.3: this plugin's own `:help auto-pair` page.
+    ///
+    /// The markdown is `include_str!`'d from this plugin's `doc/`, so it is
+    /// compiled into this component. The manual therefore ships with the
+    /// plugin, is removed when the plugin is, and never enters lattice's own
+    /// embedded-doc budget. An empty topic name registers at the bare plugin
+    /// id, so the page answers to `:help auto-pair` rather than
+    /// `:help auto-pair.auto-pair`.
+    fn register_help_topics() {
+        let _ = help::register_topic(
+            "",
+            "Auto-close brackets and quotes, or close the nearest unmatched opener on one key.",
+            include_str!("../doc/auto-pair.md"),
+            &["auto-pair".to_string()],
+        );
     }
 
     fn register_options() {

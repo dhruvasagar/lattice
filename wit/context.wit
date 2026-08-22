@@ -82,12 +82,17 @@ world treesitter-context-plugin {
     import grammar;
     import modes;
     import config;
+    // CR.3: the plugin's own `:help treesitter-context` page. Its markdown is
+    // `include_str!`'d from this plugin's `doc/`, so the manual ships with the
+    // component rather than in lattice's binary.
+    import help;
 
     export context;
     export register-options: func();
     export register-grammar: func();
     export grammar-callbacks;
     export register-modes: func();
+    export register-help-topics: func();
 }
 
 // `logging` is intentionally NOT imported, for the reason `auto-pair` gives:

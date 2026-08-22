@@ -8,7 +8,11 @@ package lattice:plugin-host@0.1.0;
 ///   - **modes** — the `auto-pair-mode` minor mode owning the insert-mode keymap
 ///     (the mode-ownership rule: bindings live at `MinorMode(auto-pair-mode)`,
 ///     never the builtin layer),
-///   - **config** — the `auto-pair.style` / `auto-pair.close-key` options.
+///   - **config** — the `auto-pair.style` / `auto-pair.close-key` options,
+///   - **help** — its own `:help auto-pair` page (CR.3). The markdown lives in
+///     this plugin's `doc/` and is `include_str!`'d into the component, so the
+///     plugin's manual travels with the plugin instead of inflating lattice's
+///     own embedded-doc budget.
 ///
 /// `logging` is intentionally NOT imported: keeping it out of the combined world
 /// keeps `log` off the sync grammar linker (the "no logging on the grammar hot
@@ -20,9 +24,11 @@ world auto-pair-plugin {
     import tree-sitter;
     import modes;
     import config;
+    import help;
 
     export register-grammar: func();
     export grammar-callbacks;
     export register-modes: func();
     export register-options: func();
+    export register-help-topics: func();
 }

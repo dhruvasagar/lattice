@@ -45,6 +45,7 @@ use lattice::plugin_host::modes::{
     register_mode,
 };
 use lattice::plugin_host::config::{OptionType, get_option, register_option, set_option};
+use lattice::plugin_host::help;
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, ContextRequest, ContextScope, Effect, ExCommandContext,
@@ -365,6 +366,23 @@ impl Guest for Component {
                 command: "context-up".to_string(),
             }],
         });
+    }
+
+    /// CR.3: this plugin's own `:help treesitter-context` page.
+    ///
+    /// The markdown is `include_str!`'d from this plugin's `doc/`, so it is
+    /// compiled into this component. The manual therefore ships with the
+    /// plugin, is removed when the plugin is, and never enters lattice's own
+    /// embedded-doc budget. An empty topic name registers at the bare plugin
+    /// id, so the page answers to `:help treesitter-context` rather than
+    /// `:help treesitter-context.treesitter-context`.
+    fn register_help_topics() {
+        let _ = help::register_topic(
+            "",
+            "Sticky scope headers — keep the enclosing impl / fn pinned above the text.",
+            include_str!("../doc/treesitter-context.md"),
+            &["treesitter-context".to_string()],
+        );
     }
 
     fn register_options() {

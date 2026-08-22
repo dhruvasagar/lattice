@@ -104,6 +104,11 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     let loader = PluginLoader::with_services(
         host,
         LoaderServices {
+            // The core plugins now `provides = [… "help"]` (CR.3), and an
+            // unwired seam fails the WHOLE load — so a harness that loads a
+            // real core plugin has to wire this or it silently gets zero
+            // plugins.
+            help_topics: Some(lattice_help::topics::builtin_topics().into_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(command_registry.clone()),

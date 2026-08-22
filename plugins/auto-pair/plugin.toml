@@ -16,6 +16,6 @@
 # gates it — so a fresh editor auto-pairs out of the box, and `:set
 # auto-pair.enabled=false` turns it off. No init.rs needed to enable it.
 id = "auto-pair"
-provides = ["grammar", "modes", "config"]
+provides = ["grammar", "modes", "config", "help"]
 editor_capabilities = ["tree-sitter"]
 default_mode = "auto-pair-mode"

@@ -91,6 +91,11 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
     let loader = Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {
+            // The core plugins now `provides = [… "help"]` (CR.3), and an
+            // unwired seam fails the WHOLE load — so a harness that loads a
+            // real core plugin has to wire this or it silently gets zero
+            // plugins.
+            help_topics: Some(lattice_help::topics::builtin_topics().into_handle()),
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(bus.clone()),
             command_registry: Some(empty_command_registry()),

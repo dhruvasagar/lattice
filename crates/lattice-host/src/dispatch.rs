@@ -19448,7 +19448,12 @@ impl Editor {
         // a delete costs one slot and destroys nothing.
         let ring_capacity = *self
             .resolved_option::<lattice_config::core_options::YankRingSize>(self.document_buffer_id);
-        self.yank_ring.push(entry, ring_capacity.max(0) as usize);
+        // YR.2: `explicit_yank` is the provenance the projection needs —
+        // `"0` reads yanks, `"1`–`"9` read deletes. It is already in scope
+        // for the clipboard mirror below, which is the same distinction
+        // asked a different way.
+        self.yank_ring
+            .push(entry, explicit_yank, ring_capacity.max(0) as usize);
         // CB.1: yank-only system-clipboard mirror.
         let clipboard_on =
             *self.resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
@@ -24212,6 +24217,26 @@ impl Editor {
                 self.unnamed_register.clone()
             }
             Some(Register::BlackHole) => None,
+            // YR.2: the numbered registers are a PROJECTION of the ring,
+            // not storage of their own. `"0` is the newest yank, `"1`–`"9`
+            // the nine newest deletes. One store with two projections
+            // cannot drift the way two stores can — the picker and `"1`
+            // can never disagree about what "two deletes ago" was.
+            //
+            // Falls back to `registers` for an explicit write (`"3yy`
+            // stores there), so a deliberate stash still wins over the
+            // projection; then to unnamed, as every other register does.
+            Some(Register::Numbered(n)) => {
+                let from_ring = if n == 0 {
+                    self.yank_ring.newest_yank()
+                } else {
+                    self.yank_ring.nth_delete(n.saturating_sub(1) as usize)
+                };
+                from_ring
+                    .cloned()
+                    .or_else(|| self.registers.get(&Register::Numbered(n)).cloned())
+                    .or_else(|| self.unnamed_register.clone())
+            }
             Some(r) => self
                 .registers
                 .get(&r)

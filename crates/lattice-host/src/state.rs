@@ -515,7 +515,23 @@ pub struct SnippetCandidateMeta {
 pub struct YankRing {
     /// Newest first. Front is the most recent entry, which is what the
     /// `"0`–`"9` projection (YR.2) and the picker both read from.
-    entries: std::collections::VecDeque<UnnamedRegister>,
+    entries: std::collections::VecDeque<RingEntry>,
+}
+
+/// YR.2: a ring slot — the register plus how it got here.
+///
+/// The yank/delete flag lives HERE rather than on [`UnnamedRegister`]
+/// because the ring is its only consumer: `"0` projects the newest
+/// *yank*, `"1`–`"9` the newest *deletes*. Putting it on the register
+/// would add a field to every named register and the unnamed one, none
+/// of which can answer a question about provenance — and it would have
+/// to be kept truthful at every construction site rather than at the
+/// one seam (`store_yank`) that actually knows.
+#[derive(Debug, Clone)]
+pub struct RingEntry {
+    pub register: UnnamedRegister,
+    /// True when this came from an explicit yank, false from a delete.
+    pub yanked: bool,
 }
 
 impl YankRing {
@@ -532,14 +548,37 @@ impl YankRing {
         self.entries.is_empty()
     }
 
-    /// Entries newest-first.
+    /// Entries newest-first. The picker shows yanks and deletes alike,
+    /// so this does not filter.
     pub fn iter(&self) -> impl Iterator<Item = &UnnamedRegister> {
-        self.entries.iter()
+        self.entries.iter().map(|e| &e.register)
     }
 
     /// The `n`th newest entry, 0-based. `nth(0)` is the most recent.
     pub fn nth(&self, n: usize) -> Option<&UnnamedRegister> {
-        self.entries.get(n)
+        self.entries.get(n).map(|e| &e.register)
+    }
+
+    /// YR.2: `"0` — the newest **yank**.
+    ///
+    /// Not `nth(0)`: an intervening delete must not shadow the last
+    /// thing you deliberately copied, which is the whole reason vim
+    /// keeps `"0` distinct from `""`.
+    pub fn newest_yank(&self) -> Option<&UnnamedRegister> {
+        self.entries.iter().find(|e| e.yanked).map(|e| &e.register)
+    }
+
+    /// YR.2: `"1`–`"9` — the `n`th newest **delete**, 0-based.
+    ///
+    /// `nth_delete(0)` is `"1`. Yanks are skipped rather than counted,
+    /// so `"1` is always "the last thing I deleted" no matter how many
+    /// yanks happened in between.
+    pub fn nth_delete(&self, n: usize) -> Option<&UnnamedRegister> {
+        self.entries
+            .iter()
+            .filter(|e| !e.yanked)
+            .nth(n)
+            .map(|e| &e.register)
     }
 
     /// Record a yank or a delete, trimming to `capacity`.
@@ -565,27 +604,125 @@ impl YankRing {
     /// is a live option (`yank.ring.size`) — reading it at push time is
     /// what makes lowering it take effect on the next yank instead of at
     /// the next restart. A capacity of 0 disables the ring.
-    pub fn push(&mut self, entry: UnnamedRegister, capacity: usize) {
+    pub fn push(&mut self, entry: UnnamedRegister, yanked: bool, capacity: usize) {
         if capacity == 0 {
             self.entries.clear();
             return;
         }
         match self.entries.front() {
             // Consecutive duplicate: already at the top, nothing to do.
-            Some(front) if front.content == entry.content && front.kind == entry.kind => return,
+            Some(front)
+                if front.register.content == entry.content && front.register.kind == entry.kind =>
+            {
+                return;
+            }
             _ => {}
         }
         // Non-consecutive repeat: promote rather than duplicate.
+        //
+        // YR.2: the promoted slot takes the NEW provenance. Deleting
+        // something you yanked an hour ago makes it the newest delete,
+        // and `"1` should find it — keeping the stale `yanked` flag
+        // would leave it addressable only as `"0`.
         if let Some(pos) = self
             .entries
             .iter()
-            .position(|e| e.content == entry.content && e.kind == entry.kind)
+            .position(|e| e.register.content == entry.content && e.register.kind == entry.kind)
         {
             self.entries.remove(pos);
         }
-        self.entries.push_front(entry);
+        self.entries.push_front(RingEntry {
+            register: entry,
+            yanked,
+        });
         while self.entries.len() > capacity {
             self.entries.pop_back();
         }
+    }
+}
+
+#[cfg(test)]
+mod yr2_projection_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn reg(s: &str) -> UnnamedRegister {
+        UnnamedRegister {
+            content: s.to_string(),
+            kind: YankKind::Charwise,
+        }
+    }
+
+    /// `"0` is the newest YANK, not the newest entry. An intervening
+    /// delete must not shadow the last thing you deliberately copied —
+    /// that is the whole reason vim keeps `"0` distinct from `""`.
+    #[test]
+    fn register_zero_skips_deletes() {
+        let mut ring = YankRing::new();
+        ring.push(reg("yanked"), true, 10);
+        ring.push(reg("deleted"), false, 10);
+
+        assert_eq!(ring.nth(0).unwrap().content, "deleted", "newest overall");
+        assert_eq!(
+            ring.newest_yank().unwrap().content,
+            "yanked",
+            "`\"0` must survive an intervening delete"
+        );
+    }
+
+    /// `"1`–`"9` count deletes only. Yanks in between are skipped rather
+    /// than counted, so `"1` is always "the last thing I deleted".
+    #[test]
+    fn numbered_registers_count_deletes_only() {
+        let mut ring = YankRing::new();
+        ring.push(reg("d3"), false, 10);
+        ring.push(reg("y"), true, 10);
+        ring.push(reg("d2"), false, 10);
+        ring.push(reg("d1"), false, 10);
+
+        assert_eq!(ring.nth_delete(0).unwrap().content, "d1", "\"1");
+        assert_eq!(ring.nth_delete(1).unwrap().content, "d2", "\"2");
+        assert_eq!(
+            ring.nth_delete(2).unwrap().content,
+            "d3",
+            "\"3 — the yank between d2 and d3 is skipped, not counted"
+        );
+        assert!(ring.nth_delete(3).is_none());
+    }
+
+    /// An empty ring projects to nothing rather than to a wrong answer.
+    #[test]
+    fn an_empty_ring_projects_to_none() {
+        let ring = YankRing::new();
+        assert!(ring.newest_yank().is_none());
+        assert!(ring.nth_delete(0).is_none());
+    }
+
+    /// A promoted repeat takes the NEW provenance. Deleting something you
+    /// yanked earlier makes it the newest delete, and `"1` must find it;
+    /// keeping the stale flag would leave it addressable only as `"0`.
+    #[test]
+    fn a_promoted_entry_takes_its_new_provenance() {
+        let mut ring = YankRing::new();
+        ring.push(reg("shared"), true, 10);
+        ring.push(reg("other"), false, 10);
+        // Same content, now arriving as a delete → promoted to front.
+        ring.push(reg("shared"), false, 10);
+
+        assert_eq!(ring.nth_delete(0).unwrap().content, "shared");
+        assert!(
+            ring.newest_yank().is_none(),
+            "the only yank was re-classified when it was promoted"
+        );
+    }
+
+    /// The picker sees everything; only the numbered projection filters.
+    #[test]
+    fn iteration_is_unfiltered() {
+        let mut ring = YankRing::new();
+        ring.push(reg("y"), true, 10);
+        ring.push(reg("d"), false, 10);
+        let all: Vec<_> = ring.iter().map(|r| r.content.as_str()).collect();
+        assert_eq!(all, vec!["d", "y"]);
     }
 }

@@ -2,12 +2,12 @@
 
 Design fragment:
 [`../../architecture/yank-ring.md`](../../architecture/yank-ring.md).
-Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19**; YR.2 and YR.6 open.
+Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19; YR.2 landed 2026-08-22**; YR.6 open.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
 | YR.1 | The ring itself — `YankRing`, `store_yank` push, cap + dedupe, `yank.ring.size` | — | ✅ |
-| YR.2 | `"0`–`"9` projected out of the ring | YR.1 | 📝 |
+| YR.2 | `"0`–`"9` projected out of the ring | YR.1 | ✅ |
 | YR.3 | `PickerAcceptOutcome::FillCaller` + `FillTarget` captured at open | — | ✅ |
 | YR.4 | The `yank-ring` picker source (ring + named registers) | YR.1, YR.3 | ✅ |
 | YR.5 | Keys: `<C-r>` insert-register, `<C-r><C-r>` / `<C-r>`-in-picker open the picker | YR.4 | ✅ |

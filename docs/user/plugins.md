@@ -173,11 +173,67 @@ path are the same code shape.
 | **modes** | Declare a major/minor mode (kind, keymap, capabilities) that registers into the mode registry. The editor auto-generates a `:<mode-name>` toggle command for it (exactly like a built-in mode), and it shows in `:list-modes` / `:describe-mode`. |
 | **keymap** | Bind user keys above the built-in grammar (the `init.rs` keybinding path). |
 | **host-services** | Call back into the editor for capability-gated services (e.g. filesystem enumeration). |
+| **help** | Ship its own `:help` pages. The markdown is compiled into the plugin's own `.wasm` (see below); the topic then opens, `<Tab>`-completes and cross-links exactly like a built-in doc. |
+| **dashboard** | Add — or replace — a section on the `:dashboard` launch page, rendered from the live pane width, icon palette and editor version. |
 | **logging** | Emit the plugin's own log narrative into the boundary trace (Layer 2). |
 
 Run `:describe-plugin-api <seam>` for the exact function signatures of any of
 these; `:list-plugin-apis` lists them all, and `:export-plugin-api` dumps the
 whole catalog as Markdown or JSON (useful for scaffolding).
+
+### A plugin's docs live inside the plugin
+
+The `help` seam has one non-obvious rule: **there is no docs directory.** A
+plugin's markdown is compiled into its own component with `include_str!` and
+handed to the editor once, at load.
+
+```rust
+fn register_help_topics() {
+    // `:help fugitive` — an empty name means the bare plugin id, so a
+    // one-page plugin does not answer to `fugitive.fugitive`.
+    let _ = register_topic("", "Git from inside lattice.",
+                           include_str!("../doc/index.md"), &[]);
+    // `:help fugitive.status`
+    let _ = register_topic("status", "The status buffer.",
+                           include_str!("../doc/status.md"), &[]);
+}
+```
+
+Two consequences worth knowing before you write the first page:
+
+- **Topic names are namespaced for you.** The editor prefixes every name with
+  your plugin's id, using the id it read from your manifest rather than
+  anything you pass. You cannot shadow a built-in page or collide with another
+  plugin, and you do not have to think about it.
+- **Docs have the plugin's lifetime.** Uninstalling removes the pages; a
+  plugin that failed to load leaves none behind. This is the reason the docs
+  travel *in* the artefact instead of being copied into a shared directory at
+  install time.
+
+The `related-commands` argument takes substring patterns matched against
+command names — `:describe-command` uses them to emit a *See also* link back to
+your page, the same way a built-in doc's frontmatter does.
+
+### Dashboard sections are rendered, not stored
+
+The `dashboard` seam works the other way round from `help`, and the difference
+matters when you write one. You declare your section ids once at load, and the
+editor calls you back **every time the page composes** — passing the current
+pane width, whether Nerd Font glyphs are available, and the editor version. So
+a section can show something live (recent projects, repository state) rather
+than a frozen block of text.
+
+Because it runs while the page is being built, a section should return
+promptly; the editor budgets the call and a section that overruns or crashes
+simply renders nothing while the rest of the page composes normally.
+
+Section ids are **not** namespaced, deliberately: registering `getting-started`
+replaces the built-in section of that name. That is a supported thing to do —
+and unloading your plugin puts the original back.
+
+If your section draws icons, honour the `nerd-fonts` flag and keep both
+glyphs the same display width, or the page's columns will shift when the user
+toggles `ui.nerd_fonts`.
 
 ---
 

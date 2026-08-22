@@ -6032,7 +6032,65 @@ accurate bounded-and-structurally-sealed picture.
 
 ---
 
-## Dashboard (DB.1–DB.7 ✅ complete; DB.8 📝 deferred post-v1, 2026-07-03)
+## Contributable registries (CR.1–CR.4 ✅, CR.5 🚧 — 2026-08-22)
+
+Design:
+[`../architecture/contributable-registries.md`](../architecture/contributable-registries.md).
+Slice plan:
+[`slice-plans/contributable-registries.md`](slice-plans/contributable-registries.md).
+
+Closes **HD.6** and the plugin half of **DB.8**, which were two deferred
+slices blocked on one missing thing: `HelpTopicRegistry` and
+`DashboardRegistry` were both built once at boot and immutable afterwards, so
+a plugin could ship neither a `:help` page nor a launch-page section. Both
+docstrings already *promised* the seam and neither was reachable — a
+paramount-#2 hole in two of the surfaces a plugin most obviously wants.
+
+One mechanism, two consumers: `Arc<ArcSwap<T>>` with teardown by provenance,
+the idiom the tree already carried four times over.
+
+| Slice | Title | Status |
+|---|---|---|
+| **CR.1** | `HelpTopicRegistryHandle` — topics behind `Arc`, RCU handle, Phase-A service | ✅ |
+| **CR.2** | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | ✅ |
+| **CR.3** | the `help` WIT seam — bodies `include_str!`'d into the component, namespaced topics | ✅ |
+| **CR.4** | the `dashboard` WIT seam — live budgeted render, `WasmDashboardSection` | ✅ |
+| **CR.5** | user docs, benches, ledger, source-plan closeout | 🚧 |
+
+**The two seams differ in shape, deliberately.** A help topic is *data* — its
+body does not change between load and read, so the guest hands over a string
+and is dropped; reading `:help` never touches wasm. A dashboard section is a
+*function* of a `DashboardCtx` (pane width, `ui.nerd_fonts`, version) that the
+guest cannot know at load and that DB.6 exists to change at runtime, so the
+guest stays instantiated and the host calls it per compose. Making both data
+would freeze sections blind to the icon palette; making both live would keep a
+`wasmtime::Store` alive per docs plugin for nothing.
+
+**Retired:** the 2026-07-29 runtime-doc-directory plan, as the *plugin*
+mechanism. It needed plugins to copy markdown into a shared directory at
+install time and separated docs from the artefact owning them. The resolution
+chain survives in `embedded-docs-budget.md` as a builtin-volume lever only,
+and is weaker for having lost its second justification.
+
+**Namespacing differs too, and for a reason.** Help topics are auto-namespaced
+by plugin id (so a plugin cannot shadow `:help buffers`), with one refinement:
+a topic named after the plugin, or unnamed, lands at the bare id — `:help
+fugitive`, not `:help fugitive.fugitive`. Dashboard section ids are *not*
+namespaced, because replacing a builtin section is a stated DB.8 capability.
+That puts the weight on unload, which CR.2's shadow stack carries: the
+registry appends rather than overwrites, so `unregister_plugin` is a `retain`
+and the displaced builtin resurfaces with no restore bookkeeping.
+
+**Two bugs the bench found**, both the same shape and one of them
+pre-existing: fuel is a *per-call* budget, and a seam called repeatedly must
+re-arm per call. CR.4's `render` and CM.6b's `WasmErrorParser::feed` both
+armed once at instantiate, so both worked for a while and then trapped
+permanently — the dashboard after 1173 composes, the parser after ~150 k build
+lines. Fixed in `5cb57b69` / `b2a4e992`. See the CR.4 section of
+`benchmarks.md`; the tell was a render benching at 9.37 ns, which was a
+poisoned early-return rather than a wasm call.
+
+## Dashboard (DB.1–DB.7 ✅ complete; DB.8 plugin half ✅ 2026-08-22, theme-remap half open)
 
 Design: [`../architecture/dashboard.md`](../architecture/dashboard.md). Slice
 plan: [`slice-plans/dashboard.md`](slice-plans/dashboard.md).
@@ -6065,7 +6123,7 @@ feature.
 | **DB.5** | startup gating + mode-owned trigger (`Startup` typed event, `ConfigRegistry` Phase-A hoist) | ✅ |
 | **DB.6** | full override + recompose triggers (`dashboard.source`, `Event::OptionChanged` subscription) | ✅ |
 | **DB.7** | benches + ledger (this entry) | ✅ |
-| **DB.8** | plugin sections + body custom roles | 📝 deferred — gated on the plugin host + theme-remap seam |
+| **DB.8** | plugin sections (→ CR.2/CR.4) + body custom roles (→ `theme-system.md`) | 🚧 plugin half ✅ 2026-08-22; theme-remap half still open |
 
 **DB.7 bench coverage (design §13).** The dashboard composes once at
 creation, never per keystroke, so there is no keystroke→glyph bench.

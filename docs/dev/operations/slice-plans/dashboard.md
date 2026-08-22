@@ -199,7 +199,7 @@ the DB.* status.
 - *test:* the bench harness itself; CI ratchet entry.
 - *doc:* `BENCHMARKS.md`, `implementation.md`.
 
-### DB.8 — plugin sections + body custom roles  📝 (tracked in `contributable-registries.md`)
+### DB.8 — plugin sections ✅ (2026-08-22) + body custom roles 📝
 The registry already accepts non-native providers; this slice adds the
 WASM host API for a plugin to **add / replace / whole-author** sections (design
 §1, §10), and routes body headings/links through the custom `dashboard.section`
@@ -222,8 +222,9 @@ part of that track.
 DB.1 (pure core) → DB.2 (buffer + mode + `:dashboard`) → DB.3 (theme elements) →
 DB.4 (branding, depends on DB.3 colours) → DB.5 (startup, depends on DB.2
 buffer) → DB.6 (override + recompose) → DB.7 (benches/ledger). DB.3 and DB.5 are
-independent of each other and can interleave after DB.2. DB.8 is post-v1,
-gated on the plugin host + theme-remap seam.
+independent of each other and can interleave after DB.2. DB.8's plugin half
+landed 2026-08-22 as CR.2 + CR.4 (`contributable-registries.md`); its
+theme-remap half is still gated on `theme-system.md` §5 scope 2.
 
 ## Status
 
@@ -238,4 +239,4 @@ gated on the plugin host + theme-remap seam.
 | DB.5 — startup gating + mode-owned trigger | ✅ |
 | DB.6 — full override + recompose triggers | ✅ |
 | DB.7 — benches + ledger | ✅ |
-| DB.8 — plugin sections (→ `contributable-registries.md` CR.2/CR.4) + body custom roles (→ `theme-system.md`) | 📝 |
+| DB.8 — plugin sections (→ `contributable-registries.md` CR.2/CR.4) ✅ + body custom roles (→ `theme-system.md`) | 🚧 |

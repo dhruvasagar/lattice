@@ -86,11 +86,27 @@ Run: `cargo bench -p lattice-help --bench topics`.
 
 | Bench | Median | Floor / Target | What it measures |
 |---|---|---|---|
-| `help_registry_boot_ns` | ~17.8 µs | 18 µs / 50 µs | `builtin_topics()` on the editor-boot path, for every session. Decompresses nothing — 73 name/summary `String`s and the map build. If this starts scaling with doc *volume*, laziness has regressed. |
+| `help_registry_boot_ns` | ~17.8 µs (73 topics) → **~39.4 µs (137 topics)** | 18 µs / 50 µs | `builtin_topics()` on the editor-boot path, for every session. Decompresses nothing — one name/summary `String` pair per topic and the map build. If this starts scaling with doc *volume*, laziness has regressed. **See the 2026-08-22 note below: the growth is in topic COUNT, which is expected, and headroom is now thin.** |
 | `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB). The one-time cost per topic per session, on an explicit `:help`. |
-| `help_topic_cached_open_ns` | ~562 ns | 570 ns / 2 µs | Every later open of the same topic: a clone of the cached string. |
+| `help_topic_cached_open_ns` | ~562 ns → ~597 ns | 570 ns / 2 µs | Every later open of the same topic: a clone of the cached string. |
+| `help_registry_handle_read_ns` (CR.1) | ~608 ns | — / 2 µs | The same cached open, taken through the `ArcSwap` handle the registry now lives behind: `.load()` + lookup + render. **The delta against the row above IS the RCU wrapper** — ~10 ns, inside run-to-run noise. Making the registry runtime-writable so plugins can ship `:help` pages costs the existing read path nothing. |
 
-All three sit on an explicit user action, never per-keystroke or
+**Boot-time growth, measured 2026-08-22.** The 17.8 µs baseline was
+recorded against **73** topics; `docs/user/` now holds **137**. That is
+0.244 µs/topic then and 0.287 µs/topic now — linear in topic *count*,
+which is exactly what this bench's note says to expect, since it builds
+one name/summary entry per topic. It is **not** a laziness regression:
+the boot path still decompresses nothing, and `first_open` is unchanged
+in shape.
+
+It is worth stating plainly anyway, because the headroom is thinner than
+the table suggests: at ~0.29 µs/topic the 50 µs target is reached around
+**170 topics**, and the doc set nearly doubled in under a month. The
+lever when it fires is not a faster map build — it is deferring the
+name/summary `String`s themselves, which the current shape materialises
+eagerly for every topic whether or not `:help` is ever opened.
+
+All of these sit on an explicit user action, never per-keystroke or
 per-frame, so the bar is "imperceptible within a command" rather than
 the frame budget. Context in
 [`embedded-docs-budget.md`](embedded-docs-budget.md).
@@ -1056,6 +1072,40 @@ scanned, not total file size.
 signals the byte-range restriction stopped bounding the scan — check that
 `set_byte_range` is still applied before `cursor.matches(...)` in
 `SyntaxSnapshot::scope_toward`.
+
+## CR.4 — plugin dashboard section benches (2026-08-22)
+
+Contributable registries, slice CR.4 (design:
+`../architecture/contributable-registries.md` §3.2; slice plan:
+`slice-plans/contributable-registries.md`). CR.4 put a **synchronous guest
+call on the actor thread**, inside `Editor::compose_dashboard_sections`. The
+design argues that is acceptable because composition is a
+`LatencyClass::Display` action — `:dashboard`, startup, or a DB.6 recompose —
+never per-keystroke and never per-frame. These are the numbers that make the
+argument falsifiable instead of a paragraph.
+
+Bench file: `crates/lattice-plugin-host/benches/dashboard_section.rs`. Run:
+`cargo bench -p lattice-plugin-host --bench dashboard_section`. Skips (rather
+than fails) when the `dashboard-guest` fixture was not built.
+
+| Bench | Median time | Notes |
+|---|---|---|
+| `dashboard_section_render_ns` | **~1.77 µs** | One `render(&ctx)` on a live plugin section — what a compose pays **per plugin section**. Against DB.7's `dashboard_creation` (~571 µs for the whole page) that is **~0.3 %**: a plugin section is a rounding error on the compose it joins. That ratio is the number to watch, not the absolute. |
+| `dashboard_section_spawn_ns` | ~237 µs | Declaring + instantiating one guest per section at load. Paid once, on the loader's off-boot-thread task, so it cannot delay boot — recorded so a regression there is visible too. |
+
+**This bench found a bug, which is the case for writing it.** The first run
+reported `dashboard_section_render_ns` at **9.37 ns**. A wasm call cannot be
+9 ns — that was a poisoned section's early return being measured, not a
+render. CR.4 had armed the per-call fuel budget once at instantiate (correct
+for a declare-once seam like `config` / `help`, wrong for one called on every
+compose), so the section worked for 1173 composes and then trapped
+permanently. Fixed in `5cb57b69`; the same shape turned out to be present in
+CM.6b's `error-parser` and was fixed in `b2a4e992`.
+
+The lesson generalises past this bench: **a suspiciously fast number is a
+result, not a win.** Nothing else in the suite would have caught it — the
+seam's own tests render two or three times and pass against the broken
+build.
 
 ## DB.7 — dashboard creation-time + idle-frame benches (2026-07-03)
 

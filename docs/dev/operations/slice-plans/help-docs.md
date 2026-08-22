@@ -1,6 +1,7 @@
 # Help docs — mode-aligned naming and full coverage
 
-**Status:** in progress — HD.1–HD.5 ✅, HD.7 ✅, HD.6 📝, HP.1–HP.3 ✅. Design
+**Status:** complete — HD.1–HD.7 ✅, HP.1–HP.3 ✅ (HD.6 landed 2026-08-22
+as CR.1+CR.3, see `contributable-registries.md`). Design
 fragment: none — this is a naming + coverage convention, recorded here
 and enforced by tests in `crates/lattice-help/src/topics.rs`. The HP
 slices at the end cover how a page *renders* rather than which pages
@@ -66,7 +67,7 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 | HD.3 | Docs for the user-facing modes with no coverage | ✅ |
 | HD.4 | Docs for the family modes (19 language, 6 display) + internals | ✅ |
 | HD.5 | Compress the embedded docs (unblocks HD.4) | ✅ |
-| HD.6 | Plugin-contributed topics (→ `contributable-registries.md` CR.1/CR.3) | 📝 |
+| HD.6 | Plugin-contributed topics (→ `contributable-registries.md` CR.1/CR.3) | ✅ |
 
 ### HD.1 — naming + links ✅ (2026-07-28)
 
@@ -270,7 +271,7 @@ rather than left as folklore. A shared dictionary would compress
 better but would mean inflating the whole corpus to read one topic,
 which costs the laziness.
 
-### HD.6 — plugin-contributed topics 📝 (tracked in `contributable-registries.md`)
+### HD.6 — plugin-contributed topics ✅ (2026-08-22, as CR.1 + CR.3)
 
 The deferred half of the 2026-07-29 distribution decision. Compression
 bought room; it did not create the seam that matters:

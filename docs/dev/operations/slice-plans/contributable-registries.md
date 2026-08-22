@@ -3,7 +3,7 @@
 **Design fragment:**
 [`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
 
-**Status:** CR.1 ✅, CR.2 ✅, CR.3–CR.5 📝.
+**Status:** CR.1–CR.4 ✅, CR.5 🚧 (2026-08-22).
 
 Closes HD.6 (`help-docs.md`) and DB.8 (`dashboard.md`) — both were
 blocked on the same missing mechanism, so they are sequenced here as one
@@ -30,9 +30,9 @@ green CR.1 can ship before CR.2 is started.
 |---|---|---|
 | CR.1 | `HelpTopicRegistryHandle` — topics behind `Arc`, RCU handle, Phase-A service | ✅ |
 | CR.2 | `DashboardRegistryHandle` — RCU handle, last-wins resolution, shadow-restoring unload | ✅ |
-| CR.3 | `help` WIT seam — `help-plugin` world, namespaced topics, drain + teardown | 📝 |
-| CR.4 | `dashboard` WIT seam — `dashboard-plugin` world, `WasmDashboardSection`, drain + teardown | 📝 |
-| CR.5 | User docs, bench, ledger, source-plan closeout | 📝 |
+| CR.3 | `help` WIT seam — `help-plugin` world, namespaced topics, drain + teardown | ✅ |
+| CR.4 | `dashboard` WIT seam — `dashboard-plugin` world, `WasmDashboardSection`, drain + teardown | ✅ |
+| CR.5 | User docs, bench, ledger, source-plan closeout | 🚧 |
 
 ---
 
@@ -97,7 +97,7 @@ position; two plugins shadowing one id unwind in reverse order; the
 same owner re-registering the same id does not grow the stack.
 *doc:* design §3.2; `dashboard.md` §3.1.
 
-### CR.3 — the `help` WIT seam 📝
+### CR.3 — the `help` WIT seam ✅ (2026-08-22)
 
 - `wit/help.wit`: the `help` interface and the `help-plugin` world (§3.1
   of the design). Async world, `theme-plugin` shape.
@@ -130,7 +130,7 @@ reload does not duplicate; two plugins with the same internal topic name
 do not collide.
 *doc:* design §3.1; `docs/user/plugins.md`.
 
-### CR.4 — the `dashboard` WIT seam 📝
+### CR.4 — the `dashboard` WIT seam ✅ (2026-08-22)
 
 - `wit/dashboard.wit`: the `dashboard` interface and the
   `dashboard-plugin` world (§3.2). **Sync** world on the grammar linker.
@@ -160,7 +160,19 @@ malformed fragment is dropped, not fatal.
 *doc:* design §3.2; `dashboard.md` §6, §10 (DB.8 moves from rejected-
 for-v1 to implemented).
 
-### CR.5 — docs, bench, ledger 📝
+**Fuel bug, found by the bench and fixed in `5cb57b69`.** `render` armed
+the per-call budget once at instantiate. That is right for a
+declare-once seam and wrong for one called on every compose: the section
+worked for 1173 composes and then trapped permanently, with no
+user-visible cause. `dashboard_section_render_ns` reported **9.37 ns**,
+which is a poisoned early-return rather than a wasm call — after the fix
+it is 1.77 µs. The same shape was present in CM.6b's `error-parser`
+(`b2a4e992`). The regression test renders 2000 times deliberately: two
+or three passes against the broken build, which is how it got written.
+See `rearm-fuel-per-guest-call` and the CR.4 section of
+`benchmarks.md`.
+
+### CR.5 — docs, bench, ledger 🚧
 
 - `docs/user/plugins.md`: both seams, with the `include_str!` pattern
   for help bodies spelled out — it is the non-obvious half.

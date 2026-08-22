@@ -60,14 +60,21 @@ command" rather than the frame budget.
 ## What to do when the budget fires again
 
 **Do not bump the number.** Compression is already spent. The next
-lever is moving docs out of the binary into a **runtime directory** —
-which is also the only model that lets *plugins* ship `:help` pages.
+lever is moving docs out of the binary into a **runtime directory**.
 
-That second point is the real driver, and it is independent of size:
-`Editor::help_topics` is a plain `Arc<HelpTopicRegistry>` built once at
-boot, so nothing can register a topic at runtime. A plugin cannot ship
-a help page today at all. Since plugin-first extensibility is paramount
-goal #2, that gap closes eventually whether or not the budget fires.
+That lever used to carry a second justification — it was also read as
+the only model that lets *plugins* ship `:help` pages. **That is no
+longer true, and the plugin half has been decided the other way**
+(2026-08-22): a plugin's markdown is `include_str!`'d into its own
+`.wasm` and registered through a `help` WIT seam against a
+runtime-writable registry handle. Docs travel with the artefact that
+owns them, and a plugin's pages never enter this budget at all. See
+[`../architecture/contributable-registries.md`](../architecture/contributable-registries.md)
+§4.
+
+So what follows is now a **builtin-volume lever only**, and it is the
+weaker for having lost its other reason. If the budget fires, weigh it
+against simply writing less, or writing more densely, first.
 
 ### The runtime-directory model
 
@@ -94,9 +101,12 @@ resolution order
   4. <exe>/../share/lattice/doc
   5. the embedded set                (always present — the floor)
 
-plugins   <plugin>/doc/*.md, overlaid at load
 user      ~/.config/lattice/doc/*.md
 ```
+
+The `plugins  <plugin>/doc/*.md, overlaid at load` line this block used
+to carry is **struck** — plugin docs ship inside the component now (§
+above).
 
 Scoped **docs-only but named for growth**: build `runtime/doc/` and the
 resolution chain, wire only docs through it, and leave the path shape

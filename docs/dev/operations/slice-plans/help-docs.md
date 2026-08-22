@@ -66,7 +66,7 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 | HD.3 | Docs for the user-facing modes with no coverage | ✅ |
 | HD.4 | Docs for the family modes (19 language, 6 display) + internals | ✅ |
 | HD.5 | Compress the embedded docs (unblocks HD.4) | ✅ |
-| HD.6 | Runtime doc directory + plugin-contributed topics | 📝 |
+| HD.6 | Plugin-contributed topics (→ `contributable-registries.md` CR.1/CR.3) | 📝 |
 
 ### HD.1 — naming + links ✅ (2026-07-28)
 
@@ -270,7 +270,7 @@ rather than left as folklore. A shared dictionary would compress
 better but would mean inflating the whole corpus to read one topic,
 which costs the laziness.
 
-### HD.6 — runtime doc directory 📝
+### HD.6 — plugin-contributed topics 📝 (tracked in `contributable-registries.md`)
 
 The deferred half of the 2026-07-29 distribution decision. Compression
 bought room; it did not create the seam that matters:
@@ -279,14 +279,21 @@ boot, **so a plugin cannot ship a `:help` page at all**. Given
 plugin-first extensibility is paramount goal #2, that closes eventually
 regardless of size.
 
-Shape, resolution order, the survey of how Vim / Helix / Kakoune / Zed
-handle it, and why the embedded set stays as a floor (`cargo install`
-and scp'd binaries have no runtime dir, and unlike Helix a missing docs
-dir fails quietly) are all recorded in
-[`../embedded-docs-budget.md`](../embedded-docs-budget.md).
+**The runtime doc directory is retired as the mechanism** (2026-08-22).
+It requires plugins to copy markdown into a shared directory at install
+time, and it separates a plugin's docs from the artefact that owns them
+— an unloaded plugin leaves its pages behind. A plugin's markdown is
+instead `include_str!`'d into its own `.wasm` and registered through a
+`help` WIT seam, against a runtime-writable `HelpTopicRegistryHandle`.
 
-Scoped docs-only but named for growth, so `runtime/themes/` and
-`runtime/queries/` can move later without a second migration.
+Design:
+[`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
+Slices: CR.1 (the handle) + CR.3 (the seam) in
+[`contributable-registries.md`](contributable-registries.md). The
+resolution-order survey and the case for keeping the embedded set as a
+floor stay recorded in
+[`../embedded-docs-budget.md`](../embedded-docs-budget.md), where they
+remain relevant to *builtin* doc volume only.
 
 ---
 

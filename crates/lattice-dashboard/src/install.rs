@@ -31,6 +31,7 @@ use lattice_runtime::{EventFilter, SubscriptionTarget};
 
 use crate::mode::register_dashboard_modes;
 use crate::options::DashboardEnabled;
+use crate::registry::DashboardRegistryHandle;
 use crate::sections::builtin_registry;
 
 /// The `*dashboard*` synthetic buffer's registered name — the same literal
@@ -67,10 +68,17 @@ fn parse_no_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
 pub fn install(boot: &mut impl SubsystemBoot) {
     register_dashboard_modes(boot.modes_mut());
     register_dashboard_commands(boot.commands_mut());
-    // The built-in section registry, read by `do_open_dashboard` at compose
-    // time. Registered (and looked up) as the bare `DashboardRegistry` type
-    // per the ServiceRegistry Arc/TypeId rule.
-    boot.register_service(builtin_registry());
+    // The section registry, read by `do_open_dashboard` at compose time.
+    //
+    // CR.2: registered as the runtime-mutable `DashboardRegistryHandle`
+    // (looked up under that exact alias, per the ServiceRegistry
+    // Arc/TypeId rule) rather than the bare value — the builtin set is the
+    // registry's *initial* contents now, and a `dashboard` plugin RCUs its
+    // own sections in. This `install` runs early in Phase B, well ahead of
+    // `lattice_plugin_loader::install`, which is what makes that drain
+    // possible; a handle registered after the loader would be a silent
+    // no-contribution.
+    boot.register_service::<DashboardRegistryHandle>(builtin_registry().into_handle());
     install_startup_trigger(boot);
     install_recompose_triggers(boot);
 }

@@ -40,9 +40,22 @@ impl Default for DashboardCtx {
 /// [`id`](DashboardSection::id)) for the default layout, and looks up by
 /// `id` when the user pins an explicit order via `dashboard.sections`.
 pub trait DashboardSection: Send + Sync {
-    /// Stable identifier, used in `dashboard.sections` and (DB.8) for plugin
+    /// Stable identifier, used in `dashboard.sections` and (CR.4) for plugin
     /// replace-by-id. Lowercase kebab, e.g. `"getting-started"`.
+    ///
+    /// Section ids are deliberately NOT namespaced by plugin, unlike help
+    /// topics: replacing a builtin section is a stated capability, so a
+    /// plugin registering `getting-started` is doing something supported.
     fn id(&self) -> &str;
+
+    /// CR.2: the host-issued plugin id that contributed this section,
+    /// `None` for builtins. Provenance IS the teardown token —
+    /// [`DashboardRegistry::unregister_plugin`] removes by it.
+    ///
+    /// Defaulted, so no native section changes.
+    fn plugin_id(&self) -> Option<u64> {
+        None
+    }
 
     /// Default sort key for the built-in layout. Lower sorts first.
     fn order(&self) -> i32;

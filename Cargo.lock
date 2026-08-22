@@ -5260,6 +5260,7 @@ dependencies = [
 name = "lattice-dashboard"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "lattice-cells",
  "lattice-config",
  "lattice-core",

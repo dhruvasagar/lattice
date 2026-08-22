@@ -11,8 +11,8 @@
 //! See `docs/dev/architecture/dashboard.md` §9.
 
 use lattice_dashboard::{
-    DashboardBrandingProvider, DashboardCtx, DashboardFragment, DashboardRegistry, DashboardRole,
-    DashboardRow, DashboardSource, LinkTarget, SectionSelection,
+    DashboardBrandingProvider, DashboardCtx, DashboardFragment, DashboardRegistryHandle,
+    DashboardRole, DashboardRow, DashboardSource, LinkTarget, SectionSelection,
 };
 
 use crate::dispatch::RendererSignal;
@@ -181,8 +181,11 @@ impl Editor {
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
-        let fragments = match self.services.get::<DashboardRegistry>() {
-            Some(registry) => registry.compose(&ctx, &selection),
+        // CR.2: one snapshot of the RCU handle per compose — a plugin
+        // loading while the page builds lands in the next compose, not
+        // halfway through this one.
+        let fragments = match self.services.get::<DashboardRegistryHandle>() {
+            Some(registry) => registry.load().compose(&ctx, &selection),
             None => {
                 tracing::warn!("dashboard registry service missing; rendering an empty dashboard");
                 Vec::new()

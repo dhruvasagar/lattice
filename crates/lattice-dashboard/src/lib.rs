@@ -29,7 +29,7 @@ pub use fragment::{
 pub use install::install;
 pub use mode::{DashboardMode, register_dashboard_modes};
 pub use options::{Dashboard, DashboardEnabled, DashboardSections, DashboardSource};
-pub use registry::{DashboardRegistry, SectionSelection};
+pub use registry::{DashboardRegistry, DashboardRegistryHandle, SectionSelection};
 pub use section::{DashboardCtx, DashboardSection};
 pub use sections::builtin_registry;
 pub use theme::{DashboardElementIds, register_dashboard_theme_elements};

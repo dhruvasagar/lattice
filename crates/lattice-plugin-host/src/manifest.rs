@@ -156,6 +156,10 @@ pub enum PluginSeam {
     /// markdown ships inside the component and crosses once, at load; the
     /// topic then lives in the same registry the builtin docs do.
     Help,
+    /// CR.4 — plugin-contributed launch-page sections (`dashboard-plugin`
+    /// world). Sync, and unlike `help` the guest stays instantiated: a
+    /// section is a function of a live `DashboardCtx`, not data.
+    Dashboard,
 }
 
 impl PluginSeam {
@@ -176,6 +180,7 @@ impl PluginSeam {
             PluginSeam::PluginManager => "plugin-manager",
             PluginSeam::ErrorParser => "error-parser",
             PluginSeam::Help => "help",
+            PluginSeam::Dashboard => "dashboard",
         }
     }
 }
@@ -205,6 +210,7 @@ impl FromStr for PluginSeam {
             "plugin-manager" => PluginSeam::PluginManager,
             "error-parser" => PluginSeam::ErrorParser,
             "help" => PluginSeam::Help,
+            "dashboard" => PluginSeam::Dashboard,
             _ => return Err(()),
         })
     }

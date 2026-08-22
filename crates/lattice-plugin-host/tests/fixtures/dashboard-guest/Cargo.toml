@@ -1,0 +1,26 @@
+# CR.4 dashboard fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `dashboard-plugin` world. It declares three sections: an
+# ordinary one whose output DEPENDS ON the passed `ctx` (which is the reason
+# this seam keeps a live guest instead of taking a fragment once at load), one
+# that deliberately reuses a built-in section id so the shadow/restore path is
+# exercised, and one with an empty id that the host must reject without
+# costing the others. Built to a component by the host crate's build.rs.
+# Standalone workspace so it targets wasm32-wasip2 without inheriting the host
+# toolchain's lints/target.
+[package]
+name = "dashboard-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

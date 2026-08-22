@@ -79,6 +79,9 @@ lattice-theme = { path = "../lattice-theme" }
 # body is inert data on both sides of the boundary, so the conversion belongs
 # on the editor-facing side.
 lattice-help = { path = "../lattice-help" }
+# CR.4: the `dashboard` seam's drain RCU-registers the host's
+# `WasmDashboardSection`s into the SAME registry the builtin sections live in.
+lattice-dashboard = { path = "../lattice-dashboard" }
 # PR.6: `ProjectResolverHandle` — the loader hands the host the resolver the
 # guest `project` seam answers from. A leaf crate already in the graph; named
 # directly now `install` looks the service up by that exact alias.

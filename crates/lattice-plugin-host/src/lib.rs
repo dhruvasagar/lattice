@@ -70,6 +70,8 @@ pub mod config_host;
 pub mod context_host;
 pub mod context_source;
 pub mod context_task;
+/// CR.4: the `dashboard` guest→host section seam.
+pub mod dashboard_host;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
@@ -831,6 +833,11 @@ struct PluginState {
     /// TC.4: namespaced element names this plugin registered — the teardown
     /// tokens, mirroring `config_contributions`.
     theme_contributions: Vec<String>,
+    /// CR.4: section specs this plugin declared through
+    /// `dashboard.register-section`, drained by `spawn_dashboard_sections`
+    /// after the export returns. The host then instantiates one live guest
+    /// per spec — a section is a function, not data.
+    dashboard_contributions: Vec<dashboard_host::DashboardSectionSpec>,
     /// CR.3: topics this plugin declared through `help.register-topic`,
     /// drained by `spawn_help_plugin` after the export returns. Plain data —
     /// the loader turns them into `HelpTopic`s, so this crate never depends
@@ -1715,6 +1722,32 @@ impl crate::help_host::bindings::lattice::plugin_host::help::Host for PluginStat
     }
 }
 
+/// CR.4: the `dashboard` seam's declaration host func.
+///
+/// Records only — the host instantiates the live per-section guests after the
+/// export returns. Section ids are NOT namespaced (see `dashboard.wit`):
+/// replacing a built-in section by id is a supported capability, so the
+/// namespace that defuses `help`'s collisions would defeat this seam's.
+impl crate::dashboard_host::bindings::lattice::plugin_host::dashboard::Host for PluginState {
+    fn register_section(
+        &mut self,
+        id: String,
+        order: i32,
+        default_enabled: bool,
+    ) -> Result<(), String> {
+        match crate::dashboard_host::validate_section(&id, order, default_enabled) {
+            Ok(spec) => {
+                self.dashboard_contributions.push(spec);
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(section = %id, %err, "register-section rejected");
+                Err(err)
+            }
+        }
+    }
+}
+
 impl crate::config_host::bindings::lattice::plugin_host::config::Host for PluginState {
     fn register_option(
         &mut self,
@@ -2146,6 +2179,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // CR.4: the `dashboard` declaration seam. `register-section` only
+        // records into `PluginState`, so it is sync and safe on either
+        // linker; inert for worlds that don't import `dashboard`.
+        crate::dashboard_host::bindings::lattice::plugin_host::dashboard::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The `modes` guest→host mode-declaration seam (PH7.11a). Sync host func
         // (`register-mode` only records into `PluginState`), inert for worlds that
         // don't import `modes`.
@@ -2281,6 +2322,14 @@ impl PluginHost {
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // CR.4: and on the sync linker, which is the one `dashboard-plugin`
+        // actually instantiates against — `render-section` runs inside the
+        // compositor and must not suspend.
+        crate::dashboard_host::bindings::lattice::plugin_host::dashboard::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut grammar_linker, |state: &mut PluginState| state)
         .map_err(|e| PluginHostError::Linker(e.into()))?;
         crate::mode_host::bindings::lattice::plugin_host::modes::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
@@ -2505,6 +2554,7 @@ impl PluginHost {
             theme_registry: None,
             theme_contributions: Vec::new(),
             help_contributions: Vec::new(),
+            dashboard_contributions: Vec::new(),
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).
             mode_contributions: mode_host::ModeContributions::default(),

@@ -278,6 +278,10 @@ pub struct LoaderServices {
     /// into — the SAME one the builtin docs live in, so a plugin page opens,
     /// completes and cross-links like any other.
     pub help_topics: Option<lattice_help::topics::HelpTopicRegistryHandle>,
+    /// CR.4: the dashboard section registry a `dashboard` plugin's sections
+    /// RCU-register into. Shadowing rather than overwriting (CR.2), so a
+    /// plugin replacing a builtin section is reversed by unload.
+    pub dashboard_sections: Option<lattice_dashboard::DashboardRegistryHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -306,6 +310,8 @@ pub struct WiredSeams {
     pub parser_factories: bool,
     /// CR.3: the help-topic registry.
     pub help_topics: bool,
+    /// CR.4: the dashboard section registry.
+    pub dashboard_sections: bool,
 }
 
 impl WiredSeams {
@@ -326,6 +332,7 @@ impl WiredSeams {
             && self.theme_registry
             && self.parser_factories
             && self.help_topics
+            && self.dashboard_sections
     }
 }
 
@@ -521,6 +528,7 @@ impl PluginLoader {
             theme_registry: self.env.theme_registry.is_some(),
             parser_factories: self.env.parser_factories.is_some(),
             help_topics: self.env.help_topics.is_some(),
+            dashboard_sections: self.env.dashboard_sections.is_some(),
         }
     }
 
@@ -696,6 +704,13 @@ impl PluginLoader {
                     // dropped, so reading `:help` never touches wasm.
                     PluginSeam::Help => {
                         let id = self.drain_help(&component, manifest, tier).await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    // CR.4: the plugin's launch-page sections. Unlike `help`,
+                    // each keeps a live guest — a section is a function of a
+                    // `DashboardCtx`, so it is called per compose.
+                    PluginSeam::Dashboard => {
+                        let id = self.drain_dashboard(&component, manifest, tier)?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
@@ -1275,6 +1290,17 @@ impl PluginLoader {
                 Arc::new(next)
             });
         }
+        // CR.4: same placement, same reasoning — plus one of its own. Leaving
+        // a plugin's section registered after unload would keep calling a
+        // guest whose plugin is gone on every compose.
+        let mut dashboard_sections_removed = 0;
+        if let Some(dash_h) = self.env.dashboard_sections.as_ref() {
+            dash_h.rcu(|current| {
+                let mut next = (**current).clone();
+                dashboard_sections_removed = next.unregister_plugin(teardown.plugin_id.0 as u64);
+                Arc::new(next)
+            });
+        }
         let (
             Some(cmd_h),
             Some(pick_h),
@@ -1304,6 +1330,7 @@ impl PluginLoader {
             );
             return TeardownReport {
                 help_topics: help_topics_removed,
+                dashboard_sections: dashboard_sections_removed,
                 ..TeardownReport::default()
             };
         };
@@ -1341,6 +1368,7 @@ impl PluginLoader {
         ctx_h.store(Arc::new(contexts));
         let mut report = report;
         report.help_topics = help_topics_removed;
+        report.dashboard_sections = dashboard_sections_removed;
         report
     }
 
@@ -2005,6 +2033,61 @@ impl PluginLoader {
             id = id.0,
             topics = count,
             "help plugin registered its topics"
+        );
+        Ok(id)
+    }
+
+    /// CR.4 — the `dashboard` seam's drain.
+    ///
+    /// Instantiates one live guest per declared section and RCU-registers
+    /// them, each stamped with this plugin's host-issued id. Teardown is by
+    /// that provenance; CR.2's shadow stack means removing a plugin section
+    /// that replaced a builtin resurfaces the builtin with no restore step.
+    ///
+    /// Synchronous, unlike every other declaration drain here: the world
+    /// instantiates against the sync linker because `render-section` runs
+    /// inside the compositor and must not suspend.
+    fn drain_dashboard(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .dashboard_sections
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("dashboard"))?;
+
+        // The Reflex-class budget, not the lifecycle default: `render-section`
+        // runs on the actor thread during a Display-class action, and the fuel
+        // cap is what bounds a pathological guest to a bounded stall.
+        let (id, sections) = self.host.spawn_dashboard_sections(
+            component,
+            manifest,
+            tier,
+            PluginBudget::grammar(),
+        )?;
+
+        let count = sections.len();
+        if count > 0 {
+            let sections: Vec<Arc<dyn lattice_dashboard::DashboardSection>> = sections
+                .into_iter()
+                .map(|s| Arc::new(s) as Arc<dyn lattice_dashboard::DashboardSection>)
+                .collect();
+            registry.rcu(|current| {
+                let mut next = (**current).clone();
+                for section in &sections {
+                    next.register(section.clone());
+                }
+                Arc::new(next)
+            });
+        }
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            sections = count,
+            "dashboard plugin registered its sections"
         );
         Ok(id)
     }

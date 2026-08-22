@@ -79,6 +79,13 @@ fn main() {
         "help-guest",
         "HELP_GUEST_WASM",
     );
+    // CR.4: the dashboard section fixture. Renders from the passed `ctx`, so
+    // it exercises the live-guest half of the seam rather than static rows.
+    build_guest(
+        &fixtures.join("dashboard-guest"),
+        "dashboard-guest",
+        "DASHBOARD_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("config-guest"),
         "config-guest",

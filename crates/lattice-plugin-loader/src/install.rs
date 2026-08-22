@@ -126,6 +126,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         help_topics: boot
             .service::<lattice_help::topics::HelpTopicRegistryHandle>()
             .map(|h| (*h).clone()),
+        // CR.4: registered by `lattice_dashboard::install`, which runs early
+        // in Phase B — well before this line.
+        dashboard_sections: boot
+            .service::<lattice_dashboard::DashboardRegistryHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

@@ -63,6 +63,27 @@ pub struct ForegroundCancel {
 pub type ForegroundCancelHandle = Arc<ForegroundCancel>;
 
 impl ForegroundCancel {
+    /// CG.4: a clone of the currently-armed token, if any.
+    ///
+    /// For callers that must poll cancellation from a context the arming
+    /// caller never reached — the plugin host's epoch callback, which
+    /// fires every millisecond inside a running guest call and cannot
+    /// take a lock there. It takes the lock ONCE per guest call and
+    /// polls the returned token (a plain atomic) thereafter, which is
+    /// the split this module's own docs describe: "the *token* is what
+    /// gets polled in tight loops".
+    ///
+    /// `None` when nothing is armed — no foreground operation is
+    /// running, so there is nothing for the caller to be cancelled by.
+    pub fn current_token(&self) -> Option<CancellationToken> {
+        match self.armed.lock() {
+            Ok(slot) => slot.clone(),
+            // Same posture as `arm`: losing cancellability for one
+            // operation beats taking the editor down.
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
     /// Arm a fresh token for a user-initiated operation, cancelling any
     /// predecessor, and hand back the clone the spawned task holds.
     ///

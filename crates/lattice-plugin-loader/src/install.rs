@@ -74,6 +74,13 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // halves are required — the resolver turns a path into a project, the
     // buffer store turns a `buffer` id into that path — so an absent either
     // leaves the seam answering `none` rather than half-answering.
+    // CG.4: hand the host the foreground-cancel registry so `<C-g>`
+    // interrupts a running guest call, not just the next one.
+    if let Some(cancel) = boot.service::<lattice_mode::ForegroundCancelHandle>() {
+        host.set_foreground_cancel((*cancel).clone());
+    } else {
+        tracing::debug!("foreground-cancel unwired: plugin calls run to their budget");
+    }
     if let (Some(resolver), Some(buffers)) = (
         boot.service::<lattice_core::ProjectResolverHandle>(),
         boot.service::<lattice_mode::BufferStoreHandle>(),

@@ -279,6 +279,13 @@ pub enum TrapKind {
     Fuel,
     /// The call ran past its epoch (wall-clock) deadline.
     Epoch,
+    /// CG.4: the user pressed `<C-g>` while the call was running.
+    ///
+    /// Deliberately NOT a crash. Fuel/epoch/other mean the plugin
+    /// misbehaved and should be quarantined; this means the user changed
+    /// their mind, and quarantining a plugin for that would punish it for
+    /// being interruptible.
+    Cancelled,
     /// Any other wasm trap (unreachable, out-of-bounds, guest panic).
     Other,
 }
@@ -292,6 +299,7 @@ impl TrapKind {
         match self {
             TrapKind::Fuel => "fuel",
             TrapKind::Epoch => "epoch",
+            TrapKind::Cancelled => "cancelled",
             TrapKind::Other => "trap",
         }
     }
@@ -302,6 +310,7 @@ impl std::fmt::Display for TrapKind {
         let s = match self {
             TrapKind::Fuel => "out of fuel",
             TrapKind::Epoch => "epoch deadline exceeded",
+            TrapKind::Cancelled => "cancelled by the user",
             TrapKind::Other => "wasm trap",
         };
         f.write_str(s)
@@ -412,12 +421,73 @@ pub(crate) fn arm_store(
     store
         .set_fuel(budget.fuel)
         .map_err(|e| PluginHostError::Instantiate(e.into()))?;
-    store.set_epoch_deadline(budget.epoch_deadline);
+
+    // CG.4: refresh the token this call may be cancelled by, ONCE, here.
+    // The registry is behind a mutex; the token is a plain atomic. Taking
+    // the lock per call and polling the atomic per tick is the split
+    // `foreground_cancel`'s own docs prescribe.
+    //
+    // Snapshotting also fixes the semantics: a call is cancelled by the
+    // operation armed when it STARTED. A later `arm()` (a different user
+    // action) must not reach back and kill a call already in flight.
+    let state = store.data_mut();
+    state.epoch_spent = 0;
+    state.cancel_token = state.cancel.as_ref().and_then(|c| c.current_token());
+
+    // The deadline is re-armed ONE TICK AT A TIME so the callback runs
+    // every ~1ms and can poll the token. That moves enforcement of
+    // `budget.epoch_deadline` in here — wasmtime counts to 1 repeatedly,
+    // we count the total. Same ceiling, checked by us.
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |mut ctx| {
+        let state = ctx.data_mut();
+        if let Some(token) = &state.cancel_token
+            && token.is_cancelled()
+        {
+            // Traps the guest. `classify_trap` maps this back to
+            // `TrapKind::Cancelled` so the caller can tell "the user
+            // stopped it" from "the plugin ran away".
+            return Err(wasmtime::Error::msg(CANCELLED_TRAP));
+        }
+        state.epoch_spent += 1;
+        if state.epoch_spent >= budget.epoch_deadline {
+            // The pre-CG.4 outcome, produced by us rather than by
+            // wasmtime's countdown: the call outran its time budget.
+            return Err(wasmtime::Error::msg(EPOCH_TRAP));
+        }
+        Ok(wasmtime::UpdateDeadline::Continue(1))
+    });
     Ok(())
 }
 
+/// Marker in the trap message for a call stopped by `<C-g>` (CG.4).
+///
+/// A string rather than a typed error because it has to survive
+/// `wasmtime::Error`'s round-trip through the guest trap — the same
+/// reason `classify_trap` matches on `wasmtime::Trap` variants rather
+/// than carrying host types across.
+pub(crate) const CANCELLED_TRAP: &str = "lattice: plugin call cancelled by the user";
+
+/// Marker for a call that outran `budget.epoch_deadline` (CG.4 moved
+/// this enforcement out of wasmtime's countdown and into our callback).
+pub(crate) const EPOCH_TRAP: &str = "lattice: plugin call exceeded its time budget";
+
 /// Classify a wasmtime call error into a [`TrapKind`] for reporting.
 pub(crate) fn classify_trap(err: &wasmtime::Error) -> TrapKind {
+    // CG.4: the epoch callback raises these two, so they arrive as plain
+    // errors rather than `wasmtime::Trap` variants — checked FIRST,
+    // because a callback-raised error may also carry a Trap in its
+    // chain and `Interrupt` would otherwise swallow a cancellation.
+    // `{:#}` renders the WHOLE anyhow chain. `to_string()` shows only the
+    // outermost context, and wasmtime wraps a callback-raised error in
+    // trap context — so the marker is never in the top line.
+    let text = format!("{err:#}");
+    if text.contains(CANCELLED_TRAP) {
+        return TrapKind::Cancelled;
+    }
+    if text.contains(EPOCH_TRAP) {
+        return TrapKind::Epoch;
+    }
     match err.downcast_ref::<wasmtime::Trap>() {
         Some(wasmtime::Trap::OutOfFuel) => TrapKind::Fuel,
         Some(wasmtime::Trap::Interrupt) => TrapKind::Epoch,
@@ -466,6 +536,20 @@ impl Quarantine {
     /// that forgot to check [`is_tripped`](Self::is_tripped)) is a silent no-op —
     /// the instance is already known dead and the event has already fired.
     pub(crate) fn trip(&mut self, func: &'static str, kind: TrapKind) {
+        // CG.4: `<C-g>` is not a crash. Fuel / epoch / other mean the
+        // plugin misbehaved and the instance is dead; cancellation means
+        // the USER changed their mind, and the instance is perfectly
+        // healthy. Quarantining here would punish a plugin for being
+        // interruptible — press `<C-g>` on a slow picker and the plugin
+        // would be dead until reload.
+        if kind == TrapKind::Cancelled {
+            tracing::debug!(
+                plugin = self.plugin.0,
+                func,
+                "plugin call cancelled by the user; instance stays live"
+            );
+            return;
+        }
         if self.tripped {
             return;
         }
@@ -778,6 +862,22 @@ struct PluginState {
     /// PR.6: what the guest `project` seam resolves through. `None` in a
     /// harness that wired no resolver; the seam then answers `none`.
     project: Option<ProjectCtx>,
+    /// CG.4: the foreground-cancel registry, stamped once per store.
+    /// `arm_store` takes the lock once per guest call to refresh
+    /// [`Self::cancel_token`]; the epoch callback never touches it.
+    cancel: Option<lattice_mode::ForegroundCancelHandle>,
+    /// CG.4: the token the epoch callback polls — a plain atomic, read
+    /// once per millisecond inside a running guest call. Refreshed by
+    /// `arm_store`, so each call is cancelled by the operation that was
+    /// armed when it STARTED, not by one armed after it finished.
+    cancel_token: Option<lattice_protocol::CancellationToken>,
+    /// CG.4: epoch ticks this call has consumed.
+    ///
+    /// The time budget moved in here when the deadline callback landed:
+    /// the deadline is now re-armed one tick at a time so the token can
+    /// be polled, so `budget.epoch_deadline` is enforced by counting
+    /// rather than by wasmtime's own countdown. Reset per call.
+    epoch_spent: u64,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1888,6 +1988,11 @@ pub struct PluginHost {
     // precedent above. Unset → `root-for-*` returns `none`, which a real
     // editor never does and a stripped harness always does.
     project: std::sync::OnceLock<ProjectCtx>,
+    // CG.4: the foreground-cancel registry `<C-g>` fires. Set once by
+    // boot, like `tracer` / `project`; unset → guest calls run to their
+    // budget and cannot be interrupted early, which is the pre-CG.4
+    // behaviour.
+    cancel: std::sync::OnceLock<lattice_mode::ForegroundCancelHandle>,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
@@ -2132,6 +2237,7 @@ impl PluginHost {
             next_id: AtomicU32::new(0),
             tracer: std::sync::OnceLock::new(),
             project: std::sync::OnceLock::new(),
+            cancel: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -2165,6 +2271,14 @@ impl PluginHost {
         buffers: lattice_mode::BufferStoreHandle,
     ) {
         let _ = self.project.set(ProjectCtx { resolver, buffers });
+    }
+
+    /// CG.4: hand the host the foreground-cancel registry, so a running
+    /// guest call can be interrupted by `<C-g>`.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_foreground_cancel(&self, cancel: lattice_mode::ForegroundCancelHandle) {
+        let _ = self.cancel.set(cancel);
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -2344,6 +2458,9 @@ impl PluginHost {
             // `log_ctx` — resolution needs no plugin id, so there is nothing
             // to wait for and no path that can forget it.
             project: self.project.get().cloned(),
+            cancel: self.cancel.get().cloned(),
+            cancel_token: None,
+            epoch_spent: 0,
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

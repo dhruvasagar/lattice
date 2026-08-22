@@ -2,7 +2,7 @@
 
 Design fragment:
 [`../../architecture/yank-ring.md`](../../architecture/yank-ring.md).
-Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19; YR.2 landed 2026-08-22**; YR.6 open.
+Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19; YR.2 and YR.6 landed 2026-08-22.** Complete.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
@@ -11,7 +11,7 @@ Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19; YR.2 landed 2026
 | YR.3 | `PickerAcceptOutcome::FillCaller` + `FillTarget` captured at open | — | ✅ |
 | YR.4 | The `yank-ring` picker source (ring + named registers) | YR.1, YR.3 | ✅ |
 | YR.5 | Keys: `<C-r>` insert-register, `<C-r><C-r>` / `<C-r>`-in-picker open the picker | YR.4 | ✅ |
-| YR.6 | Second consumer: commit picker on revision arguments | YR.3 | 📝 |
+| YR.6 | Second consumer: `ArgSpec.picker` + `<C-x><C-o>` on the `:` line | YR.3 | ✅ |
 
 **YR.3 is independent of YR.1/YR.2** and can land first or in parallel —
 it is a picker capability, not a yank one. If the revision-picker work
@@ -159,22 +159,62 @@ in a picker does the same; neither leaks into the document.
 
 ---
 
-## YR.6 — the second consumer: revision arguments
+## YR.6 — the second consumer: argument pickers ✅ (2026-08-22)
 
-A commit picker offered for any command taking a revision —
-`:magit-checkout`, `:magit-find-file`, `:magit-blame-reverse`, `C-c f v`,
-and MG.32's `b` branch/revision prompt, which is the shape that most
-obviously wants it.
+**The premise moved between planning and execution, and the slice was
+re-scoped on evidence rather than built as written.**
 
-`CommitPickSource` already exists (MG.23j) but is reachable only as a
-whole command invocation (`:picker magit-commit <ex-command>`), not as a
-way to fill in an argument. With YR.3 it becomes both.
+As planned (2026-08-03): "a commit picker for any command taking a
+revision — `:magit-checkout`, `:magit-find-file`,
+`:magit-blame-reverse`, `C-c f v`, and MG.32's `b` prompt."
 
-The generalisation — an `ArgSpec` naming a picker source, so the prompt
-for that argument offers it — is design.md Appendix B's "interactive arg
-specs". Decide during the slice whether to land the generic seam or wire
-the magit prompts directly first; the design fragment does not settle it
-because the answer depends on how many non-magit arguments want it.
+**MG.53 (2026-08-19) delivered that**, by a different route: five
+git-noun picker sources (`REVISION_`/`COMMIT_`/`REF_`/`TAG_`/
+`REMOTE_PICK_SOURCE`) plus a `{}` placeholder (`picked_line`) routing
+through `PickerAcceptOutcome::InvokeCommand`. That is
+*pick-then-execute*, and it covers every example named above. Two other
+targets were never consumers: magit's transient `Value` args are `-n`
+(a count) and `--author` (a pattern), neither of which wants a revision.
+
+**What was actually missing**, and it was countable: **0 of magit's 20
+`ArgSpec`s offered anything at all.** `:magit-checkout ma<Tab>` got no
+help while `REVISION_PICK_SOURCE` already knew the answer. The gap was
+not "pick a revision" but "type one by hand and get nothing".
+
+**The deferred decision, settled.** The plan left "generic seam vs wire
+the magit prompts" open, because it depended on how many non-magit
+arguments want it. The deciding fact turned out to be different: the
+sources already exist as **picker** sources, and `ArgSpec.completion`
+names **completion** sources — two registries, kept apart deliberately
+by `completion-pipeline-unification.md` slice 7d.1. Reusing
+`completion` would have meant a second implementation of "list
+branches" that must not drift from the first. So: the generic seam,
+`ArgSpec.picker`.
+
+Shipped:
+- `ArgSpec.picker` + `with_picker()`, mirrored over WIT so a plugin can
+  declare one. Composable with `completion` — the two answer the same
+  question at different weights.
+- `<C-x><C-o>` on the `:` line (vim's omni-completion chord; the keymap
+  already used the `<C-x>` prefix for `<C-x><C-e>`).
+- `Editor::do_open_arg_picker`, capturing BOTH the fill target and the
+  byte range the pick replaces, at open.
+- Eight magit arguments wired to their existing pickers.
+
+**The trap, stated so it is not rediscovered** — the sibling of YR.3's:
+`FillTarget::CommandLine` *inserts*, which is right for `<C-r><C-r>`
+where nothing is replaced. An argument picker opens part-way through
+typing the argument, so an insert turns `:magit-checkout ma` + `main`
+into `mamain`. The replace range is captured at open for the same reason
+the target is. **A test that opens on an empty argument passes against
+the broken version**, so the prefix case is pinned separately.
+
+Also fixed: `do_picker_dismiss` cleared `picker_fill_target` only on the
+stashed-picker branch, so a dismissed fill-picker left its capture set.
+
+*Not done:* seeding the picker's query with the already-typed prefix, so
+the list opens pre-filtered. Wanted, and the range needed for it is
+already captured — a follow-up, not a gap in the seam.
 
 ---
 

@@ -22,7 +22,26 @@ edited through the universal Insert grammar:
 | `<Tab>` | Open completion popup / advance selection |
 | `<S-Tab>` | Previous completion candidate |
 | `<C-h>` | Describe command / arg under cursor |
+| `<C-x><C-o>` | Open the picker for the argument under the cursor |
 | `<C-x><C-e>` | Expand into full-modal mini-buffer band |
+
+### Picking an argument (`<C-x><C-o>`)
+
+`<Tab>` completes an argument inline. Some arguments can offer more than
+a list of words — a git revision, for instance, is better chosen from a
+log with its subject line and date beside it. Where a command declares
+one, **`<C-x><C-o>` opens that argument's picker**, and what you choose
+replaces what you had typed for that argument:
+
+```
+:magit-checkout ma<C-x><C-o>     → the revision picker, filtered work intact
+:magit-checkout main             → after picking
+```
+
+It is vim's omni-completion chord, and it means the same thing here: ask
+whatever knows about this position. An argument can offer both — `<Tab>`
+for the quick inline answer, `<C-x><C-o>` for the richer surface — and
+if it offers no picker, the editor says so rather than doing nothing.
 
 All universal Insert-mode readline chords work: `<C-a>` (start of
 line), `<C-e>` (end of line), `<C-b>` (back one char), `<C-f>`

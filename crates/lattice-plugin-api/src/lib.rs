@@ -102,23 +102,44 @@ pub enum Capability {
 ///
 /// A test asserts this covers EVERY parsed interface, so adding a WIT interface
 /// without a deliberate capability decision fails the build's test gate. Most
-/// seams are pure data/dispatch (`None`); only `host-services` reaches the OS
-/// today (`Fs` — its `walk`; `net`/`proc` seams will refine this row when they
-/// land, design.md §15).
+/// seams are pure data/dispatch (`None`). Three reach the OS: `host-services`
+/// (`Fs` — its `walk`), `project` (`Fs` — resolution walks on a cache miss),
+/// and `plugin-manager` (`Proc` — the host builds what the guest declared; see
+/// the row's own comment for why one variant cannot describe it).
 pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     ("buffer", Capability::None),
     ("command", Capability::None),
     ("completion-source", Capability::None),
     ("config", Capability::None),
+    ("context", Capability::None),
+    ("dashboard", Capability::None),
     ("decorations", Capability::None),
+    ("error-parser", Capability::None),
     ("events", Capability::None),
     ("grammar", Capability::None),
     ("grammar-callbacks", Capability::None),
+    ("help", Capability::None),
     ("host-services", Capability::Fs),
     ("keymap", Capability::None),
     ("logging", Capability::None),
     ("modes", Capability::None),
     ("picker-source", Capability::None),
+    // The `require` seam. The GUEST does nothing but declare a list; the HOST
+    // then clones or downloads the source (net), stages it into the user
+    // plugin root (fs), and runs cargo-component over it (proc). `Capability`
+    // is single-valued, so this row cannot say "all three" — it names the
+    // widest blast radius and the doc above says why. If a second seam ever
+    // needs a union, that is the point to make `Capability` a set rather than
+    // keep picking a representative.
+    ("plugin-manager", Capability::Proc),
+    // Resolution walks the filesystem on a cache miss. This is not a
+    // formality: `error-parser-plugin` deliberately does NOT import `project`
+    // for exactly this reason (see `wit/error-parser.wit`), because that world
+    // shares the sync linker with `grammar` and a directory walk one guest
+    // call from a keystroke is a paramount-#1 violation. Annotating this
+    // `None` would contradict the decision that WIT already records.
+    ("project", Capability::Fs),
+    ("theme", Capability::None),
     ("tree-sitter", Capability::None),
     ("types", Capability::None),
     ("ui", Capability::None),

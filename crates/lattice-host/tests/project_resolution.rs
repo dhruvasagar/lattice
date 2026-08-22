@@ -277,3 +277,38 @@ fn the_resolver_is_registered_before_subsystem_installs() {
         );
     }
 }
+
+/// `:files` (and `:picker files`) root at the project.
+///
+/// Worth its own test rather than trusting `picker_workspace_root_path`:
+/// the file picker never used that field before PR.4 — it called
+/// `std::env::current_dir()` directly — so "the context is right" and
+/// "the picker is right" were independent facts, and only one of them
+/// was being asserted.
+#[test]
+fn the_file_picker_roots_at_the_project() {
+    let base = tempdir();
+    let repo = mkdirs(&base, "repo");
+    mkdirs(&repo, ".git");
+    let deep = mkdirs(&repo, "crates/thing/src");
+    let file = deep.join("lib.rs");
+    std::fs::write(&file, "\n").unwrap();
+
+    let editor = Editor::boot(
+        lattice_core::DocumentBuilder::default()
+            .with_path(file)
+            .with_text("\n")
+            .build(),
+    );
+
+    let snap = editor.document.snapshot();
+    let root = editor.picker_workspace_root_path(&snap);
+    assert_eq!(root, repo, "`:files` should list the whole project");
+    assert_ne!(
+        root,
+        std::env::current_dir().unwrap(),
+        "and not the directory the editor process was started in"
+    );
+    assert_ne!(root, deep, "nor the active file's own directory");
+    cleanup(&base);
+}

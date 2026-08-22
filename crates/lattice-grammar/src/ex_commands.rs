@@ -876,7 +876,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     // muscle memory.
     let _files_picker = registry.register_ex_command(
         "ex:files",
-        "Open the workspace file picker (`:files [root]`). Alias for `:picker files [root]`.",
+        "Open the project file picker (`:files [root]`). Absent root = the active buffer's project. Alias for `:picker files [root]`.",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
@@ -895,7 +895,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![ArgSpec {
                 name: "root".into(),
                 kind: ArgKind::String,
-                doc: "Directory to walk. Absent = current document's parent / cwd.".into(),
+                doc: "Directory to walk. Absent = the active buffer's project root.".into(),
                 prompt: "root:".into(),
                 default: ArgDefault::None,
                 completion: Some("gen:files".into()),

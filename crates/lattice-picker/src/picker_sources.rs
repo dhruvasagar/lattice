@@ -463,17 +463,20 @@ impl PickerSourceGenerator for FilesSource {
     }
 
     fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        // Default to the process's current working directory
-        // (recursive). This matches what users typically
-        // expect from `:files` -- the same root `:e` paths
-        // resolve against. Earlier slices defaulted to the
-        // active document's parent dir which behaved
-        // unintuitively for projects spread across many
-        // subdirectories. Users who want a different root
-        // pass it explicitly: `:picker files <path>`.
-        // PR.4: the project root the host resolved, not the process
-        // working directory. An explicit `:picker files <path>` still
-        // wins — it is the user saying "not that project, this one".
+        // PR.4: the active buffer's PROJECT root, resolved by the host
+        // (`picker_workspace_root_path`).
+        //
+        // The two answers this replaces were both wrong in opposite
+        // directions, and the history is worth keeping because the
+        // pendulum swung once already: an early slice used the active
+        // document's parent, which "behaved unintuitively for projects
+        // spread across many subdirectories"; the fix was the process
+        // cwd, which is right only if you launched the editor in the
+        // tree you are editing. The project root is the answer both
+        // were reaching for.
+        //
+        // An explicit `:picker files <path>` still wins — that is the
+        // user saying "not that project, this one".
         let root: std::path::PathBuf = match args.first() {
             Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
             _ => ctx.workspace_root.clone(),

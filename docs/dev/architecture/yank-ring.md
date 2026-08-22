@@ -1,7 +1,7 @@
 # The yank ring and the yank picker (YR)
 
 **Status:** designed 2026-08-03; **not implemented**. Slice plan:
-[`../operations/slice-plans/yank-ring.md`](../operations/slice-plans/yank-ring.md).
+[`../operations/slice-plans/archive/yank-ring.md`](../operations/slice-plans/archive/yank-ring.md).
 Referenced as "to be written" by
 [`clipboard.md`](clipboard.md) §11, which is where the register/clipboard
 split this builds on is defined.
@@ -243,6 +243,6 @@ has to unlearn anything.
 
 - [`clipboard.md`](clipboard.md) — the register/clipboard split this
   builds on; §11 is this feature's origin and §5 the yank-only rule
-- [`../operations/slice-plans/yank-ring.md`](../operations/slice-plans/yank-ring.md) — sequencing
+- [`../operations/slice-plans/archive/yank-ring.md`](../operations/slice-plans/archive/yank-ring.md) — sequencing
 - [`design.md`](design.md) Appendix B — interactive arg specs, the
   second consumer of `FillCaller`

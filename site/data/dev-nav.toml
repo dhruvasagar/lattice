@@ -177,6 +177,7 @@ docs = [
   "guides/plugin-authoring",
   "architecture/plugin-host",
   "architecture/contributable-registries",
+  "architecture/plugin-languages",
   "architecture/plugin-manager",
   "architecture/plugin-observability",
   "architecture/plugin-treesitter-seam",

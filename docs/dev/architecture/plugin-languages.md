@@ -154,10 +154,12 @@ The tests stay. A wasmtime bump on either side re-opens the question,
 and this is what re-answers it.
 
 **What LG.0 did NOT answer**, and is honest to name: no wasm *grammar*
-has been parsed yet, because building one needs the tree-sitter CLI
-toolchain. So "the runtimes coexist" is settled; "a wasm grammar parses
-correctly and fast enough" is LG.1's job, and remains open. The residual
-risk is now performance, not stability.
+had been parsed at that point, so "the runtimes coexist" was settled
+while "a wasm grammar parses correctly and fast enough" was not. That
+was LG.1's job, and §4.1 closes it — a wasm grammar loads, parses
+identically to the native one, and costs 2.0× cold / 1.25×
+incremental. (The belief that building one needs the tree-sitter CLI
+toolchain was also wrong; see §4.2.)
 
 **The cost stands regardless.** Two Cranelift copies is real binary
 size, and the eventual product build must decide whether the `wasm`
@@ -181,6 +183,75 @@ So LG.1 lands a bench comparing native vs wasm parse on the same
 grammar, and the number goes in `benchmarks.md` **before** the seam is
 declared usable. If wasm parsing turns out to be materially worse than
 the ecosystem figure, that is a finding, and §6's alternative exists.
+
+### 4.1 Outcome (LG.1, 2026-08-23): 2.0× cold, 1.25× incremental
+
+**Answered, and at the good end of the expected band.** The same
+`tree-sitter-md` grammar, loaded natively and from wasm, over the same
+input (`crates/lattice-syntax/benches/wasm_vs_native_parse.rs`):
+
+| Corpus | Cold | Incremental reparse |
+|---|---|---|
+| 16 §§ (3.5 KB) | 2.04× | 1.24× |
+| 128 §§ (29 KB) | 2.10× | 1.26× |
+| 512 §§ (118 KB) | 2.00× | 1.24× |
+
+Full numbers in [`benchmarks.md`](../operations/benchmarks.md).
+
+Two things matter more than the headline. **The cold ratio is flat at
+2.0× across two orders of magnitude** — it does not degrade with file
+size, which is what would have made large org files a problem.
+And **the incremental reparse is only 1.25×**, because reused subtrees
+are manipulated by host-side C on both paths; only the newly-lexed
+region runs guest code. The reparse is the path a user waits behind
+repeatedly; the 2× is paid once, on open, where the UX contract already
+permits "highlighting catches up".
+
+**The residual risk named in §3.1 is therefore closed.** Nothing now
+sends this track to §6. What remains open is ordinary implementation:
+LG.2's `Lang::Plugin` migration and LG.3's seam.
+
+**Honest scope.** These are parse numbers on one grammar. Parsing is off
+the keystroke path, so none of it touches the keystroke→glyph ratchet.
+A grammar with a much heavier external scanner would shift the guest/host
+mix, in either direction.
+
+### 4.2 The toolchain question, dissolved
+
+The build step was expected to be the awkward part: `tree-sitter build
+--wasm` needs emscripten (~1 GB) or a docker daemon, which would make one
+of them a prerequisite for contributors, or push grammar-building onto
+plugin authors' machines only. It turns out **neither is needed**, and
+the reason is worth recording because it is not obvious from
+tree-sitter's own documentation.
+
+Reading `tree-sitter/src/wasm_store.c`, a grammar module must be a plain
+**wasm side module** — a `dylink.0` custom section, which `wasm-ld
+-shared` emits natively; nothing about the format is emscripten-specific.
+The store itself supplies `memory`, `__stack_pointer`, `__memory_base`,
+`__table_base` and `__indirect_function_table`, and ships a **prebuilt
+wasm libc** exporting the 24 symbols listed in
+`src/wasm/stdlib-symbols.txt`. So the grammar carries no libc of its own
+and needs only *declarations* for the handful of functions it calls.
+
+`scripts/build-wasm-grammar.sh` is that, in full: ~60 lines of generated
+headers, clang targeting `wasm32-unknown-unknown`, and `rust-lld` — which
+every rustup toolchain already ships, and which dispatches to its wasm
+driver when invoked as `wasm-ld`. **The prerequisite is clang + rustup**,
+both of which a contributor building this repo already has.
+
+One flag is worth naming because it cost a debugging cycle:
+`--Bsymbolic`. Without it the external-scanner entry points stay
+preemptible, so LLD emits `GOT.func.tree_sitter_<name>_external_scanner_*`
+imports — and the store resolves only its builtins and its libc, so
+instantiation fails with `invalid import`. The symbols are defined *in
+the module*; the failure is purely about symbol binding, and the error
+message points nowhere near the cause.
+
+This does not preclude plugin authors using `tree-sitter build --wasm`;
+that stays the documented route for them (LG.6). It means **the repo's
+own bench and tests do not depend on it**, and that a plugin author
+without emscripten has a supported path.
 
 ## 5. Paramount-goal alignment
 

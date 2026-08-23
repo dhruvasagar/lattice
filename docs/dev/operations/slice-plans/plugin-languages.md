@@ -3,7 +3,9 @@
 **Design fragment:**
 [`../../architecture/plugin-languages.md`](../../architecture/plugin-languages.md).
 
-**Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1–LG.6 📝.
+**Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1 ✅
+(2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
+closed and nothing sends this track to §6.** LG.2–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -34,7 +36,7 @@ be the expensive order.
 | Slice | Description | Status |
 |---|---|---|
 | LG.0 | Prove `wasmtime-c-api` 36 and `wasmtime` 46 coexist | ✅ |
-| LG.1 | Bench: wasm grammar vs native parse | 📝 |
+| LG.1 | Bench: wasm grammar vs native parse | ✅ |
 | LG.2 | `Lang::Plugin(LanguageId)` + runtime language registry | 📝 |
 | LG.3 | `language` WIT seam, loader drain, teardown | 📝 |
 | LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
@@ -76,7 +78,7 @@ parsed yet — that needs the tree-sitter CLI toolchain and is LG.1's
 job. LG.0 settles stability; performance is still open, which is now
 the only thing that can send this track to §6's fallback.
 
-### LG.1 — the parse-cost bench 📝
+### LG.1 — the parse-cost bench ✅ (2026-08-23)
 
 The ecosystem figure for wasm-vs-native tree-sitter parsing is roughly
 2–5×. Measure it here rather than inherit it.
@@ -91,6 +93,34 @@ The ecosystem figure for wasm-vs-native tree-sitter parsing is roughly
 - *gate:* if the ratio is materially worse than 5×, say so and re-open
   §6 rather than shipping a language surface that makes large files
   worse.
+
+**Outcome: passed, at the good end of the band.** Cold parse **2.0×**,
+flat across 3.5 KB → 118 KB — it does not degrade with size, which was
+the property that mattered. Incremental reparse **1.25×**, because
+reused subtrees are host-side C on both paths and only the newly-lexed
+region runs guest code; that is the path a user waits behind repeatedly.
+Numbers in `benchmarks.md`; design §4.1.
+
+**The toolchain blocker dissolved rather than being paid.** No
+emscripten, no docker, no tree-sitter CLI: tree-sitter's wasm store
+ships its own wasm libc and supplies the memory/table/stack imports, so
+a grammar is a plain `wasm-ld -shared` side module.
+`scripts/build-wasm-grammar.sh` builds one with **clang + rustup only**
+(rust-lld dispatches as `wasm-ld`). Design §4.2 records why, and the
+`--Bsymbolic` flag that is easy to miss. So this is *not* a contributor
+prerequisite and not a plugin-author-only capability — the question
+raised when LG.1 was blocked no longer needs an answer.
+
+Shipped: the bench (`crates/lattice-syntax/benches/wasm_vs_native_parse.rs`),
+the build script, and `crates/lattice-syntax/tests/wasm_grammar.rs` —
+which builds through the script and asserts wasm and native trees are
+identical cold **and** after an incremental edit, so the recipe itself
+is under test rather than being a README step that rots.
+
+*Residual:* `lattice-syntax`'s `wasm-grammar` feature is off by default
+and CI does not run it, so a wasmtime bump on either side is caught only
+by someone opting in. Wiring it into CI belongs with LG.3, when the
+feature stops being bench-only.
 
 ### LG.2 — `Lang::Plugin` + the runtime registry 📝
 

@@ -65,6 +65,13 @@ tree-sitter-sequel = { workspace = true }
 tree-sitter-lua = { workspace = true }
 thiserror = { workspace = true }
 
+[features]
+# LG.1 (plugin-languages.md §4). Pulls `wasmtime-c-api 36` alongside the
+# plugin host's `wasmtime 46` — the two-runtime cost LG.0 measured and
+# cleared. OFF by default: only the wasm-vs-native parse bench needs it
+# until the `language` seam lands (LG.3).
+wasm-grammar = ["tree-sitter/wasm"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 
@@ -74,6 +81,12 @@ harness = false
 
 [[bench]]
 name = "scope_toward"
+harness = false
+
+# LG.1. Needs `--features wasm-grammar`; without it the bench compiles to
+# a stub that says so, rather than silently reporting native-only numbers.
+[[bench]]
+name = "wasm_vs_native_parse"
 harness = false
 
 [lints]

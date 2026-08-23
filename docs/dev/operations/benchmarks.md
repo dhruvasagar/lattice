@@ -71,6 +71,61 @@ target rather than just a slower number.
 
 ---
 
+## LG.1 — wasm grammar vs native parse (the §4 gate, 2026-08-23)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** Not comparable to the Ryzen
+rows further down.
+
+Plugin-contributed languages ship their grammar as WebAssembly
+([`plugin-languages.md`](../architecture/plugin-languages.md) §2), and the
+ecosystem quotes 2–5× for wasm-vs-native tree-sitter parsing. LG.1 was a
+**gate**: measure it here rather than inherit it, and re-open the design's
+§6 fallback if the real ratio was materially worse than 5×.
+
+Both sides run **the same grammar** — `tree-sitter-md`, once via
+`tree_sitter_md::LANGUAGE` and once via `WasmStore::load_language` on the
+same `parser.c` + `scanner.c` built to wasm. So the ratio isolates the
+loading mechanism, not the language.
+`crates/lattice-syntax/benches/wasm_vs_native_parse.rs`, run with
+`--features wasm-grammar`.
+
+| Corpus | Cold native | Cold wasm | **Ratio** | Incr. native | Incr. wasm | **Ratio** |
+|---|---|---|---|---|---|---|
+| 16 §§ (3.5 KB) | 849 µs | 1.73 ms | **2.04×** | 487 µs | 605 µs | **1.24×** |
+| 128 §§ (29 KB) | 6.78 ms | 14.24 ms | **2.10×** | 3.83 ms | 4.81 ms | **1.26×** |
+| 512 §§ (118 KB) | 27.67 ms | 55.29 ms | **2.00×** | 16.06 ms | 19.91 ms | **1.24×** |
+
+**Gate: passed, at the good end of the expected band.** Cold parse is a flat
+**2.0×** across two orders of magnitude of input — the ratio does not degrade
+with size, which is the property that mattered. Incremental reparse is only
+**1.25×**.
+
+**Why incremental is so much cheaper than cold, and why that is the number to
+care about.** An incremental reparse reuses subtrees, and the reuse is
+host-side C manipulating the tree — identical work on both sides. Only the
+newly-lexed region runs guest code. So the more a reparse reuses, the closer
+wasm gets to native, and the reparse is the path a user waits behind
+repeatedly. The 2× cold figure is paid once, on open, where the UX contract
+already permits "highlighting catches up".
+
+**What this does not say.** These are parse numbers, not keystroke numbers —
+parsing is off the keystroke path (async reparse; the renderer never blocks on
+it), so nothing here touches the keystroke→glyph ratchet. And the ratio is
+measured on one grammar; a grammar with a heavier external scanner would
+shift the mix between guest and host code, in either direction.
+
+**Toolchain note**, because it changes who can reproduce this. The wasm
+artefact is built by `scripts/build-wasm-grammar.sh` using **clang + rustup
+only** — no emscripten, no docker, no tree-sitter CLI. tree-sitter's wasm
+store supplies its own wasm libc and the memory/table/stack imports, so a
+grammar needs only to be a plain `wasm-ld -shared` side module against ~60
+lines of header declarations. See the script's header for the two non-obvious
+link flags. `crates/lattice-syntax/tests/wasm_grammar.rs` builds through that
+script and asserts the wasm and native trees are identical, cold and after an
+incremental edit.
+
+---
+
 ## HD.5 — compressed embedded help docs (2026-07-29)
 
 ⚠️ **Measured on the Apple Silicon box**, like the MG.14 rows below and

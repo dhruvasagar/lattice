@@ -1,0 +1,30 @@
+# LG.3c language fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `language-plugin` world.
+#
+# Its `register-languages` export declares four languages covering the shapes
+# that can go wrong: a well-formed one with a real grammar and highlights, one
+# whose grammar bytes are not a wasm module, one whose `folds.scm` does not
+# compile, and one that tries to claim a BUNDLED language's name. Each of the
+# last three must be rejected with a named reason WITHOUT costing the first or
+# failing the load.
+#
+# The grammar is built by this crate's own build.rs and `include_bytes!`'d in,
+# which is the seam's premise and the workflow LG.4 expects of a real plugin:
+# a plugin ships its grammar as its own build artefact, not the editor's.
+[package]
+name = "language-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

@@ -71,6 +71,9 @@ interface language {
         name: string,
         /// `["org"]` — extensions that select this language.
         extensions: list<string>,
+        /// The grammar's own `tree_sitter_<x>` export, when it differs from
+        /// `name`. Absent means "same as `name`".
+        grammar-name: option<string>,
         /// The grammar, compiled to wasm (`tree-sitter build --wasm`).
         grammar: list<u8>,
         /// Tree-sitter queries, as source. Absent = that feature is simply
@@ -90,6 +93,29 @@ Deliberately **data, not callbacks**. A language is a static description;
 nothing here needs the guest alive afterwards, so the store is dropped
 once registration returns — the same shape, and the same reasoning, as
 the `help` seam (CR.3) rather than `dashboard`'s live sections.
+
+**`grammar-name` was added when the seam was built (LG.3c).** The design
+originally assumed the language name and the grammar's entry point were
+the same string. They usually are — but not always, and lattice's own
+bundled set is the counter-example: `sql` rides `tree-sitter-sequel`,
+which exports `tree_sitter_sequel`. Without the split, a plugin shipping
+such a grammar would have to name its language after the grammar's
+upstream project rather than after the filetype users type.
+
+**The name is NOT namespaced, unlike a `help` topic.** A help topic is
+auto-prefixed with the plugin id so a guest cannot squat `:help buffers`.
+A language deliberately is not, because its name is load-bearing rather
+than decorative: it has to match the `#+BEGIN_SRC <name>` and fenced-code
+identifiers users already type, and the injection queries that reference
+it. `org-plugin.org` would match neither. The collision namespacing would
+defend against is instead **refused** — a name a bundled language already
+uses, or that another plugin has claimed, is rejected outright. Refusal is
+the right trade exactly when the name has to be the obvious one.
+
+**The grammar is compiled in the loader's drain, not in the guest call.**
+`spawn_language_plugin` hands back plain bytes; turning them into a
+`Language` costs ~100 ms of Cranelift (§2.5), and doing that inside the
+guest call would hold a `wasmtime::Store` alive across it for nothing.
 
 ### 2.3 `Lang` stops being a closed enum
 

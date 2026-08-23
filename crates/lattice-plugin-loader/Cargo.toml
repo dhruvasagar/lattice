@@ -79,6 +79,13 @@ lattice-theme = { path = "../lattice-theme" }
 # body is inert data on both sides of the boundary, so the conversion belongs
 # on the editor-facing side.
 lattice-help = { path = "../lattice-help" }
+# LG.3c: the `language` seam's drain compiles the guest's grammar bytes into a
+# `tree_sitter::Language` and registers it in the SAME registry the bundled
+# languages live in. Same boundary argument as `help` above — the host crate
+# hands back plain bytes and query strings and deliberately does not depend on
+# this; compiling the grammar (~100 ms of Cranelift) belongs on the
+# editor-facing side, after the guest's store has been dropped.
+lattice-syntax = { path = "../lattice-syntax" }
 # CR.4: the `dashboard` seam's drain RCU-registers the host's
 # `WasmDashboardSection`s into the SAME registry the builtin sections live in.
 lattice-dashboard = { path = "../lattice-dashboard" }

@@ -1,0 +1,109 @@
+package lattice:plugin-host@0.1.0;
+
+/// LG.3c: plugin-contributed languages.
+///
+/// A plugin ships a tree-sitter grammar compiled to WebAssembly and the
+/// queries that go with it. The language lands in the SAME registry the
+/// bundled ones live in, so `Lang::detect_from_path` selects it by extension,
+/// `:describe-buffer` names it, highlighting, folding, indenting and
+/// incremental reparse all run through the ordinary paths — with no host
+/// kind-branch anywhere.
+///
+/// ## The host still owns the parse loop
+///
+/// The guest ships the grammar; it does not run it. `WasmStore::load_language`
+/// turns the bytes into an ordinary `tree_sitter::Language`, and from that
+/// point nothing downstream can tell where the grammar came from. There is no
+/// guest call on the keystroke path at all — the plugin is consulted once, at
+/// load.
+///
+/// This preserves the rejection recorded in `plugin-treesitter-seam.md` §9: a
+/// text-only seam where the guest re-parses would duplicate the host's live
+/// incremental tree. What changes here is only where the grammar comes from,
+/// never who runs it.
+///
+/// ## Data, not a callback
+///
+/// A language is a static description. Nothing about the guest needs to be
+/// alive once the bytes and query sources are across, so the store is dropped
+/// when registration returns — the `help` seam's shape and reasoning, not
+/// `dashboard`'s live sections.
+///
+/// ## Where it runs
+///
+/// Once per load, on the loader's off-boot-thread task. Compiling a grammar
+/// costs ~100 ms (Cranelift), which is exactly why it happens here and once,
+/// rather than on first open of a matching file.
+interface language {
+    /// Everything the host needs to make a language real.
+    record language-spec {
+        /// The grammar's tree-sitter name — `org` for `tree_sitter_org`.
+        /// Becomes the language id `:set filetype` and `:describe-buffer`
+        /// report, and the key its queries are cached under. MUST match the
+        /// grammar's exported entry point or the module loads with nothing
+        /// to call.
+        ///
+        /// A name that collides with a bundled language is REFUSED, not
+        /// shadowed: a plugin silently replacing `rust` would be a miserable
+        /// thing to debug. Claiming a bundled *extension* is allowed but never
+        /// wins, because the native table is consulted first.
+        name: string,
+        /// `["org"]` — extensions that select this language, matched
+        /// case-insensitively, with or without a leading dot. A language with
+        /// none can never be selected and is refused as a manifest mistake.
+        extensions: list<string>,
+        /// The grammar's own entry-point name, when it differs from `name`.
+        ///
+        /// `load_language` finds a grammar by its `tree_sitter_<x>` export, and
+        /// that is not always what users call the language. lattice's own
+        /// bundled `sql` is the case in point: the grammar is
+        /// `tree-sitter-sequel` and exports `tree_sitter_sequel`, while the
+        /// language everyone types is `sql`. Absent means "same as `name`",
+        /// which is the common case.
+        grammar-name: option<string>,
+        /// The grammar, compiled to wasm. `tree-sitter build --wasm` produces
+        /// one; so does `scripts/build-wasm-grammar.sh` with nothing but clang
+        /// and a rustup toolchain.
+        grammar: list<u8>,
+        /// Tree-sitter queries, as source. Absent means that feature is simply
+        /// unavailable for this language — never an error.
+        ///
+        /// All of these compile at REGISTRATION, not first use. A malformed
+        /// query is the plugin author's mistake and must surface at load with
+        /// the offending query named; compiling lazily would turn a typo in
+        /// `folds.scm` into "folding silently does nothing", which is
+        /// indistinguishable from the feature not existing and surfaces days
+        /// later.
+        highlights: option<string>,
+        folds: option<string>,
+        injections: option<string>,
+        indents: option<string>,
+        textobjects: option<string>,
+    }
+
+    /// Register one language.
+    ///
+    /// `err` when the grammar fails to load or a query fails to compile,
+    /// carrying a reason that names the language and the offending query.
+    /// Never a trap, and never a half-registered language: a rejected
+    /// language costs itself and nothing else, so the plugin's other
+    /// contributions — including its other languages — still register and the
+    /// load still succeeds.
+    register-language: func(spec: language-spec) -> result<_, string>;
+}
+
+/// The world a language-contributing plugin implements. Imports the
+/// `language` registration API; exports `register-languages`, which the host
+/// calls once to drive declaration — the `help-plugin` / `register-help-topics`
+/// precedent, shape for shape.
+world language-plugin {
+    import language;
+    import logging;
+
+    /// PR.6: guest→host project resolution. An IMPORT — the host answers, the
+    /// guest asks — so core never depends on a plugin being alive. Inert for
+    /// guests that don't call it.
+    import project;
+
+    export register-languages: func();
+}

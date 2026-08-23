@@ -7,8 +7,9 @@
 (2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
 closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `Lang::Plugin` + the runtime registry. LG.3a ✅ (2026-08-23) — the live
-`LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse.
-LG.3c–LG.6 📝.
+`LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse. LG.3c ✅
+(2026-08-23) — **the seam is real: a plugin on disk contributes a
+language.** LG.4–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -26,7 +27,7 @@ LG.3a the live LangRegistry (grammar + queries, no WIT)
   │
 LG.3b loading grammars from wasm + the stores parsers need
   │
-LG.3c the `language` WIT seam + drain + teardown
+LG.3c the `language` WIT seam + drain + teardown  ← the seam is now real
   │
 LG.4  org plugin: grammar + highlights (per-level headlines)
   │
@@ -48,7 +49,7 @@ be the expensive order.
 | LG.2 | `Lang::Plugin(LanguageName)` + runtime language registry | ✅ |
 | LG.3a | Live `LangRegistry`: runtime grammar + compiled queries | ✅ |
 | LG.3b | Load grammars from wasm; parser store strategy | ✅ |
-| LG.3c | `language` WIT seam, loader drain, teardown | 📝 |
+| LG.3c | `language` WIT seam, loader drain, teardown | ✅ |
 | LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
 | LG.5 | Org plugin: folds | 📝 |
 | LG.6 | Docs, benchmarks, ledger | 📝 |
@@ -251,7 +252,7 @@ seam, with the seam reduced to plumbing.
   org needs for `#+BEGIN_SRC rust`.
 - *bench:* the three store costs, since they are new per-buffer work.
 
-### LG.3c — the `language` WIT seam 📝
+### LG.3c — the `language` WIT seam ✅ (2026-08-23)
 
 **Decision taken (2026-08-23), design §3.2:** `tree-sitter/wasm` is ON
 unconditionally — **+5.7 MiB**, measured, with zero runtime cost when
@@ -277,7 +278,34 @@ path.
   highlights; a bad grammar is rejected with a legible message; unload
   withdraws the language and reverts open buffers to plain.
   *(The last two are already covered at the substrate level by LG.3a;
-  LG.3b's versions go through an actual guest.)*
+  these go through an actual guest.)*
+
+**Outcome.** `wit/language.wit`, `lattice-plugin-host/src/language_host.rs`,
+the loader's `drain_language` + teardown, the `language-guest` fixture, and
+`lattice-plugin-loader/tests/language_drain.rs`.
+
+**`grammar-name` was added to the spec**, which the design had not
+anticipated: the language name and the grammar's `tree_sitter_<x>` export
+are usually the same string but need not be, and lattice's own `sql` on
+`tree-sitter-sequel` is the counter-example. Building the fixture is what
+surfaced it — the only grammar to hand exports `tree_sitter_markdown`,
+and `markdown` is a bundled name that must be refused. Design §2.2.
+
+**The name is not namespaced, unlike `help`.** A language name has to be
+the one users type in `#+BEGIN_SRC <name>` and injection queries, so
+prefixing it with the plugin id would break the thing it names. Collisions
+are refused instead.
+
+**Teardown cannot be skipped.** Every other seam reverses through an
+`Option<Handle>` the loader may not have been given; the language registry
+is process-global, so `unregister_plugin` is unconditional. A language left
+registered would be worse than stale docs — a buffer would keep claiming a
+grammar its plugin no longer provides.
+
+*The fixture declares four languages and three of them must fail:* bad
+grammar bytes, an uncompilable `folds.scm`, and a squat on `markdown`.
+Each must cost only itself, leaving the good one registered and the load
+successful. A fixture with only a happy path would prove much less.
 
 ### LG.4 — org: grammar + headlines 📝
 

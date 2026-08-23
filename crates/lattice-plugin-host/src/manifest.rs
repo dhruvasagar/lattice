@@ -160,6 +160,12 @@ pub enum PluginSeam {
     /// world). Sync, and unlike `help` the guest stays instantiated: a
     /// section is a function of a live `DashboardCtx`, not data.
     Dashboard,
+    /// LG.3c — a plugin-contributed language (`language-plugin` world). Data,
+    /// like `help`: the grammar bytes and query sources cross once at load and
+    /// the guest is dropped. The host compiles the grammar (~100 ms) and owns
+    /// the parse loop forever after, so there is no guest call on any hot
+    /// path.
+    Language,
 }
 
 impl PluginSeam {
@@ -181,6 +187,7 @@ impl PluginSeam {
             PluginSeam::ErrorParser => "error-parser",
             PluginSeam::Help => "help",
             PluginSeam::Dashboard => "dashboard",
+            PluginSeam::Language => "language",
         }
     }
 }
@@ -211,6 +218,7 @@ impl FromStr for PluginSeam {
             "error-parser" => PluginSeam::ErrorParser,
             "help" => PluginSeam::Help,
             "dashboard" => PluginSeam::Dashboard,
+            "language" => PluginSeam::Language,
             _ => return Err(()),
         })
     }

@@ -82,8 +82,10 @@ pub mod grammar_host;
 pub mod grammar_trampoline;
 /// CR.3: the `help` guest→host topic-registration seam.
 pub mod help_host;
+// LG.3c: the `language` guest→host registration seam.
 pub mod host_services;
 pub mod keymap_host;
+pub mod language_host;
 pub mod manifest;
 pub mod mode_host;
 pub mod picker_host;
@@ -843,6 +845,8 @@ struct PluginState {
     /// the loader turns them into `HelpTopic`s, so this crate never depends
     /// on `lattice-help`.
     help_contributions: Vec<help_host::HelpTopicSpec>,
+    /// LG.3c: languages the guest declared, drained by the loader.
+    language_contributions: Vec<language_host::LanguageSpec>,
     /// The plugin's manifest id (e.g. `"auto-pair"`). Set by every spawn/
     /// instantiate path from the manifest. Used to **auto-namespace** the
     /// plugin's config options — a `register-option("style")` registers
@@ -1722,6 +1726,31 @@ impl crate::help_host::bindings::lattice::plugin_host::help::Host for PluginStat
     }
 }
 
+/// LG.3c: the `language` seam's declaration host func.
+///
+/// Records the guest's bytes and query sources; compiling the grammar is the
+/// loader's job, after this store is gone (see `language_host`). A rejection
+/// is an `Err` back to the guest, not a trap — one malformed language costs
+/// itself, the plugin's others still register, and the load still succeeds.
+impl crate::language_host::bindings::lattice::plugin_host::language::Host for PluginState {
+    fn register_language(
+        &mut self,
+        spec: crate::language_host::bindings::lattice::plugin_host::language::LanguageSpec,
+    ) -> Result<(), String> {
+        let declared = spec.name.clone();
+        match crate::language_host::validate_language(spec) {
+            Ok(spec) => {
+                self.language_contributions.push(spec);
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(language = %declared, %err, "register-language rejected");
+                Err(err)
+            }
+        }
+    }
+}
+
 /// CR.4: the `dashboard` seam's declaration host func.
 ///
 /// Records only — the host instantiates the live per-section guests after the
@@ -2179,6 +2208,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // LG.3c: the `language` seam. Sync host func (`register-language`
+        // only records into `PluginState`), inert for worlds that don't
+        // import `language`.
+        crate::language_host::bindings::lattice::plugin_host::language::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // CR.4: the `dashboard` declaration seam. `register-section` only
         // records into `PluginState`, so it is sync and safe on either
         // linker; inert for worlds that don't import `dashboard`.
@@ -2322,6 +2359,16 @@ impl PluginHost {
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // LG.3c, for the same TC.6 reason: a multi-seam component providing
+        // BOTH `grammar` and `language` instantiates against this sync linker
+        // for its grammar seam, and instantiation must satisfy EVERY import
+        // the world declares. Recording a language touches `PluginState` and
+        // nothing else, so it is safe here.
+        crate::language_host::bindings::lattice::plugin_host::language::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut grammar_linker, |state: &mut PluginState| state)
         .map_err(|e| PluginHostError::Linker(e.into()))?;
         // CR.4: and on the sync linker, which is the one `dashboard-plugin`
         // actually instantiates against — `render-section` runs inside the
@@ -2554,6 +2601,7 @@ impl PluginHost {
             theme_registry: None,
             theme_contributions: Vec::new(),
             help_contributions: Vec::new(),
+            language_contributions: Vec::new(),
             dashboard_contributions: Vec::new(),
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).

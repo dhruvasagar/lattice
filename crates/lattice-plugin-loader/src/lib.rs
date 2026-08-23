@@ -706,6 +706,14 @@ impl PluginLoader {
                         let id = self.drain_help(&component, manifest, tier).await?;
                         loaded_id.get_or_insert(id);
                     }
+                    // LG.3c: the plugin's languages. Data like `help` — the
+                    // grammar bytes and query sources cross once here, the
+                    // host compiles the grammar, and the guest is dropped.
+                    // Parsing never touches wasm-the-plugin again.
+                    PluginSeam::Language => {
+                        let id = self.drain_language(&component, manifest, tier).await?;
+                        loaded_id.get_or_insert(id);
+                    }
                     // CR.4: the plugin's launch-page sections. Unlike `help`,
                     // each keeps a live guest — a section is a function of a
                     // `DashboardCtx`, so it is called per compose.
@@ -1290,6 +1298,15 @@ impl PluginLoader {
                 Arc::new(next)
             });
         }
+        // LG.3c: same placement and reasoning as `help` above, with one
+        // difference worth noting — the language registry is process-global,
+        // so unlike every other registry here there is no handle that can be
+        // absent and therefore no way for this to be silently skipped by an
+        // under-wired loader. Leaving a language registered would be worse
+        // than stale docs: a buffer would keep claiming a grammar its plugin
+        // no longer provides.
+        let languages_removed =
+            lattice_syntax::plugin_lang::unregister_plugin(teardown.plugin_id.0 as u64);
         // CR.4: same placement, same reasoning — plus one of its own. Leaving
         // a plugin's section registered after unload would keep calling a
         // guest whose plugin is gone on every compose.
@@ -1331,6 +1348,7 @@ impl PluginLoader {
             return TeardownReport {
                 help_topics: help_topics_removed,
                 dashboard_sections: dashboard_sections_removed,
+                languages: languages_removed,
                 ..TeardownReport::default()
             };
         };
@@ -1368,6 +1386,7 @@ impl PluginLoader {
         ctx_h.store(Arc::new(contexts));
         let mut report = report;
         report.help_topics = help_topics_removed;
+        report.languages = languages_removed;
         report.dashboard_sections = dashboard_sections_removed;
         report
     }
@@ -2033,6 +2052,90 @@ impl PluginLoader {
             id = id.0,
             topics = count,
             "help plugin registered its topics"
+        );
+        Ok(id)
+    }
+
+    /// LG.3c — the `language` seam's drain.
+    ///
+    /// Drives `register-languages` once, then compiles each declared grammar
+    /// and registers it, stamped with this plugin's host-issued id. Teardown
+    /// is by that provenance, so — like `error-parser` and `help` — there is
+    /// no list to record on `record` and therefore none to forget.
+    ///
+    /// **The grammar is compiled HERE, after the guest's store is gone.**
+    /// `spawn_language_plugin` returns plain bytes; turning them into a
+    /// `tree_sitter::Language` costs ~100 ms of Cranelift, and doing it inside
+    /// the guest call would hold a `wasmtime::Store` alive across it for no
+    /// reason. This runs on the loader's off-boot-thread task, which is the
+    /// only place that cost is acceptable — it is emphatically not on the
+    /// keystroke or frame path.
+    ///
+    /// **One bad language costs only itself.** A grammar that fails to load or
+    /// a query that fails to compile is logged with the offending language and
+    /// reason named, and the plugin's other languages — and its other
+    /// contributions — still register. A plugin that declared no languages
+    /// still loads: strange, not broken.
+    async fn drain_language(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let (id, specs) = self
+            .host
+            .spawn_language_plugin(component, manifest, tier, PluginBudget::default())
+            .await?;
+
+        let mut registered = 0usize;
+        for spec in &specs {
+            // Loaded by the GRAMMAR's export name, registered under the
+            // LANGUAGE's name — they differ whenever a grammar's upstream
+            // name is not the filetype's (`sequel` vs `sql`).
+            let grammar =
+                match lattice_syntax::wasm_grammar::load(&spec.grammar_name, &spec.grammar) {
+                    Ok(g) => g,
+                    Err(err) => {
+                        tracing::warn!(
+                            plugin = %manifest.id,
+                            language = %spec.name,
+                            %err,
+                            "plugin language rejected: grammar failed to load"
+                        );
+                        continue;
+                    }
+                };
+            let grammar_spec = lattice_syntax::GrammarSpec {
+                grammar,
+                highlights: spec.highlights.clone(),
+                folds: spec.folds.clone(),
+                injections: spec.injections.clone(),
+                indents: spec.indents.clone(),
+                textobjects: spec.textobjects.clone(),
+            };
+            let exts: Vec<&str> = spec.extensions.iter().map(String::as_str).collect();
+            match lattice_syntax::plugin_lang::register_with_grammar(
+                &spec.name,
+                &exts,
+                &grammar_spec,
+                id.0 as u64,
+            ) {
+                Ok(_) => registered += 1,
+                Err(err) => tracing::warn!(
+                    plugin = %manifest.id,
+                    language = %spec.name,
+                    %err,
+                    "plugin language rejected"
+                ),
+            }
+        }
+
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            declared = specs.len(),
+            registered,
+            "language plugin registered its languages"
         );
         Ok(id)
     }

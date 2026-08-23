@@ -257,6 +257,13 @@ pub struct TeardownReport {
     /// plain data in both directions, so nothing else about help belongs on
     /// this side of the line.
     pub help_topics: usize,
+    /// LG.3c: plugin-contributed languages unregistered.
+    ///
+    /// Filled by the LOADER, like `help_topics`, and for the same reason: the
+    /// language registry lives in `lattice-syntax`. Unlike every other field
+    /// here this one can never be skipped for want of a handle — the registry
+    /// is process-global, so there is no `Option` to be `None`.
+    pub languages: usize,
 }
 
 #[cfg(test)]
@@ -388,11 +395,13 @@ mod tests {
                 context_sources: 0,
                 theme_elements: 0,
                 parser_factories: 0,
-                // CR.3 / CR.4: always 0 from `unload` — the loader fills
-                // these after reversing the help + dashboard registries,
-                // which live on its side of the crate boundary.
+                // CR.3 / CR.4 / LG.3c: always 0 from `unload` — the loader
+                // fills these after reversing the help, dashboard and
+                // language registries, which live on its side of the crate
+                // boundary.
                 help_topics: 0,
                 dashboard_sections: 0,
+                languages: 0,
             }
         );
 

@@ -79,6 +79,14 @@ fn main() {
         "help-guest",
         "HELP_GUEST_WASM",
     );
+    // LG.3c: the language fixture. Its build.rs compiles a grammar to wasm
+    // and `include_bytes!`s it in, which is both the seam's premise and the
+    // workflow LG.4 expects of a real plugin.
+    build_guest(
+        &fixtures.join("language-guest"),
+        "language-guest",
+        "LANGUAGE_GUEST_WASM",
+    );
     // CR.4: the dashboard section fixture. Renders from the passed `ctx`, so
     // it exercises the live-guest half of the seam rather than static rows.
     build_guest(

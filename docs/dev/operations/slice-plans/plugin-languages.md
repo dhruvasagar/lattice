@@ -10,7 +10,8 @@ closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse. LG.3c ✅
 (2026-08-23) — **the seam is real: a plugin on disk contributes a
 language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5 ✅ (2026-08-23) —
-org folds. LG.6 📝.
+org folds. LG.6 🚧 — docs landed, org's `:help` page blocked on
+external-plugin world composition (below).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -53,7 +54,7 @@ be the expensive order.
 | LG.3c | `language` WIT seam, loader drain, teardown | ✅ |
 | LG.4 | Org plugin: grammar + per-level headline highlights | ✅ |
 | LG.5 | Org plugin: folds | ✅ |
-| LG.6 | Docs, benchmarks, ledger | 📝 |
+| LG.6 | Docs, benchmarks, ledger | 🚧 |
 
 ---
 
@@ -397,7 +398,7 @@ operating on whatever `compute_syntax_folds` produced; they are not
 language-specific and have coverage already. Re-testing them per language
 would test the host, not org.
 
-### LG.6 — docs, benchmarks, ledger 📝
+### LG.6 — docs, benchmarks, ledger 🚧 (2026-08-23)
 
 - `docs/user/plugins.md`: the `language` seam row + how a plugin ships a
   grammar (the `tree-sitter build --wasm` step is the non-obvious half).
@@ -407,6 +408,29 @@ would test the host, not org.
 - `benchmarks.md`: LG.1's numbers.
 - `implementation.md`: the LG.* table; note that Phase 8b gains a second
   reference plugin.
+
+**Landed:** the `language` row and a "a plugin can ship a whole language"
+section in `docs/user/plugins.md` (including the `tree-sitter build --wasm`
+step and the `grammar-name` escape hatch); the LG.* table and both
+decisions in `implementation.md`; LG.1–LG.3b's numbers in `benchmarks.md`
+as each slice landed.
+
+**⛔ Deferred — org's own `:help` page, and why.** The plan wanted it
+shipped INSIDE the org plugin via the `help` seam (CR.3), org being the
+second real test of that decision. It cannot be, yet: a component
+implements exactly ONE WIT world, so a plugin providing both `language` and
+`help` needs a combined world — and combined worlds live in lattice's own
+`wit/` (`auto-pair-plugin` imports six interfaces). That works for bundled
+plugins and **not for external ones**, which cannot add a world to
+lattice's package. Org is external by LG.4's decision, so it is the first
+plugin to hit this.
+
+The doc text is written and ships at `examples/org-plugin/doc/org.md`,
+ready to be `include_str!`'d the moment the gap closes. The fix is WIT
+`include` from a plugin-local `wit/` that depends on lattice's package —
+real work, and it belongs in the plugin-host track rather than being
+smuggled in here. **This slice stays 🚧 until then**, and this plan stays
+active: a deferred item is open work, not a completed one.
 
 ---
 

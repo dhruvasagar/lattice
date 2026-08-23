@@ -6380,6 +6380,57 @@ Slice plan: [`slice-plans/archive/pane-buffer-history.md`](slice-plans/archive/p
 
 ---
 
+## plugin-contributed languages (LG-series, ✅ LG.0–LG.5, 2026-08-22 → 2026-08-23)
+
+"Which languages exist" stopped being a compile-time property of the editor.
+A plugin ships a tree-sitter grammar compiled to WebAssembly plus its queries;
+the language lands in the SAME registry the bundled ones live in and is
+selected, highlighted, folded and reparsed through the ordinary paths, with no
+host kind-branch anywhere.
+
+| Slice | What |
+|---|---|
+| LG.0 ✅ | Gate: `wasmtime-c-api` 36 and `wasmtime` 46 coexist, proven under a forced guest trap in both init orders |
+| LG.1 ✅ | Gate: wasm vs native parse — **2.0× cold, 1.25× incremental** |
+| LG.2 ✅ | `Lang::Plugin(LanguageName)` + the runtime language registry |
+| LG.3a ✅ | The live `LangRegistry` (RCU, teardown by provenance) |
+| LG.3b ✅ | Loading grammars from wasm; the stores parsers need |
+| LG.3c ✅ | The `language` WIT seam, loader drain, teardown |
+| LG.4 ✅ | Org: per-level headlines via `#eq?` predicates |
+| LG.5 ✅ | Org: folds over sections, blocks and drawers |
+| LG.6 🚧 | Docs, ledger — one item deferred, below |
+
+Both gates passed, so the design's §6 fallback (bundle org natively) was never
+taken. Two decisions worth finding here rather than in a diff:
+
+- **`tree-sitter/wasm` is linked unconditionally**, not behind a cargo
+  feature: +5.7 MiB measured, zero runtime cost when unused. Gating it would
+  have meant a stock build where a user's language plugin silently does
+  nothing. Design §3.2.
+- **Org is NOT a bundled plugin.** Its `parser.c` is 2.2 MB of generated C and
+  `plugins/` is compiled by every workspace build. `examples/org-plugin/` holds
+  version-controlled reference source that nothing in the workspace builds; the
+  plugin manager clones and builds it on boot (PM.5–PM.8). Design §7.
+
+**Phase 8b gains a second reference plugin** (`examples/org-plugin`) alongside
+the bundled `auto-pair` and `treesitter-context`.
+
+**Deferred (LG.6):** org's own `:help` page, which the slice plan wanted
+shipped *inside* the org plugin via the `help` seam. A component implements
+exactly one WIT world, so a plugin providing both `language` and `help` needs a
+combined world — and today those live in lattice's own `wit/` (`auto-pair-plugin`
+imports six interfaces). That works for bundled plugins and not for external
+ones, which cannot add a world to lattice's package. The doc text is written and
+ships at `examples/org-plugin/doc/org.md`, ready to be `include_str!`'d the
+moment external plugins can compose worlds — via WIT `include` from a
+plugin-local `wit/` that depends on lattice's package. That mechanism is the
+real work and belongs in the plugin-host track, not here.
+
+Design: [`../architecture/plugin-languages.md`](../architecture/plugin-languages.md).
+Slice plan: [`slice-plans/plugin-languages.md`](slice-plans/plugin-languages.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

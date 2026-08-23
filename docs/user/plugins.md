@@ -181,6 +181,7 @@ path are the same code shape.
 | **tree-sitter** | Query the parse tree of a buffer through a borrowed snapshot. |
 | **help** | Ship its own `:help` pages. The markdown is compiled into the plugin's own `.wasm` (see below); the topic then opens, `<Tab>`-completes and cross-links exactly like a built-in doc. |
 | **dashboard** | Add — or replace — a section on the `:dashboard` launch page, rendered from the live pane width, icon palette and editor version. |
+| **language** | Ship a whole **language**: a tree-sitter grammar compiled to WebAssembly plus its highlight, fold, indent, injection and text-object queries. The language is then selected by file extension, highlighted, folded and reparsed exactly like a built-in one (see below). |
 | **logging** | Emit the plugin's own log narrative into the boundary trace (Layer 2). |
 
 Run `:describe-plugin-api <seam>` for the exact function signatures of any of
@@ -190,6 +191,55 @@ whole catalog as Markdown or JSON (useful for scaffolding).
 That catalog is parsed from the WIT package at build time, so it can never
 disagree with the actual API — if this table and `:list-plugin-apis` ever
 differ, believe the command.
+
+### A plugin can ship a whole language
+
+Which languages the editor knows is **not** fixed when it is built. A plugin
+that provides the `language` seam hands over a grammar and its queries once,
+at load, and from then on the language behaves like any built-in one — `.org`
+files select it, headings highlight, sections fold, incremental reparse works,
+and unloading the plugin takes the language with it.
+
+```rust
+register_language(&LanguageSpec {
+    name: "org".into(),
+    extensions: vec!["org".into(), "org_archive".into()],
+    grammar: GRAMMAR.to_vec(),                 // wasm, baked in
+    highlights: Some(include_str!("../queries/highlights.scm").into()),
+    folds: Some(include_str!("../queries/folds.scm").into()),
+    ..Default::default()
+});
+```
+
+**The non-obvious half is the grammar.** It has to be a tree-sitter grammar
+compiled to WebAssembly, and it is *your* build artefact, not the editor's:
+
+```sh
+tree-sitter build --wasm            # the upstream tool (needs emscripten or docker)
+scripts/build-wasm-grammar.sh org path/to/grammar/src   # lattice's, needs only clang + rustup
+```
+
+Then `include_bytes!` the result, exactly as `help` bakes in its markdown. The
+grammar travels with the plugin and disappears with it.
+
+Three rules worth knowing before you hit them:
+
+- **Queries compile when the plugin loads, not on first use.** A typo in
+  `folds.scm` fails the language at load with the offending file named —
+  rather than quietly meaning "folding does nothing in org files", which is
+  indistinguishable from the feature not existing.
+- **A failed language costs only itself.** A bad grammar or query leaves the
+  rest of your plugin — and your other languages — registered and working.
+- **You cannot replace a built-in language.** Registering the name `rust` is
+  refused. Claiming a built-in *extension* is allowed but never wins: the
+  built-in table is consulted first.
+
+If your grammar's entry point does not match the language name — lattice's own
+`sql` rides the `tree-sitter-sequel` grammar, which exports
+`tree_sitter_sequel` — set `grammar-name` to the grammar's name and leave
+`name` as what users type.
+
+`examples/org-plugin/` in the lattice repo is a complete worked example.
 
 ### A plugin's docs live inside the plugin
 

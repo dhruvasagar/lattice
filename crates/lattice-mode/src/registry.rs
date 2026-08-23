@@ -80,6 +80,14 @@ pub enum RegistrationError {
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn DynMode>>,
     kind_index: HashMap<BufferKind, ModeId>,
+    /// OM.1: the peer of `kind_index` for the language dispatch path.
+    /// Maps a canonical language name (`Lang::name()`) to the major that
+    /// declared `target_language() == Some(name)`. Same rules as
+    /// `kind_index`: populated at register-time, first registration wins,
+    /// freed on `unregister`. Keyed by `String` rather than a `Lang`
+    /// because a plugin language's identity IS its name — the host has no
+    /// enum arm for it.
+    lang_index: HashMap<String, ModeId>,
     /// CI.1/CI.3: minor modes the user has ENABLED. `auto_activatable_minors`
     /// gates on this — a registered minor auto-activates only when enabled.
     /// Native modes are auto-enabled at [`register`](Self::register); plugin
@@ -118,6 +126,7 @@ impl ModeRegistry {
         Self {
             modes: HashMap::new(),
             kind_index: HashMap::new(),
+            lang_index: HashMap::new(),
             enabled: std::collections::HashSet::new(),
         }
     }
@@ -164,8 +173,45 @@ impl ModeRegistry {
             return Err(RegistrationError::Duplicate(id));
         }
         let target_kind = <M as Mode>::target_buffer_kind(&mode);
+        // OM.1: a language claim is only meaningful from a MAJOR — a buffer
+        // has exactly one, and resolving a minor through the language index
+        // would install it as the buffer's major. `kind_index` does not
+        // filter this way (H.2 chose to respect whatever a mode declares),
+        // but a minor claiming a *language* is reachable from plugin input
+        // in a way a mis-declared kind never was, so it is refused here and
+        // said out loud rather than indexed and wondered about later.
+        let target_lang = match <M as Mode>::kind(&mode) {
+            ModeKind::Major => <M as Mode>::target_language(&mode).map(str::to_owned),
+            ModeKind::Minor => {
+                if let Some(lang) = <M as Mode>::target_language(&mode) {
+                    tracing::warn!(
+                        mode = %id,
+                        %lang,
+                        "ModeRegistry: ignoring target_language on a MINOR mode; \
+                         only a major can own a language"
+                    );
+                }
+                None
+            }
+        };
         let arc: Arc<dyn DynMode> = Arc::new(mode);
         self.modes.insert(id, arc);
+        if let Some(lang) = target_lang {
+            match self.lang_index.entry(lang) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(id);
+                }
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    tracing::warn!(
+                        existing = %e.get(),
+                        rejected = %id,
+                        lang = %e.key(),
+                        "ModeRegistry: ignoring duplicate target_language \
+                         claim; first registration wins"
+                    );
+                }
+            }
+        }
         if let Some(kind) = target_kind {
             match self.kind_index.entry(kind) {
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -226,6 +272,10 @@ impl ModeRegistry {
         let removed = self.modes.remove(&id).is_some();
         if removed {
             self.kind_index.retain(|_, claimed| *claimed != id);
+            // OM.1: a plugin's major is unregistered on unload, and a stale
+            // language claim would resolve documents to a mode that no
+            // longer exists.
+            self.lang_index.retain(|_, claimed| *claimed != id);
         }
         removed
     }
@@ -244,6 +294,25 @@ impl ModeRegistry {
     /// Index built at register-time, so lookup is `HashMap`-cheap.
     pub fn find_major_for_kind(&self, kind: BufferKind) -> Option<ModeId> {
         self.kind_index.get(&kind).copied()
+    }
+
+    /// OM.1: look up the major mode declared as the default for a
+    /// language, by canonical name (`Lang::name()` — `"rust"`,
+    /// `"org"`). The peer of [`find_major_for_kind`](Self::find_major_for_kind)
+    /// for [`BufferKind::Document`], which dispatches by language
+    /// rather than by kind.
+    ///
+    /// Returns `None` for a language no registered major claims —
+    /// including every built-in language today, since the built-in
+    /// majors still resolve through
+    /// `lattice_syntax::major_mode_id_for_lang`'s table and the host
+    /// consults that first. The index exists so a **plugin**
+    /// language, which can have no arm in a hand-written table, gets
+    /// a major at all.
+    ///
+    /// Index built at register-time, so lookup is `HashMap`-cheap.
+    pub fn find_major_for_lang(&self, lang: &str) -> Option<ModeId> {
+        self.lang_index.get(lang).copied()
     }
 
     /// Iterate every registered mode's `(id, kind)`.
@@ -789,6 +858,7 @@ mod tests {
         conflicts: Vec<ModeId>,
         implies: Vec<ModeId>,
         target_kind: Option<BufferKind>,
+        target_lang: Option<String>,
         policy: crate::ActivationPolicy,
         refresh: Option<&'static str>,
         activate_calls: StdArc<AtomicU32>,
@@ -814,6 +884,7 @@ mod tests {
                 conflicts: Vec::new(),
                 implies: Vec::new(),
                 target_kind: None,
+                target_lang: None,
                 policy: crate::ActivationPolicy::Manual,
                 refresh: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
@@ -824,6 +895,11 @@ mod tests {
             self.target_kind = Some(kind);
             self
         }
+        /// OM.1: declare this mode the major for a language.
+        fn for_lang(mut self, lang: &str) -> Self {
+            self.target_lang = Some(lang.to_string());
+            self
+        }
         fn minor(name: &str) -> Self {
             Self {
                 id: ModeId::new(name),
@@ -832,6 +908,7 @@ mod tests {
                 conflicts: Vec::new(),
                 implies: Vec::new(),
                 target_kind: None,
+                target_lang: None,
                 policy: crate::ActivationPolicy::Manual,
                 refresh: None,
                 activate_calls: StdArc::new(AtomicU32::new(0)),
@@ -872,6 +949,9 @@ mod tests {
         }
         fn target_buffer_kind(&self) -> Option<BufferKind> {
             self.target_kind
+        }
+        fn target_language(&self) -> Option<&str> {
+            self.target_lang.as_deref()
         }
         fn required_capabilities(&self) -> CapabilitySet {
             self.required
@@ -1124,6 +1204,98 @@ mod tests {
             vec![native],
             "disabling removes the plugin minor from activation"
         );
+    }
+
+    // ── OM.1: the language index ──────────────────────────────────
+
+    #[test]
+    fn find_major_for_lang_resolves_a_declared_claim() {
+        let mut r = ModeRegistry::new();
+        let org = r
+            .register(MockMode::major("org-mode").for_lang("org"))
+            .unwrap();
+        assert_eq!(r.find_major_for_lang("org"), Some(org));
+    }
+
+    #[test]
+    fn find_major_for_lang_returns_none_when_unclaimed() {
+        let mut r = ModeRegistry::new();
+        r.register(MockMode::major("org-mode").for_lang("org"))
+            .unwrap();
+        // A language nothing claims resolves to nothing — the caller
+        // falls through to `text-mode`, exactly as before this index.
+        assert_eq!(r.find_major_for_lang("rust"), None);
+        // And a registry with no claims at all is simply empty.
+        assert_eq!(ModeRegistry::new().find_major_for_lang("org"), None);
+    }
+
+    #[test]
+    fn find_major_for_lang_keeps_first_registration_when_clobbered() {
+        // Two majors claim "org". First wins; the second warns rather
+        // than erroring, so boot / load order is not load-bearing for
+        // correctness — the `target_buffer_kind` contract.
+        let mut r = ModeRegistry::new();
+        let first = r
+            .register(MockMode::major("org-a-mode").for_lang("org"))
+            .unwrap();
+        let _second = r
+            .register(MockMode::major("org-b-mode").for_lang("org"))
+            .unwrap();
+        assert_eq!(r.find_major_for_lang("org"), Some(first));
+    }
+
+    #[test]
+    fn a_minor_claiming_a_language_is_not_indexed() {
+        // A buffer has exactly one major. Indexing a minor here would
+        // install it AS the major on every buffer of that language.
+        // Reachable from plugin input, so it is refused rather than
+        // respected.
+        let mut r = ModeRegistry::new();
+        r.register(MockMode::minor("org-todo-mode").for_lang("org"))
+            .unwrap();
+        assert_eq!(r.find_major_for_lang("org"), None);
+    }
+
+    #[test]
+    fn unregister_frees_the_language_claim() {
+        // A plugin's major is unregistered on unload; a stale claim
+        // would resolve documents onto a mode that no longer exists.
+        let mut r = ModeRegistry::new();
+        let org = r
+            .register(MockMode::major("org-mode").for_lang("org"))
+            .unwrap();
+        assert_eq!(r.find_major_for_lang("org"), Some(org));
+
+        assert!(r.unregister(org));
+        assert_eq!(r.find_major_for_lang("org"), None);
+
+        // And the freed language can be claimed again — a reload must
+        // not be poisoned by the previous load.
+        let reloaded = r
+            .register(MockMode::major("org-mode").for_lang("org"))
+            .unwrap();
+        assert_eq!(r.find_major_for_lang("org"), Some(reloaded));
+    }
+
+    #[test]
+    fn kind_and_language_claims_are_independent() {
+        // A major may own a kind, a language, both, or neither — the
+        // two indexes never consult each other (`markdown-mode` is the
+        // real both-case: BufferKind::Help *and* Lang::Markdown).
+        let mut r = ModeRegistry::new();
+        let both = r
+            .register(
+                MockMode::major("markdownish-mode")
+                    .targeting(BufferKind::Help)
+                    .for_lang("markdown"),
+            )
+            .unwrap();
+        assert_eq!(r.find_major_for_kind(BufferKind::Help), Some(both));
+        assert_eq!(r.find_major_for_lang("markdown"), Some(both));
+
+        assert!(r.unregister(both));
+        assert_eq!(r.find_major_for_kind(BufferKind::Help), None);
+        assert_eq!(r.find_major_for_lang("markdown"), None);
     }
 
     #[test]

@@ -415,13 +415,36 @@ pub fn register_buffer_kind_modes(_registry: &mut ModeRegistry) {
 /// Document-kind buffers, finally falling back to [`TextMode`]
 /// when neither layer matches (Document + `Lang::Plain`, or an
 /// unknown / unbound kind).
+///
+/// OM.1 (2026-08-24): a third layer between the two — the registry's
+/// **language index** ([`ModeRegistry::find_major_for_lang`]). It is
+/// what lets a *plugin-contributed* language have a major at all:
+/// `major_mode_id_for_lang` is a hand-written `match` over the `Lang`
+/// enum and returns `None` for `Lang::Plugin(_)` by design, since the
+/// host does not know the language exists until a plugin says so.
+/// Before this layer a `.org` file landed in `text-mode`.
+///
+/// The built-in table is consulted **first**, so a plugin cannot take
+/// `rust-mode`'s language out from under it. When the built-in majors
+/// eventually migrate onto `Mode::target_language` the table shrinks,
+/// the index grows, and the order between them stops mattering.
 pub fn resolve_major_mode(registry: &ModeRegistry, kind: BufferKind, lang: Lang) -> ModeId {
     if let Some(id) = major_mode_id_for_buffer_kind(registry, kind) {
         return id;
     }
-    // Document kind (or any kind with no registered major): pick
-    // by language, fall through to text-mode.
-    lattice_syntax::major_mode_id_for_lang(lang).unwrap_or_else(TextMode::mode_id)
+    // Document kind (or any kind with no registered major): pick by
+    // language — the built-in table, then any registered claim, then
+    // text-mode.
+    if let Some(id) = lattice_syntax::major_mode_id_for_lang(lang) {
+        return id;
+    }
+    // `Lang::name()` is the canonical registry key for every arm,
+    // and for `Lang::Plugin` it IS the interned identity — so this
+    // needs no plugin-specific branch.
+    if let Some(id) = registry.find_major_for_lang(lang.name()) {
+        return id;
+    }
+    TextMode::mode_id()
 }
 
 #[cfg(test)]
@@ -571,6 +594,123 @@ mod tests {
         let registry = populated_registry();
         assert_eq!(
             resolve_major_mode(&registry, BufferKind::Document, Lang::Plain),
+            TextMode::mode_id()
+        );
+    }
+
+    // ── OM.1: plugin languages resolve through the registry index ──
+
+    /// A stand-in for the major a plugin declares through the `modes`
+    /// seam — nothing here is org-specific except the name it claims.
+    #[derive(Debug)]
+    struct PluginLangMode {
+        id: &'static str,
+        lang: &'static str,
+        kind: lattice_mode::ModeKind,
+    }
+
+    impl lattice_mode::Mode for PluginLangMode {
+        type Guard = ();
+        fn id(&self) -> ModeId {
+            ModeId::new(self.id)
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            self.kind
+        }
+        fn target_language(&self) -> Option<&str> {
+            Some(self.lang)
+        }
+        fn on_activate(
+            &self,
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, Self::Guard> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn org_lang() -> Lang {
+        Lang::Plugin(lattice_syntax::LanguageName::intern("org"))
+    }
+
+    #[test]
+    fn resolve_major_mode_uses_the_language_index_for_a_plugin_language() {
+        // The headline of the slice. `major_mode_id_for_lang` returns
+        // `None` for `Lang::Plugin(_)` by design, so before the index
+        // this landed in text-mode.
+        let mut registry = populated_registry();
+        registry
+            .register(PluginLangMode {
+                id: "org-mode",
+                lang: "org",
+                kind: lattice_mode::ModeKind::Major,
+            })
+            .unwrap();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
+            ModeId::new("org-mode")
+        );
+    }
+
+    #[test]
+    fn a_plugin_language_with_no_claimed_major_still_falls_back_to_text_mode() {
+        // Graceful degradation: the `language` seam can load without the
+        // `modes` seam (or its mode can be rejected), and a highlighted
+        // org buffer with no org-mode is a perfectly good outcome.
+        let registry = populated_registry();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
+            TextMode::mode_id()
+        );
+    }
+
+    #[test]
+    fn the_builtin_table_wins_over_a_plugin_claim() {
+        // A plugin claiming "rust" must not take rust-mode's language
+        // out from under it: the hand-written table is consulted first.
+        let mut registry = populated_registry();
+        registry
+            .register(PluginLangMode {
+                id: "impostor-mode",
+                lang: "rust",
+                kind: lattice_mode::ModeKind::Major,
+            })
+            .unwrap();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::Document, Lang::Rust),
+            lattice_syntax::RustMode::mode_id()
+        );
+    }
+
+    #[test]
+    fn a_kind_bound_major_still_wins_over_the_language_index() {
+        // Layer order is unchanged: kind first. A Help buffer is
+        // markdown-mode even if its detected language claims otherwise.
+        let mut registry = populated_registry();
+        registry
+            .register(PluginLangMode {
+                id: "org-mode",
+                lang: "org",
+                kind: lattice_mode::ModeKind::Major,
+            })
+            .unwrap();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::Help, org_lang()),
+            lattice_syntax::MarkdownMode::mode_id()
+        );
+    }
+
+    #[test]
+    fn a_minor_claiming_the_language_does_not_become_the_major() {
+        let mut registry = populated_registry();
+        registry
+            .register(PluginLangMode {
+                id: "org-todo-mode",
+                lang: "org",
+                kind: lattice_mode::ModeKind::Minor,
+            })
+            .unwrap();
+        assert_eq!(
+            resolve_major_mode(&registry, BufferKind::Document, org_lang()),
             TextMode::mode_id()
         );
     }

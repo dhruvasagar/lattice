@@ -269,6 +269,43 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// OM.1: for major modes, the **language** this mode is the
+    /// default major for, by canonical name (`Lang::name()` —
+    /// `"rust"`, `"org"`). The peer of
+    /// [`target_buffer_kind`](Self::target_buffer_kind) for the
+    /// dispatch path [`BufferKind::Document`] takes: language
+    /// detection rather than kind dispatch.
+    ///
+    /// `ModeRegistry::register` indexes this so
+    /// [`ModeRegistry::find_major_for_lang`] can resolve a
+    /// document's major without a host-side `match Lang { ... }`,
+    /// which is what makes a **plugin-contributed** language's
+    /// major possible at all: `Lang::Plugin(_)` has no arm in the
+    /// host's hand-written table and never will, because the host
+    /// does not know the language exists until a plugin says so.
+    ///
+    /// Returns `None` for:
+    /// - All minor modes. A minor declaring one is ignored at
+    ///   register-time rather than indexed — resolving a minor as
+    ///   a buffer's major would corrupt activation.
+    /// - Major modes not bound to a language (kind-bound majors
+    ///   like `file-tree-mode`, or manual-only majors).
+    ///
+    /// One language is owned by at most one major; first
+    /// registration wins and later claims warn, matching
+    /// `target_buffer_kind`.
+    ///
+    /// The built-in language majors (`rust-mode`, `markdown-mode`,
+    /// …) do **not** declare this yet — they resolve through
+    /// `lattice_syntax::major_mode_id_for_lang`'s table, which is
+    /// consulted first. Migrating them onto this index would
+    /// collapse that table, and is deliberately left as separate
+    /// work: this slice makes plugin languages reachable, it does
+    /// not rewrite how the built-ins resolve.
+    fn target_language(&self) -> Option<&str> {
+        None
+    }
+
     /// Option overrides this mode contributes. Pure declarative
     /// (same return value every call); the registry merges these
     /// into the resolution layer stack on activation.
@@ -528,6 +565,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn id(&self) -> ModeId;
     fn kind(&self) -> ModeKind;
     fn target_buffer_kind(&self) -> Option<BufferKind>;
+    fn target_language(&self) -> Option<&str>;
     fn options(&self) -> OptionOverrideSet;
     fn keymap(&self) -> Keymap;
     fn decorations(&self) -> Vec<DecorationProvider>;
@@ -563,6 +601,9 @@ impl<M: Mode> DynMode for M {
     }
     fn target_buffer_kind(&self) -> Option<BufferKind> {
         <M as Mode>::target_buffer_kind(self)
+    }
+    fn target_language(&self) -> Option<&str> {
+        <M as Mode>::target_language(self)
     }
     fn options(&self) -> OptionOverrideSet {
         <M as Mode>::options(self)

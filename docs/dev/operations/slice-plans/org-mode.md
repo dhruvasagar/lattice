@@ -6,8 +6,9 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.0 ✅ (2026-08-24) — seam drain order is structural, and the
-gate found a real bug rather than confirming the status quo.
+**Status:** OM.1 ✅ (2026-08-24). OM.0 ✅ — seam drain order is structural,
+and the gate found a real bug rather than confirming the status quo.
+OM.1 ✅ — a plugin language can have a major mode.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -71,7 +72,7 @@ files? — was retired during design by reading the excerpt model
 | Slice | Description | Status |
 |---|---|---|
 | OM.0 | Gate: a plugin's `grammar` seam drains before its `modes` seam | ✅ |
-| OM.1 | `ModeRegistry` language index + `Mode::target_language` | 📝 |
+| OM.1 | `ModeRegistry` language index + `Mode::target_language` | ✅ |
 | OM.2 | `modes` seam accepts `major`; `target-language` field | 📝 |
 | OM.3 | Promote / demote headline + subtree | 📝 |
 | OM.4 | Headline motions + `ih`/`ah`/`is`/`as` text objects | 📝 |
@@ -149,7 +150,7 @@ without deciding where it drains.
 The two bundled manifests' ordering warnings are now false and were
 rewritten to say what is actually true.
 
-### OM.1 — the language index 📝
+### OM.1 — the language index ✅ (2026-08-24)
 
 Native only; no WASM, no org.
 
@@ -167,6 +168,36 @@ Native only; no WASM, no org.
   can migrate onto this later and that the migration is **not** in
   scope.
 - *no bench:* registration and activation are off the keystroke path.
+
+**Landed 2026-08-24.** `Mode::target_language() -> Option<&str>` (a
+`&str`, not `Option<&'static str>` like `mirrors_option`, because a
+plugin mode's language name is an owned runtime field — borrowing from
+`self` serves both without allocating). `ModeRegistry` gained
+`lang_index: HashMap<String, ModeId>`, keyed by name because a plugin
+language's identity IS its name; the host has no enum arm for it.
+Populated in `register_inner`, first-claim-wins with a `warn` on the
+second, freed in `unregister` — every rule `kind_index` already had.
+
+**One deliberate divergence from `kind_index`:** a claim from a MINOR is
+refused and warned rather than indexed. H.2 chose to respect whatever a
+mode declares, but a minor claiming a *language* is reachable from
+plugin input in a way a mis-declared kind never was, and indexing it
+would install the minor AS the buffer's major.
+
+`resolve_major_mode` gained a third layer between the kind index and
+`text-mode`. The built-in table is consulted **first**, so a plugin
+claiming `"rust"` cannot take `rust-mode`'s language — tested. The
+lookup passes `lang.name()` unconditionally rather than matching on
+`Lang::Plugin`, since `name()` is the canonical registry key for every
+arm and IS the interned identity for a plugin one; no plugin-specific
+branch exists in the resolver.
+
+Tests: 6 in `registry.rs` (resolve, unclaimed, first-wins, minor
+refused, unregister frees + reclaim, kind/lang independence) and 5 in
+`lattice-host/src/modes.rs` (the headline plugin-language resolve; the
+graceful fallback when the `language` seam loads without a major; the
+built-in table winning; kind still beating language; a minor not
+becoming the major). Native only — no WASM, no org.
 
 ### OM.2 — majors over the seam 📝
 

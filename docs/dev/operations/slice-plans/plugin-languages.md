@@ -9,7 +9,8 @@ closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `Lang::Plugin` + the runtime registry. LG.3a ✅ (2026-08-23) — the live
 `LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse. LG.3c ✅
 (2026-08-23) — **the seam is real: a plugin on disk contributes a
-language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5–LG.6 📝.
+language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5 ✅ (2026-08-23) —
+org folds. LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -51,7 +52,7 @@ be the expensive order.
 | LG.3b | Load grammars from wasm; parser store strategy | ✅ |
 | LG.3c | `language` WIT seam, loader drain, teardown | ✅ |
 | LG.4 | Org plugin: grammar + per-level headline highlights | ✅ |
-| LG.5 | Org plugin: folds | 📝 |
+| LG.5 | Org plugin: folds | ✅ |
 | LG.6 | Docs, benchmarks, ledger | 📝 |
 
 ---
@@ -360,7 +361,7 @@ undocumented until a probe hit it.
 external scanner, which is the useful evidence that the clang+rustup route
 generalises.
 
-### LG.5 — org: folds 📝
+### LG.5 — org: folds ✅ (2026-08-23)
 
 `queries/folds.scm` over `(section)`, `(block)`, `(drawer)`, `(list)` —
 the same pipeline markdown's `(section)` fold uses, so this is queries
@@ -368,6 +369,33 @@ and tests rather than mechanism.
 
 - *test:* folding a headline hides its subtree; a `#+BEGIN_SRC` block
   folds; a drawer folds; `zR`/`zM` behave as they do elsewhere.
+
+**Outcome: queries and tests, exactly as predicted — no mechanism.**
+`compute_syntax_folds` resolves `folds.scm` by language name through the
+live registry and knows nothing about where the grammar came from, so
+`examples/org-plugin/queries/folds.scm` was the whole change. Five tests
+in `crates/lattice-host/tests/org_folds.rs`.
+
+`(section)` does the load-bearing work: in this grammar a section is a
+headline plus everything beneath it *including nested sections*, so
+folding a headline hides its subtree and the nested sections fold
+independently — org's per-level cycling falls out with no special
+handling. `(block)`, `(dynamic_block)`, `(drawer)`, `(property_drawer)`,
+`(list)`, `(table)` and `(latex_env)` join it.
+
+Two assertions are worth more than they look. **A childless headline is
+NOT foldable** — the pipeline drops single-line captures, and the
+alternative (a fold marker on every bare headline) would be visible noise
+in exactly the files org users have most of. And **`compute_syntax_folds`
+returns `Some`, not `None`,** for a structureless org file: `Some(empty)`
+means the language is authoritative and the caller does not cascade to the
+indent heuristic. `None` would silently hand a file full of `*` markers to
+indent-based folding — wrong in a way nobody would report as a fold bug.
+
+*Deferred, deliberately:* `zR` / `zM` are host-level fold commands
+operating on whatever `compute_syntax_folds` produced; they are not
+language-specific and have coverage already. Re-testing them per language
+would test the host, not org.
 
 ### LG.6 — docs, benchmarks, ledger 📝
 

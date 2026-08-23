@@ -34,8 +34,7 @@ impl Guest for Component {
             extensions: vec!["org".to_string(), "org_archive".to_string()],
             grammar: GRAMMAR.to_vec(),
             highlights: Some(include_str!("../queries/highlights.scm").to_string()),
-            // LG.5 adds folds over (section)/(block)/(drawer)/(list).
-            folds: None,
+            folds: Some(include_str!("../queries/folds.scm").to_string()),
             injections: None,
             indents: None,
             textobjects: None,

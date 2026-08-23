@@ -19,7 +19,9 @@
 //! callback return refs that live for the highlight call.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use arc_swap::ArcSwap;
 
 use tree_sitter::{Language, Query};
 
@@ -181,6 +183,11 @@ pub(crate) struct LangConfig {
     /// name-keyed table also keeps the `include_str!` beside the
     /// engine that consumes it.
     pub(crate) indents: Option<Query>,
+    /// LG.3a: the host-issued id of the plugin that contributed this
+    /// language, or `None` for one compiled into the editor. Teardown
+    /// is `retain(|c| c.provenance != Some(id))` — by provenance, not by
+    /// a token list the caller has to remember to keep.
+    pub(crate) provenance: Option<u64>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -190,9 +197,14 @@ pub(crate) struct LangConfig {
 /// `Default` produces an empty registry -- used by
 /// `lattice_host::editor::Editor::default()` for headless / placeholder
 /// construction. Production uses [`Self::standard`].
-#[derive(Default)]
+/// `Clone` is cheap by construction: each config sits behind an `Arc`, so
+/// a clone is one refcount bump per language plus a small map. That is
+/// what makes the copy-on-write registration path affordable — compiling
+/// the queries for ~19 languages costs ~1.2 s and must never be repeated
+/// just because a plugin registered a twentieth.
+#[derive(Default, Clone)]
 pub struct LangRegistry {
-    configs: HashMap<&'static str, LangConfig>,
+    configs: HashMap<&'static str, Arc<LangConfig>>,
 }
 
 impl std::fmt::Debug for LangRegistry {
@@ -217,30 +229,30 @@ impl LangRegistry {
     /// `lattice-ui-tui`'s 1683 tests took 779 s almost entirely on
     /// this. In production it is paid at startup, to open one file.
     ///
-    /// Sharing is safe by construction rather than by convention:
-    /// `LangRegistry` is a `HashMap` of `LangConfig`, has no interior
-    /// mutability and no `&mut self` method, so the cached value cannot
-    /// be observed to change. Handing every caller the same `Arc` is
-    /// what the type was built for — the doc above already said so.
+    /// Sharing is safe by construction rather than by convention: a
+    /// `LangRegistry` has no interior mutability and no `&mut self`
+    /// method, so a snapshot cannot be observed to change under its
+    /// holder. **Which snapshot you get can change** — LG.3a made this
+    /// the live RCU value so a plugin language appears in the same map
+    /// bundled ones live in, with no call-site change and no kind-branch
+    /// anywhere. Registration replaces the value; holders of an older
+    /// `Arc` keep a coherent older view until they next call this.
+    ///
+    /// See [`live`], [`register_plugin_language`] and
+    /// [`unregister_plugin`].
     ///
     /// Only success is cached. A failure here means a static query
     /// string does not compile, which is deterministic and fatal (every
     /// caller `expect`s it), so re-deriving it costs nothing real and
     /// avoids requiring `SyntaxError: Clone`.
     pub fn standard() -> Result<Arc<Self>, SyntaxError> {
-        static STANDARD: std::sync::OnceLock<Arc<LangRegistry>> = std::sync::OnceLock::new();
-        if let Some(cached) = STANDARD.get() {
-            return Ok(Arc::clone(cached));
-        }
-        let built = Self::build_standard()?;
-        Ok(Arc::clone(STANDARD.get_or_init(|| built)))
+        live()
     }
 
-    /// The uncached construction. Separated so [`standard`] can memoise
-    /// it; not public, because every caller wants the shared one.
-    ///
-    /// [`standard`]: Self::standard
-    fn build_standard() -> Result<Arc<Self>, SyntaxError> {
+    /// The uncached construction of the bundled set. Separated so the
+    /// live handle can build it exactly once; not public, because every
+    /// caller wants the shared, live one.
+    fn build_standard() -> Result<Self, SyntaxError> {
         let mut configs: HashMap<&'static str, LangConfig> = HashMap::new();
 
         configs.insert(
@@ -528,7 +540,12 @@ impl LangRegistry {
             )?,
         );
 
-        Ok(Arc::new(Self { configs }))
+        // Wrapped here rather than at each of the twenty `insert` sites:
+        // the `Arc` exists to make `Clone` cheap, and nothing about
+        // *building* the standard set cares.
+        Ok(Self {
+            configs: configs.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+        })
     }
 
     /// The compiled `folds.scm` `Query` for `name`, when the language
@@ -611,7 +628,7 @@ impl LangRegistry {
             "md" => "markdown",
             other => other,
         };
-        self.configs.get(canonical)
+        self.configs.get(canonical).map(|c| &**c)
     }
 
     /// True if a config exists for the given canonical language name.
@@ -702,6 +719,7 @@ fn build_config(
         symbols,
         textobjects,
         indents,
+        provenance: None,
     })
 }
 
@@ -866,4 +884,151 @@ mod tests {
             );
         }
     }
+}
+
+// ── LG.3a: the live registry ────────────────────────────────────────
+//
+// Design: `plugin-languages.md` §2.3. The bundled set is built once and
+// then becomes the initial value of an RCU cell; a plugin language is
+// registered by cloning that value, inserting, and storing.
+//
+// `standard()` returns the LIVE snapshot, which is the whole point: a
+// plugin language is found by `registry.highlights_query(lang.name())`
+// exactly as `rust` is, so no lookup path anywhere in the tree learns
+// that plugin languages exist. The alternative — a second map consulted
+// when `Lang::Plugin` matches — would be a kind-branch in every accessor,
+// which is what the architecture rules forbid.
+
+/// The process-wide live registry.
+///
+/// The bundled set is built on first touch (~1.2 s of query compilation)
+/// and never rebuilt; registration clones the map, not the queries.
+fn handle() -> &'static Arc<ArcSwap<LangRegistry>> {
+    static HANDLE: OnceLock<Arc<ArcSwap<LangRegistry>>> = OnceLock::new();
+    HANDLE.get_or_init(|| {
+        // A failure here means a bundled `.scm` does not compile, which
+        // is deterministic and fatal — every caller of `standard()`
+        // already `expect`s it. Storing an empty registry rather than
+        // panicking in an initialiser keeps the error at the call site,
+        // where it can name itself.
+        let built = LangRegistry::build_standard().unwrap_or_default();
+        Arc::new(ArcSwap::from_pointee(built))
+    })
+}
+
+/// Snapshot the live registry.
+///
+/// Wait-free. Returns `Err` only if the bundled set failed to compile,
+/// which is a bug in a checked-in query rather than anything a plugin
+/// can cause.
+pub fn live() -> Result<Arc<LangRegistry>, SyntaxError> {
+    let snapshot = handle().load_full();
+    if snapshot.configs.is_empty() {
+        // Re-derive so the caller gets the real compiler diagnostic
+        // rather than "empty registry".
+        return LangRegistry::build_standard().map(Arc::new);
+    }
+    Ok(snapshot)
+}
+
+/// Everything a runtime-registered language supplies beyond its identity.
+///
+/// Query sources are compiled **at registration, not first use**. A
+/// malformed `folds.scm` is the plugin author's error and has to surface
+/// at load with the offending query named — not silently disable folding
+/// three days later, which is indistinguishable from the feature not
+/// existing.
+#[derive(Debug, Clone)]
+pub struct GrammarSpec {
+    pub grammar: Language,
+    pub highlights: Option<String>,
+    pub folds: Option<String>,
+    pub injections: Option<String>,
+    pub indents: Option<String>,
+    pub textobjects: Option<String>,
+}
+
+/// Compile `spec` against `name`, WITHOUT installing anything.
+///
+/// Split from [`install_plugin_config`] so registration can be made
+/// atomic across two registries: the caller compiles first, claims the
+/// language's identity second, and installs only if both succeeded. A
+/// failed query therefore leaves no trace in either — a language works
+/// or is legibly absent, never half-registered.
+pub(crate) fn compile_plugin_config(
+    name: &'static str,
+    spec: &GrammarSpec,
+    provenance: u64,
+) -> Result<Arc<LangConfig>, SyntaxError> {
+    let compile = |what: &str, src: &str| -> Result<Query, SyntaxError> {
+        Query::new(&spec.grammar, src)
+            .map_err(|e| SyntaxError::Language(format!("compile {name} {what}: {e}")))
+    };
+    let opt = |what: &str, src: &Option<String>| -> Result<Option<Query>, SyntaxError> {
+        match src {
+            Some(src) if !src.trim().is_empty() => compile(what, src).map(Some),
+            // Absent means "that feature is unavailable for this
+            // language", never an error — the design says so explicitly.
+            _ => Ok(None),
+        }
+    };
+
+    // An absent highlights query is legal: the language parses, folds and
+    // indents, and simply renders unstyled. An empty `Query` compiles
+    // against any grammar, so this needs no special case downstream.
+    let highlights = match &spec.highlights {
+        Some(src) if !src.trim().is_empty() => compile("highlights.scm", src)?,
+        _ => compile("highlights.scm", "")?,
+    };
+    let highlight_styles = highlights
+        .capture_names()
+        .iter()
+        .map(|n| crate::style::name_to_style_pub(n))
+        .collect();
+    let highlight_priorities = highlights
+        .capture_names()
+        .iter()
+        .map(|n| crate::style::capture_priority(n))
+        .collect();
+
+    let config = LangConfig {
+        language: spec.grammar.clone(),
+        folds: opt("folds.scm", &spec.folds)?,
+        highlights,
+        highlight_styles,
+        highlight_priorities,
+        injections: opt("injections.scm", &spec.injections)?,
+        // A plugin language ships no symbols query yet; the WIT spec has
+        // no field for one, so this is absent rather than empty-by-choice.
+        symbols: None,
+        textobjects: opt("textobjects.scm", &spec.textobjects)?,
+        indents: opt("indents.scm", &spec.indents)?,
+        provenance: Some(provenance),
+    };
+
+    Ok(Arc::new(config))
+}
+
+/// Install an already-compiled config. Infallible by construction — all
+/// the ways this can fail happened in [`compile_plugin_config`].
+pub(crate) fn install_plugin_config(name: &'static str, config: Arc<LangConfig>) {
+    handle().rcu(|current| {
+        let mut next = LangRegistry::clone(current);
+        next.configs.insert(name, Arc::clone(&config));
+        next
+    });
+}
+
+/// Withdraw every language contributed by `provenance`, returning how
+/// many were removed. Bundled languages carry `None` and are untouchable.
+pub(crate) fn unregister_plugin(provenance: u64) -> usize {
+    let mut removed = 0;
+    handle().rcu(|current| {
+        let mut next = LangRegistry::clone(current);
+        let before = next.configs.len();
+        next.configs.retain(|_, c| c.provenance != Some(provenance));
+        removed = before - next.configs.len();
+        next
+    });
+    removed
 }

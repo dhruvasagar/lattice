@@ -6,7 +6,8 @@
 **Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1 ✅
 (2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
 closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
-`Lang::Plugin` + the runtime registry. LG.3–LG.6 📝.
+`Lang::Plugin` + the runtime registry. LG.3a ✅ (2026-08-23) — the live
+`LangRegistry`. LG.3b–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -19,7 +20,9 @@ LG.1  wasm-grammar bench              ← GATE. Records the parse cost.
   │
 LG.2  Lang::Plugin + runtime registry (no WIT yet)
   │
-LG.3  the `language` WIT seam + drain + teardown
+LG.3a the live LangRegistry (grammar + queries, no WIT)
+  │
+LG.3b the `language` WIT seam + drain + teardown
   │
 LG.4  org plugin: grammar + highlights (per-level headlines)
   │
@@ -39,7 +42,8 @@ be the expensive order.
 | LG.0 | Prove `wasmtime-c-api` 36 and `wasmtime` 46 coexist | ✅ |
 | LG.1 | Bench: wasm grammar vs native parse | ✅ |
 | LG.2 | `Lang::Plugin(LanguageName)` + runtime language registry | ✅ |
-| LG.3 | `language` WIT seam, loader drain, teardown | 📝 |
+| LG.3a | Live `LangRegistry`: runtime grammar + compiled queries | ✅ |
+| LG.3b | `language` WIT seam, loader drain, teardown | 📝 |
 | LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
 | LG.5 | Org plugin: folds | 📝 |
 | LG.6 | Docs, benchmarks, ledger | 📝 |
@@ -120,7 +124,7 @@ is under test rather than being a README step that rots.
 
 *Residual:* `lattice-syntax`'s `wasm-grammar` feature is off by default
 and CI does not run it, so a wasmtime bump on either side is caught only
-by someone opting in. Wiring it into CI belongs with LG.3, when the
+by someone opting in. Wiring it into CI belongs with LG.3b, when the
 feature stops being bench-only.
 
 ### LG.2 — `Lang::Plugin` + the runtime registry ✅ (2026-08-23)
@@ -145,7 +149,8 @@ Substrate only, no WIT — it lands green and useful on its own.
   it; a plugin language and a native one coexist; native resolution is
   unchanged when the registry is empty.
 
-**Outcome.** `crates/lattice-syntax/src/plugin_lang.rs`, 14 tests.
+**Outcome.** `crates/lattice-syntax/src/plugin_lang.rs`, 14 tests (LG.3a
+took the file to 20).
 
 **The match surface was 5 sites across 3 files**, not the sixteen this
 plan estimated — measured by adding a probe variant and fixing the
@@ -183,7 +188,46 @@ but never wins, since the native table is consulted first. Whether
 deliberate override should be possible is a DB.8-shaped question, left
 until someone asks.
 
-### LG.3 — the `language` WIT seam 📝
+### LG.3a — the live `LangRegistry` ✅ (2026-08-23)
+
+Carved out of LG.3 when it became clear the seam and the registry are two
+separable problems, and only the seam needs the second wasmtime. LG.3a
+lands green with no WIT and no `wasm-grammar` feature, which also means it
+is testable with a bundled grammar registered *as if* it came from a
+plugin — proving the pipeline is provenance-agnostic without depending on
+the thing whose gating is still undecided.
+
+- `LangRegistry` becomes the RCU value itself rather than gaining a
+  sibling map. A second map would have meant a kind-branch in all eight
+  accessors — the rule that forbids `match buffer_kind` forbids this too.
+  Configs move behind `Arc` so `Clone` is a refcount bump per language;
+  the ~1.2 s of bundled query compilation is never repeated.
+- `LangRegistry::standard()` now returns the live snapshot, so every
+  existing `registry.highlights_query(lang.name())` finds a plugin
+  language exactly as it finds `rust` — **zero call-site changes**.
+- `provenance: Option<u64>` per config; teardown by `retain`. Bundled
+  languages carry `None` and are untouchable.
+- `plugin_lang::register_with_grammar` is atomic across BOTH registries:
+  compile queries → claim the name → install. A bad query leaves the
+  language absent rather than resolvable-but-dead; a name collision
+  leaves the winner's grammar untouched. Both directions are tested.
+- Queries compile at registration, naming the offending file.
+- *test:* 20 in `plugin_lang`, the load-bearing one being that a
+  runtime-registered language parses AND highlights through the ordinary
+  `Syntax` path. *bench:* snapshot cost, since `standard()` is per-buffer
+  and per-hunk.
+
+*Carried to LG.3b:* nothing here loads wasm. `GrammarSpec.grammar` is a
+`tree_sitter::Language`, and where it came from is not this layer's
+business — which is the same property §2.1 relies on.
+
+### LG.3b — the `language` WIT seam 📝
+
+**Open decision, deferred here by design §3.1:** whether `tree-sitter/wasm`
+(and its second Cranelift) is always linked or sits behind a cargo feature
+the way the GPUI peer does. Default-off would mean a plugin language
+silently fails to load in a stock build, which is a paramount-#2 hole;
+always-on is real binary size. Measure the delta before choosing.
 
 - `wit/language.wit` per design §2.2 — `register-language(spec)`, data
   only, no callbacks, guest dropped after registration (the `help` seam
@@ -199,6 +243,8 @@ until someone asks.
 - *test:* a fixture plugin registers a real grammar and its file type
   highlights; a bad grammar is rejected with a legible message; unload
   withdraws the language and reverts open buffers to plain.
+  *(The last two are already covered at the substrate level by LG.3a;
+  LG.3b's versions go through an actual guest.)*
 
 ### LG.4 — org: grammar + headlines 📝
 

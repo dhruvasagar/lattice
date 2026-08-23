@@ -110,6 +110,14 @@ pub enum LanguageRegistrationError {
     /// almost certainly a mistake in the manifest rather than an
     /// intentional registration.
     NoExtensions { name: String },
+    /// One of the language's tree-sitter queries did not compile.
+    ///
+    /// Queries compile at REGISTRATION, not first use, so this surfaces
+    /// at load with the offending query named. The alternative — compile
+    /// lazily — turns a typo in `folds.scm` into "folding silently does
+    /// nothing in org files", which is indistinguishable from the
+    /// feature not existing and surfaces days later.
+    QueryCompile { name: String, detail: String },
 }
 
 impl std::fmt::Display for LanguageRegistrationError {
@@ -124,6 +132,9 @@ impl std::fmt::Display for LanguageRegistrationError {
             }
             Self::NoExtensions { name } => {
                 write!(f, "language '{name}' registered no file extensions")
+            }
+            Self::QueryCompile { name, detail } => {
+                write!(f, "language '{name}': {detail}")
             }
         }
     }
@@ -230,6 +241,19 @@ pub fn register(
     extensions: &[&str],
     provenance: u64,
 ) -> Result<LanguageName, LanguageRegistrationError> {
+    let normalised = validate(name, extensions)?;
+    let interned = LanguageName::intern(name);
+    claim(interned, normalised, provenance).map_err(|_| {
+        LanguageRegistrationError::AlreadyRegistered {
+            name: name.to_owned(),
+        }
+    })?;
+    Ok(interned)
+}
+
+/// Shared prelude: refuse a name that would shadow a builtin, and
+/// normalise the extension list.
+fn validate(name: &str, extensions: &[&str]) -> Result<Vec<String>, LanguageRegistrationError> {
     if crate::Lang::builtin_by_name(name).is_some() {
         return Err(LanguageRegistrationError::ShadowsBuiltin {
             name: name.to_owned(),
@@ -245,14 +269,17 @@ pub fn register(
             name: name.to_owned(),
         });
     }
+    Ok(normalised)
+}
 
-    let interned = LanguageName::intern(name);
+/// Claim the name and its extensions. `Err(())` means another plugin got
+/// there first.
+fn claim(interned: LanguageName, extensions: Vec<String>, provenance: u64) -> Result<(), ()> {
     let registration = Arc::new(LanguageRegistration {
         name: interned,
-        extensions: normalised,
+        extensions,
         provenance,
     });
-
     // `rcu` retries its closure under contention, so the closure must
     // stay pure — it is, and the duplicate check inside it is what makes
     // two plugins racing to claim one name resolve deterministically
@@ -273,11 +300,47 @@ pub fn register(
         next
     });
     if refused {
-        return Err(LanguageRegistrationError::AlreadyRegistered {
-            name: name.to_owned(),
-        });
+        return Err(());
     }
     ANY_REGISTERED.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Register a language *with* its grammar and queries (LG.3a).
+///
+/// The complete form: identity, selection, and everything
+/// [`crate::LangRegistry`] needs to parse, highlight, fold and indent the
+/// language. [`register`] is the identity-only subset, kept for callers
+/// that have no grammar to offer.
+///
+/// **Atomic across both registries.** The queries are compiled first,
+/// the name is claimed second, and the compiled config is installed only
+/// once both have succeeded. So a malformed `folds.scm` leaves the
+/// language absent rather than resolvable-but-dead, and a name collision
+/// leaves the winner's grammar untouched.
+pub fn register_with_grammar(
+    name: &str,
+    extensions: &[&str],
+    grammar: &crate::registry::GrammarSpec,
+    provenance: u64,
+) -> Result<LanguageName, LanguageRegistrationError> {
+    let normalised = validate(name, extensions)?;
+    let interned = LanguageName::intern(name);
+
+    // Compile BEFORE claiming the name: this is the step that fails, and
+    // failing here has installed nothing anywhere.
+    let config = crate::registry::compile_plugin_config(interned.as_str(), grammar, provenance)
+        .map_err(|e| LanguageRegistrationError::QueryCompile {
+            name: name.to_owned(),
+            detail: e.to_string(),
+        })?;
+
+    claim(interned, normalised, provenance).map_err(|_| {
+        LanguageRegistrationError::AlreadyRegistered {
+            name: name.to_owned(),
+        }
+    })?;
+    crate::registry::install_plugin_config(interned.as_str(), config);
     Ok(interned)
 }
 
@@ -289,6 +352,12 @@ pub fn register(
 /// plugin that registers three languages and crashes still has all three
 /// withdrawn.
 pub fn unregister_plugin(provenance: u64) -> usize {
+    // Both registries, one call. Withdrawing identity without the config
+    // (or the reverse) would leave a language that resolves but cannot
+    // parse, or a grammar nothing can select — two ways to be
+    // half-unloaded, neither of which any caller should have to think
+    // about.
+    crate::registry::unregister_plugin(provenance);
     let mut removed = 0;
     handle().rcu(|current| {
         let mut next = PluginLanguages::clone(current);
@@ -519,6 +588,185 @@ mod tests {
             std::ptr::eq(a.as_str(), b.as_str()),
             "re-interning must not leak a second copy"
         );
+    }
+
+    // ── LG.3a: languages that carry a grammar ───────────────────────
+    //
+    // The "plugin" grammar here is `tree-sitter-json`, registered under a
+    // name of its own. Using a real bundled grammar rather than a wasm
+    // one is deliberate: LG.3a is about whether the *pipeline* is
+    // provenance-agnostic, and answering that must not depend on the
+    // second wasmtime being linked. LG.3b supplies a wasm-loaded
+    // `Language` to exactly this code.
+
+    fn json_grammar(highlights: &str) -> crate::registry::GrammarSpec {
+        crate::registry::GrammarSpec {
+            grammar: tree_sitter_json::LANGUAGE.into(),
+            highlights: Some(highlights.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+        }
+    }
+
+    /// The one that matters. A runtime-registered language is parsed and
+    /// highlighted by the SAME `Syntax` path a bundled language uses —
+    /// no kind-branch, no second lookup, nothing that knows the grammar
+    /// arrived at runtime.
+    #[test]
+    fn a_registered_language_parses_and_highlights_through_the_normal_path() {
+        let (name, ext, plugin) = unique("full");
+        let interned =
+            register_with_grammar(&name, &[&ext], &json_grammar("(string) @string"), plugin)
+                .expect("registers");
+
+        let lang = Lang::detect_from_path(Some(&PathBuf::from(format!("a.{ext}"))));
+        assert_eq!(lang, Lang::Plugin(interned));
+
+        let mut syntax = crate::Syntax::for_language(lang)
+            .expect("registry")
+            .expect("a registered language must yield a Syntax");
+        syntax.parse("{\"k\": \"v\"}");
+        let lines = syntax.highlight_lines_native(0, 1).expect("highlights");
+        assert!(
+            lines[0].iter().any(|s| s.style == crate::Style::String),
+            "the plugin language's highlights query must produce spans: {:?}",
+            lines[0]
+        );
+
+        unregister_plugin(plugin);
+    }
+
+    #[test]
+    fn unload_reverts_an_open_buffers_language_to_plain() {
+        let (name, ext, plugin) = unique("revert");
+        let interned =
+            register_with_grammar(&name, &[&ext], &json_grammar("(string) @string"), plugin)
+                .expect("registers");
+        assert!(
+            crate::Syntax::for_language(Lang::Plugin(interned))
+                .expect("registry")
+                .is_some()
+        );
+
+        unregister_plugin(plugin);
+
+        // The buffer still holds `Lang::Plugin(interned)`. It must now
+        // find no grammar — which is exactly how `Lang::Plain` behaves,
+        // so the renderer needs no new case for it.
+        assert!(
+            crate::Syntax::for_language(Lang::Plugin(interned))
+                .expect("registry")
+                .is_none(),
+            "the grammar must be withdrawn with the language"
+        );
+    }
+
+    /// Queries compile at registration, not first use. A typo in
+    /// `folds.scm` has to surface at load naming the query — the
+    /// alternative is "folding silently does nothing", which is
+    /// indistinguishable from the feature not existing.
+    #[test]
+    fn a_malformed_query_is_rejected_at_registration_and_names_itself() {
+        let (name, ext, plugin) = unique("badquery");
+        let mut spec = json_grammar("(string) @string");
+        spec.folds = Some("(this_node_does_not_exist) @fold".to_string());
+
+        let err = register_with_grammar(&name, &[&ext], &spec, plugin).unwrap_err();
+        let LanguageRegistrationError::QueryCompile { name: n, detail } = &err else {
+            panic!("expected QueryCompile, got {err:?}");
+        };
+        assert_eq!(n, &name);
+        assert!(
+            detail.contains("folds.scm"),
+            "the offending query must be named: {detail}"
+        );
+
+        // And the refusal is total across BOTH registries — a language
+        // that resolves but cannot parse would be the worst outcome.
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from(format!("a.{ext}")))),
+            Lang::Plain
+        );
+        assert!(
+            crate::Syntax::for_language(Lang::Plugin(LanguageName::intern(&name)))
+                .expect("registry")
+                .is_none()
+        );
+    }
+
+    /// An absent query means "that feature is unavailable for this
+    /// language", never an error — the design says so explicitly.
+    #[test]
+    fn absent_optional_queries_are_not_an_error() {
+        let (name, ext, plugin) = unique("noopt");
+        let spec = crate::registry::GrammarSpec {
+            grammar: tree_sitter_json::LANGUAGE.into(),
+            highlights: None,
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+        };
+        let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
+        let mut syntax = crate::Syntax::for_language(Lang::Plugin(interned))
+            .expect("registry")
+            .expect("still a usable language");
+        syntax.parse("{\"k\": 1}");
+        // Parses fine, simply renders unstyled.
+        assert!(syntax.highlight_lines_native(0, 1).expect("ok")[0].is_empty());
+        unregister_plugin(plugin);
+    }
+
+    /// Bundled languages carry no provenance and must survive any
+    /// plugin unload.
+    #[test]
+    fn unloading_a_plugin_leaves_bundled_languages_intact() {
+        let (name, ext, plugin) = unique("bundled");
+        register_with_grammar(&name, &[&ext], &json_grammar("(string) @string"), plugin)
+            .expect("registers");
+        unregister_plugin(plugin);
+
+        for l in [Lang::Rust, Lang::Json, Lang::Markdown] {
+            assert!(
+                crate::Syntax::for_language(l).expect("registry").is_some(),
+                "{l:?} must survive a plugin unload"
+            );
+        }
+    }
+
+    /// Registration is atomic across the two registries in the collision
+    /// direction too: the loser must not overwrite the winner's grammar.
+    #[test]
+    fn a_losing_registration_does_not_clobber_the_winners_grammar() {
+        let (name, ext, plugin) = unique("clobber");
+        let interned =
+            register_with_grammar(&name, &[&ext], &json_grammar("(string) @string"), plugin)
+                .expect("first wins");
+
+        let mut other = json_grammar("");
+        other.grammar = tree_sitter_md::LANGUAGE.into();
+        let err =
+            register_with_grammar(&name, &["otherclobberext"], &other, plugin + 1).unwrap_err();
+        assert!(matches!(
+            err,
+            LanguageRegistrationError::AlreadyRegistered { .. }
+        ));
+
+        // Still the winner's grammar: json parses `{}` without error,
+        // and the markdown grammar would have produced a different tree.
+        let mut syntax = crate::Syntax::for_language(Lang::Plugin(interned))
+            .expect("registry")
+            .expect("present");
+        syntax.parse("{\"k\": \"v\"}");
+        assert!(
+            syntax.highlight_lines_native(0, 1).expect("ok")[0]
+                .iter()
+                .any(|s| s.style == crate::Style::String),
+            "the winner's highlights query must still be installed"
+        );
+        unregister_plugin(plugin);
     }
 
     #[test]

@@ -86,6 +86,10 @@ pub use crate::plugin_lang::{
     LanguageName, LanguageRegistration, LanguageRegistrationError, PluginLanguages,
     PluginLanguagesHandle,
 };
+// LG.3a: what a runtime-registered language supplies beyond its identity.
+// `register_with_grammar` is the complete registration; the loader's
+// `language` seam (LG.3b) is its only production caller.
+pub use crate::registry::GrammarSpec;
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};

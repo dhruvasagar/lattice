@@ -182,6 +182,54 @@ The encouraging half, confirmed: most of the ~150 `Lang::` occurrences
 across the tree are *constructions* or `matches!` guards, not exhaustive
 matches, so the arm-adding was far narrower than the raw grep suggested.
 
+### 2.4 The registry is live, not a second map
+
+A plugin language needs a `LangConfig` — a compiled grammar plus its
+queries — and the obvious place to put one is a second map consulted when
+`Lang::Plugin` matches. **That would be a kind-branch in every accessor**
+(`highlights_query`, `folds_query`, `indents_query`, `tree_sitter_language`
+and four more), which is exactly what the "no kind-specific logic" rule
+forbids for buffers and forbids here for the same reason.
+
+So LG.3a made `LangRegistry` itself the RCU value:
+
+- `configs` holds `Arc<LangConfig>`, which makes `LangRegistry: Clone`
+  cheap — one refcount bump per language plus a small map. Compiling the
+  bundled set costs ~1.2 s and must never be repeated because a plugin
+  registered a twentieth language; registration clones the *map*, not the
+  queries.
+- Each config carries `provenance: Option<u64>` — `None` for bundled.
+  Teardown is `retain(|c| c.provenance != Some(id))`, by provenance rather
+  than by a token list a caller has to remember to keep.
+- `LangRegistry::standard()` returns the **live snapshot**. Every existing
+  lookup (`registry.highlights_query(lang.name())`) therefore finds a
+  plugin language exactly as it finds `rust`, with no call-site change
+  anywhere in the tree.
+
+A snapshot is still immutable under its holder; what changed is that
+*which* snapshot you get can differ between calls. A registration mid-read
+affects the next lookup, not half of this one — the coherence property
+[`contributable-registries.md`](contributable-registries.md) §2 names.
+
+**Registration is atomic across the two registries.** Identity (§2.3) and
+grammar live in different places, and either half alone is a broken state:
+identity without a config resolves to a language that cannot parse, a
+config without identity is a grammar nothing can select. So the queries
+are compiled first, the name is claimed second, and the compiled config is
+installed only once both have succeeded. A malformed `folds.scm` leaves
+the language absent rather than resolvable-but-dead, and a name collision
+leaves the winner's grammar untouched.
+
+**Queries compile at registration, not first use.** A typo in a plugin's
+`folds.scm` surfaces at load with the offending query named. Compiling
+lazily would turn it into "folding silently does nothing in org files",
+which is indistinguishable from the feature not existing and surfaces days
+later. An *absent* query is not an error — it means that feature is simply
+unavailable for that language.
+
+Cost measured in [`benchmarks.md`](../operations/benchmarks.md): a
+snapshot is 13.9 ns, against a per-buffer and per-hunk call rate.
+
 ## 3. The risk that decides this
 
 **Two wasmtime majors in one binary.** tree-sitter's `wasm` feature

@@ -66,6 +66,15 @@ fn bench(c: &mut Criterion) {
         });
     });
 
+    // LG.3a: `LangRegistry::standard()` stopped being a `OnceLock` read
+    // and became an `ArcSwap` snapshot of the live registry, so plugin
+    // languages land in the same map bundled ones do. Both shapes are one
+    // atomic RMW, but that was a claim — magit's hunk highlighting calls
+    // this per hunk, so it is measured rather than asserted.
+    g.bench_function("registry_snapshot", |b| {
+        b.iter(|| black_box(lattice_syntax::LangRegistry::standard().unwrap()));
+    });
+
     g.finish();
     plugin_lang::unregister_plugin(1);
 }

@@ -71,6 +71,31 @@ target rather than just a slower number.
 
 ---
 
+## LG.3a — the live language registry (2026-08-23)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**
+
+`LangRegistry::standard()` stopped being a `OnceLock` read and became an
+`ArcSwap` snapshot of the live registry, so a plugin language lands in the
+same map bundled ones live in — no second lookup and no kind-branch in any
+accessor ([`plugin-languages.md`](../architecture/plugin-languages.md)
+§2.4). Its production callers are per-buffer (`Syntax::for_language`) and
+per-hunk (magit's diff highlighting), so the swap needed measuring rather
+than assuming.
+
+| Measure | Value |
+|---|---|
+| `LangRegistry::standard()` snapshot | **13.9 ns** |
+
+**Not free, and not worth avoiding.** An `ArcSwap::load_full` is a little
+more than the `Arc::clone` it replaced — both are one atomic RMW, but the
+swap-capable one does more work. Across a 2000-hunk diff that is ~28 µs,
+against an 8.3 ms frame. The bundled set is still compiled exactly once
+(~1.2 s); registration clones the *map*, not the queries, which is what
+`Arc<LangConfig>` is there for.
+
+---
+
 ## LG.2 — `Lang::detect_from_path` with a runtime registry (2026-08-23)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**

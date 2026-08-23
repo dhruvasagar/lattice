@@ -225,7 +225,8 @@ mod tests {
         // convention). Three rows → "\n\n" (2 separating
         // newlines + 3 empty content lines).
         assert_eq!(snap.buffer.as_string(), "\n\n");
-        assert_eq!(snap.buffer.content_line_count(), 3);
+        // ROPE space, deliberately — see `rows_are_rope_lines_not_content_lines`.
+        assert_eq!(snap.buffer.rope_line_count(), 3);
         assert_eq!(snap.cursor, Position::new(0, 0));
         assert!(!snap.alt_screen);
         assert_eq!(snap.origin_top_line, 0);
@@ -240,7 +241,7 @@ mod tests {
         // per row, padded with spaces). Trailing `\n` is
         // dropped at the rope level (vim last-line convention).
         assert_eq!(snap.buffer.as_string(), "hi\nyo\nok");
-        assert_eq!(snap.buffer.content_line_count(), 3);
+        assert_eq!(snap.buffer.rope_line_count(), 3);
     }
 
     #[test]
@@ -313,6 +314,50 @@ mod tests {
         assert!(text.contains("ALT"), "missing alt content: {text:?}");
     }
 
+    /// CV.3 converted `line_count()` call sites to `content_line_count()`
+    /// across the tree, and misfiled this module's three. This pins WHY they
+    /// are rope space, so a future sweep does not re-break them.
+    ///
+    /// `content_line_count` exists to strip the phantom empty line a
+    /// terminating newline creates. **`build_normal_snapshot` already
+    /// stripped it** (see the `text.pop()` and its comment): the rope holds
+    /// exactly one line per grid row. So applying the correction a second
+    /// time removes a REAL row — and it only shows when the bottom row is
+    /// blank, which is why the two failures were an off-by-one at the bottom
+    /// edge rather than everywhere.
+    ///
+    /// The invariant the coord adapter needs is
+    /// `rope_line_count() == grid rows`, and that is what this asserts, for
+    /// both a blank bottom row and a content-bearing one.
+    #[test]
+    fn rows_are_rope_lines_not_content_lines() {
+        // Bottom row blank: the rope ends in `\n`, which `content_line_count`
+        // reads as a terminator and the terminal means as a row.
+        let shared = make_shared(3, 10, 16);
+        feed(&shared, b"hi\r\n");
+        let snap = shared.build_normal_snapshot();
+        assert_eq!(snap.buffer.as_string(), "hi\n\n");
+        assert_eq!(
+            snap.buffer.rope_line_count(),
+            3,
+            "one rope line per grid row, always"
+        );
+        assert_eq!(
+            snap.buffer.content_line_count(),
+            2,
+            "content_line_count swallows the blank bottom row — correct for a \
+             FILE, wrong for a grid, and the reason these sites are rope space"
+        );
+
+        // Bottom row with content: the two agree, which is exactly why the
+        // misclassification survived — `ascii_strips_trailing_blanks` passed.
+        let shared = make_shared(3, 10, 16);
+        feed(&shared, b"hi\r\nyo\r\nok");
+        let snap = shared.build_normal_snapshot();
+        assert_eq!(snap.buffer.rope_line_count(), 3);
+        assert_eq!(snap.buffer.content_line_count(), 3);
+    }
+
     #[test]
     fn frozen_at_captures_current_seq() {
         let shared = make_shared(3, 10, 16);
@@ -331,7 +376,10 @@ mod tests {
             feed(&shared, format!("r{i}\r\n").as_bytes());
         }
         let snap = shared.build_normal_snapshot();
-        let line_count = snap.buffer.content_line_count();
+        // ROPE space: the adapter maps every GRID ROW, and the build
+        // already dropped the phantom trailing line, so there is nothing
+        // for `content_line_count` to correct — it would strip a real row.
+        let line_count = snap.buffer.rope_line_count();
         let last_doc_line = line_count - 1;
         let grid_line = snap.origin_top_line + last_doc_line as i32;
         let bot = {

@@ -56,6 +56,19 @@ pub struct PluginTeardown {
     /// provenance. No per-command token or "did I register grammar?" flag: the
     /// provenance IS the token.
     pub plugin_id: PluginId,
+    /// **Every** host id this plugin's seams were issued, `plugin_id`
+    /// included.
+    ///
+    /// Each `spawn_*` issues its own id — deliberately, because a provenance
+    /// id must never be derived from guest-controlled input, so it cannot be
+    /// keyed on the manifest's string id. A plugin providing N seams therefore
+    /// has N provenances, and reversing only one of them leaves the rest
+    /// registered: bundled `auto-pair` (grammar, modes, config, help) leaked
+    /// its `:help` pages on unload exactly that way.
+    ///
+    /// Token-based reversals below are unaffected — the drains capture their
+    /// tokens on the record. This is only for the provenance-keyed ones.
+    pub seam_ids: Vec<PluginId>,
     /// Picker source ids the plugin registered (`PickerRegistry::unregister`).
     pub picker_sources: Vec<String>,
     /// Modes the plugin registered — each reversed via `ModeRegistry::unregister`
@@ -93,6 +106,7 @@ impl PluginTeardown {
     pub fn new(plugin_id: PluginId) -> Self {
         Self {
             plugin_id,
+            seam_ids: Vec::new(),
             picker_sources: Vec::new(),
             modes: Vec::new(),
             config_options: Vec::new(),
@@ -112,6 +126,20 @@ impl PluginTeardown {
     /// second time. Order is irrelevant: the surfaces are independent (grammar
     /// commands, picker sources, modes+their keymap layer, options, events, and
     /// subscriptions never share an entry).
+    /// Every provenance this plugin stamped contributions with.
+    ///
+    /// Falls back to `plugin_id` alone when `seam_ids` was never populated, so
+    /// a hand-built `PluginTeardown` (tests, and any caller predating
+    /// `seam_ids`) still reverses its one id rather than silently reversing
+    /// nothing.
+    pub fn provenances(&self) -> Vec<PluginId> {
+        if self.seam_ids.is_empty() {
+            vec![self.plugin_id]
+        } else {
+            self.seam_ids.clone()
+        }
+    }
+
     pub fn unload(&self, reg: &mut TeardownRegistries<'_>) -> TeardownReport {
         let mut report = TeardownReport::default();
 
@@ -121,7 +149,10 @@ impl PluginTeardown {
         // (returns 0 if the plugin contributed none), so no per-seam "did I
         // register commands?" flag exists to forget; the `run_teardown`
         // clone/store around this happens regardless of the count.
-        report.commands = reg.commands.unregister_plugin(self.plugin_id.0);
+        // Over EVERY seam id, not just `plugin_id`: see `seam_ids`.
+        for id in self.provenances() {
+            report.commands += reg.commands.unregister_plugin(id.0);
+        }
         for id in &self.picker_sources {
             if reg.pickers.unregister(id) {
                 report.pickers += 1;
@@ -189,7 +220,9 @@ impl PluginTeardown {
         let snapshot = reg.parsers.load();
         if !snapshot.is_empty() {
             let mut next = (**snapshot).clone();
-            report.parser_factories = next.unregister_plugin(self.plugin_id.0 as u64);
+            for id in self.provenances() {
+                report.parser_factories += next.unregister_plugin(id.0 as u64);
+            }
             if report.parser_factories > 0 {
                 reg.parsers.store(std::sync::Arc::new(next));
             }

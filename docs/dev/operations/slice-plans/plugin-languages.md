@@ -437,8 +437,8 @@ the one under CI — a fixture using a lattice-side world would prove the
 thing they cannot do. `one_component_can_provide_language_and_help` in
 `language_drain.rs` asserts both drains ran off the one component.
 
-**⛔ Found while proving it — a multi-seam plugin reverses only its FIRST
-seam.** Every `spawn_*` calls `PluginHost::alloc_id`, so a plugin providing
+**✅ Found while proving it, and FIXED — a multi-seam plugin reversed only
+its FIRST seam.** Every `spawn_*` calls `PluginHost::alloc_id`, so a plugin providing
 N seams gets N host ids, one per wasm instance. The loader keeps only the
 first (`loaded_id.get_or_insert(id)`) and teardown reverses by that one.
 Token-based reversals (modes, config options, picker sources, keymap
@@ -453,10 +453,20 @@ unload today**. Nothing covered it — the existing help-teardown test loads
 a help-ONLY plugin, and `auto_pair.rs` wires a help registry but never
 unloads.
 
-Pinned by `a_multi_seam_plugin_reverses_every_seam`, `#[ignore]`d so it is
-runnable (`cargo test -p lattice-plugin-loader -- --ignored`) and
-impossible to forget. Fixing it means deciding whether a plugin is one
-identity or many — belongs to the plugin-host track, not this one.
+Fixed by carrying **every** seam id to teardown (`PluginTeardown::seam_ids`
+/ `provenances()`) and reversing each provenance-keyed registry over all of
+them.
+
+The tempting fix — memoise one id per plugin on the manifest id — is
+**unsafe**, and `provenance_ids_are_host_issued_unique_and_stamp_the_plugin_layer`
+caught it: `manifest.id` is guest-controlled, so a plugin could declare
+`id = "auto-pair"` and inherit its provenance. Host ids must never derive
+from guest input. Per-seam allocation stays; teardown learns to reverse all
+of them.
+
+Guarded by `a_multi_seam_plugin_reverses_every_seam` and, on the real
+bundled plugin, `unloading_auto_pair_reverses_its_later_seams_too`. Both
+verified failing against the pre-fix behaviour.
 
 ---
 

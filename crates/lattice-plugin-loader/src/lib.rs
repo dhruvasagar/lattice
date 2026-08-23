@@ -600,7 +600,16 @@ impl PluginLoader {
             default_mode: manifest.default_mode.clone(),
             source: plugin.source.clone(),
         };
-        let mut loaded_id: Option<PluginId> = None;
+        // EVERY host id this load issued, in `provides` order.
+        //
+        // Each `spawn_*` issues its own — deliberately, since a provenance id
+        // must never be derived from guest-controlled input and so cannot be
+        // keyed on the manifest's string id. That means a plugin providing N
+        // seams stamps its contributions with N provenances, and teardown has
+        // to reverse all of them. Keeping only the first is why bundled
+        // `auto-pair` (grammar, modes, config, help) leaked its `:help` pages
+        // on unload.
+        let mut seam_ids: Vec<PluginId> = Vec::new();
 
         if manifest.provides.is_empty() {
             // Lifecycle-only (base `plugin` world): instantiate + activate.
@@ -609,7 +618,7 @@ impl PluginLoader {
                 .instantiate_plugin(&component, manifest, tier, PluginBudget::default())
                 .await?;
             instance.activate().await?;
-            loaded_id = Some(instance.id());
+            seam_ids.push(instance.id());
             record.lifecycle = Some(instance);
         } else {
             for seam in &manifest.provides {
@@ -618,59 +627,59 @@ impl PluginLoader {
                         let id = self
                             .drain_picker(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Config => {
                         let id = self
                             .drain_config(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Events => {
                         let id = self
                             .drain_events(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Grammar => {
                         let id = self.drain_grammar(&component, manifest, tier)?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Modes => {
                         let id = self
                             .drain_mode(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::CompletionSource => {
                         let id = self
                             .drain_completion(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Keymap => {
                         let id = self
                             .drain_keymap(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Decorations => {
                         let id = self
                             .drain_decorations(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Context => {
                         let id = self
                             .drain_context(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Theme => {
                         let id = self
                             .drain_theme(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     // PO.5: `logging` is a host import the guest CONSUMES (Layer 2),
                     // not a contribution it provides — it never appears in a
@@ -686,7 +695,7 @@ impl PluginLoader {
                         let id = self
                             .drain_require(&component, manifest, tier, &mut record)
                             .await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     // CM.6b: live. The registry holds a FACTORY rather than a
                     // parser because the compilation `ParserRegistry` is built
@@ -697,14 +706,14 @@ impl PluginLoader {
                     // pending state.
                     PluginSeam::ErrorParser => {
                         let id = self.drain_error_parser(&component, manifest, tier)?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     // CR.3: the plugin's `:help` pages. Data, not a live
                     // guest — the bodies cross once here and the store is
                     // dropped, so reading `:help` never touches wasm.
                     PluginSeam::Help => {
                         let id = self.drain_help(&component, manifest, tier).await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     // LG.3c: the plugin's languages. Data like `help` — the
                     // grammar bytes and query sources cross once here, the
@@ -712,14 +721,14 @@ impl PluginLoader {
                     // Parsing never touches wasm-the-plugin again.
                     PluginSeam::Language => {
                         let id = self.drain_language(&component, manifest, tier).await?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     // CR.4: the plugin's launch-page sections. Unlike `help`,
                     // each keeps a live guest — a section is a function of a
                     // `DashboardCtx`, so it is called per compose.
                     PluginSeam::Dashboard => {
                         let id = self.drain_dashboard(&component, manifest, tier)?;
-                        loaded_id.get_or_insert(id);
+                        seam_ids.push(id);
                     }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
                                               // (PL8.E closed the last, decorations). A new seam variant
@@ -729,11 +738,15 @@ impl PluginLoader {
             }
         }
 
-        let Some(id) = loaded_id else {
+        // The FIRST id is the plugin's user-facing identity (`:list-plugins`,
+        // `SourceLayer::Plugin` rendering); all of them are what teardown
+        // reverses.
+        let Some(&id) = seam_ids.first() else {
             return Err(PluginLoaderError::NothingLoaded);
         };
         record.id = id;
         record.teardown.plugin_id = id;
+        record.teardown.seam_ids = seam_ids;
 
         // Provenance: `SourceLayer::Plugin(id)` renders as the name, and
         // `:list-plugins` shows it. Doc falls back to the manifest field.
@@ -1290,11 +1303,17 @@ impl PluginLoader {
         // pages behind after `:plugin-unload` reported success. Stale docs
         // for code that is gone is a worse failure than the partial teardown
         // that caused it, and a quieter one.
+        // Over EVERY seam id — `help` is rarely a plugin's first seam, and
+        // reversing only `plugin_id` is what left `auto-pair`'s pages behind.
+        let provenances = teardown.provenances();
         let mut help_topics_removed = 0;
         if let Some(help_h) = self.env.help_topics.as_ref() {
             help_h.rcu(|current| {
                 let mut next = (**current).clone();
-                help_topics_removed = next.unregister_plugin(teardown.plugin_id.0 as u64);
+                help_topics_removed = 0;
+                for id in &provenances {
+                    help_topics_removed += next.unregister_plugin(id.0 as u64);
+                }
                 Arc::new(next)
             });
         }
@@ -1305,8 +1324,10 @@ impl PluginLoader {
         // under-wired loader. Leaving a language registered would be worse
         // than stale docs: a buffer would keep claiming a grammar its plugin
         // no longer provides.
-        let languages_removed =
-            lattice_syntax::plugin_lang::unregister_plugin(teardown.plugin_id.0 as u64);
+        let languages_removed: usize = provenances
+            .iter()
+            .map(|id| lattice_syntax::plugin_lang::unregister_plugin(id.0 as u64))
+            .sum();
         // CR.4: same placement, same reasoning — plus one of its own. Leaving
         // a plugin's section registered after unload would keep calling a
         // guest whose plugin is gone on every compose.
@@ -1314,7 +1335,10 @@ impl PluginLoader {
         if let Some(dash_h) = self.env.dashboard_sections.as_ref() {
             dash_h.rcu(|current| {
                 let mut next = (**current).clone();
-                dashboard_sections_removed = next.unregister_plugin(teardown.plugin_id.0 as u64);
+                dashboard_sections_removed = 0;
+                for id in &provenances {
+                    dashboard_sections_removed += next.unregister_plugin(id.0 as u64);
+                }
                 Arc::new(next)
             });
         }

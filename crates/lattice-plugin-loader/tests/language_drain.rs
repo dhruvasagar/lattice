@@ -259,38 +259,30 @@ async fn one_component_can_provide_language_and_help() {
         "the help seam must have drained from the same component"
     );
 
-    // Teardown of the FIRST seam works; the second seam's contributions do
-    // not come back out. That is a real pre-existing bug, not a property of
-    // world composition, and it is pinned by the `#[ignore]`d test below
-    // rather than asserted away here.
     let report = loader.unload("language-guest").expect("unloads");
     assert_eq!(report.languages, 1, "the first seam reverses");
+    assert_eq!(report.help_topics, 1, "and so does the second");
 }
 
-/// **Known-failing: a multi-seam plugin only reverses its FIRST seam.**
+/// A multi-seam plugin reverses EVERY seam.
 ///
-/// Every `spawn_*` calls `PluginHost::alloc_id`, so a plugin providing N
-/// seams gets N host ids — one per wasm instance. The loader keeps only the
-/// first (`loaded_id.get_or_insert(id)`) and teardown reverses by that one.
+/// Each `spawn_*` used to call `PluginHost::alloc_id`, so a plugin providing
+/// N seams got N host ids — one per wasm instance — and the loader kept only
+/// the first (`loaded_id.get_or_insert`), which teardown reversed by.
 /// Token-based reversals (modes, config options, picker sources, keymap
-/// bindings) are unaffected because the drains capture their tokens on the
-/// record. **Provenance-keyed ones are not**: help topics, dashboard sections
-/// and languages are removed with `unregister_plugin(record.id)`, so anything
-/// registered by a later seam stays behind after `:plugin-unload` reports
-/// success.
+/// bindings) were fine because the drains capture their tokens on the record.
+/// **Provenance-keyed ones were not**: help topics, dashboard sections and
+/// languages are removed with `unregister_plugin(record.id)`, so a later
+/// seam's contributions survived an unload that reported success. Bundled
+/// `auto-pair` (grammar, modes, config, help) leaked its `:help` pages that
+/// way.
 ///
-/// This is not hypothetical and not new: the bundled `auto-pair` provides
-/// `grammar`, `modes`, `config` and `help` in that order, so its `:help`
-/// pages leak on unload today. Nothing covered it because the existing
-/// `help` teardown test loads a help-ONLY plugin, and `auto_pair.rs` wires a
+/// Fixed by making the id belong to the PLUGIN rather than the wasm instance
+/// (`PluginHost::id_for`, memoised on the manifest id). This test is the
+/// regression guard, and it is the ONLY coverage of multi-seam teardown: the
+/// help-teardown test loads a help-only plugin, and `auto_pair.rs` wires a
 /// help registry but never unloads.
-///
-/// Ignored rather than deleted so the gap is runnable
-/// (`cargo test -p lattice-plugin-loader -- --ignored`) and impossible to
-/// forget. Fixing it means deciding whether a plugin is one identity or many
-/// — see the LG.6 note in the slice plan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "known bug: multi-seam teardown reverses only the first seam"]
 async fn a_multi_seam_plugin_reverses_every_seam() {
     let Some(wasm) = language_guest_wasm() else {
         return;

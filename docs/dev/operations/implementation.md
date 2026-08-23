@@ -6424,14 +6424,21 @@ interfaces at `path`, so a plugin declares its world locally and gets one
 `language-guest` fixture composes its world the same way, so the route external
 plugins must use is the one under CI.
 
-**⛔ Open bug found while proving that: a multi-seam plugin reverses only its
-FIRST seam.** Each `spawn_*` calls `alloc_id`, so N seams means N host ids; the
-loader keeps only the first and teardown reverses by it. Token-based reversals
-are fine; provenance-keyed ones (help topics, dashboard sections, languages) are
-not. Bundled `auto-pair` provides `grammar`, `modes`, `config`, `help`, so its
-`:help` pages leak on unload today. Pinned by an `#[ignore]`d test,
-`a_multi_seam_plugin_reverses_every_seam`. The fix turns on whether a plugin is
-one identity or many — plugin-host track.
+**Bug found while proving that, and fixed: a multi-seam plugin reversed only
+its FIRST seam.** Each `spawn_*` calls `alloc_id`, so N seams means N host ids;
+the loader kept only the first and teardown reversed by it. Token-based
+reversals were fine; provenance-keyed ones (help topics, dashboard sections,
+languages) were not, so bundled `auto-pair` (grammar, modes, config, **help**)
+leaked its `:help` pages on unload.
+
+The loader now carries every seam id (`PluginTeardown::seam_ids`) and each
+provenance-keyed reversal iterates them. Note what was NOT done: memoising one
+id per plugin on the manifest id would be simpler and is **unsafe** — the
+manifest id is guest-controlled, and a host-issued provenance must never derive
+from guest input, or a plugin could declare `id = "auto-pair"` and inherit its
+provenance. The existing
+`provenance_ids_are_host_issued_unique_and_stamp_the_plugin_layer` caught that
+attempt.
 
 Design: [`../architecture/plugin-languages.md`](../architecture/plugin-languages.md).
 Slice plan: [`slice-plans/plugin-languages.md`](slice-plans/plugin-languages.md).

@@ -378,3 +378,97 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
         other => panic!("quote-skip: expected CursorMove, got {other:?}"),
     }
 }
+
+/// Unloading a multi-seam plugin reverses EVERY seam — on the real bundled
+/// plugin, not a fixture.
+///
+/// `auto-pair` provides `grammar`, `modes`, `config` and `help` in that order.
+/// Each `spawn_*` issues its own host id (a provenance id must never be
+/// derived from guest-controlled input, so it cannot be keyed on the
+/// manifest's string id), and teardown used to reverse only the first. Its
+/// `:help` pages therefore survived an unload that reported success — help
+/// being the LAST seam listed.
+///
+/// Nothing caught it: the help-teardown test loads a help-only plugin, and the
+/// test above wires a help registry but never unloads. This is that gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unloading_auto_pair_reverses_its_later_seams_too() {
+    let Some(wasm) = auto_pair_wasm() else {
+        eprintln!("skipping: auto-pair wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    // The shared `write_plugin_dir` omits `help` from `provides`, so the help
+    // seam never drains there — which is part of why this gap went uncovered.
+    // Use the REAL manifest's four seams, in the real order.
+    let dir = plugins_dir.join("auto-pair");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"auto-pair\"\nprovides = [\"grammar\", \"modes\", \"config\", \"help\"]\n\
+         editor_capabilities = [\"tree-sitter\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+
+    let command_registry = empty_command_registry();
+    let mode_registry = empty_mode_registry();
+    let config_registry = Arc::new(ConfigRegistry::default());
+    let help: lattice_help::topics::HelpTopicRegistryHandle =
+        lattice_help::topics::builtin_topics().into_handle();
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
+    let loader = PluginLoader::with_services(
+        host,
+        LoaderServices {
+            help_topics: Some(help.clone()),
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            command_registry: Some(command_registry.clone()),
+            mode_registry: Some(mode_registry.clone()),
+            config_registry: Some(config_registry.clone()),
+            keymap: Some(KeymapHandle::new()),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        loader
+            .discover_and_load(&plugins_dir, TrustTier::Bundled)
+            .await,
+        1
+    );
+    let topics_before = help.load().names().count();
+    assert!(
+        help.load().names().any(|n| n.starts_with("auto-pair")),
+        "auto-pair's help pages registered"
+    );
+
+    let report = loader.unload("auto-pair").expect("unloads");
+
+    // The FIRST seam (grammar) always reversed; these are the later ones.
+    assert!(
+        report.help_topics > 0,
+        "help is auto-pair's LAST seam — it must still come back out, got {report:?}"
+    );
+    assert!(
+        !help.load().names().any(|n| n.starts_with("auto-pair")),
+        "no auto-pair page may survive the unload"
+    );
+    assert_eq!(
+        help.load().names().count(),
+        topics_before - report.help_topics,
+        "exactly the plugin's pages went, and no builtin with them"
+    );
+    assert!(
+        command_registry
+            .load()
+            .lookup_by_name("auto-pair:open")
+            .is_none()
+            || report.commands > 0,
+        "the grammar seam reversed too"
+    );
+}

@@ -121,6 +121,12 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     ("help", Capability::None),
     ("host-services", Capability::Fs),
     ("keymap", Capability::None),
+    // LG.3c. The guest hands over grammar BYTES and query source; the host
+    // compiles and runs them. No OS reach: the grammar is wasm the host
+    // executes inside tree-sitter's own sandboxed store, not native code and
+    // not a file the guest names. Fetching a grammar from git is the plugin
+    // MANAGER's job (`Proc`/net, that row), not this seam's.
+    ("language", Capability::None),
     ("logging", Capability::None),
     ("modes", Capability::None),
     ("picker-source", Capability::None),

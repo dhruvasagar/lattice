@@ -614,24 +614,38 @@ mod tests {
 
     #[test]
     fn motion_chords_link_to_registered_command_names() {
-        // Every entry whose `command` is Some must point at a name
-        // that the registry actually registers. Drift-test against
-        // the builtin populator. Includes ex-commands because
-        // Command-mode keymap rows reference `ex:describe-command`
-        // for `<C-h>`.
+        // Every entry whose `command` is Some must point at a name some
+        // registry actually registers. Drift-test against the builtin
+        // populator. Includes ex-commands because Command-mode keymap rows
+        // reference `ex:describe-command` for `<C-h>`.
+        //
+        // **`action:` names are checked in `lattice-host`, not here.** Host
+        // actions (`action:pane-history-back`, …) are registered by
+        // `lattice_host::actions::populate`, and this crate sits BELOW
+        // `lattice-host` — it cannot see that registry without inverting the
+        // dependency. So the complete check lives at
+        // `lattice_host::keymap_normal::tests::every_default_keymap_command_is_registered`,
+        // which populates the grammar builtins AND the host actions and
+        // covers every entry this one skips.
+        //
+        // This split is not cosmetic: PBH added the first `action:` entries
+        // to the default keymap, and the unsplit version of this test failed
+        // for months on `<C-6>` without the binding being broken.
         let mut registry = lattice_grammar::CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
         for entry in default_keymap() {
-            if let Some(name) = entry.command {
-                assert!(
-                    registry.id_by_name(name).is_some(),
-                    "binding `{}` ({}) claims `{}` but registry has no such command",
-                    entry.chord,
-                    entry.modes_label(),
-                    name
-                );
+            let Some(name) = entry.command else { continue };
+            if name.starts_with("action:") {
+                continue;
             }
+            assert!(
+                registry.id_by_name(name).is_some(),
+                "binding `{}` ({}) claims `{}` but registry has no such command",
+                entry.chord,
+                entry.modes_label(),
+                name
+            );
         }
     }
 

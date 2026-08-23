@@ -2184,6 +2184,54 @@ mod syntax_motion_tests {
 
     use crate::keymap_trie::LookupResult;
 
+    /// The COMPLETE keymap drift test: every command a default binding
+    /// claims must exist in a registry populated the way boot populates it.
+    ///
+    /// `lattice-keymap` has a version of this, but it must skip `action:`
+    /// names — host actions are registered by `crate::actions::populate`,
+    /// and that crate sits below this one. This is the half that sees both,
+    /// so it is the one that can actually catch a binding pointing at
+    /// nothing.
+    ///
+    /// It exists because the split version did not exist: PBH added `<C-6>`
+    /// and `<C-7>`, the first `action:` entries in the default keymap, and
+    /// the keymap-crate test failed on them for months. A test that fails
+    /// for a structural reason stops being read, and then it is not a test.
+    #[test]
+    fn every_default_keymap_command_is_registered() {
+        let mut registry = CommandRegistry::new();
+        let builtins = grammar_builtins_populate(&mut registry);
+        let _ = lattice_grammar::ex_commands::populate(&mut registry);
+        let _ = crate::actions::populate(&mut registry, &builtins);
+        let _ = lattice_syntax::register_syntax_text_objects(&mut registry);
+        let _ = lattice_syntax::register_syntax_motions(&mut registry);
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+        for entry in lattice_keymap::keymap_entry::default_keymap() {
+            let Some(name) = entry.command else { continue };
+            checked += 1;
+            if registry.id_by_name(name).is_none() {
+                missing.push(format!(
+                    "`{}` ({}) claims `{name}`",
+                    entry.chord,
+                    entry.modes_label()
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "default keymap bindings point at unregistered commands:\n  {}",
+            missing.join("\n  ")
+        );
+        // Guard the guard: if `default_keymap` ever stopped carrying command
+        // names, the loop above would pass vacuously.
+        assert!(
+            checked > 50,
+            "expected the default keymap to carry many commands, saw {checked}"
+        );
+    }
+
     /// Build a handle with Normal (+ operator-pending, which rides under
     /// Normal) and Visual registered from a real, populated command
     /// registry -- the same path boot takes (`editor_boot.rs`).

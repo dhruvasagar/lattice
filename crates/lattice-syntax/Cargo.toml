@@ -83,6 +83,12 @@ harness = false
 name = "scope_toward"
 harness = false
 
+# LG.2. `detect_from_path` gained a runtime-registry fallthrough and has
+# nineteen call sites, one of them per-hunk in magit's diff highlighting.
+[[bench]]
+name = "lang_detect"
+harness = false
+
 # LG.1. Needs `--features wasm-grammar`; without it the bench compiles to
 # a stub that says so, rather than silently reporting native-only numbers.
 [[bench]]

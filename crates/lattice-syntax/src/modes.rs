@@ -213,6 +213,10 @@ lang_mode!(
 pub fn major_mode_id_for_lang(lang: Lang) -> Option<ModeId> {
     match lang {
         Lang::Plain => None,
+        // A plugin language's major mode is contributed through the
+        // `modes` seam by the plugin that owns it — the mode owns its
+        // full surface, so the host does not synthesise one here.
+        Lang::Plugin(_) => None,
         Lang::Rust => Some(RustMode::mode_id()),
         Lang::Python => Some(PythonMode::mode_id()),
         Lang::JavaScript => Some(JavascriptMode::mode_id()),

@@ -57,6 +57,11 @@ impl FormatterSpec {
             // and standardrb, SQL between a dozen tools with
             // incompatible opinions, and `Plain` has nothing to format.
             Lang::Ruby | Lang::Sql | Lang::Plain => return None,
+            // No built-in formatter for a language the editor learned
+            // about at runtime. `formatprg` still works — it overrides
+            // this table per buffer and is the documented answer for
+            // any language without a consensus formatter.
+            Lang::Plugin(_) => return None,
         };
         Some(Self {
             program,

@@ -57,8 +57,10 @@ pub mod handle;
 pub mod indent;
 pub mod lang;
 pub mod modes;
+// LG.2: languages registered at runtime rather than compiled in.
 pub mod motions;
 pub mod oneshot;
+pub mod plugin_lang;
 pub mod registry;
 pub mod style;
 pub mod syntax;
@@ -80,6 +82,10 @@ pub use crate::modes::{
 };
 pub use crate::motions::{SyntaxMotionIds, register_syntax_motions};
 pub use crate::oneshot::oneshot_highlight_lines;
+pub use crate::plugin_lang::{
+    LanguageName, LanguageRegistration, LanguageRegistrationError, PluginLanguages,
+    PluginLanguagesHandle,
+};
 pub use crate::registry::LangRegistry;
 pub use crate::style::{Style, StyledSpan};
 pub use crate::syntax::{Syntax, SyntaxError, SyntaxSnapshot};

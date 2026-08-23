@@ -95,25 +95,92 @@ the `help` seam (CR.3) rather than `dashboard`'s live sections.
 
 The one genuinely invasive change. `Lang` is a `Copy + Eq + Hash` enum
 matched across several crates; a runtime-registered language cannot be a
-variant. The migration is `Lang::Plugin(LanguageId)` where `LanguageId`
-is a `Copy` newtype over an intern index — **`Lang`'s derives constrain
-the payload**, so an owned `String` here is not an option. Existing
-variants stay, so every native `match` arm remains valid and the new arm
-is one fallthrough per exhaustive site.
+variant. The migration is `Lang::Plugin(LanguageName)` — **`Lang`'s
+derives constrain the payload**, so an owned `String` here is not an
+option. Existing variants stay, so every native `match` arm remains
+valid and the new arm is one fallthrough per exhaustive site.
 
-**Size, measured rather than guessed (2026-08-22).** An earlier draft of
-this section said "sixteen sites across four files"; that figure counted
-mentions of `Lang::Lua` — one language — and was the wrong measurement
-for this question. Adding a probe variant and letting rustc enumerate
-gives **4 non-exhaustive matches in `lattice-syntax` alone** (3 in
-`lang.rs`, 1 in `modes.rs`). That is a **lower bound**: cargo stops at
-the first failing crate, so `indent.rs`, `lattice-format/spec.rs` and
-the host's own matches were never reached. The true total needs the
-layers fixed one at a time — which is LG.2 itself.
+Keeping the variants is deliberate, not conservatism. `comment_syntax`,
+`major_mode_id_for_lang` and `FormatSpec::for_lang` get compiler-checked
+coverage of every bundled language today; collapsing `Lang` to a bare
+newtype over a name would remove all five matches at the cost of letting
+a newly-bundled language silently miss its formatter. The enum earns its
+keep.
 
-The encouraging half: most of the ~150 `Lang::` occurrences across the
-tree are *constructions* or `matches!` guards, not exhaustive matches,
-so the arm-adding is far narrower than the raw grep count suggests.
+**Size, measured (2026-08-23, LG.2).** An early draft said "sixteen sites
+across four files", counting mentions of `Lang::Lua` — one language,
+which was the wrong measurement. A later pass gave "4 in `lattice-syntax`
+alone" and flagged itself as a lower bound, because cargo stops at the
+first failing crate. Fixing the layers one at a time, which is what LG.2
+did, gives the **true total: 5 exhaustive matches across 3 files.**
+
+| Site | What the plugin arm does |
+|---|---|
+| `lang.rs` `label()` | the interned name |
+| `lang.rs` `name()` | the interned name |
+| `lang.rs` `comment_syntax()` | `None` — LG.3 lets a plugin declare it |
+| `modes.rs` `major_mode_id_for_lang()` | `None` — the plugin's own `modes` seam owns it |
+| `lattice-format/spec.rs` `for_lang()` | `None` — `formatprg` still applies |
+
+Nothing else in the workspace needed an arm. `indent.rs` and the host's
+call sites resolve by name through the registry rather than matching, so
+they were already provenance-agnostic.
+
+#### Why the payload is a name, not an index
+
+The design originally specified `LanguageId` as a `Copy` newtype over an
+**intern index**. LG.2 changed it to a `Copy` newtype over an interned
+`&'static str`, and the reason is a measurement rather than a taste:
+
+`Lang::name()` **is the registry lookup key**, called six times per
+highlight invocation (`registry.highlights_query(self.lang.name())`) plus
+once each on the folds and indents paths. An index would have put a
+process-global table read inside a function that is `&'static str`-pure
+today — paramount goal #1, for no gain. And `LangRegistry` is *already*
+`HashMap<&'static str, LangConfig>`, so a name-keyed plugin language
+joins the map bundled languages live in instead of needing a parallel
+index space.
+
+The cost is one leaked string per **distinct** name; `LanguageName::intern`
+dedupes, so a plugin reloaded fifty times in a dev session leaks one, not
+fifty. Leaking a `&'static str` for a runtime-supplied name has precedent
+in-tree — `FormatSpec` does it for user `formatprg` strings.
+
+A useful consequence: a buffer still holding `Lang::Plugin(name)` after
+its plugin unloads keeps naming itself correctly. It finds no grammar and
+renders as plain text. Nothing dangles, and no kind-branch is needed to
+express it.
+
+#### Resolution is process-global, deliberately
+
+Registration and teardown go through an RCU handle with
+teardown-by-provenance, exactly as
+[`contributable-registries.md`](contributable-registries.md) §2
+prescribes. **Reads do not take a handle.** `Lang::detect_from_path` is a
+free function with nineteen call sites across `lattice-host`,
+`lattice-magit` and `lattice-multibuffer`; threading a handle through
+them would make plugin languages visible on some paths and invisible on
+others — a two-tier language concept, and the same failure the
+"no kind-specific logic" rule forbids for buffers. `Lang::Plugin` has to
+be interpretable wherever `Lang::Rust` is, by the same code.
+`LangRegistry::standard` is already a process-wide memo in this crate for
+a related reason.
+
+The registry is consulted **only after every native arm**, so a plugin
+cannot shadow a bundled language by accident — a plugin claiming `rs`
+simply never wins. Registering a bundled *name* is refused outright
+(`ShadowsBuiltin`), since that would collide in the config map. Whether
+deliberate override should be possible is a DB.8-shaped question,
+deferred until someone asks.
+
+An empty registry costs one relaxed atomic load and never touches the
+`ArcSwap` — `detect_from_path` runs per hunk in magit's diff
+highlighting, so the no-plugins case had to be free rather than merely
+cheap. Measured in [`benchmarks.md`](../operations/benchmarks.md).
+
+The encouraging half, confirmed: most of the ~150 `Lang::` occurrences
+across the tree are *constructions* or `matches!` guards, not exhaustive
+matches, so the arm-adding was far narrower than the raw grep suggested.
 
 ## 3. The risk that decides this
 

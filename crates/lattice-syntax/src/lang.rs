@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use crate::plugin_lang::{self, LanguageName};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
     Plain,
@@ -36,9 +38,58 @@ pub enum Lang {
     /// injection queries thread between them. Help buffers also
     /// render through this language.
     Markdown,
+    /// A language contributed at runtime by a plugin (LG.2; design
+    /// [`plugin-languages.md`](../../../docs/dev/architecture/plugin-languages.md) §2.3).
+    ///
+    /// The existing variants deliberately stay. Native languages keep
+    /// compiler-checked coverage in [`Self::comment_syntax`],
+    /// [`crate::major_mode_id_for_lang`] and `FormatSpec::for_lang` —
+    /// so adding a bundled language still cannot silently miss its
+    /// formatter — and a plugin language is one fallthrough arm at each.
+    ///
+    /// The payload is the language's *name*, interned, rather than an
+    /// index: [`Self::name`] is the key every query lookup already uses,
+    /// and it stays a field read. See [`crate::plugin_lang`].
+    Plugin(LanguageName),
 }
 
 impl Lang {
+    /// The compiled-in language with this canonical name, if any.
+    ///
+    /// Exists so [`crate::plugin_lang::register`] can refuse a name that
+    /// would shadow a builtin, and it is written as a match over the
+    /// same table [`Self::name`] uses so the two cannot drift.
+    pub fn builtin_by_name(name: &str) -> Option<Self> {
+        const BUILTINS: &[Lang] = &[
+            Lang::Plain,
+            Lang::Rust,
+            Lang::Python,
+            Lang::JavaScript,
+            Lang::Bash,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Css,
+            Lang::Go,
+            Lang::Html,
+            Lang::Java,
+            Lang::Json,
+            Lang::Lua,
+            Lang::Ruby,
+            Lang::Sql,
+            Lang::Toml,
+            Lang::TypeScript,
+            Lang::Tsx,
+            Lang::Yaml,
+            Lang::Markdown,
+        ];
+        BUILTINS.iter().copied().find(|l| l.name() == name).or_else(
+            // Not a `Lang` variant, but it IS a registry key: markdown's
+            // inline grammar. A plugin claiming it would collide in the
+            // config map even though no `Lang` names it.
+            || (name == "markdown_inline").then_some(Lang::Markdown),
+        )
+    }
+
     /// Detect language from a file path's extension.
     pub fn detect_from_path(path: Option<&Path>) -> Self {
         // Check known shell rc/profile filenames (dotfiles with no extension).
@@ -80,7 +131,14 @@ impl Lang {
             Some("tsx") => Lang::Tsx,
             Some("yaml") | Some("yml") => Lang::Yaml,
             Some("md") | Some("markdown") | Some("mdown") | Some("mkd") => Lang::Markdown,
-            _ => Lang::Plain,
+            // The runtime registry is consulted only AFTER every native
+            // arm, so a plugin cannot shadow a bundled language by
+            // accident. When nothing is registered this costs one
+            // relaxed atomic load — `detect_from_path` runs per hunk in
+            // magit's diff highlighting, so the empty case has to be
+            // free rather than merely cheap.
+            Some(ext) => plugin_lang::resolve_extension(ext).map_or(Lang::Plain, Lang::Plugin),
+            None => Lang::Plain,
         }
     }
 
@@ -106,6 +164,9 @@ impl Lang {
             Lang::Tsx => "tsx",
             Lang::Yaml => "yaml",
             Lang::Markdown => "markdown",
+            // The interned name IS the identity — a field read, not a
+            // table lookup. See `plugin_lang`.
+            Lang::Plugin(n) => n.as_str(),
         }
     }
 
@@ -135,6 +196,9 @@ impl Lang {
             Lang::Tsx => "tsx",
             Lang::Yaml => "yaml",
             Lang::Markdown => "markdown",
+            // The interned name IS the identity — a field read, not a
+            // table lookup. See `plugin_lang`.
+            Lang::Plugin(n) => n.as_str(),
         }
     }
 
@@ -156,6 +220,10 @@ impl Lang {
             Lang::Html => (None, Some(("<!--", "-->"))),
             Lang::Lua => (Some("--"), Some(("--[[", "]]"))),
             Lang::Json | Lang::Plain | Lang::Markdown => (None, None),
+            // LG.3 lets a plugin declare its comment syntax; until
+            // then `aC` / `iC` no-op in a plugin language exactly as
+            // they do in markdown, rather than guessing a leader.
+            Lang::Plugin(_) => (None, None),
         };
         lattice_grammar::CommentSyntax {
             line: line.map(str::to_string),

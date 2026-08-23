@@ -5,7 +5,8 @@
 
 **Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1 ✅
 (2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
-closed and nothing sends this track to §6.** LG.2–LG.6 📝.
+closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
+`Lang::Plugin` + the runtime registry. LG.3–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -37,7 +38,7 @@ be the expensive order.
 |---|---|---|
 | LG.0 | Prove `wasmtime-c-api` 36 and `wasmtime` 46 coexist | ✅ |
 | LG.1 | Bench: wasm grammar vs native parse | ✅ |
-| LG.2 | `Lang::Plugin(LanguageId)` + runtime language registry | 📝 |
+| LG.2 | `Lang::Plugin(LanguageName)` + runtime language registry | ✅ |
 | LG.3 | `language` WIT seam, loader drain, teardown | 📝 |
 | LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
 | LG.5 | Org plugin: folds | 📝 |
@@ -122,14 +123,15 @@ and CI does not run it, so a wasmtime bump on either side is caught only
 by someone opting in. Wiring it into CI belongs with LG.3, when the
 feature stops being bench-only.
 
-### LG.2 — `Lang::Plugin` + the runtime registry 📝
+### LG.2 — `Lang::Plugin` + the runtime registry ✅ (2026-08-23)
 
 Substrate only, no WIT — it lands green and useful on its own.
 
-- `Lang::Plugin(LanguageId)` where `LanguageId` is interned. Existing
-  variants stay, so every native `match` keeps its arms; sixteen sites
-  across `lang.rs` / `modes.rs` / `indent.rs` / `format/spec.rs` gain
-  one fallthrough each.
+- `Lang::Plugin(LanguageName)`, interned. Existing variants stay, so
+  every native `match` keeps its arms and each exhaustive site gains one
+  fallthrough. *(Planned as `LanguageId` over an intern index and as
+  "sixteen sites across four files"; both were corrected on measurement
+  — see the outcome below.)*
 - A runtime language registry beside `registry.rs`'s
   `HighlightConfiguration` cache, behind the RCU handle pattern
   (`Arc<ArcSwap<…>>`, teardown by provenance) that
@@ -142,6 +144,44 @@ Substrate only, no WIT — it lands green and useful on its own.
 - *test:* a registered language resolves by extension; unload withdraws
   it; a plugin language and a native one coexist; native resolution is
   unchanged when the registry is empty.
+
+**Outcome.** `crates/lattice-syntax/src/plugin_lang.rs`, 14 tests.
+
+**The match surface was 5 sites across 3 files**, not the sixteen this
+plan estimated — measured by adding a probe variant and fixing the
+layers one at a time until the workspace compiled. `indent.rs` needed
+nothing: it resolves by name through the registry, so it was already
+provenance-agnostic. Design §2.3 carries the table.
+
+**The payload is a name, not an index** — a deviation from what §2.3
+specified, taken on merit and recorded there. `Lang::name()` *is* the
+registry lookup key (six calls per highlight invocation, plus folds and
+indents), so an index would have put a process-global table read inside
+a function that is `&'static str`-pure. `LangRegistry` is already
+`HashMap<&'static str, LangConfig>`, so a name-keyed language joins the
+map bundled ones live in. Cost: one leaked string per *distinct* name,
+deduped by `LanguageName::intern`.
+
+**Reads are process-global; writes go through the RCU handle.**
+`detect_from_path` has nineteen call sites across three crates, and
+threading a handle would have made plugin languages visible on some
+paths and invisible on others — a two-tier language concept. Registration
+and teardown-by-provenance follow `contributable-registries.md` §2
+verbatim. The empty registry costs one relaxed atomic load and never
+touches the `ArcSwap`; benched, because `detect_from_path` runs per hunk
+in magit's diff highlighting.
+
+*Scope held:* the registry carries identity and selection only. Grammar
+and compiled queries join it at LG.3, as an added field rather than a
+restructure. So a registered language currently resolves by extension
+and then renders as plain text, which is exactly what a language whose
+plugin has unloaded should also do — one path, not two.
+
+*Deliberately deferred:* a plugin may not register a bundled language's
+name (`ShadowsBuiltin`), and claiming a bundled *extension* is allowed
+but never wins, since the native table is consulted first. Whether
+deliberate override should be possible is a DB.8-shaped question, left
+until someone asks.
 
 ### LG.3 — the `language` WIT seam 📝
 

@@ -71,6 +71,41 @@ target rather than just a slower number.
 
 ---
 
+## LG.2 — `Lang::detect_from_path` with a runtime registry (2026-08-23)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**
+
+Detection used to be a pure `match` over an extension string. LG.2 adds a
+fallthrough consulting the runtime language registry
+([`plugin-languages.md`](../architecture/plugin-languages.md) §2.3), and
+the function has nineteen call sites — magit's diff highlighting calls it
+**per hunk**, grep highlighting per result. `crates/lattice-syntax/benches/lang_detect.rs`.
+
+| Case | Empty registry | Populated |
+|---|---|---|
+| `main.rs` (native arm) | **66.0 ns** | 73.2 ns |
+| unmatched extension | **89.4 ns** | 136 ns |
+| plugin extension | — | 144 ns |
+
+**The empty case is free, by construction rather than by luck.** A relaxed
+`AtomicBool` short-circuits before the `ArcSwap` is touched, so a session
+with no language plugins pays nothing — 89.4 ns unmatched is the same
+work the old code did. The native rows are equal within noise because a
+native arm returns *before* the registry is reached at all; the 7 ns
+spread is measurement order, not a real cost.
+
+With a language registered, an unmatched extension pays ~47 ns for the
+`ArcSwap` load plus a hash lookup. At 2000 hunks that is ~0.3 ms of
+one-off work, against an 8.3 ms frame — not close to mattering.
+
+**Incidental finding, not fixed here.** The ~66 ns floor is mostly the
+`String` allocation from `to_ascii_lowercase()` in `detect_from_path`,
+which predates LG.2 and is paid on every call including the native ones.
+If the per-hunk call sites ever matter, that allocation is the thing to
+remove, not the registry lookup.
+
+---
+
 ## LG.1 — wasm grammar vs native parse (the §4 gate, 2026-08-23)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** Not comparable to the Ryzen

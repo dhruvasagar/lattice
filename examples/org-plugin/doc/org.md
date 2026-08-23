@@ -5,12 +5,6 @@ this plugin. It contributes the language through lattice's `language` seam —
 the grammar and its queries ship inside the plugin, so unloading it takes org
 support with it and leaves nothing behind.
 
-> **Not yet wired as a `:help` topic.** This text is written and shipped, but
-> a component implements exactly one WIT world, and a plugin providing both
-> `language` and `help` needs a combined world — which external plugins cannot
-> yet declare. See the LG.6 note in `implementation.md`. Until then, read it
-> here.
-
 ## Headlines
 
 Each level gets its own size and colour, `*` through `******`:

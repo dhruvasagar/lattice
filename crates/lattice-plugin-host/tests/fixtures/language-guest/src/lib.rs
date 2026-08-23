@@ -21,11 +21,31 @@
 //! premise and the workflow LG.4 expects of a real plugin: the grammar is the
 //! plugin's build artefact, not the editor's.
 
+// LG.6: the fixture also proves that an EXTERNAL plugin can provide two
+// seams. A component implements exactly one world, and bundled plugins get a
+// combined world written into lattice's own `wit/` — which an external plugin
+// cannot do. It does not need to: WIT `include` composes worlds, and
+// wit-bindgen resolves an `inline` package against the interfaces at `path`,
+// so the plugin declares its own world locally and gets ONE `Guest` trait
+// with both exports. Nothing in lattice's WIT changes to allow it.
+//
+// Declared inline HERE, rather than as a world in `wit/`, precisely so this
+// route is the one under test. A fixture using a lattice-side world would
+// prove the thing external plugins cannot do.
 wit_bindgen::generate!({
-    world: "language-plugin",
+    inline: r#"
+        package lattice:language-guest@0.1.0;
+        world language-guest {
+            include lattice:plugin-host/language-plugin@0.1.0;
+            include lattice:plugin-host/help-plugin@0.1.0;
+        }
+    "#,
     path: "../../../../../wit",
+    world: "language-guest",
+    generate_all,
 });
 
+use lattice::plugin_host::help::register_topic;
 use lattice::plugin_host::language::{LanguageSpec, register_language};
 
 /// Built by build.rs. Empty when the toolchain was unavailable, in which case
@@ -84,6 +104,18 @@ impl Guest for Component {
         // Squats a bundled language's name. Must be refused, and the real
         // bundled markdown must be untouched.
         let _ = register_language(&spec("markdown", &["lg3csquat"], GRAMMAR.to_vec()));
+    }
+
+    /// The second seam. Its only job is to prove BOTH drains ran off one
+    /// component built from an inline composed world.
+    fn register_help_topics() {
+        let _ = register_topic(
+            "",
+            "The language-guest fixture.",
+            "# language-guest\n\nProves a plugin can provide `language` and \
+             `help` from one component with an inline composed world.",
+            &[],
+        );
     }
 }
 

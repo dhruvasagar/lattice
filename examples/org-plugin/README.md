@@ -21,7 +21,25 @@ Registers one language:
 | name | `org` |
 | extensions | `.org`, `.org_archive` |
 | grammar | [`nvim-orgmode/tree-sitter-org`](https://github.com/nvim-orgmode/tree-sitter-org), compiled to wasm by `build.rs` |
-| queries | `queries/highlights.scm` |
+| queries | `queries/highlights.scm`, `queries/folds.scm` |
+| `:help` | `doc/org.md`, shipped inside the component |
+
+## Two seams from one component
+
+A component implements exactly ONE WIT world, so a plugin providing both
+`language` and `help` needs a world importing both. Bundled plugins get theirs
+written into lattice's own `wit/` — but an external plugin cannot add a world
+to someone else's package.
+
+It does not need to. WIT `include` composes worlds, and `wit-bindgen` resolves
+an `inline` package against the interfaces found at `path`, so this plugin
+declares its own world locally and gets one `Guest` trait carrying both
+exports. **Nothing in lattice changes to allow it** — see `src/lib.rs`.
+
+Three details, each a build error if missed: `include` needs the version
+(`@0.1.0`); `generate_all` is required or wit-bindgen demands a `with` mapping
+per reached interface; and the inline package needs a name distinct from
+lattice's.
 
 That is the whole plugin. Everything else org needs — headline promotion,
 subtree motion, TODO and visibility cycling, agenda, tables — is *org-mode the
@@ -76,7 +94,7 @@ with a `plugin.toml`:
 
 ```toml
 id = "org"
-provides = ["language"]
+provides = ["language", "help"]
 ```
 
 In normal use the plugin manager does this for you from the git source

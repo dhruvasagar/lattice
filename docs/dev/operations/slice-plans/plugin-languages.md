@@ -10,8 +10,8 @@ closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse. LG.3c ✅
 (2026-08-23) — **the seam is real: a plugin on disk contributes a
 language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5 ✅ (2026-08-23) —
-org folds. LG.6 🚧 — docs landed, org's `:help` page blocked on
-external-plugin world composition (below).
+org folds. LG.6 ✅ (2026-08-23) — docs, and org's `:help` page
+ships after all. **The whole track is complete.**
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -54,7 +54,7 @@ be the expensive order.
 | LG.3c | `language` WIT seam, loader drain, teardown | ✅ |
 | LG.4 | Org plugin: grammar + per-level headline highlights | ✅ |
 | LG.5 | Org plugin: folds | ✅ |
-| LG.6 | Docs, benchmarks, ledger | 🚧 |
+| LG.6 | Docs, benchmarks, ledger | ✅ |
 
 ---
 
@@ -398,7 +398,7 @@ operating on whatever `compute_syntax_folds` produced; they are not
 language-specific and have coverage already. Re-testing them per language
 would test the host, not org.
 
-### LG.6 — docs, benchmarks, ledger 🚧 (2026-08-23)
+### LG.6 — docs, benchmarks, ledger ✅ (2026-08-23)
 
 - `docs/user/plugins.md`: the `language` seam row + how a plugin ships a
   grammar (the `tree-sitter build --wasm` step is the non-obvious half).
@@ -415,22 +415,48 @@ step and the `grammar-name` escape hatch); the LG.* table and both
 decisions in `implementation.md`; LG.1–LG.3b's numbers in `benchmarks.md`
 as each slice landed.
 
-**⛔ Deferred — org's own `:help` page, and why.** The plan wanted it
-shipped INSIDE the org plugin via the `help` seam (CR.3), org being the
-second real test of that decision. It cannot be, yet: a component
-implements exactly ONE WIT world, so a plugin providing both `language` and
-`help` needs a combined world — and combined worlds live in lattice's own
-`wit/` (`auto-pair-plugin` imports six interfaces). That works for bundled
-plugins and **not for external ones**, which cannot add a world to
-lattice's package. Org is external by LG.4's decision, so it is the first
-plugin to hit this.
+**Org's `:help` page ships — the gap was smaller than it looked.** This
+was briefly deferred on the reasoning that a component implements exactly
+ONE WIT world, so a plugin providing both `language` and `help` needs a
+combined world, and combined worlds live in lattice's own `wit/`
+(`auto-pair-plugin` imports six interfaces) — which an EXTERNAL plugin
+cannot add to.
 
-The doc text is written and ships at `examples/org-plugin/doc/org.md`,
-ready to be `include_str!`'d the moment the gap closes. The fix is WIT
-`include` from a plugin-local `wit/` that depends on lattice's package —
-real work, and it belongs in the plugin-host track rather than being
-smuggled in here. **This slice stays 🚧 until then**, and this plan stays
-active: a deferred item is open work, not a completed one.
+The premise was right; the conclusion was not. WIT `include` composes
+worlds, and `wit-bindgen` resolves an `inline` package against the
+interfaces found at `path`. So a plugin declares its own world locally and
+gets ONE `Guest` trait carrying both exports, with **no change to
+lattice's WIT at all**. Three details, each a build error if missed:
+`include` needs the version (`@0.1.0`); `generate_all` or wit-bindgen
+demands a `with` mapping per reached interface; and the inline package
+needs a name distinct from lattice's.
+
+The `language-guest` fixture now composes its world the same way and
+provides `language` + `help`, so the route external plugins must use is
+the one under CI — a fixture using a lattice-side world would prove the
+thing they cannot do. `one_component_can_provide_language_and_help` in
+`language_drain.rs` asserts both drains ran off the one component.
+
+**⛔ Found while proving it — a multi-seam plugin reverses only its FIRST
+seam.** Every `spawn_*` calls `PluginHost::alloc_id`, so a plugin providing
+N seams gets N host ids, one per wasm instance. The loader keeps only the
+first (`loaded_id.get_or_insert(id)`) and teardown reverses by that one.
+Token-based reversals (modes, config options, picker sources, keymap
+bindings) are unaffected — the drains capture tokens on the record.
+**Provenance-keyed ones are not**: help topics, dashboard sections and
+languages use `unregister_plugin(record.id)`, so a later seam's
+contributions stay behind after `:plugin-unload` reports success.
+
+Not hypothetical and not new: bundled `auto-pair` provides `grammar`,
+`modes`, `config`, `help` in that order, so **its `:help` pages leak on
+unload today**. Nothing covered it — the existing help-teardown test loads
+a help-ONLY plugin, and `auto_pair.rs` wires a help registry but never
+unloads.
+
+Pinned by `a_multi_seam_plugin_reverses_every_seam`, `#[ignore]`d so it is
+runnable (`cargo test -p lattice-plugin-loader -- --ignored`) and
+impossible to forget. Fixing it means deciding whether a plugin is one
+identity or many — belongs to the plugin-host track, not this one.
 
 ---
 

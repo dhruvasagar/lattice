@@ -6398,7 +6398,7 @@ host kind-branch anywhere.
 | LG.3c ✅ | The `language` WIT seam, loader drain, teardown |
 | LG.4 ✅ | Org: per-level headlines via `#eq?` predicates |
 | LG.5 ✅ | Org: folds over sections, blocks and drawers |
-| LG.6 🚧 | Docs, ledger — one item deferred, below |
+| LG.6 ✅ | Docs, ledger; org's `:help` page ships |
 
 Both gates passed, so the design's §6 fallback (bundle org natively) was never
 taken. Two decisions worth finding here rather than in a diff:
@@ -6415,16 +6415,23 @@ taken. Two decisions worth finding here rather than in a diff:
 **Phase 8b gains a second reference plugin** (`examples/org-plugin`) alongside
 the bundled `auto-pair` and `treesitter-context`.
 
-**Deferred (LG.6):** org's own `:help` page, which the slice plan wanted
-shipped *inside* the org plugin via the `help` seam. A component implements
-exactly one WIT world, so a plugin providing both `language` and `help` needs a
-combined world — and today those live in lattice's own `wit/` (`auto-pair-plugin`
-imports six interfaces). That works for bundled plugins and not for external
-ones, which cannot add a world to lattice's package. The doc text is written and
-ships at `examples/org-plugin/doc/org.md`, ready to be `include_str!`'d the
-moment external plugins can compose worlds — via WIT `include` from a
-plugin-local `wit/` that depends on lattice's package. That mechanism is the
-real work and belongs in the plugin-host track, not here.
+**External plugins can compose worlds, so org ships its `:help` page.** A
+component implements exactly one WIT world, and combined worlds live in
+lattice's `wit/` — which an external plugin cannot add to. But WIT `include`
+composes worlds and `wit-bindgen` resolves an `inline` package against the
+interfaces at `path`, so a plugin declares its world locally and gets one
+`Guest` trait with both exports, **with no change to lattice's WIT**. The
+`language-guest` fixture composes its world the same way, so the route external
+plugins must use is the one under CI.
+
+**⛔ Open bug found while proving that: a multi-seam plugin reverses only its
+FIRST seam.** Each `spawn_*` calls `alloc_id`, so N seams means N host ids; the
+loader keeps only the first and teardown reverses by it. Token-based reversals
+are fine; provenance-keyed ones (help topics, dashboard sections, languages) are
+not. Bundled `auto-pair` provides `grammar`, `modes`, `config`, `help`, so its
+`:help` pages leak on unload today. Pinned by an `#[ignore]`d test,
+`a_multi_seam_plugin_reverses_every_seam`. The fix turns on whether a plugin is
+one identity or many — plugin-host track.
 
 Design: [`../architecture/plugin-languages.md`](../architecture/plugin-languages.md).
 Slice plan: [`slice-plans/plugin-languages.md`](slice-plans/plugin-languages.md).

@@ -7,10 +7,13 @@
 # and returns an empty scope set, which degrades to "no strip" rather than an
 # error.
 #
-# `provides` order matters, as it does for auto-pair: `grammar` MUST precede
-# `modes` (the mode's keymap binds to the plugin's OWN action by name, resolved
-# against the command registry at bind time), and `theme` / `config` precede
-# `context` so the elements and options exist before the first produce call.
+# OM.0: `provides` ORDER no longer matters, here or for auto-pair. The
+# dependencies are real — `grammar` must precede `modes` (the mode's keymap
+# binds to the plugin's OWN action by name, resolved against the command
+# registry at bind time), and `theme` / `config` must precede `context` so the
+# elements and options exist before the first produce call — but the loader now
+# enforces them by sorting on `PluginSeam::drain_rank` rather than asking each
+# manifest author to remember.
 #
 # `default_mode` makes `treesitter-context-mode` enabled out of the box, and the
 # loader auto-registers `treesitter-context.enabled` to gate it — which is why

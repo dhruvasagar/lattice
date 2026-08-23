@@ -6,7 +6,8 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.0 📝 — nothing landed yet.
+**Status:** OM.0 ✅ (2026-08-24) — seam drain order is structural, and the
+gate found a real bug rather than confirming the status quo.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -69,7 +70,7 @@ files? — was retired during design by reading the excerpt model
 
 | Slice | Description | Status |
 |---|---|---|
-| OM.0 | Gate: a plugin's `grammar` seam drains before its `modes` seam | 📝 |
+| OM.0 | Gate: a plugin's `grammar` seam drains before its `modes` seam | ✅ |
 | OM.1 | `ModeRegistry` language index + `Mode::target_language` | 📝 |
 | OM.2 | `modes` seam accepts `major`; `target-language` field | 📝 |
 | OM.3 | Promote / demote headline + subtree | 📝 |
@@ -97,7 +98,7 @@ committed as it goes green, `scripts/precommit.sh <crate>` before each.
 
 ## The prerequisite slices
 
-### OM.0 — the drain-order gate 📝
+### OM.0 — the drain-order gate ✅ (2026-08-24)
 
 `mode-keymap-binding` resolves `command` against the `CommandRegistry`
 **at registration**. Org binds `<leader>ol` → `action:org-demote`, and
@@ -116,6 +117,37 @@ binding skips — logged, but invisible to the user.
 **This is a gate, not a slice.** It can come back "already correct", and
 that is a result worth pinning with a test so a loader refactor cannot
 silently reverse it.
+
+**Outcome: the order was NOT guaranteed.** The drain loop walked
+`manifest.provides` verbatim (`lattice-plugin-loader/src/lib.rs`), so the
+order came from a **guest-authored TOML file** — and both bundled
+multi-seam manifests carried a hand-written comment telling the next
+author to put `grammar` before `modes`. A load-bearing invariant
+enforced by prose inside guest input is enforced by discipline, which is
+what the codebase's own rules forbid.
+
+Fixed structurally rather than by validation: `PluginSeam::drain_rank()`
+ranks the seams by their real registration dependencies and the loader
+stable-sorts before draining, so manifest order becomes cosmetic. Ties
+keep the author's ordering. Rejected: rejecting a badly-ordered manifest
+at load — it still makes correctness the plugin author's job, and the
+author cannot see the dependency from where they are standing.
+
+Ranks: `config`/`theme`/`logging` → `language` → `grammar` → `modes` →
+`keymap` → everything else. Recorded in `drain_rank`'s own doc comment,
+which is where a new `PluginSeam` variant's author will meet it.
+
+Tests: `lattice-plugin-loader/tests/seam_drain_order.rs` (3) loads the
+`multiseam-guest` fixture — whose mode binds Normal `x` to its **own**
+grammar action — under three `provides` permutations. Note what the
+regression test asserts on the way past: the mode itself registers in
+every order, and only its *binding* silently vanishes. That is what made
+the bug invisible. Plus 3 unit tests on `drain_rank` in `manifest.rs`
+pinning the ordering itself, so a new seam variant cannot be added
+without deciding where it drains.
+
+The two bundled manifests' ordering warnings are now false and were
+rewritten to say what is actually true.
 
 ### OM.1 — the language index 📝
 

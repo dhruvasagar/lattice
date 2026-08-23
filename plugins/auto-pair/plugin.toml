@@ -1,9 +1,14 @@
 # AP.1/AP.3 — the auto-pair plugin manifest. Bundled (pre-granted). It reaches no
 # filesystem, network, or subprocess — it only reads buffer text through the
 # grammar `borrow<document>` handle and contributes grammar / modes / config
-# registry entries. `grammar` MUST precede `modes` in `provides`: the mode's
-# keymap binds to the plugin's OWN grammar actions by name, resolved against the
-# command registry at bind time, so the grammar drain must run first.
+# registry entries.
+#
+# OM.0: the ORDER of `provides` no longer matters. This mode's keymap binds to
+# the plugin's OWN grammar actions by name, resolved against the command
+# registry at bind time, so the grammar drain must run first — and the loader
+# now guarantees that by sorting on `PluginSeam::drain_rank` instead of trusting
+# this list. It reads in dependency order below because that is the clearest way
+# to write it, not because anything depends on it.
 #
 # AP.3: the `manual` style bounds its backward scan to the enclosing lexical
 # scope via the tree-sitter seam (plugin-treesitter-seam.md), which is gated on

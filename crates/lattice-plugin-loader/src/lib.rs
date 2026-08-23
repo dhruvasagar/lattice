@@ -600,7 +600,8 @@ impl PluginLoader {
             default_mode: manifest.default_mode.clone(),
             source: plugin.source.clone(),
         };
-        // EVERY host id this load issued, in `provides` order.
+        // EVERY host id this load issued, in DRAIN order (see the sort below —
+        // no longer the order `provides` lists them in).
         //
         // Each `spawn_*` issues its own — deliberately, since a provenance id
         // must never be derived from guest-controlled input and so cannot be
@@ -621,7 +622,17 @@ impl PluginLoader {
             seam_ids.push(instance.id());
             record.lifecycle = Some(instance);
         } else {
-            for seam in &manifest.provides {
+            // OM.0: drain in DEPENDENCY order, not manifest order. A
+            // `mode-keymap-binding` resolves its command name against the
+            // `CommandRegistry` at registration, so a mode binding a chord to
+            // the plugin's own grammar action needs `grammar` drained first —
+            // and `provides` is guest-controlled input, so trusting its order
+            // made a load-bearing invariant depend on a comment in someone
+            // else's TOML. `drain_rank` decides; the sort is stable, so ties
+            // keep the author's ordering.
+            let mut seams = manifest.provides.clone();
+            seams.sort_by_key(|s| s.drain_rank());
+            for seam in &seams {
                 match seam {
                     PluginSeam::PickerSource => {
                         let id = self

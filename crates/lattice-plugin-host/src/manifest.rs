@@ -169,6 +169,57 @@ pub enum PluginSeam {
 }
 
 impl PluginSeam {
+    /// Where this seam sits in the loader's drain order (OM.0). Lower drains
+    /// first; the loader stable-sorts a plugin's `provides` by this before
+    /// draining, so **the order a manifest happens to list its seams in cannot
+    /// change what registers**.
+    ///
+    /// The ordering exists because seams have real registration dependencies,
+    /// and the one that bites is `modes` on `grammar`: a
+    /// `mode-keymap-binding` resolves its `command` against the
+    /// `CommandRegistry` *at registration*, so a mode binding a chord to the
+    /// plugin's OWN grammar action needs that action already registered. Drain
+    /// the other way round and the binding is skipped with a log — the plugin
+    /// loads "successfully" and the user's chord silently does nothing.
+    ///
+    /// This used to be the plugin author's problem. Both bundled multi-seam
+    /// manifests carried a hand-written comment telling the next author to put
+    /// `grammar` before `modes`, which made a load-bearing invariant depend on
+    /// prose inside a **guest-authored** file. Sorting here makes it a property
+    /// of the seam set instead.
+    ///
+    /// The ranks, and why each is where it is:
+    ///
+    /// | rank | seams | reason |
+    /// |---|---|---|
+    /// | 0 | `config`, `theme`, `logging` | declarations later seams may reference — options and theme elements exist before any producer runs |
+    /// | 1 | `language` | a major mode may declare `target-language`; the language should exist first |
+    /// | 2 | `grammar` | registers commands into the `CommandRegistry` |
+    /// | 3 | `modes` | keymap bindings resolve command *names* — needs rank 2 |
+    /// | 4 | `keymap` | user-layer bindings, same name resolution |
+    /// | 5 | everything else | producers and data seams with no registration dependency |
+    ///
+    /// Ties keep manifest order (the sort is stable), so an author's intent is
+    /// respected everywhere it cannot break anything.
+    pub fn drain_rank(self) -> u8 {
+        match self {
+            PluginSeam::Config | PluginSeam::Theme | PluginSeam::Logging => 0,
+            PluginSeam::Language => 1,
+            PluginSeam::Grammar => 2,
+            PluginSeam::Modes => 3,
+            PluginSeam::Keymap => 4,
+            PluginSeam::PickerSource
+            | PluginSeam::CompletionSource
+            | PluginSeam::Events
+            | PluginSeam::Decorations
+            | PluginSeam::Context
+            | PluginSeam::PluginManager
+            | PluginSeam::ErrorParser
+            | PluginSeam::Help
+            | PluginSeam::Dashboard => 5,
+        }
+    }
+
     /// The dashed wire / display name (matches the WIT interface).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -666,5 +717,58 @@ mod tests {
             PluginManifest::from_toml_str(text),
             Err(ManifestError::EditorCapability(_))
         ));
+    }
+
+    /// OM.0 — the dependency the whole sort exists for. A mode's keymap
+    /// binding resolves its command name at registration, so `grammar` must
+    /// drain before `modes`.
+    #[test]
+    fn grammar_drains_before_modes() {
+        assert!(PluginSeam::Grammar.drain_rank() < PluginSeam::Modes.drain_rank());
+    }
+
+    /// Declarations others reference come first; name-resolving seams come
+    /// after the seam that registers the names.
+    #[test]
+    fn drain_ranks_order_declarations_before_consumers() {
+        for declaring in [PluginSeam::Config, PluginSeam::Theme, PluginSeam::Language] {
+            assert!(
+                declaring.drain_rank() < PluginSeam::Grammar.drain_rank(),
+                "{declaring} declares things later seams read"
+            );
+        }
+        // `keymap` binds command names too, so it cannot precede `grammar`.
+        assert!(PluginSeam::Grammar.drain_rank() < PluginSeam::Keymap.drain_rank());
+    }
+
+    /// Sorting must be total and stable — every seam has a rank, and equal
+    /// ranks keep the author's ordering. Guards against a new `PluginSeam`
+    /// variant being added without a thought about where it drains.
+    #[test]
+    fn sorting_is_stable_and_order_independent() {
+        let ranked = |mut v: Vec<PluginSeam>| {
+            v.sort_by_key(|s| s.drain_rank());
+            v
+        };
+        let a = ranked(vec![
+            PluginSeam::Modes,
+            PluginSeam::Config,
+            PluginSeam::Grammar,
+        ]);
+        let b = ranked(vec![
+            PluginSeam::Grammar,
+            PluginSeam::Modes,
+            PluginSeam::Config,
+        ]);
+        assert_eq!(a, b, "two permutations sort to the same drain order");
+        assert_eq!(
+            a,
+            vec![PluginSeam::Config, PluginSeam::Grammar, PluginSeam::Modes]
+        );
+
+        // Equal ranks preserve input order (stability), so an author's
+        // intent survives wherever it cannot break anything.
+        let same_rank = ranked(vec![PluginSeam::Help, PluginSeam::Events]);
+        assert_eq!(same_rank, vec![PluginSeam::Help, PluginSeam::Events]);
     }
 }

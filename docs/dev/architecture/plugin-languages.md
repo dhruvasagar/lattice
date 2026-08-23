@@ -251,8 +251,8 @@ later would be the expensive order.
 
 ### 3.1 Outcome (LG.0, 2026-08-22): they coexist
 
-**Answered: the two runtimes coexist.** `crates/lattice-plugin-host/tests/two_wasmtime_runtimes.rs`,
-behind `--features lg0-wasm-grammar-spike`.
+**Answered: the two runtimes coexist.** `crates/lattice-plugin-host/tests/two_wasmtime_runtimes.rs`
+— unconditional as of LG.3b, so it guards the default CI path.
 
 - Both link. `wasmtime 46` and `wasmtime-c-api 36` (with its own
   Cranelift) compile into one test binary.
@@ -276,10 +276,35 @@ identically to the native one, and costs 2.0× cold / 1.25×
 incremental. (The belief that building one needs the tree-sitter CLI
 toolchain was also wrong; see §4.2.)
 
-**The cost stands regardless.** Two Cranelift copies is real binary
-size, and the eventual product build must decide whether the `wasm`
-feature is always on or gated behind a cargo feature the way the GPUI
-peer is. Deferred to LG.3; noted here so it is not forgotten.
+### 3.2 The cost, measured — and the gating decision (LG.3b, 2026-08-23)
+
+"Two Cranelift copies" sounded like it might be disqualifying. Measured on
+the same release binary with one added live reference to `WasmStore` (so
+the linker could not strip it), thin LTO, `codegen-units = 1`,
+`strip = "symbols"`:
+
+**+5.7 MiB** (19.2 → 24.9 MiB).
+
+And **zero runtime cost when unused**: tree-sitter creates no `Engine`
+until a language plugin actually loads, so a session with none installs no
+second set of signal handlers and pays nothing but disk.
+
+**Decision: `tree-sitter/wasm` is ON unconditionally, not behind a cargo
+feature.** Gating it the way the GPUI peer is gated looked like the
+symmetric choice and is not. TUI-only is a real deployment — headless,
+SSH — so `gui` gates a genuine alternative. "Editor without plugin
+languages" is not a deployment anyone wants: it is a stock build where a
+user installs an org plugin and gets silence, with the cause being a build
+flag invisible to them. That is the paramount-#2 hole this whole track
+exists to close, reintroduced at the last step.
+
+The second cost of gating is structural rather than user-visible: a
+permanent `#[cfg]` seam through the language subsystem, every path needing
+a feature-off variant, and CI obliged to build both configurations or let
+one rot.
+
+**The cost that is real and worth naming:** a cold build now compiles a
+second Cranelift. Incremental builds are unaffected once it is cached.
 
 ## 4. Performance
 

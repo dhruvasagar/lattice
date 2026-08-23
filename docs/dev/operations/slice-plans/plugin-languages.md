@@ -21,6 +21,7 @@ LG.1  wasm-grammar bench              ← GATE. Records the parse cost.
 LG.2  Lang::Plugin + runtime registry (no WIT yet)
   │
 LG.3a the live LangRegistry (grammar + queries, no WIT)
+  │   └─ wasm runtime made unconditional (design §3.2)
   │
 LG.3b the `language` WIT seam + drain + teardown
   │
@@ -122,10 +123,11 @@ which builds through the script and asserts wasm and native trees are
 identical cold **and** after an incremental edit, so the recipe itself
 is under test rather than being a README step that rots.
 
-*Residual:* `lattice-syntax`'s `wasm-grammar` feature is off by default
-and CI does not run it, so a wasmtime bump on either side is caught only
-by someone opting in. Wiring it into CI belongs with LG.3b, when the
-feature stops being bench-only.
+*Residual — CLOSED by LG.3b (2026-08-23).* The `wasm-grammar` feature was
+off by default, so a wasmtime bump was caught only by someone opting in.
+`tree-sitter/wasm` is now unconditional and both this crate's
+`tests/wasm_grammar.rs` and LG.0's `two_wasmtime_runtimes.rs` run in the
+default CI path.
 
 ### LG.2 — `Lang::Plugin` + the runtime registry ✅ (2026-08-23)
 
@@ -223,11 +225,14 @@ business — which is the same property §2.1 relies on.
 
 ### LG.3b — the `language` WIT seam 📝
 
-**Open decision, deferred here by design §3.1:** whether `tree-sitter/wasm`
-(and its second Cranelift) is always linked or sits behind a cargo feature
-the way the GPUI peer does. Default-off would mean a plugin language
-silently fails to load in a stock build, which is a paramount-#2 hole;
-always-on is real binary size. Measure the delta before choosing.
+**Decision taken (2026-08-23), design §3.2:** `tree-sitter/wasm` is ON
+unconditionally — **+5.7 MiB**, measured, with zero runtime cost when
+unused. Gating it would have meant a stock build where a user's language
+plugin silently does nothing, plus a permanent `#[cfg]` seam CI must build
+both ways. The GPUI `gui` feature is not the precedent it looks like:
+TUI-only is a real deployment, "no plugin languages" is not. Landed ahead
+of the seam, which also put LG.0's and LG.1's guards into the default CI
+path.
 
 - `wit/language.wit` per design §2.2 — `register-language(spec)`, data
   only, no callbacks, guest dropped after registration (the `help` seam

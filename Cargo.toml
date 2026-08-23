@@ -266,7 +266,19 @@ arboard = "3.6"
 base64 = "0.22"
 
 # Syntax (tree-sitter)
-tree-sitter = "0.26.11"
+# LG.3b: `wasm` is ON unconditionally. It pulls `wasmtime-c-api 36`
+# alongside the plugin host's `wasmtime 46` — LG.0 proved the two coexist
+# under a forced guest trap in both init orders, and LG.3b measured the
+# cost at +5.7 MiB of release binary with ZERO runtime cost when unused
+# (tree-sitter creates no engine until a language plugin loads).
+#
+# Not behind a cargo feature, deliberately. Gating it would mean a stock
+# build where a user's language plugin silently does nothing — the
+# paramount-#2 hole this track exists to close — and a permanent `#[cfg]`
+# seam through the language subsystem that CI would have to build both
+# ways or watch rot. The cost that IS real: a cold build now compiles a
+# second Cranelift.
+tree-sitter = { version = "0.26.11", features = ["wasm"] }
 # Re-exported by tree-sitter for `QueryCursor::matches`. Direct dep
 # so consumers (lattice-ui-tui's fold provider, future textobjects)
 # can `use streaming_iterator::StreamingIterator` without going

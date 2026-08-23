@@ -33,7 +33,7 @@
 //! ```sh
 //! scripts/build-wasm-grammar.sh markdown \
 //!     "$(ls -d ~/.cargo/registry/src/*/tree-sitter-md-*/tree-sitter-markdown)/src"
-//! cargo bench -p lattice-syntax --features wasm-grammar --bench wasm_vs_native_parse
+//! cargo bench -p lattice-syntax --bench wasm_vs_native_parse
 //! ```
 //!
 //! The script needs only clang + rustup — no emscripten, no docker, no
@@ -41,15 +41,6 @@
 //! is missing the bench **says so and skips** rather than silently
 //! reporting native-only numbers, which would read as "wasm is free".
 
-#[cfg(not(feature = "wasm-grammar"))]
-fn main() {
-    eprintln!(
-        "wasm_vs_native_parse: requires --features wasm-grammar \
-         (pulls tree-sitter's second wasmtime; see plugin-languages.md §3)"
-    );
-}
-
-#[cfg(feature = "wasm-grammar")]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 /// Markdown that exercises the parser broadly rather than one node
@@ -57,7 +48,6 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 /// the external scanner (block continuation, fence matching) is on the
 /// measured path. A corpus of nothing but paragraphs would flatter both
 /// sides equally but tell us less.
-#[cfg(feature = "wasm-grammar")]
 fn markdown_corpus(n_sections: usize) -> String {
     let mut s = String::with_capacity(n_sections * 320);
     s.push_str("# Top\n\n");
@@ -77,7 +67,6 @@ fn markdown_corpus(n_sections: usize) -> String {
 /// The wasm grammar, or `None` when it has not been built. Returned
 /// rather than `expect`ed so a plain `cargo bench` on a fresh checkout
 /// reports the missing step instead of failing opaquely.
-#[cfg(feature = "wasm-grammar")]
 fn wasm_grammar_bytes() -> Option<Vec<u8>> {
     let path = std::env::var("LATTICE_WASM_GRAMMAR").unwrap_or_else(|_| {
         format!(
@@ -92,7 +81,6 @@ fn wasm_grammar_bytes() -> Option<Vec<u8>> {
 /// sees it: `Tree::edit` with the byte/point delta, then a reparse
 /// passing the old tree. This is the shape the editor's reparse path
 /// uses, so the number transfers.
-#[cfg(feature = "wasm-grammar")]
 fn edited(corpus: &str) -> (String, tree_sitter::InputEdit) {
     // Insert a word at the start of a body line roughly halfway down.
     let mid = corpus.len() / 2;
@@ -119,7 +107,6 @@ fn edited(corpus: &str) -> (String, tree_sitter::InputEdit) {
     (out, edit)
 }
 
-#[cfg(feature = "wasm-grammar")]
 fn bench(c: &mut Criterion) {
     let Some(wasm) = wasm_grammar_bytes() else {
         eprintln!(
@@ -215,7 +202,5 @@ fn bench(c: &mut Criterion) {
     }
 }
 
-#[cfg(feature = "wasm-grammar")]
 criterion_group!(benches, bench);
-#[cfg(feature = "wasm-grammar")]
 criterion_main!(benches);

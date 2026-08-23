@@ -15,13 +15,15 @@
 //! two engines and asserts nothing crashed would pass against the broken
 //! world.
 //!
-//! Gated behind `--features lg0-wasm-grammar-spike`, so an ordinary build
-//! never links the second runtime while the gate is open.
+//! **Runs unconditionally.** It was gated behind a spike feature while the
+//! question was open; LG.3b made `tree-sitter/wasm` a plain dependency
+//! (+5.7 MiB, no runtime cost when unused), so this now guards the default
+//! CI path rather than waiting for someone to opt in — which is the only
+//! version of a regression guard worth having.
 //!
 //! **This file stays after the gate closes.** A wasmtime bump on either side
 //! re-opens the question, and this is what re-answers it.
 
-#![cfg(feature = "lg0-wasm-grammar-spike")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use lattice_core::Buffer;

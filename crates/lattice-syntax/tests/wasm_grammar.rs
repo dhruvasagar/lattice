@@ -21,7 +21,6 @@
 //! Gated on `--features wasm-grammar`, which pulls tree-sitter's own
 //! wasmtime 36 alongside the plugin host's 46 (LG.0 cleared that; see
 //! `plugin-languages.md` §3.1). An ordinary build links neither.
-#![cfg(feature = "wasm-grammar")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};

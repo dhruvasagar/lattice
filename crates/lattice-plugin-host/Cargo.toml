@@ -131,14 +131,6 @@ tracing = { workspace = true }
 # dev-dependency only). Chosen over `tokio::sync` to keep that invariant.
 futures = { workspace = true }
 
-[features]
-# LG.0 gate (plugin-languages.md §3). `tree-sitter/wasm` pulls
-# `wasmtime-c-api 36` while this crate runs `wasmtime 46` — two JIT runtimes,
-# two sets of SIGSEGV/SIGBUS guard-page handlers, in one process. OFF by
-# default and exercised only by `tests/two_wasmtime_runtimes.rs`, so a normal
-# build never links the second runtime while the question is open.
-lg0-wasm-grammar-spike = ["tree-sitter/wasm"]
-
 [dev-dependencies]
 # Assembles the hand-written lifecycle components (no-op / busy / spin) from
 # WebAssembly Text to component bytes inside the tests -- no wasm32-wasip2

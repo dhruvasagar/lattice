@@ -76,6 +76,8 @@ impl Guest for Component {
                 chord: "x".to_string(),
                 command: "multiseam-declines".to_string(),
             }],
+            // OM.2: majors claim a language; this is a minor, so `none`.
+            target_language: None,
         });
     }
 

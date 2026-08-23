@@ -6,9 +6,11 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.1 ✅ (2026-08-24). OM.0 ✅ — seam drain order is structural,
-and the gate found a real bug rather than confirming the status quo.
-OM.1 ✅ — a plugin language can have a major mode.
+**Status:** OM.2 ✅ (2026-08-24) — **the prerequisites are done and a `.org`
+file opens in `org-mode`.** OM.0 ✅ seam drain order is structural (the gate
+found a real bug rather than confirming the status quo); OM.1 ✅ the registry
+language index; OM.2 ✅ majors cross the `modes` seam. Next: OM.3, the first
+slice where the plugin edits.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -73,7 +75,7 @@ files? — was retired during design by reading the excerpt model
 |---|---|---|
 | OM.0 | Gate: a plugin's `grammar` seam drains before its `modes` seam | ✅ |
 | OM.1 | `ModeRegistry` language index + `Mode::target_language` | ✅ |
-| OM.2 | `modes` seam accepts `major`; `target-language` field | 📝 |
+| OM.2 | `modes` seam accepts `major`; `target-language` field | ✅ |
 | OM.3 | Promote / demote headline + subtree | 📝 |
 | OM.4 | Headline motions + `ih`/`ah`/`is`/`as` text objects | 📝 |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
@@ -199,7 +201,7 @@ graceful fallback when the `language` seam loads without a major; the
 built-in table winning; kind still beating language; a minor not
 becoming the major). Native only — no WASM, no org.
 
-### OM.2 — majors over the seam 📝
+### OM.2 — majors over the seam ✅ (2026-08-24)
 
 - `mode_host.rs` accepts `major`; delete the reject arm and rewrite
   `a_major_kind_is_rejected_in_phase_7` into its positive counterpart.
@@ -214,6 +216,54 @@ becoming the major). Native only — no WASM, no org.
   modes: a major with no `target-language` is manual-only; a major
   whose id lacks the `-mode` suffix is still rejected.
 - *doc:* fragment §3.1, §3.3.
+
+**Landed 2026-08-24.** `mode-kind::major` is accepted;
+`mode-declaration.target-language` crosses as `option<string>`. `PluginMode`
+carries its kind and language instead of hard-coding `ModeKind::Minor`.
+
+**Two things the slice found that the plan had not listed**, both of which
+would have been silent:
+
+1. **`bind_mode_keymap` hard-coded `KeymapLayer::MinorMode(id)`.** A major's
+   chords would have landed in a minor layer under its own name — resolving,
+   but at the wrong priority, so a minor could no longer refine its major.
+   The layer now follows the kind. `KeymapCapability::OwnedLayer` was extended
+   to authorise `MajorMode(id)` as well: the capability names a mode and a mode
+   has one layer, so scoping it to minors would have meant giving a plugin
+   major a *broader* capability to do a narrower thing.
+2. **Teardown removed only `MinorMode(id)`.** An unloaded plugin major would
+   have leaked its keymap layer. Teardown now reads the mode's kind BEFORE
+   unregistering, since afterwards the registry no longer knows.
+
+A `target-language` on a MINOR is dropped with a warning at both layers — in
+`register_plugin_mode` (so the message names the plugin's mode) and again in
+the registry (so no other caller can bypass it).
+
+The org plugin now composes a third world (`modes-plugin`) and declares
+`org-mode` with `target_language: Some("org")` and a deliberately **empty
+keymap** — this slice is about a plugin language having a major at all.
+
+Tests: 4 unit in `mode_host.rs` (major registers as a major and claims its
+language; a major with no language claims nothing; a minor's claim is dropped
+while the mode still registers; a major's keymap lands in its own gated
+`MajorMode` layer), 1 new e2e in `mode_source.rs` through a real guest, and
+`lattice-host/tests/org_major_mode.rs` (2) which walks the whole path with the
+REAL reference plugin: discover → load → `language` + `modes` drain → `:e
+notes.org` → the editor's generic activation resolves `org-mode`. Its peer
+asserts the degradation: a language-only install opens org files in
+`text-mode`, highlighted and foldable, which is a good outcome rather than an
+error. The `modes-guest` fixture gained a major and a language-greedy minor so
+the seam's own suite covers both without needing the out-of-workspace org
+build.
+
+**Acid test:** zero `Editor::` methods, zero host `Action` variants, no
+`BufferKind::Org`, no `Lang` arm. `org_major_mode.rs` asserts the behaviour;
+the absence is visible in the diff.
+
+The three "majors are Phase 8" deferral sites were corrected rather than left
+to drift: `mode_host.rs`'s reject arm (and its test, rewritten into its
+positive counterpart), `wit/modes.wit`'s header and `mode-kind` doc, and the
+two bullets in `plugin-host.md`.
 
 ## The outliner
 

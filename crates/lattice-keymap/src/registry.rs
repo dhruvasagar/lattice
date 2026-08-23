@@ -133,9 +133,15 @@ fn capability_allows(capability: KeymapCapability, layer: KeymapLayer) -> bool {
         (KeymapCapability::Full, _) => true,
         (KeymapCapability::User, KeymapLayer::User) => true,
         (KeymapCapability::MinorMode, KeymapLayer::MinorMode(_) | KeymapLayer::Buffer) => true,
+        // OM.2: `OwnedLayer` authorises the named mode's OWN layer, whichever
+        // kind the mode is. A plugin-declared MAJOR (`org-mode`) writes to
+        // `MajorMode(org-mode)` under exactly the same gate a plugin minor
+        // writes to `MinorMode(...)` — the capability names a mode, and a mode
+        // has one layer. Restricting it to minors would have meant handing a
+        // plugin major a broader capability to do a narrower thing.
         (
             KeymapCapability::OwnedLayer { mode_id: cap_mode },
-            KeymapLayer::MinorMode(layer_mode),
+            KeymapLayer::MinorMode(layer_mode) | KeymapLayer::MajorMode(layer_mode),
         ) => cap_mode == layer_mode,
         _ => false,
     }

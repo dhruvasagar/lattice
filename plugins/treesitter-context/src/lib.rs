@@ -365,6 +365,8 @@ impl Guest for Component {
                 // precedes `modes` in the manifest's `provides`.
                 command: "context-up".to_string(),
             }],
+            // OM.2: majors claim a language; this is a minor, so `none`.
+            target_language: None,
         });
     }
 

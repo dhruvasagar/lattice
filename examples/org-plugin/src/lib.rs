@@ -6,10 +6,15 @@
 //! source and are compiled host-side at registration, so a malformed one
 //! fails at load naming the file.
 //!
-//! This is the whole plugin. Everything else org needs — headline promotion,
-//! TODO cycling, visibility cycling, agenda — is org-mode the MAJOR MODE, a
-//! separate track riding seams that already exist (`modes`, `keymap`,
-//! `grammar`). It is gated on nothing here.
+//! OM.2 adds the third seam: `modes`, declaring `org-mode` as the MAJOR for
+//! the language registered above. Until majors crossed the seam a `.org` file
+//! opened in `text-mode` however good the grammar was, because
+//! `major_mode_id_for_lang` is a hand-written match over the `Lang` enum and
+//! has no arm for a language the host has never heard of.
+//!
+//! The mode is declared with an EMPTY keymap here on purpose. This slice is
+//! about a plugin language getting a major at all; the chords and the actions
+//! they fire arrive with the slices that implement them (org-mode.md §5).
 
 // A plugin that provides TWO seams needs a world that imports both, and a
 // component implements exactly one world. Bundled plugins get theirs written
@@ -33,6 +38,7 @@ wit_bindgen::generate!({
         world org-plugin {
             include lattice:plugin-host/language-plugin@0.1.0;
             include lattice:plugin-host/help-plugin@0.1.0;
+            include lattice:plugin-host/modes-plugin@0.1.0;
         }
     "#,
     path: "../../wit",
@@ -42,6 +48,9 @@ wit_bindgen::generate!({
 
 use lattice::plugin_host::help::register_topic;
 use lattice::plugin_host::language::{LanguageSpec, register_language};
+use lattice::plugin_host::modes::{
+    ActivationPolicy, ModeCapabilities, ModeDeclaration, ModeKind, register_mode,
+};
 
 const GRAMMAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammar.wasm"));
 
@@ -63,6 +72,31 @@ impl Guest for Component {
             injections: None,
             indents: None,
             textobjects: None,
+        });
+    }
+
+    /// `org-mode`, the major for the language declared above (OM.2).
+    ///
+    /// `target_language` is the whole point: it names the language by the same
+    /// canonical string `register_language` used, the host indexes it, and a
+    /// `.org` document resolves onto this mode through the ordinary
+    /// `resolve_major_mode` path — the same one `rust-mode` takes. There is no
+    /// org branch anywhere in the host.
+    ///
+    /// `Manual` activation is not a contradiction: the policy governs
+    /// *explicit* activation, while a major bound to a language is activated by
+    /// language resolution. It is the minors (org-todo, org-table) that will
+    /// carry `Majors(["org-mode"])`.
+    ///
+    /// Empty keymap by design at this slice — see the module doc.
+    fn register_modes() {
+        register_mode(&ModeDeclaration {
+            id: "org-mode".to_string(),
+            kind: ModeKind::Major,
+            activation_policy: ActivationPolicy::Manual,
+            capabilities: ModeCapabilities::empty(),
+            keymap: vec![],
+            target_language: Some("org".to_string()),
         });
     }
 

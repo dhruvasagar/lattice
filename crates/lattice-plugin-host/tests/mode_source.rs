@@ -3,10 +3,13 @@
 //! Instantiates the `modes-guest` fixture (a `wasm32-wasip2` `modes-plugin`
 //! component) via [`PluginHost::spawn_mode_plugin`], which drives its
 //! `register-modes` export against a native [`ModeRegistry`]. Proves the seam:
-//!   - the guest's imported `register-mode` calls land minor modes in the SAME
+//!   - the guest's imported `register-mode` calls land modes in the SAME
 //!     registry builtins use, carrying their activation policy + capabilities,
 //!   - a mis-suffixed id is rejected by the registry's `-mode` gate (not in the
-//!     returned ids, not in the registry).
+//!     returned ids, not in the registry),
+//!   - OM.2: a MAJOR registers as a major, claims its language in the registry's
+//!     language index, and binds into its own `MajorMode` layer — while a MINOR's
+//!     language claim is dropped rather than honoured.
 //!
 //! Skips when the fixture wasn't built (no `wasm32-wasip2` target — see build.rs).
 
@@ -61,11 +64,20 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
         .await
         .expect("spawn mode plugin");
 
-    // Two well-formed minor modes registered; the mis-suffixed `not-suffixed` was
+    // Four well-formed modes registered; the mis-suffixed `not-suffixed` was
     // rejected by the registry's `-mode` gate (not returned, not registered).
-    assert_eq!(ids.len(), 2, "two modes accepted: {ids:?}");
-    assert!(ids.iter().any(|id| id.as_str() == "git-blame-mode"));
-    assert!(ids.iter().any(|id| id.as_str() == "lsp-lens-mode"));
+    assert_eq!(ids.len(), 4, "four modes accepted: {ids:?}");
+    for expected in [
+        "git-blame-mode",
+        "lsp-lens-mode",
+        "fixture-lang-mode",
+        "fixture-greedy-mode",
+    ] {
+        assert!(
+            ids.iter().any(|id| id.as_str() == expected),
+            "{expected} accepted"
+        );
+    }
     assert!(registry.is_registered(ModeId::new("git-blame-mode")));
     assert!(
         !registry.is_registered(ModeId::new("not-suffixed")),
@@ -104,5 +116,82 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
             LookupResult::Unbound
         ),
         "the gated binding does not fire when the mode is inactive"
+    );
+}
+
+/// OM.2 — a plugin declares a MAJOR and claims a language, end-to-end through a
+/// real guest. Before this the host rejected `major` outright, so a
+/// plugin-contributed language had no route to a major mode at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_declares_a_major_that_claims_its_language_end_to_end() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: modes fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+        .expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile modes fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+
+    let mut registry = ModeRegistry::default();
+    let mut commands = CommandRegistry::new();
+    let _ = lattice_grammar::ex_commands::populate(&mut commands);
+    let keymap = KeymapHandle::new();
+
+    host.spawn_mode_plugin(
+        &component,
+        &manifest,
+        TrustTier::Bundled,
+        PluginBudget::event(),
+        &mut registry,
+        &commands,
+        &keymap,
+    )
+    .await
+    .expect("spawn mode plugin");
+
+    // It registered AS a major — not silently downgraded, which is what the
+    // pre-OM.2 host would have had to do if it had accepted the declaration.
+    let major = ModeId::new("fixture-lang-mode");
+    let entry = registry.get(major).expect("the major registered");
+    assert_eq!(entry.kind(), lattice_mode::ModeKind::Major);
+
+    // And it owns its language, so `resolve_major_mode` puts documents of that
+    // language onto it. This is the whole point of the slice.
+    assert_eq!(
+        registry.find_major_for_lang("fixturelang"),
+        Some(major),
+        "the major claimed its language in the registry's language index"
+    );
+
+    // The minor that ALSO claimed the language registered, but did not win it —
+    // a buffer has exactly one major, and it is not this.
+    let greedy = ModeId::new("fixture-greedy-mode");
+    assert!(registry.is_registered(greedy));
+    assert_ne!(
+        registry.find_major_for_lang("fixturelang"),
+        Some(greedy),
+        "a minor's language claim is dropped, not honoured"
+    );
+
+    // The major's keymap landed in its OWN `MajorMode` layer, gated the same
+    // way a minor's is — a major layer is not always-on (K.1.c).
+    let chord = lattice_protocol::parse_chord_sequence("<C-y>").expect("chord parses");
+    assert!(
+        matches!(
+            keymap.lookup_with_context(BindingMode::Normal, &chord, &[major]),
+            LookupResult::Bound { .. }
+        ),
+        "the major's binding resolves when it is the active major"
+    );
+    assert!(
+        matches!(
+            keymap.lookup_with_context(BindingMode::Normal, &chord, &[]),
+            LookupResult::Unbound
+        ),
+        "and not when it is not"
     );
 }

@@ -74,6 +74,8 @@ impl Guest for Component {
                     command: "ex:write".to_string(),
                 },
             ],
+            // OM.2: majors claim a language; this is a minor, so `none`.
+            target_language: None,
         });
     }
 }

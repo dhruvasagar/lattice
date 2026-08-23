@@ -1265,8 +1265,11 @@ lands the declaration WIT + registration path. **Depends:** PH7.7, PH7.9.
 **Scope note.** The `Mode` trait is rich, but only `id()`/`kind()`/`on_activate()` are required
 (all else defaults). A WASM mode declares the data-crossable subset; its *behavior* is composed
 from the other seams (keymap→commands 11b; action bodies via the grammar `register-action`
-trampoline PH7.7). Lifecycle callbacks, decorations, completion-sources, typed option-overrides,
-and major modes are deferred (Phase 8 / other seams).
+trampoline PH7.7). Lifecycle callbacks, decorations, completion-sources and typed option-overrides are deferred
+(Phase 8 / other seams). **Major modes are no longer deferred** — OM.2 landed them
+(`slice-plans/org-mode.md`), because a plugin-contributed *language* can get a major no other
+way: `major_mode_id_for_lang` is a hand-written match over `Lang` with no arm for
+`Lang::Plugin(_)`.
 
 #### PH7.11a — declaration + registration ✅ (2026-07-13)
 - `wit/modes.wit`: filled the stub — `enum mode-kind`, `variant activation-policy {manual, global,
@@ -1495,7 +1498,9 @@ already enforces the four-artefact "log + skip, never panic" rule.
 
 ## Out of scope (deferred — own fragments + slice plans)
 
-- **Modes-as-components (bundled major/minor modes)** — Phase 8. PH7.11 lands only the
+- **Modes-as-components (bundled major/minor modes)** — Phase 8. (OM.2 has since lifted the
+  major-mode restriction on the *seam*; what remains is repackaging BUILT-IN modes as
+  components.) PH7.11 lands only the
   declaration WIT + registration path.
 - **Bundled-plugin manager & LSP server manager** — Phase 8 (design.md §5.5.6); the LSP
   manager is the lighthouse that validates WIT sizing.

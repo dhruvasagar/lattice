@@ -382,6 +382,8 @@ impl Guest for Component {
                 bind("<C-j>", "auto-pair-close-manual"),
                 bind("<BS>", "auto-pair-backspace"),
             ],
+            // OM.2: majors claim a language; this is a minor, so `none`.
+            target_language: None,
         });
     }
 

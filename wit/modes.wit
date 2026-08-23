@@ -7,16 +7,22 @@ package lattice:plugin-host@0.1.0;
 /// builtins use, so `:describe-mode` / mode introspection treat it uniformly.
 ///
 /// PH7.11a lands the declaration + registration path (this file); keymap bindings
-/// (chord→command-name at `KeymapLayer::MinorMode(id)`, the `KeymapCapability`
-/// write-gate) are PH7.11b; lifecycle callbacks / decorations / typed
-/// option-overrides / major modes / bundled modes-as-components are Phase 8.
+/// (chord→command-name at the mode's OWN layer, the `KeymapCapability`
+/// write-gate) are PH7.11b. **OM.2 lands major modes** — a plugin that
+/// contributes a language contributes its major too, which is the only way a
+/// plugin language can have one (`Lang::Plugin(_)` has no arm in the host's
+/// hand-written table). Lifecycle callbacks / decorations / typed
+/// option-overrides / bundled modes-as-components remain Phase 8.
 ///
 /// The CANONICAL, language-agnostic surface — any component-model language calls
 /// `register-mode` directly (see the WIT-canonical principle).
 interface modes {
-    /// Major (content-type identity) vs minor (orthogonal behavior). PH7.11a
-    /// registers `minor` only; `major` crosses for forward-compatibility but the
-    /// host rejects it for now (majors are Phase 8).
+    /// Major (content-type identity) vs minor (orthogonal behavior). Both
+    /// register (OM.2); a buffer has exactly one major and any number of
+    /// minors. A major's keymap lands at `KeymapLayer::MajorMode(id)`, below
+    /// active minors and above the built-in vim grammar — so a minor can
+    /// refine what its major bound, and neither can shadow the grammar
+    /// globally.
     enum mode-kind {
         major,
         minor,
@@ -80,6 +86,24 @@ interface modes {
         activation-policy: activation-policy,
         capabilities: mode-capabilities,
         keymap: list<mode-keymap-binding>,
+        /// OM.2: for a MAJOR, the language this mode is the default major for,
+        /// by canonical name (`"org"`) — the name the plugin's `language` seam
+        /// registered. The host indexes it (`ModeRegistry::find_major_for_lang`)
+        /// and a document of that language activates this mode, the same path a
+        /// built-in language major takes.
+        ///
+        /// Ignored (with a warning) on a `minor`: a buffer has exactly one
+        /// major, and indexing a minor here would install it AS the major. A
+        /// minor that wants to ride a major names it in
+        /// `activation-policy.majors` instead.
+        ///
+        /// `none` on a major means manual activation only — it is not the
+        /// default for any language.
+        ///
+        /// A language the host resolves through its own table (`rust`,
+        /// `markdown`, …) is NOT claimable: the built-in table is consulted
+        /// first, so a claim on one is inert rather than a hijack.
+        target-language: option<string>,
     }
 
     /// Declare a mode. Records the declaration; the host builds a `PluginMode`

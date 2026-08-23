@@ -1989,6 +1989,10 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
             policy,
             caps,
             keymap,
+            // OM.2: crosses as a plain string; `register_plugin_mode` decides
+            // whether it means anything (majors only) and the registry
+            // indexes it.
+            target_language: decl.target_language,
         });
     }
 

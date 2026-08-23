@@ -19,9 +19,16 @@
 //! drains them and registers each into a `&mut ModeRegistry` (registration needs
 //! `&mut`, not a live handle — unlike config's `Arc<ConfigRegistry>`).
 //!
-//! PH7.11a lands minor-mode declaration + registration only. Keymap bindings
-//! (PH7.11b), lifecycle callbacks, decorations, typed option-overrides, and major
-//! modes are deferred (fragment / Phase 8).
+//! PH7.11a lands mode declaration + registration; PH7.11b the keymap bindings.
+//! **OM.2 adds major modes**, because a plugin-contributed *language* can get a
+//! major no other way: `major_mode_id_for_lang` is a hand-written match over the
+//! `Lang` enum and has no arm for `Lang::Plugin(_)`. A declared major claims its
+//! language through `target-language`, the registry indexes it
+//! (`ModeRegistry::find_major_for_lang`), and a document of that language
+//! activates it through the same resolver a built-in major uses.
+//!
+//! Lifecycle callbacks, decorations and typed option-overrides remain deferred
+//! (fragment / Phase 8).
 
 use lattice_grammar::source::SourceLocation;
 use lattice_grammar::{CommandInvocation, CommandRegistry};
@@ -73,6 +80,8 @@ pub(crate) struct PluginModeDecl {
     pub policy: ActivationPolicy,
     pub caps: CapabilitySet,
     pub keymap: Vec<PluginKeymapBinding>,
+    /// OM.2: the language a MAJOR claims (`Some("org")`). Ignored on a minor.
+    pub target_language: Option<String>,
 }
 
 /// The per-plugin accumulator the `modes::Host` impl records into during
@@ -95,16 +104,22 @@ impl ModeContributions {
     }
 }
 
-/// A plugin-declared minor mode — a marker `Mode` (the `EmacsKeysMode` shape):
-/// it carries an id + activation policy + capability requirements, allocates no
-/// per-buffer resources (`Guard = ()`), and its `on_activate` is a no-op. The
+/// A plugin-declared mode — a marker `Mode` (the `EmacsKeysMode` shape): it
+/// carries an id + kind + activation policy + capability requirements, allocates
+/// no per-buffer resources (`Guard = ()`), and its `on_activate` is a no-op. The
 /// mode's *behavior* is composed from the other seams — keymap bindings (PH7.11b)
 /// bind its chords to commands; action bodies arrive via the grammar
 /// `register-action` trampoline (PH7.7). Lifecycle callbacks are Phase 8.
 struct PluginMode {
     id: ModeId,
+    kind: ModeKind,
     policy: ActivationPolicy,
     caps: CapabilitySet,
+    /// OM.2: the language this mode is the default major for. Already filtered
+    /// to majors by `register_plugin_mode`, and filtered again by the registry
+    /// — belt and braces, because installing a minor as a buffer's major is
+    /// not a failure that announces itself.
+    target_language: Option<String>,
 }
 
 impl Mode for PluginMode {
@@ -115,9 +130,11 @@ impl Mode for PluginMode {
     }
 
     fn kind(&self) -> ModeKind {
-        // PH7.11a registers minor modes only (majors are Phase 8; the register
-        // path rejects `major` before constructing a `PluginMode`).
-        ModeKind::Minor
+        self.kind
+    }
+
+    fn target_language(&self) -> Option<&str> {
+        self.target_language.as_deref()
     }
 
     fn activation_policy(&self) -> ActivationPolicy {
@@ -133,26 +150,44 @@ impl Mode for PluginMode {
     }
 }
 
-/// The `register-mode` host-service body (PH7.11a). Builds a [`PluginMode`] from
-/// `decl` and registers it into the SAME `ModeRegistry` builtins use, returning
-/// the registered [`ModeId`] on success. Returns `None` (registering nothing) if
-/// the kind is `major` (Phase 8) OR `ModeRegistry::register` rejects it (missing
-/// `-mode` suffix, id collision) — logged, never a panic (graceful degradation).
+/// The `register-mode` host-service body (PH7.11a; majors OM.2). Builds a
+/// [`PluginMode`] from `decl` and registers it into the SAME `ModeRegistry`
+/// builtins use, returning the registered [`ModeId`] on success. Returns `None`
+/// (registering nothing) when `ModeRegistry::register` rejects it (missing
+/// `-mode` suffix, id collision) — logged, never a panic (graceful
+/// degradation).
+///
+/// A `target-language` on a MINOR is dropped with a warning rather than
+/// carried: a buffer has exactly one major, so indexing a minor's claim would
+/// install it as that major. The registry refuses the same thing independently;
+/// saying it here means the plugin author reads a message naming their mode.
 pub(crate) fn register_plugin_mode(
     registry: &mut ModeRegistry,
     decl: &PluginModeDecl,
 ) -> Option<ModeId> {
-    if decl.kind != PluginModeKind::Minor {
-        tracing::warn!(
-            mode = %decl.id,
-            "register-mode skipped: only minor modes are supported in PH7.11a (majors are Phase 8)"
-        );
-        return None;
-    }
+    let kind = match decl.kind {
+        PluginModeKind::Major => ModeKind::Major,
+        PluginModeKind::Minor => ModeKind::Minor,
+    };
+    let target_language = match (decl.kind, decl.target_language.as_deref()) {
+        (PluginModeKind::Major, lang) => lang.map(str::to_owned),
+        (PluginModeKind::Minor, Some(lang)) => {
+            tracing::warn!(
+                mode = %decl.id,
+                %lang,
+                "register-mode: target-language ignored on a minor mode; only a \
+                 major can own a language (a minor rides one via activation-policy)"
+            );
+            None
+        }
+        (PluginModeKind::Minor, None) => None,
+    };
     let mode = PluginMode {
         id: ModeId::new(&decl.id),
+        kind,
         policy: decl.policy.clone(),
         caps: decl.caps,
+        target_language,
     };
     // CI.3: a plugin mode registers **available but not enabled** — the user
     // enables it (`enable-mode` / init.rs), the plugin author does not seize
@@ -166,23 +201,32 @@ pub(crate) fn register_plugin_mode(
     }
 }
 
-/// Bind a plugin mode's declared keymap into its OWN `MinorMode(mode_id)` layer
-/// (PH7.11b), returning the number of bindings that landed. Each binding resolves
-/// its command name against `commands` and installs a capability-gated write with
+/// Bind a plugin mode's declared keymap into its OWN layer (PH7.11b),
+/// returning the number of bindings that landed. Each binding resolves its
+/// command name against `commands` and installs a capability-gated write with
 /// [`KeymapCapability::OwnedLayer`] — so the mode can write ONLY its own layer
 /// (the write-gate). An unparseable chord, an unknown command, or a capability
 /// denial skips that one binding with a `warn!` (graceful degradation), never a
 /// panic. Provenance is `SourceLocation::plugin(plugin_id)` — host-issued, so the
 /// binding traces to the plugin (§6).
+///
+/// OM.2: which layer follows the mode's KIND — `MajorMode(id)` for a major,
+/// `MinorMode(id)` for a minor. Both are gated tries keyed by mode id, merged
+/// in active-modes order at lookup, so a minor overlays its major and neither
+/// touches the built-in vim grammar.
 pub(crate) fn bind_mode_keymap(
     keymap: &KeymapHandle,
     commands: &CommandRegistry,
     plugin_id: u32,
     mode_id: &ModeId,
+    kind: ModeKind,
     bindings: &[PluginKeymapBinding],
 ) -> usize {
     let capability = KeymapCapability::OwnedLayer { mode_id: *mode_id };
-    let layer = KeymapLayer::MinorMode(*mode_id);
+    let layer = match kind {
+        ModeKind::Major => KeymapLayer::MajorMode(*mode_id),
+        ModeKind::Minor => KeymapLayer::MinorMode(*mode_id),
+    };
     let mut bound = 0;
     for binding in bindings {
         let Some(command_id) = commands.id_by_name(&binding.command) else {
@@ -266,14 +310,19 @@ impl PluginHost {
                 source: source.into(),
             })?;
 
-        // Register each mode, then bind its keymap into its OWN MinorMode layer
-        // (PH7.11b, capability-gated). A mode the registry rejects contributes no
+        // Register each mode, then bind its keymap into its OWN layer
+        // (PH7.11b, capability-gated) — `MajorMode` or `MinorMode` per the
+        // declared kind (OM.2). A mode the registry rejects contributes no
         // keymap (its layer never exists).
         let recorded = store.data_mut().mode_contributions.take();
         let mut ids = Vec::with_capacity(recorded.len());
         for decl in recorded {
             if let Some(id) = register_plugin_mode(registry, &decl) {
-                bind_mode_keymap(keymap, commands, plugin_id.0, &id, &decl.keymap);
+                let kind = match decl.kind {
+                    PluginModeKind::Major => ModeKind::Major,
+                    PluginModeKind::Minor => ModeKind::Minor,
+                };
+                bind_mode_keymap(keymap, commands, plugin_id.0, &id, kind, &decl.keymap);
                 ids.push(id);
             }
         }
@@ -300,6 +349,19 @@ mod tests {
             policy: ActivationPolicy::Manual,
             caps: CapabilitySet::empty(),
             keymap: Vec::new(),
+            target_language: None,
+        }
+    }
+
+    /// OM.2: a major claiming a language — the org shape.
+    fn major_for(id: &str, lang: &str) -> PluginModeDecl {
+        PluginModeDecl {
+            id: id.to_string(),
+            kind: PluginModeKind::Major,
+            policy: ActivationPolicy::Manual,
+            caps: CapabilitySet::empty(),
+            keymap: Vec::new(),
+            target_language: Some(lang.to_string()),
         }
     }
 
@@ -322,14 +384,93 @@ mod tests {
         assert!(!registry.is_registered(ModeId::new("git-blame")));
     }
 
+    /// OM.2 — the inverse of what this test used to assert. A plugin
+    /// contributing a language must be able to contribute its major, because
+    /// the host's `major_mode_id_for_lang` table has no arm for a language it
+    /// has never heard of.
     #[test]
-    fn a_major_kind_is_rejected_in_phase_7() {
+    fn a_major_registers_and_claims_its_language() {
         let mut registry = ModeRegistry::default();
-        let mut decl = minor("rust-mode");
-        decl.kind = PluginModeKind::Major;
+        let id = register_plugin_mode(&mut registry, &major_for("org-mode", "org"))
+            .expect("a well-formed major registers");
+        assert_eq!(id.as_str(), "org-mode");
+        assert_eq!(
+            registry.get(id).expect("registered").kind(),
+            ModeKind::Major,
+            "it registers AS a major, not silently downgraded to a minor"
+        );
+        assert_eq!(
+            registry.find_major_for_lang("org"),
+            Some(id),
+            "and the language index resolves documents onto it"
+        );
+    }
+
+    /// A major need not claim a language — that is manual activation, and the
+    /// index must stay empty rather than gaining a `None` key.
+    #[test]
+    fn a_major_without_a_language_registers_but_claims_nothing() {
+        let mut registry = ModeRegistry::default();
+        let mut decl = major_for("scratch-mode", "unused");
+        decl.target_language = None;
+        let id = register_plugin_mode(&mut registry, &decl).expect("registers");
+        assert_eq!(
+            registry.get(id).expect("registered").kind(),
+            ModeKind::Major
+        );
+        assert_eq!(registry.find_major_for_lang("unused"), None);
+    }
+
+    /// A minor's language claim is dropped, not honoured — indexing it would
+    /// install the minor as every org buffer's major.
+    #[test]
+    fn a_minor_claiming_a_language_registers_without_the_claim() {
+        let mut registry = ModeRegistry::default();
+        let mut decl = minor("org-todo-mode");
+        decl.target_language = Some("org".to_string());
+        let id = register_plugin_mode(&mut registry, &decl).expect("the mode still registers");
+        assert_eq!(
+            registry.get(id).expect("registered").kind(),
+            ModeKind::Minor
+        );
+        assert_eq!(
+            registry.find_major_for_lang("org"),
+            None,
+            "the claim was dropped, so org documents do not resolve onto a minor"
+        );
+    }
+
+    /// The write-gate follows the kind: a major's bindings land in its own
+    /// `MajorMode` layer under the same `OwnedLayer` capability a minor uses.
+    #[test]
+    fn a_majors_keymap_lands_in_its_own_major_layer() {
+        let keymap = KeymapHandle::new();
+        let mut commands = CommandRegistry::new();
+        let _ = lattice_grammar::ex_commands::populate(&mut commands);
+        let mode_id = ModeId::new("org-mode");
+        let bindings = vec![PluginKeymapBinding {
+            mode: BindingMode::Normal,
+            chord: "<C-s>".to_string(),
+            command: "ex:write".to_string(),
+        }];
+
+        let bound = bind_mode_keymap(&keymap, &commands, 3, &mode_id, ModeKind::Major, &bindings);
+        assert_eq!(bound, 1, "the binding landed");
+
+        let chord = lattice_protocol::parse_chord_sequence("<C-s>").unwrap();
         assert!(
-            register_plugin_mode(&mut registry, &decl).is_none(),
-            "majors are Phase 8"
+            matches!(
+                keymap.lookup_with_context(BindingMode::Normal, &chord, &[mode_id]),
+                lattice_keymap::LookupResult::Bound { .. }
+            ),
+            "resolves when the major is active"
+        );
+        assert!(
+            matches!(
+                keymap.lookup_with_context(BindingMode::Normal, &chord, &[]),
+                lattice_keymap::LookupResult::Unbound
+            ),
+            "a major's layer is gated too — it is not always-on (K.1.c)"
         );
     }
 
@@ -352,6 +493,7 @@ mod tests {
             policy: ActivationPolicy::Universal,
             caps: CapabilitySet::LSP | CapabilitySet::DIAGNOSTICS,
             keymap: Vec::new(),
+            target_language: None,
         };
         let id = register_plugin_mode(&mut registry, &decl).unwrap();
         let mode = registry.get(id).expect("registered");
@@ -385,7 +527,7 @@ mod tests {
             chord: "<C-s>".to_string(),
             command: target.to_string(),
         }];
-        let bound = bind_mode_keymap(&keymap, &commands, 7, &mode_id, &bindings);
+        let bound = bind_mode_keymap(&keymap, &commands, 7, &mode_id, ModeKind::Minor, &bindings);
         assert_eq!(bound, 1, "the well-formed binding landed");
 
         // Build the lookup chord the same way the binding parsed it.
@@ -417,7 +559,14 @@ mod tests {
             chord: "gx".to_string(),
             command: "ex:does-not-exist".to_string(),
         }];
-        let bound = bind_mode_keymap(&keymap, &commands, 1, &ModeId::new("x-mode"), &bindings);
+        let bound = bind_mode_keymap(
+            &keymap,
+            &commands,
+            1,
+            &ModeId::new("x-mode"),
+            ModeKind::Minor,
+            &bindings,
+        );
         assert_eq!(
             bound, 0,
             "an unknown command binds nothing (logged + skipped)"

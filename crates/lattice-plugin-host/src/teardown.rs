@@ -159,12 +159,26 @@ impl PluginTeardown {
             }
         }
         for mode in &self.modes {
+            // OM.2: which layer the chords went into follows the mode's KIND,
+            // so read it BEFORE unregistering — afterwards the registry no
+            // longer knows, and a plugin major would leak its keymap layer.
+            let kind = reg.modes.get(*mode).map(|m| m.kind());
             if reg.modes.unregister(*mode) {
                 report.modes += 1;
             }
             // Both halves of the mode surface: the registry entry AND the gated
             // keymap layer its chords were bound into (PH7.11b / PH7.12b.1c).
-            reg.keymap.remove_layer(KeymapLayer::MinorMode(*mode));
+            match kind {
+                Some(lattice_mode::ModeKind::Major) => {
+                    reg.keymap.remove_layer(KeymapLayer::MajorMode(*mode));
+                }
+                // `None` (already gone) takes the minor branch: the id was
+                // never a major we bound, and `remove_layer` on an absent
+                // layer is a no-op.
+                _ => {
+                    reg.keymap.remove_layer(KeymapLayer::MinorMode(*mode));
+                }
+            }
         }
         for name in &self.config_options {
             if reg.config.unregister(name) {

@@ -65,6 +65,8 @@ pub mod registry;
 pub mod style;
 pub mod syntax;
 pub mod text_objects;
+// LG.3b: loading grammars from wasm, and the stores parsers need for them.
+pub mod wasm_grammar;
 // DX.2 (BC.6): the syntax->theme-element style bridge, moved down from
 // `lattice-host::ui::theme` so `lattice-diff` can reach it.
 pub mod theme_style;

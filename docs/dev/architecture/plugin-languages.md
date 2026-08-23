@@ -230,6 +230,51 @@ unavailable for that language.
 Cost measured in [`benchmarks.md`](../operations/benchmarks.md): a
 snapshot is 13.9 ns, against a per-buffer and per-hunk call rate.
 
+### 2.5 Loading the grammar, and the stores parsers need
+
+`WasmStore::load_language` returns a real `tree_sitter::Language` (§2), and
+almost everything downstream is genuinely unaware of the difference. **One
+thing is not transparent**, and it is not optional: a wasm-backed
+`Language` can only be used by a `Parser` that **owns a `WasmStore`**. A
+parser without one fails `set_language` outright.
+
+Measured ([`benchmarks.md`](../operations/benchmarks.md)):
+
+| Operation | Cost |
+|---|---|
+| `WasmStore::new` | 5.08 ms |
+| `load_language` | 101.6 ms |
+| bind an already-loaded `Language` into another store | 67.9 µs |
+
+Three properties follow, each load-bearing:
+
+1. **`load_language` is not cached by the `Engine`** — the same bytes into
+   a second store pay the full 101 ms again. So a grammar is compiled
+   **once**, at plugin load, on an off-thread task.
+2. **A `Language` outlives its loading store** and is portable into any
+   other store for 68 µs. So the loading store is dropped immediately and
+   the `Language` is what the registry keeps.
+3. **A `Tree` survives its parser's store being taken back**, which is
+   what makes a pooled store safe.
+
+**Stores come from two places, because there are two call shapes.**
+`Syntax`'s parser is long-lived and needs its store for every subsequent
+reparse, so it gets its own — 5 ms once per buffer whose language is
+wasm-backed, off the keystroke path. Injection highlighting builds a fresh
+`Parser` *per injection, per highlight call*, so it borrows a thread-local
+store and returns it; twenty fenced blocks would otherwise cost 20 × 5 ms
+on every highlight. Property 3 is why returning it is sound.
+
+Native grammars touch none of this — both entry points check
+`Language::is_wasm` first — so nothing about a bundled language changed.
+
+A consequence worth naming: **a wasm parent can inject into a native
+child**, which is the shape org needs for `#+BEGIN_SRC rust`. The injected
+parser uses a native `Language` and therefore needs no store at all. This
+is covered by a test that compares a wasm-loaded markdown grammar's spans
+against the bundled one — including the injected inline content, which is
+where a subtly wrong parse would show up.
+
 ## 3. The risk that decides this
 
 **Two wasmtime majors in one binary.** tree-sitter's `wasm` feature

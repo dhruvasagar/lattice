@@ -71,6 +71,48 @@ target rather than just a slower number.
 
 ---
 
+## LG.3b — what a wasm grammar costs outside the parse (2026-08-23)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**
+
+LG.1 measured *parsing*. This measures the part that is not the parse: a
+wasm-backed `Language` can only be used by a `Parser` that owns a
+`WasmStore`, and a parser without one fails `set_language` outright. These
+three numbers decide where stores come from
+([`plugin-languages.md`](../architecture/plugin-languages.md) §2.5).
+`crates/lattice-syntax/benches/wasm_vs_native_parse.rs`, group `wasm_store`.
+
+| Operation | Cost |
+|---|---|
+| `WasmStore::new` | **5.08 ms** — compiles tree-sitter's wasm libc |
+| `load_language` | **101.6 ms** — Cranelift compiling the grammar |
+| bind an already-loaded `Language` into another store | **67.9 µs** |
+
+**The 1500× gap between the last two is the whole design.** Loading is not
+cached by the `Engine` — the same bytes into a second store pay the full
+101 ms again — but a `Language` is portable into any store, and outlives
+the store it was loaded from. So a grammar is compiled exactly **once**, at
+plugin load on an off-thread task, and the `Language` is what gets kept.
+
+**Where stores come from, and why it is two answers.**
+`Syntax`'s parser is long-lived and needs its store for every later
+reparse, so it gets its own: **5 ms once per buffer** whose language is
+wasm-backed, off the keystroke path. Injection highlighting builds a fresh
+`Parser` **per injection, per highlight call**, so it borrows a
+thread-local store and returns it — a markdown file with twenty fenced
+blocks would otherwise pay 20 × 5 ms on *every* highlight. That is sound
+because a `Tree` survives its parser's store being taken back.
+
+Native grammars pay none of this: both entry points check
+`Language::is_wasm` first.
+
+*Method note:* the bind figure was 5.57 ms on the first run because store
+creation sat inside the timed routine. Moved to `iter_batched` setup, it
+is 67.9 µs — the earlier number was measuring the thing it was supposed to
+be compared against.
+
+---
+
 ## LG.3a — the live language registry (2026-08-23)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**

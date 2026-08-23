@@ -67,6 +67,11 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# LG.3b: the end-to-end test registers the markdown grammar's own
+# injections query so a WASM-backed parent injects into a NATIVE child —
+# the shape org needs for `#+BEGIN_SRC rust`. Already a normal dependency
+# of this crate; integration tests cannot see those, hence the repeat.
+tree-sitter-md = { workspace = true }
 
 [[bench]]
 name = "highlight"

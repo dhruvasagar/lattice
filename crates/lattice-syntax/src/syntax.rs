@@ -228,9 +228,11 @@ impl Syntax {
             return Ok(None);
         };
         let mut parser = Parser::new();
-        parser
-            .set_language(&ts_lang)
-            .map_err(|e| SyntaxError::Language(e.to_string()))?;
+        // LG.3b: a wasm-backed grammar needs the parser to own a
+        // `WasmStore`, and this parser is long-lived (every later reparse
+        // uses it), so it gets its own rather than borrowing the pool.
+        // ~6 ms, once per buffer, only when the grammar is wasm-backed.
+        crate::wasm_grammar::set_language(&mut parser, &ts_lang).map_err(SyntaxError::Language)?;
         Ok(Some(Self {
             parser,
             inner: SyntaxSnapshot {
@@ -1030,9 +1032,15 @@ impl SyntaxSnapshot {
         // offsets in the resulting tree are RELATIVE to the
         // injection (slot 0 = inj.range.start in our caller).
         let content = &self.source[inj.range.clone()];
+        // LG.3b: per injection, per highlight call — so a wasm-backed
+        // injected grammar borrows the thread-local store instead of
+        // building one. Twenty fenced blocks would otherwise cost
+        // 20 x ~6 ms on EVERY highlight.
         let mut parser = Parser::new();
-        parser.set_language(&lang_config.language).ok()?;
-        let tree = parser.parse(content, None)?;
+        let tree =
+            crate::wasm_grammar::with_pooled_store(&mut parser, &lang_config.language, |p| {
+                p.parse(content, None)
+            })??;
 
         // Run the injected language's highlights query. Capture
         // resolution mirrors the parent path (later pattern wins,
@@ -1117,9 +1125,15 @@ impl SyntaxSnapshot {
     ) -> Option<Vec<Option<Style>>> {
         let lang_config = self.registry.lookup(&inj.language)?;
         let content = &outer_source[inj.range.clone()];
+        // LG.3b: per injection, per highlight call — so a wasm-backed
+        // injected grammar borrows the thread-local store instead of
+        // building one. Twenty fenced blocks would otherwise cost
+        // 20 x ~6 ms on EVERY highlight.
         let mut parser = Parser::new();
-        parser.set_language(&lang_config.language).ok()?;
-        let tree = parser.parse(content, None)?;
+        let tree =
+            crate::wasm_grammar::with_pooled_store(&mut parser, &lang_config.language, |p| {
+                p.parse(content, None)
+            })??;
         let query = &lang_config.highlights;
         let styles = &lang_config.highlight_styles;
         let mut cursor = QueryCursor::new();

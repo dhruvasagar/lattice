@@ -7,7 +7,8 @@
 (2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
 closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `Lang::Plugin` + the runtime registry. LG.3a ✅ (2026-08-23) — the live
-`LangRegistry`. LG.3b–LG.6 📝.
+`LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse.
+LG.3c–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -23,7 +24,9 @@ LG.2  Lang::Plugin + runtime registry (no WIT yet)
 LG.3a the live LangRegistry (grammar + queries, no WIT)
   │   └─ wasm runtime made unconditional (design §3.2)
   │
-LG.3b the `language` WIT seam + drain + teardown
+LG.3b loading grammars from wasm + the stores parsers need
+  │
+LG.3c the `language` WIT seam + drain + teardown
   │
 LG.4  org plugin: grammar + highlights (per-level headlines)
   │
@@ -44,7 +47,8 @@ be the expensive order.
 | LG.1 | Bench: wasm grammar vs native parse | ✅ |
 | LG.2 | `Lang::Plugin(LanguageName)` + runtime language registry | ✅ |
 | LG.3a | Live `LangRegistry`: runtime grammar + compiled queries | ✅ |
-| LG.3b | `language` WIT seam, loader drain, teardown | 📝 |
+| LG.3b | Load grammars from wasm; parser store strategy | ✅ |
+| LG.3c | `language` WIT seam, loader drain, teardown | 📝 |
 | LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
 | LG.5 | Org plugin: folds | 📝 |
 | LG.6 | Docs, benchmarks, ledger | 📝 |
@@ -223,7 +227,31 @@ the thing whose gating is still undecided.
 `tree_sitter::Language`, and where it came from is not this layer's
 business — which is the same property §2.1 relies on.
 
-### LG.3b — the `language` WIT seam 📝
+### LG.3b — loading grammars from wasm ✅ (2026-08-23)
+
+Carved out when probing turned up a constraint the design had not
+recorded: a wasm-backed `Language` can only be used by a `Parser` that
+**owns a `WasmStore`**, and a parser without one fails outright. That is
+not a detail of the seam, it is the parse path — so it lands before the
+seam, with the seam reduced to plumbing.
+
+- `wasm_grammar::load` compiles a side module to a `Language` (~102 ms,
+  once, at registration). The loading store is dropped: a `Language`
+  outlives it.
+- Two store strategies, because two call shapes. `Syntax`'s long-lived
+  parser gets its own (5 ms per wasm buffer, off the keystroke path);
+  injection highlighting — a fresh `Parser` **per injection, per highlight
+  call** — borrows a thread-local store and returns it. Twenty fenced
+  blocks would otherwise cost 20 × 5 ms on every highlight.
+- Native grammars are untouched: both entry points check `is_wasm` first.
+- *test:* a wasm-loaded markdown grammar registered as a plugin language
+  highlights **identically to the bundled one**, injected inline content
+  included. "It produced some spans" would pass with a subtly wrong parse;
+  this cannot. Also covers wasm-parent → native-child injection, the shape
+  org needs for `#+BEGIN_SRC rust`.
+- *bench:* the three store costs, since they are new per-buffer work.
+
+### LG.3c — the `language` WIT seam 📝
 
 **Decision taken (2026-08-23), design §3.2:** `tree-sitter/wasm` is ON
 unconditionally — **+5.7 MiB**, measured, with zero runtime cost when

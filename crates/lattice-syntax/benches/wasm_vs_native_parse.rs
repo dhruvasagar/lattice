@@ -200,6 +200,43 @@ fn bench(c: &mut Criterion) {
         });
         g.finish();
     }
+
+    // LG.3b: what a wasm-backed grammar costs OUTSIDE the parse itself.
+    // A wasm `Language` can only be used by a `Parser` that owns a
+    // `WasmStore`, and these three numbers are what decide where stores
+    // come from — see `wasm_grammar.rs`.
+    let mut g = c.benchmark_group("wasm_store");
+    g.sample_size(10);
+    g.bench_function("WasmStore::new", |b| {
+        b.iter(|| {
+            black_box(tree_sitter::WasmStore::new(black_box(&engine)).expect("store"));
+        });
+    });
+    g.bench_function("load_language", |b| {
+        b.iter(|| {
+            let mut s = tree_sitter::WasmStore::new(&engine).expect("store");
+            black_box(s.load_language("markdown", black_box(&wasm)).expect("load"));
+        });
+    });
+    // The reason a grammar is loaded ONCE and the `Language` kept: binding
+    // an already-compiled one into another store is three orders of
+    // magnitude cheaper than compiling it again.
+    g.bench_function("bind_existing_language", |b| {
+        // The store is built in SETUP, not in the timed routine — it costs
+        // 5 ms and would swamp the thing being measured, which is exactly
+        // the mistake that makes a bench say nothing.
+        b.iter_batched(
+            || {
+                let mut p = tree_sitter::Parser::new();
+                p.set_wasm_store(tree_sitter::WasmStore::new(&engine).expect("store"))
+                    .expect("attach");
+                p
+            },
+            |mut p| p.set_language(black_box(&wasm_lang)).expect("bind"),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    g.finish();
 }
 
 criterion_group!(benches, bench);

@@ -699,6 +699,98 @@ mod tests {
         );
     }
 
+    /// LG.4: the same split works for ORG, with no renderer change.
+    ///
+    /// Design `plugin-languages.md` §7 claims variable-font headlines come
+    /// free for a plugin language because `heading_scale_split` is not
+    /// markdown-gated — it looks for the first run whose resolved
+    /// `scale > 1.0` and knows nothing about which grammar produced the
+    /// style. That claim was a paragraph; this makes it a test.
+    ///
+    /// Org's shape is `[stars][title]` — `*** Deep` — where the stars are
+    /// captured as `@punctuation.special` (`Style::Markup`, the same style
+    /// markdown's `#` markers take) and the title as `@text.title.3`. So the
+    /// split must be `(4, <heading.3 scale>)`: four base-size columns of
+    /// `*** `, then the scaled title.
+    ///
+    /// If a future change gated scaling on markdown, this fails and F.2
+    /// below still passes — which is the point of having both.
+    #[test]
+    fn org_headlines_scale_without_any_renderer_change() {
+        use lattice_host::display_matrix::{DisplayLine, DisplayRun};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
+        let reg = InMemoryThemeRegistry::with_defaults();
+        let resolved = reg.resolved();
+        let ids = BuiltinElementIds::capture(&reg);
+
+        // `*** ` markers (Markup, base) + `Deep` (Heading3, scaled).
+        let text = "*** Deep";
+        let line = DisplayLine {
+            source_line: 0,
+            text: std::sync::Arc::from(text),
+            runs: std::sync::Arc::from(
+                vec![
+                    DisplayRun {
+                        len: 4,
+                        style: lattice_syntax::Style::Markup,
+                        flags: 0,
+                        refine: None,
+                    },
+                    DisplayRun {
+                        len: 4,
+                        style: lattice_syntax::Style::Heading3,
+                        flags: 0,
+                        refine: None,
+                    },
+                ]
+                .into_boxed_slice(),
+            ),
+            col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            col_count: text.chars().count() as u32,
+            fold: None,
+        };
+
+        let (prefix_cols, title_scale) =
+            heading_scale_split(&line, &resolved, &ids).expect("an org headline splits");
+        assert_eq!(
+            prefix_cols, 4,
+            "the `*** ` stars are the base-size prefix, exactly as `## ` is"
+        );
+        assert!(
+            title_scale > 1.0,
+            "the org title must scale, got {title_scale}"
+        );
+
+        // And the levels ramp, so org gets markdown's whole scale ladder.
+        let scale_for = |style| {
+            let l = DisplayLine {
+                source_line: 0,
+                text: std::sync::Arc::from("* T"),
+                runs: std::sync::Arc::from(
+                    vec![DisplayRun {
+                        len: 3,
+                        style,
+                        flags: 0,
+                        refine: None,
+                    }]
+                    .into_boxed_slice(),
+                ),
+                col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+                col_count: 3,
+                fold: None,
+            };
+            heading_scale_split(&l, &resolved, &ids).map(|(_, s)| s)
+        };
+        let h1 = scale_for(lattice_syntax::Style::Heading1).expect("h1 scales");
+        let h3 = scale_for(lattice_syntax::Style::Heading3).expect("h3 scales");
+        assert!(
+            h1 > h3,
+            "deeper headings are smaller: h1={h1} should exceed h3={h3}"
+        );
+    }
+
     /// F.2 (Thread F): `heading_scale_split` returns the leading base-
     /// size marker width + the title scale. For `## Title` the markers
     /// run (`## `, 3 cols, base) precedes the scaled title run, so the

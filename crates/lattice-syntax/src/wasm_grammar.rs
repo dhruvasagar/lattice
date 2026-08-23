@@ -35,6 +35,13 @@
 //! 3. **A `Tree` survives its parser's store being taken back**, which is
 //!    what makes the pooled store below safe.
 //!
+//! And one constraint that is easy to violate and fails opaquely: **every
+//! store must share the engine the grammar was compiled with.** A `Language`
+//! from engine A cannot be instantiated in a store from engine B —
+//! `WasmStore::new` returns a bare `Wasm` error with no explanation. That is
+//! why [`engine`] is a process-wide `OnceLock` rather than something callers
+//! pass in: there is exactly one engine, so the mistake is unavailable.
+//!
 //! ## Two strategies, because two call shapes
 //!
 //! [`set_language`] gives a parser its **own** store and leaves it there.

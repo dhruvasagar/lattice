@@ -9,7 +9,7 @@ closed and nothing sends this track to §6.** LG.2 ✅ (2026-08-23) —
 `Lang::Plugin` + the runtime registry. LG.3a ✅ (2026-08-23) — the live
 `LangRegistry`. LG.3b ✅ (2026-08-23) — wasm grammars actually parse. LG.3c ✅
 (2026-08-23) — **the seam is real: a plugin on disk contributes a
-language.** LG.4–LG.6 📝.
+language.** LG.4 ✅ (2026-08-23) — org headlines, per level. LG.5–LG.6 📝.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -50,7 +50,7 @@ be the expensive order.
 | LG.3a | Live `LangRegistry`: runtime grammar + compiled queries | ✅ |
 | LG.3b | Load grammars from wasm; parser store strategy | ✅ |
 | LG.3c | `language` WIT seam, loader drain, teardown | ✅ |
-| LG.4 | Org plugin: grammar + per-level headline highlights | 📝 |
+| LG.4 | Org plugin: grammar + per-level headline highlights | ✅ |
 | LG.5 | Org plugin: folds | 📝 |
 | LG.6 | Docs, benchmarks, ledger | 📝 |
 
@@ -307,7 +307,7 @@ grammar bytes, an uncompilable `folds.scm`, and a squat on `markdown`.
 Each must cost only itself, leaving the good one registered and the load
 successful. A fixture with only a happy path would prove much less.
 
-### LG.4 — org: grammar + headlines 📝
+### LG.4 — org: grammar + headlines ✅ (2026-08-23)
 
 The first real consumer.
 
@@ -325,6 +325,40 @@ The first real consumer.
 - *fallback, if `#eq?` is unsupported:* compute the level host-side from
   the stars text. Worse (a host-side language special case) and to be
   taken only if the predicate route is genuinely closed.
+
+**Outcome: the predicate route is open; the fallback is withdrawn.**
+tree-sitter's `QueryMatches::advance` filters on text predicates as it
+iterates, so the pipeline inherits it for free through the
+`cursor.matches(...)` it already called — **no host change at all**. The
+negative assertion is the one that matters: a headline carries ONLY its
+own level. If predicates were silently dropped, every pattern would match
+every headline and the last would win, so the failure would look like
+"everything is Heading6" rather than an error.
+
+**The scale claim is pinned**, since design §7 asserted it in prose:
+`org_headlines_scale_without_any_renderer_change` drives an org-shaped
+`[stars][title]` line through the real `heading_scale_split` and checks
+both the base-size prefix width and the level ramp. Zero renderer changes,
+as claimed.
+
+**The plugin lives in `examples/org-plugin/`, not `plugins/`** — decided
+explicitly rather than by default. Org's `parser.c` is 2.2 MB of generated
+C, and `plugins/` is compiled by every workspace build, so bundling would
+have meant carrying that weight or reaching the network on every build.
+Design §7 records the reasoning. The queries stay under test: the test
+reads the reference plugin's real `highlights.scm` from disk and fetches
+the grammar on demand, skipping offline.
+
+*Incidental finding, now documented:* a `Language` compiled by one wasmtime
+`Engine` cannot be instantiated in a store from another — it fails with a
+bare `Wasm` error naming nothing. `wasm_grammar::engine()` is a process-wide
+`OnceLock` precisely so the mistake is unavailable; the constraint was
+undocumented until a probe hit it.
+
+*Also validated incidentally:* `scripts/build-wasm-grammar.sh` built org
+(342 KB) as readily as markdown — a second, unrelated grammar with its own
+external scanner, which is the useful evidence that the clang+rustup route
+generalises.
 
 ### LG.5 — org: folds 📝
 

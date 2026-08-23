@@ -522,17 +522,52 @@ Org exercises the seam properly rather than thinly, which is what
 - **Per-level headlines the hard way.** Org's `stars` is ONE node whose
   *text length* is the level, unlike markdown's distinct
   `atx_h1_marker`…`atx_h6_marker`. Per-level capture therefore needs
-  `#eq?` text predicates — and **no query in the tree uses one today**,
-  so the seam's first consumer also proves predicate support.
+  `#eq?` text predicates — and **no query in the tree used one**, so the
+  seam's first consumer also proved predicate support.
+
+  **Answered (LG.4): predicates work, with no host change.**
+  tree-sitter's `QueryMatches::advance` filters on text predicates as it
+  iterates, so the pipeline inherits it for free through the
+  `cursor.matches(...)` it already calls. The fallback §7 reserved —
+  computing the level host-side from the stars text, a host-side language
+  special case — is not needed and is withdrawn.
+
+  Upstream's own query cycles three levels with `#match?` regexes
+  (`^(\*{3})*\*$` matches 1, 4 and 7 stars); the reference plugin wants
+  true per-level 1–6, and `#eq?` says that directly.
 - **Variable-font headlines come free.** `heading_scale_split` is not
   markdown-gated: it finds the first run with a resolved `scale > 1.0`,
   and `Style::HeadingN → syntax.heading.N → theme scale` is generic. An
   org query emitting `@text.title.1`…`.6` gets the same two-piece scaled
   rendering — base-size stars, scaled title, one baseline — with **zero
-  renderer changes**. This is a good sign about the existing design, and
-  worth pinning with a test so it stays true.
+  renderer changes**.
+
+  **Pinned (LG.4)**, since it was a paragraph making a claim:
+  `cells_paint::tests::org_headlines_scale_without_any_renderer_change`
+  drives an org-shaped `[stars][title]` line through the real split and
+  asserts both the base-size prefix width and that the level ramp holds.
+  The stars capture is `@punctuation.special` → `Style::Markup`, the same
+  style markdown's `#` markers take, which is what keeps them at base
+  size.
 - **Folding is queries only.** `(section)`, `(block)`, `(drawer)`,
   `(list)` map onto the same fold pipeline markdown's `(section)` uses.
+
+**The plugin is not in this repo's `plugins/`, deliberately.**
+`examples/org-plugin/` carries its source — queries, `build.rs`, the
+`language-plugin` guest — as version-controlled reference, and nothing in
+the workspace builds it. Org's `parser.c` is 2.2 MB of generated C
+maintained outside crates.io, which is §1's argument for the seam in the
+first place: such a grammar is the *plugin's* build artefact, not the
+editor's. Bundling it would have meant every workspace build either
+carrying that weight or reaching the network. In normal use the plugin
+manager clones and builds it from git on boot (PM.5–PM.8) and caches the
+result under `~/.config/lattice/plugins/`.
+
+The queries are still under test —
+`crates/lattice-syntax/tests/org_headlines.rs` reads the reference
+plugin's real `highlights.scm` from disk rather than duplicating it, so
+the thing that ships is the thing that is tested, and fetches the grammar
+on demand (skipping when offline).
 
 Org's *editing* model — headline promotion, subtree motion, TODO
 cycling, visibility cycling, agenda — is a separate track that uses

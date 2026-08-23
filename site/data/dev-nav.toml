@@ -182,6 +182,7 @@ docs = [
   "architecture/plugin-observability",
   "architecture/plugin-treesitter-seam",
   "architecture/plugin-auto-pair",
+  "architecture/org-mode",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
 ]

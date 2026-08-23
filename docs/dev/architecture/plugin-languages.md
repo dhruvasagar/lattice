@@ -510,6 +510,11 @@ already owns the domain, which is the test.
 
 ## 7. First consumer: org
 
+> The *language* is what this fragment covers. Org's **editing** surface
+> — the modes, the keymap, structure editing, TODO workflow, tables and
+> the agenda — is designed in [`org-mode.md`](org-mode.md), which builds
+> on this seam and on `plugin-host.md`'s `grammar` / `modes` seams.
+
 Org exercises the seam properly rather than thinly, which is what
 `plugin-host.md` §12 asks of a new WIT surface:
 

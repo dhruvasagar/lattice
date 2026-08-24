@@ -4,8 +4,12 @@
 > Design contracts live in
 > [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
 
-**Status:** IM.1 ✅ (2026-08-25) — **the scroll arithmetic is
-tall-row-aware, with no media in existence.** IM.0 ✅ the gate (which
+**Status:** IM.4 ✅ (2026-08-25) — **the substrate is done; nothing draws
+yet.** The scroll arithmetic is tall-row-aware, a block reserves rows and
+declares its alt text, and pixels are produced off-thread. IM.5 (paint)
+is next and is the first slice that puts an image on screen.
+
+Earlier: IM.0 ✅ the gate (which
 found a real flaw and revised the design); IM.1a ✅ cursor visibility;
 IM.1b ✅ paging and centring. **IM.1c was dropped as premature and its
 work folded into IM.3 / IM.5** — see below. IM.3 next; IM.2 moved after
@@ -53,9 +57,9 @@ wrong.
 | IM.0 | Gate: audit every consumer of `Editor::scroll` / `viewport_height` | ✅ |
 | IM.1a | `RowWeights` + cursor-visibility walks spend a line-height budget | ✅ |
 | IM.1b | Paging / centring (`<C-f>`, `H`/`M`/`L`, `zz`) spend the budget | ✅ |
-| IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | 📝 |
+| IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | ✅ |
 | IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
-| IM.4 | Off-thread decode + cache, landing via the inbound primitive | 📝 |
+| IM.4 | Off-thread decode + cache (`lattice-media`) | ✅ |
 | IM.5 | GPUI paint; TUI `alt` fallback at the same row count | 📝 |
 | IM.6 | WIT seam for plugin-contributed media blocks | 📝 |
 | IM.7 | Org: `[[file:…]]`, `org.inline-images`, `<leader>oI` | 📝 |
@@ -180,7 +184,7 @@ scroll position).
 *bench:* index update cost per edit on a 100k-line file; must not appear
 on the keystroke path.
 
-### IM.3 — the descriptor 📝
+### IM.3 — the descriptor ✅ (2026-08-25)
 
 `VirtualRowKind::MediaBlock` + the descriptor from design §6 (`source`,
 `intrinsic`, `rows`, `fit`, `alt`). **No decode, no painting** — a block
@@ -189,7 +193,22 @@ reserves its rows and paints a placeholder.
 *Exit:* a block reserves the right number of rows on BOTH peers;
 scrolling past it is correct; `alt` is what the TUI shows.
 
-### IM.4 — decode off the UI thread 📝
+### IM.4 — decode off the UI thread ✅ (2026-08-25)
+
+Landed as the `lattice-media` crate. The dependency-surface argument
+(heuristic #6): it carves out the image CODEC graph, which would
+otherwise compile into `lattice-cells`' closure and therefore into the
+cell grid's; and because the crate depends on no renderer and no host, a
+decode structurally *cannot* reach a paint path. `gpui::img()` taking a
+path and doing I/O + decode inside the render pass is the easiest way to
+violate paramount goal #1, and this makes that unreachable rather than
+merely discouraged.
+
+**The inbound landing moved to IM.5.** There is no consumer to land
+results *into* until something paints. Same reason IM.1c was dropped:
+building the delivery before the recipient means testing it against
+nothing.
+
 
 `spawn_blocking` read + decode + scale; cache keyed
 `(path, mtime, target_size)`; result lands via
@@ -206,8 +225,23 @@ unchanged while a large image decodes.
 
 ### IM.5 — paint 📝
 
-`gpui::img()` into the block region; TUI paints `alt` in a box at the
-same row count. Both peers in the same patch (cross-renderer rule).
+The first slice that puts an image on screen, and it absorbs two things
+deferred from earlier slices.
+
+- **GPUI paint.** Intercept a `MediaBlock` row group and draw the decoded
+  pixels over the region, the `BrandingBlock` treatment.
+- **The inbound landing** (from IM.4): results reach the screen without a
+  keypress, via `SubsystemBoot::inbound`. Tested the way it fails —
+  assert the image appears *without* dispatching another action.
+- **Natural sizing**, which is where `MediaBlock::line_heights` stops
+  returning `rows` and starts returning the real height. IM.1's budget
+  arithmetic is already waiting for it; this is the slice that first
+  exercises it with a real block.
+- **`sub_row_px`** (from IM.1c): only meaningful once a row can exceed
+  the viewport step, which first happens here.
+
+The TUI needs **nothing**: IM.3 put the alt text in the rows' cells, so
+it already paints the fallback.
 
 ### IM.6 — the seam 📝
 

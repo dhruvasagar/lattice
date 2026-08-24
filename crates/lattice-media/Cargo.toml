@@ -1,0 +1,42 @@
+# IM.4 — image decode, off the UI thread.
+#
+# A crate rather than a module in `lattice-cells`, on the dependency-surface
+# test (CLAUDE.md heuristic #6). What it carves out: the image CODEC graph —
+# `image` and its png / jpeg / gif / webp backends, ~15 transitive crates.
+# `lattice-cells` is depended on by every renderer AND by the cells worker on
+# the hot path; putting decoders in its graph means codec code compiles into
+# the dependency closure of the cell grid.
+#
+# What breaks without it: nothing structurally enforces "decode never touches
+# the UI thread". This crate has no renderer, no host and no GPUI dependency,
+# so a decode CANNOT reach a paint path from here — the guarantee is a
+# property of the dependency graph rather than of reviewer discipline
+# (paramount goal #1).
+[package]
+name = "lattice-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+lattice-cells = { path = "../lattice-cells" }
+# `default-features = false` then opt in: the default feature set pulls every
+# codec plus rayon. These four cover what an org buffer references in
+# practice, and each one added later is a deliberate choice rather than a
+# transitive surprise.
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "webp",
+] }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tempfile = { workspace = true }

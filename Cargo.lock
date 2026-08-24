@@ -5640,6 +5640,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "lattice-cells",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lattice-mode"
 version = "0.1.0"
 dependencies = [

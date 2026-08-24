@@ -21,6 +21,7 @@ members = [
 	"crates/lattice-theme",
 	"crates/lattice-dashboard",
 	"crates/lattice-cells",
+  "crates/lattice-media",
 	"crates/lattice-multibuffer",
 	"crates/lattice-notify",
 	"crates/lattice-compilation",

@@ -451,6 +451,20 @@ pub fn resolve_major_mode(registry: &ModeRegistry, kind: BufferKind, lang: Lang)
 mod tests {
     use super::*;
 
+    /// OM.2b: `keymap.leader`'s default is written as a literal in
+    /// `lattice-config` because that crate does not depend on
+    /// `lattice-keymap`. This is the pin that stops the two drifting — both
+    /// are in scope here.
+    #[test]
+    fn the_leader_option_default_matches_the_keymap_default() {
+        use lattice_config::OptionDecl;
+        assert_eq!(
+            lattice_config::core_options::KeymapLeader::default_value(),
+            lattice_keymap::DEFAULT_LEADER,
+            "keymap.leader's default and DEFAULT_LEADER must not drift"
+        );
+    }
+
     #[test]
     fn each_buffer_kind_mode_has_distinct_id() {
         let ids = [

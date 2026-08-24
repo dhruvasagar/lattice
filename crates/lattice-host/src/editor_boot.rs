@@ -2019,6 +2019,17 @@ impl Editor {
                 // `:set` re-pushes the layer live (see dispatch.rs). `config`
                 // is still borrowable here (the field above clones it).
                 // Disabled, or a malformed prefix => empty layer (no panic).
+                // OM.2b: set what `<leader>` expands to BEFORE anything
+                // registers a binding. Expansion is bind-time, so a leader
+                // installed after a subsystem or plugin has bound its chords
+                // would not reach them — this must be the first thing done to
+                // the keymap handle, not merely an early one.
+                let leader = config
+                    .get_typed::<lattice_config::core_options::KeymapLeader>()
+                    .map(|v| (*v).clone())
+                    .unwrap_or_else(|| lattice_keymap::DEFAULT_LEADER.to_string());
+                h.set_leader(&leader);
+
                 let emacs_keys_enabled = config
                     .get_typed::<lattice_config::core_options::EmacsKeys>()
                     .map(|v| *v)

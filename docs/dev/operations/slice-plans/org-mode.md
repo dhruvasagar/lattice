@@ -39,6 +39,8 @@ OM.1  ModeRegistry language index (native only, no WASM)
   │
 OM.2  modes seam accepts `major` + target-language   ← org-mode activates
   │
+OM.2b `<leader>` expansion (carved mid-build — it did not exist)
+  │
   ├── outliner ──────────────────────────────────────────────┐
   │   OM.3   promote / demote (headline + subtree)            │
   │   OM.4   headline motions + ih/ah/is/as text objects      │
@@ -76,6 +78,7 @@ files? — was retired during design by reading the excerpt model
 | OM.0 | Gate: a plugin's `grammar` seam drains before its `modes` seam | ✅ |
 | OM.1 | `ModeRegistry` language index + `Mode::target_language` | ✅ |
 | OM.2 | `modes` seam accepts `major`; `target-language` field | ✅ |
+| OM.2b | `<leader>` bind-time expansion + `keymap.leader` | ✅ |
 | OM.3 | Promote / demote headline + subtree | 📝 |
 | OM.4 | Headline motions + `ih`/`ah`/`is`/`as` text objects | 📝 |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
@@ -264,6 +267,52 @@ The three "majors are Phase 8" deferral sites were corrected rather than left
 to drift: `mode_host.rs`'s reject arm (and its test, rewritten into its
 positive counterpart), `wit/modes.wit`'s header and `mode-kind` doc, and the
 two bullets in `plugin-host.md`.
+
+### OM.2b — `<leader>` expansion ✅ (2026-08-24)
+
+**Carved mid-build, because the approved keymap could not have worked.**
+Every org chord is `<leader>o…`, and probing the parser directly gave:
+
+```
+"<leader>oh" => Err(UnknownName { name: "leader", at: 0 })
+"<Space>oh"  => Ok(3)
+```
+
+`<leader>` does not exist in lattice. It appears in
+`keymap-architecture.md:352` as an aspirational example and was never
+built. Every org binding would have been skipped with a warning: the
+plugin loads, `org-mode` activates, the chords do nothing — the same
+silent shape OM.0 fixed, reached from a different direction.
+
+Decided with Dhruva: **bind-time expansion**, not a live-rebindable
+layer. `keymap.leader` (default `<Space>`) is read once at boot and
+`<leader>` is expanded in `try_bind_chord_string` — the single choke
+point every plugin mode, `register-binding` and init.rs binding funnels
+through. Rejected: hardcoding `<Space>o…` in org, which would take from
+the user the exact choice leader exists to give them and need migrating
+later; and full live re-expansion, which means layers must remember they
+were registered with a leader and re-push on change (the
+`emacs-keys-prefix` shape, worth doing when someone wants `:set`).
+
+`<Space>` rather than vim's `\` — vim's default is an artifact of which
+keys were free in 1991, and nvim-orgmode's documented bindings assume
+space. The standing "UX follows convention" rule.
+
+**Consequences stated rather than hidden:** expansion is bind-time, so a
+`:set keymap.leader` after boot does not move bindings that already
+landed; `set_leader` is therefore called FIRST in the keymap boot block,
+not merely early. `try_unbind_chord_string` expands too, or a plugin
+could bind `<leader>x` and never reverse it on unload.
+
+Tests: 5 in `lattice-keymap` (both spellings expand anywhere in a
+sequence including twice; a bound leader chord resolves under the
+expanded form; `set_leader` changes later bindings; unbind-by-the-same-
+string round-trips; a malformed leader degrades to `InvalidChord`
+per-binding rather than panicking). Plus a drift pin in `lattice-host`
+holding `keymap.leader`'s default equal to `DEFAULT_LEADER` — the
+literal is duplicated because `lattice-config` does not depend on
+`lattice-keymap` and should not gain the dependency for a default
+string.
 
 ## The outliner
 

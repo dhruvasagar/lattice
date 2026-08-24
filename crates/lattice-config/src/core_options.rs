@@ -507,6 +507,27 @@ crate::options! {
     /// re-pushes the layer.
     #[name("emacs-keys-prefix")]
     pub EmacsKeysPrefix: String = "<C-x>".into();
+
+    /// OM.2b: what `<leader>` expands to in a binding string. Default
+    /// `<Space>` — vim's historical `\\` is an artifact of which keys
+    /// happened to be free in 1991, and the modern vim world maps
+    /// leader to space (nvim-orgmode's documented bindings assume it).
+    ///
+    /// Expansion is **bind-time**, at `try_bind_chord_string`, which
+    /// every plugin mode / `register-binding` / init.rs binding funnels
+    /// through. So this is read once at boot and a later `:set` does
+    /// not move bindings that already landed — live re-expansion is
+    /// the `emacs-keys-prefix` shape and is deliberately not built
+    /// yet. A value that does not parse degrades per-binding to
+    /// `InvalidChord` (skipped + logged), never a panic.
+    ///
+    /// The literal is duplicated from `lattice_keymap::DEFAULT_LEADER`
+    /// rather than imported: `lattice-config` does not depend on
+    /// `lattice-keymap` and should not gain the dependency for a
+    /// default string. They are pinned equal by a test in
+    /// `lattice-host`, where both crates are in scope.
+    #[name("keymap.leader")]
+    pub KeymapLeader: String = "<Space>".into();
 }
 
 // ---- Completion group: insert-completion knobs ----

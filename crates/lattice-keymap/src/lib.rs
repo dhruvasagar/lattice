@@ -23,7 +23,8 @@ pub use trie::{BoundCommand, KeymapLayer, KeymapTrie, LookupResult};
 
 pub mod registry;
 pub use registry::{
-    KeymapCapability, KeymapError, KeymapHandle, KeymapRegistry, LayerId, PushLayerKind,
+    DEFAULT_LEADER, KeymapCapability, KeymapError, KeymapHandle, KeymapRegistry, LayerId,
+    PushLayerKind, expand_leader,
 };
 
 pub mod resolution;

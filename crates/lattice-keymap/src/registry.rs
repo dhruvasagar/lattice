@@ -125,6 +125,36 @@ impl std::fmt::Display for KeymapError {
 
 impl std::error::Error for KeymapError {}
 
+/// OM.2b: what `<leader>` expands to unless the host sets otherwise.
+///
+/// `<Space>` rather than vim's historical `\\`. Vim's default is an artifact of
+/// `\\` being one of the few unbound keys in 1991; the modern vim world
+/// overwhelmingly maps leader to space, and nvim-orgmode's documented bindings
+/// assume it. Convention beats historical accuracy on a surface this
+/// muscle-memory-bound (the standing "UX follows convention" rule).
+pub const DEFAULT_LEADER: &str = "<Space>";
+
+/// Expand every `<leader>` / `<Leader>` token in `chord_str` to `leader`.
+///
+/// Textual, before parsing, and everywhere in the sequence rather than only at
+/// the front — vim expands `<Leader>` wherever it appears, and a chord like
+/// `g<leader>x` is legal there.
+///
+/// A `leader` value that does not itself parse is not this function's problem:
+/// the expanded string goes through `parse_chord_sequence` like any other, so a
+/// malformed `keymap.leader` surfaces as an ordinary `InvalidChord` on each
+/// binding that used it — skipped and logged, never a panic.
+pub fn expand_leader(chord_str: &str, leader: &str) -> String {
+    if !chord_str.contains("<leader>") && !chord_str.contains("<Leader>") {
+        // The overwhelmingly common case: no allocation, no scan cost beyond
+        // the two `contains`.
+        return chord_str.to_string();
+    }
+    chord_str
+        .replace("<leader>", leader)
+        .replace("<Leader>", leader)
+}
+
 /// Returns `true` when `capability` authorises writes to
 /// `layer`. The check is the only place layer scope is
 /// enforced -- every capability-gated API funnels through here.
@@ -291,6 +321,18 @@ impl RegistryInner {
 /// `KeymapLayer::Builtin`.
 pub struct KeymapRegistry {
     inner: Mutex<RegistryInner>,
+    /// OM.2b: the chord `<leader>` expands to when a binding is
+    /// REGISTERED by string. Default [`DEFAULT_LEADER`]; the host sets
+    /// it from the `keymap.leader` option at boot.
+    ///
+    /// Expansion happens at bind time, never at lookup time — the
+    /// keystroke path must not learn a new concept for this, and a
+    /// binding that has landed is an ordinary chord sequence with no
+    /// memory of how it was spelled. The consequence, stated rather
+    /// than hidden: changing `keymap.leader` after boot does not move
+    /// bindings that already landed (`emacs-keys-prefix` had the same
+    /// shape before it was made live).
+    leader: ArcSwap<String>,
     /// K.1.c (2026-05-30): cached merge of the **always-on**
     /// layers only (`Builtin + MajorMode + User + Buffer`).
     /// Wait-free read; rebuilt by writers. Pre-K.1.c this
@@ -348,6 +390,7 @@ impl KeymapRegistry {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
             derived_dirty: std::sync::atomic::AtomicBool::new(false),
+            leader: ArcSwap::from_pointee(DEFAULT_LEADER.to_string()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -463,6 +506,7 @@ impl Default for KeymapRegistry {
         // through `KeymapHandle`.
         Self {
             inner: Mutex::new(RegistryInner::new()),
+            leader: ArcSwap::from_pointee(DEFAULT_LEADER.to_string()),
             derived_dirty: std::sync::atomic::AtomicBool::new(false),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
             gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
@@ -1101,9 +1145,33 @@ impl KeymapHandle {
         command: CommandInvocation,
         source: SourceLocation,
     ) -> Result<(), KeymapError> {
+        // OM.2b: `<leader>` is expanded here, at the single choke point every
+        // string-bound binding funnels through — plugin modes, plugin
+        // `register-binding`, and the user's init.rs all arrive by this route.
+        let chord_str = &self.expand_leader(chord_str);
         let chords = parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
         let path: Vec<ChordPattern> = chords.into_iter().map(ChordPattern::Literal).collect();
         self.try_bind(capability, layer, mode, &path, command, source)
+    }
+
+    /// OM.2b: the chord `<leader>` expands to at bind time.
+    pub fn leader(&self) -> Arc<String> {
+        self.registry.leader.load_full()
+    }
+
+    /// Set what `<leader>` expands to. The host calls this at boot from the
+    /// `keymap.leader` option, BEFORE any subsystem or plugin registers its
+    /// bindings — expansion is bind-time, so a leader set afterwards does not
+    /// move bindings that already landed.
+    pub fn set_leader(&self, leader: &str) {
+        self.registry.leader.store(Arc::new(leader.to_string()));
+    }
+
+    /// Expand `<leader>` in `chord_str` against the current leader.
+    /// Exposed so a caller that must parse a binding string itself
+    /// (`:describe-key`) resolves it the same way binding did.
+    pub fn expand_leader(&self, chord_str: &str) -> String {
+        expand_leader(chord_str, &self.registry.leader.load())
     }
 
     /// Capability-gated [`Self::unbind`] from a vim-notation chord
@@ -1122,6 +1190,10 @@ impl KeymapHandle {
         mode: BindingMode,
         chord_str: &str,
     ) -> Result<Option<Arc<BoundCommand>>, KeymapError> {
+        // Expand on the way out too, or a binding registered as `<leader>x`
+        // could never be reversed by the string that created it — the
+        // symmetry this method exists for.
+        let chord_str = &self.expand_leader(chord_str);
         let chords = parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
         let path: Vec<ChordPattern> = chords.into_iter().map(ChordPattern::Literal).collect();
         self.try_unbind(capability, layer, mode, &path)
@@ -1822,6 +1894,108 @@ mod tests {
             HashMap::new(),
         );
         assert!(r.is_ok());
+    }
+
+    // ── OM.2b: `<leader>` expansion ────────────────────────────────
+
+    #[test]
+    fn expand_leader_substitutes_both_spellings_anywhere() {
+        assert_eq!(expand_leader("<leader>oh", "<Space>"), "<Space>oh");
+        assert_eq!(expand_leader("<Leader>oh", "<Space>"), "<Space>oh");
+        // Vim expands the token wherever it appears, not only at the front.
+        assert_eq!(expand_leader("g<leader>x", ","), "g,x");
+        // Two occurrences both expand.
+        assert_eq!(expand_leader("<leader><leader>", ","), ",,");
+        // Untouched when absent — the overwhelmingly common case.
+        assert_eq!(expand_leader("<C-w>j", "<Space>"), "<C-w>j");
+        assert_eq!(expand_leader("dd", "<Space>"), "dd");
+    }
+
+    #[test]
+    fn a_leader_binding_resolves_under_the_expanded_chord() {
+        let h = KeymapHandle::new();
+        h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<leader>oh",
+            invocation(7),
+            src("org"),
+        )
+        .expect("binds");
+
+        // It landed as `<Space>oh` — an ordinary chord sequence with no memory
+        // of having been written with a leader.
+        let seq = parse_chord_sequence("<Space>oh").expect("parses");
+        assert!(matches!(
+            h.lookup(BindingMode::Normal, &seq),
+            LookupResult::Bound { .. }
+        ));
+    }
+
+    #[test]
+    fn set_leader_changes_what_later_bindings_expand_to() {
+        let h = KeymapHandle::new();
+        assert_eq!(*h.leader(), DEFAULT_LEADER);
+        h.set_leader(",");
+        h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<leader>x",
+            invocation(9),
+            src("user"),
+        )
+        .expect("binds");
+        let seq = parse_chord_sequence(",x").expect("parses");
+        assert!(matches!(
+            h.lookup(BindingMode::Normal, &seq),
+            LookupResult::Bound { .. }
+        ));
+    }
+
+    #[test]
+    fn a_leader_binding_can_be_unbound_by_the_string_that_created_it() {
+        // The symmetry `try_unbind_chord_string` exists for. Without
+        // expanding on the way out, a plugin could bind `<leader>x` and never
+        // reverse it on unload.
+        let h = KeymapHandle::new();
+        h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<leader>x",
+            invocation(11),
+            src("user"),
+        )
+        .expect("binds");
+        let removed = h
+            .try_unbind_chord_string(
+                KeymapCapability::User,
+                KeymapLayer::User,
+                BindingMode::Normal,
+                "<leader>x",
+            )
+            .expect("no capability or parse error");
+        assert!(removed.is_some(), "the leader binding was reversed");
+    }
+
+    #[test]
+    fn a_malformed_leader_degrades_to_an_invalid_chord_not_a_panic() {
+        let h = KeymapHandle::new();
+        h.set_leader("<not-a-key>");
+        let err = h.try_bind_chord_string(
+            KeymapCapability::User,
+            KeymapLayer::User,
+            BindingMode::Normal,
+            "<leader>x",
+            invocation(13),
+            src("user"),
+        );
+        assert!(
+            matches!(err, Err(KeymapError::InvalidChord(_))),
+            "a bad leader surfaces per-binding, skipped and logged by the caller"
+        );
     }
 
     #[test]

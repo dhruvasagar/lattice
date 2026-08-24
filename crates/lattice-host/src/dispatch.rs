@@ -6931,6 +6931,84 @@ impl Editor {
         scroll
     }
 
+    /// IM.1b — the weighted twin of `folds::nth_visible_line_forward`.
+    ///
+    /// Walks visible lines forward from `from`, spending `budget`
+    /// line-heights, and returns the line reached. A page, an `L`, an `M`
+    /// all mean "as far as fits in this much of the viewport", and once rows
+    /// differ in height that is no longer the same as "this many lines".
+    ///
+    /// **Reduces exactly to the row-count walk when weights are uniform**:
+    /// each step then costs 1.0, so a budget of `n` advances `n` lines. That
+    /// equivalence is what keeps the TUI and every unscaled buffer unchanged,
+    /// and it is asserted directly in the tests.
+    ///
+    /// Fold-aware by construction — it steps through
+    /// `nth_visible_line_forward(.., 1, ..)`, so closed fold bodies are
+    /// skipped rather than charged.
+    fn line_forward_by_budget(&self, from: u32, budget: f32, total: u32) -> u32 {
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        let mut at = from;
+        let mut used = 0.0f32;
+        loop {
+            let next = crate::folds::nth_visible_line_forward(&fold_idx, at, 1, total);
+            if next == at {
+                return at; // end of buffer
+            }
+            let cost = self.weighted_doc_line_cost(next);
+            if used + cost > budget {
+                return at;
+            }
+            used += cost;
+            at = next;
+        }
+    }
+
+    /// The backward twin of [`Self::line_forward_by_budget`], mirroring
+    /// `folds::nth_visible_line_backward`.
+    fn line_backward_by_budget(&self, from: u32, budget: f32) -> u32 {
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        let mut at = from;
+        let mut used = 0.0f32;
+        loop {
+            let prev = crate::folds::nth_visible_line_backward(&fold_idx, at, 1);
+            if prev == at {
+                return at; // top of buffer
+            }
+            let cost = self.weighted_doc_line_cost(prev);
+            if used + cost > budget {
+                return at;
+            }
+            used += cost;
+            at = prev;
+        }
+    }
+
+    /// A visible line's cost to the DOC-LINE walks, in line-heights.
+    ///
+    /// Base cost is **1, not the display-row count**, and that is deliberate
+    /// rather than a simplification. Every caller of these walks
+    /// (`do_page`, `H`/`M`/`L`, `zz`) counts doc lines today via
+    /// `folds::nth_visible_line_*` — wrap segments and anchored virtual rows
+    /// are explicitly NOT charged, which is what the `zz` comment means by
+    /// "doc-line centre (slack absorbs headers)".
+    ///
+    /// Charging display rows here changed `zz` from 6 to 7 in a buffer with
+    /// excerpt headers and broke `scroll_cursor_to_bottom_accounts_for_headers`
+    /// — a regression, not an improvement: it silently redefined three vim
+    /// motions while claiming to add tall-row support.
+    ///
+    /// So the base stays 1 and only an explicit peer override moves it. With
+    /// no overrides this is exactly `nth_visible_line_*`, and a genuinely
+    /// tall row still gets charged its height.
+    ///
+    /// `bottom_anchored_scroll` is the one walk that legitimately counts
+    /// display rows — it is the display-row-space bottom clamp — and it keeps
+    /// its own cost function.
+    fn weighted_doc_line_cost(&self, line: u32) -> f32 {
+        self.row_weights.cost(line, 1)
+    }
+
     /// What `:bn` / `:bp` consider the "current" buffer for stepping.
     /// The active pane's `buffer_id` is the source of truth (the
     /// active pane is what the user sees).
@@ -21089,21 +21167,22 @@ impl Editor {
     /// arithmetic, so closed folds don't skew the target position.
     pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
         let height = self.viewport_height.max(1);
-        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
         let total = buffer.content_line_count();
+        // IM.1b: `H` / `M` / `L` are viewport-RELATIVE, so they walk a
+        // line-height budget down from the top of the window rather than a
+        // fixed number of lines. A tall row between the top and the middle
+        // means `M` lands on an earlier line — which is the line actually
+        // drawn at the middle of the pane.
         let line = match vpos {
             lattice_grammar::ViewportPos::Top => self.scroll,
             lattice_grammar::ViewportPos::Middle => {
-                crate::folds::nth_visible_line_forward(&fold_idx, self.scroll, height / 2, total)
+                self.line_forward_by_budget(self.scroll, (height / 2) as f32, total)
             }
-            lattice_grammar::ViewportPos::Bottom => crate::folds::nth_visible_line_forward(
-                &fold_idx,
-                self.scroll,
-                height.saturating_sub(1),
-                total,
-            ),
+            lattice_grammar::ViewportPos::Bottom => {
+                self.line_forward_by_budget(self.scroll, height.saturating_sub(1) as f32, total)
+            }
         }
         .min(last);
         let len = buffer.line_byte_len(line);
@@ -21141,9 +21220,11 @@ impl Editor {
             // closed folds above the cursor don't make the scroll
             // position too low. When there aren't enough visible
             // rows above the cursor, scroll clamps to 0.
+            // IM.1b: half the viewport measured in line-heights, so a tall
+            // row above the cursor pushes the scroll down rather than
+            // centring on a line count that no longer describes the window.
             lattice_grammar::ScrollPos::Center => {
-                let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
-                crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, height / 2)
+                self.line_backward_by_budget(self.cursor.line, (height / 2) as f32)
             }
             // `zb`: cursor at the bottom row — the same display-row
             // accounting as `ensure_cursor_visible`'s bottom clamp,
@@ -21193,12 +21274,13 @@ impl Editor {
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
         let total = buffer.content_line_count();
+        // IM.1b: `step` is a budget in line-heights, not a line count — a
+        // page moves by as much of the viewport as fits, and with a tall row
+        // in the way that is fewer lines.
         let new_line = if down {
-            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
-            crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, step, total)
+            self.line_forward_by_budget(self.cursor.line, step as f32, total)
         } else {
-            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
-            crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, step)
+            self.line_backward_by_budget(self.cursor.line, step as f32)
         }
         .min(last);
         let len = buffer.line_byte_len(new_line);
@@ -43858,6 +43940,90 @@ mod tests {
         // so lines 11..=3 cost 9 and line 2 would take it to 14 — over
         // budget. The window settles at line 3.
         assert_eq!(editor.scroll, 3, "the tall row is excluded from the window");
+    }
+
+    /// IM.1b — a tall row shortens a page, an `M` and a `zz`, because all
+    /// three mean "as much of the viewport as fits".
+    #[test]
+    fn paging_and_centring_spend_a_line_height_budget() {
+        let tall = |editor: &mut crate::editor::Editor, line: u32, h: f32| {
+            let mut w = lattice_cells::RowWeights::uniform();
+            w.set(line, h);
+            editor.row_weights = std::sync::Arc::new(w);
+        };
+
+        // `<C-f>` pages by `height - 2` line-heights. At height 12 that is
+        // 10 lines of budget; a 5-line-height row in the way costs four
+        // extra, so the page lands four lines short.
+        let mut e = crate::editor::Editor::boot(doc_with_lines(60));
+        e.viewport_height = 12;
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.do_page(true);
+        let plain = e.cursor.line;
+        assert_eq!(plain, 10, "baseline: a page is height-2 lines");
+
+        let mut e = crate::editor::Editor::boot(doc_with_lines(60));
+        e.viewport_height = 12;
+        tall(&mut e, 3, 5.0);
+        e.cursor = lattice_protocol::position::Position::new(0, 0);
+        e.do_page(true);
+        assert_eq!(
+            e.cursor.line, 6,
+            "the 5-line-height row at 3 costs 5 of the 10-line budget"
+        );
+
+        // `M` walks half the viewport down from the top of the window.
+        let mut e = crate::editor::Editor::boot(doc_with_lines(60));
+        e.viewport_height = 12;
+        e.scroll = 0;
+        tall(&mut e, 2, 4.0);
+        e.do_jump_viewport(lattice_grammar::ViewportPos::Middle);
+        assert_eq!(
+            e.cursor.line, 3,
+            "half of 12 is 6 line-heights: lines 1,2(=4),3 spends exactly 6"
+        );
+
+        // `zz` walks half the viewport UP from the cursor.
+        let mut e = crate::editor::Editor::boot(doc_with_lines(60));
+        e.viewport_height = 12;
+        e.cursor = lattice_protocol::position::Position::new(20, 0);
+        tall(&mut e, 18, 4.0);
+        e.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        assert_eq!(
+            e.scroll, 17,
+            "6 line-heights up from 20: 19, 18(=4) spends 5, then 17 spends 6"
+        );
+    }
+
+    /// The parity guard for IM.1b: with no overrides the weighted walks must
+    /// land exactly where `folds::nth_visible_line_*` did. Every TUI buffer
+    /// and every unscaled GPUI buffer is this case.
+    #[test]
+    fn uniform_weights_leave_paging_and_centring_untouched() {
+        for height in [6u32, 12, 30] {
+            for from in [0u32, 5, 25] {
+                let mut a = crate::editor::Editor::boot(doc_with_lines(60));
+                a.viewport_height = height;
+                a.cursor = lattice_protocol::position::Position::new(from, 0);
+                a.do_page(true);
+
+                let mut b = crate::editor::Editor::boot(doc_with_lines(60));
+                b.viewport_height = height;
+                b.row_weights = std::sync::Arc::new(lattice_cells::RowWeights::uniform());
+                b.cursor = lattice_protocol::position::Position::new(from, 0);
+                b.do_page(true);
+
+                assert_eq!(
+                    a.cursor.line, b.cursor.line,
+                    "page differs at height={height} from={from}"
+                );
+
+                // `<C-f>` moves by height-2 lines when nothing is tall — the
+                // pre-IM.1b behaviour, pinned rather than inferred.
+                let expect = from.saturating_add(height.saturating_sub(2).max(1)).min(59);
+                assert_eq!(a.cursor.line, expect, "page is height-2 lines");
+            }
+        }
     }
 
     /// The regression guard for the whole slice: with no overrides the

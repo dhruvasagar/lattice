@@ -2073,6 +2073,127 @@ pub fn operator_prefix(
     }
 }
 
+/// OM.4b: the operators a plugin-contributed motion or text object composes
+/// with. `search` (`g/`) is absent deliberately — it is an operator in the
+/// registry but its Normal-mode surface is the search prompt, not a
+/// composable prefix.
+fn composable_operators(builtins: &Builtins) -> [lattice_grammar::registry::OperatorId; 9] {
+    [
+        builtins.delete,
+        builtins.change,
+        builtins.yank,
+        builtins.indent_right,
+        builtins.indent_left,
+        builtins.reindent,
+        builtins.upper,
+        builtins.lower,
+        builtins.toggle_case,
+    ]
+}
+
+/// OM.4b: give a plugin mode's motion / text-object bindings their
+/// operator-pending (and, for text objects, Visual) rows — **in that mode's own
+/// layer**, never `Builtin`.
+///
+/// ## Why this exists
+///
+/// `bind_mode_keymap` (plugin-host) binds a mode's declared chords in Normal
+/// and stops there. That is right for an action, and useless for the other two
+/// kinds: an operator+motion path like `d]]` and a text-object path like `dar`
+/// are bound EXPLICITLY, expanded across every operator, and for builtins that
+/// expansion comes from the hardcoded `motion_rows` / `text_object_rows`
+/// tables. A plugin has no route into those tables, so a plugin motion is
+/// unreachable after an operator and a plugin text object is unreachable
+/// entirely.
+///
+/// ## Why here and not at bind time
+///
+/// The expansion needs `Builtins` — the host-resolved operator ids — which
+/// lives downstream of `lattice-plugin-host`. Rather than leak the operator
+/// vocabulary two crates down, the host runs this pass after the mode's layer
+/// exists. That framing is also the honest one: the host is applying its
+/// UNIVERSAL operator vocabulary to a contribution, exactly as it does for
+/// builtins, while the plugin still declares only chord + command.
+/// `register_operator_bindings` is `pub` for the same shape of reason (N.1.3,
+/// the provider-contributed `zn` operator).
+///
+/// ## What it does per binding
+///
+/// Reads the mode's Normal layer, and for each terminal binding whose command
+/// resolves in `commands` to:
+///
+/// * **`Motion`** — keeps the Normal binding (`]]` still moves on its own) and
+///   adds `<op-prefix><chord>` for every composable operator.
+/// * **`TextObject`** — REPLACES the Normal binding, because a text object
+///   invoked standalone in Normal means nothing, and adds
+///   `<op-prefix><chord>` plus a Visual-mode binding so `var` extends the
+///   selection.
+/// * anything else — left alone.
+///
+/// Idempotent: re-running rebinds the same paths to the same commands, so a
+/// plugin reload cannot accumulate rows.
+pub fn expand_plugin_mode_grammar_rows(
+    handle: &KeymapHandle,
+    commands: &lattice_grammar::registry::CommandRegistry,
+    builtins: &Builtins,
+    layer: KeymapLayer,
+) -> usize {
+    let mut added = 0usize;
+    for (path, bound) in handle.layer_bindings(layer, BindingMode::Normal) {
+        let Some(spec) = commands.lookup(bound.command.command) else {
+            continue;
+        };
+        let target = match spec.kind {
+            lattice_grammar::CommandKind::Motion => Target::Motion(
+                lattice_grammar::registry::MotionId(bound.command.command),
+                Args::None,
+            ),
+            lattice_grammar::CommandKind::TextObject => Target::TextObject(
+                lattice_grammar::registry::TextObjectId(bound.command.command),
+                Args::None,
+            ),
+            _ => continue,
+        };
+        let is_text_object = matches!(target, Target::TextObject(..));
+
+        for op in composable_operators(builtins) {
+            let prefix = operator_prefix(op, builtins);
+            if prefix.is_empty() {
+                continue;
+            }
+            let mut full: Vec<ChordPattern> =
+                prefix.into_iter().map(ChordPattern::Literal).collect();
+            full.extend(path.iter().cloned());
+            handle.bind(
+                layer,
+                BindingMode::Normal,
+                &full,
+                CommandInvocation::of(op.0).with_target(target.clone()),
+                source(),
+            );
+            added += 1;
+        }
+
+        if is_text_object {
+            // Visual: `var` extends the selection to the object. The
+            // invocation is the text object itself, not an operator — the
+            // Visual dispatcher resolves the range and moves the head.
+            handle.bind(
+                layer,
+                BindingMode::Visual,
+                &path,
+                bound.command.clone(),
+                source(),
+            );
+            added += 1;
+            // And drop the Normal terminal binding `bind_mode_keymap` wrote:
+            // `ar` alone in Normal is not a command a user can mean.
+            handle.unbind(layer, BindingMode::Normal, &path);
+        }
+    }
+    added
+}
+
 fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
     // Strip ALT and SUPER; preserve CTRL and SHIFT. Same
     // treatment as Insert mode -- legacy `translate_normal`

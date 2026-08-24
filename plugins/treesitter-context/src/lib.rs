@@ -517,6 +517,7 @@ impl CallbacksGuest for Component {
     fn apply_text_object(
         _callback: u32,
         _ctx: lattice::plugin_host::types::TextObjectContext,
+        _doc: &lattice::plugin_host::buffer::Document,
     ) -> Result<lattice::plugin_host::types::Range, String> {
         Err("treesitter-context contributes no text objects".to_string())
     }

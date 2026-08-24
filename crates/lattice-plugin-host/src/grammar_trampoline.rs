@@ -308,9 +308,25 @@ fn build_text_object_spec(
         apply: Arc::new(
             move |ctx: &TextObjectContext| -> GrammarResult<NativeRange> {
                 let wit_ctx = project_text_object_context(ctx).map_err(CommandError::Plugin)?;
+                // OM.4b: mint a point-in-time `document`, as the motion and
+                // action paths do. Resolving a subtree's bounds means reading
+                // lines, and `text-object-context` always said buffer text
+                // rides this handle.
+                let snapshot = Arc::new(DocumentSnapshot {
+                    buffer: ctx.buffer.clone(),
+                    ..Default::default()
+                });
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
-                    b.lattice_plugin_host_grammar_callbacks()
-                        .call_apply_text_object(s, callback, &wit_ctx)
+                    let owned_doc = s
+                        .data_mut()
+                        .table
+                        .push(DocumentResource::new(snapshot.clone()))?;
+                    let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                    let result = b
+                        .lattice_plugin_host_grammar_callbacks()
+                        .call_apply_text_object(&mut *s, callback, &wit_ctx, doc_borrow);
+                    let _ = s.data_mut().table.delete(owned_doc);
+                    result
                 })?;
                 NativeRange::from_wit(wit).map_err(CommandError::Plugin)
             },

@@ -91,7 +91,16 @@ interface grammar-callbacks {
         doc: borrow<document>,
     ) -> result<motion-result, string>;
     apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
-    apply-text-object: func(callback: u32, ctx: text-object-context) -> result<range, string>;
+    /// OM.4b: a text object receives `borrow<document>` too — `text-object-context`
+    /// has always said "buffer text + the scope/comment env ride the `document`
+    /// handle", and AP.0.1 simply wired the action path first. Org's headline
+    /// and subtree objects are the first plugin ones, and resolving a subtree's
+    /// bounds means reading lines.
+    apply-text-object: func(
+        callback: u32,
+        ctx: text-object-context,
+        doc: borrow<document>,
+    ) -> result<range, string>;
     apply-action: func(
         callback: u32,
         ctx: action-context,

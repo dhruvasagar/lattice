@@ -52,7 +52,7 @@ mod headline;
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
-use lattice::plugin_host::grammar::{register_action, register_motion};
+use lattice::plugin_host::grammar::{register_action, register_motion, register_text_object};
 use lattice::plugin_host::help::register_topic;
 use lattice::plugin_host::language::{LanguageSpec, register_language};
 use lattice::plugin_host::modes::{
@@ -63,6 +63,7 @@ use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Edit, EditKind, Effect, ExCommandContext, MotionContext,
     MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
+    TextObjectSpec,
 };
 
 /// Callback ids for `apply-action`. The guest chooses these; the host only
@@ -77,6 +78,12 @@ const DEMOTE_SUBTREE: u32 = 4;
 const NEXT_HEADLINE: u32 = 1;
 const PREV_HEADLINE: u32 = 2;
 const PARENT_HEADLINE: u32 = 3;
+
+/// Callback ids for `apply-text-object`.
+const INNER_HEADLINE: u32 = 1;
+const AROUND_HEADLINE: u32 = 2;
+const INNER_SUBTREE: u32 = 3;
+const AROUND_SUBTREE: u32 = 4;
 
 const GRAMMAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammar.wasm"));
 
@@ -153,6 +160,20 @@ impl Guest for Component {
                 bind("]]", "org-next-headline"),
                 bind("[[", "org-prev-headline"),
                 bind("g{", "org-parent-headline"),
+                // Text objects (OM.4b). The host sees that these name TEXT
+                // OBJECTS rather than actions and expands each into
+                // `<operator><chord>` rows in this mode's own layer, plus a
+                // Visual binding — so `dar` deletes a subtree through the
+                // ORDINARY delete operator and no org-specific chord is
+                // involved.
+                //
+                // `ir` / `ar` for the subtree, not `is` / `as`: `s` is already
+                // vim's SENTENCE object, and nvim-orgmode uses `r` (subtRee)
+                // for exactly that reason.
+                bind("ih", "org-inner-headline"),
+                bind("ah", "org-around-headline"),
+                bind("ir", "org-inner-subtree"),
+                bind("ar", "org-around-subtree"),
             ],
             target_language: Some("org".to_string()),
         });
@@ -198,6 +219,33 @@ impl Guest for Component {
             "Move to the parent of the headline at the cursor",
             &motion(),
             PARENT_HEADLINE,
+        );
+        let tobj = || TextObjectSpec {
+            args_schema: Vec::new(),
+        };
+        register_text_object(
+            "org-inner-headline",
+            "The headline's title, without its stars",
+            &tobj(),
+            INNER_HEADLINE,
+        );
+        register_text_object(
+            "org-around-headline",
+            "The whole headline line, stars included",
+            &tobj(),
+            AROUND_HEADLINE,
+        );
+        register_text_object(
+            "org-inner-subtree",
+            "A subtree's body — everything under the headline, not the headline",
+            &tobj(),
+            INNER_SUBTREE,
+        );
+        register_text_object(
+            "org-around-subtree",
+            "A whole subtree: the headline and everything under it",
+            &tobj(),
+            AROUND_SUBTREE,
         );
         register_action(
             "org-promote-headline",
@@ -395,8 +443,100 @@ impl GrammarCallbacks for Component {
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
         Err("org: no operators".into())
     }
-    fn apply_text_object(_c: u32, _ctx: TextObjectContext) -> Result<Range, String> {
-        Err("org: no text objects".into())
+    /// The headline / subtree text objects (OM.4b).
+    ///
+    /// `inner` vs `around` follows vim's own distinction rather than inventing
+    /// one: *around* takes the structural marker with it, *inner* leaves it.
+    /// So `ah` is the whole headline line and `ih` its title without the stars;
+    /// `ar` is a subtree headline-and-all, `ir` its body with the headline left
+    /// standing. `dir` empties a section, `dar` removes it.
+    ///
+    /// An `err` here is logged and the contribution no-ops, leaving the
+    /// operator with nothing to act on — which is the right outcome for `dar`
+    /// with the cursor in a file's preamble.
+    fn apply_text_object(
+        callback: u32,
+        ctx: TextObjectContext,
+        doc: &Document,
+    ) -> Result<Range, String> {
+        let line = |n: u32| doc.line(n);
+        let (start, _level) = headline::enclosing_headline(line, ctx.at.line)
+            .ok_or("org: no headline at or above the cursor")?;
+        let head = line(start).ok_or("org: headline vanished mid-read")?;
+        let stars = headline::headline_level(&head).ok_or("org: not a headline")?;
+
+        let range = match callback {
+            // The headline's title: after the stars and their space, to the
+            // end of the line.
+            INNER_HEADLINE => Range {
+                start: Position {
+                    line: start,
+                    byte: (stars + 1) as u32,
+                },
+                end: Position {
+                    line: start,
+                    byte: head.len() as u32,
+                },
+            },
+            // The whole headline line, stars included.
+            AROUND_HEADLINE => Range {
+                start: Position {
+                    line: start,
+                    byte: 0,
+                },
+                end: Position {
+                    line: start,
+                    byte: head.len() as u32,
+                },
+            },
+            // The subtree's BODY — everything under the headline, the
+            // headline itself left standing. `dir` empties a section.
+            INNER_SUBTREE => {
+                let end = headline::subtree_end(line, start, doc.line_count());
+                if end == start {
+                    // A childless headline has no inner subtree; an empty
+                    // range at its end is the honest answer, and `dir` on it
+                    // deletes nothing rather than eating the headline.
+                    Range {
+                        start: Position {
+                            line: start,
+                            byte: head.len() as u32,
+                        },
+                        end: Position {
+                            line: start,
+                            byte: head.len() as u32,
+                        },
+                    }
+                } else {
+                    Range {
+                        start: Position {
+                            line: start + 1,
+                            byte: 0,
+                        },
+                        end: Position {
+                            line: end,
+                            byte: line(end).map(|l| l.len()).unwrap_or(0) as u32,
+                        },
+                    }
+                }
+            }
+            // The whole subtree, headline and all. `dar` removes a section.
+            AROUND_SUBTREE => {
+                let end = headline::subtree_end(line, start, doc.line_count());
+                Range {
+                    start: Position {
+                        line: start,
+                        byte: 0,
+                    },
+                    end: Position {
+                        line: end,
+                        byte: line(end).map(|l| l.len()).unwrap_or(0) as u32,
+                    },
+                }
+            }
+            other => return Err(format!("org: unknown text-object callback {other}")),
+        };
+        Ok(range)
     }
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
         Err("org: no ex-commands".into())

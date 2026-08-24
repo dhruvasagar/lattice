@@ -80,6 +80,27 @@ async fn org_editor(base: &std::path::Path, text: &str) -> Editor {
         .await;
     assert_eq!(loaded, 1, "the org component loads");
 
+    // OM.4b: boot subscribes to `PluginLoaded` and expands a plugin mode's
+    // motion / text-object bindings into operator rows on a spawned task. That
+    // is right in production and a race in a test that dispatches immediately,
+    // so drive the same function directly here. The event-driven wiring has its
+    // own test below rather than every test racing it.
+    {
+        let commands = editor.registry.load();
+        for (mode_id, kind) in editor.mode_registry.load().iter_meta() {
+            let layer = match kind {
+                lattice_mode::ModeKind::Major => lattice_keymap::KeymapLayer::MajorMode(mode_id),
+                lattice_mode::ModeKind::Minor => lattice_keymap::KeymapLayer::MinorMode(mode_id),
+            };
+            lattice_host::keymap_normal::expand_plugin_mode_grammar_rows(
+                &editor.keymap,
+                &commands,
+                &editor.builtins,
+                layer,
+            );
+        }
+    }
+
     let file = base.join("notes.org");
     std::fs::write(&file, text).unwrap();
     editor.do_edit(Some(file), false);
@@ -382,6 +403,185 @@ async fn parent_skips_siblings_where_prev_headline_would_not() {
     goto_line(&mut editor, 0);
     press(&mut editor, "g{");
     assert_eq!(cursor_line(&editor), 0, "a level-1 headline has no parent");
+}
+
+// ── OM.4b: operators compose with org's grammar ───────────────────
+//
+// These assert at the KEYMAP, not by dispatching `dar` and checking the text,
+// and that is a harness limit rather than a preference. Operator-pending is a
+// modal state resolved at the App layer (`input::translate`), above
+// `Editor::dispatch_chord` — dispatching `d` here returns `Bound` on the
+// operator immediately and the following keys arrive as fresh Normal chords,
+// so `dar` reads as `d`, then `a` (append), then a literal `r`. The same
+// layering that stopped OM.4 covering counts.
+//
+// What is proven here is the mechanism: the rows exist, in the right layer,
+// for the right operators, with text objects losing their Normal binding and
+// motions keeping theirs. Driving `dar` end-to-end needs a `lattice-ui-tui`
+// test on the App's `press` helper, and is carried as a named follow-up rather
+// than left implied.
+
+/// The boot wiring itself, not the function it calls.
+///
+/// `org_editor` drives `expand_plugin_mode_grammar_rows` directly so the other
+/// tests are deterministic — which leaves the `PluginLoaded` subscription that
+/// runs it in production untested, and an unrun expansion is exactly the
+/// "works, but only after you press something" bug class. So this one loads
+/// WITHOUT the direct call and waits for the event path to land the rows.
+///
+/// Waiting on a one-shot task, not polling a race: under load it takes longer,
+/// and it fails only if the subscription is genuinely not wired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_boot_subscription_expands_rows_without_any_keypress() {
+    let Some(wasm) = org_plugin_wasm() else {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    let dir = plugins_dir.join("org");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"org\"\nprovides = [\"modes\", \"grammar\", \"language\", \"help\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+
+    let editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let loaded = loader_over_editor(&editor, base.path())
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(loaded, 1);
+
+    let org = ModeId::new("org-mode");
+    let seq = parse_chord_sequence("dar").expect("parses");
+    for _ in 0..200 {
+        if matches!(
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Normal, &seq, &[org]),
+            lattice_keymap::LookupResult::Bound { .. }
+        ) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`dar` never gained a row — the PluginLoaded subscription is not wired");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_composable_operator_gets_a_row_not_just_delete() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let editor = org_editor(base.path(), "* One\nbody\n").await;
+
+    let org = ModeId::new("org-mode");
+    for prefix in ["d", "c", "y", "="] {
+        let seq = parse_chord_sequence(&format!("{prefix}ar")).expect("parses");
+        assert!(
+            matches!(
+                editor.keymap.lookup_with_context(
+                    lattice_keymap::BindingMode::Normal,
+                    &seq,
+                    &[org]
+                ),
+                lattice_keymap::LookupResult::Bound { .. }
+            ),
+            "`{prefix}ar` has a row in org-mode's layer"
+        );
+        // And ONLY in org-mode's layer — org's objects must not exist in a
+        // Rust buffer.
+        assert!(
+            matches!(
+                editor
+                    .keymap
+                    .lookup_with_context(lattice_keymap::BindingMode::Normal, &seq, &[]),
+                lattice_keymap::LookupResult::Unbound
+            ),
+            "`{prefix}ar` is not global"
+        );
+    }
+}
+
+/// Every object org contributes gets its rows, and so do its motions — the two
+/// halves of the gap OM.4b closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_four_text_objects_and_the_motions_are_reachable_after_an_operator() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let editor = org_editor(base.path(), "* One\nbody\n").await;
+
+    let org = ModeId::new("org-mode");
+    for chord in ["ih", "ah", "ir", "ar", "]]", "[["] {
+        let seq = parse_chord_sequence(&format!("d{chord}")).expect("parses");
+        assert!(
+            matches!(
+                editor.keymap.lookup_with_context(
+                    lattice_keymap::BindingMode::Normal,
+                    &seq,
+                    &[org]
+                ),
+                lattice_keymap::LookupResult::Bound { .. }
+            ),
+            "`d{chord}` resolves in org-mode's layer"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_text_object_loses_its_normal_binding_but_a_motion_keeps_one() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let editor = org_editor(base.path(), "* One\nbody\n").await;
+
+    let org = ModeId::new("org-mode");
+
+    // `bind_mode_keymap` writes a Normal terminal binding for every declared
+    // chord. The expansion REPLACES it for a text object: `ar` alone in Normal
+    // is not something a user can mean.
+    let tobj = parse_chord_sequence("ar").expect("parses");
+    assert!(
+        matches!(
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Normal, &tobj, &[org]),
+            lattice_keymap::LookupResult::Unbound
+        ),
+        "`ar` alone is not bound in Normal"
+    );
+
+    // Visual is the exception — selecting an object IS meaningful there.
+    assert!(
+        matches!(
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Visual, &tobj, &[org]),
+            lattice_keymap::LookupResult::Bound { .. }
+        ),
+        "`ar` is bound in Visual, where it extends the selection"
+    );
+
+    // A motion keeps its standalone binding; `]]` still moves on its own.
+    let motion = parse_chord_sequence("]]").expect("parses");
+    assert!(
+        matches!(
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Normal, &motion, &[org]),
+            lattice_keymap::LookupResult::Bound { .. }
+        ),
+        "only text objects lose their Normal binding, not motions"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

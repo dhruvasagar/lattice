@@ -6,12 +6,13 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.4 ✅ (2026-08-24) — **org edits and navigates.** OM.0 ✅ seam drain order is
+**Status:** OM.4b ✅ (2026-08-24) — **org's grammar composes with vim's
+operators.** OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
-promote/demote; OM.4 ✅ headline motions. Next: OM.4b, the operator-pending
-mechanism that both text objects and `d]]` need.
+promote/demote; OM.4 ✅ headline motions; OM.4b ✅ `dar` / `d]]` reach the
+plugin's grammar. Next: OM.5, `<Tab>` routing and the decline chain.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -85,7 +86,7 @@ files? — was retired during design by reading the excerpt model
 | OM.2b | `<leader>` bind-time expansion + `keymap.leader` | ✅ |
 | OM.3 | Promote / demote headline + subtree | ✅ |
 | OM.4 | Headline motions (`]]` / `[[` / `g{`) | ✅ |
-| OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | 📝 |
+| OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
 | OM.6 | Subtree move, meta-return, toggle heading, archive | 📝 |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | 📝 |
@@ -378,7 +379,7 @@ Tests: 13 unit in the plugin (motions walk every level; parent skips
 siblings; parent is `None` outside any headline) and 11 in
 `org_structure.rs`, 3 of them new for motions.
 
-### OM.4b — plugin grammar reaches operator-pending 📝
+### OM.4b — plugin grammar reaches operator-pending ✅ (2026-08-24)
 
 **Carved mid-build at OM.4.** Two separate-looking gaps turned out to be
 one mechanism:

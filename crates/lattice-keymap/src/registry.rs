@@ -1154,6 +1154,41 @@ impl KeymapHandle {
         self.try_bind(capability, layer, mode, &path, command, source)
     }
 
+    /// OM.4b: every terminal binding in ONE layer's `mode` trie, as
+    /// `(chord path, bound command)` pairs.
+    ///
+    /// The existing walks are either global (`merged`, every layer folded
+    /// together) or per-`CommandId` (the reverse cache). Neither answers "what
+    /// did *this* layer bind", which is what a caller expanding a mode's
+    /// contributions needs: the chord comes from the layer, the command's kind
+    /// comes from the `CommandRegistry`, and only the pairing identifies e.g. a
+    /// text object that needs operator-pending rows generating.
+    ///
+    /// Snapshots into a `Vec` rather than lending an iterator, because the
+    /// caller's next move is to *write* bindings into the same registry and it
+    /// must not be holding the lock while doing so. `O(bindings in one layer)`,
+    /// off any hot path — this runs at plugin load, not per keystroke.
+    pub fn layer_bindings(
+        &self,
+        layer: KeymapLayer,
+        mode: BindingMode,
+    ) -> Vec<(Vec<ChordPattern>, Arc<BoundCommand>)> {
+        let inner = self
+            .registry
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = inner.layers.iter().find(|l| l.layer == layer) else {
+            return Vec::new();
+        };
+        let Some(trie) = entry.modes.get(&mode) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        trie.walk_bindings(|path, bound| out.push((path.to_vec(), Arc::clone(bound))));
+        out
+    }
+
     /// OM.2b: the chord `<leader>` expands to at bind time.
     pub fn leader(&self) -> Arc<String> {
         self.registry.leader.load_full()

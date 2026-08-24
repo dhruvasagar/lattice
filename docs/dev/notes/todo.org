@@ -208,6 +208,7 @@
 - [X] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
 - [X] folding still gets messed up when opening a file in vertical split.
 - [ ] `zj` should go to the next visible fold, right now it goes to the next fold and if that fold is nested within the current fold, the cursor remains on that line. `zk` should also follow same concept.
+- [ ] popup actions such as `search` causes cursor jumps in the buffer underneath, the experience should be just like any other buffer, cursor is within the popup and jumps or any interactivity should also be only within this popup, nowhere else
 
 * Documentation
 - [X] lattice-tutor

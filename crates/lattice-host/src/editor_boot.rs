@@ -1788,6 +1788,66 @@ impl Editor {
         // `Arc<X>` wrapper needed); the loader looks it up under the same type.
         boot.register_service::<crate::keymap_registry::KeymapHandle>(keymap_handle.clone());
 
+        // OM.4b: after a plugin loads, give any motion / text object it
+        // contributed its operator-pending rows.
+        //
+        // `bind_mode_keymap` (two crates down, in `lattice-plugin-host`) binds
+        // a mode's declared chords in Normal and stops. That is right for an
+        // action and useless for the other two kinds: `dar` and `d]]` are
+        // bound as explicit paths, expanded across every operator, and for
+        // builtins that expansion comes from hardcoded tables a plugin cannot
+        // reach. So a plugin text object was unreachable entirely and a plugin
+        // motion unreachable after an operator.
+        //
+        // It runs HERE because the expansion needs `Builtins` — the
+        // host-resolved operator ids — which live downstream of the plugin
+        // host. Pushing them down would leak the operator vocabulary two
+        // crates and add another service that can be left unwired. This
+        // framing is also the honest one: the host applies its universal
+        // operator vocabulary to a contribution, exactly as it does for
+        // builtins.
+        {
+            let (grammar_tx, mut grammar_rx) = tokio::sync::mpsc::unbounded_channel();
+            event_bus.subscribe(
+                lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::PluginLoaded),
+                lattice_runtime::SubscriptionTarget::Channel(grammar_tx),
+            );
+            let expand_keymap = keymap_handle.clone();
+            let expand_commands = registry.clone();
+            let expand_modes = mode_registry.clone();
+            let expand_builtins = builtins;
+            let expand_wake = Arc::clone(&async_landed);
+            boot.runtime_handle().spawn(async move {
+                while grammar_rx.recv().await.is_some() {
+                    // Every registered mode, not only the loading plugin's:
+                    // the event carries no mode ids, the pass is idempotent,
+                    // and re-walking is immune to a plugin whose modes landed
+                    // under another's provenance. One walk of each layer's
+                    // Normal trie, on plugin load only — never a keystroke.
+                    let commands = expand_commands.load();
+                    for (mode_id, kind) in expand_modes.load().iter_meta() {
+                        let layer = match kind {
+                            lattice_mode::ModeKind::Major => {
+                                lattice_keymap::KeymapLayer::MajorMode(mode_id)
+                            }
+                            lattice_mode::ModeKind::Minor => {
+                                lattice_keymap::KeymapLayer::MinorMode(mode_id)
+                            }
+                        };
+                        crate::keymap_normal::expand_plugin_mode_grammar_rows(
+                            &expand_keymap,
+                            &commands,
+                            &expand_builtins,
+                            layer,
+                        );
+                    }
+                    // The rows change what a keystroke resolves to, so the
+                    // screen must not wait for the next keypress to notice.
+                    expand_wake.notify_one();
+                }
+            });
+        }
+
         // Phase 8 (PL8.A/B): the plugin loader. Stands the wasmtime runtime up,
         // registers the `PluginLoaderHandle` service, and spawns on-disk
         // discovery off the boot thread. First subsystem whose install pulls the

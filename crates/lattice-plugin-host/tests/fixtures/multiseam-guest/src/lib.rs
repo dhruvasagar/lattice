@@ -178,7 +178,11 @@ impl GrammarCallbacks for Component {
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
         Err("multiseam: no operators".into())
     }
-    fn apply_text_object(_c: u32, _ctx: TextObjectContext) -> Result<Range, String> {
+    fn apply_text_object(
+        _c: u32,
+        _ctx: TextObjectContext,
+        _doc: &Document,
+    ) -> Result<Range, String> {
         Err("multiseam: no text objects".into())
     }
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {

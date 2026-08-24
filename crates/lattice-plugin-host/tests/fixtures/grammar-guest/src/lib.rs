@@ -129,7 +129,11 @@ impl Callbacks for Component {
         }
     }
 
-    fn apply_text_object(callback: u32, ctx: TextObjectContext) -> Result<Range, String> {
+    fn apply_text_object(
+        callback: u32,
+        ctx: TextObjectContext,
+        _doc: &Document,
+    ) -> Result<Range, String> {
         match callback {
             2 => Ok(Range {
                 start: Position {

@@ -131,3 +131,76 @@ async fn a_declining_plugin_action_falls_through_to_the_builtin() {
         "the declined chord fell through to the builtin `x`, deleting the first char"
     );
 }
+
+/// AP.0.2 **two hops**: the fall-through peels ONE layer per decline, so a
+/// second mode layer binding the same chord gets its turn.
+///
+/// Until this landed the fall-through re-resolved with `active_minor_modes:
+/// &[]` — every mode layer dropped at once — so a chord declined by one layer
+/// skipped every other mode and landed on the builtin. That is not a corner
+/// case: it is the shape `org-table-mode`'s `<Tab>` needs (decline outside a
+/// table, let `org-mode` cycle the headline), and OM.5's design comment claimed
+/// it already worked. It did not; an experiment showed the chord resolving to a
+/// builtin command id rather than org's cycle.
+///
+/// The fixture binds Normal `x` twice: `multiseam-mode` declines,
+/// `multiseam-second-mode` handles it by replacing line 0 with `HANDLED`.
+/// Activation order between two Global minors is `HashMap`-undefined, and the
+/// assertion is deliberately indifferent to it — whichever layer is on top, a
+/// correct peel ends at the handler. With the old behaviour it ends at the
+/// builtin `x` (deleting a char) whenever the decliner sorts higher, which is
+/// why the bug reproduced intermittently rather than always.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decline_peels_one_layer_so_the_next_mode_gets_the_chord() {
+    let Some(wasm) = multiseam_guest_wasm() else {
+        eprintln!("skipping: multiseam-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(
+        &plugins_dir,
+        "multiseam",
+        "\"grammar\", \"modes\", \"config\"",
+        &wasm,
+    );
+
+    let mut editor = Editor::boot(CoreDocument::from_text("abc\n"));
+    editor.cursor = lattice_protocol::position::Position::new(0, 0);
+
+    let loaded = loader_over_editor(&editor, base.path())
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(loaded, 1, "the multiseam plugin loads");
+
+    // Enable BOTH minors (available-but-off, CI.3), then activate.
+    {
+        let mut next = (**editor.mode_registry.load()).clone();
+        next.set_minor_enabled(ModeId::new("multiseam-mode"), true);
+        next.set_minor_enabled(ModeId::new("multiseam-second-mode"), true);
+        editor.mode_registry.store(std::sync::Arc::new(next));
+    }
+    activate_modes(&mut editor);
+
+    let active = editor
+        .active_modes
+        .get(&editor.document_buffer_id)
+        .map(|m| m.keymap_gated_ids())
+        .unwrap_or_default();
+    assert!(
+        active.contains(&ModeId::new("multiseam-mode"))
+            && active.contains(&ModeId::new("multiseam-second-mode")),
+        "both layers are live, so the chord really is bound twice: {active:?}"
+    );
+
+    let x_chord = lattice_protocol::parse_chord_sequence("x").expect("chord parses")[0];
+    let mut partial = Vec::new();
+    let _ = editor.dispatch_chord(x_chord, &mut partial);
+
+    let text = editor.document.snapshot().text().to_string();
+    assert_eq!(
+        text, "HANDLED\n",
+        "the declined chord reached the OTHER mode layer. `abc` means the \
+         builtin `x` ran instead — every mode layer was dropped at once"
+    );
+}

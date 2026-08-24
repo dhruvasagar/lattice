@@ -1966,6 +1966,40 @@ pub fn lookup_normal(
 ///   operators (mapped via `operator_prefix`).
 /// - `Pending::AfterTextObject { op, around }` (slice 8.g.iii) --
 ///   prefix `[op_prefix..., 'i' or 'a']`.
+/// The MODE layer whose binding won for `prefix + chord` under `layers`, or
+/// `None` when the winner came from the always-on Builtin / User layers (or
+/// nothing is bound at all).
+///
+/// This is what makes AP.0.2's fall-through able to peel ONE layer at a time.
+/// A declining action has to be re-resolved without *its own* layer, and the
+/// dispatcher cannot know which layer that was — a chord may be bound in the
+/// major and in two minors, and the fold in `lookup_with_context` decides the
+/// winner. Asking the trie which layer produced the binding is cheaper and
+/// more honest than guessing at the list's tail.
+///
+/// Pure lookup against an in-memory trie: no allocation beyond the path, and
+/// only reached on the decline path, which is off the happy keystroke route.
+pub fn binding_layer_mode(
+    handle: &KeymapHandle,
+    mode: BindingMode,
+    prefix: &[KeyChord],
+    chord: &KeyChord,
+    layers: &[lattice_mode::ModeId],
+) -> Option<lattice_mode::ModeId> {
+    let chord = normalize_for_normal_lookup(*chord);
+    let mut path: Vec<KeyChord> = prefix.to_vec();
+    path.push(chord);
+    match handle.lookup_with_context(mode, &path, layers) {
+        LookupResult::Bound { command, .. } => match command.layer {
+            KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => Some(id),
+            // Builtin / User / anything else is always-on: there is no layer
+            // left to peel, so the walk ends here.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn lookup_normal_with_prefix(
     handle: &KeymapHandle,
     prefix: &[KeyChord],

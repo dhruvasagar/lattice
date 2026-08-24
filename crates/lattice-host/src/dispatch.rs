@@ -10039,6 +10039,13 @@ impl Editor {
             .map(|m| m.keymap_gated_ids())
             .unwrap_or_default();
 
+        // AP.0.2: the prefix the chord resolves against, captured BEFORE
+        // `translate` runs and before the match below clears it. The
+        // fall-through needs it: re-resolving `<leader>oJ` without the prefix
+        // resolves the bare `J`, which is how a declined org chord ended up
+        // joining two lines.
+        let prefix_before: Vec<crate::chord::KeyChord> = partial_chord.clone();
+
         let ctx = crate::input::TranslateContext {
             modal: self.modal,
             builtins: &self.builtins,
@@ -10120,52 +10127,100 @@ impl Editor {
         }
 
         // AP.0.2: a grammar action can DECLINE the chord (return
-        // `Effect::Declined`) — it did nothing, so re-resolve the chord as if the
-        // declining action's mode layers weren't present (`active_minor_modes =
-        // []`, falling to the always-on builtin/user layer + Insert self-insert).
-        // The manual close key / backspace decline when there's nothing to do, so
-        // the key still does whatever else is bound. One fall-through only: the
-        // builtin/user binding won't itself decline.
+        // `Effect::Declined`) — it did nothing, so re-resolve the chord with the
+        // DECLINING LAYER REMOVED and try again, peeling one layer per decline
+        // until something handles the key or only the always-on Builtin / User
+        // layers are left.
+        //
+        // One layer at a time, not all of them. Dropping every mode layer at
+        // once (`active_minor_modes: &[]`, which is what this did) means a
+        // second declining layer never sees the chord: org-table-mode's `<Tab>`
+        // declining outside a table skipped org-mode's fold cycle entirely and
+        // landed on the builtin jump-list. The whole point of decline is that
+        // layered modes COMPOSE, and a chain of length two is the first case
+        // anyone writes.
+        //
+        // `binding_layer_mode` asks the trie which layer actually produced the
+        // binding rather than guessing at the tail of the list — a chord can be
+        // bound in the major and in several minors, and the fold decides.
+        //
+        // The prefix is preserved, so a multi-key sequence re-resolves as a
+        // SEQUENCE. Re-translating the final chord alone is why a declined
+        // `<leader>oJ` ran vim's `J` and joined two lines.
         if std::mem::take(&mut out.declined) {
-            let no_minors: Vec<lattice_mode::ModeId> = Vec::new();
-            let mut fresh_partial: Vec<crate::chord::KeyChord> = Vec::new();
-            let fallthrough = crate::input::translate(
-                crate::input::TranslateContext {
-                    modal: self.modal,
-                    builtins: &self.builtins,
-                    pending_count: 0,
-                    op_count: 0,
-                    recording_macro: self.macro_recording.is_some(),
-                    active_buffer: self.active_buffer,
-                    completion_open: false,
-                    chord_capture: self.auto_submit_after_chord,
-                    picker_open: false,
-                    insert_completion_open: false,
-                    snippet_active: self.snippet_session.is_active(self.document_buffer_id),
-                    terminal_insert_active: false,
-                    terminal_esc_exits: false,
-                    terminal_app_cursor_keys: false,
-                    terminal_insert_exit_pending: false,
-                    terminal_visual_active: false,
-                    keymap: &self.keymap,
-                    partial_chord: &mut fresh_partial,
-                    active_minor_modes: &no_minors,
-                },
-                chord,
-            );
-            handle_action(self, fallthrough.clone(), &mut out);
+            let binding_mode = match self.modal {
+                lattice_grammar::ModalState::Insert => crate::keymap::BindingMode::Insert,
+                lattice_grammar::ModalState::Visual(_) | lattice_grammar::ModalState::Select(_) => {
+                    crate::keymap::BindingMode::Visual
+                }
+                lattice_grammar::ModalState::OperatorPending => {
+                    crate::keymap::BindingMode::OperatorPending
+                }
+                lattice_grammar::ModalState::Replace => crate::keymap::BindingMode::Replace,
+                _ => crate::keymap::BindingMode::Normal,
+            };
+            let mut layers: Vec<lattice_mode::ModeId> = active_minors.clone();
+            let mut last = action.clone();
+            // Bounded by the number of active mode layers: each pass removes
+            // exactly one, and a pass that finds no mode layer stops.
             loop {
-                let pending: Vec<Action> = std::mem::take(&mut out.next_actions);
-                if pending.is_empty() {
+                match crate::keymap_normal::binding_layer_mode(
+                    &self.keymap,
+                    binding_mode,
+                    &prefix_before,
+                    &chord,
+                    &layers,
+                ) {
+                    Some(declining) => layers.retain(|m| *m != declining),
+                    // The winner came from Builtin / User — nothing left to
+                    // peel, and those cannot decline.
+                    None => break,
+                }
+                let mut fresh_partial: Vec<crate::chord::KeyChord> = prefix_before.clone();
+                let fallthrough = crate::input::translate(
+                    crate::input::TranslateContext {
+                        modal: self.modal,
+                        builtins: &self.builtins,
+                        pending_count: 0,
+                        op_count: 0,
+                        recording_macro: self.macro_recording.is_some(),
+                        active_buffer: self.active_buffer,
+                        completion_open: false,
+                        chord_capture: self.auto_submit_after_chord,
+                        picker_open: false,
+                        insert_completion_open: false,
+                        snippet_active: self.snippet_session.is_active(self.document_buffer_id),
+                        terminal_insert_active: false,
+                        terminal_esc_exits: false,
+                        terminal_app_cursor_keys: false,
+                        terminal_insert_exit_pending: false,
+                        terminal_visual_active: false,
+                        keymap: &self.keymap,
+                        partial_chord: &mut fresh_partial,
+                        active_minor_modes: &layers,
+                    },
+                    chord,
+                );
+                handle_action(self, fallthrough.clone(), &mut out);
+                loop {
+                    let pending: Vec<Action> = std::mem::take(&mut out.next_actions);
+                    if pending.is_empty() {
+                        break;
+                    }
+                    for next in pending {
+                        handle_action(self, next, &mut out);
+                    }
+                }
+                last = fallthrough;
+                if !std::mem::take(&mut out.declined) {
                     break;
                 }
-                for next in pending {
-                    handle_action(self, next, &mut out);
+                if layers.is_empty() {
+                    break;
                 }
             }
-            // Guard: don't recurse if the fall-through also declined.
             out.declined = false;
-            return fallthrough;
+            return last;
         }
 
         action

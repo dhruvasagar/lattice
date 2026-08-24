@@ -24,8 +24,9 @@ use lattice::plugin_host::modes::{
     ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
 };
 use lattice::plugin_host::types::{
-    ActionContext, ActionSpec, Args, EchoLevel, EchoPayload, Effect, ExCommandContext,
-    MotionContext, MotionResult, OperatorContext, Position, Range, TextObjectContext,
+    ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
+    Effect, ExCommandContext, MotionContext, MotionResult, OperatorContext, Position, Range,
+    TextObjectContext,
 };
 use lattice::plugin_host::{config, grammar, modes};
 
@@ -55,6 +56,14 @@ impl Guest for Component {
             &spec(),
             4,
         );
+        // AP.0.2 two-hop: an action that HANDLES the chord by editing, so a
+        // test can tell "the second layer ran" from "the builtin ran".
+        grammar::register_action(
+            "multiseam-handles",
+            "replace line 0 with HANDLED (two-hop fall-through probe)",
+            &spec(),
+            6,
+        );
         grammar::register_action(
             "multiseam-cursor",
             "walk the tree with a cursor via the tree-sitter seam (TS.2)",
@@ -77,6 +86,23 @@ impl Guest for Component {
                 command: "multiseam-declines".to_string(),
             }],
             // OM.2: majors claim a language; this is a minor, so `none`.
+            target_language: None,
+        });
+        // AP.0.2 two-hop: a SECOND mode binding the same chord to an action
+        // that handles it. Whichever of the two layers the host orders higher,
+        // a correct peel ends at `multiseam-handles` — with the old
+        // drop-every-layer fall-through it ends at the builtin `x` half the
+        // time, which is exactly the bug.
+        modes::register_mode(&ModeDeclaration {
+            id: "multiseam-second-mode".to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Global,
+            capabilities: ModeCapabilities::empty(),
+            keymap: vec![ModeKeymapBinding {
+                binding_mode: BindingMode::Normal,
+                chord: "x".to_string(),
+                command: "multiseam-handles".to_string(),
+            }],
             target_language: None,
         });
     }
@@ -115,6 +141,21 @@ impl GrammarCallbacks for Component {
             }
             // AP.0.2: decline the chord — the dispatcher falls through.
             2 => Ok(vec![Effect::Declined]),
+            // AP.0.2 two-hop: handle it, visibly.
+            6 => Ok(vec![Effect::ApplyEdit(ApplyEditPayload {
+                target: ctx.buffer_id,
+                edit: Edit {
+                    range: Range {
+                        start: Position { line: 0, byte: 0 },
+                        end: Position {
+                            line: 0,
+                            byte: doc.line(0).map(|l| l.len() as u32).unwrap_or(0),
+                        },
+                    },
+                    kind: EditKind::Replace("HANDLED".to_string()),
+                },
+                cursor: None,
+            })]),
             // TS.1: resolve the enclosing `block` scope through the tree-snapshot
             // handle and echo `<language>:<kind>:<named-child-count>` — proof the
             // seam crossed (handle received, `enclosing` walked host-side, node

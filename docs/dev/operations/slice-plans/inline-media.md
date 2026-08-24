@@ -4,9 +4,13 @@
 > Design contracts live in
 > [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
 
-**Status:** IM.0 📝 — nothing started. Pulled back from post-1.0 on
-2026-08-24; see the design fragment §2 for why the deferral no longer
-holds (Thread F already built the per-row variable-height paint path).
+**Status:** IM.0 ✅ (2026-08-24) — **the gate found a real flaw and the
+design was revised.** `scroll` survives untouched; `viewport_height` does
+not (see below). IM.1 next.
+
+Path 4 was pulled back from post-1.0 on 2026-08-24; the design fragment
+§2 records why the deferral no longer holds (Thread F already built the
+per-row variable-height paint path).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -15,7 +19,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 ```
 IM.0  gate: what does `scroll` actually assume?     ← cheap, blocks all
   │
-IM.1  peer-local height map + sub-row scroll (GPUI)  ← no media yet
+IM.1  per-row weights + budget-based scroll math     ← no media yet
   │
 IM.2  document-level Fenwick height index            ← scrollbar, G, jumps
   │
@@ -42,8 +46,8 @@ wrong.
 
 | Slice | Description | Status |
 |---|---|---|
-| IM.0 | Gate: audit every consumer of `Editor::scroll` / `viewport_height` | 📝 |
-| IM.1 | Peer-local row→pixel map + `sub_row_px` smooth scroll (GPUI) | 📝 |
+| IM.0 | Gate: audit every consumer of `Editor::scroll` / `viewport_height` | ✅ |
+| IM.1 | Per-row weight vector + budget-based scroll math; `sub_row_px` (GPUI) | 📝 |
 | IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
 | IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | 📝 |
 | IM.4 | Off-thread decode + cache, landing via the inbound primitive | 📝 |
@@ -59,35 +63,63 @@ as it goes green, `scripts/precommit.sh <crate>` before each.
 
 ---
 
-### IM.0 — the gate 📝
+### IM.0 — the gate ✅ (2026-08-24)
 
-**This can come back "bigger than expected", and that is the point of
-running it first.**
+**It came back "the design is wrong in one specific place", which is
+exactly what the gate was for.**
 
-`Editor::scroll: u32` is a display-row index read by both peers.
+`Editor::scroll: u32` is a display-row index read by both peers, and
 `ensure_cursor_visible` already juggles sticky rows, tree-sitter context
-rows and popup viewports, all in row units. Before changing anything,
-enumerate every consumer and classify each as:
+rows and popup viewports in row units. The gate enumerated every consumer
+of both fields and classified each as row-unit-and-unaffected, uniform-
+height-assuming, or uniform-height-assuming **and shared host code** —
+the last being the dangerous set, because it reaches the TUI too.
 
-- **row-unit, unaffected** — keeps working because the core's unit does
-  not change (the design's §4 claim, which this slice tests rather than
-  assumes);
-- **assumes uniform height** — needs the peer height map;
-- **assumes uniform height AND is shared host code** — the dangerous
-  set, because it affects the TUI too.
+**Result.** The raw numbers look alarming and are misleading: 340 `.scroll`
+sites and 352 `viewport_height` sites, 181 of the latter in `lattice-host`
+alone. Classified, the picture is much smaller.
 
-*Exit:* a written list, and a test pinning current behaviour for each
-member of the third group. If that group is large, the design's §4
-split is wrong and this fragment gets revised before IM.1.
+- **Row-unit, unaffected: `Editor::scroll` entirely.** It is a row
+  *index*, and an index stays meaningful however tall rows are. No change.
+- **Assumes uniform height, shared host code — the dangerous set: seven
+  functions.** `ensure_cursor_visible`, `bottom_anchored_scroll`,
+  `do_page`, `do_scroll_line`, `do_jump_viewport` (`height / 2` centring),
+  `do_scroll_cursor_to`, `preview_viewport_for`. All consume
+  `viewport_height` as "the number of rows that fit".
+- **Degrades rather than breaks:** `cells_worker`'s prefetch window uses
+  `viewport_height * 2` as a heuristic.
+- **Peer-local:** 86 GPUI sites, 39 TUI code sites; each peer's own
+  business.
+
+**The design was revised.** `viewport_height` is computed by GPUI as
+`available_px / row_px` against a uniform `row_px = font_size * 1.3`.
+Under variable heights that division is wrong, because how many rows fit
+depends on which rows. The fragment's §4 claim that everything "keeps
+working unchanged in row units" was half wrong, and the wrong half was
+load-bearing.
+
+Fix recorded in design §4.0: `viewport_height` keeps its type and becomes
+a **budget in line-heights**, and each peer publishes a per-row weight
+vector (TUI all `1.0`, GPUI its existing `row_scale`). The seven
+functions spend the budget instead of counting rows. With all-1.0 weights
+the arithmetic is today's exactly — which is what keeps the TUI
+untouched and makes IM.1 testable with no media in existence.
 
 *paramount:* #1 — a scroll bug is a per-frame visible defect.
 
-### IM.1 — peer-local height map + sub-row scroll 📝
+### IM.1 — per-row weights + budget-based scroll math 📝
 
-GPUI already computes `row_scale` / `row_tops` per paint. This lifts that
-into a queryable map and adds `sub_row_px` for scrolling *within* a tall
-row, kept peer-local (never in `RenderState`, discarded on any core-driven
-scroll change).
+Per IM.0. Two halves:
+
+**Shared.** A per-row weight vector (line-heights, `f32`) published
+alongside the virtual-row matrix, and the seven functions in §4.0
+converted from counting rows to spending a line-height budget. The TUI
+publishes all `1.0`, so its behaviour must be bit-identical before and
+after — that is the slice's main regression guard.
+
+**GPUI-local.** Lift the existing per-paint `row_scale` / `row_tops` into
+the published weights, and add `sub_row_px` for scrolling *within* a tall
+row (never in `RenderState`, discarded on any core-driven scroll change).
 
 *Exit:* a fixture row declared 8 line-heights tall scrolls smoothly
 through, `zz`/`zt`/`zb` land it correctly, and the TUI is byte-identical

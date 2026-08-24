@@ -86,9 +86,10 @@ have images.
 
 Instead:
 
-- **Core**: `scroll` stays `u32`, a **display-row index**. Every existing
-  scroll, motion, `zz`/`zt`/`zb`, page and `ensure_cursor_visible`
-  calculation keeps working unchanged in row units.
+- **Core**: `scroll` stays `u32`, a **display-row index** — well-defined
+  however tall the rows are. `viewport_height` keeps its type but has to
+  change *meaning*, from a row count to a budget in line-heights; §4.0
+  records why and what it costs.
 - **Peer**: each renderer owns the mapping from rows to its own vertical
   unit. GPUI already has it (`row_scale` → `row_tops`, in pixels). The
   TUI's mapping is the identity — one row, one cell.
@@ -102,6 +103,52 @@ intrinsic pixel size for peers that can render it, and a **row count**
 for peers that cannot. The row count is authoritative for the core, so
 the document has the same number of display rows on both peers and every
 row-based calculation stays peer-agnostic.
+
+### 4.0 What IM.0 found — `viewport_height` is the real problem
+
+The first draft of this section claimed every existing scroll, motion,
+`zz`/`zt`/`zb`, page and `ensure_cursor_visible` calculation "keeps
+working unchanged in row units". The IM.0 audit shows that is **half
+right, and the wrong half is load-bearing**.
+
+- **`Editor::scroll` survives.** It is a row *index*, and a row index
+  stays well-defined however tall the rows are. 340 sites, no change.
+- **`Editor::viewport_height` does not.** It is a row *count* —
+  GPUI computes it as `available_px / row_px` with a uniform
+  `row_px = font_size * 1.3`. Once rows differ in height, "how many rows
+  fit" is not a constant: it depends on *which* rows, and therefore on
+  the scroll position. The division is simply wrong.
+
+The affected set is small, shared, and named. In `lattice-host` these
+consume `viewport_height` as "the rows that fit":
+
+`ensure_cursor_visible`, `bottom_anchored_scroll`, `do_page`,
+`do_scroll_line`, `do_jump_viewport` (`height / 2` centring — `zz`, `H`,
+`M`, `L`), `do_scroll_cursor_to` (`zt` / `zz` / `zb`), and
+`preview_viewport_for`. `cells_worker`'s prefetch window also reads it,
+but as a heuristic (`viewport_height * 2`), so it degrades rather than
+breaks.
+
+That is ~7 shared functions out of 113 host code sites — the audit's
+"dangerous set", and much smaller than the raw grep counts suggest.
+
+**The fix keeps pixels out of the core.** `viewport_height` stops meaning
+"a count of rows" and starts meaning **the pane's height in line-height
+units** — the same number it is today, reinterpreted. Alongside it each
+peer publishes a per-row **weight** in line-heights (`f32`): the TUI
+publishes all `1.0`, GPUI publishes its existing `row_scale`. The seven
+functions then spend a *budget* of line-heights rather than counting
+rows.
+
+With all-1.0 weights the arithmetic reduces to today's exactly, which is
+the property that keeps the TUI unchanged and makes the change testable
+before any image exists. Pixels never enter shared state; the core deals
+in line-heights, a unit both peers have.
+
+This is a revision to the plan, not a contradiction of it: the core is
+still row-anchored, and a block still declares its size twice. What
+changed is that one shared field needed its meaning sharpened, and IM.1
+grew a peer-published weight vector.
 
 The consequence, stated plainly: **an org buffer with images scrolls to
 the same places on both peers, and only one of them shows pictures.**

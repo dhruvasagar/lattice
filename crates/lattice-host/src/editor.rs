@@ -1369,7 +1369,22 @@ pub struct Editor {
     /// Last height we were drawn at; used by motion
     /// clamping and viewport scrolling. Updated by the
     /// renderer before each frame.
+    ///
+    /// IM.1: this is a **budget in line-heights**, not a count of rows. The
+    /// two are the same number whenever rows are uniform — which is always,
+    /// for the TUI — but they diverge once a row is taller than one line
+    /// (a scaled heading, an IM.3 media block), because how many rows fit
+    /// then depends on which rows. Spend it through
+    /// [`Editor::row_weights`]; do not count rows against it.
     pub viewport_height: u32,
+
+    /// IM.1: per-source-line vertical cost overrides, in line-heights.
+    ///
+    /// Empty for every TUI buffer and for any GPUI buffer with no scaled or
+    /// media rows, and the scroll walks short-circuit on that — see
+    /// [`lattice_cells::RowWeights::is_uniform`]. Published by the renderer
+    /// peer, which is the only layer that knows how tall it draws things.
+    pub row_weights: std::sync::Arc<lattice_cells::RowWeights>,
     /// Last terminal width we were drawn at. Used by pane
     /// geometry (DESIGN.md §5.9 navigation needs to know
     /// which pane is horizontally adjacent). `None` until

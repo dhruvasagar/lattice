@@ -6844,8 +6844,12 @@ impl Editor {
         rows
     }
 
+    /// IM.1: `budget` is in **line-heights**, not rows. With uniform rows the
+    /// two are the same number and every comparison below is between small
+    /// integers held exactly in `f32`, so this reduces to the integer walk it
+    /// replaced — which is the property that keeps the TUI unchanged.
     fn bottom_anchored_scroll(&self, target_line: u32, budget: u32) -> u32 {
-        let budget = budget.max(1);
+        let budget = budget.max(1) as f32;
         let buffer_id = self.active_buffer_id();
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
         let wrap_width = self.scroll_wrap_width();
@@ -6871,13 +6875,20 @@ impl Editor {
         // With wrap off and no virtual rows every visible line costs
         // exactly `1`. Folded body lines never reach here — the walk
         // hops over them to their head.
-        let line_cost = |line: u32| -> u32 {
+        //
+        // IM.1: the row count is then passed through `row_weights`, which
+        // replaces it for any line that draws taller than its rows suggest
+        // (a scaled heading; an IM.3 media block). Unoverridden lines — every
+        // line in a TUI buffer — get their row count back verbatim.
+        let weights = &self.row_weights;
+        let line_cost = |line: u32| -> f32 {
             let segments = if wrap_width == 0 {
                 1
             } else {
                 lattice_cells::wrap_segments(self.line_display_width(line), wrap_width)
             };
-            segments.saturating_add(vrows.virtual_rows_in_line_range(line, line))
+            let rows = segments.saturating_add(vrows.virtual_rows_in_line_range(line, line));
+            weights.cost(line, rows)
         };
         // The previous *visible* line above `line`: hop straight to a
         // closed fold's head instead of iterating its collapsed body,
@@ -6911,10 +6922,10 @@ impl Editor {
         let mut used = line_cost(scroll);
         while let Some(cand) = prev_visible(scroll) {
             let cost = line_cost(cand);
-            if used.saturating_add(cost) > budget {
+            if used + cost > budget {
                 break;
             }
-            used = used.saturating_add(cost);
+            used += cost;
             scroll = cand;
         }
         scroll
@@ -43802,6 +43813,77 @@ mod tests {
             display <= editor.viewport_height,
             "last line clears the modeline"
         );
+    }
+
+    /// IM.1 — a row taller than one line-height comes out of the scroll
+    /// budget at its real height.
+    ///
+    /// This is the failure the slice exists to prevent: a media block or a
+    /// scaled heading occupies (say) five line-heights, the scroll walk
+    /// counts it as ONE row because that is what the display-row matrix
+    /// says, and the cursor ends up four line-heights below the modeline —
+    /// visible to the arithmetic, off-screen to the user.
+    ///
+    /// A 12-line document in a 10-line viewport with the cursor on the last
+    /// line: with uniform rows the whole document fits and nothing scrolls.
+    /// Declare line 2 to be five line-heights tall and the budget no longer
+    /// stretches, so the window has to move down.
+    #[test]
+    fn ensure_cursor_visible_charges_a_tall_row_its_real_height() {
+        let mut editor = crate::editor::Editor::boot(doc_with_lines(12));
+        editor.viewport_height = 12;
+        editor.scroll = 0;
+        editor.cursor = lattice_protocol::position::Position::new(11, 0);
+
+        // Baseline: uniform rows, everything fits, no scroll.
+        editor.ensure_cursor_visible();
+        assert_eq!(editor.scroll, 0, "12 uniform rows fit a 12-row budget");
+
+        // Now line 2 draws five line-heights tall. Twelve lines cost
+        // 11 + 5 = 16 line-heights, which overflows the budget of 12, so
+        // the top must come down.
+        let mut w = lattice_cells::RowWeights::uniform();
+        w.set(2, 5.0);
+        editor.row_weights = std::sync::Arc::new(w);
+        editor.scroll = 0;
+        editor.ensure_cursor_visible();
+        assert!(
+            editor.scroll > 0,
+            "a 5-line-height row must be charged as five, not as one row; \
+             scroll stayed at {}",
+            editor.scroll
+        );
+
+        // And precisely: walking up from line 11 spends 1 per ordinary line,
+        // so lines 11..=3 cost 9 and line 2 would take it to 14 — over
+        // budget. The window settles at line 3.
+        assert_eq!(editor.scroll, 3, "the tall row is excluded from the window");
+    }
+
+    /// The regression guard for the whole slice: with no overrides the
+    /// converted `f32` walk must land exactly where the integer walk did.
+    /// Every TUI buffer is this case, always.
+    #[test]
+    fn a_uniform_weight_map_reproduces_the_integer_walk_exactly() {
+        for height in [4u32, 7, 10, 20] {
+            for lines in [12u32, 40, 41] {
+                let mut a = crate::editor::Editor::boot(doc_with_lines(lines));
+                a.viewport_height = height;
+                a.cursor = lattice_protocol::position::Position::new(lines - 1, 0);
+                a.ensure_cursor_visible();
+
+                let mut b = crate::editor::Editor::boot(doc_with_lines(lines));
+                b.viewport_height = height;
+                b.row_weights = std::sync::Arc::new(lattice_cells::RowWeights::uniform());
+                b.cursor = lattice_protocol::position::Position::new(lines - 1, 0);
+                b.ensure_cursor_visible();
+
+                assert_eq!(
+                    a.scroll, b.scroll,
+                    "uniform weights changed the result at height={height} lines={lines}"
+                );
+            }
+        }
     }
 
     /// `ensure_cursor_visible` must never scroll *up* when the

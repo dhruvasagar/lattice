@@ -12,9 +12,10 @@
 //! `major_mode_id_for_lang` is a hand-written match over the `Lang` enum and
 //! has no arm for a language the host has never heard of.
 //!
-//! The mode is declared with an EMPTY keymap here on purpose. This slice is
-//! about a plugin language getting a major at all; the chords and the actions
-//! they fire arrive with the slices that implement them (org-mode.md §5).
+//! OM.3 adds the fourth: `grammar`, contributing the promote/demote actions
+//! and binding them in `org-mode`'s own keymap layer. This is where the plugin
+//! starts EDITING — the actions read the buffer through the `borrow<document>`
+//! handle `apply-action` receives and return `Effect::ApplyEdit`.
 
 // A plugin that provides TWO seams needs a world that imports both, and a
 // component implements exactly one world. Bundled plugins get theirs written
@@ -39,6 +40,7 @@ wit_bindgen::generate!({
             include lattice:plugin-host/language-plugin@0.1.0;
             include lattice:plugin-host/help-plugin@0.1.0;
             include lattice:plugin-host/modes-plugin@0.1.0;
+            include lattice:plugin-host/grammar-plugin@0.1.0;
         }
     "#,
     path: "../../wit",
@@ -46,11 +48,29 @@ wit_bindgen::generate!({
     generate_all,
 });
 
+mod headline;
+
+use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
+use lattice::plugin_host::buffer::Document;
+use lattice::plugin_host::grammar::register_action;
 use lattice::plugin_host::help::register_topic;
 use lattice::plugin_host::language::{LanguageSpec, register_language};
 use lattice::plugin_host::modes::{
-    ActivationPolicy, ModeCapabilities, ModeDeclaration, ModeKind, register_mode,
+    ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
+    register_mode,
 };
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
+use lattice::plugin_host::types::{
+    ActionContext, ActionSpec, Args, Edit, EditKind, Effect, ExCommandContext, MotionContext,
+    MotionResult, OperatorContext, Position, Range, TextObjectContext,
+};
+
+/// Callback ids for `apply-action`. The guest chooses these; the host only
+/// hands them back (§6 — a plugin cannot forge a `CommandId`).
+const PROMOTE_HEADLINE: u32 = 1;
+const DEMOTE_HEADLINE: u32 = 2;
+const PROMOTE_SUBTREE: u32 = 3;
+const DEMOTE_SUBTREE: u32 = 4;
 
 const GRAMMAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammar.wasm"));
 
@@ -88,16 +108,75 @@ impl Guest for Component {
     /// language resolution. It is the minors (org-todo, org-table) that will
     /// carry `Majors(["org-mode"])`.
     ///
-    /// Empty keymap by design at this slice — see the module doc.
+    /// OM.3: the mode now carries its chords. Each binds to an action THIS
+    /// plugin registered through the `grammar` seam, resolved by name against
+    /// the command registry at bind time — which is why the loader must drain
+    /// `grammar` before `modes` (OM.0 made that structural rather than a
+    /// comment in this file's manifest).
+    ///
+    /// `<leader>oh` / `ol` and their capitals are the adapted nvim-orgmode set.
+    /// nvim binds `<<` / `>>` / `<s` / `>s`, none of which are reachable here:
+    /// `<` and `>` are TERMINAL operator bindings, so the trie resolves them on
+    /// the first key and the second never arrives. Shadowing the operators
+    /// inside org buffers would have bought the literal chords at the price of
+    /// `>ap` and `ciw`, which is a bad trade for one filetype (org-mode.md
+    /// §5.1). The letters are evil-org's directional `h`/`l`, so the mnemonic
+    /// survives the move.
     fn register_modes() {
+        let bind = |chord: &str, command: &str| ModeKeymapBinding {
+            binding_mode: BindingMode::Normal,
+            chord: chord.to_string(),
+            command: command.to_string(),
+        };
         register_mode(&ModeDeclaration {
             id: "org-mode".to_string(),
             kind: ModeKind::Major,
             activation_policy: ActivationPolicy::Manual,
             capabilities: ModeCapabilities::empty(),
-            keymap: vec![],
+            keymap: vec![
+                bind("<leader>oh", "org-promote-headline"),
+                bind("<leader>ol", "org-demote-headline"),
+                bind("<leader>oH", "org-promote-subtree"),
+                bind("<leader>oL", "org-demote-subtree"),
+            ],
             target_language: Some("org".to_string()),
         });
+    }
+
+    /// The promote/demote actions (OM.3).
+    ///
+    /// Registered as ACTIONS rather than operators: promote takes no motion and
+    /// composes with nothing, which is what an action is for. The structural
+    /// text objects that DO compose with operators (`ih`/`ah`/`is`/`as`) are a
+    /// separate contribution, OM.4.
+    fn register_grammar() {
+        let spec = || ActionSpec {
+            args_schema: Vec::new(),
+        };
+        register_action(
+            "org-promote-headline",
+            "Promote the headline at the cursor one level",
+            &spec(),
+            PROMOTE_HEADLINE,
+        );
+        register_action(
+            "org-demote-headline",
+            "Demote the headline at the cursor one level",
+            &spec(),
+            DEMOTE_HEADLINE,
+        );
+        register_action(
+            "org-promote-subtree",
+            "Promote the headline at the cursor and its whole subtree",
+            &spec(),
+            PROMOTE_SUBTREE,
+        );
+        register_action(
+            "org-demote-subtree",
+            "Demote the headline at the cursor and its whole subtree",
+            &spec(),
+            DEMOTE_SUBTREE,
+        );
     }
 
     /// Org's manual, compiled into this component and handed over once at
@@ -115,6 +194,132 @@ impl Guest for Component {
             // contains these.
             &["fold".to_string()],
         );
+    }
+}
+
+/// The shared body of all four promote/demote actions.
+///
+/// `delta` is -1 to promote, +1 to demote; `whole_subtree` decides whether the
+/// rewritten span stops at the headline or runs to the end of its subtree.
+///
+/// Lines are read through the `document` handle ONE AT A TIME, on demand.
+/// Materialising the buffer first would be simpler and would cost one
+/// guest→host call per line — 10,000 of them on a 10,000-line file, every time
+/// this key is pressed, which is a missed frame rather than a slow key
+/// (paramount goal #1). As written, a headline op reads the handful of lines
+/// between the caret and its headline, and a subtree op reads its subtree,
+/// which it must read anyway to rewrite it.
+///
+/// Declines (rather than erroring) whenever there is nothing to do: the cursor
+/// is in a file's preamble with no headline above it, or the shift is refused
+/// at level 1. `Effect::Declined` means the chord was not consumed, so the
+/// dispatcher re-resolves it against the layers below — `<leader>oh` in a
+/// buffer with no headlines falls through instead of swallowing the key.
+fn shift(ctx: &ActionContext, doc: &Document, delta: isize, whole_subtree: bool) -> Vec<Effect> {
+    let line = |n: u32| doc.line(n);
+    let Some((start, _level)) = headline::enclosing_headline(line, ctx.cursor.line) else {
+        return vec![Effect::Declined];
+    };
+    let end = if whole_subtree {
+        headline::subtree_end(line, start, doc.line_count())
+    } else {
+        start
+    };
+    let Some((text, end_len)) = headline::shift_headlines(line, start, end, delta) else {
+        return vec![Effect::Declined];
+    };
+
+    // ONE edit over the whole span — see `shift_headlines`. The range runs from
+    // column 0 of the root headline to the end of the last line in the span,
+    // exclusive of its newline, so the replacement never disturbs the line
+    // structure around it.
+    vec![Effect::ApplyEdit(lattice::plugin_host::types::ApplyEditPayload {
+        target: ctx.buffer_id,
+        edit: Edit {
+            range: Range {
+                start: Position {
+                    line: start,
+                    byte: 0,
+                },
+                end: Position {
+                    line: end,
+                    byte: end_len,
+                },
+            },
+            kind: EditKind::Replace(text),
+        },
+        // Keep the caret on its own line, and clamp its column: promoting
+        // `*** Deep` to `** Deep` shortens the line, and a caret parked past
+        // the new end would be a visible jump on a key that only restars.
+        cursor: Some(clamped_cursor(ctx, line, start, end, delta)),
+    })]
+}
+
+/// Where the caret lands after a shift: same line, column moved by the same
+/// number of stars the line gained or lost, floored at 0.
+///
+/// Only headline lines within the span move, so a caret in body text stays
+/// exactly where it was.
+fn clamped_cursor(
+    ctx: &ActionContext,
+    line: impl Fn(u32) -> Option<String>,
+    start: u32,
+    end: u32,
+    delta: isize,
+) -> Position {
+    let at = ctx.cursor.line;
+    // One extra line read, and only when the caret is inside the rewritten
+    // span — a caret in body text costs nothing.
+    let moved = at >= start
+        && at <= end
+        && line(at)
+            .as_deref()
+            .and_then(headline::headline_level)
+            .is_some();
+    let byte = if moved {
+        (ctx.cursor.byte as isize + delta).max(0) as u32
+    } else {
+        ctx.cursor.byte
+    };
+    Position {
+        line: ctx.cursor.line,
+        byte,
+    }
+}
+
+impl GrammarCallbacks for Component {
+    fn apply_action(
+        callback: u32,
+        ctx: ActionContext,
+        doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            PROMOTE_HEADLINE => Ok(shift(&ctx, doc, -1, false)),
+            DEMOTE_HEADLINE => Ok(shift(&ctx, doc, 1, false)),
+            PROMOTE_SUBTREE => Ok(shift(&ctx, doc, -1, true)),
+            DEMOTE_SUBTREE => Ok(shift(&ctx, doc, 1, true)),
+            other => Err(format!("org: unknown action callback {other}")),
+        }
+    }
+
+    // Org contributes no motions, operators or ex-commands yet; the text
+    // objects land at OM.4. An `err` here is logged and the contribution
+    // no-ops, so an unreachable callback can never wedge the keystroke path.
+    fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {
+        Err("org: no motions".into())
+    }
+    fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+        Err("org: no operators".into())
+    }
+    fn apply_text_object(_c: u32, _ctx: TextObjectContext) -> Result<Range, String> {
+        Err("org: no text objects".into())
+    }
+    fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
+        Err("org: no ex-commands".into())
+    }
+    fn apply_ex_command(_c: u32, _ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+        Err("org: no ex-commands".into())
     }
 }
 

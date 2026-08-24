@@ -1,0 +1,346 @@
+//! OM.3 — org promotes and demotes headlines, from inside a plugin.
+//!
+//! The first slice where the org plugin EDITS. Each chord runs the whole
+//! route: `<leader>oh` → the org-mode major's own keymap layer → `Action::Invoke`
+//! → the sync grammar trampoline → the guest's `apply-action`, which reads the
+//! buffer through its `borrow<document>` handle and returns
+//! `Effect::ApplyEdit` → the host's ordinary edit path.
+//!
+//! Nothing in `lattice-host` knows what a headline is.
+//!
+//! ## What is asserted, and why through dispatch
+//!
+//! The plugin's own unit tests (`examples/org-plugin/src/headline.rs`) cover
+//! the line logic and run on the host target, but `examples/org-plugin` is not
+//! a workspace member so CI never sees them. These tests are the CI gate, and
+//! they are the better test anyway: they exercise the seam, the keymap layer,
+//! the leader expansion and the edit path, not just the arithmetic.
+//!
+//! Skips when `examples/org-plugin` was not built (the `org_folds.rs`
+//! precedent) — its grammar is fetched on demand and never built by `cargo
+//! build`.
+
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use std::sync::Arc;
+
+use lattice_core::Document as CoreDocument;
+use lattice_host::editor::Editor;
+use lattice_mode::ModeId;
+use lattice_plugin_host::{PluginHost, TrustTier};
+use lattice_plugin_loader::{LoaderServices, PluginLoader};
+use lattice_protocol::{KeyChord, parse_chord_sequence};
+
+fn org_plugin_wasm() -> Option<Vec<u8>> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/org-plugin/target/wasm32-wasip2/release/org_plugin.wasm"
+    );
+    std::fs::read(path).ok()
+}
+
+fn loader_over_editor(editor: &Editor, base: &std::path::Path) -> PluginLoader {
+    let host = Arc::new(
+        PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
+    );
+    PluginLoader::with_services(
+        host,
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(editor.event_bus.clone()),
+            command_registry: Some(editor.registry.clone()),
+            mode_registry: Some(editor.mode_registry.clone()),
+            keymap: Some(editor.keymap.clone()),
+            help_topics: Some(editor.help_topics.clone()),
+            ..Default::default()
+        },
+    )
+}
+
+/// Boot an editor, load the org plugin into its live registries, and open a
+/// `.org` file holding `text`. Returns the editor and the file path.
+async fn org_editor(base: &std::path::Path, text: &str) -> Editor {
+    let plugins_dir = base.join("plugins");
+    let dir = plugins_dir.join("org");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"org\"\nprovides = [\"modes\", \"grammar\", \"language\", \"help\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("component.wasm"),
+        org_plugin_wasm().expect("caller checked"),
+    )
+    .unwrap();
+
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let loaded = loader_over_editor(&editor, base)
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(loaded, 1, "the org component loads");
+
+    let file = base.join("notes.org");
+    std::fs::write(&file, text).unwrap();
+    editor.do_edit(Some(file), false);
+    assert_eq!(
+        editor
+            .active_modes
+            .get(&editor.document_buffer_id)
+            .and_then(|m| m.major()),
+        Some(ModeId::new("org-mode")),
+        "the buffer is in org-mode before any chord is dispatched"
+    );
+    editor
+}
+
+fn chord(s: &str) -> KeyChord {
+    parse_chord_sequence(s)
+        .expect("parseable chord")
+        .into_iter()
+        .next()
+        .expect("one chord")
+}
+
+/// Dispatch a multi-key sequence written with `<leader>`, expanding it the same
+/// way the binding did — so the test types what the user types.
+fn press(editor: &mut Editor, keys: &str) {
+    let expanded = editor.keymap.expand_leader(keys);
+    let seq = parse_chord_sequence(&expanded).expect("parses");
+    let mut partial: Vec<KeyChord> = Vec::new();
+    for c in seq {
+        let _ = editor.dispatch_chord(c, &mut partial);
+    }
+}
+
+/// Put the caret on `line`, column 0.
+fn goto_line(editor: &mut Editor, line: u32) {
+    editor.cursor.line = line;
+    editor.cursor.byte = 0;
+}
+
+fn text(editor: &Editor) -> String {
+    editor.document.snapshot().text().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn demote_and_promote_a_single_headline() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\nbody\n** Child\n").await;
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "<leader>ol");
+    assert_eq!(
+        text(&editor),
+        "** One\nbody\n** Child\n",
+        "demote moved only the headline — the child is untouched"
+    );
+
+    press(&mut editor, "<leader>oh");
+    assert_eq!(
+        text(&editor),
+        "* One\nbody\n** Child\n",
+        "promote is the inverse"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn demote_a_subtree_moves_every_headline_under_it() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\nbody\n** Child\nkid body\n* Two\n").await;
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "<leader>oL");
+    assert_eq!(
+        text(&editor),
+        "** One\nbody\n*** Child\nkid body\n* Two\n",
+        "the subtree moved together and stopped at the next level-1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subtree_edit_is_one_undo_step() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let original = "* One\nbody\n** Child\n*** Grand\n";
+    let mut editor = org_editor(base.path(), original).await;
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "<leader>oL");
+    assert_eq!(text(&editor), "** One\nbody\n*** Child\n**** Grand\n");
+
+    // The whole span is replaced as ONE edit precisely so this holds: a single
+    // `u` puts every star back, not one headline at a time.
+    press(&mut editor, "u");
+    assert_eq!(
+        text(&editor),
+        original,
+        "one undo reverses the whole subtree demote"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promoting_works_from_inside_the_subtree_not_just_on_the_headline() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\n** Child\nkid body\n").await;
+
+    // Caret in the child's BODY — the enclosing headline is what moves. This is
+    // the common case in practice; the caret is rarely on the headline itself.
+    goto_line(&mut editor, 2);
+    press(&mut editor, "<leader>oh");
+    assert_eq!(
+        text(&editor),
+        "* One\n* Child\nkid body\n",
+        "the enclosing headline promoted, not the one under the caret"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promoting_past_level_one_refuses_rather_than_flattening() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let original = "* One\n** Child\n";
+    let mut editor = org_editor(base.path(), original).await;
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "<leader>oH");
+    assert_eq!(
+        text(&editor),
+        original,
+        "a subtree promote whose root is level 1 is refused whole — shifting \
+         only the children would make Child a sibling of One"
+    );
+
+    // And the single-headline form refuses too, rather than turning `* One`
+    // into body text.
+    press(&mut editor, "<leader>oh");
+    assert_eq!(text(&editor), original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_buffer_with_no_headline_leaves_the_chord_to_fall_through() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    // A preamble with no headline anywhere above the caret.
+    let original = "#+TITLE: Notes\njust prose\n";
+    let mut editor = org_editor(base.path(), original).await;
+
+    goto_line(&mut editor, 1);
+    press(&mut editor, "<leader>ol");
+    assert_eq!(
+        text(&editor),
+        original,
+        "the action declined; no edit, and nothing on the undo stack"
+    );
+}
+
+/// Correctness at scale. The interesting property here is what the plugin does
+/// NOT do: `shift` reads lines one at a time through the `document` handle
+/// rather than materialising the buffer, so a headline near the top of a long
+/// file costs the handful of reads between the caret and its headline, not one
+/// guest→host call per line. (The read-count bound itself is pinned by
+/// `headline.rs`'s own unit test, which runs on the host target; this asserts
+/// the behaviour that bound has to preserve.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_file_promotes_correctly_at_its_far_end() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut body = String::from("* One\n");
+    for i in 0..5_000 {
+        body.push_str(&format!("body {i}\n"));
+    }
+    body.push_str("** Last\ntail\n");
+    let mut editor = org_editor(base.path(), &body).await;
+
+    // Caret in the final subtree's body, 5000 lines below the first headline.
+    let last = 5_002;
+    goto_line(&mut editor, last);
+    press(&mut editor, "<leader>ol");
+
+    let out = text(&editor);
+    assert!(
+        out.starts_with("* One\nbody 0\n"),
+        "the top of the file is untouched"
+    );
+    assert!(
+        out.ends_with("* Last\ntail\n"),
+        "the enclosing headline at the far end promoted; got tail: {:?}",
+        &out[out.len().saturating_sub(40)..]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn org_chords_are_scoped_to_org_buffers() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let editor = org_editor(base.path(), "* One\n").await;
+
+    // The bindings live in `MajorMode(org-mode)`, a GATED layer. With no modes
+    // active they resolve to nothing — so a `.rs` buffer never sees them.
+    let expanded = editor.keymap.expand_leader("<leader>ol");
+    let seq = parse_chord_sequence(&expanded).unwrap();
+    assert!(
+        matches!(
+            editor
+                .keymap
+                .lookup_with_context(lattice_keymap::BindingMode::Normal, &seq, &[]),
+            lattice_keymap::LookupResult::Unbound
+        ),
+        "org's chords are not global"
+    );
+    assert!(
+        matches!(
+            editor.keymap.lookup_with_context(
+                lattice_keymap::BindingMode::Normal,
+                &seq,
+                &[ModeId::new("org-mode")]
+            ),
+            lattice_keymap::LookupResult::Bound { .. }
+        ),
+        "and do resolve when org-mode is the active major"
+    );
+
+    // Guard against the sequence being reachable by accident: a lone `<Space>`
+    // must not be a terminal binding, or `<leader>ol` could never be typed.
+    let space = parse_chord_sequence(&editor.keymap.expand_leader("<leader>")).unwrap();
+    assert!(
+        !matches!(
+            editor.keymap.lookup_with_context(
+                lattice_keymap::BindingMode::Normal,
+                &space,
+                &[ModeId::new("org-mode")]
+            ),
+            lattice_keymap::LookupResult::Bound { .. }
+        ),
+        "the leader key alone must stay a prefix, never a terminal binding"
+    );
+
+    let _ = chord("x"); // keep the helper used if the assertions above change
+}

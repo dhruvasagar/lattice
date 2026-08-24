@@ -6,11 +6,11 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.2 ✅ (2026-08-24) — **the prerequisites are done and a `.org`
-file opens in `org-mode`.** OM.0 ✅ seam drain order is structural (the gate
-found a real bug rather than confirming the status quo); OM.1 ✅ the registry
-language index; OM.2 ✅ majors cross the `modes` seam. Next: OM.3, the first
-slice where the plugin edits.
+**Status:** OM.3 ✅ (2026-08-24) — **org edits.** OM.0 ✅ seam drain order is
+structural (the gate found a real bug rather than confirming the status quo);
+OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
+OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
+promote/demote. Next: OM.4, motions and text objects.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -79,7 +79,7 @@ files? — was retired during design by reading the excerpt model
 | OM.1 | `ModeRegistry` language index + `Mode::target_language` | ✅ |
 | OM.2 | `modes` seam accepts `major`; `target-language` field | ✅ |
 | OM.2b | `<leader>` bind-time expansion + `keymap.leader` | ✅ |
-| OM.3 | Promote / demote headline + subtree | 📝 |
+| OM.3 | Promote / demote headline + subtree | ✅ |
 | OM.4 | Headline motions + `ih`/`ah`/`is`/`as` text objects | 📝 |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
 | OM.6 | Subtree move, meta-return, toggle heading, archive | 📝 |

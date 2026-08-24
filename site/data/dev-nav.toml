@@ -93,6 +93,7 @@ docs = [
   "architecture/soft-wrap",
   "architecture/horizontal-scroll",
   "architecture/virtual-rows",
+  "architecture/inline-media",
   "architecture/span-layering",
   "architecture/incremental-highlight",
   "architecture/indent-guides",

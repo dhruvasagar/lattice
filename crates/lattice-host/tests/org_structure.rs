@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
+use lattice_keymap::LookupResult;
 use lattice_mode::ModeId;
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
@@ -582,6 +583,141 @@ async fn a_text_object_loses_its_normal_binding_but_a_motion_keeps_one() {
         ),
         "only text objects lose their Normal binding, not motions"
     );
+}
+
+// ── OM.5: `<Tab>` routing and the decline chain ───────────────────
+
+/// `<Tab>` on a headline cycles; off one it DECLINES and the chord falls
+/// through to whatever `<Tab>` natively means.
+///
+/// This is the property the whole mode decomposition rests on. If `Declined`
+/// did not fall through, org would have to own every meaning `<Tab>` can have
+/// in an org buffer, and `org-table-mode` could not be a separate mode at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tab_cycles_on_a_headline_and_declines_off_one() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\nbody\n** Child\nkid\n").await;
+
+    // On the headline: folds appear, so the buffer's visible shape changes
+    // without its text changing.
+    goto_line(&mut editor, 0);
+    let before = text(&editor);
+    press(&mut editor, "<Tab>");
+    assert_eq!(
+        text(&editor),
+        before,
+        "cycling changes visibility, never text"
+    );
+    // NOT asserted here: that a fold appeared. Structure-driven folds come
+    // from a landed tree-sitter parse, which is asynchronous, so `editor.folds`
+    // is empty in this harness whatever `<Tab>` did. `CycleFoldAtCursor`'s own
+    // behaviour is covered natively (it predates this plugin); what OM.5 adds
+    // and what this test covers is the ROUTING — org's `<Tab>` reaching that
+    // effect on a headline and declining off one.
+
+    // Off a headline the action declines. The proof that it FELL THROUGH
+    // rather than merely no-opped is that no fold appeared while the chord
+    // still resolved — a swallowed chord and a declined one look identical
+    // from the buffer, so the assertion is on the fold state the org action
+    // would have produced had it handled the key.
+    let base2 = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base2.path(), "#+TITLE: Notes\nprose\nmore\n").await;
+    goto_line(&mut editor, 1);
+    let before = text(&editor);
+    press(&mut editor, "<Tab>");
+    assert_eq!(
+        text(&editor),
+        before,
+        "declining leaves the buffer untouched — no stray tab inserted, which \
+         is what would happen if the chord fell all the way through to Insert"
+    );
+}
+
+/// The chain must survive MORE than one declining layer.
+///
+/// `org-table-mode` (OM.12) will bind `<Tab>` above `org-mode` and decline
+/// outside a table, so in a plain org paragraph the key passes through two
+/// declining layers before reaching the builtin. If `Declined` only fell
+/// through one, the mode decomposition would collapse into a single
+/// mega-action.
+///
+/// What is checked here is the LAYERING that makes it possible — two layers
+/// both holding `<Tab>`, the higher one winning — because the fall-through
+/// itself happens during effect application, below this harness. The
+/// end-to-end two-hop case lands with OM.12, when the second layer is real
+/// rather than constructed; shipping a stub mode purely to make a test pass
+/// would be worse than saying so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_higher_layer_can_take_tab_from_org_mode() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let editor = org_editor(base.path(), "* One\nbody\n").await;
+
+    let org = ModeId::new("org-mode");
+    let stand_in = ModeId::new("org-table-stand-in-mode");
+    let tab = parse_chord_sequence("<Tab>").expect("parses");
+
+    // org-mode owns `<Tab>` today.
+    let LookupResult::Bound {
+        command: org_cmd, ..
+    } = editor
+        .keymap
+        .lookup_with_context(lattice_keymap::BindingMode::Normal, &tab, &[org])
+    else {
+        panic!("org-mode binds <Tab>");
+    };
+
+    // A MINOR layer above it takes the key — the priority order
+    // `Builtin < MajorMode < MinorMode` is what lets org-table-mode refine
+    // its major without either of them shadowing the builtin globally.
+    let cycle = editor
+        .registry
+        .load()
+        .id_by_name("org-demote-headline")
+        .expect("a distinct org command to bind");
+    editor
+        .keymap
+        .try_bind_chord_string(
+            lattice_keymap::KeymapCapability::Full,
+            lattice_keymap::KeymapLayer::MinorMode(stand_in),
+            lattice_keymap::BindingMode::Normal,
+            "<Tab>",
+            lattice_grammar::command::CommandInvocation::of(cycle),
+            lattice_grammar::source::SourceLocation::plugin(0),
+        )
+        .expect("binds");
+
+    let LookupResult::Bound {
+        command: minor_cmd, ..
+    } = editor.keymap.lookup_with_context(
+        lattice_keymap::BindingMode::Normal,
+        &tab,
+        &[org, stand_in],
+    )
+    else {
+        panic!("the minor layer binds <Tab>");
+    };
+    assert_ne!(
+        minor_cmd.command, org_cmd.command,
+        "the higher layer's binding wins, so a minor can refine its major's key"
+    );
+
+    // And with the minor inactive, org-mode has it back.
+    let LookupResult::Bound { command: back, .. } =
+        editor
+            .keymap
+            .lookup_with_context(lattice_keymap::BindingMode::Normal, &tab, &[org])
+    else {
+        panic!("org-mode still binds <Tab>");
+    };
+    assert_eq!(back.command, org_cmd.command);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

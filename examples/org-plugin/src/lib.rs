@@ -61,7 +61,8 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
-    ActionContext, ActionSpec, Args, Edit, EditKind, Effect, ExCommandContext, MotionContext,
+    ActionContext, ActionSpec, AppEffect, Args, Edit, EditKind, Effect, ExCommandContext,
+    MotionContext,
     MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
     TextObjectSpec,
 };
@@ -84,6 +85,10 @@ const INNER_HEADLINE: u32 = 1;
 const AROUND_HEADLINE: u32 = 2;
 const INNER_SUBTREE: u32 = 3;
 const AROUND_SUBTREE: u32 = 4;
+
+/// `<Tab>` / `<S-Tab>` (OM.5).
+const CYCLE: u32 = 5;
+const CYCLE_GLOBAL: u32 = 6;
 
 const GRAMMAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammar.wasm"));
 
@@ -174,6 +179,13 @@ impl Guest for Component {
                 bind("ah", "org-around-headline"),
                 bind("ir", "org-inner-subtree"),
                 bind("ar", "org-around-subtree"),
+                // Visibility cycling. The behaviour is already native —
+                // `AppEffect::CycleFoldAtCursor` was written for org and its
+                // doc comment says so — so these actions route to it rather
+                // than reimplementing anything. `z<Space>` / `z<Tab>` keep
+                // working; this adds org's own keys on top.
+                bind("<Tab>", "org-cycle"),
+                bind("<S-Tab>", "org-global-cycle"),
             ],
             target_language: Some("org".to_string()),
         });
@@ -246,6 +258,18 @@ impl Guest for Component {
             "A whole subtree: the headline and everything under it",
             &tobj(),
             AROUND_SUBTREE,
+        );
+        register_action(
+            "org-cycle",
+            "Cycle the headline at the cursor: folded, children, subtree",
+            &spec(),
+            CYCLE,
+        );
+        register_action(
+            "org-global-cycle",
+            "Cycle the whole buffer: overview, contents, show-all",
+            &spec(),
+            CYCLE_GLOBAL,
         );
         register_action(
             "org-promote-headline",
@@ -393,6 +417,29 @@ impl GrammarCallbacks for Component {
             DEMOTE_HEADLINE => Ok(shift(&ctx, doc, 1, false)),
             PROMOTE_SUBTREE => Ok(shift(&ctx, doc, -1, true)),
             DEMOTE_SUBTREE => Ok(shift(&ctx, doc, 1, true)),
+            // OM.5: `<Tab>` is org's most overloaded key, and `Declined` is
+            // what makes it composable rather than a host special case. On a
+            // headline it cycles; anywhere else it DECLINES, and the
+            // dispatcher re-resolves as if org-mode's layer were not there —
+            // falling through to whatever `<Tab>` natively means (jump-list
+            // forward). When `org-table-mode` arrives it binds `<Tab>` above
+            // this one and declines outside a table, making the chain two
+            // hops with no change here.
+            CYCLE => {
+                let line = |n: u32| doc.line(n);
+                let on_headline = line(ctx.cursor.line)
+                    .as_deref()
+                    .and_then(headline::headline_level)
+                    .is_some();
+                if on_headline {
+                    Ok(vec![Effect::AppAction(AppEffect::CycleFoldAtCursor)])
+                } else {
+                    Ok(vec![Effect::Declined])
+                }
+            }
+            // `<S-Tab>` is whole-buffer, so it does not decline: org's global
+            // cycle is meaningful wherever the cursor is.
+            CYCLE_GLOBAL => Ok(vec![Effect::AppAction(AppEffect::CycleFoldsGlobal)]),
             other => Err(format!("org: unknown action callback {other}")),
         }
     }

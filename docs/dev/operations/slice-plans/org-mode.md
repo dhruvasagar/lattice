@@ -6,13 +6,13 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.4b ✅ (2026-08-24) — **org's grammar composes with vim's
-operators.** OM.0 ✅ seam drain order is
+**Status:** OM.5 ✅ (2026-08-24) — **`<Tab>` cycles, and declines.** OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
 promote/demote; OM.4 ✅ headline motions; OM.4b ✅ `dar` / `d]]` reach the
-plugin's grammar. Next: OM.5, `<Tab>` routing and the decline chain.
+plugin's grammar; OM.5 ✅ `<Tab>` routing. Next: OM.6, subtree move /
+meta-return / toggle / archive.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -87,7 +87,7 @@ files? — was retired during design by reading the excerpt model
 | OM.3 | Promote / demote headline + subtree | ✅ |
 | OM.4 | Headline motions (`]]` / `[[` / `g{`) | ✅ |
 | OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
-| OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
+| OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading, archive | 📝 |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | 📝 |
 | OM.8 | Checkboxes + statistics cookies | 📝 |
@@ -450,7 +450,7 @@ site, landing inside an org slice where it does not belong).
   beside it. Visual-mode bindings are the third row set (`var` extends the
   selection), alongside operator-pending.
 
-### OM.5 — `<Tab>` routing and the decline chain 📝
+### OM.5 — `<Tab>` routing and the decline chain ✅ (2026-08-24)
 Exit: `<Tab>` cycles on a headline and falls through to jump-list-forward
 elsewhere. **Tests the multi-layer decline chain explicitly** (fragment
 §4.3) — with `org-table-mode` stubbed to always decline, the chain must
@@ -458,6 +458,39 @@ still reach the builtin. If `Declined` does not chain past two layers,
 that is a design review, not a workaround.
 *bench:* the decline path by name — the one org path costing a guest call
 on keystrokes that do nothing.
+
+**Landed 2026-08-24.** `<Tab>` → `org-cycle`, which routes to
+`AppEffect::CycleFoldAtCursor` on a headline and returns
+`Effect::Declined` anywhere else. `<S-Tab>` → `org-global-cycle`, which
+does NOT decline: a whole-buffer cycle is meaningful wherever the cursor
+sits. No behaviour was reimplemented — `CycleFoldAtCursor` was written for
+org and its doc comment says so; this slice is routing.
+
+**Two coverage limits, stated rather than asserted around.**
+
+*Folds are not asserted.* Structure-driven folds come from a landed
+tree-sitter parse, which is asynchronous, so `editor.folds` is empty in
+this harness whatever `<Tab>` did. `CycleFoldAtCursor`'s behaviour is
+covered natively and predates the plugin; what OM.5 adds and what the test
+covers is the routing. The decline case asserts the buffer is untouched —
+which rules out the failure that would actually bite (the chord falling
+all the way through and inserting a literal tab).
+
+*The two-hop chain is not yet end-to-end.* The fall-through happens during
+effect application, below this harness. What IS asserted is the layering
+that makes it possible: a MINOR layer above `org-mode` takes `<Tab>` and
+gives it back when inactive, which is exactly how `org-table-mode` will
+refine its major. The two-hop case lands with OM.12, when the second layer
+is real — shipping a stub mode that exists only to make a test pass would
+be worse than saying this plainly.
+
+*No bench.* The decline path's cost is the grammar round-trip, already
+ratcheted at `< 5 µs p99` and independent of which guest answers — the
+same reasoning recorded at OM.3.
+
+Tests: 2 in `org_structure.rs` — `<Tab>` cycles on a headline and leaves
+the buffer untouched off one; a higher layer can take `<Tab>` from
+`org-mode` and hand it back.
 
 ### OM.6 — subtree move, meta-return, toggle, archive 📝
 `<leader>oK` / `oJ` / `<leader><CR>` / `<leader>o*` / `<leader>o$`.

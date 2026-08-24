@@ -19,7 +19,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 ## Where this sits
 
 Phase **8b** (bundled / reference plugins) — `implementation.md` already
-names `examples/org-plugin` as its second reference plugin alongside
+names [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) as its second reference plugin alongside
 `auto-pair` and `treesitter-context`.
 
 **Except OM.0–OM.2, which retire a Phase-8 deferral.** The
@@ -556,10 +556,10 @@ mid-scan leaves partial excerpts and an honest headerline.
 
 ## OM.14 — docs, ledger, site 📝
 
-- `examples/org-plugin/doc/org.md` — its closing *"Editing. Headline
+- the plugin repo's `doc/org.md` — its closing *"Editing. Headline
   promotion and demotion… none of that is here"* section stops being
   true and is rewritten.
-- `examples/org-plugin/README.md`, `implementation.md` (Phase 8b row +
+- the plugin repo's `README.md`, `implementation.md` (Phase 8b row +
   an org-mode section), design fragment ↔ slice plan cross-refs.
 - Zola site: `nav.toml`, sync, search — a `docs/` change is not finished
   until the site carries it.

@@ -9,7 +9,7 @@ whose first consumer is the same plugin) and
 
 ## 1. What is already true
 
-`examples/org-plugin` ships today and contributes org **the language**: a
+[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) ships today and contributes org **the language**: a
 tree-sitter grammar compiled to wasm, per-level headline highlights, folds
 over sections and blocks and drawers, and its own `:help` page. It rides
 the `language` and `help` seams and needs nothing from the host.

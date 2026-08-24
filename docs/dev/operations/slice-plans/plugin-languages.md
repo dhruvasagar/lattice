@@ -343,7 +343,7 @@ every headline and the last would win, so the failure would look like
 both the base-size prefix width and the level ramp. Zero renderer changes,
 as claimed.
 
-**The plugin lives in `examples/org-plugin/`, not `plugins/`** — decided
+**The plugin lives in [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), not `plugins/`** — decided
 explicitly rather than by default. Org's `parser.c` is 2.2 MB of generated
 C, and `plugins/` is compiled by every workspace build, so bundling would
 have meant carrying that weight or reaching the network on every build.
@@ -374,7 +374,7 @@ and tests rather than mechanism.
 **Outcome: queries and tests, exactly as predicted — no mechanism.**
 `compute_syntax_folds` resolves `folds.scm` by language name through the
 live registry and knows nothing about where the grammar came from, so
-`examples/org-plugin/queries/folds.scm` was the whole change. Five tests
+the plugin repo's `queries/folds.scm` was the whole change. Five tests
 in `crates/lattice-host/tests/org_folds.rs`.
 
 `(section)` does the load-bearing work: in this grammar a section is a

@@ -6408,11 +6408,11 @@ taken. Two decisions worth finding here rather than in a diff:
   have meant a stock build where a user's language plugin silently does
   nothing. Design §3.2.
 - **Org is NOT a bundled plugin.** Its `parser.c` is 2.2 MB of generated C and
-  `plugins/` is compiled by every workspace build. `examples/org-plugin/` holds
+  `plugins/` is compiled by every workspace build. [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) holds
   version-controlled reference source that nothing in the workspace builds; the
   plugin manager clones and builds it on boot (PM.5–PM.8). Design §7.
 
-**Phase 8b gains a second reference plugin** (`examples/org-plugin`) alongside
+**Phase 8b gains a second reference plugin** ([`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)) alongside
 the bundled `auto-pair` and `treesitter-context`.
 
 **External plugins can compose worlds, so org ships its `:help` page.** A

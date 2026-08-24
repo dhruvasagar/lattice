@@ -1,5 +1,0 @@
-# Build artifacts of the standalone plugin (its own workspace target/) and the
-# grammar checkout its build.rs makes. The grammar is deliberately NOT
-# vendored — see README.md.
-/target
-/grammar-src

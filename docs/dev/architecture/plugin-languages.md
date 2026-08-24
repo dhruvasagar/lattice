@@ -558,7 +558,7 @@ Org exercises the seam properly rather than thinly, which is what
   `(list)` map onto the same fold pipeline markdown's `(section)` uses.
 
 **The plugin is not in this repo's `plugins/`, deliberately.**
-`examples/org-plugin/` carries its source — queries, `build.rs`, the
+[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) carries its source — queries, `build.rs`, the
 `language-plugin` guest — as version-controlled reference, and nothing in
 the workspace builds it. Org's `parser.c` is 2.2 MB of generated C
 maintained outside crates.io, which is §1's argument for the seam in the

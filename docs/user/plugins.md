@@ -239,7 +239,7 @@ If your grammar's entry point does not match the language name — lattice's own
 `tree_sitter_sequel` — set `grammar-name` to the grammar's name and leave
 `name` as what users type.
 
-`examples/org-plugin/` in the lattice repo is a complete worked example.
+[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) in the lattice repo is a complete worked example.
 
 ### A plugin's docs live inside the plugin
 

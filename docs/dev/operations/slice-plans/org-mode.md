@@ -6,13 +6,20 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.5 ✅ (2026-08-24) — **`<Tab>` cycles, and declines.** OM.0 ✅ seam drain order is
+**Status:** OM.6 ✅ (2026-08-24) — **the outliner edits structure.** OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
 promote/demote; OM.4 ✅ headline motions; OM.4b ✅ `dar` / `d]]` reach the
-plugin's grammar; OM.5 ✅ `<Tab>` routing. Next: OM.6, subtree move /
-meta-return / toggle / archive.
+plugin's grammar; OM.5 ✅ `<Tab>` routing; OM.6 ✅ subtree move / meta-return /
+toggle heading — **archive carved out as OM.6b (⛔ blocked)**. Next: OM.7,
+`org-todo-mode`.
+
+**From OM.6 on the plugin lives in its own repo**
+([`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)),
+moved out of `examples/org-plugin` by 7ba51c7. Slices from here land as
+commits THERE and touch lattice only when a seam has to change — OM.6 did
+not.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -50,7 +57,8 @@ OM.4b plugin grammar contributions reach operator-pending
   │   OM.3   promote / demote (headline + subtree)            │
   │   OM.4   headline motions + ih/ah/is/as text objects      │
   │   OM.5   <Tab>/<S-Tab> routing + the decline chain        │
-  │   OM.6   subtree move, meta-return, toggle heading, archive│
+  │   OM.6   subtree move, meta-return, toggle heading         │
+  │   OM.6b  archive subtree  ⛔ needs a cross-file write       │
   │   OM.7   org-todo-mode: TODO cycling, priority, tags      │
   │   OM.8   checkboxes + statistics cookies                  │
   │   OM.9   timestamps                                       │
@@ -88,7 +96,8 @@ files? — was retired during design by reading the excerpt model
 | OM.4 | Headline motions (`]]` / `[[` / `g{`) | ✅ |
 | OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
-| OM.6 | Subtree move, meta-return, toggle heading, archive | 📝 |
+| OM.6 | Subtree move, meta-return, toggle heading | ✅ |
+| OM.6b | Archive subtree to `<file>_archive` | ⛔ |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | 📝 |
 | OM.8 | Checkboxes + statistics cookies | 📝 |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`, date prompt) | 📝 |
@@ -492,8 +501,66 @@ Tests: 2 in `org_structure.rs` — `<Tab>` cycles on a headline and leaves
 the buffer untouched off one; a higher layer can take `<Tab>` from
 `org-mode` and hand it back.
 
-### OM.6 — subtree move, meta-return, toggle, archive 📝
-`<leader>oK` / `oJ` / `<leader><CR>` / `<leader>o*` / `<leader>o$`.
+### OM.6 — subtree move, meta-return, toggle heading ✅ (2026-08-24)
+`<leader>oK` / `oJ` / `<leader><CR>` / `<leader>o*`. Landed in the plugin
+repo (`fed1662`); no lattice change — the actions ride the `grammar` seam
+and `org-mode`'s own keymap layer, exactly as OM.3 established.
+
+Archive (`<leader>o$`) carved out as **OM.6b** — see below.
+
+Three refusals carry the slice, each a silent restructure avoided:
+
+- **Sibling ≠ adjacent headline.** From a level-2 headline the previous
+  headline is often a level-3 child of an earlier sibling; swapping with
+  it interleaves two trees. Both scans stop at a shallower headline, so a
+  move stays inside one parent.
+- **`<leader><CR>` inserts after the whole subtree.** The naive reading
+  (next line) puts the new sibling in front of the headline's children
+  and adopts them. Emacs's `-respect-content` reading is the safe one.
+- **`toggle_heading` inherits the enclosing level**, so a note under
+  `** Two` becomes a `**` sibling rather than escaping its section.
+
+**`Effect::None` is not `Effect::Declined`** — the finding worth carrying
+forward. These actions first returned `Declined` when there was nothing
+to move, by analogy with OM.5's `<Tab>`. A declined chord is re-resolved
+with the mode's layer removed, and for a MULTI-KEY sequence that runs the
+trailing key alone: `<leader>oJ` executed vim's `J` and joined two lines.
+`<leader>o*` would run `*`, `<leader><CR>` would run `<CR>`.
+
+The rule: decline only a chord that is genuinely SHARED. `<Tab>` has a
+native meaning to fall through to and still declines. A chord behind a
+plugin-owned prefix has nothing underneath it and must consume the key.
+
+⚠️ OM.3's `shift` still returns `Declined` on a refused level-1 promote
+and in a headline-less buffer. Not visibly broken — the trailing keys are
+`h`/`l`/`H`/`L`, all harmless motions — but it is the same latent shape.
+Fix when OM.7 touches that file.
+
+Tests: 10 new (4 unit, 6 integration through real chord dispatch); 51 in
+the plugin repo total.
+
+### OM.6b — archive subtree ⛔ blocked
+`<leader>o$`. `org-archive-subtree` moves a subtree into `<file>_archive`,
+and **no effect in the WIT surface writes to a file other than the
+buffer's own**. `edits` / `apply-edit` target `ctx.buffer_id`;
+`open-buffer-at` changes what is focused but does not compose with a
+follow-on edit in a defined order.
+
+So this is not plugin work — it needs a host decision first. Three
+shapes, none costed yet:
+
+1. **A new effect** (`append-to-file` or an explicit
+   `edit-in-buffer(path, edits)`), which adds ABI surface for one
+   command and needs `fs:write` capability gating.
+2. **Archive in place** — `org-toggle-archive-tag`'s `:ARCHIVE:` tag plus
+   a fold, which is a real org feature and needs nothing new, but is a
+   *different* command from the one `<leader>o$` names in every other
+   org implementation.
+3. **`<leader>o$` opens the archive file** and leaves the move to the
+   user, which is honest but not the feature.
+
+Raise before OM.11 — refile has the same cross-file requirement, so the
+two should be decided together rather than twice.
 
 ### OM.7 — `org-todo-mode` 📝
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority

@@ -4,9 +4,12 @@
 > Design contracts live in
 > [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
 
-**Status:** IM.0 ✅ (2026-08-24) — **the gate found a real flaw and the
-design was revised.** `scroll` survives untouched; `viewport_height` does
-not (see below). IM.1 next.
+**Status:** IM.1 ✅ (2026-08-25) — **the scroll arithmetic is
+tall-row-aware, with no media in existence.** IM.0 ✅ the gate (which
+found a real flaw and revised the design); IM.1a ✅ cursor visibility;
+IM.1b ✅ paging and centring. **IM.1c was dropped as premature and its
+work folded into IM.3 / IM.5** — see below. IM.3 next; IM.2 moved after
+it.
 
 Path 4 was pulled back from post-1.0 on 2026-08-24; the design fragment
 §2 records why the deferral no longer holds (Thread F already built the
@@ -19,11 +22,12 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 ```
 IM.0  gate: what does `scroll` actually assume?     ← cheap, blocks all
   │
-IM.1  per-row weights + budget-based scroll math     ← no media yet
-  │
-IM.2  document-level Fenwick height index            ← scrollbar, G, jumps
+IM.1  per-row weights + budget-based scroll math     ← no media yet ✅
+  │   (IM.1c dropped: nothing to publish weights FOR until IM.3)
   │
 IM.3  MediaBlock descriptor + VirtualRowKind         ← no decode yet
+  │
+IM.2  document-level Fenwick height index            ← scrollbar, G, jumps
   │
 IM.4  off-thread decode + cache + inbound landing
   │
@@ -47,9 +51,10 @@ wrong.
 | Slice | Description | Status |
 |---|---|---|
 | IM.0 | Gate: audit every consumer of `Editor::scroll` / `viewport_height` | ✅ |
-| IM.1 | Per-row weight vector + budget-based scroll math; `sub_row_px` (GPUI) | 📝 |
-| IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
+| IM.1a | `RowWeights` + cursor-visibility walks spend a line-height budget | ✅ |
+| IM.1b | Paging / centring (`<C-f>`, `H`/`M`/`L`, `zz`) spend the budget | ✅ |
 | IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | 📝 |
+| IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
 | IM.4 | Off-thread decode + cache, landing via the inbound primitive | 📝 |
 | IM.5 | GPUI paint; TUI `alt` fallback at the same row count | 📝 |
 | IM.6 | WIT seam for plugin-contributed media blocks | 📝 |
@@ -128,7 +133,43 @@ before and after.
 assert cursor visibility with a tall row above and below.
 *bench:* keystroke→glyph unchanged with all-1.0 scales.
 
+### IM.1c — dropped (folded into IM.3 / IM.5) ⛔
+
+Scoped as "publish real weights from GPUI, add `sub_row_px`". Both halves
+turned out to be premature, for the same reason: **nothing is tall yet.**
+
+**The publish channel is not needed.** The plan assumed each peer would
+push a per-row weight vector into the host. Two things killed that. A
+peer only knows its *viewport*, and the scroll walks range outside it, so
+a viewport-shaped vector answers the wrong question. And it is
+unnecessary: `heading_scale_split` derives a heading's scale from the
+display matrix and the resolved theme, both of which are host-side
+already. Whether that scale *applies* is a single renderer policy flag,
+not a vector — the TUI's rows are one cell tall by physics.
+
+So weights are computed where the tall thing is defined. A media block
+knows its own height (IM.3, from the descriptor). Heading scales are a
+separate, pre-existing cosmetic inaccuracy — headings already scroll
+slightly wrong today — and wiring them wants a lazy per-line query rather
+than a vector; carved out rather than smuggled in here.
+
+**`sub_row_px` has nothing to scroll within** until a row is taller than
+the viewport step, which first happens at IM.5 when an image paints at
+its natural size. It lands there, with the thing that makes it
+observable.
+
+What IM.1 actually delivered is the arithmetic: `RowWeights`, and seven
+walks that spend a line-height budget instead of counting rows, proven
+against a fixture row that simply declares itself tall. That was the
+point — the scroll rework is now done and testable before any image can
+be blamed for a scrolling bug.
+
 ### IM.2 — document-level height index 📝
+
+**Resequenced after IM.3.** Its consumers — scrollbar proportion and
+absolute jumps — only diverge from today once tall rows exist, so
+building the index first would mean benching and tuning a structure with
+nothing in it.
 
 Fenwick cumulative height, peer-local, updated on edit and block resize.
 Consumers: scrollbar proportion, absolute jumps (`G`, line N, restored

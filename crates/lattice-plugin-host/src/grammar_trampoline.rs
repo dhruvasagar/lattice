@@ -242,9 +242,29 @@ fn build_motion_spec(
         args_schema,
         apply: Arc::new(move |ctx: &MotionContext| -> GrammarResult<MotionResult> {
             let wit_ctx = project_motion_context(ctx).map_err(CommandError::Plugin)?;
+            // OM.4: mint a point-in-time `document` from the motion's buffer,
+            // exactly as `build_action_spec` does (O(1) rope clone). A motion
+            // that reads text — org's headline motions are the first — needs
+            // the same handle an action gets. No tree: the native
+            // `MotionContext` carries a `ScopeResolver`, not a
+            // `SyntaxSnapshot`, so there is nothing to mint.
+            let snapshot = Arc::new(DocumentSnapshot {
+                buffer: ctx.buffer.clone(),
+                ..Default::default()
+            });
             let wit = run_callback(&guest, "apply-motion", |b, s| {
-                b.lattice_plugin_host_grammar_callbacks()
-                    .call_apply_motion(s, callback, &wit_ctx)
+                // Lend as a borrow and reclaim after the call — the host owns
+                // the entry throughout (the `apply-action` pattern).
+                let owned_doc = s
+                    .data_mut()
+                    .table
+                    .push(DocumentResource::new(snapshot.clone()))?;
+                let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                let result = b
+                    .lattice_plugin_host_grammar_callbacks()
+                    .call_apply_motion(&mut *s, callback, &wit_ctx, doc_borrow);
+                let _ = s.data_mut().table.delete(owned_doc);
+                result
             })?;
             MotionResult::from_wit(wit).map_err(CommandError::Plugin)
         }),

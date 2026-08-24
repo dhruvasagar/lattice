@@ -109,7 +109,11 @@ impl Guest for Component {
 }
 
 impl Callbacks for Component {
-    fn apply_motion(callback: u32, ctx: MotionContext) -> Result<MotionResult, String> {
+    fn apply_motion(
+        callback: u32,
+        ctx: MotionContext,
+        _doc: &Document,
+    ) -> Result<MotionResult, String> {
         match callback {
             1 => Ok(MotionResult {
                 target: Position {

@@ -168,7 +168,11 @@ impl GrammarCallbacks for Component {
         }
     }
 
-    fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {
+    fn apply_motion(
+        _c: u32,
+        _ctx: MotionContext,
+        _doc: &Document,
+    ) -> Result<MotionResult, String> {
         Err("multiseam: no motions".into())
     }
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {

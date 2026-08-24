@@ -135,7 +135,7 @@ prevent.
 
 | Mode | Kind | Activation | Owns |
 |---|---|---|---|
-| `org-mode` | major | `target-language = "org"` | headline motions, `ih`/`ah`/`is`/`as` text objects, promote/demote, subtree move, meta-return, toggle heading, archive, links, refile, capture, `<Tab>` on a headline |
+| `org-mode` | major | `target-language = "org"` | headline motions, `ih`/`ah`/`ir`/`ar` text objects, promote/demote, subtree move, meta-return, toggle heading, archive, links, refile, capture, `<Tab>` on a headline |
 | `org-todo-mode` | minor | `majors = ["org-mode"]` | TODO keyword cycling, priority, tags, checkboxes + statistics cookies, timestamps |
 | `org-table-mode` | minor | `majors = ["org-mode"]` | alignment, cell and row motion, row/column insert and move |
 | `org-agenda-mode` | minor | manual — the provider activates it on the view | `gr` refresh, TODO change from the agenda, jump-to-source |
@@ -275,10 +275,15 @@ objects through `grammar`'s `register-text-object`:
 
 ```
 ih  ah    headline (inner / around)
-is  as    subtree  (inner / around)
+ir  ar    subtree  (inner / around)
 ```
 
-and the **ordinary operators compose** — `das` deletes a subtree, `yah`
+(Corrected during OM.4: this fragment first said `is`/`as` for subtree, but
+`s` is already vim's **sentence** object and org has no business shadowing
+it. nvim-orgmode itself uses `ir`/`ar` — following the convention we already
+chose fixes the collision rather than creating one.)
+
+and the **ordinary operators compose** — `dar` deletes a subtree, `yah`
 yanks a headline, `>as` indents one, `gcas` comments one. No org-specific
 chord is involved in any of those. This is paramount goal #3 working as
 designed: the grammar is the public API, and a plugin extends the

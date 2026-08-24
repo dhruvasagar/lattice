@@ -74,7 +74,22 @@ interface grammar-callbacks {
     /// (auto-pair's manual style) queries `enclosing` to bound its scan.
     use tree-sitter.{tree-snapshot};
 
-    apply-motion: func(callback: u32, ctx: motion-context) -> result<motion-result, string>;
+    /// OM.4: a motion receives `borrow<document>` too. The `apply-action`
+    /// doc-comment below anticipated this — "text-reading motions (structural /
+    /// word motions) can reuse the same handle when a motion signature needs
+    /// it" — and org's headline motions (`]]` / `[[` / `g{`) are the first that
+    /// do: finding the next headline means reading lines.
+    ///
+    /// A motion gets the document but NOT the tree, unlike an action. The
+    /// native `MotionContext` carries a `ScopeResolver` rather than a
+    /// `SyntaxSnapshot`, so there is no tree handle to mint here without
+    /// changing the native context — and no motion has yet needed one. When one
+    /// does, that is the slice that adds it.
+    apply-motion: func(
+        callback: u32,
+        ctx: motion-context,
+        doc: borrow<document>,
+    ) -> result<motion-result, string>;
     apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
     apply-text-object: func(callback: u32, ctx: text-object-context) -> result<range, string>;
     apply-action: func(

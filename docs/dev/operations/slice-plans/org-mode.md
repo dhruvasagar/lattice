@@ -6,11 +6,12 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.3 ✅ (2026-08-24) — **org edits.** OM.0 ✅ seam drain order is
+**Status:** OM.4 ✅ (2026-08-24) — **org edits and navigates.** OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
-promote/demote. Next: OM.4, motions and text objects.
+promote/demote; OM.4 ✅ headline motions. Next: OM.4b, the operator-pending
+mechanism that both text objects and `d]]` need.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -40,6 +41,9 @@ OM.1  ModeRegistry language index (native only, no WASM)
 OM.2  modes seam accepts `major` + target-language   ← org-mode activates
   │
 OM.2b `<leader>` expansion (carved mid-build — it did not exist)
+  │
+OM.4b plugin grammar contributions reach operator-pending
+      (carved mid-build: motions AND text objects need one mechanism)
   │
   ├── outliner ──────────────────────────────────────────────┐
   │   OM.3   promote / demote (headline + subtree)            │
@@ -80,7 +84,8 @@ files? — was retired during design by reading the excerpt model
 | OM.2 | `modes` seam accepts `major`; `target-language` field | ✅ |
 | OM.2b | `<leader>` bind-time expansion + `keymap.leader` | ✅ |
 | OM.3 | Promote / demote headline + subtree | ✅ |
-| OM.4 | Headline motions + `ih`/`ah`/`is`/`as` text objects | 📝 |
+| OM.4 | Headline motions (`]]` / `[[` / `g{`) | ✅ |
+| OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | 📝 |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | 📝 |
 | OM.6 | Subtree move, meta-return, toggle heading, archive | 📝 |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | 📝 |
@@ -326,10 +331,84 @@ Exit: all four work through real chord dispatch, and demoting past the
 theme's six-level ramp keeps level-6 styling without error.
 *bench:* the action round-trip, against the `< 5 µs p99` grammar gate.
 
-### OM.4 — motions and text objects 📝
-`]]` / `[[` / `g{`; `ih` / `ah` / `is` / `as` via `register-text-object`.
-Exit: `das` deletes a subtree and `yah` yanks a headline through the
-**ordinary** operators — no org-specific chord in either.
+### OM.4 — headline motions ✅ (2026-08-24)
+`]]` / `[[` / `g{`, kept verbatim from nvim-orgmode: `]` and `[` are trie
+prefixes rather than terminal bindings, so unlike `>>` / `<<` these
+transplant unchanged.
+
+**The seam needed extending, as its own doc-comment predicted.**
+`apply-motion` took no `document` handle, so a motion could not read the
+buffer — and finding the next headline is reading lines. `grammar.wit`
+already named this: *"text-reading motions (structural / word motions) can
+reuse the same handle when a motion signature needs it; AP.0.1 wires the
+action path only."* `apply-motion` now takes `borrow<document>`, minted in
+`build_motion_spec` exactly as `build_action_spec` does (the native
+`MotionContext` already carries `buffer`, so no native context changed).
+No tree: a `MotionContext` carries a `ScopeResolver`, not a
+`SyntaxSnapshot`, so there is nothing to mint — the slice that needs one
+adds it. Every grammar-world guest's signature updated (grammar,
+multiseam, auto-pair, treesitter-context, org).
+
+*Motions, not actions,* so they compose with operators and take counts —
+which is the whole distinction (paramount #3). `jump: true` (a headline
+jump is somewhere `<C-o>` should return from) and `exclusive: true` (`d]]`
+deletes up to but not including the next headline). A motion at the edge
+resolves to the cursor's own line rather than erroring: an `err` is logged
+and no-ops, which is right for a broken motion and wrong for `]]` at the
+last one — `}` at the end of a buffer stays put.
+
+*Why `g{` is not just `[[`:* from the second of two level-3 siblings, `[[`
+reaches the sibling; `g{` must skip it to the level-2 parent. Pinned by
+`parent_skips_siblings_where_prev_headline_would_not`.
+
+**Two gaps found while testing, carried to OM.4b rather than glossed:**
+
+* **`d]]` does not work.** Operator+motion paths are bound explicitly at
+  `KeymapLayer::Builtin` from a hardcoded `motion_rows` table
+  (`keymap_normal.rs:1467`), so a plugin motion bound in Normal is not
+  reachable after an operator. This is the SAME gap that blocks plugin
+  text objects, with the same fix.
+* **Counts are not covered here.** A control assertion showed `3j` on a
+  NATIVE motion also resolving as one step through this harness — count
+  accumulation lives at the App layer, above `Editor::dispatch_chord`. The
+  gap is the harness, not the plugin; covering it means driving
+  `lattice-ui-tui`'s `press`.
+
+Tests: 13 unit in the plugin (motions walk every level; parent skips
+siblings; parent is `None` outside any headline) and 11 in
+`org_structure.rs`, 3 of them new for motions.
+
+### OM.4b — plugin grammar reaches operator-pending 📝
+
+**Carved mid-build at OM.4.** Two separate-looking gaps turned out to be
+one mechanism:
+
+* A plugin **text object** can be registered (`register-text-object`
+  lands it in the `CommandRegistry`, `apply-text-object` works) but no
+  chord ever reaches it. Rows come from the hardcoded `text_object_rows`
+  table, expanded across every operator × `i`/`a` into
+  `KeymapLayer::Builtin`.
+* A plugin **motion** has exactly the same problem after an operator, from
+  the `motion_rows` table.
+
+The workaround is not merely ugly, it is inexpressible:
+`mode-keymap-binding` maps a chord to a command *name*, while both cases
+need `CommandInvocation::of(operator).with_target(Target::{Motion,TextObject}(id))`
+— an operator *plus* a target, which the WIT cannot say.
+
+And `Builtin` would be the wrong layer regardless: org's objects must
+exist only in org buffers, so the rows belong in `MajorMode(org-mode)`.
+
+- Contributions gain a chord; the host generates the operator × `i`/`a` ×
+  chord rows into the **mode's own layer**, not `Builtin`.
+- *chords:* `ih` / `ah` headline, `ir` / `ar` subtree — **not** `is`/`as`,
+  which the design fragment originally said: `s` is already vim's
+  *sentence* object, and nvim-orgmode itself uses `ir`/`ar`. Following the
+  convention we already chose fixes the collision.
+- *exit:* `das` deletes a subtree, `yah` yanks a headline, and `d]]`
+  deletes to the next headline — all through the ORDINARY operators, with
+  no org-specific chord.
+- *also here:* the count coverage OM.4 could not reach, at the App layer.
 
 ### OM.5 — `<Tab>` routing and the decline chain 📝
 Exit: `<Tab>` cycles on a headline and falls through to jump-list-forward

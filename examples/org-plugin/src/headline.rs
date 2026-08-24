@@ -162,6 +162,44 @@ pub fn shift_headlines(
     Some((out, last_len))
 }
 
+/// The next headline strictly after `from`, or `None` at the last one.
+///
+/// Any level — `]]` in org walks every headline, not only siblings. Stops at
+/// the first hit, so cost is the distance to it.
+pub fn next_headline(line: impl Fn(u32) -> Option<String>, from: u32, line_count: u32) -> Option<u32> {
+    (from + 1..line_count).find(|i| line(*i).as_deref().and_then(headline_level).is_some())
+}
+
+/// The previous headline strictly before `from`, or `None` at the first one.
+pub fn prev_headline(line: impl Fn(u32) -> Option<String>, from: u32) -> Option<u32> {
+    (0..from)
+        .rev()
+        .find(|i| line(*i).as_deref().and_then(headline_level).is_some())
+}
+
+/// The parent of the headline enclosing `from` — the nearest headline above it
+/// at a strictly shallower level.
+///
+/// `None` when the enclosing headline is already level 1, or when there is no
+/// enclosing headline at all. Emacs's `outline-up-heading`, and the reason it
+/// is a separate walk rather than "the previous headline": from a level-3
+/// headline, the previous headline may be a level-3 sibling, and `g{` must skip
+/// it to reach the level-2 parent.
+pub fn parent_headline(line: impl Fn(u32) -> Option<String>, from: u32) -> Option<u32> {
+    let (start, level) = enclosing_headline(&line, from)?;
+    if level <= 1 {
+        return None;
+    }
+    (0..start)
+        .rev()
+        .find(|i| {
+            line(*i)
+                .as_deref()
+                .and_then(headline_level)
+                .is_some_and(|lvl| lvl < level)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +326,38 @@ mod tests {
         assert_eq!(shift_headlines(&not_a_headline, 0, 1, 1), None);
         let (body_only, _) = buf("body\nmore\n");
         assert_eq!(shift_headlines(&body_only, 0, 1, 1), None);
+    }
+
+    #[test]
+    fn headline_motions_walk_every_level() {
+        let (l, n) = buf("* One\nbody\n** Child\nkid\n* Two\n");
+        assert_eq!(next_headline(&l, 0, n), Some(2), "]] from a headline");
+        assert_eq!(next_headline(&l, 1, n), Some(2), "]] from body text");
+        assert_eq!(next_headline(&l, 2, n), Some(4));
+        assert_eq!(next_headline(&l, 4, n), None, "no headline after the last");
+
+        assert_eq!(prev_headline(&l, 4), Some(2));
+        assert_eq!(prev_headline(&l, 2), Some(0));
+        assert_eq!(prev_headline(&l, 0), None, "nothing before the first");
+        assert_eq!(prev_headline(&l, 1), Some(0), "[[ from body text");
+    }
+
+    #[test]
+    fn parent_skips_siblings_to_reach_a_shallower_headline() {
+        // From the second level-3, the PREVIOUS headline is its level-3
+        // sibling; the parent is the level-2 above both. This is the whole
+        // reason `g{` is not just `[[`.
+        let (l, _) = buf("* One\n** Two\n*** A\n*** B\nbody\n");
+        assert_eq!(parent_headline(&l, 3), Some(1));
+        assert_eq!(parent_headline(&l, 4), Some(1), "from body under B");
+        assert_eq!(parent_headline(&l, 1), Some(0));
+        assert_eq!(parent_headline(&l, 0), None, "a level-1 has no parent");
+    }
+
+    #[test]
+    fn parent_is_none_outside_any_headline() {
+        let (l, _) = buf("#+TITLE: Notes\nprose\n");
+        assert_eq!(parent_headline(&l, 1), None);
     }
 
     #[test]

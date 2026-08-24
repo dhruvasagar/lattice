@@ -502,6 +502,7 @@ impl CallbacksGuest for Component {
     fn apply_motion(
         _callback: u32,
         _ctx: lattice::plugin_host::types::MotionContext,
+        _doc: &lattice::plugin_host::buffer::Document,
     ) -> Result<lattice::plugin_host::types::MotionResult, String> {
         Err("treesitter-context contributes no motions".to_string())
     }

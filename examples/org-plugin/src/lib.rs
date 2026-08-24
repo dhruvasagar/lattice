@@ -52,7 +52,7 @@ mod headline;
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
-use lattice::plugin_host::grammar::register_action;
+use lattice::plugin_host::grammar::{register_action, register_motion};
 use lattice::plugin_host::help::register_topic;
 use lattice::plugin_host::language::{LanguageSpec, register_language};
 use lattice::plugin_host::modes::{
@@ -62,7 +62,7 @@ use lattice::plugin_host::modes::{
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Edit, EditKind, Effect, ExCommandContext, MotionContext,
-    MotionResult, OperatorContext, Position, Range, TextObjectContext,
+    MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
 };
 
 /// Callback ids for `apply-action`. The guest chooses these; the host only
@@ -71,6 +71,12 @@ const PROMOTE_HEADLINE: u32 = 1;
 const DEMOTE_HEADLINE: u32 = 2;
 const PROMOTE_SUBTREE: u32 = 3;
 const DEMOTE_SUBTREE: u32 = 4;
+
+/// Callback ids for `apply-motion` — a separate space from the action ids
+/// above, since the host dispatches each export by its own callback number.
+const NEXT_HEADLINE: u32 = 1;
+const PREV_HEADLINE: u32 = 2;
+const PARENT_HEADLINE: u32 = 3;
 
 const GRAMMAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grammar.wasm"));
 
@@ -138,6 +144,15 @@ impl Guest for Component {
                 bind("<leader>ol", "org-demote-headline"),
                 bind("<leader>oH", "org-promote-subtree"),
                 bind("<leader>oL", "org-demote-subtree"),
+                // Motions, kept verbatim from nvim-orgmode — `]` and `[` are
+                // prefixes rather than terminal bindings, so unlike `>>` / `<<`
+                // these transplant unchanged. `g{` is emacs's
+                // `outline-up-heading`; lattice's own `zp` walks the FOLD
+                // hierarchy, which coincides with the headline hierarchy in org
+                // but is a different thing, so both earn their place.
+                bind("]]", "org-next-headline"),
+                bind("[[", "org-prev-headline"),
+                bind("g{", "org-parent-headline"),
             ],
             target_language: Some("org".to_string()),
         });
@@ -153,6 +168,37 @@ impl Guest for Component {
         let spec = || ActionSpec {
             args_schema: Vec::new(),
         };
+        // Motions, not actions: a motion composes with an operator, so `d]]`
+        // deletes to the next headline and `3]]` takes a count — which is the
+        // whole reason for the distinction (paramount goal #3). `jump: true`
+        // records a position-history entry, matching `}` / `G` / `]]` in a
+        // source file: a headline jump is somewhere you want `<C-o>` to bring
+        // you back from.
+        let motion = || MotionSpec {
+            jump: true,
+            // Exclusive: `d]]` deletes up to but not including the next
+            // headline, which is what "delete this section" means.
+            exclusive: true,
+            args_schema: Vec::new(),
+        };
+        register_motion(
+            "org-next-headline",
+            "Move to the next headline, at any level",
+            &motion(),
+            NEXT_HEADLINE,
+        );
+        register_motion(
+            "org-prev-headline",
+            "Move to the previous headline, at any level",
+            &motion(),
+            PREV_HEADLINE,
+        );
+        register_motion(
+            "org-parent-headline",
+            "Move to the parent of the headline at the cursor",
+            &motion(),
+            PARENT_HEADLINE,
+        );
         register_action(
             "org-promote-headline",
             "Promote the headline at the cursor one level",
@@ -306,8 +352,45 @@ impl GrammarCallbacks for Component {
     // Org contributes no motions, operators or ex-commands yet; the text
     // objects land at OM.4. An `err` here is logged and the contribution
     // no-ops, so an unreachable callback can never wedge the keystroke path.
-    fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {
-        Err("org: no motions".into())
+    /// The headline motions (OM.4).
+    ///
+    /// A motion must return SOMEWHERE, so "no headline that way" resolves to
+    /// the cursor's own line rather than an `err`: an `err` is logged and the
+    /// contribution no-ops, which is right for a broken motion and wrong for
+    /// `]]` at the last headline. Staying put is what `}` does at the end of a
+    /// buffer.
+    ///
+    /// `count` repeats the step, so `3]]` walks three headlines — applied by
+    /// stepping rather than by multiplying, since headlines are not evenly
+    /// spaced. A count that runs off the end stops at the last one.
+    fn apply_motion(
+        callback: u32,
+        ctx: MotionContext,
+        doc: &Document,
+    ) -> Result<MotionResult, String> {
+        let line = |n: u32| doc.line(n);
+        let count = ctx.count.max(1);
+        let mut at = ctx.from.line;
+        for _ in 0..count {
+            let next = match callback {
+                NEXT_HEADLINE => headline::next_headline(line, at, doc.line_count()),
+                PREV_HEADLINE => headline::prev_headline(line, at),
+                PARENT_HEADLINE => headline::parent_headline(line, at),
+                other => return Err(format!("org: unknown motion callback {other}")),
+            };
+            match next {
+                Some(target) => at = target,
+                // Ran out part-way through a count: stop where we got to
+                // rather than abandoning the whole motion.
+                None => break,
+            }
+        }
+        Ok(MotionResult {
+            target: Position { line: at, byte: 0 },
+            // Charwise: `d]]` should delete to the start of the next headline,
+            // not swallow the headline's own line.
+            linewise: false,
+        })
     }
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
         Err("org: no operators".into())

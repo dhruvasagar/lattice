@@ -293,6 +293,97 @@ async fn a_long_file_promotes_correctly_at_its_far_end() {
     );
 }
 
+// ── OM.4: headline motions ────────────────────────────────────────
+//
+// Two things these tests deliberately do NOT cover, both for reasons found
+// while writing them rather than assumed:
+//
+// * **Counts** (`3]]`). Count accumulation lives at the App layer, above
+//   `Editor::dispatch_chord` — a control assertion here showed `3j` on a
+//   NATIVE motion also resolving as a single step, so the gap is the harness,
+//   not the plugin. Covering it means driving `lattice-ui-tui`'s `press`
+//   helper; carried to OM.4b.
+// * **Operator composition** (`d]]`). Operator+motion paths are bound
+//   explicitly at `KeymapLayer::Builtin` from a hardcoded `motion_rows` table
+//   (`keymap_normal.rs:1467`), so a plugin motion bound in Normal is not
+//   reachable after an operator — the SAME gap that blocks plugin text
+//   objects, and the same fix. OM.4b covers both with one mechanism.
+
+fn cursor_line(editor: &Editor) -> u32 {
+    editor.cursor.line
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn headline_motions_walk_forward_and_back() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\nbody\n** Child\nkid\n* Two\n").await;
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "]]");
+    assert_eq!(cursor_line(&editor), 2, "`]]` walks to the next headline");
+    press(&mut editor, "]]");
+    assert_eq!(cursor_line(&editor), 4, "at any level");
+
+    press(&mut editor, "[[");
+    assert_eq!(cursor_line(&editor), 2, "`[[` walks back");
+    press(&mut editor, "[[");
+    assert_eq!(cursor_line(&editor), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_headline_motion_at_the_edge_stays_put_rather_than_erroring() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\nbody\n* Two\n").await;
+
+    // A motion must resolve somewhere. Returning `err` would log and no-op,
+    // which is right for a broken motion and wrong for `]]` at the last one —
+    // `}` at the end of a buffer stays put, it does not fail.
+    goto_line(&mut editor, 2);
+    press(&mut editor, "]]");
+    assert_eq!(cursor_line(&editor), 2, "`]]` at the last headline stays");
+
+    goto_line(&mut editor, 0);
+    press(&mut editor, "[[");
+    assert_eq!(cursor_line(&editor), 0, "`[[` at the first headline stays");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parent_skips_siblings_where_prev_headline_would_not() {
+    if org_plugin_wasm().is_none() {
+        eprintln!("skipping: examples/org-plugin not built");
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut editor = org_editor(base.path(), "* One\n** Two\n*** A\n*** B\n").await;
+
+    // From `*** B`, `[[` reaches its level-3 SIBLING; `g{` must skip it to the
+    // level-2 parent. This is the whole reason `g{` is not just `[[`.
+    goto_line(&mut editor, 3);
+    press(&mut editor, "[[");
+    assert_eq!(cursor_line(&editor), 2, "`[[` finds the sibling");
+
+    goto_line(&mut editor, 3);
+    press(&mut editor, "g{");
+    assert_eq!(
+        cursor_line(&editor),
+        1,
+        "g-brace finds the parent, not the sibling"
+    );
+
+    // A level-1 headline has no parent; the cursor stays.
+    goto_line(&mut editor, 0);
+    press(&mut editor, "g{");
+    assert_eq!(cursor_line(&editor), 0, "a level-1 headline has no parent");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn org_chords_are_scoped_to_org_buffers() {
     if org_plugin_wasm().is_none() {

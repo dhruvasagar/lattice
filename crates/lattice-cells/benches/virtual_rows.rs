@@ -33,6 +33,7 @@ fn build_virtual_rows(count: u32, source_line_count: u32) -> Vec<VirtualRow> {
     let stride = (source_line_count / count).max(1);
     (0..count)
         .map(|i| VirtualRow {
+            media: None,
             anchor_line: (i * stride).min(source_line_count),
             position: if i % 2 == 0 {
                 AnchorPosition::Above

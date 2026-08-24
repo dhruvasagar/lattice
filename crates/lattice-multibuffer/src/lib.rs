@@ -2686,6 +2686,7 @@ pub fn compose_header_rows(
         if last_source != Some(excerpt.source) {
             let cells = render_cells(excerpt);
             rows.push(VirtualRow {
+                media: None,
                 anchor_line: composed_cursor,
                 position: AnchorPosition::Above,
                 cells,

@@ -43820,6 +43820,7 @@ mod tests {
         let rows: Vec<lattice_cells::VirtualRow> = anchors
             .iter()
             .map(|&anchor_line| lattice_cells::VirtualRow {
+                media: None,
                 anchor_line,
                 position: lattice_cells::AnchorPosition::Above,
                 cells: std::sync::Arc::from([] as [lattice_cells::Cell; 0]),

@@ -49,6 +49,7 @@ pub mod version;
 // deletion blocks, multibuffer excerpt headers, and future
 // inlay / code-lens consumers. See
 // `docs/dev/architecture/virtual-rows.md`.
+pub mod media;
 pub mod row_weights;
 pub mod virtual_rows;
 // Generic sticky headerline — the one mechanism for a buffer to pin a status
@@ -69,6 +70,7 @@ pub use matrix::{
     CHUNK_SIZE_WHOLE_DOC, CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice,
     DisplaySliceIter, wrap_segments,
 };
+pub use media::{MediaBlock, MediaBlockRef, MediaFit, MediaSource};
 pub use row::{CellRow, InlayOffset};
 pub use row_weights::RowWeights;
 pub use style::{ExcerptHighlight, ExcerptHighlighter, RefineKind, RefineSpan, Style, StyledSpan};

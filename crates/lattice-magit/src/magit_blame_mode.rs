@@ -255,6 +255,7 @@ impl VirtualRowProvider for BlameProvider {
                     })
                     .collect();
                 VirtualRow {
+                    media: None,
                     anchor_line: chunk.start_line,
                     position: AnchorPosition::Above,
                     cells: Arc::from(cells),

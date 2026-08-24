@@ -238,6 +238,7 @@ pub fn compute_filler_rows(index: &HunkIndex, side: Side) -> Vec<VirtualRow> {
         let blank_cells: Arc<[Cell]> = Arc::from([Cell::BLANK]);
         for _ in 0..filler_count {
             rows.push(VirtualRow {
+                media: None,
                 anchor_line,
                 position,
                 cells: blank_cells.clone(),

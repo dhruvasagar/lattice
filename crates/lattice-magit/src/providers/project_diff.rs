@@ -860,6 +860,7 @@ impl lattice_cells::VirtualRowProvider for ProjectDiffDeletionRows {
                     let anchor = composed + (*at - excerpt.start_line);
                     for line in text {
                         rows.push(lattice_cells::VirtualRow {
+                            media: None,
                             anchor_line: anchor,
                             position: lattice_cells::AnchorPosition::Above,
                             cells: line

@@ -488,6 +488,7 @@ mod tests {
 
     fn row(anchor: u32, pos: AnchorPosition) -> VirtualRow {
         VirtualRow {
+            media: None,
             anchor_line: anchor,
             position: pos,
             cells: Arc::from([] as [lattice_cells::Cell; 0]),

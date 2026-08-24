@@ -197,6 +197,7 @@ impl VirtualRowProvider for HeaderlineProvider {
             return Vec::new();
         };
         vec![VirtualRow {
+            media: None,
             anchor_line: 0,
             position: AnchorPosition::Above,
             cells: row.cells,

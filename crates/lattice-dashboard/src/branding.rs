@@ -209,6 +209,7 @@ impl VirtualRowProvider for DashboardBrandingProvider {
             .into_iter()
             .map(|(cells, scales)| {
                 VirtualRow {
+                    media: None,
                     anchor_line: 0,
                     position: AnchorPosition::Above,
                     cells: Arc::from(cells.into_boxed_slice()),

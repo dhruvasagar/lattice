@@ -801,6 +801,7 @@ mod tests {
 
     fn vrow(anchor: u32, position: AnchorPosition) -> VirtualRow {
         VirtualRow {
+            media: None,
             anchor_line: anchor,
             position,
             cells: Arc::from([] as [Cell; 0]),

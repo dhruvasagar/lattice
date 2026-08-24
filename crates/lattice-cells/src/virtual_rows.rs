@@ -106,6 +106,19 @@ pub enum VirtualRowKind {
     /// the cells normally (its terminal-art treatment). A *paint*
     /// discriminant only — never a motion/scroll/cursor branch.
     BrandingBlock,
+    /// IM.3: an inline media block — an image drawn where it appears in the
+    /// buffer. A contiguous group of these rows carries the alt text as
+    /// ordinary cells; the **GPUI peer** intercepts the group and paints the
+    /// image over the region, the **TUI peer** paints the cells it was given
+    /// and needs no code of its own. The `BrandingBlock` treatment exactly,
+    /// which is what keeps the TUI a first-class peer for a feature it
+    /// cannot render.
+    ///
+    /// Scrolls with its anchor (an image belongs *with* the line that
+    /// references it), so unlike `BrandingBlock` it is NOT pinned. A *paint*
+    /// discriminant plus a height contribution — never a motion or cursor
+    /// branch.
+    MediaBlock,
 }
 
 impl VirtualRowKind {
@@ -172,6 +185,15 @@ pub struct VirtualRow {
     /// cell grid cannot vary font size). When present, its length
     /// matches `cells`; a shorter/absent entry defaults to `100`.
     pub scales: Option<Arc<[u16]>>,
+    /// IM.3: the media block this row belongs to, when
+    /// [`kind`](Self::kind) is
+    /// [`MediaBlock`](VirtualRowKind::MediaBlock).
+    ///
+    /// Shared across every row of a group, so a renderer that meets any row
+    /// of the block can paint the whole thing without reassembling it from
+    /// the cells. `None` for every other kind — one `Option<Arc>` per row,
+    /// which is what `scales` already costs.
+    pub media: Option<crate::media::MediaBlockRef>,
     /// TC.8: the SOURCE line this row should show in its gutter (0-based;
     /// renderers add one, as they do for document rows). `None` — the default
     /// for every kind — paints the blank gutter virtual rows have always had.
@@ -483,6 +505,7 @@ mod tests {
 
     fn row(anchor: u32, pos: AnchorPosition) -> VirtualRow {
         VirtualRow {
+            media: None,
             anchor_line: anchor,
             position: pos,
             cells: Arc::from([] as [Cell; 0]),

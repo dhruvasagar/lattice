@@ -408,6 +408,7 @@ impl DiffOverlayVirtualRowProvider {
                     refine_for_row,
                 );
                 rows.push(VirtualRow {
+                    media: None,
                     anchor_line: current_anchor,
                     position: AnchorPosition::Above,
                     cells: Arc::from(cells),

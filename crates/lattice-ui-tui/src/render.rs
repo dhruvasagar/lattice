@@ -4685,6 +4685,7 @@ pub(crate) fn compose_pane_lines(
         }
         let is_innermost = Some(idx) == innermost;
         let vrow = lattice_cells::VirtualRow {
+            media: None,
             anchor_line: row.source_line,
             position: lattice_cells::AnchorPosition::Above,
             cells: row.cells.clone(),
@@ -6244,6 +6245,11 @@ fn render_virtual_row(
             // MG.26b: an annotation carries no backdrop of its own —
             // a blame heading tinted like a deletion would read as one.
             | lattice_cells::VirtualRowKind::Annotation
+            // IM.3: a media block's rows carry their alt text as ordinary
+            // cells, which is the TUI's whole rendering of it. A deletion
+            // backdrop behind them would read as removed lines; the block
+            // supplies its own `bg` when it wants a box.
+            | lattice_cells::VirtualRowKind::MediaBlock
             | lattice_cells::VirtualRowKind::BrandingBlock => None,
         });
     let mut spans: Vec<Span<'static>> = Vec::new();

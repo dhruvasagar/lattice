@@ -410,6 +410,45 @@ exist only in org buffers, so the rows belong in `MajorMode(org-mode)`.
   no org-specific chord.
 - *also here:* the count coverage OM.4 could not reach, at the App layer.
 
+**Home decided with Dhruva (2026-08-24): a host-side post-load pass.**
+`lattice-host` walks a newly-registered plugin mode's bindings, finds the
+ones naming a motion or text object, and expands them into operator rows
+in that mode's own layer using its own operator table. The table stays
+put, and the framing is right: the host applies its UNIVERSAL operator
+vocabulary to a contribution, exactly as it already does for builtins,
+while the plugin still declares only chord + command.
+
+Rejected: threading the operator prefixes down through `LoaderServices`
+(leaks a host concept two crates down and adds another service that can be
+left unwired — the `NotWired` failure family); and moving the row tables
+upstream into `lattice-grammar` / `lattice-keymap` (the best long-term
+shape if they belong there, but a refactor touching every builtin binding
+site, landing inside an org slice where it does not belong).
+
+**Groundwork already surveyed, so the next session starts from facts:**
+
+- `keymap_normal.rs:2047` `operator_prefix(op, builtins)` maps an
+  `OperatorId` to its chord path — `d`, `c`, `y`, `>`, `<`, `=`, `gU`,
+  `gu`, `g~`, `g/`. This is the enumeration the pass expands over.
+- `keymap_normal.rs:1441` `register_operator_bindings` is ALREADY `pub`
+  for exactly this shape of reason — N.1.3 made it public "so boot can
+  wire a *provider-contributed* operator's chord", the narrow `zn`
+  precedent. A provider-contributed motion/text-object is the mirror case.
+- `CommandRegistry` can classify: `CommandRegistration::kind()` →
+  `CommandKind::{Motion, TextObject, Operator, Action, ExCommand}`
+  (`registry.rs:596`). So the pass routes on what the command IS rather
+  than needing a new WIT field — **OM.4b requires no WIT change**, which
+  was not obvious when it was carved.
+- **The one missing primitive:** there is no per-layer binding accessor on
+  `KeymapHandle`. `KeymapTrie::walk_bindings` exists but only on a trie,
+  with no way to fetch one layer's. The pass needs (chord, command) pairs
+  for a given mode's layer, so that accessor is the first thing to build.
+- A text-object chord must NOT keep its Normal terminal binding —
+  `bind_mode_keymap` writes one today and a text object invoked standalone
+  in Normal is meaningless. The pass replaces it rather than adding
+  beside it. Visual-mode bindings are the third row set (`var` extends the
+  selection), alongside operator-pending.
+
 ### OM.5 — `<Tab>` routing and the decline chain 📝
 Exit: `<Tab>` cycles on a headline and falls through to jump-list-forward
 elsewhere. **Tests the multi-layer decline chain explicitly** (fragment

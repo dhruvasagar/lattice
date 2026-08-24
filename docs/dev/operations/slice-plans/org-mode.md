@@ -6,14 +6,14 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.6 ✅ (2026-08-24) — **the outliner edits structure.** OM.0 ✅ seam drain order is
+**Status:** OM.7 ✅ (2026-08-24) — **tasks, in a second mode.** OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
 promote/demote; OM.4 ✅ headline motions; OM.4b ✅ `dar` / `d]]` reach the
 plugin's grammar; OM.5 ✅ `<Tab>` routing; OM.6 ✅ subtree move / meta-return /
-toggle heading — **archive carved out as OM.6b (⛔ blocked)**. Next: OM.7,
-`org-todo-mode`.
+toggle heading — **archive carved out as OM.6b (⛔ blocked)**; OM.7 ✅
+`org-todo-mode` (TODO / priority / tags). Next: OM.8, checkboxes + cookies.
 
 **From OM.6 on the plugin lives in its own repo**
 ([`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)),
@@ -98,7 +98,7 @@ files? — was retired during design by reading the excerpt model
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
 | OM.6b | Archive subtree to `<file>_archive` | ⛔ |
-| OM.7 | `org-todo-mode`: TODO cycling, priority, tags | 📝 |
+| OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
 | OM.8 | Checkboxes + statistics cookies | 📝 |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`, date prompt) | 📝 |
 | OM.10 | Links: open at point | 📝 |
@@ -562,12 +562,48 @@ shapes, none costed yet:
 Raise before OM.11 — refile has the same cross-file requirement, so the
 two should be decided together rather than twice.
 
-### OM.7 — `org-todo-mode` 📝
+### OM.7 — `org-todo-mode` ✅ (2026-08-24)
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority
 (`<leader>o,`), tags (`<leader>o:`). Keyword sequence is
-`org.todo-keywords` via the `config` seam.
-Exit: the minor activates only on `org-mode` buffers, and its chords
-resolve nowhere else.
+`org.todo-keywords` via the `config` seam. Landed in the plugin repo
+(`bf7c4f1`); no lattice change.
+
+Exit criterion met: `ActivationPolicy::Majors(["org-mode"])` scopes the
+minor, and its chords resolve with that mode active and nowhere else.
+
+**A plugin minor is INERT until enabled, and that trips everyone once.**
+`auto_activatable_minors` filters on enablement (CI.3), so the mode
+registered correctly and simply never activated. The manifest's
+`default_mode` is what publishes `ModeEnablementRequested`; without it
+there is no gate and no enablement. Two per-tick drains then have to run
+IN ORDER:
+
+  1. `drain_mode_enablement` (from `default_mode`) — before the buffer
+     opens, or step 2 finds the mode disabled;
+  2. `drain_minor_activation` (from `MajorEntered`) — after it, or the
+     `Majors` policy reads an empty major and refuses.
+
+Tests drive `run_tick_pending` on both sides of the open rather than
+hand-picking the two.
+
+**Second WIT seam for the plugin: `config`.** Options are auto-namespaced
+by plugin id, so the guest registers `todo-keywords` and the user sets
+`org.todo-keywords`. Read per keystroke, not cached — `:set` must land on
+the next press, and caching would need an `OptionChanged` subscription to
+stay honest.
+
+⚠️ **App-layer test debt, now with a second creditor.** `<leader>o:` is a
+two-hop prompt flow and NEITHER hop is reachable from an `Editor`-level
+test: `Effect::OpenPrompt` is applied by the renderer (so the chord
+surfaces as `Action::Invoke` with the effect consumed inside it), and
+dispatching an invocation *with args* needs `handle_action`, which is
+`pub(crate)`. Coverage is split — `todo.rs` unit-tests the tag logic, an
+integration test asserts the chord and the named submit action are both
+registered — but the round trip wants the `lattice-ui-tui` test file that
+already owes counts (`3]]`), `dar` end-to-end and the two-hop decline
+chain. That file is now the single place four things are waiting on.
+
+Tests: 16 new (11 unit, 5 integration); 70 in the plugin repo.
 
 ### OM.8 — checkboxes + cookies 📝
 `<C-Space>`; parent `[1/3]` / `[33%]` recalculation in the same edit

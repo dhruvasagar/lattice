@@ -1,17 +1,27 @@
-# IM.4 — image decode, off the UI thread.
+# IM.4 — image decode, shared by both renderer peers.
 #
-# A crate rather than a module in `lattice-cells`, on the dependency-surface
-# test (CLAUDE.md heuristic #6). What it carves out: the image CODEC graph —
-# `image` and its png / jpeg / gif / webp backends, ~15 transitive crates.
-# `lattice-cells` is depended on by every renderer AND by the cells worker on
-# the hot path; putting decoders in its graph means codec code compiles into
-# the dependency closure of the cell grid.
+# A crate rather than a module, on the dependency-surface test (CLAUDE.md
+# heuristic #6). Two things it carves out:
 #
-# What breaks without it: nothing structurally enforces "decode never touches
-# the UI thread". This crate has no renderer, no host and no GPUI dependency,
-# so a decode CANNOT reach a paint path from here — the guarantee is a
-# property of the dependency graph rather than of reviewer discipline
-# (paramount goal #1).
+# 1. The image CODEC graph — `image` plus its png / jpeg / gif / webp backends.
+#    `lattice-cells` has ONE dependency today and 10+ dependents; putting
+#    decoders there compiles codec code into the closure of every one of them,
+#    `lattice-completion` and `lattice-listing` included.
+#
+# 2. A home that is neither peer. Decode is GPUI-only *today*, but terminal
+#    graphics (kitty / sixel / iTerm2) is explicitly not foreclosed — see
+#    docs/dev/architecture/inline-media.md §9. The day the TUI grows an image
+#    path, both peers need this code, and a thing both peers need can live in
+#    neither of them.
+#
+# (2) is the load-bearing half. An earlier version of this comment claimed the
+# crate made UI-thread decode "structurally impossible" because it depends on
+# no renderer. That was wrong and is worth recording: having no renderer
+# dependency stops THIS crate calling into paint, and does nothing to stop a
+# renderer calling the synchronous `decode` from inside a render pass. The
+# off-thread guarantee comes from the call site using `spawn_blocking` and
+# from the tests that assert it — not from this dependency edge.
+
 [package]
 name = "lattice-media"
 version.workspace = true

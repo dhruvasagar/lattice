@@ -157,6 +157,39 @@ deliberately. It is bounded to *what is inside the block* rather than
 *where the block is*, which is what keeps it from metastasising into the
 scroll model.
 
+### 4.2 What must be shared, and what must not
+
+Worth stating plainly, because "inline images are a GPUI feature" is the
+natural first assumption and it is *almost* right.
+
+**Shared, and unavoidably so: the row reservation.** `Editor::scroll` is a
+display-row INDEX owned by the host, and every scroll calculation runs
+host-side in that row space — `ensure_cursor_visible`, paging, `H`/`M`/`L`,
+`zz`/`zt`/`zb`. The virtual-row matrix that defines display rows is
+host-produced (`virtual_rows_worker.rs`), not peer-produced.
+
+So a renderer cannot simply invent image rows the host does not know
+about. If it did, the host would believe line N sits at row N while the
+peer drew it eight rows lower: the cursor lands in the wrong place, `zz`
+centres on nothing, paging drifts. The reservation has to be in the shared
+model.
+
+That is the *whole* of what must be shared — "a block of R rows exists at
+line L, H line-heights tall". The host never needs to know it is an image.
+
+**Not shared: pixels.** Decode, cache, upload and paint are the drawing
+peer's business, and the host is a conduit for the descriptor rather than
+a consumer of it.
+
+The descriptor currently rides in `VirtualRow::media` because a row and its
+content travelling together is one publish with no keying or lifetime
+problem, and because it matches `BrandingBlock`. The cost is one
+`Option<Arc>` per virtual row and a `PathBuf`-carrying type in
+`lattice-cells` that nothing there reads. If that second cost starts to
+bite, the split is to keep an opaque block id in the row and a
+peer-side table from id to descriptor; the shared surface above does not
+change either way.
+
 ### 4.1 The document-level height index
 
 `row_tops` is viewport-local, rebuilt per paint, O(visible rows). That is
@@ -269,11 +302,17 @@ it moves the capability decision into the guest. Rejected.
 
 **Terminal graphics protocols (kitty / sixel / iTerm2) in the same
 slice.** These would make the TUI a genuine peer for this feature and
-retire the divergence in §4. Rejected *for now* as scope, not as
-direction — it is a second hard substrate, and the block descriptor
-above is deliberately protocol-agnostic so a TUI implementation can be
-added later without touching the core or the seam. Noted here so the
-option is not lost.
+retire the divergence in §4. Rejected *for now* as scope, **explicitly not
+as direction** (decision 2026-08-25): it is a second hard substrate, and
+tmux — where this editor is often run — needs passthrough for graphics
+and is the usual place it gets painful.
+
+Not foreclosing it has a concrete consequence rather than being a
+sentiment. The descriptor stays protocol-agnostic; the decode path lives
+in `lattice-media`, a crate that belongs to **neither peer**, precisely so
+the TUI can grow an image path without moving it; and `MediaBlock::alt`
+stays mandatory so a terminal that cannot draw still says what is there.
+A TUI implementation should touch neither the core nor the plugin seam.
 
 ## 10. Paramount-goal alignment
 

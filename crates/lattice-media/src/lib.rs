@@ -2,7 +2,7 @@
 //!
 //! Design: `docs/dev/architecture/inline-media.md` §5.
 //!
-//! ## The rule this crate exists to enforce
+//! ## The rule this code exists to serve
 //!
 //! **Decode never happens on the UI thread.** `gpui::img()` will happily take
 //! a path and load it, which means file I/O and PNG decode inside the render
@@ -10,8 +10,24 @@
 //! never gets a path to draw; it gets pixels that were produced elsewhere, or
 //! it gets nothing and paints the placeholder.
 //!
-//! The guarantee is structural rather than a convention: this crate depends on
-//! neither the host nor a renderer, so nothing here *can* reach a paint path.
+//! That guarantee lives at the CALL SITE, not here. [`MediaCache::get`] is
+//! async and goes through `spawn_blocking`, which is the ergonomic path; but
+//! [`decode`] is public and synchronous, and nothing in this crate's
+//! dependency graph prevents a renderer calling it from inside a paint. The
+//! rule is enforced by the caller and by the tests that assert frame time is
+//! unaffected — stating otherwise would be a false comfort.
+//!
+//! ## Why a crate, and why not inside the GPUI peer
+//!
+//! Only GPUI draws images today. This is not in `lattice-ui-gpui` because
+//! terminal graphics (kitty / sixel / iTerm2) is deliberately not foreclosed —
+//! see `docs/dev/architecture/inline-media.md` §9 — and the day the TUI grows
+//! an image path, both peers need this code. A thing both peers need can live
+//! in neither of them.
+//!
+//! It is not in `lattice-cells` either: that crate has one dependency and ten
+//! dependents, and none of `lattice-completion`, `lattice-listing` or
+//! `lattice-diff` should be compiling PNG decoders.
 //!
 //! ## Size before pixels
 //!

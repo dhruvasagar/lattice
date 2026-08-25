@@ -93,6 +93,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.
     let services = LoaderServices {
+        media_registry: boot
+            .service::<lattice_mode::MediaSourceRegistryHandle>()
+            .map(|h| (*h).clone()),
         runtime: Some(boot.runtime_handle().clone()),
         bus: Some(boot.event_bus().clone()),
         picker_registry: boot.service::<PickerRegistryHandle>().map(|h| (*h).clone()),

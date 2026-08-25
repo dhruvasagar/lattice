@@ -72,6 +72,9 @@ pub mod context_source;
 pub mod context_task;
 /// CR.4: the `dashboard` guest→host section seam.
 pub mod dashboard_host;
+pub mod media_host;
+pub mod media_source;
+pub use crate::media_source::WasmMediaSource;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
@@ -82,6 +85,7 @@ pub mod grammar_host;
 pub mod grammar_trampoline;
 /// CR.3: the `help` guest→host topic-registration seam.
 pub mod help_host;
+pub mod media_task;
 // LG.3c: the `language` guest→host registration seam.
 pub mod host_services;
 pub mod keymap_host;

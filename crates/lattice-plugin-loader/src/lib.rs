@@ -262,6 +262,8 @@ pub struct LoaderServices {
     /// loaded decoration plugin's `WasmDecorationSource`). The host's per-tick
     /// `maybe_refresh_wasm_decorations` reads the same handle wait-free.
     pub decoration_registry: Option<GutterDecorationSourceRegistryHandle>,
+    /// IM.6b: where a loaded `media` plugin's producer is registered.
+    pub media_registry: Option<lattice_mode::MediaSourceRegistryHandle>,
     /// TC.2: the runtime-mutable context-producer registry (RCU-register a
     /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
     /// refresh reads the same handle wait-free.
@@ -674,17 +676,11 @@ impl PluginLoader {
                             .await?;
                         seam_ids.push(id);
                     }
-                    // IM.6a: the `media` seam's ABI exists (wit/media.wit) but
-                    // its producer machinery does not yet — IM.6b mirrors the
-                    // `decorations` client/actor/boundary trio for it.
-                    //
-                    // `NotWired` rather than a silent skip: a plugin that
-                    // declares `media` today CANNOT have its images drawn, and
-                    // failing the load says so. A no-op arm would load the
-                    // plugin, drop its images on the floor and leave the author
-                    // hunting a bug in their own guest.
                     PluginSeam::Media => {
-                        return Err(PluginLoaderError::NotWired("media"));
+                        let id = self
+                            .drain_media(&component, manifest, tier, &mut record)
+                            .await?;
+                        seam_ids.push(id);
                     }
                     PluginSeam::Decorations => {
                         let id = self
@@ -1407,7 +1403,14 @@ impl PluginLoader {
         let mut decorations = (**deco_h.load()).clone();
         let mut contexts = (**ctx_h.load()).clone();
         let report = {
+            let mut media_reg = self
+                .env
+                .media_registry
+                .as_ref()
+                .map(|r| (**r.load()).clone())
+                .unwrap_or_default();
             let mut reg = TeardownRegistries {
+                media: &mut media_reg,
                 commands: &mut commands,
                 pickers: &mut pickers,
                 modes: &mut modes,
@@ -2300,6 +2303,62 @@ impl PluginLoader {
             plugin = %manifest.id,
             id = id.0,
             "context plugin registered its context-scope producer"
+        );
+        Ok(id)
+    }
+
+    /// IM.6b: drain the `media` seam — spawn the producer actor and register
+    /// its source. The twin of [`Self::drain_decorations`]; a media provider
+    /// carries no id/doc metadata either, so there is no `connect` round-trip.
+    async fn drain_media(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("media"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("media"))?;
+        let registry = self
+            .env
+            .media_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("media"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_media_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+        let actor = actor.with_tracer(self.env.tracer.clone());
+        let task = runtime.spawn(actor.run());
+        let source = lattice_plugin_host::WasmMediaSource::new(client);
+        let id = source.plugin_id();
+
+        // Copy-on-write RCU into the wait-free registry, like every other
+        // producer seam: concurrent host refreshes keep reading the prior
+        // snapshot until the store lands, so there is no lock on the read path.
+        let producer: Arc<dyn lattice_mode::AsyncMediaSource> = Arc::new(source);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(producer.clone());
+            Arc::new(next)
+        });
+
+        record.tasks.push(task);
+        // Teardown token: the media registry unregisters this producer by id.
+        record.teardown.media_sources.push(id.0 as u64);
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            "media plugin registered its inline-media producer"
         );
         Ok(id)
     }

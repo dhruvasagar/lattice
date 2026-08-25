@@ -70,6 +70,7 @@ pub mod context;
 pub mod context_source;
 pub mod contributions;
 pub mod decoration_source;
+pub mod media_source;
 // BC.5: `emacs-keys-mode` — a default-on universal builtin minor mode (the
 // `<C-x>` leader tribute). Moved here from `lattice-host`; registered with the
 // foundation modes. The host keeps only the keymap-layer push (config + the
@@ -163,6 +164,10 @@ pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
+pub use crate::media_source::{
+    AsyncMediaSource, MediaBlockRequest, MediaFuture, MediaSourceRegistry,
+    MediaSourceRegistryHandle,
+};
 pub use crate::mode::{
     ActivationPolicy, DynMode, EditableTail, LifecycleFuture, Mode, ModeId, ModeKind,
 };

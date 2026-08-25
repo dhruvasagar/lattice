@@ -130,6 +130,12 @@ fn main() {
     );
     // AP.1 spike: a single component providing grammar + modes + config, loaded
     // once per seam by `tests/multiseam.rs` to prove multi-seam plugins work.
+    // IM.6b: the inline-media producer fixture.
+    build_guest(
+        &fixtures.join("media-guest"),
+        "media-guest",
+        "MEDIA_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("multiseam-guest"),
         "multiseam-guest",

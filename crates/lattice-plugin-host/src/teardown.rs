@@ -91,6 +91,10 @@ pub struct PluginTeardown {
     /// [`GutterDecorationSourceRegistry`] — each reversed via
     /// `GutterDecorationSourceRegistry::unregister`. Mirrors `picker_sources`.
     pub decoration_sources: Vec<u64>,
+    /// IM.6b: media producers to unregister, by plugin id. Mirrors
+    /// `decoration_sources` — without this a `:plugin-reload` would leave the
+    /// old producer registered and every image would be requested twice.
+    pub media_sources: Vec<u64>,
     /// TC.2: context producer ids the plugin registered into the
     /// [`ContextSourceRegistry`] — each reversed via
     /// `ContextSourceRegistry::unregister`. Mirrors `decoration_sources`.
@@ -114,6 +118,7 @@ impl PluginTeardown {
             subscriptions: Vec::new(),
             keymap_bindings: Vec::new(),
             decoration_sources: Vec::new(),
+            media_sources: Vec::new(),
             context_sources: Vec::new(),
             theme_elements: Vec::new(),
         }
@@ -214,6 +219,9 @@ impl PluginTeardown {
         for source_id in &self.decoration_sources {
             report.decoration_sources += reg.decorations.unregister(*source_id);
         }
+        for source_id in &self.media_sources {
+            report.media_sources += reg.media.unregister(*source_id);
+        }
         for source_id in &self.context_sources {
             report.context_sources += reg.contexts.unregister(*source_id);
         }
@@ -262,6 +270,8 @@ pub struct TeardownRegistries<'a> {
     pub bus: &'a EventBus,
     /// PL8.E: the decoration-producer registry (`unregister` by producer id).
     pub decorations: &'a mut GutterDecorationSourceRegistry,
+    /// IM.6b: the media-producer registry, for the same reversal.
+    pub media: &'a mut lattice_mode::MediaSourceRegistry,
     /// TC.2: the context-producer registry (`unregister` by producer id).
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).
@@ -287,6 +297,8 @@ pub struct TeardownReport {
     pub keymap_bindings: usize,
     /// PL8.E: decoration producers unregistered.
     pub decoration_sources: usize,
+    /// IM.6b: media producers unregistered.
+    pub media_sources: usize,
     /// TC.2: context producers unregistered.
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
@@ -411,6 +423,7 @@ mod tests {
         let parsers = lattice_compilation::CompilationParserFactories::new_handle();
         let report = {
             let mut reg = TeardownRegistries {
+                media: &mut Default::default(),
                 commands: &mut commands,
                 pickers: &mut pickers,
                 modes: &mut modes,
@@ -439,6 +452,7 @@ mod tests {
                 subscriptions: 1,
                 keymap_bindings: 0,
                 decoration_sources: 0,
+                media_sources: 0,
                 context_sources: 0,
                 theme_elements: 0,
                 parser_factories: 0,
@@ -469,6 +483,7 @@ mod tests {
 
         // Idempotent: a second unload removes nothing (all zeros).
         let mut reg = TeardownRegistries {
+            media: &mut Default::default(),
             commands: &mut commands,
             pickers: &mut pickers,
             modes: &mut modes,

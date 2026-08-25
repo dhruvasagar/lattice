@@ -499,6 +499,15 @@ struct MediaPixelsInner {
     /// Decodes already dispatched, so a block visible for 200 frames spawns
     /// ONE task rather than 200. It also retains paths that FAILED, which is
     /// what stops a missing file being retried on every frame forever.
+    ///
+    /// **Never cleared within a session**, deliberately for now: the theme /
+    /// font-size signal that would invalidate a decode is handled on
+    /// `GpuiApp`, and this lives on `EditorView`, so there is no path to it
+    /// yet. Two consequences, both small and both preferable to a `clear`
+    /// method nothing calls: an image that failed once shows its alt text
+    /// until the plugin reloads, and a font-size change leaves images at
+    /// their previous target size until the same. Wire an invalidation
+    /// signal through when either starts to bite.
     dispatched: std::collections::HashSet<std::path::PathBuf>,
 }
 
@@ -531,15 +540,6 @@ impl MediaPixels {
     pub(crate) fn insert(&self, path: std::path::PathBuf, image: Arc<gpui::RenderImage>) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.ready.insert(path, image);
-        }
-    }
-
-    /// Forget everything. A font-size or theme change invalidates every
-    /// decode, because the target size was computed from the old metrics.
-    pub(crate) fn clear(&self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.ready.clear();
-            inner.dispatched.clear();
         }
     }
 }
@@ -4086,11 +4086,8 @@ mod tests {
         assert!(pixels.claim(p));
         // No `insert` follows — this is the failure path.
         assert!(!pixels.claim(p), "still claimed, so no second attempt");
-
-        // `clear` is the deliberate escape hatch: a font-size or theme change
-        // invalidates every decode, and re-claiming is then correct.
-        pixels.clear();
-        assert!(pixels.claim(p), "after a clear it may be attempted again");
+        // No in-session escape hatch by design — see `dispatched`. A failed
+        // image shows its alt text until the plugin reloads.
     }
 
     /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,

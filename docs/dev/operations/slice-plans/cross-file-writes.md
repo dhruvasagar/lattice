@@ -43,7 +43,7 @@ XF.6  docs, ledger, site
 
 | Slice | Description | Status |
 |---|---|---|
-| XF.0 | Gate: effect-list failure semantics (answered; test outstanding) | 📝 |
+| XF.0 | Gate: effect-list failure semantics | ✅ |
 | XF.1 | `Effect::WriteToFile` + the anchor resolver | 📝 |
 | XF.2 | Open-or-reuse a target buffer, without stealing focus | 📝 |
 | XF.3 | Insert-then-cut applied as one unit | 📝 |
@@ -63,7 +63,7 @@ otherwise should say so rather than quietly skip the artefact.
 
 ---
 
-### XF.0 — the gate 📝 (answered; the slice is the regression test)
+### XF.0 — the gate ✅ (2026-08-25)
 
 Design §5's one-effect argument rests on how a returned `list<effect>`
 behaves when one of them fails. **Answered by inspection at design time,
@@ -77,14 +77,26 @@ OM.0's reason: a contract this design leans on should be pinned so a
 dispatcher refactor cannot silently reverse it, and "already correct" is
 exactly the result worth pinning.
 
-- *test:* a `Effect::Many` whose first part cannot apply still applies
-  the rest — asserting the current behaviour, with a comment naming
-  `cross-file-writes.md` §5 as what depends on it.
-- *paramount:* #2.
+**Landed as four unit tests in `dispatch.rs`, not an integration test**,
+and the reason is the finding: `Editor::handle_effect` — the public entry
+— **does not flatten `Effect::Many` at all.** Its own doc says the
+recursion "stays on App". The flattening the design cites is
+`apply_effect_host`'s, which is private, so an integration test would
+have asserted about a different function than the one §5 names and passed
+for the wrong reason.
 
-**Keep it first anyway.** It is minutes of work, and it is the slice that
-would have caught the premise being wrong before XF.1 through XF.3 were
-built on top of it.
+A second thing the first draft got wrong and the tests caught:
+`Effect::ApplyEdit` does not mutate inside the applier. It defers through
+`out.next_actions`, which the renderer re-dispatches. A test that skipped
+that drain sees an unchanged document and reads as "the effect failed" —
+which is how the first version of these tests failed against a working
+system.
+
+Tests: the headline (a doomed part does not stop a later one); the same
+list REVERSED, so it cannot pass merely because ordering favoured it;
+consecutive failures not poisoning what follows; and a failing part being
+a no-op rather than a partial write — which is what makes "insert first,
+cut only if it landed" safe to build on.
 
 ### XF.1 — the native effect 📝
 

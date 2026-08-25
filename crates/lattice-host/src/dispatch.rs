@@ -39591,6 +39591,135 @@ fn project_transient_state(
 mod tests {
     use super::*;
 
+    // ── XF.0: an effect cannot report failure, so a list cannot stop ──
+    //
+    // Pins what `cross-file-writes.md` §5 rests on. `Effect::WriteToFile`
+    // carries its `cut` inside ONE effect rather than being an ordered pair,
+    // and the argument is not merely "there is no abort-on-failure" — it is
+    // that `apply_effect_host` returns `()`, so an effect has no channel to
+    // say it did not work and a host that wanted to stop has nothing to stop
+    // on. Two ordered effects would need every effect's signature changed to
+    // serve one command family.
+    //
+    // Archive is "delete here, insert there". As two effects that is two ways
+    // to corrupt a document: the subtree twice, or the subtree GONE. The
+    // second is data loss from a keystroke.
+    //
+    // These live here rather than in `tests/` because the `Many` recursion is
+    // `apply_effect_host`'s — `Editor::handle_effect` deliberately does not
+    // flatten (its own doc says the recursion "stays on App"), so an
+    // integration test would assert about a different function than the one
+    // the design cites.
+    //
+    // If this ever fails because someone added abort-on-failure, that is good
+    // news: revisit §5, because `cut` may no longer need to exist.
+
+    fn xf0_editor() -> Editor {
+        Editor::boot(lattice_core::Document::from_text("alpha\nbeta\n"))
+    }
+
+    /// An edit against a buffer id that was never registered.
+    /// `apply_targeted_edit` answers `Err(Cancelled)`, which
+    /// `apply_edit_effect_inline` logs and drops — the closest the vocabulary
+    /// has to a failing effect.
+    fn xf0_doomed() -> lattice_grammar::Effect {
+        lattice_grammar::Effect::ApplyEdit {
+            target: lattice_core::BufferId(9_999),
+            edit: lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(0, 0),
+                "never lands",
+            ),
+            cursor: None,
+        }
+    }
+
+    fn xf0_insert(target: lattice_core::BufferId, text: &str) -> lattice_grammar::Effect {
+        lattice_grammar::Effect::ApplyEdit {
+            target,
+            edit: lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(0, 0),
+                text,
+            ),
+            cursor: None,
+        }
+    }
+
+    /// Apply through `apply_effect_host` and drain the deferred actions it
+    /// produces, which is what the renderer does. `Effect::ApplyEdit` does not
+    /// mutate inline — it defers through `out.next_actions` — so a test that
+    /// skipped the drain would be asserting about a list not yet applied.
+    fn xf0_apply(editor: &mut Editor, effect: lattice_grammar::Effect) {
+        let mut out = DispatchOutcome::default();
+        apply_effect_host(editor, effect, &mut out);
+        for action in out.next_actions {
+            let _ = editor.dispatch(action);
+        }
+    }
+
+    fn xf0_text(editor: &Editor) -> String {
+        editor.document.snapshot().text().to_string()
+    }
+
+    #[test]
+    fn a_failing_effect_does_not_stop_the_rest_of_the_list() {
+        let mut editor = xf0_editor();
+        let real = editor.document_buffer_id;
+        xf0_apply(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![xf0_doomed(), xf0_insert(real, "landed ")]),
+        );
+        assert!(
+            xf0_text(&editor).starts_with("landed alpha"),
+            "the later part applied even though the first could not — there \
+             is no abort. Got {:?}",
+            xf0_text(&editor)
+        );
+    }
+
+    /// The same list reversed, so the test cannot pass merely because the
+    /// ordering happened to favour it. "No abort" means the successful part
+    /// lands either way.
+    #[test]
+    fn effect_list_order_does_not_make_anything_conditional() {
+        let mut editor = xf0_editor();
+        let real = editor.document_buffer_id;
+        xf0_apply(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![xf0_insert(real, "landed "), xf0_doomed()]),
+        );
+        assert!(xf0_text(&editor).starts_with("landed alpha"));
+    }
+
+    /// Consecutive failures do not poison what follows either — each part is
+    /// applied independently and none can say anything about the others.
+    #[test]
+    fn consecutive_failing_effects_do_not_poison_the_list() {
+        let mut editor = xf0_editor();
+        let real = editor.document_buffer_id;
+        xf0_apply(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![
+                xf0_doomed(),
+                xf0_doomed(),
+                xf0_insert(real, "landed "),
+            ]),
+        );
+        assert!(xf0_text(&editor).starts_with("landed alpha"));
+    }
+
+    /// A failing part is a no-op rather than a partial write. This is what
+    /// makes "insert first, cut only if it landed" safe to build on.
+    #[test]
+    fn a_failing_effect_leaves_the_document_untouched() {
+        let mut editor = xf0_editor();
+        let before = xf0_text(&editor);
+        xf0_apply(
+            &mut editor,
+            lattice_grammar::Effect::Many(vec![xf0_doomed(), xf0_doomed()]),
+        );
+        assert_eq!(xf0_text(&editor), before);
+    }
+
     // ── DL.6 regression: listing icons must resolve their theme element ──
 
     /// Icons are published from the entries chokepoint, which runs BEFORE

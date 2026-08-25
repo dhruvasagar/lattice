@@ -98,6 +98,25 @@ world agenda-source-plugin {
     /// spends effort avoiding elsewhere.
     export extensions: func() -> list<string>;
 
+    /// A MINOR mode this source wants activated on the agenda view, by id.
+    /// Called once at load, beside `extensions`.
+    ///
+    /// This is how a source gets to act on its own rows. The view's generic
+    /// behaviour — jump-to-source, `gr` refresh — belongs to the host, which
+    /// built the view and is the only thing that can re-walk it. But
+    /// *changing a TODO state from the agenda* is the source's semantics, and
+    /// it needs chords in a buffer whose major is `multibuffer-mode`.
+    ///
+    /// An activation policy cannot express "the buffer this provider just
+    /// built": `majors(["multibuffer-mode"])` would fire the source's chords
+    /// in search results and diffs too. So the provider activates it, and
+    /// this is the source naming what to activate.
+    ///
+    /// `none` for a source that only produces rows. A `major` named here is
+    /// refused with a warning — the view already has one, and replacing it
+    /// would take the multibuffer's own motions away.
+    export view-mode: func() -> option<string>;
+
     /// Drop per-scan state. Called before the first file of a scan.
     ///
     /// Every scan is a fresh one — `gr` re-runs from `begin`, so a guest

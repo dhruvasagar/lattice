@@ -41,6 +41,10 @@ enum AgendaCall {
     Extensions {
         reply: oneshot::Sender<CallResult<Vec<String>>>,
     },
+    /// `view-mode()` — the minor this source wants on the agenda view.
+    ViewMode {
+        reply: oneshot::Sender<CallResult<Option<String>>>,
+    },
     /// `begin()` — drop per-scan state.
     Begin {
         reply: oneshot::Sender<CallResult<()>>,
@@ -76,6 +80,16 @@ impl AgendaClient {
             .map_err(|_| PluginHostError::PluginGone { func: "extensions" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "extensions" })?
+    }
+
+    /// Call the guest's `view-mode()`. Once, at load.
+    pub async fn view_mode(&self) -> CallResult<Option<String>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(AgendaCall::ViewMode { reply })
+            .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?;
+        rx.await
+            .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?
     }
 
     /// Call the guest's `begin()` — the start of a scan.
@@ -136,6 +150,9 @@ impl AgendaActor {
                 AgendaCall::Extensions { reply } => {
                     let _ = reply.send(self.call_extensions().await);
                 }
+                AgendaCall::ViewMode { reply } => {
+                    let _ = reply.send(self.call_view_mode().await);
+                }
                 AgendaCall::Begin { reply } => {
                     let _ = reply.send(self.call_begin().await);
                 }
@@ -159,6 +176,24 @@ impl AgendaActor {
             crate::PluginSeam::AgendaSource,
             &mut self.quarantine,
             "extensions",
+            start,
+            result,
+        )
+    }
+
+    async fn call_view_mode(&mut self) -> CallResult<Option<String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "view-mode" });
+        }
+        arm_store(&mut self.store, self.budget)?;
+        let start = std::time::Instant::now();
+        let result = self.bindings.call_view_mode(&mut self.store).await;
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::AgendaSource,
+            &mut self.quarantine,
+            "view-mode",
             start,
             result,
         )

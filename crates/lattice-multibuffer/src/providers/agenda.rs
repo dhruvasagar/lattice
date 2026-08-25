@@ -185,10 +185,29 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
         .get::<Arc<lattice_syntax::LangRegistry>>()
         .map(|h| (*h).clone());
 
-    // The root: an explicit argument wins, else the active buffer's project.
+    // Read before any `&mut` use of the activator: `snapshot` borrows the
+    // registry's ArcSwap guard, and the activation calls below need the
+    // activator mutably.
+    let view_modes = snapshot.view_modes();
+
+    let existing = existing_view(&services);
+
+    // The root, in precedence order: an explicit argument, else the root the
+    // OPEN view already shows, else the active buffer's project.
+    //
     // `:agenda ~/notes` from a code checkout scans the notes, which is the
-    // point of accepting an argument at all.
+    // point of accepting an argument at all. The middle case is what makes
+    // OM.A3's `gr` a refresh rather than a reset: refreshing an agenda over
+    // `~/notes` must not silently turn it into an agenda over the current
+    // checkout, which is the mistake magit's `gr` documents at PD.9.
     let mut options = AgendaOptions::default();
+    if let Some(view) = existing
+        && let Some(svc) = services.get::<AgendaServiceHandle>()
+        && let Some(state) = svc.state(view)
+        && let Ok(state) = state.read()
+    {
+        options = state.options.clone();
+    }
     if let Args::String(s) = args {
         let trimmed = s.trim();
         if !trimmed.is_empty() {
@@ -196,7 +215,6 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
         }
     }
 
-    let existing = existing_view(&services);
     let view = match existing {
         Some(view) => view,
         None => create_multibuffer_view(
@@ -239,11 +257,27 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
         emphasis: None,
     });
 
+    // OM.A3: the view's own minor. `gr` arrives through the implies cascade
+    // (`refresh_action` returns `Some`), so this one call is the whole of the
+    // wiring — the same shape `project_search` uses for `ProjectSearchMode`.
+    activator.activate_minor_by_id(view, AgendaViewMode::mode_id());
+
+    // …and each SOURCE's own minor, so a producer can act on its own rows.
+    // The host stays generic: it activates a mode by the name the source
+    // declared and never learns what the chords do. A name that is not
+    // registered echoes a warning through the ordinary activation path rather
+    // than failing the open — the rows are still worth showing.
+    for mode in view_modes {
+        activator.activate_minor_by_id(view, lattice_mode::ModeId::new(&mode));
+    }
+
     let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
+    let sources_for_scan = snapshot.sources();
+    drop(snapshot);
     spawn_agenda_scan(
         view,
         options,
-        snapshot.sources(),
+        sources_for_scan,
         (*mb_registry).clone(),
         events,
     );
@@ -342,7 +376,7 @@ pub fn spawn_agenda_scan(
             }
         }
         if live.is_empty() {
-            finish_empty(&mb_registry, &events, view, 0);
+            finish_empty(&mb_registry, &events, view, &ScanOutcome::default());
             return;
         }
 
@@ -368,6 +402,14 @@ pub fn spawn_agenda_scan(
         let total = candidates.len();
         let mut files: Vec<FileRows> = Vec::new();
         let mut scanned = 0usize;
+        // OM.A3: a source that stops answering must not cost the user the rows
+        // already collected, and must not be silently absent either.
+        // `Health` counts a source's consecutive failures; `dropped` is the
+        // set that ran out of them, and it is what makes the terminal
+        // headerline say "partial" instead of implying a complete agenda.
+        let mut health: HashMap<u64, u32> = HashMap::new();
+        let mut dropped: Vec<u64> = Vec::new();
+        let mut skipped_files = 0usize;
 
         for chunk in candidates.chunks(READ_BATCH) {
             // The view may have been closed while the scan ran.
@@ -386,24 +428,51 @@ pub fn spawn_agenda_scan(
             for (path, text) in read {
                 scanned += 1;
                 for source in &live {
-                    if !source.claims(&path) {
+                    let id = source.source_id();
+                    if dropped.contains(&id) || !source.claims(&path) {
                         continue;
                     }
                     match source.scan(path.clone(), text.clone()).await {
-                        Ok(entries) if entries.is_empty() => {}
-                        Ok(entries) => files.push(FileRows {
-                            path: path.clone(),
-                            text: text.clone(),
-                            entries,
-                        }),
+                        Ok(entries) => {
+                            // A file it could read resets the counter: the
+                            // budget is for a source that has STOPPED
+                            // answering, not one with a few bad files in a
+                            // large project.
+                            health.insert(id, 0);
+                            if !entries.is_empty() {
+                                files.push(FileRows {
+                                    path: path.clone(),
+                                    text: text.clone(),
+                                    entries,
+                                });
+                            }
+                        }
                         // One malformed file must not fail the agenda —
                         // `error-parser`'s rule, same failure class. `debug!`
                         // because a project-wide scan would flood `info!`.
-                        Err(e) => tracing::debug!(
-                            path = %path.display(),
-                            error = %e,
-                            "agenda: a source could not scan a file; skipping it"
-                        ),
+                        Err(e) => {
+                            skipped_files += 1;
+                            let strikes = health.entry(id).or_insert(0);
+                            *strikes += 1;
+                            tracing::debug!(
+                                path = %path.display(),
+                                error = %e,
+                                strikes = *strikes,
+                                "agenda: a source could not scan a file; skipping it"
+                            );
+                            // A quarantined plugin errors on EVERY later call,
+                            // so continuing to ask costs a channel round-trip
+                            // per remaining file to learn nothing. Drop it and
+                            // keep walking for the other sources.
+                            if *strikes >= SOURCE_FAILURE_BUDGET {
+                                tracing::warn!(
+                                    source = id,
+                                    "agenda: a source failed {SOURCE_FAILURE_BUDGET} files in a \
+                                     row; dropping it from this scan (the agenda will be partial)"
+                                );
+                                dropped.push(id);
+                            }
+                        }
                     }
                 }
             }
@@ -419,13 +488,54 @@ pub fn spawn_agenda_scan(
             }
         }
 
+        let outcome = ScanOutcome {
+            files_scanned: scanned,
+            skipped_files,
+            dropped_sources: dropped.len(),
+        };
         let sorted = sort_rows(&files);
         if sorted.is_empty() {
-            finish_empty(&mb_registry, &events, view, scanned);
+            finish_empty(&mb_registry, &events, view, &outcome);
         } else {
-            append_sorted(&mb_registry, &events, view, &files, sorted, scanned);
+            append_sorted(&mb_registry, &events, view, &files, sorted, &outcome);
         }
     });
+}
+
+/// How many consecutive files a source may fail before the scan stops asking.
+///
+/// Small on purpose. The failure this defends against is a QUARANTINED plugin,
+/// which errors on every call forever — three strikes distinguishes it from a
+/// handful of malformed files without making a large project pay a channel
+/// round-trip per file to keep confirming the same answer.
+const SOURCE_FAILURE_BUDGET: u32 = 3;
+
+/// What a finished scan has to be honest about.
+///
+/// Partial-and-honest beats empty-and-silent (`org-mode.md` §8) — but it also
+/// beats *partial-and-silent*, which is what a bare row count would be: an
+/// agenda missing a source's rows looks exactly like an agenda that had none.
+#[derive(Debug, Default, Clone, Copy)]
+struct ScanOutcome {
+    files_scanned: usize,
+    skipped_files: usize,
+    dropped_sources: usize,
+}
+
+impl ScanOutcome {
+    /// The `— partial: …` suffix, or empty when the scan was clean.
+    fn caveat(&self) -> String {
+        if self.dropped_sources > 0 {
+            format!(
+                " — partial: {} source(s) stopped responding",
+                self.dropped_sources
+            )
+        } else if self.skipped_files > 0 {
+            format!(" ({} file(s) skipped)", self.skipped_files)
+        } else {
+            String::new()
+        }
+    }
 }
 
 /// Collect the paths at least one source claims. Blocking by construction.
@@ -505,7 +615,7 @@ fn append_sorted(
     view: BufferId,
     files: &[FileRows],
     rows: Vec<SortedRow>,
-    files_scanned: usize,
+    outcome: &ScanOutcome,
 ) {
     let Some(handle) = mb_registry.handle(view) else {
         return;
@@ -535,7 +645,11 @@ fn append_sorted(
     handle.append_excerpts(excerpts);
 
     handle.set_headerline(HeaderlineStatus::Complete {
-        summary: format!("[agenda] {count} row(s) in {files_scanned} file(s)"),
+        summary: format!(
+            "[agenda] {count} row(s) in {} file(s){}",
+            outcome.files_scanned,
+            outcome.caveat()
+        ),
         emphasis: None,
     });
     if let Some(events) = events {
@@ -582,13 +696,17 @@ fn finish_empty(
     mb_registry: &MultibufferRegistryHandle,
     events: &Option<Arc<EventBus>>,
     view: BufferId,
-    files_scanned: usize,
+    outcome: &ScanOutcome,
 ) {
     let Some(handle) = mb_registry.handle(view) else {
         return;
     };
     handle.set_headerline(HeaderlineStatus::Complete {
-        summary: format!("[agenda] nothing scheduled ({files_scanned} file(s) scanned)"),
+        summary: format!(
+            "[agenda] nothing scheduled ({} file(s) scanned){}",
+            outcome.files_scanned,
+            outcome.caveat()
+        ),
         emphasis: None,
     });
     if let Some(events) = events {
@@ -597,8 +715,149 @@ fn finish_empty(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// The view's own mode
+// ─────────────────────────────────────────────────────────────────
+
+/// `agenda-view-mode` — the minor the provider activates on the agenda view.
+///
+/// The `ProjectSearchMode` shape (`org-mode.md` §4.2): `multibuffer-mode` is
+/// the view's major, and the provider contributes a minor carrying what is
+/// specific to *this* view.
+///
+/// ## Why this is native and not the plugin's `org-agenda-mode`
+///
+/// The design fragment gave `gr` to `org-agenda-mode`, which the plugin owns.
+/// It cannot have it, for a reason that is structural rather than a matter of
+/// taste: refreshing the agenda means re-running the HOST's walk, which is
+/// `AppEffect::OpenProviderView` — and that effect's plugin surface is
+/// **deliberately withheld** (`boundary_app_effect.rs`), pending the
+/// capability model for which providers a plugin may trigger. A plugin
+/// `gr` could bind the chord and not do the work.
+///
+/// It is also the better split on merit. Refreshing a host-built view is
+/// host machinery: the second agenda-source plugin — the markdown TODO
+/// scanner the whole `extensions()` design exists for — inherits `gr` here,
+/// where under the fragment's version every agenda plugin would re-derive it.
+/// That is the copied-keymap failure the minor-mode rule forbids, one layer
+/// up. What stays the plugin's is what is genuinely org: acting on a TODO
+/// state from the agenda, through `org-agenda-mode`'s own chords and its own
+/// handler bodies. Both modes are active on the view at once; neither is a
+/// half-migration.
+pub struct AgendaViewMode;
+
+/// The refresh body this view declares. Named, not anonymous, because
+/// `refresh_action` returns a *target* and the handler below must supply it —
+/// declaring one without the other is the gap `magit-project-diff` shipped
+/// with and PD.9 had to come back for.
+pub const REFRESH_ACTION: &str = "action:agenda-refresh";
+
+impl AgendaViewMode {
+    pub fn mode_id() -> lattice_mode::ModeId {
+        lattice_mode::ModeId::new("agenda-view-mode")
+    }
+}
+
+impl lattice_mode::Mode for AgendaViewMode {
+    type Guard = ();
+
+    fn id(&self) -> lattice_mode::ModeId {
+        Self::mode_id()
+    }
+
+    fn kind(&self) -> lattice_mode::ModeKind {
+        lattice_mode::ModeKind::Minor
+    }
+
+    /// Manual: the provider activates it on the view it just built. An
+    /// activation policy could not express "the buffer this provider made",
+    /// and a policy keyed on `BufferKind::Multibuffer` would attach it to
+    /// every search and diff view too.
+    fn activation_policy(&self) -> lattice_mode::ActivationPolicy {
+        lattice_mode::ActivationPolicy::Manual
+    }
+
+    /// Returning `Some` is the whole of the `gr` wiring: it pulls
+    /// `refreshable-view-mode` in through the implies cascade, and that mode
+    /// owns the chord. One line, no second thing to remember — which matters,
+    /// because forgetting the second thing kills the chord silently.
+    fn refresh_action(&self) -> Option<&'static str> {
+        Some(REFRESH_ACTION)
+    }
+
+    /// The mode that declares the target also supplies the body. Leaving the
+    /// handler to the host would be the half-migration the standing rule
+    /// forbids.
+    fn action_handlers(&self) -> Vec<lattice_mode::ActionHandlerContribution> {
+        vec![lattice_mode::ActionHandlerContribution {
+            action_name: REFRESH_ACTION,
+            handler: Arc::new(|ctx: &lattice_mode::ActionContext<'_>| {
+                let view = BufferId(ctx.buffer_id.0 as u32);
+                // Re-open with the root this view already shows. Reading it
+                // back matters: `gr` in an agenda over `~/notes` must not
+                // silently turn it into an agenda over the current checkout.
+                //
+                // `Args::None` is not a fallback to "the project root" — the
+                // opener itself prefers the open view's stored state, so an
+                // absent service degrades to the same answer by one path
+                // instead of two that can disagree.
+                let args = ctx
+                    .services
+                    .get::<AgendaServiceHandle>()
+                    .and_then(|svc| svc.state(view))
+                    .and_then(|state| {
+                        state
+                            .read()
+                            .ok()
+                            .map(|s| Args::String(s.options.root.display().to_string()))
+                    })
+                    .unwrap_or(Args::None);
+                Some(lattice_grammar::Effect::AppAction(
+                    lattice_grammar::app_effect::AppEffect::OpenProviderView {
+                        provider: PROVIDER_NAME.to_string(),
+                        args,
+                    },
+                ))
+            }),
+        }]
+    }
+
+    fn on_activate(
+        &self,
+        _ctx: lattice_mode::ModeContext,
+    ) -> lattice_mode::LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Boot integration
 // ─────────────────────────────────────────────────────────────────
+
+/// Register the view's minor mode.
+pub fn register_agenda_mode(modes: &mut lattice_mode::ModeRegistry) {
+    modes
+        .register(AgendaViewMode)
+        .expect("agenda-view-mode registers without conflict at boot");
+}
+
+/// Register `action:agenda-refresh` so the mode's `refresh_action` target
+/// resolves. The body lives on the mode; this is the registry entry the host
+/// looks the name up in.
+pub fn register_agenda_actions(registry: &mut CommandRegistry) {
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::registry::ActionSpec;
+    registry.register_action(
+        REFRESH_ACTION,
+        "Re-scan the agenda over the root this view already shows.",
+        ActionSpec {
+            // A dead body, like `refreshable-view-mode`'s own: the mode's
+            // registered handler is what runs. This exists so the name
+            // resolves.
+            apply: Arc::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+        },
+    );
+}
 
 /// Register the per-view state service.
 pub fn register_agenda_service(services: &mut ServiceRegistry) {
@@ -894,7 +1153,10 @@ mod tests {
     /// Poll until the spawned scan reaches a terminal headerline. The scan
     /// hops through `spawn_blocking` twice, so there is no single future to
     /// await from here.
-    async fn settle(registry: &MultibufferRegistryHandle, view: BufferId) -> HeaderlineStatus {
+    async fn settle_agenda(
+        registry: &MultibufferRegistryHandle,
+        view: BufferId,
+    ) -> HeaderlineStatus {
         for _ in 0..400 {
             if let Some(h) = registry.handle(view) {
                 let status = (*h.headerline()).clone();
@@ -950,7 +1212,7 @@ mod tests {
             None,
         );
 
-        let status = settle(&registry, view).await;
+        let status = settle_agenda(&registry, view).await;
         let handle = registry.handle(view).unwrap();
         let excerpts = handle.excerpts();
 
@@ -1006,7 +1268,7 @@ mod tests {
             None,
         );
 
-        settle(&registry, view).await;
+        settle_agenda(&registry, view).await;
         let excerpts = registry.handle(view).unwrap().excerpts();
         assert_eq!(excerpts.len(), 1);
         assert_eq!(excerpts[0].header.title, "Day 5");
@@ -1034,7 +1296,7 @@ mod tests {
             None,
         );
 
-        match settle(&registry, view).await {
+        match settle_agenda(&registry, view).await {
             HeaderlineStatus::Complete { summary, .. } => {
                 assert!(summary.contains("nothing scheduled"), "got {summary}");
             }
@@ -1067,10 +1329,177 @@ mod tests {
             None,
         );
 
-        settle(&registry, view).await;
+        settle_agenda(&registry, view).await;
         assert_eq!(begins.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // OM.A3 — the view mode and the partial-scan contract
+    // ─────────────────────────────────────────────────────────────
+
+    /// A source that errors on EVERY file — a quarantined plugin, which is
+    /// the failure this defends against.
+    #[derive(Debug)]
+    struct DeadSource {
+        exts: Vec<String>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl lattice_mode::AsyncAgendaSource for DeadSource {
+        fn source_id(&self) -> u64 {
+            99
+        }
+        fn extensions(&self) -> &[String] {
+            &self.exts
+        }
+        fn begin(&self) -> lattice_mode::AgendaBeginFuture<'_> {
+            Box::pin(async { Ok(()) })
+        }
+        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Err("quarantined".to_string()) })
+        }
+    }
+
+    /// §8's partial-and-honest rule, with the second half that a bare row
+    /// count would lose: an agenda missing a source's rows looks exactly like
+    /// an agenda that never had any, so the headerline has to SAY it is
+    /// partial.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_source_that_stops_answering_leaves_partial_rows_and_an_honest_headerline() {
+        let dir = tempdir();
+        for i in 0..10 {
+            write(&dir, &format!("n{i}.org"), "* TODO 1\n");
+        }
+
+        let (registry, view) = view_handle();
+        let dead = Arc::new(DeadSource {
+            exts: vec!["org".to_string()],
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let calls = dead.calls.clone();
+
+        spawn_agenda_scan(
+            view,
+            AgendaOptions {
+                root: dir.clone(),
+                max_files: None,
+            },
+            // The healthy source still contributes: one bad producer must not
+            // cost the user the other's rows.
+            vec![Arc::new(FakeSource::new(1, &["org"])), dead],
+            registry.clone(),
+            None,
+        );
+
+        let status = settle_agenda(&registry, view).await;
+        assert_eq!(
+            registry.handle(view).unwrap().excerpts().len(),
+            10,
+            "the healthy source's rows survived"
+        );
+        match status {
+            HeaderlineStatus::Complete { summary, .. } => assert!(
+                summary.contains("partial") && summary.contains("stopped responding"),
+                "the headerline must say the agenda is incomplete, got {summary}"
+            ),
+            other => panic!("expected a Complete headerline, got {other:?}"),
+        }
+
+        // …and it stopped asking. A quarantined plugin answers the same way
+        // forever, so continuing costs a channel round-trip per remaining
+        // file to learn nothing.
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            SOURCE_FAILURE_BUDGET as usize,
+            "the scan gave up after the budget rather than asking all ten"
+        );
+    }
+
+    /// A few bad files in a large project is NOT a dead source. The budget
+    /// counts CONSECUTIVE failures, so a good file in between resets it —
+    /// otherwise a project with three malformed org files anywhere in it
+    /// would silently lose its agenda.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scattered_bad_files_do_not_drop_a_healthy_source() {
+        let dir = tempdir();
+        // Alternating, so no three failures ever land in a row.
+        for i in 0..8 {
+            if i % 2 == 0 {
+                write(&dir, &format!("bad{i}.org"), "BROKEN\n");
+            } else {
+                write(&dir, &format!("good{i}.org"), "* TODO 1\n");
+            }
+        }
+
+        let (registry, view) = view_handle();
+        spawn_agenda_scan(
+            view,
+            AgendaOptions {
+                root: dir.clone(),
+                max_files: None,
+            },
+            vec![Arc::new(FakeSource::new(1, &["org"]))],
+            registry.clone(),
+            None,
+        );
+
+        let status = settle_agenda(&registry, view).await;
+        assert_eq!(
+            registry.handle(view).unwrap().excerpts().len(),
+            4,
+            "every good file still contributed"
+        );
+        match status {
+            HeaderlineStatus::Complete { summary, .. } => {
+                assert!(
+                    !summary.contains("stopped responding"),
+                    "a source with scattered bad files is alive, got {summary}"
+                );
+                assert!(
+                    summary.contains("4 file(s) skipped"),
+                    "…but the skips are still reported, got {summary}"
+                );
+            }
+            other => panic!("expected a Complete headerline, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `gr` has to have a target AND a body. Declaring the first and leaving
+    /// the second to the host is the half-migration the standing rule
+    /// forbids — and it is exactly what `magit-project-diff` shipped with,
+    /// where the chord resolved to nothing and failed silently.
+    #[test]
+    fn gr_resolves_to_this_views_own_refresh() {
+        use lattice_mode::Mode;
+        let m = AgendaViewMode;
+        assert_eq!(m.kind(), lattice_mode::ModeKind::Minor);
+        assert!(
+            matches!(
+                m.activation_policy(),
+                lattice_mode::ActivationPolicy::Manual
+            ),
+            "the provider activates it on the view it built; no policy can say that"
+        );
+        // The cascade keys on `refresh_action` being `Some`, NOT on an
+        // `implies()` entry — deliberately, so a forgotten list entry cannot
+        // kill the chord as silently as the three copied `gr` keymaps it
+        // replaced (RV.1). One line is the whole contract, and this is it.
+        assert_eq!(
+            m.refresh_action(),
+            Some(REFRESH_ACTION),
+            "the chord arrives through the cascade because this is Some"
+        );
+        assert!(
+            m.action_handlers()
+                .iter()
+                .any(|c| c.action_name == REFRESH_ACTION),
+            "…whose body this mode supplies"
+        );
     }
 
     #[test]

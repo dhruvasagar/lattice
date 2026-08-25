@@ -23,6 +23,9 @@ pub struct WasmAgendaSource {
     /// already the producer's dominant cost; adding an `extensions()` call
     /// per file would double it to answer a question that cannot change.
     extensions: Vec<String>,
+    /// Resolved once at load, like `extensions` and for the same reason: the
+    /// provider reads it on every open, and the answer cannot change.
+    view_mode: Option<String>,
 }
 
 impl AsyncAgendaSource for WasmAgendaSource {
@@ -32,6 +35,10 @@ impl AsyncAgendaSource for WasmAgendaSource {
 
     fn extensions(&self) -> &[String] {
         &self.extensions
+    }
+
+    fn view_mode(&self) -> Option<&str> {
+        self.view_mode.as_deref()
     }
 
     fn begin(&self) -> AgendaBeginFuture<'_> {
@@ -62,8 +69,12 @@ impl AsyncAgendaSource for WasmAgendaSource {
 }
 
 impl WasmAgendaSource {
-    pub fn new(client: AgendaClient, extensions: Vec<String>) -> Self {
-        Self { client, extensions }
+    pub fn new(client: AgendaClient, extensions: Vec<String>, view_mode: Option<String>) -> Self {
+        Self {
+            client,
+            extensions,
+            view_mode,
+        }
     }
 
     pub fn plugin_id(&self) -> PluginId {

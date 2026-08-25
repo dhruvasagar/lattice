@@ -138,7 +138,7 @@ prevent.
 | `org-mode` | major | `target-language = "org"` | headline motions, `ih`/`ah`/`ir`/`ar` text objects, promote/demote, subtree move, meta-return, toggle heading, archive, links, refile, capture, `<Tab>` on a headline |
 | `org-todo-mode` | minor | `majors = ["org-mode"]` | TODO keyword cycling, priority, tags, checkboxes + statistics cookies, timestamps |
 | `org-table-mode` | minor | `majors = ["org-mode"]` | alignment, cell and row motion, row/column insert and move |
-| `org-agenda-mode` | minor | manual — the provider activates it on the view | `gr` refresh, TODO change from the agenda, jump-to-source |
+| `org-agenda-mode` | minor | manual — the provider activates it on the view, named by the source's `view-mode` export | TODO change from the agenda |
 
 ### 4.1 Why these four and not one, or ten
 
@@ -161,15 +161,51 @@ minor-mode-over-duplication rule.
   `org-timestamp-mode` would be modes-per-feature, which is the same
   error as crates-per-feature.
 
-### 4.2 `org-agenda-mode` mirrors the search provider exactly
+### 4.2 The agenda view carries TWO minors, and the split is not arbitrary
 
 The agenda view is a multibuffer. `multibuffer-mode` is its major
 (`target_buffer_kind = Multibuffer`), and a provider contributes a
 **minor** activated on the view — `ProjectSearchMode` is `ModeKind::Minor`
 and the search provider activates it with `activate_minor_by_id`
-(`providers/search.rs:912`). `org-agenda-mode` is the same shape. The
-host-side agenda provider activates it; the *keymap and every handler
-body* are the plugin's.
+(`providers/search.rs:912`).
+
+**Amended at OM.A3.** This section originally gave `gr` refresh and
+jump-to-source to `org-agenda-mode` along with the TODO change. The
+plugin cannot have the first two, and the reason is structural rather
+than a matter of taste: refreshing the agenda means re-running the
+**host's** walk, which is `AppEffect::OpenProviderView` — and that
+effect's plugin surface is deliberately withheld
+(`boundary_app_effect.rs`) pending the capability model for which
+providers a plugin may trigger. A plugin `gr` could bind the chord and
+not do the work.
+
+It is also the better split on merit. Refreshing a host-built view is
+host machinery, and the second agenda-source plugin — the markdown TODO
+scanner the whole `extensions()` design exists for — inherits `gr`
+rather than re-deriving it. Re-derivation is the copied-keymap failure
+the minor-mode rule forbids, one layer up.
+
+So the view carries two minors and each owns its full surface:
+
+- **`agenda-view-mode`** (native, `lattice-multibuffer`, beside the
+  provider — the `ProjectSearchMode` shape verbatim): `gr` through
+  `refreshable-view-mode`'s cascade, with the refresh body in the same
+  crate. Jump-to-source comes free from `MultibufferMode`.
+- **`org-agenda-mode`** (the plugin's): the TODO chords and their handler
+  bodies, on org's own rows.
+
+Neither is a half-migration: each holds both the binding and the body of
+what it claims.
+
+**How the host activates a mode it cannot name.** No `ActivationPolicy`
+can express "the buffer this provider just built" —
+`majors(["multibuffer-mode"])` would fire org's chords in project-search
+results and magit diffs. So the `agenda-source` world gained one export,
+`view-mode: func() -> option<string>`: the source names a minor, and the
+provider activates it on the view. The host learns a mode id and never
+learns what its chords do. This is the ABI addition §"Why the agenda is
+last" reserved the right to make once, informed by what org turned out to
+need.
 
 ### 4.3 The decline chain
 

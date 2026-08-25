@@ -6,7 +6,11 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
+**Status:** OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the
+seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
+(docs / ledger / site) and the two ⛔ cross-file-write slices remain.
+
+Earlier: OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
 OM.8 ✅ checkboxes + cookies; OM.9 ✅ timestamps; OM.10 ✅ links;
 OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. **OM.11 is ⛔ blocked**
 on the same cross-file write primitive as OM.6b — see below. The agenda
@@ -112,8 +116,8 @@ files? — was retired during design by reading the excerpt model
 | OM.12 | `org-table-mode`: align + cell motion | ✅ |
 | OM.13 | Row / column move + insert | ✅ |
 | OM.A1 | `agenda-source` seam + host provider | ✅ |
-| OM.A2 | Org agenda semantics in the guest | 📝 |
-| OM.A3 | `org-agenda-mode`: act from agenda, `gr`, headerline | 📝 |
+| OM.A2 | Org agenda semantics in the guest | ✅ |
+| OM.A3 | `org-agenda-mode`: act from agenda, `gr`, headerline | ✅ |
 | OM.14 | Docs, ledger, site nav | 📝 |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench
@@ -766,18 +770,106 @@ filter, batched reads, cross-file sort, excerpt build) against a native
 fake producer. The guest round-trip is already ratcheted by the grammar
 gate and is independent of which guest answers.
 
-### OM.A2 — org semantics 📝
-TODO / `SCHEDULED:` / `DEADLINE:` parsing, date arithmetic, grouping via
-first-excerpt-titled / rest-empty, sort keys.
-Exit: a 3-file fixture produces a date-grouped agenda in the right order.
-Failure: a malformed file is skipped and the scan continues.
+### OM.A2 — org semantics ✅ (2026-08-25)
 
-### OM.A3 — `org-agenda-mode` 📝
-Fourth mode, a **minor** the provider activates on the view — the
-`ProjectSearchMode` shape (`providers/search.rs:912`).
-Exit: changing a TODO state **in the agenda** writes the source file;
-`gr` rescans; the headerline reports progress and completion; a trap
-mid-scan leaves partial excerpts and an honest headerline.
+`agenda.rs` in the plugin repo; `begin`/`scan` become a shell over it.
+
+A row is an OPEN headline carrying a date, from `DEADLINE:` or
+`SCHEDULED:` on the planning line or an active `<…>` stamp on the
+headline. Three refusals carry as much of the slice as the rule: an
+INACTIVE `[…]` stamp is never a row (counting them drags every logbook
+line and every `CLOSED:` in); a DONE headline is not a row however dated
+(an agenda listing what you finished is a log); and only the line
+immediately below a headline is its planning line — one under a CHILD
+belongs to the child, and dating the parent with it would jump the user
+to the wrong line.
+
+`end_line` runs to the planning line, so a row shows its date rather than
+a bare title. That is the field OM.A1's trivial guest had no use for.
+
+Ordering is one packed `i64` because the ABI carries one number: epoch
+day, then kind (deadline → scheduled → bare stamp), then priority with
+unprioritised LAST — unranked rather than urgent. The epoch day is
+Hinnant's `days_from_civil`, twenty lines where `chrono` in a wasm guest
+would be a dependency tree.
+
+`group` (ISO date) and `label` (rendered header) stay separate: the host
+compares KEYS after its sort, so a key reading "Today" would merge two
+days if a scan straddled midnight. The label is relative to a `today`
+captured once in `begin`, alongside the keyword set — `:set
+org.todo-keywords` landing mid-scan would change what counts as done
+halfway through a project.
+
+Exit met: the e2e corpus is written relative to the day it runs, and
+`home.org` supplies both the first row and the last — an ordering only
+the cross-file sort produces. Tomorrow's group is drawn from two files
+under one header.
+
+Tests: 15 in `agenda.rs` (the calendar, including 1900 / 2000 / pre-epoch;
+the three refusals; the ordering packing; key vs label) plus the
+rewritten e2e.
+
+### OM.A3 — the view's modes ✅ (2026-08-25)
+
+**The design gave one mode what two own, and the plugin could not have
+had the whole of it.** `gr` refresh means re-running the HOST's walk —
+`AppEffect::OpenProviderView`, whose plugin surface is *deliberately*
+withheld (`boundary_app_effect.rs`) pending the capability model for
+which providers a plugin may trigger. A plugin `gr` could bind the chord
+and not do the work.
+
+It is the better split on merit anyway: the second agenda-source plugin
+inherits refresh instead of re-deriving it, which is the copied-keymap
+failure the minor-mode rule forbids one layer up. So:
+
+- **`agenda-view-mode`** — native, in `providers/agenda.rs`, the
+  `ProjectSearchMode` shape verbatim. `refresh_action()` returns `Some`,
+  which is the whole `gr` wiring (the cascade keys on that, NOT on an
+  `implies()` entry — RV.1 made it one line precisely so a forgotten
+  list entry could not kill the chord silently). The body lives on the
+  mode.
+- **`org-agenda-mode`** — the plugin's, carrying the TODO chords and
+  their handler bodies.
+
+**One ABI addition, and §"Why the agenda is last" is what reserved the
+right to make it:** `view-mode: func() -> option<string>`. No
+`ActivationPolicy` can say "the buffer this provider just built" —
+`majors(["multibuffer-mode"])` would fire org's chords in search results
+and magit diffs — so the source names a minor and the provider activates
+it. The host learns an id and never learns what the chords do.
+
+`gr` re-scans **the root the view already shows**, read back from the
+per-view state. A refresh that silently re-targets itself is not a
+refresh (PD.9's mistake, avoided rather than repeated).
+
+**Partial-and-honest got a second half.** §8 said a trap mid-scan leaves
+what it collected; a bare row count would still make a partial agenda
+look exactly like a complete one that had fewer rows. A source is dropped
+after three CONSECUTIVE failures — the quarantine signature, where
+scattered bad files reset the counter — and the terminal headerline says
+`— partial: N source(s) stopped responding`. Isolated skips are reported
+separately (`(3 file(s) skipped)`).
+
+Exit met, all four: a `<leader>ot` typed in the agenda writes the source
+file; `gr` rescans the view's own root; the headerline reports progress
+and completion; a dead source leaves partial rows and says so.
+
+Tests: 3 more in `providers::agenda` (the dead-source drop with its call
+budget; scattered failures NOT dropping a healthy source; the `gr`
+target-and-body contract), 1 in `lattice-mode` (view-mode dedup), and the
+plugin repo's `changing_a_todo_state_in_the_agenda_writes_the_source_document`
+— which asserts the mode was activated before typing, because without
+that the chord resolves to nothing and the text assertion fails with no
+clue why.
+
+**A test-harness bug worth recording**, because it presented as a broken
+feature for half an hour: `org_agenda.rs`'s plugin manifest omitted
+`"grammar"` from `provides`, so no action names existed, every keymap
+binding was skipped with a `warn` nobody was capturing, and `<leader>ot`
+fell through to vim's `o` + an inserted `t`. `org_major_mode.rs` has the
+same omission and does not care (it asserts activation, not chords). A
+mode whose bindings all silently vanish looks exactly like a mode that
+did not activate.
 
 ## OM.14 — docs, ledger, site 📝
 

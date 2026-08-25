@@ -77,6 +77,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // M.6: project-search provider-minor mode (feature-gated with its provider).
     #[cfg(feature = "search")]
     crate::providers::search::register_project_search_mode(boot.modes_mut());
+    // OM.A3: the agenda view's minor. `gr` arrives through the implies
+    // cascade because it declares a `refresh_action`.
+    #[cfg(feature = "agenda")]
+    crate::providers::agenda::register_agenda_mode(boot.modes_mut());
 
     // ── Commands ────────────────────────────────────────────────────────────
     // M.2.b.3 / K.2.5: excerpt-jump motions (`]e`/`[e`/`]E`/`[E`). The returned
@@ -100,9 +104,13 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // M.6: `:search` ex-command (feature-gated with its provider).
     #[cfg(feature = "search")]
     crate::providers::search::register_search_ex_command(boot.commands_mut());
-    // OM.A1: `:agenda` (feature-gated with its provider).
+    // OM.A1: `:agenda` (feature-gated with its provider). OM.A3 adds the
+    // refresh action the view mode's `refresh_action` names.
     #[cfg(feature = "agenda")]
-    crate::providers::agenda::register_agenda_ex_command(boot.commands_mut());
+    {
+        crate::providers::agenda::register_agenda_ex_command(boot.commands_mut());
+        crate::providers::agenda::register_agenda_actions(boot.commands_mut());
+    }
 
     // ── Services ────────────────────────────────────────────────────────────
     // M.2.b.2: expose the typed multibuffer-handle lookup so providers

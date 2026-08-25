@@ -37,6 +37,13 @@ impl Guest for Component {
         vec![".ORG".to_string()]
     }
 
+    /// A mode this fixture wants on the view — asserted host-side, so the
+    /// `none` case is covered by every OTHER seam fixture and this covers the
+    /// `some` one.
+    fn view_mode() -> Option<String> {
+        Some("agenda-guest-mode".to_string())
+    }
+
     fn begin() {
         FILES_SEEN.set(0);
     }

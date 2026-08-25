@@ -69,6 +69,19 @@ pub trait AsyncAgendaSource: Send + Sync + std::fmt::Debug {
     /// walk's per-file test is a string compare rather than a guest call.
     fn extensions(&self) -> &[String];
 
+    /// A minor mode this source wants activated on the agenda view.
+    ///
+    /// How a source acts on its own rows. The view's generic behaviour —
+    /// jump-to-source, `gr` — is the host's, because the host built the view
+    /// and is the only thing that can re-walk it; but the *semantics* of a
+    /// row belong to whoever produced it, and those need chords in a buffer
+    /// whose major is `multibuffer-mode`. No activation policy can say "the
+    /// buffer this provider just built", so the provider activates it and
+    /// this is the source naming what.
+    fn view_mode(&self) -> Option<&str> {
+        None
+    }
+
     /// Drop per-scan state. Called once before the first file of a scan.
     ///
     /// An `Err` drops this source from the scan (its state is unknown, so its
@@ -131,6 +144,25 @@ impl AgendaSourceRegistry {
         self.sources.clone()
     }
 
+    /// Every minor mode a registered source wants on the agenda view.
+    ///
+    /// Deduplicated, and returned for EVERY registered source rather than
+    /// only the ones that contributed rows: a source's chords must be present
+    /// before the scan finishes, and a mode whose actions no-op off its own
+    /// rows is harmless where a mode that arrives late is a key that works on
+    /// the second try.
+    pub fn view_modes(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.sources {
+            if let Some(m) = s.view_mode()
+                && !out.iter().any(|e| e == m)
+            {
+                out.push(m.to_string());
+            }
+        }
+        out
+    }
+
     /// Every source claiming `path`'s extension.
     ///
     /// The walk asks this per file. Returning the matching sources rather
@@ -167,6 +199,7 @@ mod tests {
     struct Fake {
         id: u64,
         exts: Vec<String>,
+        view_mode: Option<String>,
     }
 
     impl Fake {
@@ -174,7 +207,13 @@ mod tests {
             Self {
                 id,
                 exts: exts.iter().map(|e| e.to_string()).collect(),
+                view_mode: None,
             }
+        }
+
+        fn with_view_mode(mut self, m: &str) -> Self {
+            self.view_mode = Some(m.to_string());
+            self
         }
     }
 
@@ -184,6 +223,9 @@ mod tests {
         }
         fn extensions(&self) -> &[String] {
             &self.exts
+        }
+        fn view_mode(&self) -> Option<&str> {
+            self.view_mode.as_deref()
         }
         fn begin(&self) -> AgendaBeginFuture<'_> {
             Box::pin(async { Ok(()) })
@@ -238,6 +280,22 @@ mod tests {
         r.register(Arc::new(Fake::new(1, &["md"])));
         r.register(Arc::new(Fake::new(2, &["md"])));
         assert_eq!(r.claiming(Path::new("/p/x.md")).len(), 2);
+    }
+
+    /// Every source's mode is offered, deduplicated — two org-shaped plugins
+    /// naming one mode must not activate it twice, and a source with no mode
+    /// must not contribute an entry.
+    #[test]
+    fn view_modes_are_collected_and_deduplicated() {
+        let mut r = AgendaSourceRegistry::new();
+        r.register(Arc::new(
+            Fake::new(1, &["org"]).with_view_mode("org-agenda-mode"),
+        ));
+        r.register(Arc::new(Fake::new(2, &["md"])));
+        r.register(Arc::new(
+            Fake::new(3, &["txt"]).with_view_mode("org-agenda-mode"),
+        ));
+        assert_eq!(r.view_modes(), vec!["org-agenda-mode".to_string()]);
     }
 
     /// `.ORG` is the same filetype as `.org`. The host lowercases the

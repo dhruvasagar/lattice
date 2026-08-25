@@ -2468,7 +2468,23 @@ impl PluginLoader {
             );
         }
 
-        let source = lattice_plugin_host::WasmAgendaSource::new(client, extensions);
+        // OM.A3: the minor the provider activates on the agenda view, so the
+        // source can act on its own rows. Resolved here for the same reason
+        // `extensions` is — the provider reads it on every open, and it
+        // cannot change. A `none` (or a failed call) is a source that only
+        // produces rows, which is the ordinary case.
+        let view_mode = match client.view_mode().await {
+            Ok(m) => m.filter(|m| !m.trim().is_empty()),
+            Err(e) => {
+                tracing::debug!(
+                    plugin = %manifest.id,
+                    error = %e,
+                    "agenda plugin declared no view mode"
+                );
+                None
+            }
+        };
+        let source = lattice_plugin_host::WasmAgendaSource::new(client, extensions, view_mode);
         let id = source.plugin_id();
 
         // Copy-on-write RCU into the wait-free registry, like every other

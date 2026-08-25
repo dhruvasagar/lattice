@@ -50,7 +50,8 @@ async fn source(host: &PluginHost) -> WasmAgendaSource {
         .expect("spawn agenda source");
     tokio::spawn(actor.run());
     let declared = client.extensions().await.expect("extensions cross back");
-    WasmAgendaSource::new(client, normalise_extensions(declared))
+    let view_mode = client.view_mode().await.expect("view-mode crosses back");
+    WasmAgendaSource::new(client, normalise_extensions(declared), view_mode)
 }
 
 fn org(rows: &[i64]) -> String {
@@ -81,6 +82,11 @@ async fn the_guest_declares_which_files_it_is_offered() {
     assert!(src.claims(Path::new("/p/notes.org")));
     assert!(src.claims(Path::new("/p/NOTES.ORG")));
     assert!(!src.claims(Path::new("/p/main.rs")));
+
+    // OM.A3: the source also names the minor it wants on the agenda view, so
+    // it can act on its own rows there. The host activates the name and never
+    // learns what the chords do.
+    assert_eq!(src.view_mode(), Some("agenda-guest-mode"));
 }
 
 /// Text crosses in, rows cross back, and the guest's own `sort_key` survives —

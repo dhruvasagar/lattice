@@ -4172,6 +4172,17 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 cursor,
             });
         }
+        // XF.3: applied inline rather than deferred — see
+        // `apply_write_to_file` for why the `ApplyEdit` deferral cannot
+        // express "cut only if the insert landed".
+        Effect::WriteToFile {
+            path,
+            anchor,
+            text,
+            cut,
+        } => {
+            editor.apply_write_to_file(path, anchor, text, cut);
+        }
         Effect::EnterMode(mode) => {
             // 5.5.G.23.macros: operators that flip mode (`c` ->
             // Insert) come through the same `enter_mode` helper as
@@ -21573,6 +21584,132 @@ impl Editor {
         );
         self.seed_empty_document_locals(id);
         Ok(id)
+    }
+
+    /// XF.3: apply an [`Effect::WriteToFile`](lattice_grammar::Effect) —
+    /// insert into the target, then cut from the source, and only in that
+    /// order.
+    ///
+    /// ## Why this applies inline instead of deferring like `ApplyEdit`
+    ///
+    /// `Effect::ApplyEdit` pushes an `Action::ApplyEdit` onto
+    /// `out.next_actions` for the renderer to re-dispatch. Composing this
+    /// effect out of two of those would be tidy and would be **wrong**:
+    /// `next_actions` is a list, the renderer walks it unconditionally, and an
+    /// effect cannot report failure (pinned by XF.0's tests). The cut would
+    /// run whether or not the insert landed — which is the "the subtree is
+    /// gone" outcome the whole one-effect design exists to make
+    /// unrepresentable.
+    ///
+    /// [`Self::apply_targeted_edit`] returns a `Result`, so applying inline is
+    /// what makes "only if it landed" expressible at all. The diff path
+    /// (`apply_diff_effect_inline`) already establishes inline application
+    /// through the same helper.
+    ///
+    /// ## Ordering, and the asymmetry in the failure handling
+    ///
+    /// Insert first. A failed insert leaves the source untouched — the user
+    /// sees an error and still has their text. Cutting first would mean a
+    /// failed insert had already destroyed the original.
+    ///
+    /// A failed *cut* after a landed insert is logged and left: the text now
+    /// exists in both places. Duplicated text is recoverable by hand; lost
+    /// text is not, so the asymmetry is deliberate rather than an oversight.
+    pub fn apply_write_to_file(
+        &mut self,
+        path: std::path::PathBuf,
+        anchor: lattice_grammar::FileAnchor,
+        text: String,
+        cut: Option<lattice_protocol::position::Range>,
+    ) {
+        // Captured BEFORE resolving: opening the target must not move focus
+        // (XF.2), but reading the source id first means this is correct even
+        // if that ever changes.
+        let source = self.active_pane_buffer_id();
+
+        let target = match self.resolve_path_to_buffer(&path) {
+            Ok(id) => id,
+            Err(reason) => {
+                self.set_message(EchoLevel::Warn, format!("write-to-file: {reason}"));
+                return;
+            }
+        };
+
+        let Some(handle) = self.buffers.document_handle(target) else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!("write-to-file: {} could not be opened", path.display()),
+            );
+            return;
+        };
+        let snap = handle.snapshot();
+        let line_count = snap.buffer.content_line_count();
+        let line = anchor.resolve_line(line_count);
+
+        // `resolve_line` answers in LINES, which is all a producer can name
+        // about a file it never read. Turning that into a position needs the
+        // buffer, and the append case is not `Position::new(line_count, 0)`:
+        // `content_line_count` strips the phantom line after a trailing
+        // newline (CV.2), so that position exists for `"* Old\n"` and does
+        // NOT for `""` or `"a"` — where the insert would fail and, with a
+        // `cut`, silently take the "insert failed, keep the source" branch on
+        // a perfectly writable file.
+        let (at, text) = if line >= line_count {
+            let last = snap.buffer.rope_line_count().saturating_sub(1);
+            let end =
+                lattice_protocol::position::Position::new(last, snap.buffer.line_byte_len(last));
+            // Appending to a file whose last line has no newline would splice
+            // onto that line — `"notes"` + `"* Archived\n"` becomes
+            // `"notes* Archived"`. "After the last line" means starting a new
+            // one, and the producer cannot know which case it is: it has
+            // never read this file. So the host supplies the separator.
+            let needs_break = end.byte > 0;
+            let text = if needs_break {
+                format!("\n{text}")
+            } else {
+                text
+            };
+            (end, text)
+        } else {
+            (lattice_protocol::position::Position::new(line, 0), text)
+        };
+
+        if let Err(err) =
+            self.apply_targeted_edit(target, lattice_protocol::edit::Edit::insert(at, text))
+        {
+            // The cut deliberately does NOT run. This is the branch that
+            // keeps the user's text where it was.
+            tracing::debug!(
+                target: "lattice_host::edit",
+                path = %path.display(),
+                ?err,
+                "write-to-file: the insert failed; the source is untouched"
+            );
+            self.set_message(
+                EchoLevel::Warn,
+                format!("write-to-file: could not write to {}", path.display()),
+            );
+            return;
+        }
+
+        let Some(range) = cut else { return };
+        if let Err(err) =
+            self.apply_targeted_edit(source, lattice_protocol::edit::Edit::delete(range))
+        {
+            // `warn!`, not `debug!`: the text is now in two places and the
+            // user is the only one who can resolve that. One-shot and
+            // user-actionable is exactly the `info`/`warn` case.
+            tracing::warn!(
+                path = %path.display(),
+                ?err,
+                "write-to-file: the text was written but could not be removed from the source; \
+                 it now exists in both places"
+            );
+            self.set_message(
+                EchoLevel::Warn,
+                "write-to-file: written, but the original could not be removed".to_string(),
+            );
+        }
     }
 
     /// XF.2: is `target` already open, comparing paths by what they actually

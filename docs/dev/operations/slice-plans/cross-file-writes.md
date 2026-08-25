@@ -46,7 +46,7 @@ XF.6  docs, ledger, site
 | XF.0 | Gate: effect-list failure semantics | ✅ |
 | XF.1 | `Effect::WriteToFile` + the anchor resolver | ✅ |
 | XF.2 | Open-or-reuse a target buffer, without stealing focus | ✅ |
-| XF.3 | Insert-then-cut applied as one unit | 📝 |
+| XF.3 | Insert-then-cut applied as one unit | ✅ |
 | XF.4 | The WIT effect + the boundary capability gate | 📝 |
 | XF.5 | A fixture guest end to end | 📝 |
 | XF.6 | Docs, ledger, site | 📝 |
@@ -178,22 +178,46 @@ empty with its path set; a missing parent refused *without* creating the
 tree on the way out; a directory refused; and resolving twice yielding
 one buffer.
 
-### XF.3 — insert-then-cut, as one unit 📝
+### XF.3 — insert-then-cut, as one unit ✅ (2026-08-25)
 
 The applier. Resolve the anchor, apply the insert through
 `Editor::apply_targeted_edit` (which already routes active-document vs
 peer-buffer), and only on success apply `cut` to the buffer the action
 ran in.
 
-- *exit:* a `WriteToFile` with a `cut` moves text between two buffers and
-  neither `u` is a cross-buffer undo — each buffer reverses its own half
-  (design §5).
-- *tests:* the happy path both ways (`cut` present and absent); **a
-  failing insert leaves the source untouched**, which is the data-loss
-  case and the reason the effect is one effect; an out-of-bounds `cut`
-  after a landed insert skips with a `warn!` rather than losing the
-  insert.
-- *no bench.*
+**It applies inline, and could not have reused `ApplyEdit`'s deferral.**
+`Effect::ApplyEdit` pushes an `Action::ApplyEdit` onto `next_actions` for
+the renderer to walk — unconditionally, and an effect cannot report
+failure (XF.0). Composing this out of two of those would have run the cut
+whether or not the insert landed, which is the "the subtree is gone"
+outcome the one-effect design exists to make unrepresentable.
+`apply_targeted_edit` returns a `Result`, so applying inline is what
+makes "only if it landed" expressible at all.
+
+**Two position bugs the tests caught, both silent.**
+
+`content_line_count` strips the phantom line after a trailing newline
+(CV.2), so `Position::new(line_count, 0)` — the obvious append — exists
+for `"* Old\n"` and does **not** for `""` or `"a"`. On an empty target
+the insert failed, and with a `cut` that took the insert-failed branch on
+a perfectly writable file: the archive silently did nothing. The append
+position now comes from `rope_line_count` + `line_byte_len`, which is the
+true end in every case.
+
+And appending to a file whose last line has no newline spliced onto it:
+`"notes"` + `"* Archived\n"` became `"notes* Archived"`, corrupting a
+line the user never touched. The producer cannot prevent this — it has
+never read the target — so the host supplies the separator. `resolve_line`
+stays the pure, tested line-level function; turning a line into a
+position is the host's job because only the host has the buffer.
+
+Tests (12): append / start / create; the move; **a failed insert leaving
+the source untouched**, in two shapes (missing parent, and a directory
+target — different branches); an already-open target written in place
+with its unsaved content; the target left unsaved so the disk is
+untouched; each buffer undoing its own half; both trailing-newline cases,
+including that repeated appends do not accumulate blank lines; and
+`Line(n)` past the end appending rather than failing.
 
 ### XF.4 — the WIT effect + the gate 📝
 

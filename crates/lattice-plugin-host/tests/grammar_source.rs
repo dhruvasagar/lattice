@@ -66,9 +66,9 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
     // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e).
     assert_eq!(
         set.len(),
-        6,
+        7,
         "guest contributed down-n + to-cursor + fails + traps + read-at-cursor \
-         + open-files-picker"
+         + open-files-picker + archive-to"
     );
 
     let mut registry = CommandRegistry::new();
@@ -277,6 +277,183 @@ fn plugin_action_reads_buffer_text_at_the_cursor_via_the_document_handle() {
         }
         other => panic!("expected an Echo effect from the plugin action, got {other:?}"),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// XF.5 — the cross-file write, and its capability gate, through a real guest
+// ─────────────────────────────────────────────────────────────────
+
+/// Load the fixture with an explicit capability set, so the granted and denied
+/// cases differ **only** by the manifest.
+///
+/// That is the whole point: the guest is byte-identical between the two tests,
+/// so a denial is demonstrably about the capability rather than about the
+/// plugin having been written differently.
+fn load_with_caps(dir: &TempDir, caps: Vec<lattice_plugin_host::Capability>) -> CommandRegistry {
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+        .expect("host builds with tempdirs");
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .expect("compile grammar fixture");
+    let manifest = PluginManifest::new("grammar-fixture", caps, CapabilitySet::empty());
+    let set = host
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
+            None,
+        )
+        .expect("instantiate + register-grammar");
+    let mut registry = CommandRegistry::new();
+    set.register_all(&mut registry);
+    registry
+}
+
+/// Fire `archive-to <path>` and return whatever effect came back.
+fn run_archive_to(registry: &CommandRegistry, path: &std::path::Path) -> lattice_grammar::Effect {
+    let action_id = registry.id_by_name("archive-to").unwrap();
+    let mut document = lattice_core::Document::from_text("* Keep\n");
+    let cancel = CancellationToken::never();
+    lattice_grammar::dispatcher::execute(
+        registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(action_id)
+            .with_args(lattice_grammar::Args::String(path.display().to_string())),
+        &cancel,
+    )
+    .expect("the action dispatches")
+}
+
+/// A plugin granted `fs:write` over a directory gets its `WriteToFile`
+/// through, payload intact.
+#[test]
+fn a_granted_plugin_can_return_a_cross_file_write() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let target = notes.join("archive.org");
+
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsWrite(notes.clone())],
+    );
+
+    match run_archive_to(&registry, &target) {
+        lattice_grammar::Effect::WriteToFile {
+            path, anchor, text, ..
+        } => {
+            assert_eq!(path, target);
+            assert_eq!(anchor, lattice_grammar::FileAnchor::End);
+            assert_eq!(text, "* Archived by the fixture\n");
+        }
+        other => panic!("expected a WriteToFile, got {other:?}"),
+    }
+}
+
+/// **The gate, wired.** The same guest, the same action, the same path — and
+/// no `fs:write` grant. The effect is replaced with an `Echo` before it can
+/// reach the editor.
+///
+/// The authorizer's own tests prove it decides correctly; this proves it is
+/// actually *consulted*, which is the half a unit test cannot show and the
+/// half whose absence would be an unchecked cross-file write reachable from
+/// any plugin.
+#[test]
+fn a_plugin_without_fs_write_has_its_cross_file_write_refused() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let target = notes.join("archive.org");
+
+    // No capabilities at all — the only difference from the test above.
+    let registry = load_with_caps(&dir, Vec::new());
+
+    match run_archive_to(&registry, &target) {
+        lattice_grammar::Effect::Echo { text, .. } => {
+            assert!(
+                text.contains("denied"),
+                "the user is told rather than left wondering why a key did \
+                 nothing: {text}"
+            );
+            assert!(text.contains("grammar-fixture"), "names the plugin: {text}");
+        }
+        lattice_grammar::Effect::WriteToFile { .. } => {
+            panic!(
+                "an ungranted plugin's cross-file write reached the editor — \
+                 the boundary gate is not wired"
+            )
+        }
+        other => panic!("expected an Echo, got {other:?}"),
+    }
+}
+
+/// A `fs:read` grant over the same directory is still not permission to write
+/// into it. The distinction matters because `host-services`' walk accepts
+/// either, so "has an fs grant" is not the same question as "may write".
+#[test]
+fn a_read_only_grant_does_not_authorise_a_cross_file_write() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsRead(notes.clone())],
+    );
+
+    assert!(
+        matches!(
+            run_archive_to(&registry, &notes.join("archive.org")),
+            lattice_grammar::Effect::Echo { .. }
+        ),
+        "read is not write"
+    );
+}
+
+/// A granted plugin still cannot reach outside its prefix by spelling the path
+/// with `..`. The escape test, through the real boundary rather than against
+/// the authorizer directly.
+#[test]
+fn a_granted_plugin_cannot_escape_its_prefix_with_dotdot() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    let secret = dir.path().join("secret");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::create_dir_all(&secret).unwrap();
+
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsWrite(notes.clone())],
+    );
+
+    let escaping = notes.join("..").join("secret").join("stolen.org");
+    assert!(
+        matches!(
+            run_archive_to(&registry, &escaping),
+            lattice_grammar::Effect::Echo { .. }
+        ),
+        "`<granted>/../secret/…` resolves outside the grant and must be refused"
+    );
 }
 
 #[test]

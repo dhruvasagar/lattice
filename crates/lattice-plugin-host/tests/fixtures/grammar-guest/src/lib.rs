@@ -26,7 +26,7 @@ use lattice::plugin_host::grammar;
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Effect, EchoLevel, EchoPayload, ExCommandContext,
-    OpenPickerPayload,
+    FileAnchor, OpenPickerPayload, WriteToFilePayload,
     MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
     TextObjectSpec,
 };
@@ -97,6 +97,19 @@ impl Guest for Component {
         // open a picker source it did not define. `apply-action(6)` returns
         // `Effect::OpenPicker`, which is how a plugin reuses a native
         // picker (or another plugin's) rather than shipping its own.
+        // XF.5: the cross-file write. Callback 7 returns
+        // `Effect::WriteToFile` naming a path the TEST chooses, so one
+        // fixture proves both the permitted and the denied case depending on
+        // the manifest's `fs:write` grant. The path arrives through
+        // `ctx.args`, which is also how the test proves the payload crossed.
+        grammar::register_action(
+            "archive-to",
+            "write a line into another file (fixture)",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            7,
+        );
         grammar::register_action(
             "open-files-picker",
             "open the host's `files` picker (fixture)",
@@ -180,6 +193,23 @@ impl Callbacks for Component {
                 source: "files".to_string(),
                 args: vec!["src".to_string(), "*.rs".to_string()],
             })]),
+            // XF.5: the cross-file write. The target path comes from the
+            // action's args so ONE fixture covers both the granted and the
+            // denied case — the test varies the manifest, not the guest, which
+            // is what makes the denial about the capability rather than about
+            // the plugin having been written differently.
+            7 => {
+                let path = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    _ => return Err("fixture: archive-to needs a path".to_string()),
+                };
+                Ok(vec![Effect::WriteToFile(WriteToFilePayload {
+                    path,
+                    anchor: FileAnchor::End,
+                    text: "* Archived by the fixture\n".to_string(),
+                    cut: None,
+                })])
+            }
             other => Err(format!("fixture: unknown action callback {other}")),
         }
     }

@@ -48,7 +48,7 @@ XF.6  docs, ledger, site
 | XF.2 | Open-or-reuse a target buffer, without stealing focus | ✅ |
 | XF.3 | Insert-then-cut applied as one unit | ✅ |
 | XF.4 | The WIT effect + the boundary capability gate | ✅ |
-| XF.5 | A fixture guest end to end | 📝 |
+| XF.5 | A fixture guest end to end | ✅ |
 | XF.6 | Docs, ledger, site | 📝 |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench
@@ -277,18 +277,38 @@ anchor, since a variant collapsing to `End` would file every capture at
 the bottom, and the `cut` surviving, since losing it turns a move into a
 copy that looks like it worked).
 
-### XF.5 — a fixture guest, end to end 📝
+### XF.5 — a fixture guest, end to end ✅ (2026-08-26)
 
 A `wasm32-wasip2` fixture that returns a `write-to-file` from an action,
 driven through a real `Editor` — the whole path, the way
 `agenda_source.rs` drives `agenda-guest`.
 
-- *exit:* the fixture's chord moves a line from its own buffer into a
-  second file, and the second file's buffer holds it afterwards.
-- *tests:* the move; the denial (the same fixture with no `fs:write`
-  grant writes nothing and echoes); reuse of an already-open target.
-- **Test it the way it fails:** assert the target buffer's content
-  *without* dispatching another action first.
+The `grammar-guest` fixture gained an `archive-to` action returning a
+`WriteToFile` whose path comes from `ctx.args`. **One guest covers both
+the granted and the denied case, and the tests vary only the manifest** —
+which is what makes a denial demonstrably about the capability rather
+than about the plugin having been written differently.
+
+Four tests through the real boundary: a granted plugin's write crossing
+with its payload intact; the same guest, same action, same path with NO
+grant being replaced by an `Echo` before it can reach the editor; a
+`fs:read` grant not authorising a write (the distinction `host-services`'
+walk deliberately does not make); and `..` failing to escape a granted
+prefix.
+
+**Verified by mutation, not just by passing.** Unwiring
+`authorizer.authorize` in the trampoline fails exactly those three
+denial tests and leaves the other eleven green — so they are testing the
+*wiring*, which is the half `effect_authorizer`'s unit tests cannot
+show, and the half whose absence would be an unchecked cross-file write
+reachable from any plugin.
+
+**A second contribution-count assertion existed**, in
+`lattice-plugin-loader`'s `unload_reload.rs`, and only
+`cargo test --workspace` found it — a scoped precommit over
+`lattice-plugin-host` cannot see a test in another crate that counts this
+fixture's contributions. Third time this session that the workspace run
+caught something scoped runs could not.
 
 ### XF.6 — docs, ledger, site 📝
 

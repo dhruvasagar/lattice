@@ -1026,6 +1026,10 @@ impl Render for ModelineTooltip {
 }
 
 struct EditorView {
+    /// IM.5: decoded pixels for the media blocks in view, shared with every
+    /// pane's `EditorElement`. Written only by the media landing (off the UI
+    /// thread's critical path); read by `paint`, which never loads.
+    media_pixels: std::sync::Arc<crate::editor_element::MediaPixels>,
     app: GpuiApp,
     focus_handle: FocusHandle,
     /// Perf plan A.3: per-frame ensure-work delta cache.
@@ -1100,6 +1104,7 @@ impl EditorView {
         })
         .detach();
         Self {
+            media_pixels: Default::default(),
             app,
             focus_handle: cx.focus_handle(),
             ensure_gate: EnsureGateCache::default(),
@@ -2562,6 +2567,7 @@ impl EditorView {
         // inlay-hint virtual text + per-cell diagnostic
         // underlines restore in slice X3.full.4.
         let editor_element = crate::editor_element::EditorElement {
+            media_pixels: self.media_pixels.clone(),
             pane_idx,
             theme: theme.clone(),
             // 2026-05-26: pass the visible-window text joined so
@@ -3894,6 +3900,7 @@ impl Render for EditorView {
                         .map(|c| c.load_full())
                         .filter(|m| m.version.text == text_version);
                     let editor_element = crate::editor_element::EditorElement {
+                        media_pixels: self.media_pixels.clone(),
                         // CV.4: live wrap width for this pseudo-pane; `0`
                         // when it has no published entry, which falls back
                         // to the matrix stamp exactly as before.
@@ -4499,6 +4506,7 @@ impl Render for EditorView {
                 .map(|c| c.load_full())
                 .filter(|m| m.version.text == text_version);
             let editor_element = crate::editor_element::EditorElement {
+                media_pixels: self.media_pixels.clone(),
                 // CV.4: live wrap width for the popup pseudo-pane; `0`
                 // when it has no published entry, which falls back to the
                 // matrix stamp exactly as before.

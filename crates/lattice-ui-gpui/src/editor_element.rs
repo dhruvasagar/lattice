@@ -227,6 +227,14 @@ pub(crate) struct InlineDiagSummary {
 /// `GpuiApp` survives across layout / prepaint / paint method
 /// boundaries.
 pub(crate) struct EditorElement {
+    /// IM.5: pixels already decoded for the media blocks in view, keyed by
+    /// descriptor.
+    ///
+    /// A LOOKUP, never a loader. `paint` consults this and draws nothing on a
+    /// miss — it must not read a file or decode, which is what the whole
+    /// `lattice-media` split exists to prevent. The rows keep their reserved
+    /// space regardless, so pixels arriving later do not reflow anything.
+    pub(crate) media_pixels: Arc<MediaPixels>,
     /// Pane index inside the active pane tree. Used for
     /// `ElementId` so GPUI tracks the same element across frames.
     pub(crate) pane_idx: usize,
@@ -471,6 +479,36 @@ pub(crate) struct EditorElement {
 }
 
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
+/// IM.5: decoded pixels for media blocks, ready to upload.
+///
+/// Populated off the UI thread by the media worker; read (never written) by
+/// `paint`. An empty map is the normal state for every buffer without images
+/// and costs one pointer chase to establish.
+#[derive(Default)]
+pub(crate) struct MediaPixels {
+    by_path: std::collections::HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
+}
+
+impl MediaPixels {
+    /// Pixels for `block`, if they have been decoded.
+    pub(crate) fn get(
+        &self,
+        block: &lattice_cells::MediaBlockRef,
+    ) -> Option<Arc<gpui::RenderImage>> {
+        self.by_path.get(block.path()?).cloned()
+    }
+
+    /// Record a decode. Called from the media worker's landing, never from
+    /// paint.
+    pub(crate) fn insert(&mut self, path: std::path::PathBuf, image: Arc<gpui::RenderImage>) {
+        self.by_path.insert(path, image);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_path.is_empty()
+    }
+}
+
 pub(crate) struct EditorElementLayoutState;
 
 /// F.2/F.3 (Thread F): a display row whose columns are NOT uniformly the
@@ -678,6 +716,21 @@ pub(crate) struct EditorElementPrepaintState {
     /// it as a 2-D composition (quad mark + shaped wordmark) over the
     /// blanked branding rows. `None` for every non-dashboard buffer.
     branding: Option<BrandingPaint>,
+    /// IM.5: media blocks whose rows fall in this viewport, as
+    /// `(first_display_row, row_count, descriptor)`. `paint` draws each
+    /// one's pixels over the blanked rows; the rows themselves carry the alt
+    /// text, which is what the TUI paints and what this peer falls back to
+    /// while a decode is in flight.
+    media: Vec<MediaPaint>,
+}
+
+/// IM.5: one media block located in the current viewport.
+struct MediaPaint {
+    /// Display-row index of the block's first row (its `y` = `row_top`).
+    first_row: usize,
+    /// Rows in the group — the vertical box the image is drawn into.
+    row_count: usize,
+    block: lattice_cells::MediaBlockRef,
 }
 
 /// DB.4-gpui: the dashboard branding composition, parsed from a
@@ -711,6 +764,34 @@ struct BrandingPaint {
 /// the logo bracket and the amber cursor bar). GPUI turns each such cell
 /// into a square quad.
 const BRANDING_MARK_GLYPH: u32 = 0x2588; // █
+
+/// IM.5: coalesce this frame's MediaBlock rows into one entry per block.
+///
+/// Rows arrive in display order, so a run of consecutive display rows sharing
+/// the same descriptor is one block. A block partly scrolled off the top
+/// still produces an entry — `first_row` is simply the first row still
+/// visible, and `paint` clips to the pane — so an image does not vanish the
+/// moment its top edge leaves the viewport.
+fn build_media_paints(rows: &[(usize, lattice_cells::MediaBlockRef)]) -> Vec<MediaPaint> {
+    let mut out: Vec<MediaPaint> = Vec::new();
+    for (row, block) in rows {
+        match out.last_mut() {
+            // Same block, adjacent row ⇒ extend the run.
+            Some(last)
+                if std::sync::Arc::ptr_eq(&last.block, block)
+                    && last.first_row + last.row_count == *row =>
+            {
+                last.row_count += 1;
+            }
+            _ => out.push(MediaPaint {
+                first_row: *row,
+                row_count: 1,
+                block: block.clone(),
+            }),
+        }
+    }
+    out
+}
 
 /// DB.4-gpui: parse a `BrandingBlock` row group (each entry is
 /// `(display_row_index, cells)`) into a [`BrandingPaint`]. Block-glyph
@@ -959,6 +1040,9 @@ impl Element for EditorElement {
         // DB.4-gpui: `(display_row, cells)` for each BrandingBlock virtual
         // row emitted this frame; parsed into a `BrandingPaint` below.
         let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> = Vec::new();
+        // IM.5: `(display_row, descriptor)` for each MediaBlock virtual row
+        // emitted this frame, coalesced into groups below.
+        let mut media_rows: Vec<(usize, lattice_cells::MediaBlockRef)> = Vec::new();
         // D.3.b.1.gpui (2026-05-29): for each entry in
         // `self.gutter`, the shaped_text row index of the
         // corresponding doc row after virtual-row interleaving.
@@ -1502,6 +1586,7 @@ impl Element for EditorElement {
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
                     &mut branding_rows,
+                    &mut media_rows,
                 );
             }
             // TC.3b: the pinned context strip, AFTER the matrix's sticky rows
@@ -1519,6 +1604,7 @@ impl Element for EditorElement {
                 }
                 let is_innermost = Some(idx) == innermost;
                 let vrow = lattice_cells::VirtualRow {
+                    media: None,
                     anchor_line: row.source_line,
                     position: lattice_cells::AnchorPosition::Above,
                     cells: row.cells.clone(),
@@ -1573,6 +1659,7 @@ impl Element for EditorElement {
                     &mut diagnostic_segments_per_row,
                     &mut overlay_quads_per_row,
                     &mut branding_rows,
+                    &mut media_rows,
                 );
             }
             'rows: for (vis_row, meta) in self.gutter.iter().enumerate() {
@@ -1617,6 +1704,7 @@ impl Element for EditorElement {
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
                         &mut branding_rows,
+                        &mut media_rows,
                     );
                 }
                 // The doc row itself must also respect the budget:
@@ -1741,6 +1829,7 @@ impl Element for EditorElement {
                         &mut diagnostic_segments_per_row,
                         &mut overlay_quads_per_row,
                         &mut branding_rows,
+                        &mut media_rows,
                     );
                 }
             }
@@ -1985,6 +2074,7 @@ impl Element for EditorElement {
             inline_diag_overlay,
             fold_summary_overlays,
             branding: build_branding_paint(&branding_rows),
+            media: build_media_paints(&media_rows),
         }
     }
 
@@ -2540,6 +2630,58 @@ impl Element for EditorElement {
                     let underline = Bounds::new(underline_origin, size(advance, px(2.0)));
                     window.paint_quad(fill(underline, rgb(self.theme.cursor_background)));
                 }
+            }
+        }
+
+        // IM.5: inline media. Each block's pixels are drawn over its blanked
+        // rows, aspect-preserved inside the reserved box and clipped to the
+        // pane.
+        //
+        // Nothing here reads a file or decodes anything: `paint` consults a
+        // cache that `lattice-media` filled off-thread. A miss draws nothing
+        // at all and leaves the reserved rows blank — the block already
+        // reserved its space from its intrinsic size, so the document does
+        // not reflow when the pixels arrive.
+        for m in &prepaint.media {
+            let Some(pixels) = self.media_pixels.get(&m.block) else {
+                continue;
+            };
+            let top = row_top(m.first_row);
+            let box_h = (0..m.row_count)
+                .map(|i| row_h(m.first_row + i))
+                .fold(Pixels::ZERO, |a, b| a + b);
+            // Start where TEXT starts, not where the pane does — an image
+            // aligns with the content column, clear of gutter and signs.
+            let origin_x = text_origin_x;
+            let box_w = (bounds.origin.x + bounds.size.width) - origin_x;
+
+            // Fit inside the box, preserving aspect. The box came from the
+            // same intrinsic size, so this is normally a no-op — it matters
+            // when the pane has been resized since the block resolved, where
+            // drawing at the stale size would overflow into the text below.
+            let dims = pixels.size(0);
+            let (iw, ih) = (i32::from(dims.width) as f32, i32::from(dims.height) as f32);
+            if iw <= 0.0 || ih <= 0.0 {
+                continue;
+            }
+            let scale = (f32::from(box_w) / iw).min(f32::from(box_h) / ih).min(1.0);
+            let draw_w = px(iw * scale);
+            let draw_h = px(ih * scale);
+
+            let img_bounds = Bounds {
+                origin: point(origin_x, top),
+                size: size(draw_w, draw_h),
+            };
+            // A failed upload must not take the frame down — the rows stay
+            // blank and the next frame retries.
+            if let Err(err) = window.paint_image(
+                img_bounds,
+                gpui::Corners::default(),
+                pixels.clone(),
+                0,
+                false,
+            ) {
+                tracing::debug!(?err, "media block paint failed; leaving the box blank");
             }
         }
 
@@ -3348,12 +3490,48 @@ fn push_virtual_row(
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     branding_rows: &mut Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)>,
+    media_rows: &mut Vec<(usize, lattice_cells::MediaBlockRef)>,
 ) {
     // DB.4-gpui: a BrandingBlock row is recorded (with its display index +
     // cells) for the 2-D branding pass and then rendered BLANK here — the
     // GPUI peer paints the quad mark + shaped wordmark over it, so the raw
     // mark/wordmark cells must not double-paint. (The TUI peer paints the
     // cells directly; it never reaches this function.)
+    // IM.5: a MediaBlock row is recorded for the image pass and then rendered
+    // BLANK, so the alt-text cells do not show through the picture. Only when
+    // the block HAS pixels to draw — an unresolved or failed block keeps its
+    // cells, which is how the alt text becomes the placeholder rather than a
+    // separate code path. (The TUI never reaches this function; it paints the
+    // cells directly, which is its whole rendering of a block.)
+    if vrow.kind == lattice_cells::VirtualRowKind::MediaBlock {
+        if let Some(block) = vrow.media.as_ref() {
+            if block.height_lh.is_some() {
+                media_rows.push((shaped_text.len(), block.clone()));
+                let blank = window.text_system().shape_line(
+                    SharedString::from(" "),
+                    font_size,
+                    &[TextRun {
+                        len: 1,
+                        font: font.clone(),
+                        color: rgb(body_color).into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
+                shaped_text.push(blank);
+                row_meta.push(Default::default());
+                row_segment.push(0);
+                row_scale.push(1.0);
+                row_split.push(None);
+                inlay_offsets_per_row.push(Vec::new());
+                diagnostic_segments_per_row.push(Vec::new());
+                overlay_quads_per_row.push(Vec::new());
+                return;
+            }
+        }
+    }
     if vrow.kind == lattice_cells::VirtualRowKind::BrandingBlock {
         branding_rows.push((shaped_text.len(), vrow.cells.clone()));
         let blank = window.text_system().shape_line(
@@ -3518,8 +3696,12 @@ fn push_virtual_row(
         // 2-D composition over these rows itself.
         // MG.26b: an annotation carries no backdrop of its own — a
         // blame heading tinted like a deletion would read as one.
+        // IM.5: a media block paints its own pixels over these rows; a cell
+        // backdrop behind them would tint the image. An unresolved block
+        // reaches here too and stays blank behind its alt text.
         lattice_cells::VirtualRowKind::Annotation
         | lattice_cells::VirtualRowKind::Filler
+        | lattice_cells::VirtualRowKind::MediaBlock
         | lattice_cells::VirtualRowKind::BrandingBlock => Vec::new(),
     };
     shaped_text.push(shaped_body);
@@ -3762,6 +3944,54 @@ mod tests {
     }
 
     use super::*;
+
+    /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,
+    /// so a five-row image is painted once rather than five times stacked on
+    /// top of each other.
+    #[test]
+    fn media_rows_coalesce_into_one_paint_per_block() {
+        let a: lattice_cells::MediaBlockRef =
+            std::sync::Arc::new(lattice_cells::MediaBlock::new("/a.png", None));
+        let b: lattice_cells::MediaBlockRef =
+            std::sync::Arc::new(lattice_cells::MediaBlock::new("/b.png", None));
+
+        let rows = vec![
+            (3, a.clone()),
+            (4, a.clone()),
+            (5, a.clone()),
+            (9, b.clone()),
+            (10, b.clone()),
+        ];
+        let paints = build_media_paints(&rows);
+        assert_eq!(paints.len(), 2, "two blocks, not five rows");
+        assert_eq!((paints[0].first_row, paints[0].row_count), (3, 3));
+        assert_eq!((paints[1].first_row, paints[1].row_count), (9, 2));
+    }
+
+    /// A gap in display rows ends a run even for the same descriptor — two
+    /// separate references to one file are two blocks, and merging them would
+    /// stretch a single image across the text between them.
+    #[test]
+    fn a_row_gap_starts_a_new_block_even_for_the_same_image() {
+        let a: lattice_cells::MediaBlockRef =
+            std::sync::Arc::new(lattice_cells::MediaBlock::new("/a.png", None));
+        let paints = build_media_paints(&[(1, a.clone()), (2, a.clone()), (7, a.clone())]);
+        assert_eq!(paints.len(), 2);
+        assert_eq!((paints[0].first_row, paints[0].row_count), (1, 2));
+        assert_eq!((paints[1].first_row, paints[1].row_count), (7, 1));
+    }
+
+    /// A block scrolled half off the top still paints: `first_row` is the
+    /// first row still visible. Otherwise an image would vanish the moment
+    /// its top edge left the viewport.
+    #[test]
+    fn a_partly_scrolled_block_still_produces_a_paint() {
+        let a: lattice_cells::MediaBlockRef =
+            std::sync::Arc::new(lattice_cells::MediaBlock::new("/a.png", None));
+        let paints = build_media_paints(&[(0, a.clone())]);
+        assert_eq!(paints.len(), 1);
+        assert_eq!((paints[0].first_row, paints[0].row_count), (0, 1));
+    }
 
     /// DB.4-gpui: the branding parser turns a `BrandingBlock` row group's
     /// cells into mark tiles (by fg colour) + wordmark/tagline text, and —

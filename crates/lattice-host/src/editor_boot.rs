@@ -566,6 +566,15 @@ impl Editor {
         boot.register_service::<lattice_mode::ProviderViewRegistryHandle>(Arc::new(
             lattice_mode::ProviderViewRegistry::new(),
         ));
+        // Which directory is the buffer *called this* about? Providers whose
+        // buffers open by name (magit) register a source here; the synthetic
+        // creation chokepoint asks. Published in Phase B, ahead of every
+        // subsystem `install`, so no provider can be installed before the
+        // registry it registers into exists.
+        let scope_sources: lattice_mode::BufferScopeSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::BufferScopeSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_mode::BufferScopeSourceRegistryHandle>(scope_sources);
         // PR.2: the project resolver — "which project does this buffer
         // belong to", the one answer terminal / compilation / search /
         // the file picker all root from.

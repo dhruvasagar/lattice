@@ -288,6 +288,121 @@ impl BufferLocals {
     }
 }
 
+/// The directory a buffer is *about*, when that is not its own path.
+///
+/// A magit status buffer, an oil listing, a file tree, a search or agenda
+/// view — none of them is a file, so none has a path, and every one of them
+/// still belongs somewhere. Without this the editor's project resolution
+/// takes its only other branch and answers with the **process working
+/// directory**, so `:files` in a magit buffer for `~/work/api` listed
+/// whatever tree the editor happened to be launched in.
+///
+/// ## A directory, not a project root
+///
+/// The writer records where the buffer *is*; the host resolves that to a
+/// project through the ordinary `ProjectResolverHandle`. So an oil buffer on
+/// `/repo/src` records `/repo/src` and `:files` still lists `/repo` — the
+/// provider does not have to know what a project is, and the two notions
+/// cannot drift apart by being recorded twice.
+///
+/// ## Universal, hence `text-mode`
+///
+/// Owned by no single mode, like `text-mode.extra-highlights`: any buffer may
+/// have one and most do not. Written through
+/// [`ModeActivator::set_buffer_scope_dir`](crate::ModeActivator::set_buffer_scope_dir)
+/// so a provider sets it from its trigger, where it already knows the answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferScopeDir(pub std::path::PathBuf);
+
+impl BufferLocal for BufferScopeDir {
+    const NAME: &'static str = "text-mode.scope-dir";
+    const DOC: &'static str = "The directory this buffer is about, for a buffer that is not \
+         itself a file — a magit repository, an oil listing's directory, a \
+         file tree's root, a search or agenda view's scan root. Project \
+         resolution (`:files`, `:search`) reads it before falling back to \
+         the buffer's own path, and then to the working directory.";
+    const OWNER_MODE: &'static str = "text-mode";
+    fn describe(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+/// A provider's answer to "which directory is the buffer *called this*
+/// about?", asked by the host the moment it creates a synthetic buffer.
+///
+/// ## Why by name, and why a pull rather than a push
+///
+/// A provider that opens its buffer with `Effect::OpenSyntheticBuffer` never
+/// touches the buffer: it returns a name and a mode id, and the host does the
+/// rest. So it has no `BufferId` to attach a
+/// [`BufferScopeDir`](crate::BufferScopeDir) to, and by the time its mode's
+/// `on_activate` runs there is no `&mut` reach into the buffer-local map
+/// either.
+///
+/// It does, however, know the directory *before* the buffer exists — that is
+/// the whole reason magit's `RepoScopes` is keyed by name rather than by id.
+/// So the host asks, at creation, with the one thing both sides have: the
+/// name.
+///
+/// The alternative was a `scope_dir` field on `Effect::OpenSyntheticBuffer`,
+/// which is ABI churn on a widely-constructed effect (and on its WIT peer) to
+/// carry data most callers do not have.
+pub trait BufferScopeSource: Send + Sync + std::fmt::Debug {
+    /// The directory a buffer named `buffer_name` is about, if this source
+    /// knows. `None` for a name it does not recognise — every source is asked
+    /// and most will not know.
+    fn scope_dir_for_name(&self, buffer_name: &str) -> Option<std::path::PathBuf>;
+}
+
+/// Registered [`BufferScopeSource`]s. A `Vec` rather than a single handle
+/// because two providers naming buffers is normal and a single slot would let
+/// the second registration silently displace the first.
+#[derive(Default, Clone)]
+pub struct BufferScopeSourceRegistry {
+    sources: Vec<std::sync::Arc<dyn BufferScopeSource>>,
+}
+
+impl std::fmt::Debug for BufferScopeSourceRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferScopeSourceRegistry")
+            .field("sources", &self.sources.len())
+            .finish()
+    }
+}
+
+impl BufferScopeSourceRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, source: std::sync::Arc<dyn BufferScopeSource>) {
+        self.sources.push(source);
+    }
+
+    /// The first source that recognises `buffer_name`. First-answer-wins:
+    /// two providers claiming one name is a naming collision they have to
+    /// resolve between themselves, and picking arbitrarily is no worse than
+    /// picking last.
+    pub fn scope_dir_for_name(&self, buffer_name: &str) -> Option<std::path::PathBuf> {
+        self.sources
+            .iter()
+            .find_map(|s| s.scope_dir_for_name(buffer_name))
+    }
+
+    pub fn len(&self) -> usize {
+        self.sources.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
+
+/// Register **and** look up with this exact alias (the `ServiceRegistry`
+/// `TypeId` rule).
+pub type BufferScopeSourceRegistryHandle =
+    std::sync::Arc<arc_swap::ArcSwap<BufferScopeSourceRegistry>>;
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

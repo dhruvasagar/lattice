@@ -419,6 +419,24 @@ impl Editor {
         // accessors (`document_syntax_for` etc.) resolve cleanly
         // through `buffer_locals` for this id.
         self.seed_empty_document_locals(id);
+        // Does any provider know which directory a buffer of this NAME is
+        // about? A synthetic buffer has no path, so without this the
+        // editor's project resolution has only the process working directory
+        // left to answer with — `:files` in a magit buffer for one checkout
+        // listed whichever tree the editor happened to be launched in.
+        //
+        // Asked by name because a provider that opens through
+        // `Effect::OpenSyntheticBuffer` never sees this `BufferId`: it
+        // returned a name and the host did the rest. The name is the one
+        // thing both sides hold, which is also why magit keys `RepoScopes`
+        // that way. Generic: the host learns a directory, never whose it is.
+        if let Some(sources) = self
+            .services
+            .get::<lattice_mode::BufferScopeSourceRegistryHandle>()
+            && let Some(dir) = sources.load().scope_dir_for_name(name)
+        {
+            self.set_buffer_scope_dir(id, dir);
+        }
         // Activate `major_id` directly. We can't use
         // `activate_major_for_buffer_kind` because it auto-detects
         // the language from the buffer's path (which is None here)

@@ -147,6 +147,24 @@ pub trait ModeActivator {
         let _ = (buffer, provider);
         false
     }
+
+    /// Record the directory `buffer` is *about*
+    /// ([`BufferScopeDir`](crate::BufferScopeDir)).
+    ///
+    /// A provider calls this from its trigger, where it has already resolved
+    /// the directory — a magit repository's workdir, an oil listing's dir, a
+    /// scan root. Project resolution (`:files`, `:search`) then answers for
+    /// that buffer instead of falling through to the working directory.
+    ///
+    /// Pass the directory, not a project root: the host resolves the project
+    /// from it through the ordinary resolver, so a provider never has to
+    /// learn what a project is and the two cannot be recorded inconsistently.
+    ///
+    /// Default impl is a no-op so test activators stay valid; the host
+    /// forwards to `Editor::set_buffer_scope_dir`.
+    fn set_buffer_scope_dir(&mut self, buffer: BufferId, dir: std::path::PathBuf) {
+        let _ = (buffer, dir);
+    }
 }
 
 /// AUX‑2: service-accessible interface for registering virtual row providers

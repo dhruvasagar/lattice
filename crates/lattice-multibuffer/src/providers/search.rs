@@ -909,6 +909,11 @@ pub fn project_search(
         });
     }
 
+    // The root this scan walked. A results view has no path, so without it
+    // `:files` from inside the results resolves against the working directory
+    // rather than the project that was searched.
+    activator.set_buffer_scope_dir(view_id, options.root.clone());
+
     activator.activate_minor_by_id(view_id, ProjectSearchMode::mode_id());
 
     let task = spawn_scan_task(

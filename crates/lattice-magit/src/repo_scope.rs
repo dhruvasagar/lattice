@@ -185,6 +185,22 @@ impl RepoScopes {
 /// under THIS alias (`feedback_servicesregistry_arc_typeid`).
 pub type RepoScopesHandle = Arc<RepoScopes>;
 
+/// PR.6: `RepoScopes` already answers "which repository is the buffer *called
+/// this* acting on" — which is exactly what the editor's generic project
+/// resolution needs from a buffer that has no path.
+///
+/// Implementing the trait rather than having the host read `RepoScopesHandle`
+/// keeps a magit-specific service out of generic host code: the host learns a
+/// directory and never learns whose, or that git was involved.
+///
+/// It works for every magit view at once — status, diff, log, stash, blame —
+/// because they all record through the same map.
+impl lattice_mode::BufferScopeSource for RepoScopes {
+    fn scope_dir_for_name(&self, buffer_name: &str) -> Option<PathBuf> {
+        self.workdir_for(buffer_name)
+    }
+}
+
 /// MR.2: the single path from "a magit trigger fired" to "the buffer it
 /// opens" — resolve the repository, name the buffer for it, record
 /// which repository that buffer acts on.

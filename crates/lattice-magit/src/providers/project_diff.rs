@@ -1195,6 +1195,11 @@ pub fn open_project_diff(
         emphasis: None,
     });
 
+    // The repository this view is diffing. Its buffer is a multibuffer with
+    // no path, so it needs saying explicitly — the peer of the `RepoScopes`
+    // registration that covers magit's name-opened views.
+    activator.set_buffer_scope_dir(view, workdir.clone());
+
     activator.activate_minor_by_id(view, MagitProjectDiffMode::mode_id());
 
     // PD.4: editability follows the post-image (design §2.1). A working

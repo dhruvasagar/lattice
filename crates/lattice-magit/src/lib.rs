@@ -246,6 +246,26 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         tracing::debug!("no project resolver at magit install; `C-x g` falls back to process cwd");
     }
     boot.register_service::<repo_scope::RepoScopesHandle>(repo_scopes.clone());
+    // PR.6: magit's buffers have no path, so the editor's project resolution
+    // had only the process working directory left to answer with — `:files`
+    // in a status buffer for one checkout listed whichever tree the editor
+    // was launched in. `RepoScopes` already knows, keyed by the name the host
+    // creates the buffer under, so registering it as a generic
+    // `BufferScopeSource` is the whole fix and covers every magit view at
+    // once. RCU into the wait-free registry like every other producer seam.
+    if let Some(scope_sources) = boot.service::<lattice_mode::BufferScopeSourceRegistryHandle>() {
+        let source: Arc<dyn lattice_mode::BufferScopeSource> = repo_scopes.clone();
+        scope_sources.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(source.clone());
+            Arc::new(next)
+        });
+    } else {
+        tracing::debug!(
+            "no buffer-scope registry at magit install; `:files` in a magit buffer \
+             will resolve against the working directory"
+        );
+    }
     // The store handle exists on `boot` from Phase A; the *service*
     // entry for it is registered after this install runs, so the
     // ex-commands capture the handle rather than looking it up.

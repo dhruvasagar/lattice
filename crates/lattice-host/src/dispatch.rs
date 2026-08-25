@@ -13079,6 +13079,16 @@ impl Editor {
         let Some(resolver) = self.services.get::<lattice_core::ProjectResolverHandle>() else {
             return std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         };
+        // A buffer that is not a file still belongs somewhere, and it says so
+        // through `BufferScopeDir`. Consulted FIRST: a magit status buffer, an
+        // oil listing and a search view all have `snap.path == None`, so
+        // without this every one of them fell to the `""` arm below and
+        // resolved against the process working directory — `:files` in a magit
+        // buffer for one checkout listed whichever tree the editor was
+        // launched in.
+        if let Some(dir) = self.buffer_scope_dir(self.active_pane_buffer_id()) {
+            return resolver.for_path(&dir).root;
+        }
         match snap.path.as_ref() {
             Some(arc) => resolver.for_path(arc.as_ref()).root,
             None => resolver.for_path(std::path::Path::new("")).root,
@@ -21473,11 +21483,38 @@ impl Editor {
 impl Editor {
     /// Write the `OilDir` buffer-local for `buffer_id`. Single
     /// chokepoint for every oil-buffer dir mutation (M.3.2.c.5).
+    ///
+    /// Also records the generic [`BufferScopeDir`](lattice_mode::BufferScopeDir),
+    /// so `:files` / `:search` from an oil buffer resolve against the
+    /// directory it is listing rather than the process working directory. One
+    /// chokepoint writes both, which is what stops them drifting apart.
     pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
+        self.set_buffer_scope_dir(buffer_id, dir.clone());
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
             .insert(lattice_listing::oil::modes::OilDir(dir));
+    }
+
+    /// Record the directory `buffer_id` is *about* — the generic
+    /// [`BufferScopeDir`](lattice_mode::BufferScopeDir).
+    ///
+    /// The single write chokepoint, and the one
+    /// [`ModeActivator::set_buffer_scope_dir`](lattice_mode::ModeActivator::set_buffer_scope_dir)
+    /// forwards to, so a provider crate reaches it without a host dependency.
+    pub fn set_buffer_scope_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(lattice_mode::BufferScopeDir(dir));
+    }
+
+    /// The directory `buffer_id` is about, if one was recorded.
+    pub fn buffer_scope_dir(&self, buffer_id: BufferId) -> Option<std::path::PathBuf> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.get::<lattice_mode::BufferScopeDir>())
+            .map(|d| d.0.clone())
     }
 
     /// Read the dir an oil buffer represents from its `OilDir`
@@ -21772,7 +21809,13 @@ impl Editor {
     }
 
     /// Write `FileTreeRoot`. Single chokepoint (M.3.2.c.5).
+    ///
+    /// Also records the generic `BufferScopeDir`, the oil peer's reason: a
+    /// file tree is not a file, so project resolution would otherwise answer
+    /// for the process working directory rather than the tree the user is
+    /// looking at.
     pub fn set_file_tree_root(&mut self, buffer_id: BufferId, root: std::path::PathBuf) {
+        self.set_buffer_scope_dir(buffer_id, root.clone());
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -32445,6 +32488,12 @@ impl Editor {
                 kind: lattice_core::ProjectKind::Pwd,
             };
         };
+        // Same precedence as `picker_workspace_root_path`, and it has to be:
+        // `:search` and `:files` answering different projects from the same
+        // buffer would be worse than either answer alone.
+        if let Some(dir) = self.buffer_scope_dir(self.active_pane_buffer_id()) {
+            return resolver.for_path(&dir);
+        }
         match self.document.path() {
             Some(path) => resolver.for_path(&path),
             // An empty relative path resolves against the resolver's own

@@ -257,6 +257,11 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
         emphasis: None,
     });
 
+    // The root this view scanned, so `:files` / `:search` from inside the
+    // agenda answer for the project the rows came from rather than for the
+    // process working directory. The view has no path of its own.
+    activator.set_buffer_scope_dir(view, options.root.clone());
+
     // OM.A3: the view's own minor. `gr` arrives through the implies cascade
     // (`refresh_action` returns `Some`), so this one call is the whole of the
     // wiring — the same shape `project_search` uses for `ProjectSearchMode`.

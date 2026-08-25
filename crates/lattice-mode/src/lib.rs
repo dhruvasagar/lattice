@@ -172,7 +172,10 @@ pub use crate::decoration_source::{
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
-pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
+pub use crate::locals::{
+    BufferLocal, BufferLocals, BufferScopeDir, BufferScopeSource, BufferScopeSourceRegistry,
+    BufferScopeSourceRegistryHandle, LocalDescriptor,
+};
 pub use crate::media_source::{
     AsyncMediaSource, MediaBlockRequest, MediaFuture, MediaSourceRegistry,
     MediaSourceRegistryHandle,

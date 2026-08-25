@@ -60,6 +60,12 @@ impl ModeActivator for Editor {
         Arc::clone(&self.services)
     }
 
+    /// Forward to the host's single write chokepoint, so a provider crate
+    /// records what its buffer is about without depending on `lattice-host`.
+    fn set_buffer_scope_dir(&mut self, buffer: BufferId, dir: std::path::PathBuf) {
+        Editor::set_buffer_scope_dir(self, buffer, dir);
+    }
+
     /// K.4.6 (2026-06-02): forward to the editor's
     /// `VirtualRowProviderRegistry`. The virtual-rows worker
     /// (`crate::virtual_rows_worker`) picks up new providers on

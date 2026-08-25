@@ -324,10 +324,13 @@ interface agenda-source {
     record entry {
         /// 0-based line of the headline, `error-parser`'s convention.
         line: u32,
-        /// Group label. Empty string = same group as the previous entry,
-        /// which is how a date group renders one header for N rows.
+        /// Last 0-based line of the excerpt, inclusive.
+        end-line: u32,
+        /// Grouping KEY. Rows that sort adjacently and share a key render
+        /// under one header — how a date group shows one header for N
+        /// rows drawn from N files.
         group: string,
-        /// Header title for this excerpt.
+        /// The header title, used when this row starts a group.
         label: string,
         /// Host stable-sorts across files on this. The guest owns what
         /// it means (an epoch day, a priority rank).
@@ -340,20 +343,54 @@ world agenda-source-plugin {
     import logging;
     import project;
 
+    /// File extensions this source wants offered, without the dot.
+    /// Called once at load. See "the host does not know what an org
+    /// file is", below.
+    export extensions: func() -> list<string>;
     /// Drop per-scan state. Called before the first file of a scan.
     export begin: func();
     /// Scan one file; return its agenda rows.
-    export scan: func(path: string, text: string) -> list<entry>;
+    export scan: func(path: string, text: string) -> result<list<entry>, string>;
 }
 ```
 
-Host: walk (bounded, `.org` only, `fs:read`-gated), read off-thread,
-`scan` per file, stable-sort by `sort-key`, append excerpts, publish
+Host: walk (bounded, `fs:read`-gated), read off-thread, `scan` per file,
+stable-sort by `sort-key`, append excerpts, publish
 `MultibufferExcerptsReady`, drive the headerline. Guest: everything org —
 which headlines are agenda-worthy, TODO / `SCHEDULED:` / `DEADLINE:`
 parsing, date arithmetic, grouping, ordering.
 
 The guest touches no filesystem: no WASI preopens, no `walk` capability.
+
+**`group` is a key, not a label** — the amendment OM.A1 made to the shape
+first sketched here, where the two fields were redundant and `group` was
+documented as "empty = same as the previous entry". A guest cannot know
+which of its rows will land first once every other file's rows are
+interleaved by the sort, so it cannot decide which one carries the header.
+The host compares keys *after* sorting and titles the first row of each
+run; the rest get an empty `ExcerptHeader.title`, which renders no header
+row. §6.1's grouping mechanism is unchanged — only who decides.
+
+**The host does not know what an org file is.** The sketch above once said
+the walk was "`.org` only", which contradicts §10's own claim that every
+host change here is generic. `extensions` is what fixes it: the source
+declares what it wants offered, resolved once at load and cached beside
+the producer, so the walk's per-file test is a string compare. A markdown
+TODO scanner then appears in the same view with no host change at all.
+
+Two alternatives were rejected. **Offer every project file to every
+source** — one boundary crossing carrying the full text of every file in
+the tree, which is precisely the producer-critical-path cost §7 warns
+about. **Resolve the extensions from the plugin's `language` seam** (the
+`PluginLangRegistry` already indexes `by_extension`) — it would make an
+agenda source *require* a language seam when the two are independent
+contributions.
+
+**One bad file must not fail the agenda**, so `scan` returns a `result`
+and an `err` skips that file with a `debug` log while the walk continues —
+`error-parser`'s rule, because it is the same failure class. `begin`
+failing is different: that source's per-scan state is then unknown, so it
+is dropped from *this scan* and the others carry on.
 
 ### 6.3 Rejected alternatives
 

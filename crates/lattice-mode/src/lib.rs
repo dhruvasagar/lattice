@@ -62,6 +62,11 @@ pub mod action_handler_registry;
 pub mod activator;
 pub mod active;
 pub mod binding_mode;
+// OM.A1: the native seam a WASM agenda-row producer implements. Sibling of
+// `media_source` — async, host-driven off the keystroke path, once per file of
+// a project walk. The source declares which extensions it wants offered, which
+// is what keeps a filetype out of the host's walk.
+pub mod agenda_source;
 pub mod buffer_store;
 pub mod capability;
 pub mod context;
@@ -138,6 +143,10 @@ pub use crate::action_handler_registry::{
 };
 pub use crate::activator::{ModeActivator, VirtualRowRegistrar};
 pub use crate::active::ActiveModes;
+pub use crate::agenda_source::{
+    AgendaBeginFuture, AgendaEntry, AgendaFuture, AgendaSourceRegistry, AgendaSourceRegistryHandle,
+    AsyncAgendaSource,
+};
 pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;

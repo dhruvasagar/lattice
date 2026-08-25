@@ -53,8 +53,12 @@ fancy-regex = { workspace = true, optional = true }
 # M.6 (2026-06-01): each in-tree provider ships behind its own
 # cargo feature so opt-out builds disable per provider. Default
 # enables the providers we ship.
-default = ["search"]
+default = ["search", "agenda"]
 search = ["dep:ignore", "dep:fancy-regex"]
+# OM.A1 (2026-08-25): `providers::agenda` walks the project with the same
+# .gitignore respect `search` uses, so it shares the `ignore` dep. No regex —
+# the agenda's predicate lives entirely in the guest.
+agenda = ["dep:ignore"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }
@@ -84,6 +88,14 @@ required-features = ["search"]
 # property: keystroke-pipeline latency at the runtime layer
 # during provider load. Pre-M.6.X: hundreds of ms (freeze).
 # Post-M.6.X: stays close to the 5 ms sleep budget.
+# OM.A1 (2026-08-25): agenda_scan_per_file_us — the host half of the agenda
+# producer's critical path (walk + extension filter + batched reads +
+# cross-file sort + excerpt build). `org-mode.md` §7.
+[[bench]]
+name = "agenda_scan"
+harness = false
+required-features = ["agenda"]
+
 [[bench]]
 name = "actor_latency_during_scan"
 harness = false

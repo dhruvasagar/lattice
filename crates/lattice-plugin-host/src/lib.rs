@@ -78,6 +78,11 @@ pub use crate::media_source::WasmMediaSource;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
+// OM.A1: the `agenda-source` guest→host producer seam.
+pub mod agenda_host;
+pub mod agenda_source;
+pub mod agenda_task;
+pub use crate::agenda_source::{WasmAgendaSource, normalise_extensions};
 pub mod error_parser_host;
 pub mod event_task;
 pub mod events_host;

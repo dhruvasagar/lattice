@@ -1,0 +1,116 @@
+package lattice:plugin-host@0.1.0;
+
+/// OM.A1: plugin-contributed agenda rows.
+///
+/// A plugin teaches lattice to recognise "things with a date on them" in a
+/// filetype the editor has never heard of. Org's agenda is the first and the
+/// motivating one, but nothing here is org: a source names the file
+/// extensions it wants offered, is handed one file's text at a time, and
+/// returns the rows it found.
+///
+/// ## It is a multibuffer, so the row shape is an excerpt
+///
+/// The host turns each [`entry`] into an `Excerpt { source, start_line,
+/// end_line, header }` in a multibuffer view — which buys jump-to-source,
+/// edit-propagates-to-source, headerline status and refresh from machinery
+/// that already ships (`org-mode.md` §6.1). That is why an entry carries a
+/// *line* rather than a rendered string: an agenda you can only read is a
+/// lesser feature wearing the name.
+///
+/// ## Text, not a document handle
+///
+/// Same reasoning as `media.media-blocks`: a scan reads EVERY line, so a
+/// handle would cost one boundary crossing per line where one copy costs
+/// one. The host must read the file anyway to build the source `Document`,
+/// so it reads once and hands the text over rather than making the guest
+/// read it a second time through WASI. The guest touches no filesystem: no
+/// preopens, no `walk` capability.
+///
+/// ## Where it runs
+///
+/// Off the UI and actor threads, on a spawned scan task. Not the keystroke
+/// path — but it IS the critical path of a producer, so a guest that blocks
+/// in `scan` backs up the agenda the way a slow `error-parser` backs up a
+/// build. Budgeted per call like every other seam.
+///
+/// ## What the host does with a bad entry
+///
+/// Validates and drops, never traps. A malformed file must not fail the
+/// agenda — `error-parser`'s rule, because it is the same failure class.
+interface agenda-source {
+    /// One agenda row the guest recognised in a file.
+    record entry {
+        /// **0-based** line of the row's anchor, `error-parser`'s
+        /// convention. Becomes the excerpt's `start_line`.
+        line: u32,
+        /// Last 0-based line of the excerpt, inclusive. Equal to `line` for
+        /// the one-row-per-headline case. A guest wanting the headline plus
+        /// its `SCHEDULED:` line returns `line + 1` here.
+        end-line: u32,
+        /// Grouping **key**. Rows that sort next to each other and share a
+        /// key render under ONE header — which is how a date group shows
+        /// one header for N rows drawn from N different files.
+        ///
+        /// It is a key, not a label, because the guest cannot know which
+        /// of its rows will land first once every other file's rows are
+        /// interleaved by the sort. The host compares keys AFTER sorting
+        /// and titles the first row of each run; the rest render no header.
+        group: string,
+        /// The header title for this row, used when it turns out to start
+        /// a group — `"Today"`, `"2026-08-27 Thu"`. Rows sharing a `group`
+        /// should carry the same `label`; the first one after the sort is
+        /// the one rendered.
+        ///
+        /// The row's own text is the source line itself. This is a header,
+        /// not a rendered agenda line: an excerpt shows the file, which is
+        /// what makes the agenda editable rather than a list of strings.
+        label: string,
+        /// Host stable-sorts across files on this, ascending. The guest
+        /// owns what it means (an epoch day, a priority rank, a composite).
+        sort-key: s64,
+    }
+}
+
+/// The world an agenda-source plugin implements.
+///
+/// `extensions` is called ONCE at load and cached; `begin` then `scan` are
+/// called per scan, `scan` once per matching file in walk order.
+world agenda-source-plugin {
+    import agenda-source;
+    import logging;
+    import project;
+
+    use agenda-source.{entry};
+
+    /// File extensions this source wants offered, WITHOUT the leading dot
+    /// (`["org"]`). Matched case-insensitively. Called once at load.
+    ///
+    /// This export is why the host does not know what an org file is. Two
+    /// alternatives were rejected: offering every project file to every
+    /// source (one boundary crossing carrying the full text of every file
+    /// in the tree — the producer-critical-path cost §7 warns about), and
+    /// resolving the extensions from the plugin's `language` seam, which
+    /// would make an agenda source *require* a language when the two are
+    /// independent contributions.
+    ///
+    /// A source returning an empty list scans nothing and is logged at
+    /// load — a silently-inert producer is the `NotWired` failure the host
+    /// spends effort avoiding elsewhere.
+    export extensions: func() -> list<string>;
+
+    /// Drop per-scan state. Called before the first file of a scan.
+    ///
+    /// Every scan is a fresh one — `gr` re-runs from `begin`, so a guest
+    /// accumulating across a scan (a "seen headlines" set, a today anchor
+    /// captured once) clears here rather than leaking into the next.
+    export begin: func();
+
+    /// Scan one file; return its agenda rows.
+    ///
+    /// `path` is absolute. Rows may be returned in any order; the host
+    /// stable-sorts every file's rows together on `sort-key`.
+    ///
+    /// An `err` skips this file with a `debug` log and the scan continues.
+    /// One bad file must not fail the agenda.
+    export scan: func(path: string, text: string) -> result<list<entry>, string>;
+}

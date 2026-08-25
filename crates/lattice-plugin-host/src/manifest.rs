@@ -164,6 +164,12 @@ pub enum PluginSeam {
     /// world). Sync, and unlike `help` the guest stays instantiated: a
     /// section is a function of a live `DashboardCtx`, not data.
     Dashboard,
+    /// OM.A1 — a plugin-contributed agenda-row producer
+    /// (`agenda-source-plugin` world). Async, driven once per file of a
+    /// project walk by the host's agenda provider. The guest declares the
+    /// file extensions it wants offered, which is what keeps a filetype out
+    /// of the host's walk.
+    AgendaSource,
     /// LG.3c — a plugin-contributed language (`language-plugin` world). Data,
     /// like `help`: the grammar bytes and query sources cross once at load and
     /// the guest is dropped. The host compiles the grammar (~100 ms) and owns
@@ -220,6 +226,7 @@ impl PluginSeam {
             | PluginSeam::Context
             | PluginSeam::PluginManager
             | PluginSeam::ErrorParser
+            | PluginSeam::AgendaSource
             | PluginSeam::Help
             | PluginSeam::Dashboard => 5,
         }
@@ -242,6 +249,7 @@ impl PluginSeam {
             PluginSeam::Logging => "logging",
             PluginSeam::PluginManager => "plugin-manager",
             PluginSeam::ErrorParser => "error-parser",
+            PluginSeam::AgendaSource => "agenda-source",
             PluginSeam::Help => "help",
             PluginSeam::Dashboard => "dashboard",
             PluginSeam::Language => "language",
@@ -274,6 +282,7 @@ impl FromStr for PluginSeam {
             "logging" => PluginSeam::Logging,
             "plugin-manager" => PluginSeam::PluginManager,
             "error-parser" => PluginSeam::ErrorParser,
+            "agenda-source" => PluginSeam::AgendaSource,
             "help" => PluginSeam::Help,
             "dashboard" => PluginSeam::Dashboard,
             "language" => PluginSeam::Language,

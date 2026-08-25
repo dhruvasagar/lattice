@@ -1,0 +1,197 @@
+//! OM.A1 — the agenda-row producer seam, driven through a real guest.
+//!
+//! Instantiates the `agenda-guest` fixture via
+//! [`PluginHost::spawn_agenda_source`], drives its `extensions` / `begin` /
+//! `scan` exports through the [`WasmAgendaSource`] adapter + `AgendaActor`
+//! bridge, and asserts the native result — the whole seam end to end:
+//!
+//!   - the declared extensions cross back and are normalised (the fixture
+//!     deliberately says `".ORG"`), which is what makes `claims()` work
+//!     without the host knowing what an org file is;
+//!   - `scan` crosses text in and `list<entry>` back;
+//!   - `begin` really resets the guest's per-scan state — the fixture reports
+//!     its file counter in each label, so a second scan that did NOT reset
+//!     would be visible;
+//!   - a malformed file returns a typed `err` the adapter surfaces, and the
+//!     source is still usable afterwards (an err is not a quarantine).
+//!
+//! Skips when the fixture wasn't built (no `wasm32-wasip2` target).
+
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use lattice_mode::{AsyncAgendaSource, CapabilitySet};
+use lattice_plugin_host::{
+    PluginBudget, PluginHost, PluginManifest, TrustTier, WasmAgendaSource, normalise_extensions,
+};
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+
+fn guest_wasm() -> Option<&'static str> {
+    let path = env!("AGENDA_GUEST_WASM");
+    (!path.is_empty()).then_some(path)
+}
+
+/// Spawn the fixture and build the adapter the way the loader does — ask for
+/// the extensions once, normalise, then construct.
+async fn source(host: &PluginHost) -> WasmAgendaSource {
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .expect("compile agenda fixture");
+    let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
+    let (client, actor) = host
+        .spawn_agenda_source(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+        )
+        .await
+        .expect("spawn agenda source");
+    tokio::spawn(actor.run());
+    let declared = client.extensions().await.expect("extensions cross back");
+    WasmAgendaSource::new(client, normalise_extensions(declared))
+}
+
+fn org(rows: &[i64]) -> String {
+    let mut out = String::from("#+TITLE: notes\n");
+    for r in rows {
+        out.push_str(&format!("* TODO {r}\n"));
+    }
+    out
+}
+
+/// The declaration that keeps `.org` out of the host: the guest names the
+/// extension, the host normalises it, and `claims()` answers from that alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_guest_declares_which_files_it_is_offered() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: agenda fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    assert_eq!(
+        src.extensions(),
+        ["org".to_string()],
+        "the fixture declares `.ORG`; the host stores it normalised"
+    );
+    assert!(src.claims(Path::new("/p/notes.org")));
+    assert!(src.claims(Path::new("/p/NOTES.ORG")));
+    assert!(!src.claims(Path::new("/p/main.rs")));
+}
+
+/// Text crosses in, rows cross back, and the guest's own `sort_key` survives —
+/// which is the datum the whole cross-file ordering is built on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_crosses_text_in_and_rows_back() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let rows = src
+        .scan(PathBuf::from("/p/a.org"), org(&[30, 10]))
+        .await
+        .expect("scan");
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].line, 1, "0-based, past the `#+TITLE:` line");
+    assert_eq!(rows[0].end_line, 1);
+    assert_eq!(rows[0].sort_key, 30);
+    assert_eq!(rows[0].group, "day-30");
+    assert_eq!(rows[1].sort_key, 10);
+}
+
+/// `begin` is not decoration. The fixture counts the files it has been given
+/// and puts the count in each label, so a `begin` that did NOT clear the
+/// guest's state shows up as `file 3` on the second scan's first file.
+///
+/// This is the property the WIT's "every scan is a fresh one" contract rests
+/// on, and it is invisible to a test that only ever runs one scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn begin_resets_the_guests_per_scan_state() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let first = src
+        .scan(PathBuf::from("/p/a.org"), org(&[1]))
+        .await
+        .unwrap();
+    let second = src
+        .scan(PathBuf::from("/p/b.org"), org(&[2]))
+        .await
+        .unwrap();
+    assert_eq!(first[0].label, "Day 1 (file 1)");
+    assert_eq!(second[0].label, "Day 2 (file 2)", "state accumulates…");
+
+    src.begin().await.expect("second begin");
+    let third = src
+        .scan(PathBuf::from("/p/c.org"), org(&[3]))
+        .await
+        .unwrap();
+    assert_eq!(
+        third[0].label, "Day 3 (file 1)",
+        "…and `begin` is what clears it"
+    );
+}
+
+/// One bad file must not fail the agenda — `error-parser`'s rule, same
+/// failure class. The guest's `err` surfaces as an `Err` the scan skips, and
+/// the source keeps working: an err is not a quarantine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_file_errs_without_killing_the_source() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let err = src
+        .scan(PathBuf::from("/p/bad.org"), "BROKEN\n".to_string())
+        .await
+        .expect_err("the guest rejects this file");
+    assert!(err.contains("malformed file"), "got {err}");
+
+    let ok = src
+        .scan(PathBuf::from("/p/good.org"), org(&[7]))
+        .await
+        .expect("still alive after a guest err");
+    assert_eq!(ok.len(), 1);
+    assert_eq!(ok[0].sort_key, 7);
+}
+
+/// A file with nothing dated in it returns an empty list, not an error. The
+/// distinction matters: the scan logs an `Err` and stays silent on `Ok([])`,
+/// and a project of ordinary org notes would otherwise fill the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_with_no_rows_returns_empty_rather_than_erring() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let rows = src
+        .scan(
+            PathBuf::from("/p/prose.org"),
+            "just some prose\n".to_string(),
+        )
+        .await
+        .expect("no rows is not an error");
+    assert!(rows.is_empty());
+}

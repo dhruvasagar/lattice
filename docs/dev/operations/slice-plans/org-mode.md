@@ -111,7 +111,7 @@ files? — was retired during design by reading the excerpt model
 | OM.11 | Refile + capture | ⛔ blocked (cross-file write) |
 | OM.12 | `org-table-mode`: align + cell motion | ✅ |
 | OM.13 | Row / column move + insert | ✅ |
-| OM.A1 | `agenda-source` seam + host provider | 📝 |
+| OM.A1 | `agenda-source` seam + host provider | ✅ |
 | OM.A2 | Org agenda semantics in the guest | 📝 |
 | OM.A3 | `org-agenda-mode`: act from agenda, `gr`, headerline | 📝 |
 | OM.14 | Docs, ledger, site nav | 📝 |
@@ -696,13 +696,75 @@ keeps its columns transposed against every other row. A refusal CONSUMES
 
 ## The agenda
 
-### OM.A1 — the seam 📝
-`wit/agenda-source.wit` + the host provider: walk `.org` (bounded,
-`fs:read`-gated), read off-thread, `scan` per file, stable-sort by
-`sort-key`, `append_excerpts`, publish `MultibufferExcerptsReady`, drive
-the headerline. Guest is trivial — one entry per headline.
-Exit: excerpts appear in a multibuffer.
-*bench:* scan throughput per file.
+### OM.A1 — the seam ✅ (2026-08-25)
+
+`wit/agenda-source.wit`, the `AgendaSourceRegistry` native seam, the
+plugin-host bridge, the loader drain, and `providers::agenda` — the walk,
+the cross-file sort, the excerpt build, `:agenda`.
+
+**The design's WIT needed two amendments, both recorded in the fragment
+rather than smuggled in.**
+
+1. **`extensions: func() -> list<string>`.** §6.2 said the host walks
+   "`.org` only", which puts a filetype in the host and contradicts §10's
+   own acid test. The source declares what it wants offered, resolved once
+   at load. Rejected: offering every project file to every source (the
+   full text of every file in the tree crossing the boundary — the
+   producer-cost §7 warns about), and reading the extensions off the
+   plugin's `language` seam (couples two independent contributions).
+2. **`group` is a KEY, not a label.** As sketched, `group` and `label`
+   were redundant and `group`'s "empty = same as previous" reading was
+   unimplementable: a guest cannot know which of its rows lands first once
+   the cross-file sort interleaves them. The host now compares keys after
+   sorting and titles the first row of each run.
+
+`scan` also gained a `result<_, string>` return — one malformed file must
+not fail the agenda, and without it there was no way for the guest to say
+so.
+
+**No trigger machinery was added, because PV.1 already built it.** The
+provider registers an opener on the generic provider-view seam and
+`:agenda` emits `AppEffect::OpenProviderView`. Zero `Editor::` methods,
+zero host `Action` variants, zero dispatch arms — the acid test, checked
+by grep as well as by prose.
+
+**The whole scan finishes before anything is appended**, unlike
+`providers::search`. The agenda's order is *global*: a row from the last
+file may belong at the top. Progress moves to the headerline instead.
+Re-sorting and rewriting every row per batch was rejected outright — a
+whole-viewport restyle is a UX-rules veto, not a trade-off.
+
+**Two bugs found on the way past, both pre-existing and both silent.**
+
+- `WiredSeams` never reported `media_registry`, so a boot-ordering
+  regression there would have degraded `drain_media` to a `NotWired` skip
+  with nothing asserting otherwise. Added alongside `agenda_registry` —
+  adding the sibling and leaving this one silent would be
+  aligned-by-silence.
+- **The loader never published its media-registry teardown snapshot.**
+  `unload` mutates a `&mut` clone of the `ArcSwap`'s contents and the
+  loader stored back `commands` / `pickers` / `modes` / `decorations` /
+  `contexts` but not `media` — so unloading a media plugin unregistered
+  its producer from a clone that was then dropped, and the plugin kept
+  contributing images until the next reload. Both registries are stored
+  back now.
+
+Tests: 12 in `providers::agenda` (cross-file sort; stable order on equal
+keys; one header per group run; a recurring group getting a fresh header;
+rows of one file sharing one source document; a rejected file skipped
+while the scan continues; an empty agenda still reaching a terminal
+headerline; `begin` exactly once per scan; the extension filter; `~`
+expansion; service round-trip), 9 in `lattice-mode::agenda_source` +
+`plugin-host::agenda_source` (registry replace-on-reload, teardown
+idempotence, claim matching, entry validation, extension normalisation),
+and 5 in `tests/agenda_source.rs` driving the real `agenda-guest` fixture
+— including the one that matters most, that **`begin` really resets the
+guest's per-scan state**, which a single-scan test cannot see.
+
+*bench:* `agenda_scan/scan_200_files` — the host half (walk, extension
+filter, batched reads, cross-file sort, excerpt build) against a native
+fake producer. The guest round-trip is already ratcheted by the grammar
+gate and is independent of which guest answers.
 
 ### OM.A2 — org semantics 📝
 TODO / `SCHEDULED:` / `DEADLINE:` parsing, date arithmetic, grouping via

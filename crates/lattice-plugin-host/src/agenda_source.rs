@@ -1,0 +1,189 @@
+//! OM.A1 — the `WasmAgendaSource` adapter.
+//!
+//! Wraps an agenda plugin's [`AgendaClient`] bridge and exposes a **native**-
+//! typed producer the host's scan calls, exactly like `WasmMediaSource`. The
+//! provider that drives it lives in `lattice-multibuffer` and knows nothing
+//! about WASM; this is the only place the two meet.
+
+use std::path::PathBuf;
+
+use lattice_mode::agenda_source::{
+    AgendaBeginFuture, AgendaEntry, AgendaFuture, AsyncAgendaSource,
+};
+
+use crate::PluginId;
+use crate::agenda_task::{AgendaClient, Entry};
+
+/// An async agenda-row producer over a plugin's [`AgendaClient`].
+#[derive(Clone, Debug)]
+pub struct WasmAgendaSource {
+    client: AgendaClient,
+    /// Resolved ONCE at load, so the walk's per-file test is a string compare
+    /// rather than a guest call. A `scan`-per-file boundary crossing is
+    /// already the producer's dominant cost; adding an `extensions()` call
+    /// per file would double it to answer a question that cannot change.
+    extensions: Vec<String>,
+}
+
+impl AsyncAgendaSource for WasmAgendaSource {
+    fn source_id(&self) -> u64 {
+        self.plugin_id().0 as u64
+    }
+
+    fn extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    fn begin(&self) -> AgendaBeginFuture<'_> {
+        Box::pin(async move {
+            self.client
+                .begin()
+                .await
+                .map_err(|e| format!("agenda plugin: {e}"))
+        })
+    }
+
+    fn scan(&self, path: PathBuf, text: String) -> AgendaFuture<'_> {
+        Box::pin(async move {
+            let display = path.display().to_string();
+            let raw: Vec<Entry> = match self.client.scan(display.clone(), text).await {
+                // The guest's own `err` and a host-surface failure land in the
+                // same place because the caller does the same thing with both:
+                // skip this file, keep scanning.
+                Ok(inner) => inner?,
+                Err(host_err) => return Err(format!("agenda plugin: {host_err}")),
+            };
+            Ok(raw
+                .into_iter()
+                .filter_map(|e| validate(&display, e))
+                .collect())
+        })
+    }
+}
+
+impl WasmAgendaSource {
+    pub fn new(client: AgendaClient, extensions: Vec<String>) -> Self {
+        Self { client, extensions }
+    }
+
+    pub fn plugin_id(&self) -> PluginId {
+        self.client.id()
+    }
+}
+
+/// Normalise a declared extension: lowercase, leading dots stripped, blanks
+/// dropped. A guest writing `".ORG"` and a guest writing `"org"` mean the same
+/// filetype, and making the host guess which spelling it got is how a
+/// producer ends up silently scanning nothing.
+pub fn normalise_extensions(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in raw {
+        let cleaned = e.trim().trim_start_matches('.').to_ascii_lowercase();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !out.contains(&cleaned) {
+            out.push(cleaned);
+        }
+    }
+    out
+}
+
+/// Convert one WIT entry into a native one, or drop it.
+///
+/// Guest output is untrusted, exactly as `error_parser_host::validate` treats
+/// a parsed diagnostic. The rejections here are the ones a buggy guest
+/// actually produces: an inverted span (`end_line < line`, an off-by-one in
+/// the guest's own subtree walk) and a line near `u32::MAX` (an underflow in a
+/// 1-based → 0-based conversion). Both would otherwise become an excerpt that
+/// renders nothing and jumps nowhere.
+///
+/// `debug!`, never `info!` — this fires per row of a project-wide scan.
+fn validate(path: &str, e: Entry) -> Option<AgendaEntry> {
+    if e.line == u32::MAX || e.end_line == u32::MAX {
+        tracing::debug!(
+            path,
+            line = e.line,
+            end_line = e.end_line,
+            "agenda source returned an out-of-range line; skipping the row"
+        );
+        return None;
+    }
+    if e.end_line < e.line {
+        tracing::debug!(
+            path,
+            line = e.line,
+            end_line = e.end_line,
+            "agenda source returned an inverted span; skipping the row"
+        );
+        return None;
+    }
+    Some(AgendaEntry {
+        line: e.line,
+        end_line: e.end_line,
+        group: e.group,
+        label: e.label,
+        sort_key: e.sort_key,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(line: u32, end_line: u32) -> Entry {
+        Entry {
+            line,
+            end_line,
+            group: "Today".into(),
+            label: "TODO write tests".into(),
+            sort_key: 42,
+        }
+    }
+
+    #[test]
+    fn a_well_formed_entry_converts() {
+        let got = validate("/p/n.org", entry(9, 10)).expect("accepted");
+        assert_eq!((got.line, got.end_line), (9, 10));
+        assert_eq!(got.group, "Today");
+        assert_eq!(got.sort_key, 42);
+    }
+
+    /// A single-line row is the common case and must not look inverted.
+    #[test]
+    fn a_single_line_span_is_accepted() {
+        assert!(validate("/p/n.org", entry(4, 4)).is_some());
+    }
+
+    #[test]
+    fn an_inverted_span_is_dropped() {
+        assert!(validate("/p/n.org", entry(10, 9)).is_none());
+    }
+
+    /// What a guest's own 1-based → 0-based conversion produces when it
+    /// underflows on line 0.
+    #[test]
+    fn an_out_of_range_line_is_dropped() {
+        assert!(validate("/p/n.org", entry(u32::MAX, u32::MAX)).is_none());
+        assert!(validate("/p/n.org", entry(0, u32::MAX)).is_none());
+    }
+
+    #[test]
+    fn extensions_are_lowercased_and_dot_stripped() {
+        let got = normalise_extensions(vec![".ORG".into(), "Md".into()]);
+        assert_eq!(got, vec!["org".to_string(), "md".to_string()]);
+    }
+
+    /// A duplicate would make the walk offer one file to one source twice.
+    #[test]
+    fn duplicate_and_blank_extensions_are_dropped() {
+        let got = normalise_extensions(vec![
+            "org".into(),
+            ".org".into(),
+            "  ".into(),
+            ".".into(),
+            "".into(),
+        ]);
+        assert_eq!(got, vec!["org".to_string()]);
+    }
+}

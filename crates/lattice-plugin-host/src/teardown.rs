@@ -95,6 +95,10 @@ pub struct PluginTeardown {
     /// `decoration_sources` — without this a `:plugin-reload` would leave the
     /// old producer registered and every image would be requested twice.
     pub media_sources: Vec<u64>,
+    /// OM.A1: agenda producers to unregister, by plugin id. Mirrors
+    /// `media_sources` — without this a `:plugin-reload` would leave the old
+    /// producer registered and every agenda row would appear twice.
+    pub agenda_sources: Vec<u64>,
     /// TC.2: context producer ids the plugin registered into the
     /// [`ContextSourceRegistry`] — each reversed via
     /// `ContextSourceRegistry::unregister`. Mirrors `decoration_sources`.
@@ -119,6 +123,7 @@ impl PluginTeardown {
             keymap_bindings: Vec::new(),
             decoration_sources: Vec::new(),
             media_sources: Vec::new(),
+            agenda_sources: Vec::new(),
             context_sources: Vec::new(),
             theme_elements: Vec::new(),
         }
@@ -222,6 +227,9 @@ impl PluginTeardown {
         for source_id in &self.media_sources {
             report.media_sources += reg.media.unregister(*source_id);
         }
+        for source_id in &self.agenda_sources {
+            report.agenda_sources += reg.agenda.unregister(*source_id);
+        }
         for source_id in &self.context_sources {
             report.context_sources += reg.contexts.unregister(*source_id);
         }
@@ -272,6 +280,8 @@ pub struct TeardownRegistries<'a> {
     pub decorations: &'a mut GutterDecorationSourceRegistry,
     /// IM.6b: the media-producer registry, for the same reversal.
     pub media: &'a mut lattice_mode::MediaSourceRegistry,
+    /// OM.A1: the agenda-producer registry, for the same reversal.
+    pub agenda: &'a mut lattice_mode::AgendaSourceRegistry,
     /// TC.2: the context-producer registry (`unregister` by producer id).
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).
@@ -299,6 +309,8 @@ pub struct TeardownReport {
     pub decoration_sources: usize,
     /// IM.6b: media producers unregistered.
     pub media_sources: usize,
+    /// OM.A1: agenda producers unregistered.
+    pub agenda_sources: usize,
     /// TC.2: context producers unregistered.
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
@@ -424,6 +436,7 @@ mod tests {
         let report = {
             let mut reg = TeardownRegistries {
                 media: &mut Default::default(),
+                agenda: &mut Default::default(),
                 commands: &mut commands,
                 pickers: &mut pickers,
                 modes: &mut modes,
@@ -453,6 +466,7 @@ mod tests {
                 keymap_bindings: 0,
                 decoration_sources: 0,
                 media_sources: 0,
+                agenda_sources: 0,
                 context_sources: 0,
                 theme_elements: 0,
                 parser_factories: 0,
@@ -484,6 +498,7 @@ mod tests {
         // Idempotent: a second unload removes nothing (all zeros).
         let mut reg = TeardownRegistries {
             media: &mut Default::default(),
+            agenda: &mut Default::default(),
             commands: &mut commands,
             pickers: &mut pickers,
             modes: &mut modes,

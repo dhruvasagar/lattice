@@ -100,6 +100,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // M.6: `:search` ex-command (feature-gated with its provider).
     #[cfg(feature = "search")]
     crate::providers::search::register_search_ex_command(boot.commands_mut());
+    // OM.A1: `:agenda` (feature-gated with its provider).
+    #[cfg(feature = "agenda")]
+    crate::providers::agenda::register_agenda_ex_command(boot.commands_mut());
 
     // ── Services ────────────────────────────────────────────────────────────
     // M.2.b.2: expose the typed multibuffer-handle lookup so providers
@@ -109,6 +112,16 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // M.6: the project-search service so `project_search` triggers find it.
     #[cfg(feature = "search")]
     crate::providers::search::register_project_search_service(boot.services_mut());
+    // OM.A1: the agenda's per-view state, plus its opener on the generic
+    // provider-view seam. `:agenda` reaches the view through
+    // `AppEffect::OpenProviderView` and the registered opener — no host
+    // `Action` variant, no dispatch arm, no `Editor::` method (§10's acid
+    // test, and the reason PV.1 exists).
+    #[cfg(feature = "agenda")]
+    {
+        crate::providers::agenda::register_agenda_service(boot.services_mut());
+        crate::providers::agenda::register_agenda_provider(boot.services_mut());
+    }
 
     // ── Off-keystroke wake ──────────────────────────────────────────────────
     // `MultibufferExcerptsReady` (published by any provider after appending a

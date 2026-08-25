@@ -121,6 +121,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
     let report = {
         let mut reg = TeardownRegistries {
             media: &mut Default::default(),
+            agenda: &mut Default::default(),
             commands: &mut commands,
             pickers: &mut pickers,
             modes: &mut modes,

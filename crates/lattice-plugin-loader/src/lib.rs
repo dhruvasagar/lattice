@@ -264,6 +264,10 @@ pub struct LoaderServices {
     pub decoration_registry: Option<GutterDecorationSourceRegistryHandle>,
     /// IM.6b: where a loaded `media` plugin's producer is registered.
     pub media_registry: Option<lattice_mode::MediaSourceRegistryHandle>,
+    /// OM.A1: where a plugin's agenda-row producer lands. Absent leaves the
+    /// seam `NotWired` — the load fails loudly rather than reporting success
+    /// and contributing nothing to every `:agenda` forever.
+    pub agenda_registry: Option<lattice_mode::AgendaSourceRegistryHandle>,
     /// TC.2: the runtime-mutable context-producer registry (RCU-register a
     /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
     /// refresh reads the same handle wait-free.
@@ -314,6 +318,16 @@ pub struct WiredSeams {
     pub help_topics: bool,
     /// CR.4: the dashboard section registry.
     pub dashboard_sections: bool,
+    /// IM.6b: the inline-media producer registry.
+    ///
+    /// Added at OM.A1 alongside `agenda_registry`. It was missing — media
+    /// drained through a service this struct never reported on, so a boot
+    /// ordering regression there would have degraded `drain_media` to a
+    /// `NotWired` skip with nothing asserting otherwise. Adding the sibling
+    /// and leaving this one silent would be aligned-by-silence.
+    pub media_registry: bool,
+    /// OM.A1: the agenda-row producer registry.
+    pub agenda_registry: bool,
 }
 
 impl WiredSeams {
@@ -531,6 +545,8 @@ impl PluginLoader {
             parser_factories: self.env.parser_factories.is_some(),
             help_topics: self.env.help_topics.is_some(),
             dashboard_sections: self.env.dashboard_sections.is_some(),
+            media_registry: self.env.media_registry.is_some(),
+            agenda_registry: self.env.agenda_registry.is_some(),
         }
     }
 
@@ -725,6 +741,16 @@ impl PluginLoader {
                     // pending state.
                     PluginSeam::ErrorParser => {
                         let id = self.drain_error_parser(&component, manifest, tier)?;
+                        seam_ids.push(id);
+                    }
+                    // OM.A1: an agenda-row producer. Live, like `media` — the
+                    // guest stays instantiated and is called once per file of
+                    // every scan, so its per-scan state (`begin`) has
+                    // somewhere to live.
+                    PluginSeam::AgendaSource => {
+                        let id = self
+                            .drain_agenda(&component, manifest, tier, &mut record)
+                            .await?;
                         seam_ids.push(id);
                     }
                     // CR.3: the plugin's `:help` pages. Data, not a live
@@ -1409,8 +1435,15 @@ impl PluginLoader {
                 .as_ref()
                 .map(|r| (**r.load()).clone())
                 .unwrap_or_default();
+            let mut agenda_reg = self
+                .env
+                .agenda_registry
+                .as_ref()
+                .map(|r| (**r.load()).clone())
+                .unwrap_or_default();
             let mut reg = TeardownRegistries {
                 media: &mut media_reg,
+                agenda: &mut agenda_reg,
                 commands: &mut commands,
                 pickers: &mut pickers,
                 modes: &mut modes,
@@ -1426,7 +1459,18 @@ impl PluginLoader {
                 // common case removes nothing at all.
                 parsers: parsers_h,
             };
-            teardown.unload(&mut reg)
+            let report = teardown.unload(&mut reg);
+            // The media / agenda snapshots are `&mut` clones, so the reversal
+            // has to be published back the same way the ArcSwap registries
+            // below are. Missing this is how an unloaded producer keeps
+            // contributing until the next reload.
+            if let Some(h) = self.env.media_registry.as_ref() {
+                h.store(Arc::new(media_reg));
+            }
+            if let Some(h) = self.env.agenda_registry.as_ref() {
+                h.store(Arc::new(agenda_reg));
+            }
+            report
         };
         // Publish the reversed snapshots (RCU store).
         cmd_h.store(Arc::new(commands));
@@ -2359,6 +2403,91 @@ impl PluginLoader {
             plugin = %manifest.id,
             id = id.0,
             "media plugin registered its inline-media producer"
+        );
+        Ok(id)
+    }
+
+    /// OM.A1: instantiate the plugin's agenda-source, resolve the extensions
+    /// it claims ONCE, and register it as a producer.
+    ///
+    /// The `extensions()` round-trip happens here rather than per file for
+    /// the reason `WasmAgendaSource::extensions` records: the answer cannot
+    /// change, and a scan already pays one boundary crossing per file.
+    ///
+    /// A source claiming NOTHING is registered anyway and logged at `warn`.
+    /// Refusing the load would fail a plugin over one empty list while its
+    /// other seams were fine; registering silently would leave a producer
+    /// that can never contribute — the `NotWired` shape. The log is the
+    /// middle answer, and it names the plugin.
+    async fn drain_agenda(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+        let registry = self
+            .env
+            .agenda_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_agenda_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+        let actor = actor.with_tracer(self.env.tracer.clone());
+        let task = runtime.spawn(actor.run());
+
+        // Ask before registering: the producer is immutable once in the
+        // registry, and a `claims()` that consults a lock per file would put
+        // contention on the walk for an answer that never changes.
+        let declared = client.extensions().await.unwrap_or_else(|e| {
+            tracing::warn!(
+                plugin = %manifest.id,
+                error = %e,
+                "agenda plugin could not declare its file extensions; it will scan nothing"
+            );
+            Vec::new()
+        });
+        let extensions = lattice_plugin_host::normalise_extensions(declared);
+        if extensions.is_empty() {
+            tracing::warn!(
+                plugin = %manifest.id,
+                "agenda plugin claims no file extensions; it will never be offered a file"
+            );
+        }
+
+        let source = lattice_plugin_host::WasmAgendaSource::new(client, extensions);
+        let id = source.plugin_id();
+
+        // Copy-on-write RCU into the wait-free registry, like every other
+        // producer seam: a scan already running keeps reading the prior
+        // snapshot until the store lands, so there is no lock on the read
+        // path.
+        let producer: Arc<dyn lattice_mode::AsyncAgendaSource> = Arc::new(source);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(producer.clone());
+            Arc::new(next)
+        });
+
+        record.tasks.push(task);
+        record.teardown.agenda_sources.push(id.0 as u64);
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            "agenda plugin registered its agenda-row producer"
         );
         Ok(id)
     }

@@ -1097,6 +1097,17 @@ impl Editor {
         );
         boot.register_service::<lattice_mode::MediaSourceRegistryHandle>(media_registry.clone());
 
+        // OM.A1: the sibling registry for agenda-row producers. Same shape and
+        // the same reason — RCU-registered by the loader, read wait-free by
+        // the agenda provider's scan. Registered here unconditionally, even in
+        // a build whose multibuffer `agenda` feature is off: the seam is wired
+        // for the LOADER, and whether a view consumes it is a separate
+        // question. `wired_seams().all()` asserts it.
+        let agenda_registry: lattice_mode::AgendaSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::AgendaSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_mode::AgendaSourceRegistryHandle>(agenda_registry);
+
         // TC.2: the sibling registry for async context-scope producers
         // (`drain_context`). Same shape and the same reason — RCU-registered by
         // the loader, read wait-free by the host's reparse-driven refresh.

@@ -136,6 +136,12 @@ fn main() {
         "media-guest",
         "MEDIA_GUEST_WASM",
     );
+    // OM.A1: the agenda-row producer fixture.
+    build_guest(
+        &fixtures.join("agenda-guest"),
+        "agenda-guest",
+        "AGENDA_GUEST_WASM",
+    );
     build_guest(
         &fixtures.join("multiseam-guest"),
         "multiseam-guest",

@@ -17,6 +17,8 @@ lattice-ui-tui = { path = "../lattice-ui-tui" }
 # tracing subscriber. Avoids `std::env::set_var` (denied by
 # `#![deny(unsafe_code)]`).
 lattice-runtime = { path = "../lattice-runtime" }
+# Plugin auto-discovery is opt-in; this binary is the opt (`enable_autoload`).
+lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 # `lattice --init` resolves the config home (`~/.config/lattice/init/`) via the
 # canonical `config_home()` — the same tree the loader discovers init.rs from.
 lattice-config = { path = "../lattice-config" }

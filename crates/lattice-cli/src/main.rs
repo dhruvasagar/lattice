@@ -247,6 +247,17 @@ async fn main() -> Result<()> {
     // direct invocations; `open Lattice.app` auto-selects GUI via the
     // bundle-context guard above. `clap`'s `conflicts_with` enforces
     // mutual exclusivity at parse time.
+    // Plugin auto-discovery is opt-IN, and this is the opt. It sits here
+    // rather than inside `Editor::boot` because *this* is what distinguishes a
+    // user running the editor from the 45 test files that boot the same
+    // `Editor`: those must never pick up whatever is installed in the
+    // developer's `~/.config/lattice`, and making them each remember to say so
+    // is a thing the next one forgets (see `enable_autoload`).
+    //
+    // Before both branches, so the TUI and GPUI peers cannot disagree about
+    // whether the user's plugins load.
+    lattice_plugin_loader::enable_autoload();
+
     if use_gui {
         run_gui(document)
     } else {

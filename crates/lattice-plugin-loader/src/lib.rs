@@ -81,7 +81,7 @@ pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
     default_source_cache_dir, discover, discover_one,
 };
-pub use install::{disable_autoload, install};
+pub use install::{autoload_enabled, disable_autoload, enable_autoload, install};
 pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,

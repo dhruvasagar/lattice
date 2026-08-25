@@ -5336,6 +5336,7 @@ dependencies = [
  "clap",
  "lattice-config",
  "lattice-core",
+ "lattice-plugin-loader",
  "lattice-runtime",
  "lattice-ui-gpui",
  "lattice-ui-tui",

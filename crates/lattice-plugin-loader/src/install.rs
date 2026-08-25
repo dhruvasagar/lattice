@@ -24,23 +24,64 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
 
-/// Process-global opt-out of boot-time plugin auto-discovery, set by
-/// [`disable_autoload`]. Checked (together with the
-/// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var) in [`install`].
-static AUTOLOAD_DISABLED: AtomicBool = AtomicBool::new(false);
+/// Process-global opt-**in** to boot-time plugin auto-discovery, set by
+/// [`enable_autoload`]. Checked (together with the
+/// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var, which still overrides) in
+/// [`install`].
+///
+/// ## Why opt-in, and what it cost to learn
+///
+/// This was an opt-**out** (`disable_autoload`), and 42 of the 45 test files
+/// that boot a real `Editor` never called it. Every one of them silently
+/// loaded the developer's real `~/.config/lattice/plugins/` — so a test's
+/// behaviour depended on which plugins the person running it happened to have
+/// installed, and CI (with an empty home) and a laptop disagreed.
+///
+/// It is not a hypothetical: `lsp_async_wake.rs` asserts that no
+/// `async_landed` wake fires within a second of settling, and a real plugin
+/// load fires one. The test passed for everyone until an org plugin was
+/// installed, then failed on that machine only — the shape that costs an
+/// afternoon, because nothing in the failure points at the cause.
+///
+/// The fix has to be structural rather than 42 edits: a per-file opt-out is a
+/// thing the 43rd file forgets, and its absence does not announce itself. So
+/// the default is now sealed and production opts in.
+///
+/// **The trade this accepts:** if the [`enable_autoload`] call is ever lost
+/// from the binary's startup, a shipped editor loads no plugins. That is a
+/// loud failure — the first run shows it — where the one it replaces was
+/// silent and machine-dependent.
+static AUTOLOAD_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Suppress boot-time plugin auto-discovery for this process — the loader
-/// service and its ex-commands are still installed, so manual `:plugin-load`
-/// works, but [`install`] does not scan the core-plugins / `init.rs` / on-disk
-/// plugin directories. For tests and embedders that must not pick up a
-/// developer's real `~/.config/lattice`. Idempotent; equivalent to setting the
-/// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var. Safe (no `unsafe` env mutation).
+/// Turn on boot-time plugin auto-discovery for this process.
+///
+/// **Called by the binary's startup, once, before any `Editor::boot`.** Every
+/// other embedder — tests, benches, tools — gets a sealed editor by default
+/// and has to say otherwise.
+pub fn enable_autoload() {
+    AUTOLOAD_ENABLED.store(true, Ordering::Relaxed);
+}
+
+/// Suppress boot-time plugin auto-discovery for this process.
+///
+/// Now that the default is sealed this is only meaningful *after*
+/// [`enable_autoload`] — a binary turning discovery back off, or a test in a
+/// process that enabled it. Kept because it is the honest inverse and because
+/// existing callers state their intent, which is worth reading even where it
+/// is a no-op.
 pub fn disable_autoload() {
-    AUTOLOAD_DISABLED.store(true, Ordering::Relaxed);
+    AUTOLOAD_ENABLED.store(false, Ordering::Relaxed);
+}
+
+/// Whether boot-time auto-discovery is currently on. The env override is
+/// deliberately NOT consulted: this reports the latch, which is what a caller
+/// setting it wants to confirm, and what `autoload_is_opt_in.rs` pins.
+pub fn autoload_enabled() -> bool {
+    AUTOLOAD_ENABLED.load(Ordering::Relaxed)
 }
 
 fn autoload_disabled() -> bool {
-    AUTOLOAD_DISABLED.load(Ordering::Relaxed)
+    !AUTOLOAD_ENABLED.load(Ordering::Relaxed)
         || std::env::var_os("LATTICE_DISABLE_PLUGIN_AUTOLOAD").is_some()
 }
 

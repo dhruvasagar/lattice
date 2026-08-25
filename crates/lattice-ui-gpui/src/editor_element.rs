@@ -486,26 +486,61 @@ pub(crate) struct EditorElement {
 /// and costs one pointer chase to establish.
 #[derive(Default)]
 pub(crate) struct MediaPixels {
-    by_path: std::collections::HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
+    /// Interior mutability because the two sides run on different threads:
+    /// `paint` reads on the UI thread every frame, a background decode writes
+    /// when it finishes. A `Mutex` rather than RCU because the map is tiny —
+    /// the media blocks in one viewport — and the lock is uncontended.
+    inner: std::sync::Mutex<MediaPixelsInner>,
+}
+
+#[derive(Default)]
+struct MediaPixelsInner {
+    ready: std::collections::HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
+    /// Decodes already dispatched, so a block visible for 200 frames spawns
+    /// ONE task rather than 200. It also retains paths that FAILED, which is
+    /// what stops a missing file being retried on every frame forever.
+    dispatched: std::collections::HashSet<std::path::PathBuf>,
 }
 
 impl MediaPixels {
-    /// Pixels for `block`, if they have been decoded.
+    /// Pixels for `block`, if they have been decoded. Never loads.
     pub(crate) fn get(
         &self,
         block: &lattice_cells::MediaBlockRef,
     ) -> Option<Arc<gpui::RenderImage>> {
-        self.by_path.get(block.path()?).cloned()
+        let path = block.path()?;
+        self.inner.lock().ok()?.ready.get(path).cloned()
     }
 
-    /// Record a decode. Called from the media worker's landing, never from
-    /// paint.
-    pub(crate) fn insert(&mut self, path: std::path::PathBuf, image: Arc<gpui::RenderImage>) {
-        self.by_path.insert(path, image);
+    /// Claim the right to decode `path`, or `false` if someone already has.
+    ///
+    /// Called from prepaint, on the UI thread, so it does nothing but a hash
+    /// lookup — the decode itself is spawned by the caller.
+    pub(crate) fn claim(&self, path: &std::path::Path) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if inner.ready.contains_key(path) || inner.dispatched.contains(path) {
+            return false;
+        }
+        inner.dispatched.insert(path.to_path_buf());
+        true
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.by_path.is_empty()
+    /// Record a finished decode. Called from the landing, never from paint.
+    pub(crate) fn insert(&self, path: std::path::PathBuf, image: Arc<gpui::RenderImage>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.ready.insert(path, image);
+        }
+    }
+
+    /// Forget everything. A font-size or theme change invalidates every
+    /// decode, because the target size was computed from the old metrics.
+    pub(crate) fn clear(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.ready.clear();
+            inner.dispatched.clear();
+        }
     }
 }
 
@@ -764,6 +799,86 @@ struct BrandingPaint {
 /// the logo bracket and the amber cursor bar). GPUI turns each such cell
 /// into a square quad.
 const BRANDING_MARK_GLYPH: u32 = 0x2588; // █
+
+impl EditorElement {
+    /// IM.5c: start a background decode for any visible block that has no
+    /// pixels yet, so the image appears WITHOUT the user pressing anything.
+    ///
+    /// Called from prepaint, on the UI thread, and does no I/O itself: a hash
+    /// lookup per visible block, then `spawn` onto GPUI's background executor
+    /// for the ones that need it. `claim` makes the dispatch idempotent, so a
+    /// block visible for two hundred frames starts one task rather than two
+    /// hundred — and a path that FAILED stays claimed, which is what stops a
+    /// missing file being retried on every frame forever.
+    ///
+    /// The completion writes into `MediaPixels` and calls `refresh`, which is
+    /// the "reaches the screen without a keypress" half. Without that the
+    /// image would sit decoded and invisible until the user happened to type,
+    /// which is the exact bug shape `boot-composition.md` §3 exists to
+    /// prevent.
+    fn dispatch_media_decodes(&self, paints: &[MediaPaint], font_size: Pixels, cx: &mut App) {
+        for m in paints {
+            let Some(path) = m.block.path() else { continue };
+            if !self.media_pixels.claim(path) {
+                continue;
+            }
+            let path = path.to_path_buf();
+            let pixels = self.media_pixels.clone();
+            // Decode to the size the block will actually draw at. `height_lh`
+            // is `Some` here — unresolved blocks are never collected into a
+            // paint — so this is not a guess.
+            let line_px = f32::from(font_size) * 1.3;
+            let target_h = (m.block.height_lh.unwrap_or(1.0) * line_px).max(1.0) as u32;
+            // Width bound is generous: `block_geometry` already fitted the
+            // height to the pane, and `decode` preserves aspect ratio, so the
+            // height is the binding constraint.
+            let target_w = target_h.saturating_mul(8).max(1);
+            cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                // The decode itself runs on the BACKGROUND executor — this is
+                // the one call in the whole feature that must not happen on
+                // the UI thread.
+                let decoded = cx
+                    .background_executor()
+                    .spawn({
+                        let path = path.clone();
+                        async move {
+                            lattice_media::decode(
+                                &path,
+                                (target_w, target_h),
+                                lattice_media::PixelFormat::BgraPremultiplied8,
+                            )
+                        }
+                    })
+                    .await;
+                match decoded {
+                    Ok(img) => {
+                        let frame = image::Frame::new(
+                            image::RgbaImage::from_raw(img.width, img.height, img.rgba.to_vec())
+                                .unwrap_or_else(|| image::RgbaImage::new(1, 1)),
+                        );
+                        pixels.insert(
+                            path,
+                            std::sync::Arc::new(gpui::RenderImage::new(vec![frame])),
+                        );
+                        // The half that makes it appear WITHOUT a keypress.
+                        // Without this the image sits decoded and invisible
+                        // until the user happens to type — the exact bug
+                        // shape `boot-composition.md` §3 exists to prevent.
+                        let _ = cx.update(|cx| cx.refresh_windows());
+                    }
+                    Err(err) => {
+                        // Logged once: `claim` keeps the path claimed on
+                        // failure, so a missing file is not retried every
+                        // frame forever. The alt text stands in.
+                        tracing::debug!(%err, path = %path.display(),
+                            "inline media unavailable; alt text stands in");
+                    }
+                }
+            })
+            .detach();
+        }
+    }
+}
 
 /// IM.5: coalesce this frame's MediaBlock rows into one entry per block.
 ///
@@ -2074,7 +2189,11 @@ impl Element for EditorElement {
             inline_diag_overlay,
             fold_summary_overlays,
             branding: build_branding_paint(&branding_rows),
-            media: build_media_paints(&media_rows),
+            media: {
+                let paints = build_media_paints(&media_rows);
+                self.dispatch_media_decodes(&paints, font_size, _cx);
+                paints
+            },
         }
     }
 
@@ -3944,6 +4063,35 @@ mod tests {
     }
 
     use super::*;
+
+    /// IM.5c: a block visible for two hundred frames must start ONE decode,
+    /// not two hundred. `claim` is what makes prepaint's dispatch idempotent.
+    #[test]
+    fn a_decode_is_claimed_once_however_many_frames_the_block_is_visible() {
+        let pixels = MediaPixels::default();
+        let p = std::path::Path::new("/tmp/x.png");
+        assert!(pixels.claim(p), "first frame claims it");
+        for _ in 0..200 {
+            assert!(!pixels.claim(p), "every later frame is a no-op");
+        }
+    }
+
+    /// A path that FAILED stays claimed. Otherwise a missing file is retried
+    /// on every frame forever — a permanent background-task treadmill for a
+    /// file that will never appear.
+    #[test]
+    fn a_failed_path_is_not_retried_every_frame() {
+        let pixels = MediaPixels::default();
+        let p = std::path::Path::new("/tmp/missing.png");
+        assert!(pixels.claim(p));
+        // No `insert` follows — this is the failure path.
+        assert!(!pixels.claim(p), "still claimed, so no second attempt");
+
+        // `clear` is the deliberate escape hatch: a font-size or theme change
+        // invalidates every decode, and re-claiming is then correct.
+        pixels.clear();
+        assert!(pixels.claim(p), "after a clear it may be attempted again");
+    }
 
     /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,
     /// so a five-row image is painted once rather than five times stacked on

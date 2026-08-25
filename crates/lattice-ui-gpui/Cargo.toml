@@ -30,6 +30,10 @@ lattice-notify = { path = "../lattice-notify" }
 # `EditorElement::prepaint` consumer. See
 # `docs/dev/architecture/cell-grid-renderer.md`.
 lattice-cells = { path = "../lattice-cells" }
+lattice-media = { path = "../lattice-media" }
+# IM.5c: `gpui::RenderImage` is built from `image::Frame`, so the landing
+# needs the type even though all decoding happens in `lattice-media`.
+image = { version = "0.25", default-features = false }
 lattice-core = { path = "../lattice-core" }
 lattice-mode = { path = "../lattice-mode" }
 # Slice 3c.unify.gpui-annotation-render: `paint_candidate_row`

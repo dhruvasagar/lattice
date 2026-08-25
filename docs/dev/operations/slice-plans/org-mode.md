@@ -6,7 +6,13 @@
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 
-**Status:** OM.7 ✅ (2026-08-24) — **tasks, in a second mode.** OM.0 ✅ seam drain order is
+**Status:** OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
+OM.8 ✅ checkboxes + cookies; OM.9 ✅ timestamps; OM.10 ✅ links;
+OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. **OM.11 is ⛔ blocked**
+on the same cross-file write primitive as OM.6b — see below. The agenda
+group (OM.A1–A3) is the remaining work.
+
+Earlier: OM.7 ✅ tasks, in a second mode. OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
 OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
@@ -99,12 +105,12 @@ files? — was retired during design by reading the excerpt model
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
 | OM.6b | Archive subtree to `<file>_archive` | ⛔ |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
-| OM.8 | Checkboxes + statistics cookies | 📝 |
-| OM.9 | Timestamps (`<C-a>` / `<C-x>`, date prompt) | 📝 |
-| OM.10 | Links: open at point | 📝 |
-| OM.11 | Refile (plugin's own picker-source) + capture | 📝 |
-| OM.12 | `org-table-mode`: align + cell motion | 📝 |
-| OM.13 | Row / column move + insert | 📝 |
+| OM.8 | Checkboxes + statistics cookies | ✅ |
+| OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
+| OM.10 | Links: open at point | ✅ |
+| OM.11 | Refile + capture | ⛔ blocked (cross-file write) |
+| OM.12 | `org-table-mode`: align + cell motion | ✅ |
+| OM.13 | Row / column move + insert | ✅ |
 | OM.A1 | `agenda-source` seam + host provider | 📝 |
 | OM.A2 | Org agenda semantics in the guest | 📝 |
 | OM.A3 | `org-agenda-mode`: act from agenda, `gr`, headerline | 📝 |
@@ -605,34 +611,88 @@ chain. That file is now the single place four things are waiting on.
 
 Tests: 16 new (11 unit, 5 integration); 70 in the plugin repo.
 
-### OM.8 — checkboxes + cookies 📝
-`<C-Space>`; parent `[1/3]` / `[33%]` recalculation in the same edit
-batch, so one undo step.
+### OM.8 — checkboxes + cookies ✅ (2026-08-25)
+`<C-Space>`; the nearest ancestor cookie recalculates in the SAME edit, so
+one `u` puts both back — a list showing `[2/3]` above one ticked box is a
+worse state than either end. The tally runs against the buffer as it WILL
+be, or the cookie lags a keypress behind the box.
 
-### OM.9 — timestamps 📝
-`<C-a>` / `<C-x>` on the component under the cursor. Declines to the
-builtin increment elsewhere. Date entry is `Effect::OpenPrompt`.
+Cookies count direct children only (a grandchild is already reflected in
+its own parent's box) and keep their form — `[n/m]` stays a ratio, `[p%]`
+a percentage, truncated so 100% means complete. `* [ ] x` at column 0 is a
+headline, not a bullet: accepting it would let `<C-Space>` rewrite a
+heading.
 
-### OM.10 — links 📝
-`<leader>oo`: file → `OpenBufferAt`, `http(s)` → `OpenExternalUri`,
-internal `*Headline` → `CursorMove` after a tree search.
+### OM.9 — timestamps ✅ (2026-08-25)
+`<C-a>` / `<C-x>` on the component under the cursor; anywhere else in the
+stamp means the day.
 
-### OM.11 — refile + capture 📝
-Refile's target chooser is a **picker the plugin registers itself**
-through the existing `picker-source` seam, opened with
-`Effect::OpenPicker`. Capture writes through `OpenBufferAt` + `edits`.
-Exit: the outliner is complete — an org file is editable, not merely
-readable.
+**The one action in the plugin that should decline.** These are vim's
+increment / decrement — a genuinely shared chord — so org shadows them
+only where a timestamp is. Everything behind `<leader>o` consumes instead.
+Note lattice has **no increment command yet**, so today the decline
+resolves to nothing; the first test asserted `41`→`42` and failed on that.
+Recorded rather than papered over: when increment lands this composes for
+free, which consuming would have foreclosed.
+
+Date maths is hand-rolled (a `chrono`-shaped dep in a wasm guest buys a
+dozen lines). The weekday is recomputed every edit — a stamp whose day
+name disagrees with its date is worse than none. Date entry via
+`OpenPrompt` was not needed and is not built.
+
+### OM.10 — links ✅ (2026-08-25)
+`<leader>oo`, exactly the three routes planned. The internal case searches
+this buffer and matches the headline TITLE exactly, so a TODO keyword or
+priority on the target does not interfere; an unresolved reference echoes
+and leaves the cursor put, because jumping to the wrong heading is worse
+than not jumping. Resolved by title comparison rather than a tree search —
+the tree can be absent, and this runs on a keystroke.
+
+### OM.11 — refile + capture ⛔ BLOCKED (2026-08-25)
+
+Blocked on the **same missing primitive as OM.6b**, and confirmed rather
+than assumed: no effect in the WIT surface writes to a file other than the
+buffer's own. `apply-edit` takes a `target` buffer id the guest cannot
+learn for a file it has not opened; `invoke-command` exists only as a
+*picker-accept outcome*, not as an effect, so there is no way to chain
+"open that file" into "now edit it".
+
+Refile's primary meaning is moving a subtree to ANOTHER file, and capture
+writes to a designated capture file, so both need it. A same-file-only
+refile is expressible (one `ApplyEdit` over the enclosing span) but is a
+different, much smaller feature than the slice describes.
+
+**Decide together with OM.6b**, whose three candidate shapes are recorded
+there. Until then the outliner is complete for everything that stays
+within one file.
 
 ## Tables
 
-### OM.12 — `org-table-mode` 📝
-Third mode. Alignment + cell motion; `<Tab>` / `<S-Tab>` / `<CR>`.
-Extends OM.5's chain with its real (non-stub) implementation. Column
-widths computed guest-side from the table's parse; alignment lands as
-one `edits` batch.
+### OM.12 — `org-table-mode` ✅ (2026-08-25)
+Third mode. `<Tab>` / `<S-Tab>` align and step a cell; `<leader>o|`
+aligns in place.
 
-### OM.13 — row / column move + insert 📝
+**The decline chain finally has two hops, and only because of the
+inline-media work.** Table-mode's `<Tab>` declines off a table and reaches
+org-mode's headline cycle. That required lattice `b9f6e3f6`, which fixed
+the dispatcher to peel ONE keymap layer per decline; before it, a decline
+dropped every mode layer at once and would have skipped org-mode entirely
+— exactly what OM.5's comment claimed already worked and did not.
+
+Alignment is whole-table and one edit (a column is as wide as its widest
+cell). A ragged row is padded rather than refused — mid-edit is when a
+table IS ragged, and when the key is most wanted.
+
+### OM.13 — row / column move + insert ✅ (2026-08-25)
+`<leader>t…`, using the outliner's directional letters so one mnemonic
+covers subtrees and rows. Whole-table re-align in the same edit; the caret
+follows what it moved.
+
+Four refusals protect structure a key would otherwise destroy silently: a
+separator will not move (a rule marks a section), the last row and column
+will not delete, and a ragged row is padded before a column swap or it
+keeps its columns transposed against every other row. A refusal CONSUMES
+— the user is in a table and meant a table command.
 
 ## The agenda
 

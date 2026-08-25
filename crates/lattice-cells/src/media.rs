@@ -84,6 +84,20 @@ pub struct MediaBlock {
     /// practice — [`MediaBlock::new`] falls back to the file name — because
     /// a blank box tells the user nothing about what they are missing.
     pub alt: String,
+    /// IM.5: the block's drawn height in **line-heights**, once geometry is
+    /// known — `None` until then.
+    ///
+    /// This is the number that makes the block genuinely variable-height
+    /// rather than snapped to whole rows, and it is deliberately allowed to
+    /// differ from the reserved row count. A 3.4-line-height image reserves
+    /// 4 rows and draws 3.4 of them.
+    ///
+    /// Only the renderer that actually draws media populates it (through
+    /// `RowWeights`), and only one renderer runs in a process — so there is
+    /// no question of two peers disagreeing. What both peers *do* agree on is
+    /// the row count, which is why `scroll` (a row index) still anchors the
+    /// same line on each.
+    pub height_lh: Option<f32>,
 }
 
 impl MediaBlock {
@@ -101,6 +115,7 @@ impl MediaBlock {
             intrinsic: None,
             fit: MediaFit::default(),
             alt,
+            height_lh: None,
         }
     }
 
@@ -111,13 +126,15 @@ impl MediaBlock {
         }
     }
 
-    /// Height in **line-heights** for a block reserving `rows` display rows.
+    /// Height in **line-heights** — the drawn height once geometry is known,
+    /// else the reserved row count.
     ///
-    /// Until IM.5 gives a block its natural size this is exactly `rows`, so a
-    /// media block costs the scroll walks what its rows already cost and
-    /// nothing changes. The seam exists now so IM.5 has one place to change.
+    /// The fallback is what keeps a block harmless before its size is
+    /// resolved and on any peer that does not draw media: it then costs the
+    /// scroll walks exactly what its rows already cost, so introducing a
+    /// block cannot move an existing scroll position.
     pub fn line_heights(&self, rows: u16) -> f32 {
-        rows as f32
+        self.height_lh.unwrap_or(rows as f32)
     }
 }
 
@@ -280,6 +297,64 @@ mod tests {
     fn a_zero_row_block_is_clamped_rather_than_vanishing() {
         let block = Arc::new(MediaBlock::new("/tmp/x.png", None));
         assert_eq!(media_block_rows(block, 0, 0, 20).len(), 1);
+    }
+
+    /// The TUI gets a uniform map, so introducing media cannot move its
+    /// scroll positions — it paints the alt-text cells in the reserved rows,
+    /// and in a terminal those rows really are one line tall.
+    #[test]
+    fn a_non_drawing_renderer_gets_a_uniform_weight_map() {
+        use crate::virtual_rows::{VirtualRowMatrix, VirtualRowVersion};
+        let mut block = MediaBlock::new("/x.png", None);
+        block.height_lh = Some(4.25);
+        let rows = media_block_rows(Arc::new(block), 3, 5, 40);
+        let m = VirtualRowMatrix::build(rows, 20, VirtualRowVersion::default());
+
+        assert!(
+            m.media_row_weights(false).is_uniform(),
+            "a renderer that draws no pixels charges nothing extra"
+        );
+    }
+
+    /// A drawing renderer charges the block's DRAWN height, which is
+    /// fractional and differs from the rows it reserved — that is what makes
+    /// the block variable-height rather than snapped.
+    #[test]
+    fn a_drawing_renderer_charges_the_blocks_drawn_height() {
+        use crate::virtual_rows::{VirtualRowMatrix, VirtualRowVersion};
+        let mut block = MediaBlock::new("/x.png", None);
+        block.height_lh = Some(4.25);
+        let rows = media_block_rows(Arc::new(block), 3, 5, 40);
+        let m = VirtualRowMatrix::build(rows, 20, VirtualRowVersion::default());
+
+        let w = m.media_row_weights(true);
+        assert!(!w.is_uniform());
+        // The anchor line costs its own row plus the drawn height, NOT the
+        // five rows the block reserved.
+        assert!(
+            (w.cost(3, 6) - 5.25).abs() < 0.001,
+            "expected 1 + 4.25, got {}",
+            w.cost(3, 6)
+        );
+        assert_eq!(w.cost(4, 1), 1.0, "neighbouring lines are untouched");
+    }
+
+    /// Before its size is known a block costs its RESERVED rows, which is
+    /// what stops a resolving image from reflowing the document under the
+    /// reader.
+    #[test]
+    fn an_unresolved_block_costs_its_reserved_rows() {
+        use crate::virtual_rows::{VirtualRowMatrix, VirtualRowVersion};
+        let block = MediaBlock::new("/x.png", None); // height_lh: None
+        let rows = media_block_rows(Arc::new(block), 2, 6, 40);
+        let m = VirtualRowMatrix::build(rows, 20, VirtualRowVersion::default());
+
+        let w = m.media_row_weights(true);
+        assert!(
+            (w.cost(2, 7) - 7.0).abs() < 0.001,
+            "1 + 6 reserved rows, got {}",
+            w.cost(2, 7)
+        );
     }
 
     /// Alt text longer than the pane truncates rather than overflowing the

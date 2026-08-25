@@ -162,6 +162,67 @@ pub fn fit_within(src: (u32, u32), bounds: (u32, u32)) -> (u32, u32) {
     )
 }
 
+/// How much space a block should take, given what it is and where it goes.
+///
+/// Returns `(rows, height_lh)`:
+///
+/// - `rows` — display rows to reserve. **Both peers agree on this**, which is
+///   what keeps `scroll` (a row index) anchoring the same source line
+///   whichever renderer is running.
+/// - `height_lh` — the drawn height in line-heights, which the drawing peer
+///   spends through `RowWeights`. Deliberately allowed to be fractional: a
+///   3.4-line-height image reserves 4 rows and draws 3.4 of them. Snapping it
+///   to 4 is what §3 of the design rejected, because it makes the rendered
+///   size a function of the font size.
+///
+/// `rows` is `ceil(height_lh)` so the reservation never under-covers the
+/// drawing — an image must not paint over the line beneath it.
+pub fn block_geometry(
+    intrinsic: (u32, u32),
+    fit: lattice_cells::MediaFit,
+    line_height_px: f32,
+    pane_width_px: f32,
+) -> (u16, f32) {
+    // Degenerate geometry (a pane not yet measured, a zero line height)
+    // yields one row rather than a division by zero or an absurd
+    // reservation. The next frame with real metrics resolves it properly.
+    // `is_finite` first: a NaN pane width would slip past a bare `<= 0.0`
+    // comparison and propagate into the row count.
+    if !line_height_px.is_finite()
+        || !pane_width_px.is_finite()
+        || line_height_px <= 0.0
+        || pane_width_px <= 0.0
+    {
+        return (1, 1.0);
+    }
+    let (iw, ih) = intrinsic;
+    if iw == 0 || ih == 0 {
+        return (1, 1.0);
+    }
+
+    let drawn_h_px = match fit {
+        // Never wider than the pane, and never scaled UP — a 32×32 icon
+        // stretched across the pane is worse than the icon.
+        lattice_cells::MediaFit::Contain => {
+            let scale = (pane_width_px / iw as f32).min(1.0);
+            ih as f32 * scale
+        }
+        // Always fill the width, up or down, and let the height follow.
+        lattice_cells::MediaFit::Width => ih as f32 * (pane_width_px / iw as f32),
+    };
+
+    let height_lh = (drawn_h_px / line_height_px).max(MIN_BLOCK_LH);
+    let rows = height_lh.ceil().min(u16::MAX as f32) as u16;
+    (rows.max(1), height_lh)
+}
+
+/// A block never draws thinner than this, however extreme its aspect ratio.
+///
+/// A 10000×1 rule would otherwise resolve to a fraction of a line-height and
+/// be invisible while still consuming a row — the "it silently did nothing"
+/// failure that `media_block_rows` clamps against on the row side.
+pub const MIN_BLOCK_LH: f32 = 1.0;
+
 /// What a cache entry is keyed on.
 ///
 /// `mtime` is why an edited image reappears instead of serving a stale decode
@@ -372,6 +433,70 @@ mod tests {
         }
         cache.clear();
         assert_eq!(cache.bytes(), 0);
+    }
+
+    #[test]
+    fn geometry_scales_to_the_pane_and_reserves_whole_rows() {
+        use lattice_cells::MediaFit;
+        // 400x200 in a 200px pane at 20px lines: halved to 200x100, which is
+        // 5 line-heights, so 5 rows.
+        let (rows, lh) = block_geometry((400, 200), MediaFit::Contain, 20.0, 200.0);
+        assert_eq!(rows, 5);
+        assert!((lh - 5.0).abs() < 0.001, "got {lh}");
+
+        // Fractional heights are KEPT, not snapped — that is what makes the
+        // block variable-height rather than whole-row. 4.25 draws 4.25 and
+        // reserves 5, so it never paints over the line beneath it.
+        let (rows, lh) = block_geometry((400, 170), MediaFit::Contain, 20.0, 200.0);
+        assert!((lh - 4.25).abs() < 0.001, "got {lh}");
+        assert_eq!(
+            rows, 5,
+            "rows is ceil(height), so the reservation covers it"
+        );
+    }
+
+    /// `Contain` never scales up; `Width` does. A small icon blown up to fill
+    /// the pane is worse than the icon.
+    #[test]
+    fn contain_never_upscales_but_width_does() {
+        use lattice_cells::MediaFit;
+        let (_, lh_contain) = block_geometry((32, 32), MediaFit::Contain, 20.0, 400.0);
+        assert!(
+            (lh_contain - 1.6).abs() < 0.001,
+            "32px / 20px lines, got {lh_contain}"
+        );
+
+        let (_, lh_width) = block_geometry((32, 32), MediaFit::Width, 20.0, 400.0);
+        assert!(
+            (lh_width - 20.0).abs() < 0.001,
+            "filled the width, got {lh_width}"
+        );
+    }
+
+    /// Degenerate geometry must not divide by zero or reserve something
+    /// absurd — an unmeasured pane resolves on the next frame.
+    #[test]
+    fn degenerate_geometry_yields_one_row_rather_than_nonsense() {
+        use lattice_cells::MediaFit;
+        for args in [
+            ((100, 100), 0.0, 200.0),
+            ((100, 100), 20.0, 0.0),
+            ((0, 100), 20.0, 200.0),
+            ((100, 0), 20.0, 200.0),
+        ] {
+            let (rows, lh) = block_geometry(args.0, MediaFit::Contain, args.1, args.2);
+            assert_eq!((rows, lh), (1, 1.0), "for {args:?}");
+        }
+    }
+
+    /// An extreme aspect ratio must not resolve to a sliver that is invisible
+    /// while still occupying a row.
+    #[test]
+    fn an_extreme_ratio_still_draws_at_least_one_line() {
+        use lattice_cells::MediaFit;
+        let (rows, lh) = block_geometry((10_000, 1), MediaFit::Contain, 20.0, 200.0);
+        assert!(lh >= MIN_BLOCK_LH, "got {lh}");
+        assert_eq!(rows, 1);
     }
 
     /// An edited image must reappear rather than serving the old decode

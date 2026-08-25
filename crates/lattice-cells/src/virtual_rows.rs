@@ -439,6 +439,51 @@ impl VirtualRowMatrix {
     /// [`VirtualRowKind::is_pinned`] — `Sticky` headerlines + the
     /// `BrandingBlock` masthead). Used by renderers to paint the fixed top
     /// strip before the scrollable content window.
+    /// IM.5: the [`RowWeights`](crate::RowWeights) implied by this matrix's
+    /// media blocks.
+    ///
+    /// A source line carrying a media block costs its own row plus the
+    /// block's DRAWN height, which is fractional and generally differs from
+    /// the rows the block reserved. Everything else is absent from the map
+    /// and therefore costs exactly what it always did.
+    ///
+    /// `draws_media` is the renderer's answer to "do I paint pixels". The TUI
+    /// passes `false` and gets a uniform map, so its scroll arithmetic is
+    /// untouched — it renders the block's alt-text cells in the reserved rows
+    /// and those rows are one line tall, which is the truth for a terminal.
+    /// Only one renderer runs in a process, so the two answers never collide.
+    pub fn media_row_weights(&self, draws_media: bool) -> crate::RowWeights {
+        let mut weights = crate::RowWeights::uniform();
+        if !draws_media {
+            return weights;
+        }
+        // Group by anchor line: a block's rows all share one anchor, and the
+        // line's cost is its own row plus the block's drawn height.
+        let mut seen: std::collections::HashMap<u32, (f32, u32)> = std::collections::HashMap::new();
+        for row in self.rows.iter() {
+            if row.kind != VirtualRowKind::MediaBlock {
+                continue;
+            }
+            let Some(block) = row.media.as_ref() else {
+                continue;
+            };
+            let entry = seen.entry(row.anchor_line).or_insert((0.0, 0));
+            entry.1 += 1;
+            // Every row of a group carries the same descriptor, so the drawn
+            // height is recorded once rather than accumulated per row.
+            entry.0 = block.line_heights(0);
+        }
+        for (line, (drawn, rows)) in seen {
+            // `line_heights(0)` returns 0.0 when the block has no resolved
+            // height yet — before its size is known it costs its reserved
+            // rows, which is what stops a resolving image from reflowing the
+            // document.
+            let cost = if drawn > 0.0 { drawn } else { rows as f32 };
+            weights.set(line, 1.0 + cost);
+        }
+        weights
+    }
+
     pub fn sticky_rows(&self) -> impl Iterator<Item = &VirtualRow> {
         self.rows.iter().filter(|r| r.kind.is_pinned())
     }

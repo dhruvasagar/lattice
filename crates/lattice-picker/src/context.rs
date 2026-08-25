@@ -35,10 +35,21 @@ use lattice_protocol::Position;
 /// own clones.
 pub struct PickerContext<'a> {
     pub active_buffer: ActiveBufferSnapshot<'a>,
-    /// Best-effort workspace root: active document's parent
-    /// when one exists, else current directory, else `.`.
-    /// Owned because cwd resolution is fallible and the
-    /// fallback PathBuf needs somewhere stable to live.
+    /// The active buffer's **project root** (PR.4), resolved by the
+    /// host through `ProjectResolverHandle::for_path`.
+    ///
+    /// NOT the process working directory, and not the active
+    /// document's parent — both were tried and both were wrong in
+    /// opposite directions. The parent "behaved unintuitively for
+    /// projects spread across many subdirectories"; the cwd is right
+    /// only if you launched the editor inside the tree you are
+    /// editing. A source wanting "where does this file's project
+    /// live" reads this and needs nothing else.
+    ///
+    /// Degrades to the process cwd (then `.`) only when no
+    /// `ProjectResolverHandle` is registered — a test harness, not a
+    /// real boot. Owned because that fallback is fallible and the
+    /// PathBuf needs somewhere stable to live.
     pub workspace_root: PathBuf,
     pub recent_files: &'a [PathBuf],
     /// Position-history ring, translated from the App's richer

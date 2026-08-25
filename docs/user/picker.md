@@ -68,7 +68,7 @@ buffer" read the buffer you were in when you opened the picker.
 
 | Source | Lists | `<CR>` does | Args |
 |---|---|---|---|
-| `files` | Files under the workspace root | Open the file | `[root]` — directory to walk (default: document's parent / cwd) |
+| `files` | Files under the workspace root | Open the file | `[root]` — directory to walk (default: the active buffer's project root) |
 | `recent` | Recently-edited files (MRU) | Open the file | — |
 | `buffers` | Every open buffer | Switch to it | — |
 | `lines` | Lines of the active buffer | Jump to the line | — |

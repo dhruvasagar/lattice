@@ -435,12 +435,12 @@ impl FilesSource {
         Self {
             spec: PickerSourceSpec {
                 id: "files".into(),
-                doc: "File picker rooted at the current working directory (recursive). Pass an explicit path to override.".into(),
+                doc: "File picker rooted at the active buffer's PROJECT (recursive). Pass an explicit path to override.".into(),
                 args_hint: "[root]".into(),
                 args_schema: vec![ArgSpec {
                     name: "root".into(),
                     kind: ArgKind::String,
-                    doc: "Directory to walk recursively. Absent = current working directory.".into(),
+                    doc: "Directory to walk recursively. Absent = the active buffer's project root.".into(),
                     prompt: "root:".into(),
                     default: ArgDefault::None,
                     completion: Some("gen:files".into()),
@@ -583,8 +583,8 @@ impl FilePickSource {
                 args_schema: vec![ArgSpec {
                     name: "root".into(),
                     kind: ArgKind::String,
-                    doc: "Directory to walk recursively. Absent = current working directory. \
-                          Picked paths are relative to it."
+                    doc: "Directory to walk recursively. Absent = the active buffer's \
+                          project root. Picked paths are relative to it."
                         .into(),
                     prompt: "root:".into(),
                     default: ArgDefault::None,

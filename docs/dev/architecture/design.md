@@ -1367,7 +1367,7 @@ Plugins ship their own sprites. The `git-gutter` plugin registers `git-gutter:ad
 
 ##### Why this is not Path 4
 
-Sprites fit in line height. They participate in the existing decoration + gutter + status + picker pipelines. They share the GPU pipeline with glyphs. They do not change line layout. Path 4 (inline blocks) is for *non-line-height* media that affects the cumulative-height index and requires per-block layout work -- a strictly more complex problem deferred to post-1.0.
+Sprites fit in line height. They participate in the existing decoration + gutter + status + picker pipelines. They share the GPU pipeline with glyphs. They do not change line layout. Path 4 (inline blocks) is for *non-line-height* media that changes the document's display-row count and therefore its scroll arithmetic -- a strictly more complex problem, and one that landed separately in 2026-08 (see [`inline-media.md`](inline-media.md)). The two remain distinct: a sprite never reserves rows.
 
 #### 5.6.8 Render-snapshot coherence (the core / renderer contract)
 
@@ -3403,13 +3403,21 @@ Original scope: shaped path in `lattice-render-editor`, per-line layout cache + 
 
 **Moved to Post-1.0** alongside Path 4 (inline media blocks), which shares the same variable-height substrate.
 
+> **Superseded for Path 4 (2026-08-25).** Path 4 was pulled back into v1 and
+> built — see [`inline-media.md`](inline-media.md). The premise above held for
+> the *scroll* substrate and not for the paint one: Thread F had already landed
+> per-display-row variable height in the GPUI element (`row_scale` /
+> `row_tops`), so what remained was the scroll arithmetic, which turned out to
+> be seven shared functions rather than a rewrite. The per-line variable
+> *font size* half of Phase 9 stays retired.
+
 **Carved out and kept for v1:** *concealment* — hiding `**`, `[]()`, heading `#` markers on lines the cursor is not on. It is what actually makes markdown editing feel rich in Vim, Emacs and Helix alike, it costs no shaped path, and it works identically on both peers. Not yet implemented (no `conceal` support exists in the tree).
 
 ### Phase 10: Polish and v1.0 (weeks 29-32)
 Live-eval (`*scratch:rust*` -> `rustc` -> dynamic plugin load). Accessibility. Cross-platform packaging. Crash reporter. Documentation. Themes. **Exit:** 1.0 release.
 
 ### Post-1.0
-Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH. Collaborative editing. Multi-cursor as first-class editing model. Pluggable editing paradigms (e.g., emacs / readline-style alternative). `tree-sitter-motions` plugin promoted to a bundled extension. PTY-backed `terminal` buffer view.
+`WebRenderer` (decision time). Remote / SSH. Collaborative editing. Multi-cursor as first-class editing model. Pluggable editing paradigms (e.g., emacs / readline-style alternative). `tree-sitter-motions` plugin promoted to a bundled extension. PTY-backed `terminal` buffer view.
 
 **Total estimate:** ~8 months solo, faster with a small team. Realistic with rework: 11-15 months.
 

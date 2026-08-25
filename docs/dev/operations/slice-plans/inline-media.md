@@ -4,7 +4,12 @@
 > Design contracts live in
 > [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
 
-**Status:** IM.5 ✅ (2026-08-25) — **GPUI draws images.** The scroll
+**Status:** IM.8 ✅ (2026-08-25) — **the plan is complete.** An org
+`[[file:diagram.png]]` becomes rows the host reserves and the GPUI peer
+draws; the TUI shows its alt text in the same rows. IM.2 was **closed as
+not needed** rather than built — see below.
+
+Earlier: IM.5 ✅ GPUI draws images. The scroll
 arithmetic is tall-row-aware (IM.1), blocks reserve rows and declare alt
 text (IM.3), pixels are decoded off-thread (IM.4), sized naturally
 (IM.5a), painted over the reserved rows (IM.5b) and landed without a
@@ -63,15 +68,16 @@ wrong.
 | IM.1a | `RowWeights` + cursor-visibility walks spend a line-height budget | ✅ |
 | IM.1b | Paging / centring (`<C-f>`, `H`/`M`/`L`, `zz`) spend the budget | ✅ |
 | IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | ✅ |
-| IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
+| IM.2 | Document-level Fenwick height index | ⛔ not needed |
 | IM.4 | Off-thread decode + cache (`lattice-media`) | ✅ |
 | IM.5a | Natural sizing — `height_lh`, `block_geometry`, weight derivation | ✅ |
 | IM.5b-1 | Decode straight into the consumer's pixel layout | ✅ |
 | IM.5b | GPUI paint over the reserved rows | ✅ |
 | IM.5c | Background decode + landing without a keypress | ✅ |
-| IM.6 | WIT seam for plugin-contributed media blocks | 📝 |
-| IM.7 | Org: `[[file:…]]`, `org.inline-images`, `<leader>oI` | 📝 |
-| IM.8 | Docs, ledger, site nav | 📝 |
+| IM.6a | The `media` seam's ABI (`wit/media.wit`) | ✅ |
+| IM.6b | Producer machinery: actor, adapter, registry, drain, fixture | ✅ |
+| IM.7 | Org: `[[file:…]]`, `org.inline-images`, `<leader>oI` | ✅ |
+| IM.8 | Docs, ledger, site nav | ✅ |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench
 where a hot path is touched, tests covering the failure mode as well as
@@ -176,12 +182,26 @@ against a fixture row that simply declares itself tall. That was the
 point — the scroll rework is now done and testable before any image can
 be blamed for a scrolling bug.
 
-### IM.2 — document-level height index 📝
+### IM.2 — document-level height index ⛔ NOT NEEDED (2026-08-25)
 
-**Resequenced after IM.3.** Its consumers — scrollbar proportion and
-absolute jumps — only diverge from today once tall rows exist, so
-building the index first would mean benching and tuning a structure with
-nothing in it.
+Closed without building it, because the audit that resequencing invited
+found it has **no consumer**.
+
+Its two named consumers were the scrollbar and absolute jumps.
+
+- **There is no scrollbar.** Not "it does not need this yet" — the string
+  `scrollbar` does not appear anywhere in the codebase. A cumulative-height
+  index exists to make a thumb proportional, and there is no thumb.
+- **Absolute jumps already work.** `G` and `:N` set `cursor.line`, and the
+  scroll follows from `ensure_cursor_visible`, which IM.1a made
+  tall-row-aware. `ensure_cursor_visible_charges_a_tall_row_its_real_height`
+  is exactly that case: cursor on the last line, a tall row in between.
+
+Building a Fenwick tree now would be tuning a structure with nothing
+reading it. **Trigger to revisit:** a scrollbar. Its shape is also likely
+simpler than a tree — `RowWeights` is SPARSE, so "extra height above line
+N" is a short scan over the handful of overridden lines, not a walk over
+every line in the document.
 
 Fenwick cumulative height, peer-local, updated on edit and block resize.
 Consumers: scrollbar proportion, absolute jumps (`G`, line N, restored
@@ -266,22 +286,53 @@ compiles the lib WITHOUT the `window` feature — so the real-gpui paint
 path is never type-checked. `--features window` belongs in the loop for
 any renderer-touching slice, not only at the end of one.
 
-### IM.6 — the seam 📝
+### IM.6a — the seam's ABI ✅ (2026-08-25)
 
-WIT surface for a guest to contribute a media block: path + row count,
-never bytes, `fs:read` gated host-side.
+`wit/media.wit`. The design fragment claimed this would extend the
+`decorations` seam; it does not, and **no WIT seam could produce a virtual
+row at all** — see §7's correction. Narrow by choice: the guest names a
+file and a line, and carries neither pixels nor a size.
 
-*Exit:* a fixture guest contributes a block that renders.
+### IM.6b — the producer machinery ✅ (2026-08-25)
 
-### IM.7 — org 📝
+Bindgen world, actor bridge, source adapter, registry, loader drain,
+teardown, fixture guest. Deliberately the twin of `decorations` at every
+layer.
 
-`[[file:…]]` alone on a line; `org.inline-images` (default off);
-`<leader>oI` toggle. Lands in the plugin repo.
+**The seam changed shape mid-slice** and the reason is worth keeping.
+`media-blocks` first took a `borrow<document>` handle, mirroring
+`grammar.apply-action`. Wrong for this access pattern: an action reads a
+handful of lines near the cursor, where a handle costs a few crossings; a
+media scan reads EVERY line, where a handle costs one crossing per line —
+ten thousand on a large org file — against one for a single copy. It takes
+`text` now.
 
-*Exit:* opening an org file with `org.inline-images=on` shows the image
-in GPUI and its `alt` in the TUI, with identical scroll behaviour.
+That makes the actor loop the FOURTH near-copy of
+picker/completion/decoration. The rule-of-three note in `completion_task`
+is earned; generalise the next time one of them changes shape rather than
+speculatively here.
 
-### IM.8 — docs, ledger, site nav 📝
+*Exit met:* a fixture guest contributes blocks that resolve, and both
+failure paths degrade to a typed `err` rather than a trap.
+
+### IM.7 — org ✅ (2026-08-25)
+
+Two commits: the guest half in the plugin repo (`91f5aac`), the host pump
+and virtual-row provider here.
+
+**Guest:** scan for image links alone on their line. Only alone, because a
+block occupies whole rows and can only hang below a line — a link inside a
+sentence would put its picture on the next row, detached from the text
+that introduced it. An extension allow-list rather than "try to decode and
+see", so `[[file:notes.org]]` does not become a failed image and nothing
+probes files the user never asked about. Off by default.
+
+**Host:** `maybe_refresh_wasm_media` (the decoration pump's twin) and
+`MediaVirtualRowProvider`. `PROVISIONAL_ROWS = 8` is the reservation
+before a file is measured — not 0 (invisible but holding a slot) and not 1
+(every image visibly jumping to its real height as reads land).
+
+### IM.8 — docs, ledger, site nav ✅ (2026-08-25)
 
 Includes correcting `design.md`: Phase 9's retirement note and the
 Post-1.0 list both still say Path 4 is post-1.0, and §5.6.7's "Why this

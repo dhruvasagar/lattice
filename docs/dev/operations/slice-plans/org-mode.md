@@ -10,11 +10,10 @@
 > the four generic host changes, the acid test, and the findings worth
 > carrying past org.
 >
-> **Not archivable.** OM.6b and OM.11 are ⛔ deferred on the same missing
-> primitive, and a deferred slice is open work — see the archiving rule in
-> CLAUDE.md. The primitive is now designed
-> ([`cross-file-writes.md`](cross-file-writes.md)) but not built; this
-> plan stays active until XF.5 lands and both slices go green.
+> **Not archivable.** OM.6b and OM.11 are open work — 📝 rather than ⛔
+> since 2026-08-26, when XF shipped the cross-file write primitive they
+> were blocked on. A planned slice is still open work, so this plan stays
+> active until both go green (the archiving rule in CLAUDE.md).
 
 **Status:** OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the
 seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
@@ -22,9 +21,10 @@ seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
 
 Earlier: OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
 OM.8 ✅ checkboxes + cookies; OM.9 ✅ timestamps; OM.10 ✅ links;
-OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. **OM.11 is ⛔ blocked**
-on the same cross-file write primitive as OM.6b — see below. The agenda
-group (OM.A1–A3) is the remaining work.
+OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. OM.11 and OM.6b were
+blocked on the same cross-file write primitive; **XF shipped it on
+2026-08-26** and both are now ordinary plugin work. The agenda group
+(OM.A1–A3) is done.
 
 Earlier: OM.7 ✅ tasks, in a second mode. OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
@@ -32,7 +32,7 @@ OM.1 ✅ the registry language index; OM.2 ✅ majors cross the `modes` seam;
 OM.2b ✅ `<leader>` (carved mid-build — it did not exist); OM.3 ✅
 promote/demote; OM.4 ✅ headline motions; OM.4b ✅ `dar` / `d]]` reach the
 plugin's grammar; OM.5 ✅ `<Tab>` routing; OM.6 ✅ subtree move / meta-return /
-toggle heading — **archive carved out as OM.6b (⛔ blocked)**; OM.7 ✅
+toggle heading — **archive carved out as OM.6b (unblocked by XF)**; OM.7 ✅
 `org-todo-mode` (TODO / priority / tags). Next: OM.8, checkboxes + cookies.
 
 **From OM.6 on the plugin lives in its own repo**
@@ -78,7 +78,7 @@ OM.4b plugin grammar contributions reach operator-pending
   │   OM.4   headline motions + ih/ah/is/as text objects      │
   │   OM.5   <Tab>/<S-Tab> routing + the decline chain        │
   │   OM.6   subtree move, meta-return, toggle heading         │
-  │   OM.6b  archive subtree  ⛔ waiting on XF.5                │
+  │   OM.6b  archive subtree  📝 unblocked by XF                │
   │   OM.7   org-todo-mode: TODO cycling, priority, tags      │
   │   OM.8   checkboxes + statistics cookies                  │
   │   OM.9   timestamps                                       │
@@ -117,12 +117,12 @@ files? — was retired during design by reading the excerpt model
 | OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
-| OM.6b | Archive subtree to `<file>_archive` | ⛔ waiting on XF.5 |
+| OM.6b | Archive subtree to `<file>_archive` | 📝 unblocked by XF |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
 | OM.8 | Checkboxes + statistics cookies | ✅ |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
 | OM.10 | Links: open at point | ✅ |
-| OM.11 | Refile + capture | ⛔ waiting on XF.5 |
+| OM.11 | Refile + capture | 📝 unblocked by XF |
 | OM.12 | `org-table-mode`: align + cell motion | ✅ |
 | OM.13 | Row / column move + insert | ✅ |
 | OM.A1 | `agenda-source` seam + host provider | ✅ |
@@ -586,8 +586,12 @@ paramount-#2 in the place org actually exposed a gap: the next plugin
 that needs to write beside itself inherits it.
 
 Design: [`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md).
-Slice plan: [`cross-file-writes.md`](cross-file-writes.md). **Still ⛔
-here** — this slice unblocks at XF.5, not before.
+Slice plan: [`cross-file-writes.md`](cross-file-writes.md).
+
+**Unblocked 2026-08-26.** `Effect::WriteToFile` ships, gated on
+`fs:write`. This is now ordinary plugin work: `<leader>o$` returns a
+`write-to-file` naming `<file>_archive`, with the subtree's span as the
+`cut`, and the manifest asks for `fs:write` over the org directory.
 
 ### OM.7 — `org-todo-mode` ✅ (2026-08-24)
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority
@@ -683,11 +687,16 @@ writes to a designated capture file, so both need it. A same-file-only
 refile is expressible (one `ApplyEdit` over the enclosing span) but is a
 different, much smaller feature than the slice describes.
 
-**Decided together with OM.6b** (2026-08-25): a new
-`write-to-file` effect, host-mediated and `fs:write`-gated. Design:
+**Decided together with OM.6b** (2026-08-25) and **shipped 2026-08-26**:
+a `write-to-file` effect, host-mediated and `fs:write`-gated. Design:
 [`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md);
-slice plan: [`cross-file-writes.md`](cross-file-writes.md). **Still ⛔
-here** — this slice unblocks at XF.5.
+slice plan: [`cross-file-writes.md`](cross-file-writes.md).
+
+Refile is now expressible: pick a target (its own picker source), return
+`write-to-file` with the subtree as the `cut`. So is capture — the effect
+creates a missing target, which is capture's first run. What is NOT
+supplied by XF and remains this slice's own work: capture's template flow
+(a prompt, a target picker) and refile's target-selection UI.
 
 Note what stays org's own work afterwards: the cross-file *write*
 unblocks, but capture's template flow (a prompt, a target picker) is

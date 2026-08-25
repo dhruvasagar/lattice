@@ -311,10 +311,32 @@ are explicit and prefix-scoped:
 
 | Capability | Grants |
 |---|---|
-| `fs:read:<path>` / `fs:write:<path>` | Read/write access under a specific path prefix only. |
+| `fs:read:<path>` / `fs:write:<path>` | Read/write access under a specific path prefix only. `fs:write` also authorises a plugin to **file text into another buffer** — see below. |
 | `net:http:<host>` | HTTP to a named host (serviced through a gated host-service, not raw sockets). |
 | `proc:spawn` | Spawn a subprocess — **bundled plugins only**. |
 | editor caps (`lsp`, `tree-sitter`, `folds`, `diagnostics`, `writable`, `buffer-uri`) | Access to specific editor subsystems, for plugin-declared modes. |
+
+**A plugin can file text into a file you have not opened**, if it holds
+`fs:write` over that path. This is what an org plugin's archive, refile and
+capture commands do: take a subtree from where you are and put it somewhere
+else.
+
+Two things are worth knowing about how that works, because they are what stop
+it being alarming:
+
+- **It edits a buffer, not the disk.** Lattice opens the target (reusing the
+  buffer if you already have it open, so your unsaved changes are what the
+  write lands on), inserts, and leaves it **modified and unsaved**. It appears
+  in `:ls`, `u` undoes it, and nothing reaches your disk until you `:w`. A
+  plugin writing files behind your back is a larger authority than this, and
+  lattice does not grant it.
+- **The path is checked against the grant, not trusted.** A plugin granted
+  `~/org` cannot write outside it, including by spelling the path with `..`;
+  the attempt is refused and reported. A plugin with only `fs:read` over a
+  directory cannot write into it — reading a tree and changing it are separate
+  permissions.
+
+The write also never steals focus: your cursor stays where it was.
 
 Every plugin also gets a private, always-writable data directory (mounted at
 `/data`); denied capabilities are surfaced, not silently dropped. A plugin's

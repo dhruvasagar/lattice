@@ -7,9 +7,11 @@
 > rather than two, where the capability gate lives, and the rejected
 > alternatives.
 
-**Status:** 📝 planned. Unblocks [`org-mode.md`](org-mode.md) OM.6b
-(archive) and OM.11 (refile + capture), which are the only reason this
-exists and the only consumer at the end of it.
+**Status:** ✅ XF.0–XF.6 complete (2026-08-26). The primitive ships,
+gated on `fs:write` at the boundary. [`org-mode.md`](org-mode.md) OM.6b
+(archive) and OM.11 (refile + capture) are unblocked — they were the only
+reason this exists, and they are now ordinary plugin work in the plugin
+repo rather than blocked on a missing host mechanism.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
@@ -49,7 +51,7 @@ XF.6  docs, ledger, site
 | XF.3 | Insert-then-cut applied as one unit | ✅ |
 | XF.4 | The WIT effect + the boundary capability gate | ✅ |
 | XF.5 | A fixture guest end to end | ✅ |
-| XF.6 | Docs, ledger, site | 📝 |
+| XF.6 | Docs, ledger, site | ✅ |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench
 where a hot path is touched, tests covering the failure mode as well as
@@ -310,17 +312,27 @@ reachable from any plugin.
 fixture's contributions. Third time this session that the workspace run
 caught something scoped runs could not.
 
-### XF.6 — docs, ledger, site 📝
+### XF.6 — docs, ledger, site ✅ (2026-08-26)
 
-- `docs/user/` — this is a user-visible authority change. A plugin that
-  can write beside itself is worth a paragraph wherever plugin
-  capabilities are explained (`core-plugins.md`, `init.md`).
-- `implementation.md` — the Phase-7/8 surface row, and the org-mode
-  section's "what is blocked" paragraph stops being true.
-- `plugin-host.md` §capabilities; `org-mode.md` §9's deferral note.
-- `slice-plans/org-mode.md` — OM.6b and OM.11 move ⛔ → 📝, and **that
-  is when the org plan can finally be archived**, not before.
-- Zola: `nav.toml`, sync, search.
+- **`docs/user/plugins.md`** — the user-visible half, and the one worth
+  getting right: a plugin can now file text into a file you have not
+  opened. What stops that being alarming is stated plainly — it edits a
+  *buffer*, leaves it modified and unsaved so nothing reaches disk until
+  you `:w`, appears in `:ls`, undoes with `u`, and never steals focus;
+  and the path is checked against the grant rather than trusted,
+  including against `..`. Also that `fs:read` over a directory is not
+  permission to write into it.
+- **`implementation.md`** — the org-mode section's "what is blocked"
+  paragraph stops being true, and gains the four silent bugs the slices
+  caught.
+- **`org-mode.md`** slice plan — OM.6b and OM.11 move ⛔ → 📝 with what
+  each now has to do, and what XF does *not* supply (capture's template
+  flow, refile's target picker).
+- Design fragment + slice-plan statuses; Zola sync.
+
+**The org plan is still not archivable**, and the header says why: 📝 is
+open work too. Archiving it now would bury the two slices this whole
+detour existed to unblock.
 
 ---
 

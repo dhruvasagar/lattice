@@ -1,6 +1,19 @@
 # Cross-file writes
 
-**Status:** design. Slice plan:
+**Status:** built (XF.0–XF.6, 2026-08-26). The primitive ships and is
+gated; what remains is org's own use of it — OM.6b (archive) and OM.11
+(refile + capture), in the plugin repo.
+
+Where this document and the code disagree, the code and the slice plan are
+what happened. Two things the build changed and the slice plan records in
+full: the effect **applies inline** rather than through `ApplyEdit`'s
+deferral (`next_actions` is walked unconditionally, so a deferred cut would
+run whether or not the insert landed — the exact failure §5 forbids), and
+`FileAnchor::resolve_line` answers in *lines* while turning a line into a
+position stays host-side, because only the host has the buffer and the
+append position is not `Position::new(line_count, 0)`.
+
+Slice plan:
 [`../operations/slice-plans/cross-file-writes.md`](../operations/slice-plans/cross-file-writes.md).
 Extends [`plugin-host.md`](plugin-host.md) (the effect vocabulary, the
 capability model). Unblocks [`org-mode.md`](org-mode.md) OM.6b and OM.11.

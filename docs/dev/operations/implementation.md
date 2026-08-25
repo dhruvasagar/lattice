@@ -6529,8 +6529,9 @@ the buffer's own*, and **no effect in the WIT surface writes to another file**.
 not opened, and `invoke-command` exists only as a picker-accept outcome, not as
 an effect, so there is no way to chain "open that file" into "now edit it".
 
-**Decided 2026-08-25: a new host-mediated effect**, `write-to-file`, gated on
-the `fs:write` capability that already exists —
+**Decided 2026-08-25 and shipped 2026-08-26 (XF.0–XF.6): a new host-mediated
+effect**, `write-to-file`, gated on the `fs:write` capability that already
+existed —
 [`../architecture/cross-file-writes.md`](../architecture/cross-file-writes.md),
 slice plan [`slice-plans/cross-file-writes.md`](slice-plans/cross-file-writes.md).
 Archiving in place was rejected (it renames the command users came for, and
@@ -6541,6 +6542,23 @@ and the capability check runs at the **boundary**, where the plugin's
 provenance is still known, rather than at the dispatcher, which deliberately
 cannot tell a plugin's effect from a native mode's. That enforcement shape is
 the one `AppEffect::OpenProviderView`'s withheld WIT surface will reuse.
+
+**Shipped as XF.0–XF.6.** `Effect::WriteToFile { path, anchor, text, cut }`
+plus `FileAnchor`; `Editor::resolve_path_to_buffer` (open-or-reuse, in the
+background, listed, never stealing focus); an applier that inserts first and
+cuts only on success; and `EffectAuthorizer`, built once per plugin at load
+from its grant. `org-mode.md`'s OM.6b and OM.11 are unblocked and are now
+ordinary plugin work.
+
+Four bugs the slices caught, each silent and each now a test: `Path` equality
+does not collapse `..` (so a producer path containing one would have opened a
+SECOND buffer over an already-open file and lost the user's unsaved work);
+`content_line_count` strips the phantom trailing line, so the obvious append
+position does not exist on an empty file and archiving into a fresh one did
+nothing; appending to a file whose last line lacks a newline spliced onto it;
+and re-entering `BufferRegistry::for_each` deadlocks rather than fails. The
+gate's wiring is verified by mutation — unwiring `authorize` fails exactly the
+three denial tests.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
 Slice plan: [`slice-plans/org-mode.md`](slice-plans/org-mode.md).

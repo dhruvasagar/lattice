@@ -12,7 +12,9 @@
 >
 > **Not archivable.** OM.6b and OM.11 are ⛔ deferred on the same missing
 > primitive, and a deferred slice is open work — see the archiving rule in
-> CLAUDE.md. This plan stays active until they are decided.
+> CLAUDE.md. The primitive is now designed
+> ([`cross-file-writes.md`](cross-file-writes.md)) but not built; this
+> plan stays active until XF.5 lands and both slices go green.
 
 **Status:** OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the
 seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
@@ -76,7 +78,7 @@ OM.4b plugin grammar contributions reach operator-pending
   │   OM.4   headline motions + ih/ah/is/as text objects      │
   │   OM.5   <Tab>/<S-Tab> routing + the decline chain        │
   │   OM.6   subtree move, meta-return, toggle heading         │
-  │   OM.6b  archive subtree  ⛔ needs a cross-file write       │
+  │   OM.6b  archive subtree  ⛔ waiting on XF.5                │
   │   OM.7   org-todo-mode: TODO cycling, priority, tags      │
   │   OM.8   checkboxes + statistics cookies                  │
   │   OM.9   timestamps                                       │
@@ -115,12 +117,12 @@ files? — was retired during design by reading the excerpt model
 | OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
-| OM.6b | Archive subtree to `<file>_archive` | ⛔ |
+| OM.6b | Archive subtree to `<file>_archive` | ⛔ waiting on XF.5 |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
 | OM.8 | Checkboxes + statistics cookies | ✅ |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
 | OM.10 | Links: open at point | ✅ |
-| OM.11 | Refile + capture | ⛔ blocked (cross-file write) |
+| OM.11 | Refile + capture | ⛔ waiting on XF.5 |
 | OM.12 | `org-table-mode`: align + cell motion | ✅ |
 | OM.13 | Row / column move + insert | ✅ |
 | OM.A1 | `agenda-source` seam + host provider | ✅ |
@@ -564,8 +566,8 @@ buffer's own**. `edits` / `apply-edit` target `ctx.buffer_id`;
 `open-buffer-at` changes what is focused but does not compose with a
 follow-on edit in a defined order.
 
-So this is not plugin work — it needs a host decision first. Three
-shapes, none costed yet:
+So this is not plugin work — it needed a host decision first. Three
+shapes were recorded:
 
 1. **A new effect** (`append-to-file` or an explicit
    `edit-in-buffer(path, edits)`), which adds ABI surface for one
@@ -577,8 +579,15 @@ shapes, none costed yet:
 3. **`<leader>o$` opens the archive file** and leaves the move to the
    user, which is honest but not the feature.
 
-Raise before OM.11 — refile has the same cross-file requirement, so the
-two should be decided together rather than twice.
+**Decided 2026-08-25: (1).** (2) loses the standing convention rule —
+it renames the command users came for — and does nothing for refile or
+capture, which is the larger half. (3) is not the feature. (1) protects
+paramount-#2 in the place org actually exposed a gap: the next plugin
+that needs to write beside itself inherits it.
+
+Design: [`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md).
+Slice plan: [`cross-file-writes.md`](cross-file-writes.md). **Still ⛔
+here** — this slice unblocks at XF.5, not before.
 
 ### OM.7 — `org-todo-mode` ✅ (2026-08-24)
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority
@@ -674,9 +683,16 @@ writes to a designated capture file, so both need it. A same-file-only
 refile is expressible (one `ApplyEdit` over the enclosing span) but is a
 different, much smaller feature than the slice describes.
 
-**Decide together with OM.6b**, whose three candidate shapes are recorded
-there. Until then the outliner is complete for everything that stays
-within one file.
+**Decided together with OM.6b** (2026-08-25): a new
+`write-to-file` effect, host-mediated and `fs:write`-gated. Design:
+[`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md);
+slice plan: [`cross-file-writes.md`](cross-file-writes.md). **Still ⛔
+here** — this slice unblocks at XF.5.
+
+Note what stays org's own work afterwards: the cross-file *write*
+unblocks, but capture's template flow (a prompt, a target picker) is
+this slice's, not XF's. Until then the outliner is complete for
+everything that stays within one file.
 
 ## Tables
 

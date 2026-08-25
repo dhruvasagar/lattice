@@ -1,8 +1,10 @@
 # Org-mode as a plugin
 
 **Status:** built, except the two slices that need a cross-file write
-(OM.6b archive, OM.11 refile + capture — both ⛔, both blocked on the
-same missing primitive). Sequencing, per-slice outcomes and the amendments
+(OM.6b archive, OM.11 refile + capture — both ⛔ on the same missing
+primitive, now designed as
+[`cross-file-writes.md`](cross-file-writes.md) and unblocking at its
+XF.5). Sequencing, per-slice outcomes and the amendments
 this document records:
 [`../operations/slice-plans/org-mode.md`](../operations/slice-plans/org-mode.md).
 Ledger entry: [`../operations/implementation.md`](../operations/implementation.md)
@@ -528,6 +530,11 @@ move).
 
 **Out, as cuts rather than omissions:** export backends, babel / source
 execution, table formulas, column view, org-roam.
+
+**Blocked on a host primitive, now designed:** archive, refile and
+capture all move text into a file other than the buffer's own, and no
+effect could. [`cross-file-writes.md`](cross-file-writes.md) is the
+answer — a host-mediated `write-to-file` effect gated on `fs:write`.
 
 **Deferred with a reason:** clocking is cheap in edits but needs
 persistent "currently clocked" state and a modeline contribution, so it

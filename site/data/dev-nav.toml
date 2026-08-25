@@ -184,6 +184,7 @@ docs = [
   "architecture/plugin-treesitter-seam",
   "architecture/plugin-auto-pair",
   "architecture/org-mode",
+  "architecture/cross-file-writes",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
 ]

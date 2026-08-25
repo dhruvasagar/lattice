@@ -6528,7 +6528,19 @@ the buffer's own*, and **no effect in the WIT surface writes to another file**.
 `apply-edit` takes a target buffer id the guest cannot learn for a file it has
 not opened, and `invoke-command` exists only as a picker-accept outcome, not as
 an effect, so there is no way to chain "open that file" into "now edit it".
-Three candidate shapes are recorded at OM.6b; they need costing together.
+
+**Decided 2026-08-25: a new host-mediated effect**, `write-to-file`, gated on
+the `fs:write` capability that already exists —
+[`../architecture/cross-file-writes.md`](../architecture/cross-file-writes.md),
+slice plan [`slice-plans/cross-file-writes.md`](slice-plans/cross-file-writes.md).
+Archiving in place was rejected (it renames the command users came for, and
+does nothing for refile or capture); so was leaving the move to the user. The
+effect writes *through the document pipeline* rather than to disk, so an
+already-open target sees the edit, `u` covers it and the LSP hears about it —
+and the capability check runs at the **boundary**, where the plugin's
+provenance is still known, rather than at the dispatcher, which deliberately
+cannot tell a plugin's effect from a native mode's. That enforcement shape is
+the one `AppEffect::OpenProviderView`'s withheld WIT surface will reuse.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
 Slice plan: [`slice-plans/org-mode.md`](slice-plans/org-mode.md).

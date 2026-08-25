@@ -20,10 +20,12 @@ wit_bindgen::generate!({
     path: "../../../../../wit",
 });
 
-/// Per-scan state. Single-threaded guest, so a `static mut` behind the
-/// component's own linear memory is the whole story — this is exactly the
-/// state `begin` exists to clear.
-static mut FILES_SEEN: u32 = 0;
+// Per-scan state. Single-threaded guest with its calls serialised by the
+// host's per-plugin actor, so a `thread_local` is the whole story — and this
+// is exactly the state `begin` exists to clear.
+thread_local! {
+    static FILES_SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 
 struct Component;
 
@@ -36,17 +38,15 @@ impl Guest for Component {
     }
 
     fn begin() {
-        unsafe { FILES_SEEN = 0 };
+        FILES_SEEN.set(0);
     }
 
     fn scan(_path: String, text: String) -> Result<Vec<Entry>, String> {
         if text.contains("BROKEN") {
             return Err("agenda-guest: malformed file".to_string());
         }
-        let seen = unsafe {
-            FILES_SEEN += 1;
-            FILES_SEEN
-        };
+        let seen = FILES_SEEN.get() + 1;
+        FILES_SEEN.set(seen);
         let mut out = Vec::new();
         for (i, line) in text.lines().enumerate() {
             let Some(rest) = line.strip_prefix("* TODO ") else {

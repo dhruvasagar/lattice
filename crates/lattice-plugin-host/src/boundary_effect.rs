@@ -21,7 +21,7 @@ use crate::lattice::plugin_host::types::{
     DescribeCommandPayload as WitDescribeCommandPayload, DiffsplitPayload as WitDiffsplitPayload,
     EchoLevel as WitEchoLevel, EchoPayload as WitEchoPayload, Edit as WitEdit,
     EditDelta as WitEditDelta, EditKind as WitEditKind, Effect as WitEffect,
-    LspRequest as WitLspRequest, ModalState as WitModalState,
+    FileAnchor as WitFileAnchor, LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
     OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
@@ -33,7 +33,8 @@ use crate::lattice::plugin_host::types::{
     SelectionSet as WitSelectionSet, SetLspLogLevelPayload as WitSetLspLogLevelPayload,
     SpawnTerminalPayload as WitSpawnTerminalPayload, SubstitutePayload as WitSubstitutePayload,
     SubstituteScope as WitSubstituteScope, Utf16Pos as WitUtf16Pos, VisualKind as WitVisualKind,
-    VisualMode as WitVisualMode, YankKind as WitYankKind, YankPayload as WitYankPayload,
+    VisualMode as WitVisualMode, WriteToFilePayload as WitWriteToFilePayload,
+    YankKind as WitYankKind, YankPayload as WitYankPayload,
 };
 use lattice_core::BufferId;
 use lattice_core::buffer::AppliedEdit as NativeAppliedEdit;
@@ -560,21 +561,25 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                     .to_string(),
             );
         }
-        // XF.1: the native effect ships ahead of its WIT surface, deliberately.
-        // A plugin returning this needs its `path` checked against that
-        // plugin's `fs:write` grant, and the check has to run HERE — where the
-        // `Store<PluginState>` still knows whose effect this is — because the
-        // host's applier cannot tell a plugin's effect from a native mode's.
-        // XF.4 lands the payload mirror and that gate together; crossing it
-        // before then would be an unchecked cross-file write.
-        NativeEffect::WriteToFile { .. } => {
-            return Err(
-                "Effect::WriteToFile writes into a file the editor may not have open; its \
-                 plugin (WIT) surface lands with the capability gate that authorises the path \
-                 (cross-file-writes.md §6, XF.4)"
-                    .to_string(),
-            );
-        }
+        NativeEffect::WriteToFile {
+            path,
+            anchor,
+            text,
+            cut,
+        } => WitEffect::WriteToFile(WitWriteToFilePayload {
+            // Lossy only for a non-UTF-8 path, which cannot cross a WIT
+            // `string` at all — refused rather than mangled, so a guest never
+            // receives a path that names a different file than the host meant.
+            path: path
+                .to_str()
+                .ok_or_else(|| {
+                    format!("Effect::WriteToFile path is not UTF-8: {}", path.display())
+                })?
+                .to_string(),
+            anchor: anchor_to_wit(*anchor),
+            text: text.clone(),
+            cut: cut.as_ref().map(|r| r.to_wit()).transpose()?,
+        }),
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
             register,
@@ -918,6 +923,24 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
 
 /// Map one WIT `effect` mirror back to native. There is no `Many` arm (it is a
 /// list-level concept), so this is a flat, total mapping over the ~101 arms.
+/// XF.4: `FileAnchor` crosses as data with no host state behind it, so the
+/// two directions are a plain mapping rather than a `WitBoundary` impl.
+fn anchor_to_wit(a: lattice_grammar::FileAnchor) -> WitFileAnchor {
+    match a {
+        lattice_grammar::FileAnchor::End => WitFileAnchor::End,
+        lattice_grammar::FileAnchor::Start => WitFileAnchor::Start,
+        lattice_grammar::FileAnchor::Line(n) => WitFileAnchor::Line(n),
+    }
+}
+
+fn anchor_from_wit(a: WitFileAnchor) -> lattice_grammar::FileAnchor {
+    match a {
+        WitFileAnchor::End => lattice_grammar::FileAnchor::End,
+        WitFileAnchor::Start => lattice_grammar::FileAnchor::Start,
+        WitFileAnchor::Line(n) => lattice_grammar::FileAnchor::Line(n),
+    }
+}
+
 fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
     Ok(match w {
         WitEffect::None => NativeEffect::None,
@@ -928,6 +951,15 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
                 .map(NativeAppliedEdit::from_wit)
                 .collect::<Result<Vec<_>, _>>()?,
         ),
+        // XF.4: a guest-returned cross-file write. Converted here; AUTHORISED
+        // by `EffectAuthorizer` in the trampoline, which is the only place
+        // that still knows which plugin this came from.
+        WitEffect::WriteToFile(p) => NativeEffect::WriteToFile {
+            path: std::path::PathBuf::from(p.path),
+            anchor: anchor_from_wit(p.anchor),
+            text: p.text,
+            cut: p.cut.map(NativeRange::from_wit).transpose()?,
+        },
         WitEffect::ApplyEdit(p) => NativeEffect::ApplyEdit {
             target: BufferId(p.target),
             edit: NativeEdit::from_wit(p.edit)?,
@@ -1238,6 +1270,96 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── XF.4: the cross-file write crosses ──────────────────────────────
+
+    fn write_effect(cut: Option<NativeRange>) -> NativeEffect {
+        NativeEffect::WriteToFile {
+            path: std::path::PathBuf::from("/tmp/archive.org"),
+            anchor: lattice_grammar::FileAnchor::End,
+            text: "* Archived\n".to_string(),
+            cut,
+        }
+    }
+
+    #[test]
+    fn write_to_file_round_trips() {
+        let back = effect_from_wit(effect_to_wit(&write_effect(None)).unwrap()).unwrap();
+        match back {
+            NativeEffect::WriteToFile {
+                path,
+                anchor,
+                text,
+                cut,
+            } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/archive.org"));
+                assert_eq!(anchor, lattice_grammar::FileAnchor::End);
+                assert_eq!(text, "* Archived\n");
+                assert!(cut.is_none());
+            }
+            other => panic!("expected WriteToFile, got {other:?}"),
+        }
+    }
+
+    /// The `cut` is what turns a copy into a move. Losing it across the
+    /// boundary would leave the text in both places and look like a working
+    /// archive until someone noticed the original was still there.
+    #[test]
+    fn the_cut_range_survives_the_crossing() {
+        let range = NativeRange {
+            start: pos(2, 0),
+            end: pos(5, 0),
+        };
+        let back = effect_from_wit(effect_to_wit(&write_effect(Some(range))).unwrap()).unwrap();
+        match back {
+            NativeEffect::WriteToFile { cut: Some(got), .. } => assert_eq!(got, range),
+            other => panic!("expected a cut, got {other:?}"),
+        }
+    }
+
+    /// Every anchor, because a variant silently collapsing to `End` would
+    /// file every capture at the bottom regardless of what the guest asked.
+    #[test]
+    fn every_anchor_round_trips() {
+        for anchor in [
+            lattice_grammar::FileAnchor::End,
+            lattice_grammar::FileAnchor::Start,
+            lattice_grammar::FileAnchor::Line(0),
+            lattice_grammar::FileAnchor::Line(42),
+        ] {
+            let native = NativeEffect::WriteToFile {
+                path: std::path::PathBuf::from("/tmp/a.org"),
+                anchor,
+                text: "x".to_string(),
+                cut: None,
+            };
+            let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
+            match back {
+                NativeEffect::WriteToFile { anchor: got, .. } => assert_eq!(got, anchor),
+                other => panic!("expected WriteToFile, got {other:?}"),
+            }
+        }
+    }
+
+    /// A non-UTF-8 path cannot cross a WIT `string`. Refused rather than
+    /// lossily converted — a mangled path names a *different file*, and this
+    /// effect writes to it.
+    #[test]
+    fn a_non_utf8_path_is_refused_rather_than_mangled() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/\xff.org"));
+            let native = NativeEffect::WriteToFile {
+                path: bad,
+                anchor: lattice_grammar::FileAnchor::End,
+                text: "x".to_string(),
+                cut: None,
+            };
+            let err = effect_to_wit(&native).expect_err("must refuse");
+            assert!(err.contains("not UTF-8"), "got {err}");
+        }
     }
 
     #[test]

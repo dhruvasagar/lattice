@@ -83,6 +83,10 @@ pub mod agenda_host;
 pub mod agenda_source;
 pub mod agenda_task;
 pub use crate::agenda_source::{WasmAgendaSource, normalise_extensions};
+// XF.4: the fs:write gate for guest-returned effects, applied at the
+// boundary where the plugin's provenance is still known.
+pub mod effect_authorizer;
+pub use crate::effect_authorizer::EffectAuthorizer;
 pub mod error_parser_host;
 pub mod event_task;
 pub mod events_host;

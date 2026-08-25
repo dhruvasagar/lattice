@@ -76,6 +76,14 @@ use lattice_runtime::EventBus;
 struct GrammarGuest {
     store: Store<PluginState>,
     bindings: GrammarPlugin,
+    /// XF.4: the `fs:write` gate for effects this plugin returns.
+    ///
+    /// Built once at load from `store.data().grant` — a grant never changes
+    /// for a plugin's life, so the keystroke path pays only the prefix compare
+    /// a `WriteToFile` actually needs, and nothing at all for every other
+    /// effect. `Arc` so each trampoline closure captures a pointer rather than
+    /// a copy of the prefix list.
+    authorizer: Arc<crate::EffectAuthorizer>,
     /// Crash-quarantine (PH7.12) shared by every trampoline closure (they all
     /// lock this one guest). The first `apply-*` trap trips it — one
     /// `PluginCrashed` on the bus — and every later keystroke short-circuits to a
@@ -143,6 +151,8 @@ fn run_callback<T>(
         plugin,
         gate,
         tracer,
+        // XF.4: read at build time by each trampoline closure, not here.
+        authorizer: _,
     } = &mut *guard;
     // Reflex-class budget (audit F1): a runaway plugin motion traps well inside a
     // frame instead of stalling the keystroke.
@@ -271,12 +281,31 @@ fn build_motion_spec(
     })
 }
 
+/// XF.4: convert a guest-returned effect and AUTHORISE it.
+///
+/// The one place both halves happen, so a new effect-returning contribution
+/// cannot get the conversion and forget the gate — which would be an
+/// unchecked cross-file write reachable from any plugin.
+fn effect_from_guest(
+    authorizer: &Arc<crate::EffectAuthorizer>,
+    wit: Vec<crate::lattice::plugin_host::types::Effect>,
+) -> GrammarResult<NativeEffect> {
+    let native = NativeEffect::from_wit(wit).map_err(CommandError::Plugin)?;
+    Ok(authorizer.authorize(native))
+}
+
 fn build_operator_spec(
     guest: &Arc<Mutex<GrammarGuest>>,
     spec: WitOperatorSpec,
     callback: u32,
 ) -> Result<OperatorSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
+    let authorizer = Arc::clone(
+        &guest
+            .lock()
+            .expect("grammar guest mutex poisoned")
+            .authorizer,
+    );
     let guest = guest.clone();
     Ok(OperatorSpec {
         repeatable: spec.repeatable,
@@ -290,7 +319,7 @@ fn build_operator_spec(
                     b.lattice_plugin_host_grammar_callbacks()
                         .call_apply_operator(s, callback, &wit_ctx)
                 })?;
-                NativeEffect::from_wit(wit).map_err(CommandError::Plugin)
+                effect_from_guest(&authorizer, wit)
             },
         ),
     })
@@ -344,6 +373,12 @@ fn build_action_spec(
     tree_sitter_granted: bool,
 ) -> Result<ActionSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
+    let authorizer = Arc::clone(
+        &guest
+            .lock()
+            .expect("grammar guest mutex poisoned")
+            .authorizer,
+    );
     let guest = guest.clone();
     Ok(ActionSpec {
         args_schema,
@@ -403,7 +438,7 @@ fn build_action_spec(
                 }
                 result
             })?;
-            NativeEffect::from_wit(wit).map_err(CommandError::Plugin)
+            effect_from_guest(&authorizer, wit)
         }),
     })
 }
@@ -419,6 +454,12 @@ fn build_ex_command_spec(
         LatencyClass::from_wit(spec.latency_class).map_err(PluginHostError::GrammarSpec)?;
     let surface_form =
         SurfaceForm::from_wit(spec.surface_form).map_err(PluginHostError::GrammarSpec)?;
+    let authorizer = Arc::clone(
+        &guest
+            .lock()
+            .expect("grammar guest mutex poisoned")
+            .authorizer,
+    );
     let parse_guest = guest.clone();
     let apply_guest = guest.clone();
     Ok(ExCommandSpec {
@@ -442,7 +483,7 @@ fn build_ex_command_spec(
                     b.lattice_plugin_host_grammar_callbacks()
                         .call_apply_ex_command(s, apply_callback, &wit_ctx)
                 })?;
-                NativeEffect::from_wit(wit).map_err(CommandError::Plugin)
+                effect_from_guest(&authorizer, wit)
             },
         ),
     })
@@ -591,9 +632,14 @@ impl PluginHost {
         // Move the store + bindings behind the shared lock every trampoline reads.
         // The `Quarantine` rides inside so one `apply-*` trap quarantines every
         // contribution from this plugin (they share the one guest).
+        let authorizer = Arc::new(crate::EffectAuthorizer::new(
+            &store.data().grant,
+            manifest.id.clone(),
+        ));
         let guest = Arc::new(Mutex::new(GrammarGuest {
             store,
             bindings,
+            authorizer,
             quarantine: Quarantine::new(id, Arc::clone(bus)),
             plugin: id.0,
             gate,

@@ -47,7 +47,7 @@ XF.6  docs, ledger, site
 | XF.1 | `Effect::WriteToFile` + the anchor resolver | ✅ |
 | XF.2 | Open-or-reuse a target buffer, without stealing focus | ✅ |
 | XF.3 | Insert-then-cut applied as one unit | ✅ |
-| XF.4 | The WIT effect + the boundary capability gate | 📝 |
+| XF.4 | The WIT effect + the boundary capability gate | ✅ |
 | XF.5 | A fixture guest end to end | 📝 |
 | XF.6 | Docs, ledger, site | 📝 |
 
@@ -219,7 +219,7 @@ untouched; each buffer undoing its own half; both trailing-newline cases,
 including that repeated appends do not accumulate blank lines; and
 `Line(n)` past the end appending rather than failing.
 
-### XF.4 — the WIT effect + the gate 📝
+### XF.4 — the WIT effect + the gate ✅ (2026-08-26)
 
 `write-to-file(write-to-file-payload)` in `types.wit`, its boundary
 conversion, and the capability check.
@@ -237,12 +237,45 @@ naming the refusal, so the dispatcher only ever sees authorised effects.
   denial.
 - `info!` on denial (one-shot, user-actionable).
 
-- *tests:* a granted path converts; a path outside every prefix becomes
-  an `Echo` and never reaches the dispatcher; `../` cannot escape a
-  granted prefix; a plugin with **no** `fs` grant writes nothing; a
-  not-yet-existing file under a granted prefix is permitted.
-- *doc:* fragment §6; plus the note in `plugin-host.md` that this is the
-  enforcement shape `OpenProviderView` will reuse.
+`file-anchor` + `write-to-file-payload` in `types.wit`, both boundary
+directions, and `EffectAuthorizer` — built once per plugin at load from
+`store.data().grant`, so the keystroke path pays only the prefix compare
+a `WriteToFile` actually needs and nothing at all for any other effect.
+
+**Three things the gate has to get right, each its own test.**
+
+*Read is not write.* `walk_within_grant` accepts `fs:read` OR `fs:write`
+because a walk only reads; conflating them here would let any plugin that
+can list a tree write into it. Only write prefixes count.
+
+*`..` cannot escape.* Both sides canonicalize, so
+`<granted>/../secret/passwords` is refused where a textual prefix match
+would have allowed it.
+
+*A not-yet-existing file is judged by its PARENT.* Capture's first run
+creates its target, and a non-existent path canonicalizes to nothing —
+without this the whole create-a-capture-file case would be permanently
+denied, i.e. the feature unreachable by construction. The parent check
+does not open a hole: a non-existent file outside the grant is still
+refused, and that has its own test.
+
+**`Many` recurses**, or the gate would be the whole gate — bypassed by
+wrapping the write in a list. A denial replaces only that part with an
+`Echo`; the rest of a compound effect still runs, so one refused write
+does not silently cancel everything else the action did.
+
+**One conversion path, deliberately.** `effect_from_guest` does the
+`from_wit` and the authorise together, and all three effect-returning
+trampolines (operator, action, ex-command) call it. A fourth
+contribution kind cannot get the conversion and forget the gate.
+
+A non-UTF-8 path is refused rather than lossily converted: a mangled path
+names a *different file*, and this effect writes to it.
+
+Tests: 12 on the authorizer, 4 boundary round-trips (including every
+anchor, since a variant collapsing to `End` would file every capture at
+the bottom, and the `cut` surviving, since losing it turns a move into a
+copy that looks like it worked).
 
 ### XF.5 — a fixture guest, end to end 📝
 

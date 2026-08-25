@@ -408,6 +408,63 @@ interface types {
         buffer-name: option<string>,
     }
 
+    /// XF.4: where in a target file a `write-to-file` lands.
+    ///
+    /// A *position*, not a range, and the asymmetry with `apply-edit` is
+    /// deliberate: for its own buffer a guest holds `borrow<document>` and can
+    /// compute a range that means something; for a file it has never read, a
+    /// range would be a guess. These are the three positions namable without
+    /// reading. Insert-only also means a guest cannot silently destroy content
+    /// in a file the user was not looking at.
+    variant file-anchor {
+        /// After the last line. The common case — archive, refile and capture
+        /// all append.
+        end,
+        /// Before the first line.
+        start,
+        /// Before this 0-based line. Past the end clamps to `end` rather than
+        /// failing: a guest computing a line from a file it has not read can
+        /// legitimately be off, and refusing to file the text at all is worse
+        /// than filing it at the end.
+        line(u32),
+    }
+
+    /// XF.4: move text into a file the editor may not have open.
+    ///
+    /// The primitive `org-archive-subtree`, `org-refile` and `org-capture`
+    /// were blocked on. `apply-edit` addresses a `buffer-id`, which a guest
+    /// cannot learn for a file that has never been opened.
+    ///
+    /// **The write goes through the document pipeline, not to disk.** The host
+    /// resolves `path` to a buffer, reusing one already open — so the user's
+    /// unsaved changes are what the write lands on, `u` covers it, and the LSP
+    /// hears about it. The target is left MODIFIED, not saved: a plugin that
+    /// silently writes files is a larger authority than one that edits
+    /// buffers.
+    record write-to-file-payload {
+        /// Absolute, or relative to the editor's working directory.
+        ///
+        /// **Checked against this plugin's `fs:write` grant**, host-side, at
+        /// the boundary — a path outside it is refused and echoed, and the
+        /// effect never reaches the editor. The check runs here rather than at
+        /// the applier because the applier cannot tell a plugin's effect from
+        /// a native mode's; only the boundary still knows whose this is.
+        path: string,
+        anchor: file-anchor,
+        /// Inserted verbatim. A trailing newline is the guest's business —
+        /// except that the host supplies a line break when appending to a
+        /// target whose last line has none, which the guest cannot know.
+        text: string,
+        /// When present, this range is removed from the buffer the action ran
+        /// in — and ONLY after the insert has landed.
+        ///
+        /// One effect rather than two, because as two the failure modes are
+        /// "the text exists twice" and "the text is gone". The second is data
+        /// loss from a keystroke, and an effect cannot report failure, so two
+        /// ordered effects could not be made to depend on each other.
+        cut: option<range>,
+    }
+
     record apply-edit-payload {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
@@ -495,6 +552,8 @@ interface types {
         declined,
         edits(list<applied-edit>),
         apply-edit(apply-edit-payload),
+        /// XF.4: move text into another file. See `write-to-file-payload`.
+        write-to-file(write-to-file-payload),
         selection-change(selection-set),
         cursor-move(position),
         /// IX.3: ask the user a yes/no question, then dispatch an action.

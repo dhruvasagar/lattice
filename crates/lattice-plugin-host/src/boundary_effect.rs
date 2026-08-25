@@ -560,6 +560,21 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                     .to_string(),
             );
         }
+        // XF.1: the native effect ships ahead of its WIT surface, deliberately.
+        // A plugin returning this needs its `path` checked against that
+        // plugin's `fs:write` grant, and the check has to run HERE — where the
+        // `Store<PluginState>` still knows whose effect this is — because the
+        // host's applier cannot tell a plugin's effect from a native mode's.
+        // XF.4 lands the payload mirror and that gate together; crossing it
+        // before then would be an unchecked cross-file write.
+        NativeEffect::WriteToFile { .. } => {
+            return Err(
+                "Effect::WriteToFile writes into a file the editor may not have open; its \
+                 plugin (WIT) surface lands with the capability gate that authorises the path \
+                 (cross-file-writes.md §6, XF.4)"
+                    .to_string(),
+            );
+        }
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
             register,

@@ -1030,6 +1030,10 @@ impl App {
             // `Action::ApplyEdit` on `out.next_actions` (drained by the
             // dispatch wrapper); nothing renderer-coupled here.
             | Effect::ApplyEdit { .. }
+            // XF.1: host-applied. The host resolves the path to a buffer,
+            // inserts, and cuts — nothing renderer-coupled, exactly like its
+            // `ApplyEdit` sibling above.
+            | Effect::WriteToFile { .. }
             | Effect::Edits(_)
             // Host-applied cd/pwd effects.
             | Effect::ChangeDir(_)
@@ -1328,6 +1332,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::Edits(_) | Effect::Yank { .. } => true,
         // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
         Effect::ApplyEdit { .. } => true,
+        // XF.1: mirrors the host classifier — always a mutation (it inserts
+        // into the target, and with a `cut` deletes from the source too).
+        Effect::WriteToFile { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
@@ -1476,6 +1483,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::Edits(_) => true,
         // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
         Effect::ApplyEdit { .. } => true,
+        // XF.1: a change rather than a yank, so `.` may repeat it.
+        Effect::WriteToFile { .. } => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.

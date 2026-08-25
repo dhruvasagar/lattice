@@ -37475,6 +37475,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         Effect::Edits(_) | Effect::Yank { .. } => true,
         // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
         Effect::ApplyEdit { .. } => true,
+        // XF.1: always a mutation — it inserts into the target, and with a
+        // `cut` it also deletes from the buffer the action ran in. Visual
+        // must auto-exit after it for the same reason `d` does.
+        Effect::WriteToFile { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates_or_yanks),
@@ -37622,6 +37626,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::Edits(_) => true,
         // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
         Effect::ApplyEdit { .. } => true,
+        // XF.1: a change rather than a yank, so `.` may repeat it.
+        Effect::WriteToFile { .. } => true,
         Effect::Substitute { .. } | Effect::Global { .. } | Effect::DeleteCurrentLine => true,
         Effect::Many(parts) => parts.iter().any(effect_mutates),
         // L4b: the diagnostics popup is not a buffer mutation.

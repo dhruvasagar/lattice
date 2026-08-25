@@ -1218,6 +1218,10 @@ impl GpuiApp {
             // `Action::ApplyEdit`; the renderer has nothing to do (parity
             // with the TUI peer per [[feedback_tui_gpui_parity]]).
             | Effect::ApplyEdit { .. }
+            // XF.1: host-applied, parity with the TUI peer and with
+            // `ApplyEdit` above — the host owns path→buffer, the insert and
+            // the cut; there is nothing renderer-coupled in any of it.
+            | Effect::WriteToFile { .. }
             | Effect::CursorMove(_)
             // MG.18d: the host applies (or drops) the targeted cursor
             // move in `handle_effect`; nothing for the renderer to do,

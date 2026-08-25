@@ -48,7 +48,7 @@ pub use crate::command::{
 };
 pub use crate::dispatcher::{execute, execute_motion_only, execute_with_env};
 pub use crate::effect::{
-    EchoLevel, Effect, LspRequest, QuitScope, SubstituteScope, Utf16Pos, YankKind,
+    EchoLevel, Effect, FileAnchor, LspRequest, QuitScope, SubstituteScope, Utf16Pos, YankKind,
 };
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::introspect::{

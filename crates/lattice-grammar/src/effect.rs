@@ -175,6 +175,53 @@ pub enum LspRequest {
     ReferencesToErrorList,
 }
 
+/// Where in a target file an [`Effect::WriteToFile`] lands.
+///
+/// A **position**, not a range, and the asymmetry with [`Effect::ApplyEdit`]
+/// is the answer rather than an inconsistency to tidy away
+/// (`cross-file-writes.md` §4).
+///
+/// For its own buffer a producer holds a document handle: it can read lines,
+/// count them, and compute a range that means something. For another file it
+/// holds nothing — it has never seen the bytes, so a range it invented would
+/// be a guess. These are the three positions namable without reading, and
+/// they are exactly the three archive, refile and capture need.
+///
+/// Insert-only also bounds the blast radius: it cannot silently destroy
+/// content in a file the user was not looking at, where a range-carrying
+/// primitive could on an off-by-one and the user would find out later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAnchor {
+    /// After the last line — the common case. Archive, refile and capture all
+    /// append by default.
+    End,
+    /// Before the first line.
+    Start,
+    /// Before this 0-based line. Past the end clamps to [`FileAnchor::End`]
+    /// rather than erroring: a producer computing a line from a file it has
+    /// not read can legitimately be off, and refusing to file the text at all
+    /// is worse than filing it at the end.
+    Line(u32),
+}
+
+impl FileAnchor {
+    /// The 0-based line an insert should happen *before*, given the target's
+    /// line count.
+    ///
+    /// `line_count` is the number of content lines. `End` yields
+    /// `line_count`, i.e. one past the last — which is what "append" means to
+    /// the caller building a `Position`.
+    pub fn resolve_line(self, line_count: u32) -> u32 {
+        match self {
+            FileAnchor::Start => 0,
+            FileAnchor::End => line_count,
+            // Clamp, per the variant's doc. `>=` and not `>`: a `Line` equal
+            // to the count already means "past the last line", which is End.
+            FileAnchor::Line(n) => n.min(line_count),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     None,
@@ -216,6 +263,50 @@ pub enum Effect {
         target: lattice_core::BufferId,
         edit: lattice_protocol::edit::Edit,
         cursor: Option<lattice_protocol::position::Position>,
+    },
+    /// XF.1: move text into a file the editor has not necessarily opened.
+    ///
+    /// Design: [`cross-file-writes.md`](../../../docs/dev/architecture/cross-file-writes.md).
+    /// The primitive `org-archive-subtree`, `org-refile` and `org-capture`
+    /// were all blocked on — every one of them is "take text from here and
+    /// put it in a different file", and nothing in the vocabulary could say
+    /// the second half. [`Effect::ApplyEdit`] addresses a `BufferId`, which a
+    /// producer cannot learn for a file that has never been opened.
+    ///
+    /// **Through the document pipeline, not to disk.** The host resolves
+    /// `path` to a buffer, opening it in the background if needed and REUSING
+    /// it if it is already open. So an open target sees the edit, `u` covers
+    /// it, and the LSP hears about it — a direct write would leave the buffer
+    /// and the disk disagreeing with nobody told.
+    ///
+    /// **The target is left modified, not saved.** Emacs's `org-refile` and
+    /// `org-archive-subtree` both do; a plugin that silently writes files is a
+    /// larger authority than one that edits buffers, and should be an explicit
+    /// later decision if it is ever wanted.
+    WriteToFile {
+        /// Absolute, or relative to the editor's working directory.
+        ///
+        /// When this effect arrives from a plugin it has already been checked
+        /// against that plugin's `fs:write` grant AT THE BOUNDARY, where the
+        /// provenance is still known — the host's applier deliberately cannot
+        /// tell a plugin's effect from a native mode's, so the gate cannot
+        /// live there (XF.4).
+        path: std::path::PathBuf,
+        /// Where in the target the text lands.
+        anchor: FileAnchor,
+        /// Inserted verbatim. A trailing newline is the producer's business.
+        text: String,
+        /// When present, this range is removed from the buffer the action ran
+        /// in — and ONLY after the insert has landed.
+        ///
+        /// Folding the pair into one effect is what makes the bad outcome
+        /// unrepresentable: as two effects, "insert succeeded, delete failed"
+        /// duplicates the text and "delete succeeded, insert failed" LOSES
+        /// it. The second is data loss from a keystroke. An effect cannot
+        /// report failure at all (pinned by XF.0), so two ordered effects
+        /// could not be made to depend on each other without changing every
+        /// effect's signature.
+        cut: Option<lattice_protocol::position::Range>,
     },
     SelectionChange(SelectionSet),
     /// Move the cursor to `target` without affecting the selection.
@@ -1243,6 +1334,94 @@ impl Effect {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    // ── XF.1: the anchor resolver ──────────────────────────────────────
+    //
+    // The whole of `FileAnchor`'s logic, and the reason it is a position
+    // rather than a range: a producer addressing a file it has never read can
+    // name these three and nothing else (`cross-file-writes.md` §4).
+
+    #[test]
+    fn end_resolves_one_past_the_last_line() {
+        // "Append" means insert *before* line `line_count` — one past the
+        // last — which is what a caller building a `Position` needs.
+        assert_eq!(FileAnchor::End.resolve_line(3), 3);
+    }
+
+    /// An empty target is the capture case: the file is created by this very
+    /// write, so every anchor has to agree on line 0 rather than one of them
+    /// producing an out-of-range insert into a document with no lines.
+    #[test]
+    fn every_anchor_agrees_on_an_empty_file() {
+        assert_eq!(FileAnchor::End.resolve_line(0), 0);
+        assert_eq!(FileAnchor::Start.resolve_line(0), 0);
+        assert_eq!(FileAnchor::Line(0).resolve_line(0), 0);
+        assert_eq!(FileAnchor::Line(7).resolve_line(0), 0);
+    }
+
+    #[test]
+    fn start_is_always_the_first_line() {
+        assert_eq!(FileAnchor::Start.resolve_line(0), 0);
+        assert_eq!(FileAnchor::Start.resolve_line(100), 0);
+    }
+
+    #[test]
+    fn a_line_in_range_resolves_to_itself() {
+        assert_eq!(FileAnchor::Line(0).resolve_line(5), 0);
+        assert_eq!(FileAnchor::Line(3).resolve_line(5), 3);
+    }
+
+    /// Past the end CLAMPS rather than erroring. A producer computing a line
+    /// from a file it has not read can legitimately be off, and refusing to
+    /// file the text at all is worse than filing it at the end — this is the
+    /// difference between "your archive entry went somewhere" and "your
+    /// archive entry is gone".
+    #[test]
+    fn a_line_past_the_end_clamps_to_append() {
+        assert_eq!(FileAnchor::Line(9).resolve_line(5), 5);
+        assert_eq!(FileAnchor::Line(u32::MAX).resolve_line(5), 5);
+        assert_eq!(
+            FileAnchor::Line(9).resolve_line(5),
+            FileAnchor::End.resolve_line(5),
+            "clamping means exactly End, not almost-End"
+        );
+    }
+
+    /// `Line(n)` where n == the count is already "past the last line", so it
+    /// is End rather than an off-by-one that inserts inside the last line.
+    #[test]
+    fn a_line_equal_to_the_count_is_append_not_the_last_line() {
+        assert_eq!(
+            FileAnchor::Line(5).resolve_line(5),
+            FileAnchor::End.resolve_line(5)
+        );
+    }
+
+    /// `WriteToFile` is a mutation for dot-repeat and for Visual auto-exit.
+    /// Pinned here because both classifiers live in other crates and a new
+    /// effect silently defaulting to "not a mutation" is the kind of gap
+    /// nothing surfaces until `.` mysteriously replays the wrong thing.
+    #[test]
+    fn write_to_file_is_constructible_with_and_without_a_cut() {
+        let base = Effect::WriteToFile {
+            path: std::path::PathBuf::from("/tmp/archive.org"),
+            anchor: FileAnchor::End,
+            text: "* Done\n".to_string(),
+            cut: None,
+        };
+        assert!(matches!(base, Effect::WriteToFile { cut: None, .. }));
+
+        let moving = Effect::WriteToFile {
+            path: std::path::PathBuf::from("/tmp/archive.org"),
+            anchor: FileAnchor::End,
+            text: "* Done\n".to_string(),
+            cut: Some(lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(2, 0),
+                lattice_protocol::position::Position::new(5, 0),
+            )),
+        };
+        assert!(matches!(moving, Effect::WriteToFile { cut: Some(_), .. }));
+    }
 
     #[test]
     fn none_is_none() {

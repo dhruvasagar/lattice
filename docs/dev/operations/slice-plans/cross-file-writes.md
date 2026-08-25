@@ -44,7 +44,7 @@ XF.6  docs, ledger, site
 | Slice | Description | Status |
 |---|---|---|
 | XF.0 | Gate: effect-list failure semantics | ✅ |
-| XF.1 | `Effect::WriteToFile` + the anchor resolver | 📝 |
+| XF.1 | `Effect::WriteToFile` + the anchor resolver | ✅ |
 | XF.2 | Open-or-reuse a target buffer, without stealing focus | 📝 |
 | XF.3 | Insert-then-cut applied as one unit | 📝 |
 | XF.4 | The WIT effect + the boundary capability gate | 📝 |
@@ -98,7 +98,7 @@ consecutive failures not poisoning what follows; and a failing part being
 a no-op rather than a partial write — which is what makes "insert first,
 cut only if it landed" safe to build on.
 
-### XF.1 — the native effect 📝
+### XF.1 — the native effect ✅ (2026-08-25)
 
 `Effect::WriteToFile { path, anchor, text, cut }` in `lattice-grammar`,
 plus `FileAnchor { End, Start, Line(u32) }`. No WIT, no plugin — a
@@ -108,12 +108,29 @@ boundary slice has something to convert *to*.
 The anchor resolver is the whole of the logic worth testing here: given a
 document snapshot and an anchor, produce the byte offset to insert at.
 
-- *tests:* `end` on an empty file, on a file with and without a trailing
-  newline (the two produce different offsets and only one is right);
-  `start`; `line(n)` in range; `line(n)` past the end clamping to `end`
-  rather than erroring, per design §3.
-- *doc:* the fragment already carries the contract; this slice adds the
-  variant's own doc comments.
+**The compiler enforced the cross-renderer rule**, which is the pleasant
+version of that rule working: adding the variant broke six exhaustive
+matches — the WIT boundary, the host's two effect classifiers, and BOTH
+renderers' (the TUI twice, GPUI once). Nothing had to be remembered.
+
+Both renderers group it with `ApplyEdit` as host-applied: there is
+nothing renderer-coupled in path→buffer, the insert, or the cut. Both
+classifiers report it as a mutation — for Visual auto-exit and for `.`
+eligibility — because it always changes at least the target and, with a
+`cut`, the source too.
+
+**The WIT boundary rejects it with a typed error for now**, the
+`OpenProviderView` precedent. Crossing it before XF.4 would be an
+unchecked cross-file write, since the gate that authorises the path
+cannot run at the applier (§6).
+
+Tests: `end` one past the last line; every anchor agreeing on an EMPTY
+file, which is capture's first run and where a disagreement would be an
+out-of-range insert; `start`; `line(n)` in range; `line(n)` past the end
+clamping to exactly `End` rather than erroring — the difference between
+"your archive entry went somewhere" and "your archive entry is gone";
+and `line(n) == count` being append rather than an off-by-one inside the
+last line.
 
 ### XF.2 — open-or-reuse, in the background 📝
 

@@ -130,6 +130,10 @@ pub enum PluginSeam {
     Modes,
     Config,
     Decorations,
+    /// IM.6: inline media blocks (`inline-media.md` §7). A producer, like
+    /// `Decorations` — the guest names files and lines, the host resolves
+    /// sizes and builds the virtual rows.
+    Media,
     /// TC.2 — the sticky-context producer (`context-plugin` world). Async,
     /// host-cached per parse version; see `treesitter-context.md`.
     Context,
@@ -212,6 +216,7 @@ impl PluginSeam {
             | PluginSeam::CompletionSource
             | PluginSeam::Events
             | PluginSeam::Decorations
+            | PluginSeam::Media
             | PluginSeam::Context
             | PluginSeam::PluginManager
             | PluginSeam::ErrorParser
@@ -230,6 +235,7 @@ impl PluginSeam {
             PluginSeam::Modes => "modes",
             PluginSeam::Config => "config",
             PluginSeam::Decorations => "decorations",
+            PluginSeam::Media => "media",
             PluginSeam::Context => "context",
             PluginSeam::Theme => "theme",
             PluginSeam::Keymap => "keymap",
@@ -261,6 +267,7 @@ impl FromStr for PluginSeam {
             "modes" => PluginSeam::Modes,
             "config" => PluginSeam::Config,
             "decorations" => PluginSeam::Decorations,
+            "media" => PluginSeam::Media,
             "context" => PluginSeam::Context,
             "theme" => PluginSeam::Theme,
             "keymap" => PluginSeam::Keymap,
@@ -629,6 +636,7 @@ mod tests {
             PluginSeam::Modes,
             PluginSeam::Config,
             PluginSeam::Decorations,
+            PluginSeam::Media,
             PluginSeam::Keymap,
             PluginSeam::Logging,
         ] {
@@ -725,6 +733,24 @@ mod tests {
     #[test]
     fn grammar_drains_before_modes() {
         assert!(PluginSeam::Grammar.drain_rank() < PluginSeam::Modes.drain_rank());
+    }
+
+    /// IM.6a: the `media` seam parses from a manifest and round-trips its
+    /// wire name. Pinned because the name is what a plugin author types into
+    /// `plugin.toml`, and a typo there is otherwise a silent "my seam never
+    /// ran".
+    #[test]
+    fn the_media_seam_parses_and_round_trips() {
+        let m = PluginManifest::from_toml_str("id = \"org\"\nprovides = [\"media\"]\n")
+            .expect("parses");
+        assert_eq!(m.provides, vec![PluginSeam::Media]);
+        assert_eq!(PluginSeam::Media.as_str(), "media");
+        // It is a CONSUMER-rank seam like `decorations`: it produces content
+        // from state other seams declared, so it drains after them.
+        assert_eq!(
+            PluginSeam::Media.drain_rank(),
+            PluginSeam::Decorations.drain_rank()
+        );
     }
 
     /// Declarations others reference come first; name-resolving seams come

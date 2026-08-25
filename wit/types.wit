@@ -1341,6 +1341,40 @@ interface types {
         line-count: u32,
     }
 
+    // --- Inline media seam (IM.6, inline-media.md §7) ---------------------------
+
+    /// How a media block's intrinsic size maps into its box. Mirrors
+    /// `lattice_cells::MediaFit`.
+    enum media-fit {
+        /// Scale down to fit, preserving aspect ratio; never scale up.
+        contain,
+        /// Scale to the pane width, up or down; the height follows.
+        width,
+    }
+
+    /// One inline media block a guest wants drawn.
+    ///
+    /// The guest names a FILE and a LINE; it never sends pixels. That keeps the
+    /// `fs:read` decision host-side — the host decides whether this plugin may
+    /// read that path — and stops a plugin putting arbitrary bytes on screen.
+    /// It also avoids copying a decoded image across the boundary per load.
+    ///
+    /// Note what is ABSENT: any notion of size. The host resolves the intrinsic
+    /// dimensions and computes the reserved rows, so sizing policy lives in one
+    /// place and a guest cannot reserve arbitrary vertical space.
+    record media-block {
+        /// 0-based source line the block hangs below.
+        anchor-line: u32,
+        /// Path to the image. Relative paths resolve against the buffer's own
+        /// directory, which is what an org `[[file:diagram.png]]` means.
+        path: string,
+        /// What a renderer that cannot draw shows instead, and what a screen
+        /// reader reads. `none` falls back to the file name — never nothing,
+        /// because a blank box tells the user nothing about what is missing.
+        alt: option<string>,
+        fit: media-fit,
+    }
+
     // --- Sticky-context seam (TC.2, treesitter-context.md) ----------------------
 
     /// One structural scope: the range it spans, plus the line span that NAMES

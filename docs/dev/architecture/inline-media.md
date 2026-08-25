@@ -265,14 +265,46 @@ what `:describe-buffer` and a screen reader read.
 ## 7. The plugin seam
 
 Org contributes images from WASM, so the descriptor needs a WIT surface.
-It composes with the existing decoration seam rather than adding a new
-one — a media block is a decoration with a size.
 
-The guest sends a path and a row count; it never sends pixels. Beyond
-avoiding a large copy across the boundary, this keeps `fs:read` gating
-host-side: the guest names a file, the **host** decides whether the
-plugin may read it, and a plugin cannot smuggle arbitrary bytes onto the
-screen.
+**Correction (2026-08-25).** This section previously said the seam
+"composes with the existing decoration seam rather than adding a new one —
+a media block is a decoration with a size". That is wrong, and writing
+code against it would have been the way to find out. `decorations` is a
+**gutter** producer: it mirrors `Mode::gutter_decorations` and returns
+per-line cues for the gutter column. A media block is a virtual-row group,
+which is a different thing entirely — and in fact **no WIT seam can
+produce a virtual row today**; none of the twenty-five interfaces mentions
+them.
+
+So this is a new ABI surface, and it is a NARROW one by choice
+(alternatives in §9):
+
+```wit
+interface media {
+    record media-block {
+        anchor-line: u32,
+        path: string,
+        alt: option<string>,
+        fit: media-fit,
+    }
+    media-blocks: func(ctx: decoration-context)
+        -> result<list<media-block>, string>;
+}
+```
+
+The guest names a file and a line. The **host** resolves the intrinsic
+size, computes rows and `height_lh`, and builds the virtual rows — so
+sizing policy stays in one place and a plugin cannot reserve arbitrary
+vertical space or paint outside its block.
+
+The guest never sends pixels. Beyond avoiding a large copy across the
+boundary per image, this keeps `fs:read` gating host-side: the guest names
+a file, the **host** decides whether that plugin may read it, and a plugin
+cannot smuggle arbitrary bytes onto the screen.
+
+Shape follows `decorations`: an async producer the host calls on a trigger
+and caches per buffer, never on the render path (§7 rule 7 — per-frame
+WASM is a paramount-#1 violation).
 
 ## 8. Org's surface
 
@@ -299,6 +331,20 @@ retired Phase 9 in the first place.
 
 **Bytes across the WIT boundary.** A large copy per image, per load, and
 it moves the capability decision into the guest. Rejected.
+
+**A general `virtual-rows` seam** — a guest contributing arbitrary rows
+(cells, kind, height, scales) rather than media specifically. Strictly
+more powerful: inline charts, LaTeX and anything else would arrive through
+one ABI instead of a new seam per content type. Rejected for now because
+it exposes the CELL GRID across the plugin boundary, which is a large and
+effectively permanent commitment, and hands every plugin a way to paint
+arbitrary content anywhere in a buffer. The narrow `media` seam can be
+subsumed by it later; the reverse is not true.
+
+**Host-side org support** — the host recognising `[[file:…]]` itself, no
+ABI at all. Fastest to ship and rejected outright: it would be the first
+time the host knows what an org link is, which is exactly what
+org-as-a-plugin exists to prevent.
 
 **Terminal graphics protocols (kitty / sixel / iTerm2) in the same
 slice.** These would make the TUI a genuine peer for this feature and

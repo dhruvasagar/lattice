@@ -674,6 +674,18 @@ impl PluginLoader {
                             .await?;
                         seam_ids.push(id);
                     }
+                    // IM.6a: the `media` seam's ABI exists (wit/media.wit) but
+                    // its producer machinery does not yet — IM.6b mirrors the
+                    // `decorations` client/actor/boundary trio for it.
+                    //
+                    // `NotWired` rather than a silent skip: a plugin that
+                    // declares `media` today CANNOT have its images drawn, and
+                    // failing the load says so. A no-op arm would load the
+                    // plugin, drop its images on the floor and leave the author
+                    // hunting a bug in their own guest.
+                    PluginSeam::Media => {
+                        return Err(PluginLoaderError::NotWired("media"));
+                    }
                     PluginSeam::Decorations => {
                         let id = self
                             .drain_decorations(&component, manifest, tier, &mut record)

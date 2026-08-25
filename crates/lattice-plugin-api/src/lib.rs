@@ -107,6 +107,13 @@ pub enum Capability {
 /// and `plugin-manager` (`Proc` — the host builds what the guest declared; see
 /// the row's own comment for why one variant cannot describe it).
 pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
+    // OM.A1. `None` and not `Fs`, which is the interesting part: the host
+    // walks the project and reads every file, and hands the guest `text`. The
+    // guest touches no filesystem — no preopens, no `walk` — so the capability
+    // this seam requires *of a plugin* is nothing. Keeping the read host-side
+    // is what makes that true, and annotating it `Fs` would misreport a
+    // deliberate design property as a permission.
+    ("agenda-source", Capability::None),
     ("buffer", Capability::None),
     ("command", Capability::None),
     ("completion-source", Capability::None),
@@ -121,6 +128,12 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     ("help", Capability::None),
     ("host-services", Capability::Fs),
     ("keymap", Capability::None),
+    // IM.6. Same shape as `agenda-source` above: the guest names a file and
+    // never sends pixels, and the host resolves + reads it. `media.wit` calls
+    // that out as deliberate — "the `fs:read` capability decision stays with
+    // the HOST, which is what stops a plugin putting arbitrary bytes on screen
+    // regardless of its grant". So the seam demands nothing of the plugin.
+    ("media", Capability::None),
     // LG.3c. The guest hands over grammar BYTES and query source; the host
     // compiles and runs them. No OS reach: the grammar is wasm the host
     // executes inside tree-sitter's own sandboxed store, not native code and

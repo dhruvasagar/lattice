@@ -57,6 +57,7 @@ same surface).
 |   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
 | Projects and roots         | [`project`](help:project)                | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
+| The agenda                 | [`agenda-view-mode`](help:agenda-view-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
 | The problems view          | [`problems-minor-mode`](help:problems-minor-mode) | ✅      |

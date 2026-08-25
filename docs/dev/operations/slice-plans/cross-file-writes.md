@@ -45,7 +45,7 @@ XF.6  docs, ledger, site
 |---|---|---|
 | XF.0 | Gate: effect-list failure semantics | ✅ |
 | XF.1 | `Effect::WriteToFile` + the anchor resolver | ✅ |
-| XF.2 | Open-or-reuse a target buffer, without stealing focus | 📝 |
+| XF.2 | Open-or-reuse a target buffer, without stealing focus | ✅ |
 | XF.3 | Insert-then-cut applied as one unit | 📝 |
 | XF.4 | The WIT effect + the boundary capability gate | 📝 |
 | XF.5 | A fixture guest end to end | 📝 |
@@ -132,7 +132,7 @@ clamping to exactly `End` rather than erroring — the difference between
 and `line(n) == count` being append rather than an off-by-one inside the
 last line.
 
-### XF.2 — open-or-reuse, in the background 📝
+### XF.2 — open-or-reuse, in the background ✅ (2026-08-25)
 
 The one genuinely missing primitive: **path → `BufferId`**.
 
@@ -149,14 +149,34 @@ The one genuinely missing primitive: **path → `BufferId`**.
 - Missing file → created (empty document, path set) when its parent
   exists; missing parent → `Err`, per design §8.
 
-- *tests:* an already-open buffer is reused and its unsaved content is
-  the base the edit applies to; a background open lands in `:ls` and
-  leaves the active buffer alone; a nonexistent file with an existing
-  parent opens empty; a nonexistent parent is an error; a directory is
-  an error.
-- *the failure mode this slice exists to prevent, as its own test:* open
-  a file, modify it without saving, then write to it by path — the
-  modification must still be there afterwards.
+`Editor::resolve_path_to_buffer`. Two things the slice found.
+
+**`find_document_by_path` was not enough for the reuse check.** It
+compares `PathBuf`s, and `Path` equality is component-wise — so
+`dir/./notes.org` matches `dir/notes.org` for free, but
+**`dir/sub/../notes.org` does not** (`Path::new("/a/c/../b") ==
+Path::new("/a/b")` is `false`; verified rather than assumed). A producer
+whose path happens to contain `..` would have opened a SECOND buffer over
+an already-open file, and the user's unsaved work in the first would be
+invisible to the write. `find_document_by_real_path` canonicalizes both
+sides; a path that will not canonicalize (the file does not exist yet)
+falls back to raw, which can only fail to match — the safe direction,
+since the unsafe one is matching two different files together.
+
+**The first version deadlocked.** It called `buffers.document_handle()`
+inside `buffers.for_each()`, which the registry's own doc forbids in
+as many words — the callback holds the mutex. It did not fail the test
+run, it *hung* it. Ids are collected first and the handles looked up
+after.
+
+Tests (10): the headline reuse case, asserting the buffer's UNSAVED
+content is what the write sees; both `..` spellings, in both directions
+(awkward-then-plain as well as plain-then-awkward, because the
+canonicalisation has to happen on both sides); focus not moving; the
+target landing in `:ls` and findable by path; a missing file opening
+empty with its path set; a missing parent refused *without* creating the
+tree on the way out; a directory refused; and resolving twice yielding
+one buffer.
 
 ### XF.3 — insert-then-cut, as one unit 📝
 

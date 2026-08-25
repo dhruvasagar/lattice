@@ -21496,6 +21496,119 @@ impl Editor {
             .insert(lattice_listing::oil::modes::OilDir(dir));
     }
 
+    /// XF.2: resolve `path` to a buffer, opening it in the background if it
+    /// is not already open.
+    ///
+    /// The one primitive [`Effect::WriteToFile`](lattice_grammar::Effect)
+    /// needed and the vocabulary did not have: a producer can name a file it
+    /// has never opened, and everything downstream addresses a `BufferId`.
+    ///
+    /// ## Reuse is the correctness case, not an optimisation
+    ///
+    /// If the file is already open, THAT buffer is returned. Opening a second
+    /// one over a file the user has unsaved changes in and then editing the
+    /// copy loses their work silently — the edit lands, the buffer they are
+    /// looking at never sees it, and whichever saves last wins.
+    ///
+    /// ## Background, and listed
+    ///
+    /// The active pane does not move: the user pressed a key to archive a
+    /// subtree, not to navigate. The buffer is an ordinary listed `Document`,
+    /// so `:ls` shows it, `:w` saves it and `:bd` closes it — a plugin's write
+    /// leaves something the user can see and act on rather than a hidden
+    /// mutation.
+    ///
+    /// ## Reading here, and why that is acceptable
+    ///
+    /// `Document::open` reads synchronously. This runs on a user-initiated
+    /// command, once per target file, never per frame / keystroke / tick — the
+    /// same bound `:e` lives with (`cross-file-writes.md` §9).
+    ///
+    /// A missing file is CREATED (empty, with its path set): capture's first
+    /// run is exactly that. A missing parent directory is an error rather than
+    /// a `mkdir -p` — creating directories is a larger authority than creating
+    /// a file, and a typo'd path should not silently build a tree.
+    pub fn resolve_path_to_buffer(&mut self, path: &std::path::Path) -> Result<BufferId, String> {
+        let target = normalize_user_path_with_cwd(path, self.current_dir.as_deref());
+
+        if let Some(existing) = self.find_document_by_real_path(&target) {
+            return Ok(existing);
+        }
+
+        if target.is_dir() {
+            return Err(format!("{} is a directory", target.display()));
+        }
+
+        let document = if target.exists() {
+            lattice_core::Document::open(&target)
+                .map_err(|e| format!("could not read {}: {e}", target.display()))?
+        } else {
+            // Capture's first run. The parent must exist — see the doc above
+            // on why this is not a `mkdir -p`.
+            match target.parent() {
+                Some(dir) if dir.as_os_str().is_empty() || dir.is_dir() => {}
+                Some(dir) => {
+                    return Err(format!("no such directory: {}", dir.display()));
+                }
+                None => return Err(format!("{} has no parent", target.display())),
+            }
+            lattice_core::DocumentBuilder::default()
+                .with_path(target.clone())
+                .with_text("")
+                .build()
+        };
+
+        let id = BufferId::next();
+        let handle = lattice_runtime::spawn_document(id, document, self.registry.clone());
+        let handle: std::sync::Arc<dyn lattice_runtime::Document> = std::sync::Arc::new(handle);
+        // Fully qualified: `insert_document_buffer` is a `BufferStore` trait
+        // method and the trait is not in scope here.
+        lattice_mode::BufferStore::insert_document_buffer(
+            &self.buffers,
+            id,
+            lattice_core::BufferKind::Document,
+            handle,
+            lattice_core::BufferFlags::default(),
+            None,
+        );
+        self.seed_empty_document_locals(id);
+        Ok(id)
+    }
+
+    /// XF.2: is `target` already open, comparing paths by what they actually
+    /// point at rather than by how they are spelled?
+    ///
+    /// [`Self::find_document_by_path`] compares `PathBuf`s, and `Path`
+    /// equality is component-wise — so `dir/./notes.org` matches
+    /// `dir/notes.org` for free, but **`dir/sub/../notes.org` does not**.
+    /// That gap is not cosmetic here: missing an open buffer means opening a
+    /// second one over the same file and editing the copy, which loses
+    /// whatever the user had not saved. Silently.
+    ///
+    /// So both sides are canonicalized before comparing. A path that will not
+    /// canonicalize (the target does not exist yet — capture's first run, or
+    /// a buffer whose file was deleted underneath it) falls back to its raw
+    /// form, which can only ever fail to match. Failing to match means
+    /// opening a fresh buffer, which is the safe direction: the unsafe one is
+    /// matching two different files together.
+    fn find_document_by_real_path(&self, target: &std::path::Path) -> Option<BufferId> {
+        let real =
+            |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let wanted = real(target);
+        // Collect ids FIRST, then look each handle up outside the walk.
+        // `BufferRegistry::for_each` holds the registry mutex for the whole
+        // callback and re-entering it deadlocks — its own doc says so, and
+        // doing it anyway hung the test suite rather than failing it.
+        let mut ids = Vec::new();
+        self.buffers.for_each(|entry| ids.push(entry.id));
+        ids.into_iter().find(|&id| {
+            self.buffers
+                .document_handle(id)
+                .and_then(|h| h.path())
+                .is_some_and(|p| real(&p) == wanted)
+        })
+    }
+
     /// Record the directory `buffer_id` is *about* — the generic
     /// [`BufferScopeDir`](lattice_mode::BufferScopeDir).
     ///

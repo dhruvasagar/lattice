@@ -55,7 +55,12 @@ async fn the_producer_crosses_context_and_returns_resolved_blocks() {
     let src = source(&host).await;
 
     let blocks = src
-        .media_blocks(7, Some(std::path::Path::new("/home/u/notes/todo.org")), 9)
+        .media_blocks(
+            7,
+            Some(std::path::Path::new("/home/u/notes/todo.org")),
+            9,
+            String::new(),
+        )
         .await
         .expect("producer returns blocks");
     assert_eq!(blocks.len(), 2);
@@ -93,14 +98,14 @@ async fn an_empty_buffer_degrades_to_a_guest_error_not_a_trap() {
     let src = source(&host).await;
 
     let err = src
-        .media_blocks(7, Some(std::path::Path::new("/a/b.org")), 0)
+        .media_blocks(7, Some(std::path::Path::new("/a/b.org")), 0, String::new())
         .await
         .expect_err("empty buffer is a guest err");
     assert!(err.contains("empty buffer"), "got {err}");
 
     // And the source is still usable afterwards — an err is not a quarantine.
     let ok = src
-        .media_blocks(7, Some(std::path::Path::new("/a/b.org")), 3)
+        .media_blocks(7, Some(std::path::Path::new("/a/b.org")), 3, String::new())
         .await
         .expect("still alive after a guest err");
     assert_eq!(ok.len(), 2);
@@ -118,7 +123,10 @@ async fn a_relative_path_without_a_buffer_path_is_dropped() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    let blocks = src.media_blocks(7, None, 9).await.expect("produces");
+    let blocks = src
+        .media_blocks(7, None, 9, String::new())
+        .await
+        .expect("produces");
     assert_eq!(
         blocks.len(),
         1,

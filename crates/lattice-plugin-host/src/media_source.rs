@@ -23,9 +23,15 @@ impl AsyncMediaSource for WasmMediaSource {
         self.plugin_id().0 as u64
     }
 
-    fn produce(&self, buffer_id: u64, path: Option<PathBuf>, line_count: u32) -> MediaFuture<'_> {
+    fn produce(
+        &self,
+        buffer_id: u64,
+        path: Option<PathBuf>,
+        line_count: u32,
+        text: String,
+    ) -> MediaFuture<'_> {
         Box::pin(async move {
-            self.media_blocks(buffer_id, path.as_deref(), line_count)
+            self.media_blocks(buffer_id, path.as_deref(), line_count, text)
                 .await
         })
     }
@@ -57,9 +63,10 @@ impl WasmMediaSource {
         buffer_id: u64,
         path: Option<&Path>,
         line_count: u32,
+        text: String,
     ) -> Result<Vec<MediaBlockRequest>, String> {
         let ctx = project_decoration_context(buffer_id, path, line_count);
-        let wit: Vec<crate::media_task::MediaBlock> = match self.client.produce(ctx).await {
+        let wit: Vec<crate::media_task::MediaBlock> = match self.client.produce(ctx, text).await {
             Ok(inner) => inner?,
             Err(host_err) => return Err(format!("media plugin: {host_err}")),
         };

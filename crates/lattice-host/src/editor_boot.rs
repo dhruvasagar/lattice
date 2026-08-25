@@ -1089,6 +1089,14 @@ impl Editor {
             decoration_registry.clone(),
         );
 
+        // IM.7: the sibling registry for inline-media producers. Same shape and
+        // the same reason — RCU-registered by the loader, read wait-free by the
+        // host's per-tick refresh.
+        let media_registry: lattice_mode::MediaSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::MediaSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_mode::MediaSourceRegistryHandle>(media_registry.clone());
+
         // TC.2: the sibling registry for async context-scope producers
         // (`drain_context`). Same shape and the same reason — RCU-registered by
         // the loader, read wait-free by the host's reparse-driven refresh.
@@ -1929,6 +1937,7 @@ impl Editor {
             wasm_decorations: crate::wasm_decorations::WasmDecorationState::with_registry(
                 decoration_registry.clone(),
             ),
+            wasm_media: crate::wasm_media::WasmMediaState::with_registry(media_registry.clone()),
             wasm_context: crate::wasm_context::WasmContextState::with_registry(
                 context_registry.clone(),
             ),

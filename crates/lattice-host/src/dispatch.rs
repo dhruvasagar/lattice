@@ -16620,6 +16620,10 @@ impl Editor {
         // CI.4: apply any pending `enable-mode` / `disable-mode` (a plugin's
         // deferred config) — flip enablement + re-activate open buffers.
         signals.extend(self.drain_mode_enablement());
+        // IM.7: drive the inline-media producers. Cheap when nothing changed —
+        // registry-epoch and cache-version gated, exactly like the decoration
+        // pump beside it.
+        self.maybe_refresh_wasm_media();
         self.drain_pending_references();
         self.drain_pending_symbols();
         // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`

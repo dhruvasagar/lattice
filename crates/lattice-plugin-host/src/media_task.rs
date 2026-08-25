@@ -37,6 +37,7 @@ enum MediaCall {
     /// `media.media-blocks(ctx)` — produce the buffer's inline media blocks.
     Produce {
         ctx: Box<DecorationContext>,
+        text: String,
         reply: oneshot::Sender<CallResult<Result<Vec<MediaBlock>, String>>>,
     },
 }
@@ -65,11 +66,13 @@ impl MediaClient {
     pub async fn produce(
         &self,
         ctx: DecorationContext,
+        text: String,
     ) -> CallResult<Result<Vec<MediaBlock>, String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .unbounded_send(MediaCall::Produce {
                 ctx: Box::new(ctx),
+                text,
                 reply,
             })
             .map_err(|_| PluginHostError::PluginGone {
@@ -108,8 +111,8 @@ impl MediaActor {
     pub async fn run(mut self) {
         while let Some(call) = self.rx.next().await {
             match call {
-                MediaCall::Produce { ctx, reply } => {
-                    let _ = reply.send(self.call_produce(&ctx).await);
+                MediaCall::Produce { ctx, text, reply } => {
+                    let _ = reply.send(self.call_produce(&ctx, &text).await);
                 }
             }
         }
@@ -118,6 +121,7 @@ impl MediaActor {
     async fn call_produce(
         &mut self,
         ctx: &DecorationContext,
+        text: &str,
     ) -> CallResult<Result<Vec<MediaBlock>, String>> {
         if self.quarantine.is_tripped() {
             return Err(PluginHostError::Quarantined {
@@ -129,7 +133,7 @@ impl MediaActor {
         let result = self
             .bindings
             .lattice_plugin_host_media()
-            .call_media_blocks(&mut self.store, ctx)
+            .call_media_blocks(&mut self.store, ctx, text)
             .await;
         crate::trip_and_map_traced(
             self.tracer.as_ref(),

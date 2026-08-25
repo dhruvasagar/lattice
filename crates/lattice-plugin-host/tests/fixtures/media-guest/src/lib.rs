@@ -23,7 +23,7 @@ use lattice::plugin_host::types::{DecorationContext, MediaBlock, MediaFit};
 struct Component;
 
 impl Guest for Component {
-    fn media_blocks(ctx: DecorationContext) -> Result<Vec<MediaBlock>, String> {
+    fn media_blocks(ctx: DecorationContext, _text: String) -> Result<Vec<MediaBlock>, String> {
         if ctx.line_count == 0 {
             // Graceful: nothing to scan → a typed guest err, not a trap.
             return Err("media-guest: empty buffer".to_string());

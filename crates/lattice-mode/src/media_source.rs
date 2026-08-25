@@ -46,7 +46,17 @@ pub trait AsyncMediaSource: Send + Sync + std::fmt::Debug {
     fn source_id(&self) -> u64;
 
     /// Produce this buffer's media blocks off the render path.
-    fn produce(&self, buffer_id: u64, path: Option<PathBuf>, line_count: u32) -> MediaFuture<'_>;
+    /// `text` is the buffer's contents. Passed by value rather than through a
+    /// document handle because a media scan reads EVERY line: a handle would
+    /// cost one boundary crossing per line, where one copy costs one. The copy
+    /// is affordable because this runs on open / edit, not per frame.
+    fn produce(
+        &self,
+        buffer_id: u64,
+        path: Option<PathBuf>,
+        line_count: u32,
+        text: String,
+    ) -> MediaFuture<'_>;
 }
 
 /// Runtime-mutable registry of [`AsyncMediaSource`]s.
@@ -113,7 +123,7 @@ mod tests {
         fn source_id(&self) -> u64 {
             self.0
         }
-        fn produce(&self, _b: u64, _p: Option<PathBuf>, _l: u32) -> MediaFuture<'_> {
+        fn produce(&self, _b: u64, _p: Option<PathBuf>, _l: u32, _t: String) -> MediaFuture<'_> {
             Box::pin(async { Ok(Vec::new()) })
         }
     }

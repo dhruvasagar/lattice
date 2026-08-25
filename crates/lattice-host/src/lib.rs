@@ -198,6 +198,7 @@ pub mod state;
 pub mod sticky_context;
 pub mod wasm_context;
 pub mod wasm_decorations;
+pub mod wasm_media;
 // Phase 5.7.B.9: synthetic-buffer + messages helpers migrate
 // from `impl App` (TUI) to `impl Editor` (host) so both
 // renderer peers seed `*lsp*` + `*messages*` eagerly.

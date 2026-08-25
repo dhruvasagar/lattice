@@ -1473,6 +1473,9 @@ pub struct Editor {
     /// path; renderers read `rs.wasm_gutter_decorations`. Inert in
     /// `Editor::default()` (no registry wired).
     pub wasm_decorations: crate::wasm_decorations::WasmDecorationState,
+    /// IM.7: inline-media producer wiring — the cache the virtual-row builder
+    /// reads, plus the registry the loader registers into.
+    pub wasm_media: crate::wasm_media::WasmMediaState,
     /// TC.3a: WASM sticky-context wiring (per-buffer scope cache + producer
     /// registry handle + off-keystroke paint generation + single-flight
     /// bookkeeping). The per-tick `maybe_refresh_wasm_context` drives the

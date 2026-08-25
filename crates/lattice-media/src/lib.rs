@@ -51,12 +51,31 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// The byte layout a consumer needs.
+///
+/// A parameter rather than a fixed output, and that is not speculative
+/// generality — GPUI's `RenderImage` is **premultiplied BGRA** while a
+/// terminal graphics protocol wants straight RGBA. Converting at the
+/// consumer would put a per-pixel loop in the paint path, which is the exact
+/// thing this crate exists to keep out of it, so the swap happens inside the
+/// same off-thread decode and is cached in that form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PixelFormat {
+    /// Straight RGBA8. What image files decode to, and what a kitty / sixel
+    /// path would want.
+    #[default]
+    Rgba8,
+    /// Premultiplied BGRA8 — `gpui::RenderImage`'s required layout.
+    BgraPremultiplied8,
+}
+
 /// Decoded, scaled pixels ready for a peer to upload.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
-    /// RGBA8, row-major, `width * height * 4` bytes.
+    pub format: PixelFormat,
+    /// Row-major, `width * height * 4` bytes, in [`Self::format`].
     pub rgba: Arc<[u8]>,
 }
 
@@ -125,7 +144,11 @@ pub fn probe(path: &Path) -> Result<(u32, u32), MediaError> {
 /// Never upscales: a 32×32 icon blown up to fill a block is worse than the
 /// same icon shown small, and the caller cannot tell the difference from the
 /// returned dimensions alone.
-pub fn decode(path: &Path, target: (u32, u32)) -> Result<DecodedImage, MediaError> {
+pub fn decode(
+    path: &Path,
+    target: (u32, u32),
+    format: PixelFormat,
+) -> Result<DecodedImage, MediaError> {
     let (w, h) = probe(path)?;
     let img = image::ImageReader::open(path)
         .map_err(|e| MediaError::Unreadable(e.to_string()))?
@@ -141,11 +164,36 @@ pub fn decode(path: &Path, target: (u32, u32)) -> Result<DecodedImage, MediaErro
         img.resize(tw, th, image::imageops::FilterType::Triangle)
     };
     let rgba = scaled.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let mut bytes = rgba.into_raw();
+    if format == PixelFormat::BgraPremultiplied8 {
+        premultiply_to_bgra(&mut bytes);
+    }
     Ok(DecodedImage {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: Arc::from(rgba.into_raw().into_boxed_slice()),
+        width: w,
+        height: h,
+        format,
+        rgba: Arc::from(bytes.into_boxed_slice()),
     })
+}
+
+/// In-place RGBA8 → premultiplied BGRA8.
+///
+/// Runs inside the off-thread decode, never at paint. Premultiplication is
+/// what stops a transparent PNG showing a dark halo where the compositor
+/// blends un-premultiplied colour against the background.
+fn premultiply_to_bgra(bytes: &mut [u8]) {
+    for px in bytes.chunks_exact_mut(4) {
+        let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
+        // `+ 127) / 255` rounds instead of truncating; truncation darkens
+        // every semi-transparent pixel by up to one level, which is visible
+        // as a dingy edge on antialiased artwork.
+        let mul = |c: u8| (((c as u16) * (a as u16) + 127) / 255) as u8;
+        px[0] = mul(b);
+        px[1] = mul(g);
+        px[2] = mul(r);
+        px[3] = a;
+    }
 }
 
 fn guard_size(w: u32, h: u32) -> Result<(), MediaError> {
@@ -249,6 +297,7 @@ struct CacheKey {
     path: PathBuf,
     mtime: Option<i64>,
     target: (u32, u32),
+    format: PixelFormat,
 }
 
 /// A bounded decode cache.
@@ -290,17 +339,19 @@ impl MediaCache {
         self: &Arc<Self>,
         path: &Path,
         target: (u32, u32),
+        format: PixelFormat,
     ) -> Result<Arc<DecodedImage>, MediaError> {
         let key = CacheKey {
             path: path.to_path_buf(),
             mtime: mtime_of(path),
             target,
+            format,
         };
         if let Some(hit) = self.lookup(&key) {
             return Ok(hit);
         }
         let owned = path.to_path_buf();
-        let decoded = tokio::task::spawn_blocking(move || decode(&owned, target))
+        let decoded = tokio::task::spawn_blocking(move || decode(&owned, target, format))
             .await
             .map_err(|e| MediaError::Unreadable(format!("decode task failed: {e}")))??;
         let decoded = Arc::new(decoded);
@@ -419,15 +470,24 @@ mod tests {
         let p = write_png(dir.path(), "big.png", 200, 100);
         let cache = Arc::new(MediaCache::new(8 * 1024 * 1024));
 
-        let first = cache.get(&p, (100, 100)).await.expect("decodes");
+        let first = cache
+            .get(&p, (100, 100), PixelFormat::Rgba8)
+            .await
+            .expect("decodes");
         assert_eq!((first.width, first.height), (100, 50), "scaled to fit");
         assert_eq!(first.rgba.len(), 100 * 50 * 4, "RGBA8");
 
-        let again = cache.get(&p, (100, 100)).await.expect("decodes");
+        let again = cache
+            .get(&p, (100, 100), PixelFormat::Rgba8)
+            .await
+            .expect("decodes");
         assert!(Arc::ptr_eq(&first, &again), "second get is a cache hit");
 
         // A different target is a different decode, not a stale hit.
-        let other = cache.get(&p, (40, 40)).await.expect("decodes");
+        let other = cache
+            .get(&p, (40, 40), PixelFormat::Rgba8)
+            .await
+            .expect("decodes");
         assert_eq!((other.width, other.height), (40, 20));
     }
 
@@ -440,7 +500,10 @@ mod tests {
         let cache = Arc::new(MediaCache::new(50_000));
         for i in 0..4 {
             let p = write_png(dir.path(), &format!("{i}.png"), 100, 100);
-            cache.get(&p, (100, 100)).await.expect("decodes");
+            cache
+                .get(&p, (100, 100), PixelFormat::Rgba8)
+                .await
+                .expect("decodes");
             assert!(
                 cache.bytes() <= 50_000,
                 "over budget after {i}: {}",
@@ -515,6 +578,64 @@ mod tests {
         assert_eq!(rows, 1);
     }
 
+    /// GPUI needs premultiplied BGRA. Doing the swap at the consumer would
+    /// put a per-pixel loop in the paint path — the exact thing this crate
+    /// exists to keep out of it — so it happens inside the off-thread decode
+    /// and is cached in that form.
+    #[test]
+    fn bgra_premultiplication_happens_at_decode_not_at_paint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("half.png");
+        // One pixel: pure red at 50% alpha.
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 128]))
+            .save(&path)
+            .unwrap();
+
+        let straight = decode(&path, (10, 10), PixelFormat::Rgba8).unwrap();
+        assert_eq!(&straight.rgba[..], &[255, 0, 0, 128], "RGBA is untouched");
+
+        let bgra = decode(&path, (10, 10), PixelFormat::BgraPremultiplied8).unwrap();
+        // B, G, R, A with colour scaled by alpha: 255 * 128/255 = 128.
+        assert_eq!(
+            &bgra.rgba[..],
+            &[0, 0, 128, 128],
+            "channels swapped and premultiplied"
+        );
+    }
+
+    /// Rounding rather than truncating: `(c * a) / 255` alone darkens every
+    /// semi-transparent pixel by up to one level, which shows as a dingy
+    /// edge on antialiased artwork.
+    #[test]
+    fn premultiplication_rounds_instead_of_truncating() {
+        let mut px = vec![200u8, 100, 50, 200];
+        premultiply_to_bgra(&mut px);
+        // 200*200/255 = 156.86 -> 157 rounded (156 truncated).
+        assert_eq!(px[2], 157, "red channel rounded");
+        assert_eq!(px[3], 200, "alpha is left alone");
+    }
+
+    /// The format is part of the cache key: the same file wanted in two
+    /// layouts is two decodes, not one served in the wrong byte order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_format_is_part_of_the_cache_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_png(dir.path(), "c.png", 8, 8);
+        let cache = Arc::new(MediaCache::new(8 * 1024 * 1024));
+
+        let a = cache.get(&p, (100, 100), PixelFormat::Rgba8).await.unwrap();
+        let b = cache
+            .get(&p, (100, 100), PixelFormat::BgraPremultiplied8)
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different layouts are different entries"
+        );
+        assert_eq!(a.format, PixelFormat::Rgba8);
+        assert_eq!(b.format, PixelFormat::BgraPremultiplied8);
+    }
+
     /// An edited image must reappear rather than serving the old decode
     /// forever — which is what `mtime` is in the key for.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -522,7 +643,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_png(dir.path(), "x.png", 40, 40);
         let cache = Arc::new(MediaCache::new(8 * 1024 * 1024));
-        let first = cache.get(&p, (100, 100)).await.unwrap();
+        let first = cache.get(&p, (100, 100), PixelFormat::Rgba8).await.unwrap();
         assert_eq!((first.width, first.height), (40, 40));
 
         // Rewrite at a different size, with an mtime the filesystem will
@@ -530,7 +651,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         write_png(dir.path(), "x.png", 20, 20);
 
-        let second = cache.get(&p, (100, 100)).await.unwrap();
+        let second = cache.get(&p, (100, 100), PixelFormat::Rgba8).await.unwrap();
         assert_eq!(
             (second.width, second.height),
             (20, 20),

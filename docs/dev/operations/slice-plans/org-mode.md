@@ -5,6 +5,14 @@
 > [`../../architecture/org-mode.md`](../../architecture/org-mode.md) —
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
+> The ledger entry is
+> [`../implementation.md`](../implementation.md) §"Org-mode as a plugin":
+> the four generic host changes, the acid test, and the findings worth
+> carrying past org.
+>
+> **Not archivable.** OM.6b and OM.11 are ⛔ deferred on the same missing
+> primitive, and a deferred slice is open work — see the archiving rule in
+> CLAUDE.md. This plan stays active until they are decided.
 
 **Status:** OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the
 seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
@@ -118,7 +126,7 @@ files? — was retired during design by reading the excerpt model
 | OM.A1 | `agenda-source` seam + host provider | ✅ |
 | OM.A2 | Org agenda semantics in the guest | ✅ |
 | OM.A3 | `org-agenda-mode`: act from agenda, `gr`, headerline | ✅ |
-| OM.14 | Docs, ledger, site nav | 📝 |
+| OM.14 | Docs, ledger, site nav | ✅ |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench
 where a hot path is touched, tests covering the failure mode as well as
@@ -871,15 +879,28 @@ same omission and does not care (it asserts activation, not chords). A
 mode whose bindings all silently vanish looks exactly like a mode that
 did not activate.
 
-## OM.14 — docs, ledger, site 📝
+## OM.14 — docs, ledger, site ✅ (2026-08-25)
 
-- the plugin repo's `doc/org.md` — its closing *"Editing. Headline
-  promotion and demotion… none of that is here"* section stops being
-  true and is rewritten.
-- the plugin repo's `README.md`, `implementation.md` (Phase 8b row +
-  an org-mode section), design fragment ↔ slice plan cross-refs.
-- Zola site: `nav.toml`, sync, search — a `docs/` change is not finished
-  until the site carries it.
+- **`doc/org.md`** gained an Agenda section and its closing *"Tables and
+  the agenda are not here yet"* is gone — tables had been shipped for a
+  day and the claim was already false when the agenda landed. What
+  replaces it is the honest cut list: injection is missing, and
+  everything that writes to another file is blocked rather than pending.
+- **`README.md`** was stale from before the repo split — a relative link
+  into `../../docs/`, a `cd examples/org-plugin`, the wrong artefact
+  name, and a `provides = ["language", "help"]` that named two of seven
+  seams. Its "everything else org needs … is a separate track, gated on
+  nothing here" paragraph described work that has since landed.
+- **`implementation.md`**: the Phase 8b row (📝 *design underway; no
+  crate built* → 🟡 three plugins shipped) and a new §"Org-mode as a
+  plugin" carrying the four generic host changes, the acid test, the
+  three findings worth keeping, and what the cross-file block actually
+  is.
+- **Cross-refs** in both directions, plus a pointer from the design
+  fragment to the three sections it amends mid-build.
+- **`docs/user/agenda-view-mode.md`** + `nav.toml` + sync landed with
+  OM.A3 rather than here: the mode-has-a-help-page class guard fails the
+  build without it, which is the right place for that to be caught.
 
 ## The acid test, as an assertion
 

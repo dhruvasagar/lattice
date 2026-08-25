@@ -1,18 +1,34 @@
 # Org-mode as a plugin
 
-**Status:** design. Slice plan:
+**Status:** built, except the two slices that need a cross-file write
+(OM.6b archive, OM.11 refile + capture — both ⛔, both blocked on the
+same missing primitive). Sequencing, per-slice outcomes and the amendments
+this document records:
 [`../operations/slice-plans/org-mode.md`](../operations/slice-plans/org-mode.md).
+Ledger entry: [`../operations/implementation.md`](../operations/implementation.md)
+§"Org-mode as a plugin".
+
 Builds on [`plugin-languages.md`](plugin-languages.md) (the `language` seam,
 whose first consumer is the same plugin) and
 [`plugin-host.md`](plugin-host.md) (`grammar`, `modes`, `config`,
-`picker-source`).
+`picker-source`). The agenda's host half is a multibuffer provider —
+[`multibuffer-views.md`](multibuffer-views.md) §3.7 for the provider shape and
+§3.7a for the provider-view seam `:agenda` triggers through.
 
-## 1. What is already true
+**Two sections carry amendments made during the build**, each marked in place
+rather than rewritten over: §4.2 (the view carries two minors, not one) and
+§6.2 (`extensions()`, and `group` as a key rather than a label). Where this
+document and the code disagree, the code and the slice plan are what happened.
 
-[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) ships today and contributes org **the language**: a
+## 1. What was already true
+
+*Written before the build; kept because it is the starting position the rest
+of this document argues from.*
+
+[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin) already contributed org **the language**: a
 tree-sitter grammar compiled to wasm, per-level headline highlights, folds
-over sections and blocks and drawers, and its own `:help` page. It rides
-the `language` and `help` seams and needs nothing from the host.
+over sections and blocks and drawers, and its own `:help` page. It rode
+the `language` and `help` seams and needed nothing from the host.
 
 Visibility cycling is native and predates the plugin: `z<Space>` cycles a
 heading FOLDED → CHILDREN → SUBTREE and `z<Tab>` cycles the buffer
@@ -21,16 +37,21 @@ OVERVIEW → CONTENTS → SHOW-ALL (`AppEffect::CycleFoldAtCursor` /
 ordinary fold pipeline, so `za` / `zR` / `zM` work with no org-specific
 code anywhere.
 
-What is missing is **editing**: promotion, subtree motion, TODO workflow,
-tables, agenda. That is org-mode the *mode*, and this fragment is its
-design.
+What was missing was **editing**: promotion, subtree motion, TODO workflow,
+tables, agenda. That is org-mode the *mode*, and this fragment is its design.
+
+**All of it now ships** except the two slices that need to write to a file
+other than the buffer's own (§9). The plugin rides seven seams; the host
+gained four generic changes and learned nothing about headlines.
 
 ## 2. The thesis
 
 > Org-mode is a plugin. Not "mostly a plugin with a few host hooks" — a
 > plugin. The host learns nothing about headlines.
 
-That is the claim under test. Concretely it means: no `BufferKind::Org`,
+That is the claim under test. **It held** — asserted at OM.2, again at OM.A3,
+and greppable: no `BufferKind::Org`, no `Lang::Org`, no `Editor::do_org_*`, no
+`Action::Org*`. Concretely it means: no `BufferKind::Org`,
 no `Lang::Org`, no `Editor::do_org_*`, no `Action::OrgPromote`, no org
 branch in a renderer. The acid test from CLAUDE.md applies verbatim — a
 provider landing should require **zero** `Editor::` method additions and

@@ -73,7 +73,7 @@ Reasons this ordering wins:
 | 6     | Document Renderer + UI Components     | ✅ done (delivered across Phases 4–5) | Scope shipped incrementally under Phases 4–5, not as a discrete phase. **Popup system** ✅ — popup-unification initiative complete; completion / hover / signature / diagnostic / code-action all compose through the shared pane path (no bespoke text layout). **Picker primitive** ✅ — `lattice-picker` crate; file picker + every LSP multi-result list (`PickerSource::*`) with async syntax-highlighted preview. **Status lines + segment registry** ✅ — modeline element/descriptor registry (ML.0–ML.5) across both renderers; header line = multibuffer view-header virtual rows. **Buffer-backed views** ✅ — file-tree, oil, `:diagnostics`, help, `*messages*`, `*lsp*` all Documents (everything-is-a-buffer). **Command line / echo area** ✅ — rich minibuffer + completion popups + substitute live-preview. **Notifications** ✅ — `lattice-notify` (NOTIF.1a data layer + store/expiry, 1b/c corner-anchored rendering in BOTH peers, 1d magit remote ops as first consumer, 1e `notifications.*` config + the `*messages*` tee); design [`../architecture/notifications.md`](../architecture/notifications.md). The three surfaces answer three different questions and so do not compete: headerline = "what is this buffer doing", `*messages*` = "what happened earlier", notification = "the thing I started has finished, wherever I am now". **Plan change:** the `lattice-render-document` (taffy + cosmic-text) crate was superseded by the GPUI peer renderer (Phase 5.7) — document layout/text lives in `lattice-ui-tui` (ratatui) + `lattice-ui-gpui` (GPUI). **No known gaps.** (The "only gap: a dedicated notification system" line stood here until 2026-08-19; it predated NOTIF.1 and was stale, not true.) Popups, pickers, panels-as-buffers detailed in design §5.9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 7     | Plugin Host                           | ✅ done (PH7.0–PH7.12; host runtime — editor-side loading is Phase 8) | `lattice-plugin-host` crate: wasmtime 46 + Component Model + WASI preview 2; the `wit/` API package; the capability/WASI security model + fuel + epoch deadlines + crash-quarantine (`PluginCrashed`); every extension seam mirroring an exercised native trait — picker-source (⭐ exit), grammar (the one synchronous-on-keystroke seam, sync trampoline), completion-source (generator), events/hooks, decorations (producer; renderer read-from-cache is Phase-8 boot-wiring), config, modes, host-services (`walk`); the `fuzzy-finder` validation plugin (parity + overhead-benched, not cut over); CI overhead gates (typed-call / round-trip p99, no-per-frame-WASM dep-graph guard, `wasm32-wasip2` in CI); registry/keymap/config teardown + graceful-degradation audit. **Editor-side loader + manager + observability landed (Phase 8, PL8.A–H + PO.1–5, branch `phase-8-plugin-loader`):** `lattice-host` depends on `lattice-plugin-host` transitively via the `lattice-plugin-loader` crate (`cli → host → plugin-loader → plugin-host → wasmtime`; the renderer no-per-frame-WASM guard still holds — it checks *renderer* deps). The loader stands the host up at boot (`PluginLoaderHandle` service) and drives `compile → instantiate → activate`. Shipped: on-disk discovery + the seam→registry drain (PL8.B), the `:plugin-load` / `:plugin-unload` / `:plugin-reload` ex-commands (PL8.C), the `init.rs` config path + auto-reload watcher (PL8.D), and the buffer-backed `:plugins` **manager view** with reload/unload/describe/refresh/trace/trace-level chords (PL8.H). **Observability (PO.1–PO.5):** the `PluginTracer` boundary-trace substrate + `PluginTracePushed` event (PO.1); the async seams instrumented (PO.2); the gated hot-path grammar seam — a per-plugin atomic `HotGate`, zero-cost when off, benched at ≈+1 ns (PO.3); the `*plugin-trace*` / `*plugin-trace:<name>*` buffer views + `:plugin-trace` + the manager `t`/`T` drill-in + the live typed `plugin.trace-level` option (PO.4); and the `wasi:logging`-shaped guest logging import across all 8 async worlds, Layer 2 (PO.5). Security hardening: the untrusted `manifest.id` is validated to a single safe path component before it keys the writable data mount. User-reachable: `:plugins`, `:plugin-load/unload/reload`, `:plugin-trace`, `:reload-config`, `:list-plugins` / `:describe-plugin`, and the `:describe-plugin-api` / `:list-plugin-apis` / `:export-plugin-api` catalog. Remaining: bundled reference plugins (8b) + modes-as-components. Slice plans: [`slice-plans/plugin-host.md`](slice-plans/plugin-host.md), [`slice-plans/plugin-loader.md`](slice-plans/plugin-loader.md), [`slice-plans/archive/plugin-observability.md`](slice-plans/archive/plugin-observability.md); design fragments: [`../architecture/plugin-host.md`](../architecture/plugin-host.md), [`../architecture/plugin-observability.md`](../architecture/plugin-observability.md). |
 | 8     | Major/Minor Modes + Reference Plugins | 🟡 system built natively; as-components repackaging awaits Phase 7 | The mode/view **system** is built and heavily exercised: `lattice-mode` registry with the major/minor axes, conflict resolution, `target_buffer_kind`, lifecycle `on_activate`/`on_deactivate`, the 15-member LSP sub-mode cascade, plus help / diff / oil / file-tree / multibuffer modes. Phase 8's design exit ("mode and view systems fully exercised; everything-is-a-buffer validated") is met natively. What remains is the §5.8.3 goal of shipping major/minor modes **as WASM components** — blocked on Phase 7 (no plugin host yet). Built-in modes stay native by design (the default keymap/grammar never crosses the WASM boundary); the as-components path is for the extension story.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 8b    | Bundled plugins                       | 📝 design underway; no crate built | Curated set of first-party WASM Component plugins shipping with the editor binary -- LSP server manager (lighthouse), plugin manager, fuzzy-finder, project grep, git client, snippet engine, editing helpers, diff viewer, outline sidebar, format-on-save, test runner, markdown preview. Each crate lives at `plugins/<name>/` (fuzzy-finder ships; the rest not built). See ../architecture/design.md §5.5.6 for the strategy + the seven WIT prerequisites Phase 7 must expose. **Design landed (2026-07, branch `phase-8-plugin-loader`):** the first-wave fragments — [`plugin-auto-pair.md`](../architecture/plugin-auto-pair.md) (the trivial-first plugin: `auto` + `manual` pairing), [`lighthouse.md`](../architecture/lighthouse.md) (LSP server manager + its net/proc/task/register-server host-services extension), and — **promoted to v1** — [`plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md) (the foundational plugin↔tree-sitter query seam that unlocks structural plugins) — each with a slice plan under `slice-plans/`. auto-pair surfaced two more general host prereqs (a grammar-context `document` handle; declining/fall-through bindings). **BUILT (2026-07-20, `phase-8-plugin-loader`):** **the auto-pair epic is complete (AP.0.1→AP.4)** and it is the FIRST plugin shipped — as a **core plugin**, not compiled-in. Delivered: the grammar `document` handle (AP.0.1) + fall-through/`Effect::Declined` (AP.0.2); the **tree-sitter query seam TS.1–TS.3** ([`plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md) — `tree-snapshot`/`node`/`query`/`tree-cursor`, host-side predicate eval, the `enclosing` scope query at ~1.1 µs, capability-gated); auto-pair's `auto` + `manual` styles (AP.1–AP.3, manual = TS.3's first structural consumer); and the **plugin-manager redesign core track PM.1–PM.4** ([`plugin-manager.md`](../architecture/plugin-manager.md)): a runtime-root search path + boot discovery, `cargo xtask build-core-plugins` staging, and the manifest `default_mode` + `<id>.enabled` config gate — so auto-pair auto-pairs **out of the box** (no `include_bytes`, no toolchain, no init.rs). Remaining plugin-manager work = the **user track PM.5–PM.8** (use-package `require` + build-on-boot from git/local sources). **Note:** much of the *other* bundled functionality already exists **natively** (fuzzy-finder = `lattice-picker`, project grep, git diff = `lattice-diff`, snippet engine = `lattice-snippet`, outline = `:lsp-symbols`, plus `lattice-claude-code`) — none yet repackaged as WASM Component plugins. |
+| 8b    | Bundled + reference plugins           | 🟡 three plugins shipped (auto-pair, treesitter-context, org); the rest of the curated set unbuilt | Curated set of first-party WASM Component plugins shipping with the editor binary -- LSP server manager (lighthouse), plugin manager, fuzzy-finder, project grep, git client, snippet engine, editing helpers, diff viewer, outline sidebar, format-on-save, test runner, markdown preview. Each crate lives at `plugins/<name>/` (fuzzy-finder ships; the rest not built). See ../architecture/design.md §5.5.6 for the strategy + the seven WIT prerequisites Phase 7 must expose. **Design landed (2026-07, branch `phase-8-plugin-loader`):** the first-wave fragments — [`plugin-auto-pair.md`](../architecture/plugin-auto-pair.md) (the trivial-first plugin: `auto` + `manual` pairing), [`lighthouse.md`](../architecture/lighthouse.md) (LSP server manager + its net/proc/task/register-server host-services extension), and — **promoted to v1** — [`plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md) (the foundational plugin↔tree-sitter query seam that unlocks structural plugins) — each with a slice plan under `slice-plans/`. auto-pair surfaced two more general host prereqs (a grammar-context `document` handle; declining/fall-through bindings). **BUILT (2026-07-20, `phase-8-plugin-loader`):** **the auto-pair epic is complete (AP.0.1→AP.4)** and it is the FIRST plugin shipped — as a **core plugin**, not compiled-in. Delivered: the grammar `document` handle (AP.0.1) + fall-through/`Effect::Declined` (AP.0.2); the **tree-sitter query seam TS.1–TS.3** ([`plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md) — `tree-snapshot`/`node`/`query`/`tree-cursor`, host-side predicate eval, the `enclosing` scope query at ~1.1 µs, capability-gated); auto-pair's `auto` + `manual` styles (AP.1–AP.3, manual = TS.3's first structural consumer); and the **plugin-manager redesign core track PM.1–PM.4** ([`plugin-manager.md`](../architecture/plugin-manager.md)): a runtime-root search path + boot discovery, `cargo xtask build-core-plugins` staging, and the manifest `default_mode` + `<id>.enabled` config gate — so auto-pair auto-pairs **out of the box** (no `include_bytes`, no toolchain, no init.rs). Remaining plugin-manager work = the **user track PM.5–PM.8** (use-package `require` + build-on-boot from git/local sources). **Note:** much of the *other* bundled functionality already exists **natively** (fuzzy-finder = `lattice-picker`, project grep, git diff = `lattice-diff`, snippet engine = `lattice-snippet`, outline = `:lsp-symbols`, plus `lattice-claude-code`) — none yet repackaged as WASM Component plugins. **The org plugin (2026-08-24→25, [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)) is the second reference plugin and the deepest test of the seam surface so far:** seven seams from one composed world, four modes, and a whole editing grammar — outliner, TODO workflow, checkboxes, timestamps, links, tables, and the agenda — with **zero `Editor::` methods, zero host `Action` variants, no `BufferKind::Org` and no `Lang` arm**. The three host changes it needed are all generic (a language index on `ModeRegistry`, `mode-declaration.target-language`, and lifting the majors restriction off the `modes` seam); the `agenda-source` seam it added last is generic in the same way — the guest declares its file extensions, so the host never learns what a `.org` file is. See the org-mode section below. |
 | 9     | Rich Buffer Rendering                 | ⛔ RETIRED from v1 (2026-08-18) | Retired, not deferred-by-drift. Its named crate (`lattice-render-editor`) was superseded by the cell grid; most of the intent shipped under Phases 3–6 (markdown grammar + injections, the full `Heading1..6`/`Bold`/`Italic`/`Link`/`Url`/`MarkupRaw` style set, rich minibuffer, virtual rows, soft-wrap, indent guides); what remains is the variable row-height scroll machinery (Fenwick index + every uniform-row scroll/cursor calculation), which is GPUI-only since a terminal has one cell size — a permanently renderer-divergent surface for a cosmetic gain. Moved to Post-1.0 with Path 4, which shares the substrate. **Carved out and kept for v1:** concealment (hide `**` / `[]()` / heading `#` off the cursor line) — no shaped path needed, identical on both peers, not yet implemented. See design.md §13 Phase 9.                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10    | Polish + v1.0                         | 🟡 partial (themes ✅, packaging in progress) | **Themes** shipped (`lattice-theme` crate, theme-system slice plan, themeable popups/modeline). **Packaging** in progress — the tag-driven release pipeline (`.github/workflows/release.yml`, design `release-pipeline.md`) builds cross-platform archives + Linux bundles. Still **not started**: `*scratch:rust*` live-eval workflow (§10, depends on Phase 7 plugin host), accessibility, crash reporter.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
@@ -6442,6 +6442,96 @@ attempt.
 
 Design: [`../architecture/plugin-languages.md`](../architecture/plugin-languages.md).
 Slice plan: [`slice-plans/plugin-languages.md`](slice-plans/plugin-languages.md).
+
+---
+
+## Org-mode as a plugin (2026-08-24 → 2026-08-25)
+
+The second reference plugin, and the one the extensibility goal was built to
+survive. It lives outside this tree
+([`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin))
+because that is what a user's plugin manager clones and builds.
+
+| Group | Slices | Status |
+|---|---|---|
+| Prerequisites | OM.0 drain-order gate, OM.1 language index, OM.2 majors over the seam, OM.2b `<leader>` | ✅ |
+| Outliner | OM.3 promote/demote, OM.4 motions, OM.4b operator-pending, OM.5 `<Tab>`, OM.6 subtree move, OM.7 TODO, OM.8 checkboxes, OM.9 timestamps, OM.10 links | ✅ |
+| Tables | OM.12 align + cell motion, OM.13 rows and columns | ✅ |
+| Agenda | OM.A1 the `agenda-source` seam, OM.A2 org semantics, OM.A3 the view's modes | ✅ |
+| Docs | OM.14 | ✅ |
+| Cross-file writes | OM.6b archive, OM.11 refile + capture | ⛔ blocked |
+
+**The acid test, asserted rather than claimed.** Zero `Editor::` method
+additions, zero new variants in the host's `Action` enum, no
+`BufferKind::Org`, no `Lang::Org`, no org branch in either renderer. Org
+contributes a language, four modes, a grammar, options, media blocks, agenda
+rows and its own `:help` page, and the host names none of them.
+
+**Four host changes across the whole epic, every one of them generic.**
+
+- **A language index on `ModeRegistry`** (OM.1). `major_mode_id_for_lang` is a
+  hand-written match whose `Lang::Plugin(_)` arm returns `None` by design, so
+  a plugin language had no way to have a major. The index is the third layer,
+  consulted after the built-in table — a plugin claiming `"rust"` cannot take
+  `rust-mode`'s language.
+- **`mode-declaration.target-language`** (OM.2), plus lifting the reject arm
+  that had kept `major` off the `modes` seam. Two silent bugs came with it:
+  `bind_mode_keymap` hard-coded `MinorMode(id)`, so a major's chords would
+  have resolved at the wrong priority; and teardown removed only
+  `MinorMode(id)`, leaking an unloaded major's keymap layer.
+- **`<leader>` expansion** (OM.2b), carved mid-build because it did not exist.
+  Every org chord is `<leader>o…` and every one of them would have been
+  skipped with a warning: the plugin loads, the mode activates, the keys do
+  nothing.
+- **The `agenda-source` seam** (OM.A1), the only WIT interface the epic added
+  — deliberately last, so the ABI addition was made once, informed by what org
+  turned out to need.
+
+**Three findings worth carrying past org.**
+
+- **Seam drain order was NOT guaranteed** (OM.0). The loader walked
+  `manifest.provides` verbatim, so a load-bearing invariant depended on a
+  hand-written comment inside a **guest-authored** TOML file. Fixed
+  structurally: `PluginSeam::drain_rank()` ranks by real registration
+  dependency and the loader stable-sorts. What the regression test asserts on
+  the way past is why it was invisible — the mode registered in every order,
+  and only its *bindings* silently vanished.
+- **`Effect::None` is not `Effect::Declined`** (OM.6). A declined chord is
+  re-resolved with the mode's layer removed, and for a MULTI-KEY sequence that
+  runs the trailing key alone: `<leader>oJ` executed vim's `J` and joined two
+  lines. Decline only a chord that is genuinely SHARED; a chord behind a
+  plugin-owned prefix has nothing underneath it and must consume the key.
+- **A plugin minor is INERT until enabled** (OM.7). The manifest's
+  `default_mode` is what publishes the enablement request; without it the mode
+  registers correctly and never activates. Two per-tick drains then have to
+  run in order.
+
+**The agenda is a multibuffer, literally** (OM.A1–A3). An agenda row is an
+`Excerpt`, which buys jump-to-source, edit-propagates-to-source, headerline
+status and refresh from machinery that already ships — and the second of those
+is what decided it, because org's agenda is a place you change TODO states
+*from*. Host-side this added `providers::agenda` (the walk, the cross-file
+stable sort, the excerpt build), `agenda-view-mode` (`gr`), the
+`AgendaSourceRegistry` seam and the `:agenda` ex-command; none of it knows what
+an org file is, because the guest declares which extensions it wants offered.
+`:agenda` reaches the view through PV.1's generic provider-view seam, so it
+needed no dispatch arm at all.
+
+**Two pre-existing bugs surfaced by the agenda work**, both silent: `WiredSeams`
+never reported `media_registry`, and the loader never stored its media teardown
+snapshot back into the `ArcSwap` — so unloading a media plugin left its producer
+registered and every image still requested.
+
+**What is blocked, and why it is one decision rather than two.** `<leader>o$`
+(archive) and `:org-refile` / capture all move a subtree to a file *other than
+the buffer's own*, and **no effect in the WIT surface writes to another file**.
+`apply-edit` takes a target buffer id the guest cannot learn for a file it has
+not opened, and `invoke-command` exists only as a picker-accept outcome, not as
+an effect, so there is no way to chain "open that file" into "now edit it".
+Three candidate shapes are recorded at OM.6b; they need costing together.
+
+Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
+Slice plan: [`slice-plans/org-mode.md`](slice-plans/org-mode.md).
 
 ---
 

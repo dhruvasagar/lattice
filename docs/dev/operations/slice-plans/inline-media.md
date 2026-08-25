@@ -4,10 +4,15 @@
 > Design contracts live in
 > [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
 
-**Status:** IM.4 ✅ (2026-08-25) — **the substrate is done; nothing draws
-yet.** The scroll arithmetic is tall-row-aware, a block reserves rows and
-declares its alt text, and pixels are produced off-thread. IM.5 (paint)
-is next and is the first slice that puts an image on screen.
+**Status:** IM.5 ✅ (2026-08-25) — **GPUI draws images.** The scroll
+arithmetic is tall-row-aware (IM.1), blocks reserve rows and declare alt
+text (IM.3), pixels are decoded off-thread (IM.4), sized naturally
+(IM.5a), painted over the reserved rows (IM.5b) and landed without a
+keypress (IM.5c).
+
+**Nothing produces a block yet** — that is IM.6 (the plugin seam) and
+IM.7 (org's `[[file:…]]`), which are what make an image appear for a
+user. IM.2 remains and is polish.
 
 Earlier: IM.0 ✅ the gate (which
 found a real flaw and revised the design); IM.1a ✅ cursor visibility;
@@ -60,7 +65,10 @@ wrong.
 | IM.3 | `MediaBlock` descriptor + `VirtualRowKind::MediaBlock` | ✅ |
 | IM.2 | Document-level Fenwick height index (scrollbar, absolute jumps) | 📝 |
 | IM.4 | Off-thread decode + cache (`lattice-media`) | ✅ |
-| IM.5 | GPUI paint; TUI `alt` fallback at the same row count | 📝 |
+| IM.5a | Natural sizing — `height_lh`, `block_geometry`, weight derivation | ✅ |
+| IM.5b-1 | Decode straight into the consumer's pixel layout | ✅ |
+| IM.5b | GPUI paint over the reserved rows | ✅ |
+| IM.5c | Background decode + landing without a keypress | ✅ |
 | IM.6 | WIT seam for plugin-contributed media blocks | 📝 |
 | IM.7 | Org: `[[file:…]]`, `org.inline-images`, `<leader>oI` | 📝 |
 | IM.8 | Docs, ledger, site nav | 📝 |
@@ -223,7 +231,7 @@ never a stall.
 *bench:* decode is off-thread — assert the UI thread's frame time is
 unchanged while a large image decodes.
 
-### IM.5 — paint 📝
+### IM.5 — paint ✅ (2026-08-25)
 
 The first slice that puts an image on screen, and it absorbs two things
 deferred from earlier slices.
@@ -242,6 +250,21 @@ deferred from earlier slices.
 
 The TUI needs **nothing**: IM.3 put the alt text in the rows' cells, so
 it already paints the fallback.
+
+**Landed in four commits**, and two things are worth carrying forward.
+
+`gpui::RenderImage` is premultiplied BGRA, not RGBA — found by reading
+`paint_image` before writing against it. Converting at the consumer would
+have put a per-pixel loop in the render pass, so `PixelFormat` became a
+decode parameter (IM.5b-1) and the swap happens inside the same
+`spawn_blocking`, cached in that form.
+
+**IM.3 broke the GPUI build without anyone noticing.** Adding
+`VirtualRowKind::MediaBlock` left two non-exhaustive matches in
+`editor_element.rs`, invisible because `cargo build -p lattice-ui-gpui`
+compiles the lib WITHOUT the `window` feature — so the real-gpui paint
+path is never type-checked. `--features window` belongs in the loop for
+any renderer-touching slice, not only at the end of one.
 
 ### IM.6 — the seam 📝
 

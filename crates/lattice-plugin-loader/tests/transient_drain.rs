@@ -131,6 +131,7 @@ fn in_org() -> TransientContext {
         major_mode: Some("org-mode".into()),
         minor_modes: vec!["org-global-mode".into()],
         buffer: None,
+        args: Default::default(),
     }
 }
 
@@ -171,8 +172,10 @@ async fn a_plugin_menu_registers_under_the_name_the_guest_chose() {
         .expect("and it builds");
 
     // The title echoes the projection, so this proves the OPEN CONTEXT reached
-    // the guest through the registry — not merely that a menu appeared.
-    assert_eq!(spec.title, "org-mode (1 minors)");
+    // the guest through the registry — not merely that a menu appeared. The
+    // trailing "for nothing" is TR.3a's args: this is a plain open, so the
+    // builder correctly sees no subject.
+    assert_eq!(spec.title, "org-mode (1 minors) for nothing");
 
     // Two rows naming the same command with different args — the property the
     // seam exists for — plus the dismiss, and NOT the ghost row.

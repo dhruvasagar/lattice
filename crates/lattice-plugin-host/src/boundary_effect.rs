@@ -26,7 +26,8 @@ use crate::lattice::plugin_host::types::{
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
     OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
     OpenPromptPayload as WitOpenPromptPayload,
-    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, PopupFocus as WitPopupFocus,
+    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload,
+    OpenTransientPayload as WitOpenTransientPayload, PopupFocus as WitPopupFocus,
     PopupPlacement as WitPopupPlacement, Position as WitPosition, QuitPayload as WitQuitPayload,
     QuitScope as WitQuitScope, Range as WitRange, Register as WitRegister,
     SearchDirection as WitSearchDirection, Selection as WitSelection,
@@ -867,7 +868,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             on_submit_action: on_submit_action.clone(),
             buffer_name: buffer_name.clone(),
         }),
-        NativeEffect::OpenTransient { source } => WitEffect::OpenTransient(source.clone()),
+        NativeEffect::OpenTransient { source, args } => {
+            WitEffect::OpenTransient(WitOpenTransientPayload {
+                source: source.clone(),
+                args: args.to_wit()?,
+            })
+        }
         // Host-only surfaces: `:cd` / `:pwd` act on the editor process,
         // and `:clist`'s error picker is a host-owned view. They are not
         // blocked on a mirror so much as unmapped by intent; the error
@@ -981,7 +987,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         // IX.5: a guest asks for a line of text. The submitted value
         // reaches the action through its context's `prompt_value`, so
         // nothing about the payload needs to carry it back.
-        WitEffect::OpenTransient(source) => NativeEffect::OpenTransient { source },
+        WitEffect::OpenTransient(p) => NativeEffect::OpenTransient {
+            source: p.source,
+            args: lattice_grammar::Args::from_wit(p.args)?,
+        },
         WitEffect::OpenPrompt(p) => NativeEffect::OpenPrompt {
             prompt: p.prompt,
             initial: p.initial,

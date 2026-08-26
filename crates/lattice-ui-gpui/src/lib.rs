@@ -1564,12 +1564,13 @@ impl GpuiApp {
             // magit-file-dispatch), resolved via the owning mode
             // crate's `TransientSourceRegistry` registration. TUI/GPUI
             // parity with `do_open_transient`.
-            Effect::OpenTransient { source } => {
+            Effect::OpenTransient { source, args } => {
                 // TR.2: the body is `Editor::open_named_transient` —
                 // shared verbatim with the TUI peer rather than copied,
                 // which is also what gives the guest-backed async build
                 // path parity for free.
-                let signals = self.mutate_editor_with(move |e| e.open_named_transient(source));
+                let signals =
+                    self.mutate_editor_with(move |e| e.open_named_transient(source, args));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }

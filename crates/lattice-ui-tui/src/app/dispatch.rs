@@ -1098,7 +1098,7 @@ impl App {
                 yes_action,
                 args,
             } => self.do_confirm(prompt, yes_action, args),
-            Effect::OpenTransient { source } => self.do_open_transient(source),
+            Effect::OpenTransient { source, args } => self.do_open_transient(source, args),
             Effect::OpenPrompt {
                 prompt,
                 initial,

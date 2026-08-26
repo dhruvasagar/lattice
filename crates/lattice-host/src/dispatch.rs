@@ -31442,11 +31442,20 @@ impl Editor {
     /// Empty when the active buffer has no `ActiveModes` entry yet
     /// (mid-boot), which degrades to the ungated menu — the same
     /// direction `keymap_gated_ids` degrades in.
-    pub fn transient_open_context(&self) -> lattice_picker::TransientContext {
+    pub fn transient_open_context(
+        &self,
+        args: lattice_grammar::Args,
+    ) -> lattice_picker::TransientContext {
         let Some(active) = self.active_modes.get(&self.document_buffer_id) else {
-            return lattice_picker::TransientContext::default();
+            return lattice_picker::TransientContext {
+                args,
+                ..Default::default()
+            };
         };
         lattice_picker::TransientContext {
+            // TR.3a: what the open was FOR, as opposed to the mode/buffer
+            // fields, which are where it was opened.
+            args,
             major_mode: active.major().map(|m| m.as_str().to_string()),
             minor_modes: active
                 .minors()
@@ -31468,7 +31477,11 @@ impl Editor {
     /// then seated by [`drain_pending_transient_build`](Self::drain_pending_transient_build)
     /// off the async-landed wake — NOT off the next keystroke, which is
     /// what the `async_landed.notify_one()` below buys.
-    pub fn open_named_transient(&mut self, source: String) -> Vec<RendererSignal> {
+    pub fn open_named_transient(
+        &mut self,
+        source: String,
+        args: lattice_grammar::Args,
+    ) -> Vec<RendererSignal> {
         let Some(registry) = self
             .services
             .get::<lattice_picker::TransientSourceRegistryHandle>()
@@ -31483,7 +31496,7 @@ impl Editor {
         // Resolved here rather than by whatever emitted the effect, so
         // the chord, the ex-command (whose context carries no buffer)
         // and any plugin-emitted open are uniformly context-aware.
-        let ctx = self.transient_open_context();
+        let ctx = self.transient_open_context(args);
         let Some(build) = registry.build(&source, &ctx) else {
             self.set_message(
                 EchoLevel::Error,

@@ -394,6 +394,15 @@ interface types {
     /// it from its context's `prompt-value`, not from `args`, because
     /// the value is what the *user* typed rather than what the caller
     /// chose.
+    /// TR.3a: what `effect::open-transient` carries.
+    record open-transient-payload {
+        /// The registered source name.
+        source: string,
+        /// Arguments for this open, handed to the builder as
+        /// `transient-context.args`. `args::none` for a plain open.
+        args: args,
+    }
+
     record open-prompt-payload {
         /// Shown before the input area.
         prompt: string,
@@ -564,13 +573,20 @@ interface types {
         /// action with it. The other half of "a plugin can collect
         /// input" — without it a guest can only ask yes/no questions.
         open-prompt(open-prompt-payload),
-        /// IX.6: open a named transient menu. The payload is the
-        /// *source name* the owning crate registered with the
+        /// IX.6: open a named transient menu. The payload names the
+        /// *source* the owning crate registered with the
         /// `TransientSourceRegistry`, not a menu structure — the menu is
         /// built host-side from that registration, so a guest opens its
         /// own menu by naming it rather than by shipping a spec across
         /// on every press.
-        open-transient(string),
+        ///
+        /// TR.3a: it also carries the ARGUMENTS the open was requested
+        /// with, which reach the builder as `transient-context.args`.
+        /// Without them a menu cannot drill down — a row that opens a
+        /// second menu has no way to say what it opened it FOR, and the
+        /// builder would have to keep the answer in guest memory where
+        /// nothing clears it.
+        open-transient(open-transient-payload),
         yank(yank-payload),
         enter-mode(modal-state),
         save-buffer(option<string>),
@@ -1064,6 +1080,15 @@ interface types {
         /// The buffer the menu was opened over. `none` mid-boot, where a
         /// builder degrades exactly as it does for the mode fields.
         buffer: option<u32>,
+        /// TR.3a: the arguments the open carried
+        /// (`effect::open-transient`'s payload).
+        ///
+        /// This is what lets a menu DRILL DOWN: org's capture menu has a
+        /// row per template, and the fields menu that row opens needs to
+        /// know which template it is collecting for. The alternative is
+        /// guest memory, which `<Esc>` never clears — the next open would
+        /// inherit the last one's subject.
+        args: args,
     }
 
     /// An action row's target: a command **name** plus the arguments this

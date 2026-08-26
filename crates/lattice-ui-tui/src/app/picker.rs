@@ -198,8 +198,8 @@ impl App {
     /// are literally the same code — the two had identical copies, and
     /// the async (guest-backed) build path would have had to be written
     /// twice.
-    pub(crate) fn do_open_transient(&mut self, source: String) {
-        let signals = self.mutate_editor_with(move |e| e.open_named_transient(source));
+    pub(crate) fn do_open_transient(&mut self, source: String, args: lattice_grammar::Args) {
+        let signals = self.mutate_editor_with(move |e| e.open_named_transient(source, args));
         for s in signals {
             self.handle_renderer_signal(s);
         }

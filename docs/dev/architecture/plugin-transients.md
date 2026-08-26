@@ -1,6 +1,6 @@
 # Plugin-contributed transient menus
 
-**Status:** TR.1, TR.2a, TR.2b landed — the seam is live. Extends
+**Status:** TR.1, TR.2a, TR.2b, TR.3a landed. Extends
 [`plugin-host.md`](plugin-host.md)
 (the seam vocabulary). Slice plan:
 [`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md),
@@ -116,7 +116,47 @@ called once, at load, to name the registry entry; `build` per open, its future
 parked and seated on the async-landed wake.
 
 `transient-context` is the owned projection of `TransientContext`
-(`major-mode`, `minor-modes`, `buffer-id`) — the `picker-context` precedent.
+(`major-mode`, `minor-modes`, `buffer-id`, and TR.3a's `args`) — the
+`picker-context` precedent.
+
+## 6. TR.3a — an open carries its arguments
+
+`Effect::OpenTransient` carried only a name, and `TransientContext` said only
+*where* a menu was opened. Neither said what it was opened **for**, which makes
+a menu unable to drill down: org's capture menu has a row per template, and the
+fields menu that row opens has to know which template it is collecting for.
+
+The only alternative is the guest remembering the subject between the two
+opens — and `<Esc>` dispatches nothing at all, so nothing would ever clear it
+and the next open would inherit the last one's subject. That is the same
+failure mode `%^{Prompt}`'s state has (`org-capture.md` §5), and it has the
+same answer: the state travels with the request.
+
+So `Effect::OpenTransient { source, args }`, reaching the builder as
+`TransientContext::args`. `Args::None` is a plain open, which is every native
+menu today.
+
+### The same gap exists on the buffer-open path
+
+This is worth naming because magit already pays for it. `Effect::
+OpenSyntheticBuffer { name, mode_id }` carries no arguments either, so magit
+keeps **two** `Mutex<HashMap<buffer-name, payload>>` side tables —
+`ViewArgsRequests` and `BlameRequests` — whose own doc explains the reason:
+*"the `d` / `l` rows became argument transients, but the toggles are answered
+BEFORE the buffer exists — there is nothing yet to hold them."* Their `take`
+is deliberately once-only, because *"leaving it would make the next plain
+`:magit-diff` silently inherit the previous menu's toggles"* — the same stale-
+subject hazard, worked around by hand.
+
+Giving `OpenSyntheticBuffer` an `args` field would let both tables be deleted.
+Deliberately NOT done in TR.3a: org validates the shape on the transient path
+first, and magit's collapse is then a mechanical follow-on rather than two
+designs landing at once.
+
+**`parse_buffer_name` is a different problem and stays.** It carries a buffer's
+*identity* — which diff, which blame, which revision this buffer IS — and has
+to survive the buffer's whole life, across `gr`, `:ls` and re-activation. An
+argument is for one open; an identity is for as long as the buffer exists.
 
 ### What crosses, and what does not
 
@@ -124,7 +164,7 @@ parked and seated on the async-landed wake.
 
 | Variant | v1 | Why |
 |---|---|---|
-| `Action` | ✅ | The whole point. Crosses as a **command name plus its `args`**, the name resolved to a `CommandId` host-side — a plugin cannot forge an id (§7, the `register_*` rule). The args are the per-row slot TR.2a added; without them a menu whose rows differ only in a parameter is inexpressible. |
+| `Action` | ✅ | The whole point. Crosses as a **command name plus its `args`**, the name resolved to a `CommandId` host-side — a plugin cannot forge an id (§8, the `register_*` rule). The args are the per-row slot TR.2a added; without them a menu whose rows differ only in a parameter is inexpressible. |
 | `Dismiss` | ✅ | Free, and a menu without `q` is a trap. |
 | `Submenu` | 📝 | `Arc<TransientSpec>` is recursive; the WIT mirror needs the same care `Range`'s recursion needed. No consumer yet. |
 | `Flag` / `Argument` | 📝 | Both round-trip `TransientState` through park/resume. A real second seam, not a field. |
@@ -134,7 +174,7 @@ parked and seated on the async-landed wake.
 does **not** cross at all — a closure has no WIT form. A guest spec gets
 `preview: None`. Saying so here rather than discovering it at bindgen.
 
-## 6. Failure behaviour
+## 7. Failure behaviour
 
 A guest `err` from `build` is logged and the menu does not open, with an echo
 naming the plugin — the `picker-source::init` rule, and for the same reason: a
@@ -145,7 +185,7 @@ with a `debug!`, not an error. A plugin whose sixth row references a command
 it failed to register should still get the other five, and the alternative —
 refusing the whole menu — makes one bad row cost the feature.
 
-## 7. Paramount-goal alignment
+## 8. Paramount-goal alignment
 
 **#2 Extensibility.** This is the goal the seam serves: a keyed menu is a
 first-class UI primitive and was reachable only by native crates.

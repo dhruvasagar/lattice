@@ -35,15 +35,24 @@ use crate::transient_task::{
 };
 
 /// Project a live [`TransientContext`](NativeTransientContext) into its owned
-/// WIT mirror. Host→guest only; infallible, because every field is already
-/// owned plain data (no paths, so none of the UTF-8 rejection the picker
-/// context needs).
-pub fn project_transient_context(ctx: &NativeTransientContext) -> WitTransientContext {
-    WitTransientContext {
+/// WIT mirror. Host→guest only.
+///
+/// Fallible only because of TR.3a's `args`: an `Args` variant that has no WIT
+/// form is a typed error rather than a silently-dropped field, which would
+/// hand the builder `none` and have it build the wrong menu.
+pub fn project_transient_context(
+    ctx: &NativeTransientContext,
+) -> Result<WitTransientContext, String> {
+    Ok(WitTransientContext {
         major_mode: ctx.major_mode.clone(),
         minor_modes: ctx.minor_modes.clone(),
         buffer: ctx.buffer.map(|b| b.0),
-    }
+        // TR.3a: what the open was FOR — the row's args when a menu drilled
+        // down into another. A projection failure would silently hand the
+        // builder `none` and it would build the wrong menu, so it is a typed
+        // error like every other boundary conversion.
+        args: ctx.args.to_wit()?,
+    })
 }
 
 /// Convert a guest-built spec into the native one, resolving each action row's
@@ -135,6 +144,7 @@ pub fn transient_builder(
         let registry = registry.clone();
         let plugin = plugin.clone();
         Box::pin(async move {
+            let wit_ctx = wit_ctx?;
             // The host surface (trap / gone / quarantined) and the guest's own
             // `err` both mean the menu does not open. They are kept distinct in
             // the message so the echo says which.
@@ -279,13 +289,15 @@ mod tests {
             major_mode: Some("org-mode".into()),
             minor_modes: vec!["org-global-mode".into(), "auto-pair-mode".into()],
             buffer: Some(BufferId(7)),
+            args: Default::default(),
         };
-        let wit = project_transient_context(&ctx);
+        let wit = project_transient_context(&ctx).expect("projects");
         assert_eq!(wit.major_mode.as_deref(), Some("org-mode"));
         assert_eq!(wit.minor_modes.len(), 2);
         assert_eq!(wit.buffer, Some(7));
 
-        let empty = project_transient_context(&NativeTransientContext::default());
+        let empty =
+            project_transient_context(&NativeTransientContext::default()).expect("projects");
         assert_eq!(empty.major_mode, None);
         assert!(empty.minor_modes.is_empty());
         assert_eq!(empty.buffer, None);

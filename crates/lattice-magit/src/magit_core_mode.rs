@@ -202,6 +202,9 @@ fn root_menu_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
             handler: Arc::new(move |_ctx: &ActionContext<'_>| {
                 Some(Effect::OpenTransient {
                     source: m.source.to_string(),
+                    // TR.3a: a plain open — every native menu is opened for
+                    // itself rather than for a subject.
+                    args: lattice_grammar::Args::None,
                 })
             }),
         })
@@ -1379,6 +1382,9 @@ impl Mode for MagitCoreMode {
                     let _ = view_for(ctx)?;
                     Some(Effect::OpenTransient {
                         source: "magit-view-arguments".to_string(),
+                        // TR.3a: a plain open — every native menu is opened for
+                        // itself rather than for a subject.
+                        args: lattice_grammar::Args::None,
                     })
                 }),
             },

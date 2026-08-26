@@ -1079,6 +1079,9 @@ fn register_ex_commands(
                 apply: Arc::new(move |_ctx| {
                     Ok(Effect::OpenTransient {
                         source: source.to_string(),
+                        // TR.3a: a plain open — every native menu is opened for
+                        // itself rather than for a subject.
+                        args: lattice_grammar::Args::None,
                     })
                 }),
                 args_schema: Vec::new(),
@@ -4243,6 +4246,7 @@ mod tests {
             major_mode: Some(MagitStatusMode::mode_id().as_str().to_string()),
             minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
             buffer: None,
+            args: Default::default(),
         }
     }
 
@@ -4253,6 +4257,7 @@ mod tests {
             major_mode: Some(MagitLogMode::mode_id().as_str().to_string()),
             minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
             buffer: None,
+            args: Default::default(),
         }
     }
 
@@ -4726,6 +4731,7 @@ mod tests {
             major_mode: Some("magit-diff-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
             buffer: None,
+            args: Default::default(),
         };
         let diff_keys = keys(&in_diff);
         for k in ["-w", "-s", "-U", "g"] {
@@ -4740,6 +4746,7 @@ mod tests {
             major_mode: Some("magit-log-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
             buffer: None,
+            args: Default::default(),
         };
         let log_keys = keys(&in_log);
         for k in ["-a", "-n", "-A", "g"] {

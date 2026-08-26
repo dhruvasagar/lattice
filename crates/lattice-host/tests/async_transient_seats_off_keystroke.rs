@@ -72,7 +72,7 @@ async fn an_async_builder_opens_the_menu_off_keystroke() {
 
     assert!(
         editor
-            .open_named_transient("fixture-menu".into())
+            .open_named_transient("fixture-menu".into(), lattice_grammar::Args::None)
             .is_empty()
     );
     assert!(
@@ -104,7 +104,7 @@ async fn a_failed_build_echoes_the_source_and_opens_nothing() {
     });
     quiesce(&editor).await;
 
-    editor.open_named_transient("fixture-menu".into());
+    editor.open_named_transient("fixture-menu".into(), lattice_grammar::Args::None);
     assert!(
         tokio::time::timeout(Duration::from_secs(2), editor.async_landed.notified())
             .await
@@ -127,7 +127,7 @@ async fn a_sync_builder_still_seats_immediately() {
     let (mut editor, registry) = booted();
     registry.register("native-menu", |_| spec("Native"));
 
-    editor.open_named_transient("native-menu".into());
+    editor.open_named_transient("native-menu".into(), lattice_grammar::Args::None);
     assert!(
         editor.pending_transient_build.is_none(),
         "a sync build parks nothing"
@@ -154,8 +154,8 @@ async fn a_second_open_supersedes_the_first() {
     registry.register_async("fast", |_| Box::pin(async { Ok(spec("Fast")) }));
     quiesce(&editor).await;
 
-    editor.open_named_transient("slow".into());
-    editor.open_named_transient("fast".into());
+    editor.open_named_transient("slow".into(), lattice_grammar::Args::None);
+    editor.open_named_transient("fast".into(), lattice_grammar::Args::None);
 
     // Give the slow build time to finish and try to publish.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -186,10 +186,10 @@ async fn the_open_context_reaches_an_async_builder() {
     quiesce(&editor).await;
 
     let expected = editor
-        .transient_open_context()
+        .transient_open_context(lattice_grammar::Args::None)
         .major_mode
         .unwrap_or_else(|| "none".into());
-    editor.open_named_transient("ctx-menu".into());
+    editor.open_named_transient("ctx-menu".into(), lattice_grammar::Args::None);
     assert!(
         tokio::time::timeout(Duration::from_secs(2), editor.async_landed.notified())
             .await
@@ -203,4 +203,55 @@ async fn the_open_context_reaches_an_async_builder() {
         .and_then(|p| p.transient.as_ref())
         .map(|t| t.title.clone());
     assert_eq!(title.as_deref(), Some(expected.as_str()));
+}
+
+/// TR.3a — the arguments an open carried reach the builder.
+///
+/// This is what lets a menu DRILL DOWN. Org's capture menu has a row per
+/// template; the fields menu that row opens has to know which template it is
+/// collecting for, and `TransientContext`'s other fields say only where the
+/// menu was opened, never what it was opened FOR.
+///
+/// The alternative is the guest remembering the subject between the two opens,
+/// and `<Esc>` dispatches nothing at all — so nothing would ever clear it and
+/// the next open would inherit the last one's subject.
+#[tokio::test]
+async fn the_args_an_open_carried_reach_the_builder() {
+    let (mut editor, registry) = booted();
+    registry.register_async("fields", |ctx: &TransientContext| {
+        let subject = format!("{:?}", ctx.args);
+        Box::pin(async move { Ok(spec(&subject)) })
+    });
+    quiesce(&editor).await;
+
+    editor.open_named_transient(
+        "fields".into(),
+        lattice_grammar::Args::String("vocab-french".into()),
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), editor.async_landed.notified())
+            .await
+            .is_ok()
+    );
+    editor.drain_pending_transient_build();
+
+    let title = editor
+        .picker
+        .as_ref()
+        .and_then(|p| p.transient.as_ref())
+        .map(|t| t.title.clone())
+        .expect("the menu seated");
+    assert!(
+        title.contains("vocab-french"),
+        "the builder saw what the open was for, got: {title}"
+    );
+}
+
+/// A plain open carries no args, which is every native menu. The builder sees
+/// `Args::None` rather than a stale subject from a previous open.
+#[test]
+fn a_plain_open_carries_no_args() {
+    let (editor, _registry) = booted();
+    let ctx = editor.transient_open_context(lattice_grammar::Args::None);
+    assert!(matches!(ctx.args, lattice_grammar::Args::None));
 }

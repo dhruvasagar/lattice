@@ -12,9 +12,9 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅ — a multi-template
-set is usable end to end: `<leader>oc` opens a menu, the key picks the
-template, the prompt files the note. **OC.4 is next** (`%^{Prompt}`).
+seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅, TR.3a ✅ — a
+multi-template set is usable end to end: `<leader>oc` opens a menu, the key
+picks the template, the prompt files the note. **TR.3b is next**, then OC.4.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -38,13 +38,15 @@ for the one verb meant to work from anywhere.
   ├── TR.2a a build that can answer later + per-row action args
   └── TR.2b the `transient-source` seam
   host (generic, no org in it)
-  └── OC.1a `default_modes` — a plugin may have more than one on by default
+  ├── OC.1a `default_modes` — a plugin may have more than one on by default
+  ├── OC.3a a plugin's prompt submit actually fires
+  ├── TR.3a an open carries its arguments
+  └── TR.3b `Argument` rows cross the seam
   org plugin
-  ├── OC.1  org-global-mode + the <C-x>o prefix
+  ├── OC.1  org-global-mode + the <leader>o prefix
   ├── OC.2  parse `org.capture-templates`
-  ├── OC.3a a plugin's prompt submit actually fires (host)
   ├── OC.3  the capture transient
-  ├── OC.4  the %^{Prompt} chain
+  ├── OC.4  the %^{Prompt} fields
   ├── OC.5  targets + the placeholder set
   └── OC.6  docs, ledger, site
 ```
@@ -59,7 +61,9 @@ for the one verb meant to work from anywhere.
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | ✅ |
 | OC.3a | `Effect::OpenPrompt` reaches a plugin's action, with its smuggled state | ✅ |
 | OC.3 | The capture transient, one key per template | ✅ |
-| OC.4 | `%^{Prompt}` chain via `OpenPrompt` + `buffer-name` state | 📝 |
+| TR.3a | `Effect::OpenTransient` carries args → `TransientContext::args` | ✅ |
+| TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | 📝 |
+| OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | 📝 |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
 | OC.6 | Docs, ledger, site nav | 📝 |
 
@@ -278,18 +282,62 @@ naming a plugin action fires it with the row's args.
 Duplicate keys are a user error the menu cannot resolve: the first wins and
 the later one is skipped with a warning naming both descriptions (OC.2).
 
-## OC.4 — the `%^{Prompt}` chain 📝
+## TR.3a — an open carries its arguments ✅
 
-One `OpenPrompt` per placeholder, in template order, each submitting to org's
-continue-action with the answers so far in `buffer-name` (design §5). The
-final submit expands and writes.
+Design §6. `Effect::OpenTransient { source, args }`, reaching the builder as
+`TransientContext::args`. Without it a menu cannot drill down: org's capture
+menu has a row per template, and the fields menu that row opens must know which
+template it is collecting for. The only alternative is guest memory, which
+`<Esc>` never clears — so the next open would inherit the last one's subject.
 
-State rides the payload, not guest memory: `<Esc>` dispatches nothing, so an
-accumulator would never be cleared and the next capture would inherit it.
+**The same gap exists on `Effect::OpenSyntheticBuffer`**, and magit pays for it
+with two `Mutex<HashMap<buffer-name, payload>>` side tables
+(`ViewArgsRequests`, `BlameRequests`) whose doc says exactly why: the toggles
+are answered before the buffer exists. Giving that effect an `args` field would
+delete both. Deliberately deferred so org validates the shape on one path
+first. `parse_buffer_name` is NOT part of this — it carries buffer identity,
+which has to outlive any single open.
 
-Tests: a three-placeholder template collects three answers in order and
-substitutes each at its own position; abandoning midway writes nothing and
-leaves no state behind; a template with no `%^{}` still writes in one hop.
+Tests: the args reach a native builder and cross the WIT boundary into a guest
+(the fixture echoes them into its menu title, so the assertion is on data only
+the guest could have produced); a plain open carries `Args::None` rather than a
+stale subject.
+
+## TR.3b — `Argument` rows cross the seam 📝
+
+Mirror `TransientItemKind::Argument` over WIT so a plugin menu can collect named
+values through the mechanism lattice already has: `PendingTransientArgument`
+parks the whole menu, the value lands in `TransientState`, `resume_parked_
+transient` puts the menu back, and `<Esc>` cancels the value with the menu
+untouched. Magit's argument rows use it today.
+
+**Chosen over sequential prompts with the answers encoded in `buffer-name`** —
+that would have been a second spelling of a mechanism the editor already has.
+(The `buffer-name` channel is real and documented, and magit's blame/diff/
+revision modes use it for buffer identity; it is the *multi-step input* part
+that was redundant.)
+
+**The open question this slice must answer:** `project_transient_state` maps
+`TransientState` into an action's args through the command's **static**
+`args_schema`, and `%^{}` questions come from an option read at capture time.
+Likely answer: when the fired command has no schema, project the menu's own
+`Argument` rows in spec order — the menu's row order IS the schema, and org's
+substitution is positional anyway.
+
+## OC.4 — the `%^{Prompt}` fields 📝
+
+A template with `%^{}` questions gets a per-template fields menu: one
+`Argument` row per question, plus a row that captures. `<leader>oc` → the
+template menu → a key → the fields menu → fill → fire.
+
+Diverges from emacs org-capture, which asks sequentially. Chosen deliberately
+(see TR.3b): it is lattice's existing mechanism, it keeps one surface rather
+than flashing between prompts, and a form is re-editable in a way a
+questionnaire is not.
+
+Tests: a three-question template collects three answers and substitutes each at
+its own position; abandoning leaves nothing behind; a template with no `%^{}`
+still captures in one hop.
 
 ## OC.5 — targets and the placeholder set 📝
 

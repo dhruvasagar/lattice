@@ -57,9 +57,17 @@ impl Guest for Component {
             // that the context crossed, not merely that a menu appeared. The
             // minor count rides along for the second axis.
             title: format!(
-                "{} ({} minors)",
+                "{} ({} minors) for {}",
                 ctx.major_mode.as_deref().unwrap_or("no-major"),
-                ctx.minor_modes.len()
+                ctx.minor_modes.len(),
+                // TR.3a: what the open was FOR. Echoed so a host assertion
+                // tests that the args crossed, not merely that the field
+                // exists — a menu that drills down reads its subject here.
+                match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    Args::None => "nothing".to_string(),
+                    other => format!("{other:?}"),
+                }
             ),
             groups: vec![TransientGroup {
                 label: "Templates".to_string(),

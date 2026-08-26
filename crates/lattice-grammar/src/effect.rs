@@ -1296,8 +1296,20 @@ pub enum Effect {
     /// named-source shape. The registry, not this enum, holds the
     /// actual `TransientSpec` builder, since `TransientSpec` lives in
     /// a crate downstream of `lattice-grammar`.
+    /// TR.3a: `args` are the arguments this open was requested with;
+    /// they reach the builder as `TransientContext::args`.
+    ///
+    /// Without them a menu cannot drill down — a row that opens a second
+    /// menu has no way to say what it opened it FOR. Org's capture menu
+    /// has a row per template and the fields menu it opens must know
+    /// which template it is collecting for; the only alternative is guest
+    /// memory, which `<Esc>` never clears, so the next open would inherit
+    /// the last one's subject.
+    ///
+    /// `Args::None` is a plain open, which is every native menu today.
     OpenTransient {
         source: String,
+        args: crate::args::Args,
     },
 
     /// Open a one-line minibuffer text prompt. `prompt` is shown as

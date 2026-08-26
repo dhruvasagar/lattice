@@ -91,7 +91,7 @@ async fn build(
     ctx: &TransientContext,
 ) -> Result<TransientSpec, String> {
     let wit = client
-        .build(project_transient_context(ctx))
+        .build(project_transient_context(ctx).expect("the context projects"))
         .await
         .expect("no host-side trap")?;
     Ok(spec_from_wit(wit, registry, "transient-fixture"))
@@ -102,6 +102,15 @@ fn in_org() -> TransientContext {
         major_mode: Some("org-mode".into()),
         minor_modes: vec!["org-global-mode".into(), "auto-pair-mode".into()],
         buffer: Some(lattice_core::BufferId(3)),
+        args: Default::default(),
+    }
+}
+
+/// The same context, opened FOR something — a menu drilling down.
+fn in_org_for(subject: &str) -> TransientContext {
+    TransientContext {
+        args: lattice_grammar::Args::String(subject.to_string()),
+        ..in_org()
     }
 }
 
@@ -133,14 +142,23 @@ async fn the_open_context_reaches_the_guest() {
     let spec = build(&client, &registry, &in_org())
         .await
         .expect("the menu builds");
-    assert_eq!(spec.title, "org-mode (2 minors)");
+    assert_eq!(spec.title, "org-mode (2 minors) for nothing");
 
     // A second build with a different context must REBUILD, not replay — the
     // whole reason `build` is per open rather than cached at registration.
     let spec = build(&client, &registry, &TransientContext::default())
         .await
         .expect("the menu builds");
-    assert_eq!(spec.title, "no-major (0 minors)");
+    assert_eq!(spec.title, "no-major (0 minors) for nothing");
+
+    // TR.3a: and the args an open carried cross too — a menu that drills down
+    // reads its subject from here. Without them a second menu has no way to
+    // say what it was opened for, and the guest would have to remember it
+    // where `<Esc>` never clears it.
+    let spec = build(&client, &registry, &in_org_for("vocab-french"))
+        .await
+        .expect("the menu builds");
+    assert_eq!(spec.title, "org-mode (2 minors) for vocab-french");
 }
 
 /// The headline: two rows, one command, different args. Without the per-row
@@ -230,6 +248,7 @@ async fn a_guest_error_is_typed_and_does_not_quarantine_the_source() {
         major_mode: Some("broken-mode".into()),
         minor_modes: Vec::new(),
         buffer: None,
+        args: Default::default(),
     };
     let err = build(&client, &registry, &broken)
         .await

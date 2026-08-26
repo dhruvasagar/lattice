@@ -407,7 +407,10 @@ impl TransientItemKind {
 /// underlying buffer, its cursor and any Visual region — resolved at
 /// fire time, when they are current. Duplicating them here would be
 /// speculative surface that could also go stale between build and fire.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// No `Eq`: `Args` carries an `ArgValue::Invocation` whose recursive
+// `CommandInvocation` is only `PartialEq`. `PartialEq` is what the tests
+// compare on anyway.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TransientContext {
     /// The active major mode's id, if the buffer has one. The
     /// `:if-mode` question.
@@ -427,6 +430,15 @@ pub struct TransientContext {
     /// Still not the cursor or the selection: a row's own action
     /// receives those at fire time, when they are current.
     pub buffer: Option<lattice_core::BufferId>,
+    /// TR.3a: the arguments the open carried
+    /// (`Effect::OpenTransient { args }`).
+    ///
+    /// The one field here that is not a fact about WHERE the menu was
+    /// opened — it is what it was opened FOR, and it is what lets a menu
+    /// drill down. Org's capture menu has a row per template; the fields
+    /// menu that row opens reads the template key from here rather than
+    /// from guest memory, which `<Esc>` never clears.
+    pub args: Args,
 }
 
 impl TransientContext {
@@ -772,6 +784,7 @@ mod tests {
             major_mode: Some("magit-status-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
             buffer: None,
+            args: Default::default(),
         };
         assert_eq!(
             registry.build_ready("ctx", &in_status).unwrap().title,
@@ -797,6 +810,7 @@ mod tests {
             major_mode: Some("magit-status-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
             buffer: None,
+            args: Default::default(),
         };
         assert!(ctx.is_major("magit-status-mode"));
         assert!(!ctx.is_major("magit-core-mode"), "a minor is not the major");
@@ -812,6 +826,7 @@ mod tests {
             major_mode: Some("magit-log-mode".into()),
             minor_modes: vec!["magit-core-mode".into()],
             buffer: None,
+            args: Default::default(),
         };
         assert!(in_log.has_minor("magit-core-mode"));
         assert!(!in_log.is_major("magit-status-mode"));
@@ -857,6 +872,7 @@ mod tests {
             major_mode: Some("org-mode".into()),
             minor_modes: Vec::new(),
             buffer: None,
+            args: Default::default(),
         };
         let TransientBuild::Future(fut) = registry.build("org-capture", &ctx).expect("registered")
         else {

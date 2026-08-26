@@ -46,6 +46,7 @@ fn magits_sources_are_still_registered_into_it() {
         major_mode: None,
         minor_modes: Vec::new(),
         buffer: None,
+        args: Default::default(),
     };
     assert!(
         registry.build("magit-dispatch", &ctx).is_some(),
@@ -67,6 +68,7 @@ fn an_unregistered_name_is_none_not_a_panic() {
         major_mode: None,
         minor_modes: Vec::new(),
         buffer: None,
+        args: Default::default(),
     };
     assert!(registry.build("no-such-menu", &ctx).is_none());
 }

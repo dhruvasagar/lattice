@@ -535,6 +535,16 @@ pub struct Editor {
     /// ModalState::Prompt`). Set by `open_prompt_line`, consumed
     /// (`.take()`) by `do_prompt_line_submit`.
     pub pending_prompt_submit_action: Option<String>,
+    /// OC.3a: the synthetic name the prompt was opened with, held so the
+    /// submit can hand it back to the action.
+    ///
+    /// `open-prompt-payload.buffer-name` is documented as the channel a caller
+    /// uses to "smuggle state through a multi-step flow", and a NATIVE handler
+    /// reads it off the prompt buffer it is handed. A plugin action cannot: it
+    /// receives a `buffer-id` over WIT and has no way to turn that into a name.
+    /// So the host carries it back in the fired invocation's args instead —
+    /// same channel, reachable from both sides.
+    pub pending_prompt_buffer_name: Option<String>,
 
     /// MG.17b: the transient a prompt was opened *from*, held across
     /// the surface switch.

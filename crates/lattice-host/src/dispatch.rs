@@ -8257,6 +8257,9 @@ impl Editor {
         on_submit_action: String,
         buffer_name: Option<String>,
     ) -> Vec<RendererSignal> {
+        // The caller's own name, if it supplied one — kept separate from the
+        // default so the submit can tell "smuggled state" from "no state".
+        let buffer_name_for_submit = buffer_name.clone();
         let name = buffer_name.unwrap_or_else(|| {
             crate::prompt_line_mode::PROMPT_LINE_BUFFER_NAME_DEFAULT.to_string()
         });
@@ -8272,6 +8275,9 @@ impl Editor {
         self.focus_editing_buffer(id);
         self.modal = ModalState::Prompt;
         self.pending_prompt_submit_action = Some(on_submit_action);
+        // OC.3a: held for the submit, which hands it back to a plugin action
+        // that cannot read it off the buffer itself.
+        self.pending_prompt_buffer_name = buffer_name_for_submit;
         self.set_prompt_line_text(&initial);
         self.set_message(EchoLevel::Info, prompt);
         Vec::new()
@@ -8385,14 +8391,39 @@ impl Editor {
             );
             return;
         };
+        let smuggled = self.pending_prompt_buffer_name.take();
         let Some(handler) = self
             .services
             .get::<lattice_mode::ActionHandlerRegistryHandle>()
             .and_then(|reg| reg.lookup(cmd_id))
         else {
-            self.set_message(
-                EchoLevel::Error,
-                format!("prompt: no handler registered for `{on_submit_action}`"),
+            // OC.3a: no native handler, so this is a PLUGIN's action — a
+            // grammar-seam contribution, which lives in the `CommandRegistry`
+            // with an `apply` closure and never in the `ActionHandlerRegistry`.
+            // Dispatch it the way every other plugin action is dispatched.
+            //
+            // Without this branch `Effect::OpenPrompt` is unusable by any
+            // plugin: the prompt opens, the user types, and the submit dies
+            // with "no handler registered". Org's capture and its tag prompt
+            // both took that path, and nothing caught it because the tests
+            // dispatch the submit action directly rather than through a
+            // prompt.
+            //
+            // The typed text arrives as the first argument, and the name the
+            // caller smuggled through `buffer-name` as the second when there
+            // is one. A native handler reads that name off the prompt buffer
+            // it is handed; a plugin has only a `buffer-id` over WIT and no
+            // way to resolve it, so the host hands it over explicitly.
+            let args = match &smuggled {
+                Some(name) => lattice_grammar::Args::List(vec![
+                    lattice_grammar::args::ArgValue::String(text.clone()),
+                    lattice_grammar::args::ArgValue::String(name.clone()),
+                ]),
+                None => lattice_grammar::Args::String(text.clone()),
+            };
+            self.dispatch_invocation(
+                lattice_grammar::CommandInvocation::of(cmd_id).with_args(args),
+                out,
             );
             return;
         };
@@ -8425,6 +8456,7 @@ impl Editor {
             return;
         }
         self.pending_prompt_submit_action = None;
+        self.pending_prompt_buffer_name = None;
         self.restore_editing_buffer();
         // MG.17b: `<Esc>` in an argument's prompt cancels the ARGUMENT,
         // not the menu — the menu comes back with the value unchanged.

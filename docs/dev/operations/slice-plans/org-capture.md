@@ -43,6 +43,7 @@ for the one verb meant to work from anywhere.
   org plugin
   ├── OC.1  org-global-mode + the <C-x>o prefix
   ├── OC.2  parse `org.capture-templates`
+  ├── OC.3a a plugin's prompt submit actually fires (host)
   ├── OC.3  the capture transient
   ├── OC.4  the %^{Prompt} chain
   ├── OC.5  targets + the placeholder set
@@ -57,6 +58,7 @@ for the one verb meant to work from anywhere.
 | OC.1a | manifest `default_modes` (plural) + one gate for all of them | ✅ |
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | ✅ |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | ✅ |
+| OC.3a | `Effect::OpenPrompt` reaches a plugin's action, with its smuggled state | ✅ |
 | OC.3 | The capture transient, one key per template | 📝 |
 | OC.4 | `%^{Prompt}` chain via `OpenPrompt` + `buffer-name` state | 📝 |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
@@ -205,6 +207,34 @@ feature.
 Tests: the nine-template set from a real config round-trips; a body's newlines
 survive the option; a malformed entry is skipped by key with the others
 intact; an absent option gives a menu that says so rather than an empty one.
+
+## OC.3a — a plugin's prompt submit actually fires ✅
+
+Carved on the way into OC.3, because OC.4 cannot be built on a mechanism that
+does not work — and because it is a live bug, not a missing feature.
+
+`do_prompt_line_submit` looked its handler up in the `ActionHandlerRegistry`
+ONLY. Native modes register there; the plugin seams do not — a plugin's grammar
+action lives in the `CommandRegistry` with an `apply` closure. So
+`Effect::OpenPrompt` was **unusable by any plugin**: the prompt opened, the user
+typed, and the submit died with `prompt: no handler registered`. Org's capture
+(OM.11, OC.2) and its `<leader>o:` tag prompt both took that path.
+
+**Nothing caught it because every org test dispatches the submit action
+directly rather than through a prompt** — the seam was wired end to end and the
+one path a user actually takes was the one that did not work. Same shape as
+`plugin-gates-hand-guests-throwaway-contexts`.
+
+A missing native handler now falls through to the ordinary plugin-action
+dispatch. The typed text arrives as the first argument; the name the caller
+smuggled through `buffer-name` as the second, because a plugin gets a
+`buffer-id` over WIT and cannot resolve a name from it the way a native handler
+reads it off the buffer it is handed.
+
+Tests (`prompt_submit_reaches_a_plugin_action.rs`, 4): a plugin grammar action
+fires with the typed text; the smuggled name comes back beside it; a native
+handler still wins and the fallback does NOT also run; an unknown action still
+echoes.
 
 ## OC.3 — the capture transient 📝
 

@@ -72,6 +72,8 @@
 - [ ] notification should have icons & color coding
 - [X] `C-x g` should also trigger refresh so we see latest changes, gated by an option
 - [ ] tmux pane zoom
+- [ ] magit-status under unmerged / recent commits, it would be nice to show how old the commit is in a human readable form (3 hours ago, 2 days ago, etc.)
+- [ ] project detection should work from synthetic buffers too like oil, file-tree, magit, etc.
 
 * Plugins
 - [X] plugin manager

@@ -128,6 +128,25 @@ State rides the payload rather than guest memory on purpose. A capture
 abandoned with `<Esc>` dispatches nothing at all, so a guest-side accumulator
 would never be told to clear and the next capture would inherit it.
 
+**Two host bugs blocked this and are fixed at OC.3a.**
+
+The first is the larger: `Effect::OpenPrompt` was **unusable by any plugin**.
+`do_prompt_line_submit` resolved `on-submit-action` to a `CommandId` and then
+looked the handler up in the `ActionHandlerRegistry`, which native modes
+register into and the plugin seams do not — a plugin's grammar action lives in
+the `CommandRegistry` with an `apply` closure. Every plugin prompt therefore
+opened, took the user's text, and died with "no handler registered". Nothing
+caught it because org's tests dispatch the submit action directly rather than
+through a prompt: the seam was wired end to end and the one path a user takes
+was the one that did not work. A missing native handler now falls through to
+the ordinary plugin-action dispatch.
+
+The second follows from it. A native handler reads the smuggled `buffer-name`
+off the prompt buffer it is handed; a plugin receives only a `buffer-id` over
+WIT and has no way to resolve a name from it. So the host hands the name back
+**in the fired invocation's args** — the typed text first, the smuggled state
+second. Same channel, reachable from both sides.
+
 ## 6. The menu, and the prefix
 
 `org-global-mode` — a minor with `ActivationPolicy::Universal`, the

@@ -1,8 +1,11 @@
 # Cross-file writes
 
 **Status:** built (XF.0–XF.6, 2026-08-26). The primitive ships and is
-gated; what remains is org's own use of it — OM.6b (archive) and OM.11
-(refile + capture), in the plugin repo.
+gated. Org's archive (OM.6b) landed the same day, and needed one thing
+this document did not anticipate: a guest cannot name a file *beside* its
+own without knowing which file it is in. `document.path()` (OM.6b.0) is
+that half; see [`org-mode.md`](org-mode.md). OM.11 (refile + capture)
+remains, in the plugin repo.
 
 Where this document and the code disagree, the code and the slice plan are
 what happened. Two things the build changed and the slice plan records in

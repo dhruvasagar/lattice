@@ -37,8 +37,8 @@ XF.4  the WIT effect + the boundary capability gate
   │
 XF.5  a fixture guest proves the whole path
   │
-  ├── OM.6b  archive subtree          (plugin repo)
-  └── OM.11  refile + capture         (plugin repo)
+  ├── OM.6b  archive subtree ✅        (plugin repo, + OM.6b.0 host)
+  └── OM.11  refile + capture 📝      (plugin repo)
   │
 XF.6  docs, ledger, site
 ```

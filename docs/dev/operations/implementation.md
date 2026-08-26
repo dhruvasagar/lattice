@@ -6459,7 +6459,8 @@ because that is what a user's plugin manager clones and builds.
 | Tables | OM.12 align + cell motion, OM.13 rows and columns | ✅ |
 | Agenda | OM.A1 the `agenda-source` seam, OM.A2 org semantics, OM.A3 the view's modes | ✅ |
 | Docs | OM.14 | ✅ |
-| Cross-file writes | OM.6b archive, OM.11 refile + capture | ⛔ blocked |
+| Cross-file writes | OM.6b.0 `document.path()`, OM.6b archive | ✅ |
+| Cross-file writes | OM.11 refile + capture | 📝 |
 
 **The acid test, asserted rather than claimed.** Zero `Editor::` method
 additions, zero new variants in the host's `Action` enum, no
@@ -6549,6 +6550,20 @@ background, listed, never stealing focus); an applier that inserts first and
 cuts only on success; and `EffectAuthorizer`, built once per plugin at load
 from its grant. `org-mode.md`'s OM.6b and OM.11 are unblocked and are now
 ordinary plugin work.
+
+**And the effect alone was not enough for archive.** `org-archive-location`
+names `<file>_archive`, derived from the source, and no grammar seam let a
+guest learn which file it was editing — `action-context` carries a cursor and
+a buffer id, the `document` resource read text but not identity. OM.6b.0 added
+`document.path()` to that resource (not to a context, where the same field
+would have to be re-added to three more and every dispatch would pay for it),
+threaded the path through all three grammar contexts, and retyped
+`Document::path` as `Option<Arc<PathBuf>>` so carrying it is a refcount rather
+than an allocation on the keystroke path. The host's action gate then had to
+put the path on the throwaway document it hands a guest —
+`Editor::active_document_path`, the peer of `active_text` — which no
+host-side test caught, because they all build a context directly and never go
+through the gate.
 
 Four bugs the slices caught, each silent and each now a test: `Path` equality
 does not collapse `..` (so a producer path containing one would have opened a

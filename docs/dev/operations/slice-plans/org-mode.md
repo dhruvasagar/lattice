@@ -10,21 +10,25 @@
 > the four generic host changes, the acid test, and the findings worth
 > carrying past org.
 >
-> **Not archivable.** OM.6b and OM.11 are open work — 📝 rather than ⛔
-> since 2026-08-26, when XF shipped the cross-file write primitive they
-> were blocked on. A planned slice is still open work, so this plan stays
-> active until both go green (the archiving rule in CLAUDE.md).
+> **Not archivable.** OM.11 is open work — 📝 rather than ⛔ since
+> 2026-08-26, when XF shipped the cross-file write primitive it was
+> blocked on. A planned slice is still open work, so this plan stays
+> active until it goes green (the archiving rule in CLAUDE.md).
 
-**Status:** OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the
-seam, OM.A2 org's semantics, OM.A3 the view's two modes. Only OM.14
-(docs / ledger / site) and the two ⛔ cross-file-write slices remain.
+**Status:** OM.6b ✅ (2026-08-26) — **archiving works.** OM.6b.0 gave a
+guest `document.path()`, so it can name a file beside its own; OM.6b
+spends it on `<leader>o$`. OM.11 (refile + capture) is the last slice
+open.
+
+Earlier: OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the seam,
+OM.A2 org's semantics, OM.A3 the view's two modes.
 
 Earlier: OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
 OM.8 ✅ checkboxes + cookies; OM.9 ✅ timestamps; OM.10 ✅ links;
 OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. OM.11 and OM.6b were
 blocked on the same cross-file write primitive; **XF shipped it on
-2026-08-26** and both are now ordinary plugin work. The agenda group
-(OM.A1–A3) is done.
+2026-08-26**, OM.6b landed the same day, and OM.11 is ordinary plugin
+work. The agenda group (OM.A1–A3) is done.
 
 Earlier: OM.7 ✅ tasks, in a second mode. OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
@@ -78,12 +82,12 @@ OM.4b plugin grammar contributions reach operator-pending
   │   OM.4   headline motions + ih/ah/is/as text objects      │
   │   OM.5   <Tab>/<S-Tab> routing + the decline chain        │
   │   OM.6   subtree move, meta-return, toggle heading         │
-  │   OM.6b  archive subtree  📝 unblocked by XF                │
+  │   OM.6b  archive subtree ✅                                 │
   │   OM.7   org-todo-mode: TODO cycling, priority, tags      │
   │   OM.8   checkboxes + statistics cookies                  │
   │   OM.9   timestamps                                       │
   │   OM.10  links                                            │
-  │   OM.11  refile (own picker-source) + capture             │
+  │   OM.11  refile (own picker-source) + capture  📝           │
   │                                                            │
   ├── tables ────────────────────────────────────────────────┤
   │   OM.12  org-table-mode: align + cell motion              │
@@ -118,7 +122,7 @@ files? — was retired during design by reading the excerpt model
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
 | OM.6b.0 | `document.path()`: a guest learns which file it is editing | ✅ |
-| OM.6b | Archive subtree to `<file>_archive` | 🚧 |
+| OM.6b | Archive subtree to `<file>_archive` | ✅ |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
 | OM.8 | Checkboxes + statistics cookies | ✅ |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
@@ -560,7 +564,7 @@ Fix when OM.7 touches that file.
 Tests: 10 new (4 unit, 6 integration through real chord dispatch); 51 in
 the plugin repo total.
 
-### OM.6b — archive subtree ⛔ blocked
+### OM.6b — archive subtree ✅ (2026-08-26)
 `<leader>o$`. `org-archive-subtree` moves a subtree into `<file>_archive`,
 and **no effect in the WIT surface writes to a file other than the
 buffer's own**. `edits` / `apply-edit` target `ctx.buffer_id`;
@@ -590,9 +594,39 @@ Design: [`../../architecture/cross-file-writes.md`](../../architecture/cross-fil
 Slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 
 **Unblocked 2026-08-26.** `Effect::WriteToFile` ships, gated on
-`fs:write`. This is now ordinary plugin work: `<leader>o$` returns a
+`fs:write`; OM.6b.0 supplied the address. `<leader>o$` returns a
 `write-to-file` naming `<file>_archive`, with the subtree's span as the
 `cut`, and the manifest asks for `fs:write` over the org directory.
+
+**Shipped 2026-08-26** in the plugin repo (`781944d`, doc `672d178`); no
+lattice change beyond OM.6b.0.
+
+**The span that disappears is not the subtree's lines, and that is the
+whole slice.** Deleting exactly `[start,0)..(end, len(end))` leaves the
+newline that terminated the line above plus an empty line where the
+subtree was, so the file grows one blank line per archive — invisible to
+a test that only checks the archive file, and cumulative in the one the
+user actually reads.
+
+The rule is "is there anything after this subtree", answered by
+`line(end + 1)` and NOT by `end + 1 < line_count`. A file ending in a
+newline has a remainder at `line_count` that the CONTENT-line count does
+not admit to (the inconsistency pinned in `plugin-host/src/buffer.rs`),
+so archiving the whole of `"* Two\n"` emptied the file down to a single
+blank line until the rule keyed off the former. The unit-test accessor
+had to be rewritten to reproduce that remainder; built from `str::lines`
+it hid the case that failed. `archive.rs` owns the answer because OM.11's
+refile needs the identical one.
+
+Three refusals, each the OM.6 rule applied again: the preamble has no
+subtree, so the chord CONSUMES rather than declining (a decline re-runs
+`$` alone and jumps the caret from a key that meant "archive"); a buffer
+with no file is echoed rather than silently ignored; an ungranted plugin
+is refused at the boundary and needs no guest code at all.
+
+Tests: 9 unit + 4 through real chord dispatch, one of them the ungranted
+case with the manifest as the only difference between it and the granted
+one.
 
 ### OM.6b.0 — the document's own path ✅ (2026-08-26)
 

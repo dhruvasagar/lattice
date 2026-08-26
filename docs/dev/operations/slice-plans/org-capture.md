@@ -12,8 +12,10 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live. OC.1a ✅ (a host fix OC.1 turned out to need) and OC.1 ✅; OC.2
-onward is org-plugin work.
+seam is live. OC.1a ✅ (a host fix OC.1 turned out to need), OC.1 ✅, OC.2 ✅.
+**OC.3 is next** and is what makes a multi-template set usable at all: today a
+set with more than one template echoes the keys that exist and captures
+nothing.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -54,7 +56,7 @@ for the one verb meant to work from anywhere.
 | TR.2b | `transient-source` WIT seam + loader drain + teardown | ✅ |
 | OC.1a | manifest `default_modes` (plural) + one gate for all of them | ✅ |
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | ✅ |
-| OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | 📝 |
+| OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | ✅ |
 | OC.3 | The capture transient, one key per template | 📝 |
 | OC.4 | `%^{Prompt}` chain via `OpenPrompt` + `buffer-name` state | 📝 |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
@@ -186,7 +188,7 @@ to the multibuffer provider and org only supplies its rows through the
 `agenda-source` seam, so the chord names what already exists rather than adding
 an org-side wrapper for it.
 
-## OC.2 — parse the templates 📝
+## OC.2 — parse the templates ✅
 
 `org.capture-templates`, a string holding TOML. Replaces
 `org.capture-file` / `org.capture-template`.

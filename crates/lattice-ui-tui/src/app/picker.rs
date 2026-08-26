@@ -192,34 +192,14 @@ impl App {
     /// against the `TransientSourceRegistry` service (populated at
     /// boot by the owning mode crate; e.g. magit registers
     /// `magit-dispatch` / `magit-file-dispatch`) and opens the
-    /// built spec. Mirrors `do_confirm`'s shape.
+    /// built spec.
+    ///
+    /// TR.2: the body lives on `Editor` so this peer and the GPUI one
+    /// are literally the same code — the two had identical copies, and
+    /// the async (guest-backed) build path would have had to be written
+    /// twice.
     pub(crate) fn do_open_transient(&mut self, source: String) {
-        let signals = self.mutate_editor_with(move |e| {
-            let Some(registry) = e
-                .services
-                .get::<lattice_picker::TransientSourceRegistryHandle>()
-            else {
-                e.set_message(
-                    crate::app::EchoLevel::Error,
-                    "transient: source registry unavailable".to_string(),
-                );
-                return Vec::new();
-            };
-            // MG.23h: the menu is built for the place it was opened
-            // from. Resolved here rather than by whatever emitted the
-            // effect, so the chord, the ex-command (whose context
-            // carries no buffer) and any future plugin-emitted open are
-            // uniformly context-aware.
-            let ctx = e.transient_open_context();
-            let Some(spec) = registry.build(&source, &ctx) else {
-                e.set_message(
-                    crate::app::EchoLevel::Error,
-                    format!("transient: unknown source `{source}`"),
-                );
-                return Vec::new();
-            };
-            e.open_transient(spec)
-        });
+        let signals = self.mutate_editor_with(move |e| e.open_named_transient(source));
         for s in signals {
             self.handle_renderer_signal(s);
         }

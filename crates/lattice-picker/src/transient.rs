@@ -9,8 +9,11 @@
 //! See `docs/dev/architecture/magit.md` §8.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use lattice_grammar::Args;
 use lattice_protocol::ids::CommandId;
 
 /// Accumulated state for an open transient: flag values and argument
@@ -254,7 +257,20 @@ impl TransientArgSource {
 pub enum TransientItemKind {
     /// Fires an action via the action-handler registry and closes
     /// the transient.
-    Action(CommandId),
+    ///
+    /// `args` are the row's OWN arguments, and they are how a menu
+    /// whose rows differ only in a parameter is expressible at all.
+    /// Every native menu today leaves them [`Args::None`] and lets the
+    /// host project the menu's [`TransientState`] through the command's
+    /// `args_schema` instead — flags and arguments the user toggled
+    /// before pressing the key. That mechanism is per-MENU, so it
+    /// cannot say "this row means template `t`, that one means `n`",
+    /// which is exactly the shape a plugin-contributed menu has (org's
+    /// capture menu, one row per template). Hence a per-row slot.
+    ///
+    /// When both are present the row's args win, because they were
+    /// chosen when the row was built and the state was not.
+    Action { command: CommandId, args: Args },
     /// Opens a nested transient (submenu). The parent transient is
     /// pushed onto a stack; `BS`/`DEL` returns to it.
     Submenu(std::sync::Arc<TransientSpec>),
@@ -312,6 +328,32 @@ pub enum TransientItemKind {
 }
 
 impl TransientItemKind {
+    /// The overwhelmingly common action row: fires `command` with no
+    /// arguments of its own, leaving the menu's [`TransientState`]
+    /// projection to supply them. Every native menu builds rows this
+    /// way; the struct form exists for the per-row case.
+    pub fn action(command: CommandId) -> Self {
+        Self::Action {
+            command,
+            args: Args::None,
+        }
+    }
+
+    /// The row's OWN arguments, if its kind can carry any.
+    ///
+    /// `None` for every kind but [`Self::Action`] — including
+    /// [`Self::Variable`], which is an action leaf whose action prompts
+    /// for its new value rather than receiving one. Reported as an
+    /// `Option` rather than a `&Args::None` so the two are
+    /// distinguishable without giving every variant a field it would
+    /// never use.
+    pub fn row_args(&self) -> Option<&Args> {
+        match self {
+            Self::Action { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+
     /// How a [`Self::Variable`]'s current value reads in the menu.
     ///
     /// Three distinct states, deliberately: unread, read-and-unset,
@@ -400,11 +442,50 @@ impl TransientContext {
     }
 }
 
+/// A menu build that could not answer synchronously — the shape a
+/// guest-backed builder returns. Mirrors
+/// [`PickerInitResult::Future`](crate::source::PickerInitResult::Future):
+/// `'static + Send`, so the host can move it onto its own runtime and
+/// seat the menu when it lands.
+pub type TransientBuildFuture =
+    Pin<Box<dyn Future<Output = Result<TransientSpec, String>> + Send + 'static>>;
+
+/// What [`TransientSourceRegistry::build`] answers with.
+///
+/// Native builders are pure functions of a [`TransientContext`] and
+/// answer [`Ready`](Self::Ready) — the menu seats in the same frame the
+/// chord was pressed, exactly as before this type existed. A WASM
+/// builder cannot: its `build` is a guest call on the plugin's own
+/// actor task, and blocking the editor actor on it would violate
+/// paramount #4. So it answers [`Future`](Self::Future) and the host
+/// parks, then seats on the async-landed wake.
+///
+/// Making that difference a value rather than two registries is what
+/// keeps `Effect::OpenTransient { source }` one code path: the effect
+/// still carries only a name, and neither the chord nor the ex-command
+/// that emits it knows or cares which kind of builder answers.
+pub enum TransientBuild {
+    /// Built synchronously — seat it now.
+    Ready(TransientSpec),
+    /// Building off-thread. `Err` from the future is echoed and the
+    /// menu does not open.
+    Future(TransientBuildFuture),
+}
+
+impl std::fmt::Debug for TransientBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransientBuild::Ready(spec) => f.debug_tuple("Ready").field(spec).finish(),
+            TransientBuild::Future(_) => f.debug_struct("Future").finish_non_exhaustive(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct TransientSourceRegistry {
     #[allow(clippy::type_complexity)]
     sources: std::sync::Mutex<
-        HashMap<String, Arc<dyn Fn(&TransientContext) -> TransientSpec + Send + Sync>>,
+        HashMap<String, Arc<dyn Fn(&TransientContext) -> TransientBuild + Send + Sync>>,
     >,
 }
 
@@ -418,21 +499,54 @@ impl TransientSourceRegistry {
         Self::default()
     }
 
-    /// Register a named builder. Re-registering a name overwrites
-    /// the previous entry (last writer wins), matching
+    /// Register a named **synchronous** builder — a native menu, whose
+    /// rows are a pure function of the open context. Re-registering a
+    /// name overwrites the previous entry (last writer wins), matching
     /// `PickerRegistry::register`'s semantics.
     pub fn register(
         &self,
         name: impl Into<String>,
         builder: impl Fn(&TransientContext) -> TransientSpec + Send + Sync + 'static,
     ) {
+        self.register_build(name, move |ctx| TransientBuild::Ready(builder(ctx)));
+    }
+
+    /// TR.2: register a named builder that answers a
+    /// [`TransientBuildFuture`] — the guest-backed shape. The host
+    /// parks on the future and seats the menu when it lands.
+    pub fn register_async(
+        &self,
+        name: impl Into<String>,
+        builder: impl Fn(&TransientContext) -> TransientBuildFuture + Send + Sync + 'static,
+    ) {
+        self.register_build(name, move |ctx| TransientBuild::Future(builder(ctx)));
+    }
+
+    fn register_build(
+        &self,
+        name: impl Into<String>,
+        builder: impl Fn(&TransientContext) -> TransientBuild + Send + Sync + 'static,
+    ) {
         if let Ok(mut sources) = self.sources.lock() {
             sources.insert(name.into(), Arc::new(builder));
         }
     }
 
-    /// Build the named transient's spec for the place it was opened
-    /// from, or `None` if no builder is registered under `name`.
+    /// TR.2: drop the builder registered under `name`, reporting
+    /// whether one was there. The teardown half of
+    /// [`register_async`](Self::register_async) — an unloaded plugin's
+    /// menu name must stop resolving, or `Effect::OpenTransient` would
+    /// keep reaching a client whose actor is gone and report a host
+    /// error instead of "unknown source".
+    pub fn unregister(&self, name: &str) -> bool {
+        match self.sources.lock() {
+            Ok(mut sources) => sources.remove(name).is_some(),
+            Err(_) => false,
+        }
+    }
+
+    /// Build the named transient for the place it was opened from, or
+    /// `None` if no builder is registered under `name`.
     ///
     /// MG.23h: `ctx` is supplied by the renderer at open time rather
     /// than by whatever emitted `Effect::OpenTransient`. That is what
@@ -440,9 +554,20 @@ impl TransientSourceRegistry {
     /// ex-command (whose `ExCommandContext` carries no buffer), and any
     /// future plugin-emitted open. Resolving it at emit time instead
     /// would leave all but the chord looking at nothing.
-    pub fn build(&self, name: &str, ctx: &TransientContext) -> Option<TransientSpec> {
+    pub fn build(&self, name: &str, ctx: &TransientContext) -> Option<TransientBuild> {
         let builder = self.sources.lock().ok()?.get(name)?.clone();
         Some(builder(ctx))
+    }
+
+    /// [`build`](Self::build) for a caller that can only handle a
+    /// synchronous answer — tests and native call sites that predate
+    /// TR.2. A guest-backed name answers `None` here rather than
+    /// blocking.
+    pub fn build_ready(&self, name: &str, ctx: &TransientContext) -> Option<TransientSpec> {
+        match self.build(name, ctx)? {
+            TransientBuild::Ready(spec) => Some(spec),
+            TransientBuild::Future(_) => None,
+        }
     }
 }
 
@@ -459,7 +584,7 @@ pub fn confirm_transient_spec(prompt: &str, yes_command_id: CommandId) -> Transi
                     key: vec!["y".to_string(), "Y".to_string()],
                     label: "Yes".to_string(),
                     description: String::new(),
-                    kind: TransientItemKind::Action(yes_command_id),
+                    kind: TransientItemKind::action(yes_command_id),
                 },
                 TransientItem {
                     key: vec![
@@ -497,7 +622,7 @@ mod tests {
         let registry = TransientSourceRegistry::new();
         assert!(
             registry
-                .build("nope", &TransientContext::default())
+                .build_ready("nope", &TransientContext::default())
                 .is_none()
         );
     }
@@ -507,7 +632,7 @@ mod tests {
         let registry = TransientSourceRegistry::new();
         registry.register("magit-dispatch", |_| spec_titled("Magit dispatch"));
         let spec = registry
-            .build("magit-dispatch", &TransientContext::default())
+            .build_ready("magit-dispatch", &TransientContext::default())
             .expect("registered name builds");
         assert_eq!(spec.title, "Magit dispatch");
     }
@@ -526,9 +651,9 @@ mod tests {
             calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             spec_titled("counted")
         });
-        registry.build("counted", &TransientContext::default());
-        registry.build("counted", &TransientContext::default());
-        registry.build("counted", &TransientContext::default());
+        registry.build_ready("counted", &TransientContext::default());
+        registry.build_ready("counted", &TransientContext::default());
+        registry.build_ready("counted", &TransientContext::default());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
@@ -538,7 +663,7 @@ mod tests {
         registry.register("magit-dispatch", |_| spec_titled("first"));
         registry.register("magit-dispatch", |_| spec_titled("second"));
         let spec = registry
-            .build("magit-dispatch", &TransientContext::default())
+            .build_ready("magit-dispatch", &TransientContext::default())
             .expect("still registered");
         assert_eq!(
             spec.title, "second",
@@ -649,12 +774,12 @@ mod tests {
             buffer: None,
         };
         assert_eq!(
-            registry.build("ctx", &in_status).unwrap().title,
+            registry.build_ready("ctx", &in_status).unwrap().title,
             "magit-status-mode"
         );
         assert_eq!(
             registry
-                .build("ctx", &TransientContext::default())
+                .build_ready("ctx", &TransientContext::default())
                 .unwrap()
                 .title,
             "none",
@@ -702,18 +827,122 @@ mod tests {
         registry.register("magit-file-dispatch", |_| spec_titled("file-dispatch"));
         assert_eq!(
             registry
-                .build("magit-dispatch", &TransientContext::default())
+                .build_ready("magit-dispatch", &TransientContext::default())
                 .unwrap()
                 .title,
             "dispatch"
         );
         assert_eq!(
             registry
-                .build("magit-file-dispatch", &TransientContext::default())
+                .build_ready("magit-file-dispatch", &TransientContext::default())
                 .unwrap()
                 .title,
             "file-dispatch"
         );
+    }
+
+    // ---- TR.2: async builders + unregister ----
+
+    /// The guest-backed shape: `build` hands back a future, and the
+    /// context reaches the builder before it is spawned (the projection
+    /// happens synchronously, so nothing borrows across the await).
+    #[test]
+    fn an_async_builder_answers_a_future_carrying_the_open_context() {
+        let registry = TransientSourceRegistry::new();
+        registry.register_async("org-capture", |ctx: &TransientContext| {
+            let major = ctx.major_mode.clone().unwrap_or_else(|| "none".into());
+            Box::pin(async move { Ok(spec_titled(&major)) })
+        });
+        let ctx = TransientContext {
+            major_mode: Some("org-mode".into()),
+            minor_modes: Vec::new(),
+            buffer: None,
+        };
+        let TransientBuild::Future(fut) = registry.build("org-capture", &ctx).expect("registered")
+        else {
+            panic!("an async builder must answer Future, not Ready");
+        };
+        let spec = futures::executor::block_on(fut).expect("the future resolves");
+        assert_eq!(spec.title, "org-mode");
+    }
+
+    /// A native builder is unchanged by TR.2 — it still answers in the
+    /// same frame the chord was pressed.
+    #[test]
+    fn a_sync_builder_still_answers_ready() {
+        let registry = TransientSourceRegistry::new();
+        registry.register("magit-dispatch", |_| spec_titled("dispatch"));
+        assert!(matches!(
+            registry.build("magit-dispatch", &TransientContext::default()),
+            Some(TransientBuild::Ready(_))
+        ));
+    }
+
+    /// `build_ready` exists for callers that cannot park. It must
+    /// REFUSE a guest-backed name rather than silently blocking or
+    /// inventing an empty menu.
+    #[test]
+    fn build_ready_declines_an_async_builder() {
+        let registry = TransientSourceRegistry::new();
+        registry.register_async("org-capture", |_| {
+            Box::pin(async { Ok(spec_titled("capture")) })
+        });
+        assert!(
+            registry
+                .build_ready("org-capture", &TransientContext::default())
+                .is_none()
+        );
+    }
+
+    /// The teardown half: an unloaded plugin's menu name stops
+    /// resolving, so `Effect::OpenTransient` reports "unknown source"
+    /// rather than reaching a dead actor.
+    #[test]
+    fn unregister_drops_the_name_and_reports_whether_it_was_there() {
+        let registry = TransientSourceRegistry::new();
+        registry.register("magit-dispatch", |_| spec_titled("dispatch"));
+        registry.register_async("org-capture", |_| {
+            Box::pin(async { Ok(spec_titled("capture")) })
+        });
+
+        assert!(registry.unregister("org-capture"));
+        assert!(
+            registry
+                .build("org-capture", &TransientContext::default())
+                .is_none()
+        );
+        assert!(
+            !registry.unregister("org-capture"),
+            "a second unregister removes nothing"
+        );
+        assert!(
+            registry
+                .build("magit-dispatch", &TransientContext::default())
+                .is_some(),
+            "an unrelated name survives"
+        );
+    }
+
+    /// The per-row args slot the plugin seam needs, and the default
+    /// every native row keeps.
+    #[test]
+    fn an_action_row_defaults_to_no_args_of_its_own() {
+        let bare = TransientItemKind::action(CommandId::new(3));
+        assert!(matches!(
+            bare,
+            TransientItemKind::Action {
+                args: Args::None,
+                ..
+            }
+        ));
+        let keyed = TransientItemKind::Action {
+            command: CommandId::new(3),
+            args: Args::String("t".into()),
+        };
+        assert!(matches!(
+            keyed,
+            TransientItemKind::Action { ref args, .. } if matches!(args, Args::String(s) if s == "t")
+        ));
     }
 
     /// A three-group menu whose groups are different sizes, so an
@@ -869,7 +1098,10 @@ mod tests {
         assert_eq!(spec.groups.len(), 1);
         let items = &spec.groups[0].items;
         assert_eq!(items.len(), 2);
-        assert!(matches!(items[0].kind, TransientItemKind::Action(id) if id == cmd_id));
+        assert!(
+            matches!(items[0].kind, TransientItemKind::Action { command, ref args }
+                if command == cmd_id && matches!(args, Args::None))
+        );
         assert!(matches!(items[1].kind, TransientItemKind::Dismiss));
         assert!(items[1].key.iter().any(|k| k == "q"), "q must dismiss");
         assert!(items[1].key.iter().any(|k| k == "n"), "n must dismiss");

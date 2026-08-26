@@ -1331,7 +1331,7 @@ fn action_or_placeholder(
     placeholder_name: &str,
 ) -> TransientItem {
     let kind = match id {
-        Some(cid) => TransientItemKind::Action(cid),
+        Some(cid) => TransientItemKind::action(cid),
         None => TransientItemKind::Flag {
             name: placeholder_name.to_string(),
             default: false,

@@ -40,6 +40,10 @@ linkme = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# TR.2: drive a `TransientBuildFuture` to completion in the registry's
+# unit tests. Test-only — the crate itself only *stores* the future; the
+# host owns the runtime that polls it.
+futures = { workspace = true }
 # PH.3: test-only — construct `DisplaySpan { style: lattice_cells::Style }`
 # in the grep-highlighter wiring test. NOT a production dep: the picker
 # crate stays free of syntax/cells in its dependency graph (the

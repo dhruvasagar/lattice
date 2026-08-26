@@ -5721,6 +5721,7 @@ dependencies = [
  "bincode",
  "criterion",
  "dirs 5.0.1",
+ "futures",
  "lattice-cells",
  "lattice-completion",
  "lattice-config",

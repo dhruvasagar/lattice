@@ -4182,7 +4182,7 @@ mod tests {
             for item in &group.items {
                 let where_ = format!("{path}{} / {}", group.label, item.label);
                 match &item.kind {
-                    lattice_picker::TransientItemKind::Action(_) => {}
+                    lattice_picker::TransientItemKind::Action { .. } => {}
                     lattice_picker::TransientItemKind::Submenu(sub) => {
                         found.extend(inert_items(sub, &format!("{where_} > ")));
                     }
@@ -4593,7 +4593,7 @@ mod tests {
                 .cloned()
                 .expect("the dispatch offers `M` in every context");
             assert!(
-                matches!(item.kind, TransientItemKind::Action(_)),
+                matches!(item.kind, TransientItemKind::Action { .. }),
                 "`M` resolved to {:?}, not a real action",
                 item.label
             );
@@ -4839,7 +4839,7 @@ mod tests {
             .cloned()
             .expect("`C-c f v` must exist");
         assert!(
-            matches!(row.kind, TransientItemKind::Action(_)),
+            matches!(row.kind, TransientItemKind::Action { .. }),
             "`v` resolved to {:?}, not a real action",
             row.label
         );
@@ -4886,7 +4886,7 @@ mod tests {
         };
         for key in ["v", "V"] {
             assert!(
-                matches!(row(key).kind, TransientItemKind::Action(_)),
+                matches!(row(key).kind, TransientItemKind::Action { .. }),
                 "`{key}` must be a real action"
             );
         }
@@ -4929,7 +4929,7 @@ mod tests {
             .iter()
             .flat_map(|g| &g.items)
             .flat_map(|i| {
-                let real = matches!(i.kind, TransientItemKind::Action(_));
+                let real = matches!(i.kind, TransientItemKind::Action { .. });
                 i.key.iter().map(move |k| (k.clone(), real))
             })
             .collect();
@@ -4959,8 +4959,8 @@ mod tests {
                 .iter()
                 .flat_map(|g| &g.items)
                 .find(|i| {
-                    matches!(&i.kind, TransientItemKind::Action(id)
-                        if Some(*id) == registry.id_by_name(action))
+                    matches!(&i.kind, TransientItemKind::Action { command, .. }
+                        if Some(*command) == registry.id_by_name(action))
                 })
                 .and_then(|i| i.key.first().cloned())
         };
@@ -5026,7 +5026,7 @@ mod tests {
                 .flat_map(|g| &g.items)
                 .find(|i| i.key.iter().any(|k| k == key))
                 .and_then(|i| match i.kind {
-                    TransientItemKind::Action(id) => Some(id),
+                    TransientItemKind::Action { command, .. } => Some(command),
                     _ => None,
                 })
         };
@@ -5112,8 +5112,8 @@ mod tests {
                 .iter()
                 .flat_map(|g| &g.items)
                 .find(|i| {
-                    matches!(&i.kind, TransientItemKind::Action(id)
-                        if Some(*id) == registry.id_by_name(action))
+                    matches!(&i.kind, TransientItemKind::Action { command, .. }
+                        if Some(*command) == registry.id_by_name(action))
                 })
                 .and_then(|i| i.key.first().cloned())
         };
@@ -5195,7 +5195,7 @@ mod tests {
                 .cloned()
                 .expect("the dispatch offers `o` in every context");
             assert!(
-                matches!(item.kind, TransientItemKind::Action(_)),
+                matches!(item.kind, TransientItemKind::Action { .. }),
                 "`o` resolved to {:?}, not a real action",
                 item.label
             );
@@ -5340,7 +5340,7 @@ mod tests {
             let spec: &TransientSpec = spec;
             for row in spec.groups.iter().flat_map(|g| &g.items) {
                 assert!(
-                    matches!(row.kind, TransientItemKind::Action(_)),
+                    matches!(row.kind, TransientItemKind::Action { .. }),
                     "bisect row {:?} is inert (in_progress={in_progress})",
                     row.label
                 );

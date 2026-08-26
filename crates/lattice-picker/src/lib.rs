@@ -67,9 +67,10 @@ pub use source::{
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 pub use transient::{
-    KeyResolution, TransientArgSource, TransientContext, TransientGroup, TransientItem,
-    TransientItemKind, TransientSourceRegistry, TransientSourceRegistryHandle, TransientSpec,
-    TransientState, TransientValue, confirm_transient_spec, transient_initial_state,
+    KeyResolution, TransientArgSource, TransientBuild, TransientBuildFuture, TransientContext,
+    TransientGroup, TransientItem, TransientItemKind, TransientSourceRegistry,
+    TransientSourceRegistryHandle, TransientSpec, TransientState, TransientValue,
+    confirm_transient_spec, transient_initial_state,
 };
 
 use std::path::PathBuf;

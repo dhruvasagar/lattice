@@ -1022,6 +1022,12 @@ pub struct Editor {
     /// Its resolved outcome commits via
     /// `drain_pending_picker_accept`.
     pub pending_picker_accept: Option<PendingPickerAccept>,
+    /// TR.2: in-flight async transient build, if the named menu's
+    /// builder is guest-backed. Seated by
+    /// `drain_pending_transient_build` on the async-landed wake — never
+    /// by a keystroke, which is what makes a plugin menu open on the
+    /// chord that asked for it.
+    pub pending_transient_build: Option<crate::state::PendingTransientBuild>,
     /// Live-picker query state -- present only when the
     /// active picker source has `spec().live == true`.
     pub live_picker_query: Option<LivePickerQueryState>,

@@ -11,8 +11,14 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-26). TR.1 ✅; TR.2 is next and is the
-largest slice — a full seam, mirroring `picker-source` end to end.
+**Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅; TR.2b is the
+WIT seam itself, mirroring `picker-source` end to end.
+
+**TR.2 was carved in two while executing it.** The registry's builders were
+synchronous, so a guest-backed one had nowhere to live before the seam existed
+— and that substrate change (plus the per-row `args` the first consumer needs)
+is a self-contained, native-only slice with its own tests. Landing it separately
+keeps the seam commit about the seam.
 
 ## Why now
 
@@ -27,7 +33,8 @@ for the one verb meant to work from anywhere.
 ```
   host (generic, no org in it)
   ├── TR.1  the transient registry is the editor's, not magit's
-  └── TR.2  the `transient-source` seam
+  ├── TR.2a a build that can answer later + per-row action args
+  └── TR.2b the `transient-source` seam
   org plugin
   ├── OC.1  org-global-mode + the <C-x>o prefix
   ├── OC.2  parse `org.capture-templates`
@@ -40,7 +47,8 @@ for the one verb meant to work from anywhere.
 | Slice | Description | Status |
 |---|---|---|
 | TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | ✅ |
-| TR.2 | `transient-source` WIT seam + loader drain + teardown | 📝 |
+| TR.2a | `TransientBuild` (Ready/Future) + per-row `Action` args | ✅ |
+| TR.2b | `transient-source` WIT seam + loader drain + teardown | 📝 |
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | 📝 |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | 📝 |
 | OC.3 | The capture transient, one key per template | 📝 |
@@ -80,7 +88,33 @@ Tests: the service resolves on a booted editor; magit's `magit-dispatch`
 still builds through it; an unregistered name is `None` rather than a panic
 (the property TR.2's guest-supplied names lean on).
 
-## TR.2 — the `transient-source` seam 📝
+## TR.2a — a build that can answer later ✅
+
+Design §4. The registry stored `Fn(&TransientContext) -> TransientSpec`;
+a guest's `build` is an async call on its own actor task and cannot answer that
+way. Builders now return `TransientBuild::{Ready, Future}` — natives through the
+unchanged `register`, guests through `register_async` — and the host parks a
+future in `Editor::pending_transient_build`, seating it from
+`drain_pending_transient_build` on the **async-landed wake**.
+
+The open body moved onto `Editor::open_named_transient` in the same slice: both
+renderer peers held identical copies, and the async path would otherwise have
+been written into each.
+
+**`TransientItemKind::Action` gained an `args` slot** (design §4, "Per-row
+arguments"). Not a convenience — the state projection is per-MENU, so a menu
+whose rows differ only in a parameter (org's capture menu, one row per template)
+was inexpressible. Native rows use `TransientItemKind::action(cmd)` and are
+unaffected.
+
+Tests: an async builder's menu opens with NO second keystroke and the wake fires
+(`async_transient_seats_off_keystroke.rs`, 5 tests — plus the failed-build echo
+naming its source, the supersede path, and the sync builder still seating in the
+same call); each row fires with its own args while an args-less row still reads
+the menu state, both driven through `press`
+(`transient_row_carries_its_own_args.rs`).
+
+## TR.2b — the `transient-source` seam 📝
 
 Mirrors `picker-source`: guest exports `id()` + `build(ctx) -> result<spec>`;
 the host wraps the export as a registry builder and registers it under the

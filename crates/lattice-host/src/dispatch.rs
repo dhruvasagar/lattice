@@ -16759,6 +16759,9 @@ impl Editor {
         // PH7.4c.2: commit any async plugin-source accept whose outcome landed
         // (same async-landed wake as init; no renderer-specific wiring needed).
         signals.extend(self.drain_pending_picker_accept());
+        // TR.2: seat a plugin-contributed transient whose build landed
+        // (same async-landed wake; no renderer-specific wiring).
+        signals.extend(self.drain_pending_transient_build());
         // 5.8.AF.5: `refresh_lsp_file_watcher` is now a
         // fingerprint-gated, non-blocking cmd-send. The actual
         // watcher + event fan-out runs on the LSP-runtime task
@@ -31422,6 +31425,102 @@ impl Editor {
         }
     }
 
+    /// Open the transient menu registered under `source` — the whole
+    /// body of `Effect::OpenTransient`, hoisted here so both renderer
+    /// peers are one call and cannot drift.
+    ///
+    /// A native builder answers in this frame and the menu seats
+    /// immediately. A guest-backed one (TR.2) answers a future: it is
+    /// spawned on the plugin runtime and parked in
+    /// [`pending_transient_build`](crate::Editor::pending_transient_build),
+    /// then seated by [`drain_pending_transient_build`](Self::drain_pending_transient_build)
+    /// off the async-landed wake — NOT off the next keystroke, which is
+    /// what the `async_landed.notify_one()` below buys.
+    pub fn open_named_transient(&mut self, source: String) -> Vec<RendererSignal> {
+        let Some(registry) = self
+            .services
+            .get::<lattice_picker::TransientSourceRegistryHandle>()
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "transient: source registry unavailable".to_string(),
+            );
+            return Vec::new();
+        };
+        // MG.23h: the menu is built for the place it was opened from.
+        // Resolved here rather than by whatever emitted the effect, so
+        // the chord, the ex-command (whose context carries no buffer)
+        // and any plugin-emitted open are uniformly context-aware.
+        let ctx = self.transient_open_context();
+        let Some(build) = registry.build(&source, &ctx) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("transient: unknown source `{source}`"),
+            );
+            return Vec::new();
+        };
+        match build {
+            lattice_picker::TransientBuild::Ready(spec) => self.open_transient(spec),
+            lattice_picker::TransientBuild::Future(fut) => {
+                // A second open supersedes the first: the user pressed
+                // another chord, and seating the older menu on top of
+                // it would be the wrong one.
+                if let Some(prev) = self.pending_transient_build.take() {
+                    prev.cancel.cancel();
+                }
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                let async_landed = self.async_landed.clone();
+                lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result);
+                        async_landed.notify_one();
+                    }
+                });
+                self.pending_transient_build =
+                    Some(crate::state::PendingTransientBuild { source, rx, cancel });
+                Vec::new()
+            }
+        }
+    }
+
+    /// TR.2: seat a guest-backed menu whose build has landed.
+    ///
+    /// Mirrors [`drain_pending_picker_init`](Self::drain_pending_picker_init):
+    /// non-blocking `try_recv`, polled off the async-landed wake. A
+    /// guest `err` is echoed WITH the source name and the menu stays
+    /// closed — a menu that opens empty is worse than one that says why
+    /// it did not.
+    pub fn drain_pending_transient_build(&mut self) -> Vec<RendererSignal> {
+        let Some(pending) = self.pending_transient_build.as_mut() else {
+            return Vec::new();
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                // The task was dropped without sending — nothing will
+                // ever arrive, so free the slot rather than leaving a
+                // dead one to block the next open's supersede path.
+                self.pending_transient_build = None;
+                return Vec::new();
+            }
+        };
+        let pending = self.pending_transient_build.take().expect("guarded above");
+        match result {
+            Ok(spec) => self.open_transient(spec),
+            Err(e) => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("transient `{}`: {e}", pending.source),
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// PICK.1: open a transient menu. Seats a picker in transient mode
     /// with the given spec, state, and preview function.
     pub fn open_transient(&mut self, spec: lattice_picker::TransientSpec) -> Vec<RendererSignal> {
@@ -31510,13 +31609,21 @@ impl Editor {
             return;
         };
 
+        // TR.2: the row's own arguments, if its kind carries any. Read
+        // before the match so the Action / Variable arm below can stay
+        // shared — a `Variable`'s action prompts for its value and has
+        // no args slot of its own.
+        let row_args = item.kind.row_args().cloned();
+
         match item.kind {
             // MG.43g: a variable row IS an action leaf that also
             // displays a value. Sharing the arm rather than copying it
             // is what guarantees it stays one — argument projection,
             // region carrying and effect application all apply
             // identically, and none of them can drift out of sync.
-            lattice_picker::TransientItemKind::Action(cmd_id)
+            lattice_picker::TransientItemKind::Action {
+                command: cmd_id, ..
+            }
             | lattice_picker::TransientItemKind::Variable { action: cmd_id, .. } => {
                 tracing::debug!(
                     target: "lattice_host::transient",
@@ -31530,7 +31637,17 @@ impl Editor {
                 // pressing the key. Resolved against the action's own
                 // `args_schema` BEFORE `do_picker_dismiss` tears the
                 // picker (and its state) down.
-                let args = self.transient_args_for(cmd_id, &transient_state);
+                //
+                // TR.2: unless the ROW carries its own arguments, which
+                // win. The state projection is per-menu and so cannot
+                // distinguish rows that differ only in a parameter —
+                // the shape a plugin-built menu has (org's capture
+                // menu, one row per template). A row that carries none
+                // (every native row today) is unchanged.
+                let args = match row_args {
+                    Some(explicit) if !matches!(explicit, lattice_grammar::Args::None) => explicit,
+                    _ => self.transient_args_for(cmd_id, &transient_state),
+                };
                 out.renderer_signals.extend(self.do_picker_dismiss());
                 if let Some(handler) = handler {
                     let ctx = lattice_mode::ActionContext {

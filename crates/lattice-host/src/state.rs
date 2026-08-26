@@ -375,6 +375,34 @@ impl std::fmt::Debug for PendingPickerInit {
     }
 }
 
+/// TR.2: in-flight async **transient build**. A guest-backed
+/// menu's builder answers a `TransientBuildFuture` rather than a
+/// spec; it is spawned on the LSP runtime and its resolved spec
+/// lands here via `rx`, seated by
+/// `drain_pending_transient_build` on the async-landed wake.
+///
+/// `source` is kept for the error echo: a build that fails must
+/// name the menu that failed, or the user sees a chord that did
+/// nothing.
+///
+/// Single-slot like [`PendingPickerInit`], and for the same
+/// reason — a second `Effect::OpenTransient` before the first
+/// lands supersedes it, so the older future is cancelled rather
+/// than racing to seat a menu the user has moved on from.
+pub struct PendingTransientBuild {
+    pub source: String,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<Result<lattice_picker::TransientSpec, String>>,
+    pub cancel: CancellationToken,
+}
+
+impl std::fmt::Debug for PendingTransientBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingTransientBuild")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
 /// In-flight async picker *accept*. The future from
 /// `PickerSourceGenerator::accept_async` is spawned on the LSP
 /// runtime (a plugin source's accept is an async guest call

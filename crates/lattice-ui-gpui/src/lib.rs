@@ -1565,29 +1565,11 @@ impl GpuiApp {
             // crate's `TransientSourceRegistry` registration. TUI/GPUI
             // parity with `do_open_transient`.
             Effect::OpenTransient { source } => {
-                let signals = self.mutate_editor_with(move |e| {
-                    let Some(registry) =
-                        e.services.get::<lattice_picker::TransientSourceRegistryHandle>()
-                    else {
-                        e.set_message(
-                            lattice_host::action::EchoLevel::Error,
-                            "transient: source registry unavailable".to_string(),
-                        );
-                        return Vec::new();
-                    };
-                    // MG.23h: same context resolution as the TUI peer —
-                    // see `App::do_open_transient` there for why it
-                    // happens at build time rather than at emit time.
-                    let ctx = e.transient_open_context();
-                    let Some(spec) = registry.build(&source, &ctx) else {
-                        e.set_message(
-                            lattice_host::action::EchoLevel::Error,
-                            format!("transient: unknown source `{source}`"),
-                        );
-                        return Vec::new();
-                    };
-                    e.open_transient(spec)
-                });
+                // TR.2: the body is `Editor::open_named_transient` —
+                // shared verbatim with the TUI peer rather than copied,
+                // which is also what gives the guest-backed async build
+                // path parity for free.
+                let signals = self.mutate_editor_with(move |e| e.open_named_transient(source));
                 for s in signals {
                     self.handle_renderer_signal(s);
                 }

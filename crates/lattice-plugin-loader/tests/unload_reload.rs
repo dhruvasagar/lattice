@@ -173,9 +173,10 @@ async fn unload_reverses_picker_and_grammar_contributions() {
         .unload("grammar-fixture")
         .expect("grammar was loaded");
     assert_eq!(
-        report.commands, 7,
-        "all seven grammar contributions (down-n / to-cursor / fails / traps / \
-         read-at-cursor / open-files-picker / archive-to) reversed"
+        report.commands, 8,
+        "all eight grammar contributions (down-n / to-cursor / fails / traps / \
+         read-at-cursor / open-files-picker / archive-to / archive-beside-me) \
+         reversed"
     );
     assert!(
         r.commands.load().id_by_name("down-n").is_none(),

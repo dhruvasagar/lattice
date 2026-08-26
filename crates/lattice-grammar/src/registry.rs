@@ -88,6 +88,11 @@ pub struct MotionContext<'a> {
     /// motions (`]f`/`[c`/…). `None` on Plain buffers with no parse — the
     /// motion then no-ops. Threaded by the host, identical to `TextObjectContext`.
     pub scope_resolver: Option<&'a dyn ScopeResolver>,
+    /// OM.6b: the file the motion's buffer is backed by, so a plugin motion's
+    /// `document` handle can answer `path()`. A borrow — this context is
+    /// already borrowing, so carrying it costs nothing on the keystroke path
+    /// (motions fire on every `j`). `None` for a buffer with no file.
+    pub path: Option<&'a std::path::Path>,
 }
 
 /// What a motion's evaluator returned.
@@ -338,6 +343,9 @@ pub struct TextObjectContext<'a> {
     /// language. `None` (or `line: None`) ⇒ the comment objects resolve
     /// nothing. Only `aC` / `iC` read it.
     pub comment_syntax: Option<&'a CommentSyntax>,
+    /// OM.6b: the file the object's buffer is backed by — the borrowed peer of
+    /// [`MotionContext::path`], for the same reason.
+    pub path: Option<&'a std::path::Path>,
 }
 
 type TextObjectFn = Arc<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;
@@ -549,6 +557,14 @@ pub struct ActionContext {
     /// running ones (a hypothetical "rebuild fold tree" action)
     /// poll `cancel.check()?` between iterations.
     pub cancel: crate::CancellationToken,
+    /// OM.6b: the file the action's buffer is backed by, so a plugin action's
+    /// `document` handle can answer `path()` — the question `org-archive-subtree`
+    /// asks to name `<file>_archive`.
+    ///
+    /// Owned, unlike the motion and text-object peers, because this context is
+    /// owned; `Arc<PathBuf>` rather than `PathBuf` so it is an Arc bump per
+    /// dispatch and not an allocation. `None` for a buffer with no file.
+    pub path: Option<std::sync::Arc<std::path::PathBuf>>,
 }
 
 /// Evaluator callback for a free-form action. Returns the

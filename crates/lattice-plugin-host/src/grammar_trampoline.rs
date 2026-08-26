@@ -260,6 +260,10 @@ fn build_motion_spec(
             // `SyntaxSnapshot`, so there is nothing to mint.
             let snapshot = Arc::new(DocumentSnapshot {
                 buffer: ctx.buffer.clone(),
+                // OM.6b: so `document.path()` answers on this seam too. A
+                // guest that gets `none` here because the mint dropped the
+                // field would read it as "unsaved buffer" and be wrong.
+                path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                 ..Default::default()
             });
             let wit = run_callback(&guest, "apply-motion", |b, s| {
@@ -343,6 +347,8 @@ fn build_text_object_spec(
                 // rides this handle.
                 let snapshot = Arc::new(DocumentSnapshot {
                     buffer: ctx.buffer.clone(),
+                    // OM.6b, as on the motion and action seams.
+                    path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                     ..Default::default()
                 });
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
@@ -386,10 +392,12 @@ fn build_action_spec(
             let wit_ctx = project_action_context(ctx).map_err(CommandError::Plugin)?;
             // AP.0.1: mint a point-in-time `document` from the action's buffer
             // (O(1) rope clone) so the guest can read text around the cursor.
-            // Only `snapshot.buffer` is read by `DocumentResource`; the other
-            // snapshot fields are irrelevant here, so a minimal snapshot is fine.
+            // OM.6b added `path` to the mint — `document.path()` is what
+            // `org-archive-subtree` asks to name `<file>_archive`. The rest of
+            // the snapshot's fields are still irrelevant here.
             let snapshot = Arc::new(DocumentSnapshot {
                 buffer: ctx.buffer.clone(),
+                path: ctx.path.clone(),
                 ..Default::default()
             });
             // TS.1: downcast the type-erased tree snapshot the `ActionContext`

@@ -1287,6 +1287,13 @@ impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument f
         self.table.get(&self_).ok().and_then(|d| d.line_at(n))
     }
 
+    fn path(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+    ) -> Option<String> {
+        self.table.get(&self_).ok().and_then(|d| d.path())
+    }
+
     fn drop(
         &mut self,
         rep: wasmtime::component::Resource<crate::buffer::DocumentResource>,

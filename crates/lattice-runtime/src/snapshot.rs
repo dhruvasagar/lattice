@@ -87,7 +87,9 @@ impl DocumentSnapshot {
             version: doc.version(),
             text_version: doc.text_version(),
             buffer: doc.buffer().clone(),
-            path: doc.path().map(|p| Arc::new(p.to_path_buf())),
+            // An Arc bump since OM.6b retyped `Document::path`; this allocated
+            // a fresh `PathBuf` per publish before, which is once per commit.
+            path: doc.path_shared(),
             dirty: doc.dirty(),
             selections: Arc::new(doc.selections().clone()),
         }

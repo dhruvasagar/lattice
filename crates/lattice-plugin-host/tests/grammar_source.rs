@@ -62,13 +62,14 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
-    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 2 actions
-    // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e).
+    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 4 actions
+    // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e; archive-to, XF.5;
+    // archive-beside-me, OM.6b).
     assert_eq!(
         set.len(),
-        7,
+        8,
         "guest contributed down-n + to-cursor + fails + traps + read-at-cursor \
-         + open-files-picker + archive-to"
+         + open-files-picker + archive-to + archive-beside-me"
     );
 
     let mut registry = CommandRegistry::new();
@@ -326,6 +327,100 @@ fn run_archive_to(registry: &CommandRegistry, path: &std::path::Path) -> lattice
         &cancel,
     )
     .expect("the action dispatches")
+}
+
+/// OM.6b: fire `archive-beside-me` in a document backed by `path`, and return
+/// whatever effect came back. Nothing about the TARGET is supplied here — the
+/// guest derives it from `document.path()`, which is exactly the capability
+/// under test.
+fn run_archive_beside_me(
+    registry: &CommandRegistry,
+    path: Option<&std::path::Path>,
+) -> lattice_grammar::Effect {
+    let action_id = registry.id_by_name("archive-beside-me").unwrap();
+    let builder = lattice_core::DocumentBuilder::default().with_text("* Keep\n");
+    let mut document = match path {
+        Some(p) => builder.with_path(p).build(),
+        None => builder.build(),
+    };
+    let cancel = CancellationToken::never();
+    lattice_grammar::dispatcher::execute(
+        registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(action_id),
+        &cancel,
+    )
+    .expect("the action dispatches")
+}
+
+/// **OM.6b, the whole shape.** A guest asks which file it is editing, derives a
+/// sibling path from the answer, and writes there. Before `document.path()` a
+/// grammar action could read its buffer's text but not name its file, so
+/// `org-archive-subtree` — whose target is `<file>_archive` by definition —
+/// was inexpressible no matter what the effect vocabulary allowed.
+///
+/// The assertion is on the path the GUEST computed, not one the test passed in.
+#[test]
+fn a_guest_can_name_a_file_beside_the_one_it_is_editing() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let mine = notes.join("today.org");
+
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsWrite(notes.clone())],
+    );
+
+    match run_archive_beside_me(&registry, Some(&mine)) {
+        lattice_grammar::Effect::WriteToFile { path, text, .. } => {
+            assert_eq!(path, notes.join("today.org_archive"));
+            assert_eq!(text, "* Archived beside me\n");
+        }
+        other => panic!("expected a WriteToFile, got {other:?}"),
+    }
+}
+
+/// A buffer with no file answers `none` rather than inventing a path. The
+/// guest is then the one that decides what to do about it — here, a typed
+/// `err` — because "archive this scratch buffer" has no correct target and
+/// guessing one would write somewhere the user never named.
+#[test]
+fn a_buffer_with_no_file_reports_no_path() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsWrite(
+            dir.path().to_path_buf(),
+        )],
+    );
+
+    let action_id = registry.id_by_name("archive-beside-me").unwrap();
+    let mut document = lattice_core::Document::from_text("* Keep\n");
+    let cancel = CancellationToken::never();
+    let err = lattice_grammar::dispatcher::execute(
+        &registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(action_id),
+        &cancel,
+    )
+    .expect_err("a pathless buffer has no archive target");
+    assert!(
+        format!("{err:?}").contains("no file"),
+        "the guest's own message survives: {err:?}"
+    );
 }
 
 /// A plugin granted `fs:write` over a directory gets its `WriteToFile`

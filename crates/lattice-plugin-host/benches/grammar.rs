@@ -55,6 +55,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         args: args.clone(),
         cancel: &cancel,
         scope_resolver: None,
+        path: None,
     };
     c.bench_function("grammar_project_motion_context", |b| {
         b.iter(|| {
@@ -83,6 +84,7 @@ fn grammar_marshalling(c: &mut Criterion) {
         cancel: &cancel,
         scope_resolver: None,
         comment_syntax: None,
+        path: None,
     };
     c.bench_function("grammar_project_text_object_context", |b| {
         b.iter(|| {

@@ -74,6 +74,22 @@ impl DocumentResource {
     pub fn line_at(&self, n: u32) -> Option<String> {
         self.snapshot.buffer.line(n)
     }
+
+    /// OM.6b: the file backing this document, absolute; `None` for a buffer
+    /// with no path on disk.
+    ///
+    /// A non-UTF-8 path also answers `None` rather than erroring. The WIT
+    /// signature has no error channel on purpose — the guest's question is
+    /// "can I name a file next to mine", and "no" is a complete answer to it.
+    /// Erroring would make one oddly-named file fail an action that has
+    /// nothing to do with encoding.
+    pub fn path(&self) -> Option<String> {
+        self.snapshot
+            .path
+            .as_deref()
+            .and_then(|p| p.to_str())
+            .map(str::to_string)
+    }
 }
 
 /// Project the borrow-carrying [`ActiveBufferSnapshot`] into the owned WIT

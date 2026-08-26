@@ -117,7 +117,8 @@ files? — was retired during design by reading the excerpt model
 | OM.4b | Plugin motions + text objects reach operator-pending, in the mode's layer | ✅ |
 | OM.5 | `<Tab>` / `<S-Tab>` routing + the decline chain | ✅ |
 | OM.6 | Subtree move, meta-return, toggle heading | ✅ |
-| OM.6b | Archive subtree to `<file>_archive` | 📝 unblocked by XF |
+| OM.6b.0 | `document.path()`: a guest learns which file it is editing | ✅ |
+| OM.6b | Archive subtree to `<file>_archive` | 🚧 |
 | OM.7 | `org-todo-mode`: TODO cycling, priority, tags | ✅ |
 | OM.8 | Checkboxes + statistics cookies | ✅ |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
@@ -592,6 +593,46 @@ Slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 `fs:write`. This is now ordinary plugin work: `<leader>o$` returns a
 `write-to-file` naming `<file>_archive`, with the subtree's span as the
 `cut`, and the manifest asks for `fs:write` over the org directory.
+
+### OM.6b.0 — the document's own path ✅ (2026-08-26)
+
+XF shipped the effect; this shipped the *address*. `org-archive-subtree`
+files into `<file>_archive` — a name derived from the source file — and a
+grammar action could not learn its own path. `action-context` carries
+`cursor` and `buffer-id`; the `document` resource read text, length and
+lines; `host-services` walks but does not ask; `project::root-for-buffer`
+answers with the root, not the file. `write-to-file`'s `path` is
+"absolute, or relative to the editor's working directory", which is the
+wrong anchor the moment the org file is not under the cwd.
+
+**On the resource, not the context.** `document.path() -> option<string>`
+rather than `action-context.path`. A guest asking "which file am I in"
+always holds a `document`, and on a context the same field would have to
+be re-added to `motion-context`, `text-object-context` and
+`ex-command-context` in turn — each dispatch paying the projection whether
+or not the guest reads it. Snapshot semantics like every other method
+there: the path as of the handle's mint.
+
+**The native half is where the cost decision was.** None of the three
+grammar contexts carried a path, so all three grew one — the trampoline
+mints a `document` on each seam, and a `path()` that answered only on the
+action path would read as "unsaved buffer" everywhere else, which is a
+silent wrong answer rather than a missing feature.
+
+`MotionContext` and `TextObjectContext` are borrowing contexts, so theirs
+is `Option<&Path>` and free. `ActionContext` is owned, and a `PathBuf`
+clone there is an allocation on the keystroke path — actions include
+`undo`, paste and open-line. So `Document::path` was retyped
+`Option<Arc<PathBuf>>` and the context takes an Arc bump.
+`Document::path()` still hands out `Option<&Path>`, so no caller outside
+`lattice-core` changed; `DocumentSnapshot::from_document` stopped
+allocating a fresh `PathBuf` per publish, which is once per commit.
+
+Tests: 2 through the real fixture guest — a guest names `<its own
+file>_archive` with nothing about the target supplied by the test, and a
+buffer with no file answers `none` rather than inventing one. Two
+fixture-count assertions moved with it (`grammar_source.rs`,
+`unload_reload.rs`); a third callback in the fixture is the proof.
 
 ### OM.7 — `org-todo-mode` ✅ (2026-08-24)
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority

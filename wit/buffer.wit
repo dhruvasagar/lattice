@@ -30,6 +30,24 @@ interface buffer {
         /// Line `n` (0-based) as text without its trailing newline (matching
         /// `Buffer::line`), or `none` when `n` is past the last line.
         line: func(n: u32) -> option<string>;
+
+        /// OM.6b: the file this document is backed by, absolute. `none` for a
+        /// buffer with no file on disk — a scratch buffer, a synthetic one, or
+        /// a file whose path is not UTF-8 (it cannot cross as a `string`, and
+        /// one oddly-named file must not fail the call).
+        ///
+        /// **Why the resource and not a context field.** "Which file am I
+        /// editing" is a question every content-aware guest asks, and a guest
+        /// asking it always holds a `document`. On a context it would have to
+        /// be re-added to `motion-context`, `text-object-context` and
+        /// `ex-command-context` in turn, and every dispatch would pay the
+        /// string clone whether or not the guest read it.
+        ///
+        /// Snapshot semantics, like every other method here: this is the path
+        /// as of the handle's mint. A `set-path` landing mid-action is
+        /// invisible, which is the same trade `get-text-range` already makes
+        /// and for the same reason.
+        path: func() -> option<string>;
     }
 
     /// The owned projection of `ActiveBufferSnapshot`'s metadata (§4.2). Bulk

@@ -110,6 +110,19 @@ impl Guest for Component {
             },
             7,
         );
+        // OM.6b: the archive shape, end to end in one callback — the guest
+        // asks the `document` handle which file it is in, derives a SIBLING
+        // path from it, and writes there. Nothing about the target comes from
+        // the test, which is the point: a guest that cannot learn its own path
+        // cannot express `org-archive-subtree` at all.
+        grammar::register_action(
+            "archive-beside-me",
+            "append to `<this file>_archive` (fixture)",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            8,
+        );
         grammar::register_action(
             "open-files-picker",
             "open the host's `files` picker (fixture)",
@@ -207,6 +220,18 @@ impl Callbacks for Component {
                     path,
                     anchor: FileAnchor::End,
                     text: "* Archived by the fixture\n".to_string(),
+                    cut: None,
+                })])
+            }
+            // OM.6b: `<this file>_archive`, named from the document handle.
+            8 => {
+                let Some(mine) = doc.path() else {
+                    return Err("fixture: this buffer has no file".to_string());
+                };
+                Ok(vec![Effect::WriteToFile(WriteToFilePayload {
+                    path: format!("{mine}_archive"),
+                    anchor: FileAnchor::End,
+                    text: "* Archived beside me\n".to_string(),
                     cut: None,
                 })])
             }

@@ -135,6 +135,9 @@ fn execute_action(
         // parse.
         syntax: env.syntax.map(std::sync::Arc::clone),
         cancel: cancel.clone(),
+        // OM.6b: an Arc bump, so an action that never asks pays nothing but
+        // the refcount.
+        path: document.path_shared(),
     };
     (spec.apply)(&ctx)
 }
@@ -183,6 +186,10 @@ pub fn execute_motion_only(
         args: invocation.args.clone(),
         cancel,
         scope_resolver: env.scope_resolver,
+        // This path resolves against a bare `Buffer` with no `Document`
+        // behind it (help and the other non-document buffer kinds), so there
+        // is no file to name.
+        path: None,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -231,6 +238,7 @@ fn execute_motion(
         args: invocation.args.clone(),
         cancel,
         scope_resolver: env.scope_resolver,
+        path: document.path(),
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -258,6 +266,7 @@ fn execute_text_object(
         cancel,
         scope_resolver: env.scope_resolver,
         comment_syntax: env.comment_syntax,
+        path: document.path(),
     };
     let range = (tobj.apply)(&ctx)?;
     // A bare text object (no operator) sets the selection to the object's
@@ -647,6 +656,7 @@ fn resolve_target(
                 args: args.clone(),
                 cancel,
                 scope_resolver: env.scope_resolver,
+                path: document.path(),
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -683,6 +693,7 @@ fn resolve_target(
                 cancel,
                 scope_resolver: env.scope_resolver,
                 comment_syntax: env.comment_syntax,
+                path: document.path(),
             };
             (tobj.apply)(&ctx)
         }

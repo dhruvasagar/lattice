@@ -9,6 +9,7 @@
 //! when M.3 lands the per-buffer-kind major modes.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lattice_protocol::edit::{Edit, EditKind};
@@ -23,7 +24,13 @@ use crate::undo::{UndoEntry, UndoStack};
 #[derive(Debug)]
 pub struct Document {
     id: DocumentId,
-    path: Option<PathBuf>,
+    /// `Arc<PathBuf>` so every reader that needs to *carry* the path — a
+    /// published `DocumentSnapshot`, a grammar dispatch context (OM.6b) —
+    /// takes an Arc bump rather than a heap allocation. Motions dispatch on
+    /// every `j`, so a `PathBuf` clone there would be an allocation on the
+    /// keystroke path bought for one plugin feature (paramount #1).
+    /// `path()` still hands out `Option<&Path>`, so callers are unaffected.
+    path: Option<Arc<PathBuf>>,
     buffer: Buffer,
     version: u64,
     /// Bumps only on text-mutating operations (edits, undo, redo). Selection
@@ -62,7 +69,7 @@ pub struct Document {
 
 #[derive(Debug, Default)]
 pub struct DocumentBuilder {
-    path: Option<PathBuf>,
+    path: Option<Arc<PathBuf>>,
     initial_text: Option<String>,
     /// K.4.11.perf-fix (2026-06-02): pre-built Buffer for callers
     /// that already hold a Rope and want to skip the
@@ -74,7 +81,7 @@ pub struct DocumentBuilder {
 
 impl DocumentBuilder {
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.path = Some(path.into());
+        self.path = Some(Arc::new(path.into()));
         self
     }
 
@@ -165,7 +172,15 @@ impl Document {
     }
 
     pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        self.path.as_deref().map(PathBuf::as_path)
+    }
+
+    /// The path as a shared handle, for readers that must *carry* it out of
+    /// the borrow — a published `DocumentSnapshot`, a grammar dispatch
+    /// context. An Arc bump, never an allocation. Prefer [`Document::path`]
+    /// when a borrow will do.
+    pub fn path_shared(&self) -> Option<Arc<PathBuf>> {
+        self.path.clone()
     }
 
     pub fn version(&self) -> u64 {
@@ -345,16 +360,20 @@ impl Document {
     /// Persist to the document's path. Errors if no path is set.
     pub fn save(&mut self) -> CoreResult<&Path> {
         let path = self.path.clone().ok_or(CoreError::NoPath)?;
-        std::fs::write(&path, self.buffer.as_string())?;
+        std::fs::write(path.as_path(), self.buffer.as_string())?;
         self.clean_position = Some(self.undo.undo_depth());
         // path is set; dereference safely via the stored option.
-        Ok(self.path.as_deref().expect("path set above"))
+        Ok(self
+            .path
+            .as_deref()
+            .map(PathBuf::as_path)
+            .expect("path set above"))
     }
 
     pub fn save_as(&mut self, path: impl Into<PathBuf>) -> CoreResult<()> {
         let path = path.into();
         std::fs::write(&path, self.buffer.as_string())?;
-        self.path = Some(path);
+        self.path = Some(Arc::new(path));
         self.clean_position = Some(self.undo.undo_depth());
         Ok(())
     }

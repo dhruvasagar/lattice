@@ -235,6 +235,7 @@ mod tests {
             args: Args::String("w".into()),
             cancel: &cancel,
             scope_resolver: None,
+            path: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);
@@ -282,6 +283,7 @@ mod tests {
             cancel: &cancel,
             scope_resolver: None,
             comment_syntax: None,
+            path: None,
         };
         let wit = project_text_object_context(&ctx).unwrap();
         assert_eq!(wit.at.byte, 2);
@@ -316,6 +318,7 @@ mod tests {
             buffer: Buffer::from_text("hello\nworld\n"),
             syntax: None,
             cancel: CancellationToken::never(),
+            path: None,
         };
         let wit = project_action_context(&ctx).unwrap();
         assert_eq!(wit.count, 3);

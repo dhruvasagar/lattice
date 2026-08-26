@@ -28235,12 +28235,38 @@ impl Editor {
                 // Arming is still right when the source resolved
                 // *nothing* — the command palette picks a command name
                 // and the user supplies its arguments.
-                let line = ex_line_with_args(&id, &args);
                 if args.is_none() && self.arm_picker_prompt(&id) {
                     return out;
                 }
+                // OM.11: an ACTION is dispatched with its typed args rather
+                // than through the `:` line.
+                //
+                // Two reasons, and the second is the one that made this a bug
+                // rather than a tidy-up. The `:` line cannot reach an action
+                // at all (`excommand::parse` answers `Unknown` for
+                // `CommandKind::Action`), so a picker source could only ever
+                // call back into an EX-command — and an ex-command receives no
+                // `borrow<document>`, so it cannot read the buffer the user is
+                // sitting in. Org's refile needs exactly that: pick a target,
+                // then take the subtree at the cursor. And re-serialising
+                // typed args into text for a parser to re-split is the same
+                // lossy round-trip the comment above records as having eaten
+                // the branch pickers' arguments — a path containing a space
+                // would arrive as two arguments.
+                let action = self.registry.load().id_by_name(&id).filter(|cid| {
+                    self.registry
+                        .load()
+                        .lookup(*cid)
+                        .is_some_and(|m| matches!(m.kind, lattice_grammar::CommandKind::Action))
+                });
                 let mut inner = DispatchOutcome::default();
-                self.execute_ex_line(&line, &mut inner);
+                match action {
+                    Some(cid) => self.dispatch_invocation(
+                        lattice_grammar::CommandInvocation::of(cid).with_args(args),
+                        &mut inner,
+                    ),
+                    None => self.execute_ex_line(&ex_line_with_args(&id, &args), &mut inner),
+                }
                 out.merge(inner);
             }
             LoadCommandLine { text } => {

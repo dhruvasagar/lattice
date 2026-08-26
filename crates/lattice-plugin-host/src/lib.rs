@@ -2407,6 +2407,24 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OM.11, for the same TC.6 reason: org provides BOTH `grammar` and
+        // `picker-source` (refile's target list), and a picker source needs
+        // `walk`. Instantiation must satisfy every import the world declares,
+        // so without this the whole component fails to load on the grammar
+        // seam — which is how this was found, and what the `multiseam` fixture
+        // now pins (it imports `host-services` for exactly this reason).
+        //
+        // `walk` is a sync, bounded host func, and it adds no authority the
+        // sync path did not already have: `add_to_linker_sync` above gives the
+        // guest WASI's filesystem view, so a grammar action could already read
+        // files on the dispatch thread. What it does NOT get is `logging`,
+        // still deliberately absent, so "no logging reachable from the grammar
+        // hot path" stays structural.
+        crate::lattice::plugin_host::host_services::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL)?;
 
         Ok(Self {

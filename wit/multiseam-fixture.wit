@@ -13,12 +13,19 @@ package lattice:plugin-host@0.1.0;
 /// preserves the "no logging reachable from the grammar hot path" invariant (the
 /// grammar linker gains only the sync `modes` / `config` register funcs, never
 /// `log`). A test vehicle — the real `auto-pair` world lands at AP.1 proper.
+///
+/// OM.11 adds `host-services`, because org provides BOTH `grammar` and
+/// `picker-source` and a picker source needs `walk`. A component's imports must
+/// ALL resolve on EVERY linker it is instantiated against, so without it on the
+/// sync grammar linker the whole component failed to load — this world is where
+/// that is caught, since org lives in another repo.
 world multiseam-fixture {
     import grammar;
     import buffer;
     import tree-sitter;
     import modes;
     import config;
+    import host-services;
 
     export register-grammar: func();
     export grammar-callbacks;

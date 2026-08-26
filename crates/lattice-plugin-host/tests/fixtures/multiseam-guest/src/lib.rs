@@ -28,7 +28,7 @@ use lattice::plugin_host::types::{
     Effect, ExCommandContext, MotionContext, MotionResult, OperatorContext, Position, Range,
     TextObjectContext,
 };
-use lattice::plugin_host::{config, grammar, modes};
+use lattice::plugin_host::{config, grammar, host_services, modes};
 
 struct Component;
 
@@ -69,6 +69,18 @@ impl Guest for Component {
             "walk the tree with a cursor via the tree-sitter seam (TS.2)",
             &spec(),
             5,
+        );
+        // OM.11: an action that calls `host-services`. The point is not what
+        // it returns — an ungranted plugin's `walk` is an `err` — but that the
+        // import RESOLVES on the sync grammar linker. A component providing
+        // both `grammar` and `picker-source` (org's refile) declares this
+        // import, and instantiation must satisfy every import a world declares,
+        // not only the ones the seam being drained uses.
+        grammar::register_action(
+            "multiseam-walk",
+            "call host-services::walk from the sync grammar seam (OM.11)",
+            &spec(),
+            7,
         );
     }
 
@@ -203,6 +215,21 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{moved}:{kind}"),
+                })])
+            }
+            // OM.11: proof the `host-services` import is reachable here at
+            // all. Ungranted, so `walk` answers `err`; echoing which way it
+            // went distinguishes "the seam is wired" from "the seam is
+            // missing", which an unresolved import would have turned into a
+            // load failure long before this ran.
+            7 => {
+                let text = match host_services::walk("/") {
+                    Ok(paths) => format!("walked:{}", paths.len()),
+                    Err(_) => "refused".to_string(),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
                 })])
             }
             other => Err(format!("multiseam: unknown action callback {other}")),

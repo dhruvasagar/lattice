@@ -116,36 +116,68 @@ A named headline that is absent **appends and says so**, rather than creating
 it or refusing. The note is not lost, and the echo is what tells the user
 their target moved.
 
-## 5. The prompt chain
+## 5. Collecting several answers
 
-`%^{Prompt}` needs N sequential prompts before a single write. Each prompt is
-an `Effect::OpenPrompt` whose `on-submit-action` is org's own continue-action,
-with the answers so far carried in **`open-prompt-payload.buffer-name`** —
-which the WIT documents for precisely this ("callers that need to smuggle
-state through a multi-step flow encode it here").
+`%^{Prompt}` needs N answers before a single write. That is the only way a
+template like a vocabulary entry can exist at all: it is not one line of typed
+text, it is several named fields.
 
-State rides the payload rather than guest memory on purpose. A capture
-abandoned with `<Esc>` dispatches nothing at all, so a guest-side accumulator
-would never be told to clear and the next capture would inherit it.
+**The template's questions become FIELDS on a menu**, not a run of prompts.
+`<leader>oc` opens the template chooser; the key picks a template; a template
+that asks questions then opens its own fields menu — a row per question, a row
+for the body, and a row that captures.
 
-**Two host bugs blocked this and are fixed at OC.3a.**
+The mechanism is the host's and magit already uses it: pressing a field's key
+parks the whole menu, a one-line prompt takes the value, it lands in
+`TransientState`, and the menu comes back. `<Esc>` cancels the value with the
+menu untouched. See `plugin-transients.md` §7 for the seam half (TR.3b).
 
-The first is the larger: `Effect::OpenPrompt` was **unusable by any plugin**.
-`do_prompt_line_submit` resolved `on-submit-action` to a `CommandId` and then
-looked the handler up in the `ActionHandlerRegistry`, which native modes
-register into and the plugin seams do not — a plugin's grammar action lives in
-the `CommandRegistry` with an `apply` closure. Every plugin prompt therefore
-opened, took the user's text, and died with "no handler registered". Nothing
-caught it because org's tests dispatch the submit action directly rather than
-through a prompt: the seam was wired end to end and the one path a user takes
-was the one that did not work. A missing native handler now falls through to
-the ordinary plugin-action dispatch.
+**Rejected: sequential prompts carrying their answers in
+`open-prompt-payload.buffer-name`.** That channel is real and documented, and
+magit's blame / diff / revision modes use it — but for buffer *identity*, not
+multi-step input. Accumulating answers through it would have been a second
+spelling of a mechanism the editor already has, with a bespoke codec on top.
 
-The second follows from it. A native handler reads the smuggled `buffer-name`
-off the prompt buffer it is handed; a plugin receives only a `buffer-id` over
-WIT and has no way to resolve a name from it. So the host hands the name back
-**in the fired invocation's args** — the typed text first, the smuggled state
-second. Same channel, reachable from both sides.
+The visible difference is that the menu stays the surface throughout, so an
+answer can be re-edited before anything is written; a questionnaire has already
+moved on by the time you notice the typo. It diverges from emacs org-capture,
+which asks sequentially — a real muscle-memory cost, accepted because the
+mechanism is one the editor already has and the form is the better surface.
+
+**A template with no questions keeps the direct prompt.** One hop, exactly as
+before. The common template is a single `%?`, and routing it through a menu
+would cost three keystrokes to collect the one value a prompt already asks for.
+
+### Two submit actions, not one that guesses
+
+The prompt hop hands its action `[text, buffer-name]`; the fields hop hands its
+action `[key, answer…]`. A single action would have to sniff which shape it
+got, so they are named separately (`org-capture-submit`,
+`org-capture-fields-submit`) and each one's arguments are a fact rather than an
+inference.
+
+### Field names are positional
+
+`q0`, `q1`, … rather than the question text. A template may legitimately ask
+the same question twice — `%^{Line}` in a list template plainly means two
+different lines — and two rows sharing a state key would overwrite each other.
+
+Expansion consumes the answers positionally too, which is why a question that
+was never asked (an empty `%^{}`) consumes none: shifting the sequence would
+substitute every later answer one slot early, and the result would look
+plausible while being wrong.
+
+### Two host bugs this uncovered
+
+Both are recorded in the slice plan and were the same shape: a seam wired end
+to end whose one real path no test took.
+
+- `Effect::OpenPrompt` was **unusable by any plugin** — the submit resolved its
+  handler in the `ActionHandlerRegistry`, which the plugin seams do not
+  register into (OC.3a).
+- A plugin's transient **row could never fire**, for the same reason, and the
+  transient seam's store had no config registry, so org's menu built from a
+  template set it could not read (OC.3).
 
 ## 6. The menu, and the prefix
 

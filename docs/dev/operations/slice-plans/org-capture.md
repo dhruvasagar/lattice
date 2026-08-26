@@ -12,9 +12,10 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅, TR.3a ✅ — a
-multi-template set is usable end to end: `<leader>oc` opens a menu, the key
-picks the template, the prompt files the note. **TR.3b is next**, then OC.4.
+seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅, TR.3a ✅,
+TR.3b ✅, OC.4 ✅ — many templates and `%^{Question}` fields both work end to
+end. **OC.5 is next**: `file+headline` targets and the rest of the placeholder
+set (`%a` / `%t`).
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -63,7 +64,7 @@ for the one verb meant to work from anywhere.
 | OC.3 | The capture transient, one key per template | ✅ |
 | TR.3a | `Effect::OpenTransient` carries args → `TransientContext::args` | ✅ |
 | TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | ✅ |
-| OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | 📝 |
+| OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | ✅ |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
 | OC.6 | Docs, ledger, site nav | 📝 |
 
@@ -337,7 +338,7 @@ fields both arrive, in that order; a menu with no fields passes the row's args
 through alone; an `Argument` row crosses the WIT boundary with its name, prompt
 and default, `source` deferred.
 
-## OC.4 — the `%^{Prompt}` fields 📝
+## OC.4 — the `%^{Prompt}` fields ✅
 
 A template with `%^{}` questions gets a per-template fields menu: one
 `Argument` row per question, plus a row that captures. `<leader>oc` → the
@@ -348,9 +349,28 @@ Diverges from emacs org-capture, which asks sequentially. Chosen deliberately
 than flashing between prompts, and a form is re-editable in a way a
 questionnaire is not.
 
-Tests: a three-question template collects three answers and substitutes each at
-its own position; abandoning leaves nothing behind; a template with no `%^{}`
-still captures in one hop.
+**One registered source serves both menus.** The seam gives a guest one
+`id()`, so which shape gets built is decided by what the open was FOR (TR.3a):
+opened for nothing it is the template chooser, opened for a key it is that
+template's fields. Two names would have needed two `id()`s.
+
+Field names are positional (`q0`, `q1`, …) rather than the question text — a
+template may ask the same question twice, and two rows sharing a state key
+would overwrite each other. Expansion consumes them positionally too, so a
+question that was never asked (an empty `%^{}`) consumes no answer; shifting
+would substitute every later answer one slot early and look plausible.
+
+Two submit actions rather than one that guesses: the prompt hop hands its
+action `[text, buffer-name]` and the fields hop hands its action
+`[key, answer…]`.
+
+Tests (org): a three-question template shows a row per question in TEMPLATE
+order and substitutes each answer at its own position; a template with no
+questions still captures in one hop through the direct prompt; abandoning the
+menu writes nothing and the next capture does not inherit the abandoned answer.
+Unit (expansion): answers substitute in order, a question and `%?` coexist, a
+missing answer leaves its slot without shifting the rest, an empty question
+consumes nothing and stays visible, an unclosed one survives verbatim.
 
 ## OC.5 — targets and the placeholder set 📝
 

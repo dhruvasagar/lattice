@@ -24,8 +24,8 @@ wit_bindgen::generate!({
 
 use exports::lattice::plugin_host::transient_source::Guest;
 use lattice::plugin_host::types::{
-    Args, TransientAction, TransientContext, TransientGroup, TransientItem, TransientItemKind,
-    TransientSpec,
+    Args, TransientAction, TransientArgument, TransientContext, TransientGroup, TransientItem,
+    TransientItemKind, TransientSpec,
 };
 
 struct Component;
@@ -77,6 +77,18 @@ impl Guest for Component {
                     // Names a command nobody registered: the host must drop
                     // THIS row and keep the rest.
                     action("z", "ghost", "fixture-command-never-registered", "z"),
+                    // TR.3b: a FIELD. Pressing its key parks the menu, prompts,
+                    // and puts the menu back with the answer in its state.
+                    TransientItem {
+                        key: vec!["w".to_string()],
+                        label: "word".to_string(),
+                        description: "a field the menu collects".to_string(),
+                        kind: TransientItemKind::Argument(TransientArgument {
+                            name: "word".to_string(),
+                            default: Some("chat".to_string()),
+                            prompt: "Word".to_string(),
+                        }),
+                    },
                     TransientItem {
                         key: vec!["q".to_string()],
                         label: "quit".to_string(),

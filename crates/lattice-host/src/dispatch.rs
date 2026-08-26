@@ -31689,9 +31689,36 @@ impl Editor {
                 // the shape a plugin-built menu has (org's capture
                 // menu, one row per template). A row that carries none
                 // (every native row today) is unchanged.
-                let args = match row_args {
-                    Some(explicit) if !matches!(explicit, lattice_grammar::Args::None) => explicit,
-                    _ => self.transient_args_for(cmd_id, &transient_state),
+                // Which arguments the action runs with, and the rule differs
+                // by whether the command declares a schema.
+                //
+                // **Schema'd** (every native menu): TR.2a's rule, unchanged —
+                // the row's own args win over the menu-state projection,
+                // because they were chosen when the row was built and the
+                // state was not.
+                //
+                // **Schema-less** (a plugin's action): the row's args come
+                // first and the menu's collected fields follow, in row order.
+                // A menu that drills down is BOTH a parameterised row and a
+                // set of fields — org's fields menu carries the template key
+                // on its fire row and collects that template's answers — so
+                // one has to be able to say both. Appending only here keeps
+                // the schema'd path byte-identical.
+                let schemaless = self
+                    .registry
+                    .load()
+                    .lookup(cmd_id)
+                    .is_some_and(|s| s.args_schema.is_empty());
+                let collected = self.transient_args_for(cmd_id, &transient_state, &spec);
+                let args = if schemaless {
+                    merge_row_and_menu_args(row_args, collected)
+                } else {
+                    match row_args {
+                        Some(explicit) if !matches!(explicit, lattice_grammar::Args::None) => {
+                            explicit
+                        }
+                        _ => collected,
+                    }
                 };
                 out.renderer_signals.extend(self.do_picker_dismiss());
                 if let Some(handler) = handler {
@@ -31866,6 +31893,7 @@ impl Editor {
         &self,
         cmd_id: lattice_protocol::ids::CommandId,
         state: &lattice_picker::TransientState,
+        menu: &lattice_picker::TransientSpec,
     ) -> lattice_grammar::Args {
         use lattice_grammar::Args;
 
@@ -31873,7 +31901,19 @@ impl Editor {
         let Some(spec) = registry.lookup(cmd_id) else {
             return Args::None;
         };
-        project_transient_state(&spec.args_schema, state)
+        if !spec.args_schema.is_empty() {
+            return project_transient_state(&spec.args_schema, state);
+        }
+        // TR.3b: no schema, so the MENU's own `Argument` rows are the schema,
+        // in the order they are declared.
+        //
+        // A schema is static — declared when the command registers — and the
+        // fields a plugin menu collects are not: org's `%^{Question}`s come
+        // from an option read at capture time. Projecting through the rows
+        // instead is what makes them expressible, and it is not a lesser
+        // answer: a menu's row order is exactly what "these fields, in this
+        // order" means, and org's own substitution is positional.
+        project_menu_arguments(menu, state)
     }
 
     /// IX.1: spread a confirmed action's arguments across its schema's
@@ -40059,6 +40099,84 @@ pub(crate) fn seed_transient_state(
         state.insert(spec.name.to_string(), carried);
     }
     state
+}
+
+/// TR.3b: project a menu's own `Argument` rows, in declaration order.
+///
+/// The schema-less peer of [`project_transient_state`], for a menu whose
+/// fields are not knowable when the command registers — a plugin's, built from
+/// config at open time. `Args::None` when the menu collects nothing, so a menu
+/// of plain action rows is unchanged.
+fn project_menu_arguments(
+    menu: &lattice_picker::TransientSpec,
+    state: &lattice_picker::TransientState,
+) -> lattice_grammar::Args {
+    use lattice_grammar::{ArgValue, Args};
+
+    let values: Vec<ArgValue> = menu
+        .groups
+        .iter()
+        .flat_map(|g| &g.items)
+        .filter_map(|item| match &item.kind {
+            lattice_picker::TransientItemKind::Argument { name, default, .. } => {
+                Some(match state.get(name) {
+                    Some(lattice_picker::TransientValue::String(s)) => ArgValue::String(s.clone()),
+                    Some(lattice_picker::TransientValue::Bool(b)) => ArgValue::Bool(*b),
+                    // Unanswered: the declared default, else empty. NOT
+                    // skipped — the positions have to line up with the rows,
+                    // or a template's third answer would substitute into its
+                    // second slot.
+                    None => ArgValue::String(default.clone().unwrap_or_default()),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    if values.is_empty() {
+        Args::None
+    } else {
+        Args::List(values)
+    }
+}
+
+/// TR.3b: a fired row's own arguments followed by what the menu collected.
+///
+/// Either alone passes through unchanged, so every native menu behaves exactly
+/// as it did; only a row that carries args in a menu that also collects fields
+/// produces the concatenation.
+fn merge_row_and_menu_args(
+    row: Option<lattice_grammar::Args>,
+    collected: lattice_grammar::Args,
+) -> lattice_grammar::Args {
+    use lattice_grammar::Args;
+
+    let row = row.filter(|a| !matches!(a, Args::None));
+    match (row, collected) {
+        (None, collected) => collected,
+        (Some(row), Args::None) => row,
+        (Some(row), collected) => {
+            let mut values = flatten_args(row);
+            values.extend(flatten_args(collected));
+            Args::List(values)
+        }
+    }
+}
+
+/// Flatten an `Args` into positional values, so two of them can be
+/// concatenated. A `Bytes` payload has no positional reading and is dropped
+/// with a `debug!` rather than silently reinterpreted.
+fn flatten_args(args: lattice_grammar::Args) -> Vec<lattice_grammar::ArgValue> {
+    use lattice_grammar::{ArgValue, Args};
+    match args {
+        Args::None => Vec::new(),
+        Args::String(s) => vec![ArgValue::String(s)],
+        Args::Char(c) => vec![ArgValue::Char(c)],
+        Args::List(items) => items,
+        Args::Bytes(_) => {
+            tracing::debug!("transient: a msgpack `Args::Bytes` has no positional form; dropping");
+            Vec::new()
+        }
+    }
 }
 
 fn project_transient_state(

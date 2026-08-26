@@ -1109,12 +1109,38 @@ interface types {
         args: args,
     }
 
-    /// Mirrors `lattice_picker::TransientItemKind`. v1 crosses two of its six
-    /// variants; `submenu` / `flag` / `argument` / `variable` are deferred
-    /// with reasons in `plugin-transients.md` §5.
+    /// TR.3b: a field the menu collects before anything fires.
+    ///
+    /// Pressing its key PARKS the whole menu, opens a one-line prompt, writes
+    /// the answer into the menu's state under `name`, and puts the menu back —
+    /// `<Esc>` cancels the value with the menu untouched. That mechanism is
+    /// the host's (`PendingTransientArgument` → `resume_parked_transient`) and
+    /// magit's argument rows already use it; this record is only what lets a
+    /// guest declare one.
+    ///
+    /// It is what makes a template's `%^{Question}` expressible: several named
+    /// answers collected before one write, with the menu as the surface
+    /// throughout rather than a run of prompts the user cannot go back into.
+    record transient-argument {
+        /// Key in the menu's state this answer lands under. Also what names
+        /// it when the fired row's command has no `args-schema` — the rows'
+        /// order is then the schema.
+        name: string,
+        /// Pre-filled on first ask; `none` for an empty field. A re-edit
+        /// always seeds with the value already held.
+        default: option<string>,
+        /// The prompt's label.
+        prompt: string,
+    }
+
+    /// Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its
+    /// six variants; `submenu` / `flag` / `variable` are deferred with reasons
+    /// in `plugin-transients.md` §5.
     variant transient-item-kind {
         /// Fires a command and closes the menu.
         action(transient-action),
+        /// Collects a named value into the menu's state (TR.3b).
+        argument(transient-argument),
         /// Closes the menu without firing anything. Free, and a menu with no
         /// `q` is a trap.
         dismiss,

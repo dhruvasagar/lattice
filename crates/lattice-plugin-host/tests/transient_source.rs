@@ -205,6 +205,45 @@ async fn rows_cross_back_with_their_own_args() {
     );
 }
 
+/// TR.3b — an `Argument` row crosses, with its name, prompt and default.
+///
+/// This is what makes a template's `%^{Question}` expressible: the menu
+/// collects several named answers before anything fires, through the host's
+/// own park/resume rather than a mechanism the plugin invents. `source` is
+/// `None` — the picker-backed variant stays deferred, and a free-text prompt
+/// is what a template question is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_argument_row_crosses_with_its_name_prompt_and_default() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: transient fixture guest not built");
+        return;
+    };
+    let host = PluginHost::new().unwrap();
+    let client = client(&host).await;
+    let registry = commands();
+    let spec = build(&client, &registry, &in_org()).await.expect("builds");
+
+    let field = spec.groups[0]
+        .items
+        .iter()
+        .find(|i| i.key.iter().any(|k| k == "w"))
+        .expect("the field row");
+    match &field.kind {
+        TransientItemKind::Argument {
+            name,
+            default,
+            prompt,
+            source,
+        } => {
+            assert_eq!(name, "word", "the state key the answer lands under");
+            assert_eq!(prompt, "Word");
+            assert_eq!(default.as_deref(), Some("chat"));
+            assert!(source.is_none(), "the picker-backed variant stays deferred");
+        }
+        other => panic!("expected an argument row, got {other:?}"),
+    }
+}
+
 /// One bad row costs that row, not the menu. The fixture names a command
 /// nobody registered; the other three must survive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -227,7 +266,7 @@ async fn an_unregistered_command_drops_only_its_row() {
         .collect();
     assert_eq!(
         keys,
-        vec!["t", "n", "q"],
+        vec!["t", "n", "w", "q"],
         "the ghost row is gone and the rest of the menu is intact"
     );
 }

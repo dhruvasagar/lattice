@@ -1,6 +1,6 @@
 # Plugin-contributed transient menus
 
-**Status:** TR.1, TR.2a, TR.2b, TR.3a landed. Extends
+**Status:** TR.1, TR.2a, TR.2b, TR.3a, TR.3b landed. Extends
 [`plugin-host.md`](plugin-host.md)
 (the seam vocabulary). Slice plan:
 [`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md),
@@ -160,21 +160,67 @@ argument is for one open; an identity is for as long as the buffer exists.
 
 ### What crosses, and what does not
 
-`TransientItemKind` has six variants. v1 mirrors **two**:
+`TransientItemKind` has six variants. The seam mirrors **three**:
 
 | Variant | v1 | Why |
 |---|---|---|
-| `Action` | ✅ | The whole point. Crosses as a **command name plus its `args`**, the name resolved to a `CommandId` host-side — a plugin cannot forge an id (§8, the `register_*` rule). The args are the per-row slot TR.2a added; without them a menu whose rows differ only in a parameter is inexpressible. |
+| `Action` | ✅ | The whole point. Crosses as a **command name plus its `args`**, the name resolved to a `CommandId` host-side — a plugin cannot forge an id (§9, the `register_*` rule). The args are the per-row slot TR.2a added; without them a menu whose rows differ only in a parameter is inexpressible. |
 | `Dismiss` | ✅ | Free, and a menu without `q` is a trap. |
 | `Submenu` | 📝 | `Arc<TransientSpec>` is recursive; the WIT mirror needs the same care `Range`'s recursion needed. No consumer yet. |
-| `Flag` / `Argument` | 📝 | Both round-trip `TransientState` through park/resume. A real second seam, not a field. |
+| `Argument` | ✅ (TR.3b) | The field mechanism — see §7. |
+| `Flag` | 📝 | Round-trips `TransientState` like `Argument`, but nothing needs a boolean toggle yet. |
 | `Variable` | 📝 | Prefetched external value + an action that prompts. Wants the config seam more than the transient one. |
 
 `TransientSpec::preview` is a `Box<dyn Fn(&TransientState) -> String>` and
 does **not** cross at all — a closure has no WIT form. A guest spec gets
 `preview: None`. Saying so here rather than discovering it at bindgen.
 
-## 7. Failure behaviour
+## 7. TR.3b — `Argument` rows, and what the fields project into
+
+A menu that only fires things cannot express *"collect three named answers,
+then act"* — which is what a capture template's `%^{Question}`s are, and what
+made org's vocabulary template inexpressible.
+
+Lattice already has the mechanism and magit uses it:
+`PendingTransientArgument` parks the whole menu, a one-line prompt collects the
+value, it lands in `TransientState` under the row's `name`, and
+`resume_parked_transient` puts the menu back — `<Esc>` cancels the value with
+the menu untouched. TR.3b only lets a **guest declare** such a row; none of the
+machinery is new.
+
+**This was chosen over a run of sequential prompts carrying their answers in
+`open-prompt-payload.buffer-name`.** That channel is real and documented, and
+magit's blame / diff / revision modes use it — but for buffer *identity*, not
+for multi-step input. Using it to accumulate answers would have been a second
+spelling of park/resume, with a bespoke codec on top. The visible difference is
+that the menu stays the surface throughout: a form the user can go back into,
+rather than a questionnaire that has already moved on.
+
+### The fields need a schema that does not exist yet
+
+`project_transient_state` maps `TransientState` into an action's arguments
+through the command's **`args_schema`** — which is static, declared when the
+command registers. A plugin's fields are not: org's questions come from an
+option read at capture time, so no schema can name them.
+
+So when the fired command declares **no** schema, the host projects the menu's
+own `Argument` rows, in declaration order. A menu's row order is exactly what
+"these fields, in this order" means, and the substitution it feeds is
+positional. An unanswered field projects its default (or empty) rather than
+being skipped — skipping would slide the third answer into the second slot.
+
+### A row can say two things at once
+
+TR.2a had a row's own args REPLACE the state projection, which was right while
+a menu was *either* parameterised rows *or* fields. A menu that drills down is
+both: org's fields menu carries the template key on its fire row **and**
+collects that template's answers.
+
+So for a schema-less command the row's args come first and the collected fields
+follow. The schema'd path is untouched — every native menu behaves exactly as
+it did, which is the property the tests pin hardest.
+
+## 8. Failure behaviour
 
 A guest `err` from `build` is logged and the menu does not open, with an echo
 naming the plugin — the `picker-source::init` rule, and for the same reason: a
@@ -185,7 +231,7 @@ with a `debug!`, not an error. A plugin whose sixth row references a command
 it failed to register should still get the other five, and the alternative —
 refusing the whole menu — makes one bad row cost the feature.
 
-## 8. Paramount-goal alignment
+## 9. Paramount-goal alignment
 
 **#2 Extensibility.** This is the goal the seam serves: a keyed menu is a
 first-class UI primitive and was reachable only by native crates.

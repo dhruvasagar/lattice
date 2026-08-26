@@ -234,3 +234,185 @@ fn a_row_naming_a_plugin_action_fires_it_with_the_rows_args() {
          cannot fire is a menu that does nothing"
     );
 }
+
+/// TR.3b — a menu whose fired command has NO `args_schema` projects its own
+/// `Argument` rows, in declaration order.
+///
+/// A schema is static, declared when the command registers. The fields a
+/// plugin menu collects are not: org's `%^{Question}`s come from an option read
+/// at capture time, so no schema could name them. The menu's row order is
+/// exactly what "these fields, in this order" means, and org's substitution is
+/// positional anyway.
+#[test]
+fn a_schemaless_command_reads_the_menus_own_argument_rows_in_order() {
+    let (mut editor, cmd_id, seen, _reg) = boot_schemaless();
+
+    let spec = TransientSpec {
+        title: "Vocab".into(),
+        groups: vec![TransientGroup {
+            label: "Fields".into(),
+            items: vec![
+                field("w", "word", "Word"),
+                field("c", "context", "Context"),
+                field("t", "translation", "Translation"),
+                TransientItem {
+                    key: vec!["x".into()],
+                    label: "capture".into(),
+                    description: String::new(),
+                    kind: TransientItemKind::action(cmd_id),
+                },
+            ],
+        }],
+        preview: None,
+        footer: None,
+    };
+    let mut picker = Picker::new("Vocab", PickerSource::Buffers, PickerAction::OpenFile);
+    picker.transient_state = lattice_picker::transient_initial_state(&spec);
+    picker.transient_state.insert(
+        "word".into(),
+        lattice_picker::TransientValue::String("chat".into()),
+    );
+    picker.transient_state.insert(
+        "translation".into(),
+        lattice_picker::TransientValue::String("cat".into()),
+    );
+    picker.transient = Some(Arc::new(spec));
+    editor.picker = Some(picker);
+
+    press(&mut editor, 'x');
+
+    let got = format!("{:?}", seen.lock().unwrap().clone());
+    // Positions line up with the ROWS: the unanswered middle field is an empty
+    // string, not skipped — skipping it would substitute the third answer into
+    // the second slot.
+    assert!(
+        got.contains("chat") && got.contains("cat"),
+        "both answers crossed: {got}"
+    );
+    let word_at = got.find("chat").unwrap();
+    let trans_at = got.find("cat").unwrap();
+    assert!(
+        word_at < trans_at,
+        "and in declaration order, not the state map's: {got}"
+    );
+}
+
+/// The row's own args come FIRST, then the fields — so one row can say both
+/// "this is the template" and "here are its answers". A menu that drills down
+/// is both a parameterised row and a set of fields.
+#[test]
+fn a_rows_args_and_the_menus_fields_both_arrive() {
+    let (mut editor, cmd_id, seen, _reg) = boot_schemaless();
+
+    let spec = TransientSpec {
+        title: "Vocab".into(),
+        groups: vec![TransientGroup {
+            label: "Fields".into(),
+            items: vec![
+                field("w", "word", "Word"),
+                TransientItem {
+                    key: vec!["x".into()],
+                    label: "capture".into(),
+                    description: String::new(),
+                    // The template key the fields menu was opened for.
+                    kind: TransientItemKind::Action {
+                        command: cmd_id,
+                        args: lattice_grammar::Args::String("v".into()),
+                    },
+                },
+            ],
+        }],
+        preview: None,
+        footer: None,
+    };
+    let mut picker = Picker::new("Vocab", PickerSource::Buffers, PickerAction::OpenFile);
+    picker.transient_state = lattice_picker::transient_initial_state(&spec);
+    picker.transient_state.insert(
+        "word".into(),
+        lattice_picker::TransientValue::String("chat".into()),
+    );
+    picker.transient = Some(Arc::new(spec));
+    editor.picker = Some(picker);
+
+    press(&mut editor, 'x');
+
+    let got = seen.lock().unwrap().clone();
+    let lattice_grammar::Args::List(values) = got.expect("the action fired") else {
+        panic!("row args + fields must arrive as a positional list");
+    };
+    assert_eq!(values.len(), 2);
+    assert!(
+        format!("{:?}", values[0]).contains('v'),
+        "the row's own args first: {values:?}"
+    );
+    assert!(
+        format!("{:?}", values[1]).contains("chat"),
+        "then the field: {values:?}"
+    );
+}
+
+/// A menu with no fields is unchanged — every native menu, and the regression
+/// that matters most.
+#[test]
+fn a_menu_with_no_fields_still_passes_the_rows_args_through_alone() {
+    let (mut editor, cmd_id, seen, _reg) = boot_schemaless();
+    seat_keyed_menu(&mut editor, cmd_id);
+    press(&mut editor, 't');
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        Some(lattice_grammar::Args::String("todo".into())),
+        "no fields, so the row's args arrive exactly as before"
+    );
+}
+
+/// An `Argument` row, keyed and labelled.
+fn field(key: &str, name: &str, prompt: &str) -> TransientItem {
+    TransientItem {
+        key: vec![key.to_string()],
+        label: name.to_string(),
+        description: String::new(),
+        kind: TransientItemKind::Argument {
+            name: name.to_string(),
+            default: None,
+            prompt: prompt.to_string(),
+            source: None,
+        },
+    }
+}
+
+/// [`boot`], but the action declares NO `args_schema` — which is what a plugin
+/// grammar action does, and what makes the menu's rows the schema instead.
+fn boot_schemaless() -> (
+    Editor,
+    lattice_protocol::ids::CommandId,
+    Seen,
+    lattice_mode::ActionHandlerRegistration,
+) {
+    let editor = Editor::boot(CoreDocument::from_text("* One\n"));
+    let mut registry = (**editor.registry.load()).clone();
+    registry.register_action(
+        "record-schemaless",
+        "records the args it was dispatched with (test)",
+        lattice_grammar::registry::ActionSpec {
+            args_schema: Vec::new(),
+            apply: Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+        },
+    );
+    let cmd_id = registry.id_by_name("record-schemaless").unwrap();
+    editor.registry.store(Arc::new(registry));
+
+    let seen: Seen = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&seen);
+    let handlers = editor
+        .services
+        .get::<ActionHandlerRegistryHandle>()
+        .unwrap();
+    let reg = (*handlers).register(
+        cmd_id,
+        Arc::new(move |ctx: &lattice_mode::ActionContext| {
+            *sink.lock().unwrap() = Some(ctx.args.clone());
+            None
+        }),
+    );
+    (editor, cmd_id, seen, reg)
+}

@@ -62,7 +62,7 @@ for the one verb meant to work from anywhere.
 | OC.3a | `Effect::OpenPrompt` reaches a plugin's action, with its smuggled state | ✅ |
 | OC.3 | The capture transient, one key per template | ✅ |
 | TR.3a | `Effect::OpenTransient` carries args → `TransientContext::args` | ✅ |
-| TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | 📝 |
+| TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | ✅ |
 | OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | 📝 |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
 | OC.6 | Docs, ledger, site nav | 📝 |
@@ -303,7 +303,7 @@ Tests: the args reach a native builder and cross the WIT boundary into a guest
 the guest could have produced); a plain open carries `Args::None` rather than a
 stale subject.
 
-## TR.3b — `Argument` rows cross the seam 📝
+## TR.3b — `Argument` rows cross the seam ✅
 
 Mirror `TransientItemKind::Argument` over WIT so a plugin menu can collect named
 values through the mechanism lattice already has: `PendingTransientArgument`
@@ -317,12 +317,25 @@ that would have been a second spelling of a mechanism the editor already has.
 revision modes use it for buffer identity; it is the *multi-step input* part
 that was redundant.)
 
-**The open question this slice must answer:** `project_transient_state` maps
+**The schema problem, answered.** `project_transient_state` maps
 `TransientState` into an action's args through the command's **static**
 `args_schema`, and `%^{}` questions come from an option read at capture time.
-Likely answer: when the fired command has no schema, project the menu's own
-`Argument` rows in spec order — the menu's row order IS the schema, and org's
-substitution is positional anyway.
+So when the fired command declares no schema, the host projects the menu's own
+`Argument` rows in declaration order — the row order IS the schema, and org's
+substitution is positional. An unanswered field projects its default rather
+than being skipped, or the third answer would slide into the second slot.
+
+**And a row can now say two things.** TR.2a had a row's args replace the state
+projection; a menu that drills down is both a parameterised row and a set of
+fields, so for a schema-less command the row's args come first and the fields
+follow. The schema'd path is byte-identical, which is what the tests pin
+hardest — every native menu goes through it.
+
+Tests: a schema-less command reads the menu's rows in declaration order (with
+an unanswered middle field holding its position); a row's args and the menu's
+fields both arrive, in that order; a menu with no fields passes the row's args
+through alone; an `Argument` row crosses the WIT boundary with its name, prompt
+and default, `source` deferred.
 
 ## OC.4 — the `%^{Prompt}` fields 📝
 

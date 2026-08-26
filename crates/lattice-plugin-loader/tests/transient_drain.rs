@@ -186,8 +186,10 @@ async fn a_plugin_menu_registers_under_the_name_the_guest_chose() {
         .collect();
     assert_eq!(
         keys,
-        vec!["t", "n", "q"],
-        "the row naming an unregistered command was dropped and the rest kept"
+        vec!["t", "n", "w", "q"],
+        "the row naming an unregistered command was dropped and the rest kept \
+         — including TR.3b's field row, which fires nothing and so has no \
+         command to resolve"
     );
 
     let expected = rig.commands.load().id_by_name(COMMAND).unwrap();

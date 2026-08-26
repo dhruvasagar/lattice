@@ -78,6 +78,16 @@ pub fn spec_from_wit(
                 .filter_map(|item| {
                     let kind = match item.kind {
                         WitItemKind::Dismiss => NativeTransientItemKind::Dismiss,
+                        // TR.3b: a field. `source` is `None` — the
+                        // picker-backed variant (pick the value from a
+                        // registered picker source) stays deferred; a
+                        // free-text prompt is what a template question is.
+                        WitItemKind::Argument(a) => NativeTransientItemKind::Argument {
+                            name: a.name,
+                            default: a.default,
+                            prompt: a.prompt,
+                            source: None,
+                        },
                         WitItemKind::Action(action) => {
                             let Some(command) = commands.id_by_name(&action.command) else {
                                 // `debug!` and not `warn!`: this fires per row

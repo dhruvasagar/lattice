@@ -11,7 +11,8 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-26).
+**Status:** 🚧 in progress (2026-08-26). TR.1 ✅; TR.2 is next and is the
+largest slice — a full seam, mirroring `picker-source` end to end.
 
 ## Why now
 
@@ -38,7 +39,7 @@ for the one verb meant to work from anywhere.
 
 | Slice | Description | Status |
 |---|---|---|
-| TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | 📝 |
+| TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | ✅ |
 | TR.2 | `transient-source` WIT seam + loader drain + teardown | 📝 |
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | 📝 |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | 📝 |
@@ -65,9 +66,19 @@ service it now looks up.
 if magit loaded, so a plugin transient would work or not depending on an
 unrelated feature crate — with nothing at the failure point to explain it.
 
-Test: a booted editor with magit absent still resolves
-`TransientSourceRegistryHandle`, and magit's own menus still build with it
-present.
+Landed with the registration placed **before** `lattice_magit::install`
+rather than beside its picker sibling: magit installs early and now looks the
+service up, so the ordering is load-bearing.
+
+**Nearly shipped with the `ServiceRegistry` TypeId pitfall.** The handle is
+registered as `TransientSourceRegistryHandle` (= `Arc<Registry>`), and a
+lookup of `Registry` keys on a different `TypeId` and silently answers
+`None` — all three tests failed that way on the first run. Register and look
+up with the SAME `T`.
+
+Tests: the service resolves on a booted editor; magit's `magit-dispatch`
+still builds through it; an unregistered name is `None` rather than a panic
+(the property TR.2's guest-supplied names lean on).
 
 ## TR.2 — the `transient-source` seam 📝
 

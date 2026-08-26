@@ -312,7 +312,19 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let menu_scopes = repo_scopes.clone();
     let dispatch_store = menu_store.clone();
     let dispatch_scopes = menu_scopes.clone();
-    let transient_registry = lattice_picker::TransientSourceRegistry::new();
+    // TR.1: the registry is the EDITOR's now (`editor_boot`, beside the picker
+    // registry), not magit's. Magit was its first user and had been its owner
+    // by accident, which made every transient menu conditional on magit having
+    // loaded. Look it up and contribute sources; a missing service means a
+    // harness that wired no picker layer, so degrade to a local registry whose
+    // sources simply go nowhere rather than panicking mid-boot.
+    // Looked up under the HANDLE type, matching how it is registered — the
+    // `ServiceRegistry` keys on `TypeId::of::<T>()`, so registering an
+    // `Arc<X>` as `XHandle` and looking up `X` silently answers `None`.
+    let transient_registry: lattice_picker::TransientSourceRegistryHandle = boot
+        .service::<lattice_picker::TransientSourceRegistryHandle>()
+        .map(|h| (*h).clone())
+        .unwrap_or_else(|| std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()));
     // MG.49: each root menu is reachable BOTH from the dispatch and from
     // its own chord, and both go through `root_menu_spec` — so the menu
     // `C-c g z` nests and the menu `z` opens are the same object, not two
@@ -380,9 +392,6 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     transient_registry.register("magit-view-arguments", move |ctx| {
         transients::view_arguments_transient(&view_args_ids, ctx)
     });
-    boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
-        transient_registry,
-    ));
 }
 
 /// MG.17a: parse a remote operation's flags off the `:` line into the

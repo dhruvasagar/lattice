@@ -175,6 +175,17 @@ impl Document {
         self.path.as_deref().map(PathBuf::as_path)
     }
 
+    /// Adopt a path that is already shared. Does NOT touch the filesystem —
+    /// [`Document::save_as`] is the one that writes.
+    ///
+    /// For a throwaway document assembled around an existing buffer, where the
+    /// path came from the snapshot that buffer was cloned from (the host's
+    /// plugin-action gate, OM.6b). An Arc bump, so it costs the same as not
+    /// carrying the path at all.
+    pub fn set_path_shared(&mut self, path: Arc<PathBuf>) {
+        self.path = Some(path);
+    }
+
     /// The path as a shared handle, for readers that must *carry* it out of
     /// the borrow — a published `DocumentSnapshot`, a grammar dispatch
     /// context. An Arc bump, never an allocation. Prefer [`Document::path`]

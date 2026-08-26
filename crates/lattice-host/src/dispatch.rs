@@ -7160,6 +7160,33 @@ impl Editor {
         }
     }
 
+    /// The file behind the buffer [`Self::active_text`] reads from.
+    ///
+    /// OM.6b: a plugin action's `document` handle answers `path()` from this,
+    /// so it MUST follow the same branch as `active_text` — a guest handed the
+    /// text of one buffer and the path of another would archive a subtree into
+    /// a file it never saw.
+    ///
+    /// `None` for every buffer with no file on disk: a focused popup, a
+    /// terminal, help, and any synthetic document (whose path slot is a name,
+    /// not a location).
+    pub fn active_document_path(&self) -> Option<std::sync::Arc<std::path::PathBuf>> {
+        if self.popup_focused && self.popup_buffer_content().is_some() {
+            return None;
+        }
+        match self.active_buffer {
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            | BufferKind::Dashboard => self.document.snapshot().path.clone(),
+            BufferKind::FileTree | BufferKind::Oil => self
+                .buffers
+                .document_handle(self.active_pane_buffer_id())
+                .and_then(|h| h.snapshot().path.clone()),
+            BufferKind::Terminal | BufferKind::Help => None,
+        }
+    }
+
     /// Cursor of the currently active buffer. Reads
     /// [`Self::cursor`] when the document holds focus, the popup
     /// buffer's cursor (via [`Self::popup_help`]) when a popup
@@ -39110,6 +39137,13 @@ impl Editor {
             // `active_text()` is a wait-free ropey clone, and `execute` only reads
             // it here (the action's edits target the real buffer via `ApplyEdit`).
             let mut doc = lattice_core::Document::from_buffer(self.active_text());
+            // OM.6b: and its path, from the SAME buffer the text came from, so
+            // `document.path()` answers in a plugin action. Without this the
+            // throwaway document reports "unsaved buffer" for every file the
+            // user has open, and `<leader>o$` has no `<file>_archive` to name.
+            if let Some(path) = self.active_document_path() {
+                doc.set_path_shared(path);
+            }
             // TS.1: acquire the active buffer's tree-sitter snapshot AT THE SAME
             // INSTANT as the buffer above (both from the active pane) so the
             // plugin's `tree-snapshot` handle and its `document` handle read the

@@ -634,6 +634,23 @@ buffer with no file answers `none` rather than inventing one. Two
 fixture-count assertions moved with it (`grammar_source.rs`,
 `unload_reload.rs`); a third callback in the fixture is the proof.
 
+**And then it still answered `none` in a real editor.** The seam was
+right and the host was feeding it nothing: the action gate hands a plugin
+a THROWAWAY `Document::from_buffer(active_text())`, built to carry a rope
+clone and nothing else, so it had no path to report. Found only by
+driving the real org guest through a real editor — every host-side test
+passed on the broken version, because they all construct the context
+directly and never go through the gate.
+
+`Editor::active_document_path()` is the fix and the peer of
+`active_text()`: it MUST follow the same branch, or a guest gets the text
+of one buffer and the path of another and files a subtree into a file it
+never read. `None` for a focused popup, a terminal, help, and any
+synthetic document — a name in the path slot is not a location.
+`Document::set_path_shared` puts it on the throwaway document as an Arc
+bump. 3 tests in `lattice-host/tests/active_document_path.rs`, including
+that switching files switches the path *with* the text.
+
 ### OM.7 — `org-todo-mode` ✅ (2026-08-24)
 Second mode. TODO cycling (`<leader>ot` / `oT`), priority
 (`<leader>o,`), tags (`<leader>o:`). Keyword sequence is

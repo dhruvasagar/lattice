@@ -148,6 +148,9 @@ const PLUGIN_MANIFEST: &str = r#"# The plugin manifest the editor discovers. `gr
 # `provides`: the mode's keymap binds the plugin's OWN grammar action by name,
 # resolved at bind time. `default_mode` makes `__MODE__` on by default via the
 # auto-registered `__NAME__.enabled` option (`:set __NAME__.enabled=false` off).
+# A plugin with more than one on-by-default mode uses `default_modes = [...]`
+# instead — one gate, every mode named. A mode that is neither is registered
+# but never activates.
 id = "__NAME__"
 provides = ["grammar", "modes"]
 default_mode = "__MODE__"

@@ -12,7 +12,8 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live and OC.1 is next: the whole remaining plan is org-plugin work.
+seam is live. OC.1a ✅ (a host fix OC.1 turned out to need) and OC.1 ✅; OC.2
+onward is org-plugin work.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -35,6 +36,8 @@ for the one verb meant to work from anywhere.
   ├── TR.1  the transient registry is the editor's, not magit's
   ├── TR.2a a build that can answer later + per-row action args
   └── TR.2b the `transient-source` seam
+  host (generic, no org in it)
+  └── OC.1a `default_modes` — a plugin may have more than one on by default
   org plugin
   ├── OC.1  org-global-mode + the <C-x>o prefix
   ├── OC.2  parse `org.capture-templates`
@@ -49,7 +52,8 @@ for the one verb meant to work from anywhere.
 | TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | ✅ |
 | TR.2a | `TransientBuild` (Ready/Future) + per-row `Action` args | ✅ |
 | TR.2b | `transient-source` WIT seam + loader drain + teardown | ✅ |
-| OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | 📝 |
+| OC.1a | manifest `default_modes` (plural) + one gate for all of them | ✅ |
+| OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | ✅ |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | 📝 |
 | OC.3 | The capture transient, one key per template | 📝 |
 | OC.4 | `%^{Prompt}` chain via `OpenPrompt` + `buffer-name` state | 📝 |
@@ -140,7 +144,32 @@ under the name its own `id()` chose and builds through the registry; unload
 withdraws the name so the chord says "unknown source" rather than reaching a
 dead actor; an unrelated name stays unknown).
 
-## OC.1 — `org-global-mode` and the prefix 📝
+## OC.1a — a plugin may have more than one on-by-default mode ✅
+
+Carved while executing OC.1, because OC.1 does not work without it.
+
+A plugin minor is inert until enabled (`auto_activatable_minors` filters on
+enablement, CI.3) and the only enablement trigger is the manifest's
+`default_mode` — a single string. Org now needs two modes on out of the box:
+`org-todo-mode` inside org files, `org-global-mode` everywhere. Naming one left
+the other registered, correct, and permanently inert. **The symptom is a chord
+that silently does nothing**, with the enablement filter the only place that
+would have explained it, which is why this is a host fix rather than a
+work-around in the plugin.
+
+`default_modes` (plural) in `PluginManifest`; the singular key still parses and
+folds in (blanks dropped, duplicates collapsed — a manifest that says the same
+mode both ways must not request enablement twice). Still ONE `<id>.enabled`
+gate: the user is turning org on or off, not curating its internals, and a
+half-disabled plugin whose remaining chords keep firing is worse than one that
+stayed on.
+
+Tests: the plural key parses, merges with the singular (singular first — it
+names the primary mode), and dedupes (`manifest.rs`); a two-mode plugin gets
+BOTH enabled on load from one gate, registers only that one option, and
+toggling it off reaches both (`mode_gate.rs`).
+
+## OC.1 — `org-global-mode` and the prefix ✅
 
 A minor with `ActivationPolicy::Universal` (the `magit-global-mode`
 precedent) owning `<C-x>o`: `oa` → agenda, `oc` → capture.
@@ -152,8 +181,10 @@ emacs chord is exactly the kind of thing that reads as a bug later.
 Moves capture off org-mode's major keymap, which is what makes it reachable
 from a non-org buffer at all.
 
-Tests: `<C-x>oc` resolves in a plain text buffer (the whole point); `<C-x>o`
-is a prefix, not a terminal binding; the agenda chord still reaches `:agenda`.
+`oa` binds to the HOST's `:agenda` ex-command by name: the agenda view belongs
+to the multibuffer provider and org only supplies its rows through the
+`agenda-source` seam, so the chord names what already exists rather than adding
+an org-side wrapper for it.
 
 ## OC.2 — parse the templates 📝
 

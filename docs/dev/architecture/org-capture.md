@@ -139,6 +139,16 @@ would never be told to clear and the next capture would inherit it.
 Universal because both verbs are global: capture is worthless if it only
 works where org files already are.
 
+**A second on-by-default mode needed a host change (OC.1a).** A plugin minor
+stays inert until it is enabled (`auto_activatable_minors` filters on
+enablement, CI.3), and enablement is triggered by the manifest's `default_mode`
+— which was a single string. Org now has two modes that must be on out of the
+box: `org-todo-mode` inside org files and `org-global-mode` everywhere. Naming
+one left the other registered, correct, and permanently inert, which presents
+as a chord that silently does nothing. `default_modes` (plural) is the fix; the
+singular key still parses and folds in. Still ONE `<id>.enabled` gate, because
+the user is turning org on or off, not curating its internals.
+
 **`<C-x>o` shadows `action:next-pane`** (emacs's `other-window`,
 `emacs_keys_mode.rs`). Chosen deliberately: lattice is vim-first and `<C-w>w`
 is the native pane switch, so the cost falls only on the emacs-keys layer, and

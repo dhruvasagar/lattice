@@ -325,14 +325,22 @@ pub struct PluginManifest {
     /// preferred doc source is the plugin's embedded WIT world doc-comment;
     /// this manifest field is the fallback when a component ships no WIT docs.
     pub doc: Option<String>,
-    /// PM.3: the minor mode this plugin enables by DEFAULT. When set, the loader
-    /// auto-registers a `<id>.enabled` bool option (default true) that gates it —
-    /// on load (and on any change to the option) the manager enables / disables
-    /// this mode via the `ModeEnablementRequested` path. `None` ⇒ the plugin
-    /// contributes a mode the user must enable explicitly (the CI.3
-    /// available-but-off default). The host learns the mode-id ONLY from here —
-    /// the plugin owns it (mode-ownership).
-    pub default_mode: Option<String>,
+    /// PM.3: the minor modes this plugin enables by DEFAULT. When non-empty the
+    /// loader auto-registers a `<id>.enabled` bool option (default true) that
+    /// gates them — on load (and on any change to the option) the manager
+    /// enables / disables each via the `ModeEnablementRequested` path. Empty ⇒
+    /// every mode the plugin contributes must be enabled explicitly (the CI.3
+    /// available-but-off default). The host learns the mode-ids ONLY from here
+    /// — the plugin owns them (mode-ownership).
+    ///
+    /// **OC.1a made this plural.** A plugin with more than one on-by-default
+    /// mode could not express itself: org contributes `org-todo-mode` (org
+    /// files) *and* `org-global-mode` (the universal `<C-x>o` prefix), and
+    /// naming one left the other registered, correct, and permanently inert —
+    /// a chord that silently does nothing, with the enablement filter the only
+    /// place that would have explained it. The singular `default_mode` key is
+    /// still accepted and folds in here; a manifest may use either or both.
+    pub default_modes: Vec<String>,
 }
 
 /// The on-disk manifest shape. Deserialised first, then validated into
@@ -352,9 +360,15 @@ struct RawManifest {
     #[serde(default)]
     doc: Option<String>,
     /// PM.3: the minor mode this plugin enables by default (gated by
-    /// `<id>.enabled`). Absent ⇒ no default mode.
+    /// `<id>.enabled`). Absent ⇒ no default mode. The singular spelling, kept
+    /// because most plugins have exactly one and `default_mode = "x"` reads
+    /// better than a one-element list.
     #[serde(default)]
     default_mode: Option<String>,
+    /// OC.1a: the plural spelling, for a plugin with more than one
+    /// on-by-default mode. Merged with `default_mode`; either key alone works.
+    #[serde(default)]
+    default_modes: Vec<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -433,7 +447,7 @@ impl PluginManifest {
             editor_capabilities,
             provides: Vec::new(),
             doc: None,
-            default_mode: None,
+            default_modes: Vec::new(),
         }
     }
 
@@ -471,7 +485,22 @@ impl PluginManifest {
             editor_capabilities: editor,
             provides,
             doc: raw.doc.filter(|d| !d.trim().is_empty()),
-            default_mode: raw.default_mode.filter(|m| !m.trim().is_empty()),
+            // Singular first so `default_mode` keeps naming the primary mode,
+            // then the list. Blanks dropped and duplicates collapsed: a
+            // manifest that says the same mode both ways must not publish two
+            // enablement requests for it.
+            default_modes: raw
+                .default_mode
+                .into_iter()
+                .chain(raw.default_modes)
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .fold(Vec::new(), |mut acc, m| {
+                    if !acc.contains(&m) {
+                        acc.push(m);
+                    }
+                    acc
+                }),
         })
     }
 }
@@ -503,27 +532,63 @@ mod tests {
     }
 
     /// PM.3: `default_mode` parses (the `<id>.enabled` gate trigger); absent or
-    /// blank → `None`.
+    /// blank → empty.
     #[test]
     fn parses_optional_default_mode() {
         let m = PluginManifest::from_toml_str(
             "id = \"auto-pair\"\ndefault_mode = \"auto-pair-mode\"\n",
         )
         .unwrap();
-        assert_eq!(m.default_mode.as_deref(), Some("auto-pair-mode"));
+        assert_eq!(m.default_modes, vec!["auto-pair-mode".to_string()]);
         assert!(
             PluginManifest::from_toml_str("id = \"x\"\n")
                 .unwrap()
-                .default_mode
-                .is_none()
+                .default_modes
+                .is_empty()
         );
         assert!(
             PluginManifest::from_toml_str("id = \"x\"\ndefault_mode = \" \"\n")
                 .unwrap()
-                .default_mode
-                .is_none(),
-            "blank default_mode normalises to None"
+                .default_modes
+                .is_empty(),
+            "blank default_mode normalises away"
         );
+    }
+
+    /// OC.1a: the plural spelling, and the merge of the two.
+    ///
+    /// The blocker this fixes: a plugin with two on-by-default modes could
+    /// name only one, and the other stayed registered, correct, and inert —
+    /// the chord simply did nothing, with no message anywhere.
+    #[test]
+    fn parses_plural_default_modes_and_merges_them_with_the_singular() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_modes = [\"org-todo-mode\", \"org-global-mode\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.default_modes,
+            vec!["org-todo-mode".to_string(), "org-global-mode".to_string()]
+        );
+
+        // Both keys: the singular stays first (it names the primary mode).
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_mode = \"org-todo-mode\"\n\
+             default_modes = [\"org-global-mode\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.default_modes,
+            vec!["org-todo-mode".to_string(), "org-global-mode".to_string()]
+        );
+
+        // Saying the same mode both ways must not request its enablement
+        // twice, and blanks in the list are dropped like the singular's.
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_mode = \"a\"\ndefault_modes = [\"a\", \" \", \"b\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.default_modes, vec!["a".to_string(), "b".to_string()]);
     }
 
     /// PM.4: the SHIPPED `auto-pair` manifest declares its `default_mode` (+ the
@@ -539,8 +604,8 @@ mod tests {
         let m = PluginManifest::from_toml_str(&text).expect("it parses");
         assert_eq!(m.id, "auto-pair");
         assert_eq!(
-            m.default_mode.as_deref(),
-            Some("auto-pair-mode"),
+            m.default_modes,
+            vec!["auto-pair-mode".to_string()],
             "the shipped manifest enables auto-pair-mode by default"
         );
         assert!(

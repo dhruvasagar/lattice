@@ -160,8 +160,8 @@ struct LoadedRecord {
     /// PM.3: the mode this plugin enables by default (from its manifest), gated by
     /// `<id>.enabled`. Kept so the `OptionChanged` subscription
     /// ([`PluginLoader::subscribe_mode_gates`]) can map a changed `<id>.enabled`
-    /// back to the mode to (de)activate. `None` ⇒ no default mode.
-    default_mode: Option<String>,
+    /// back to the modes to (de)activate. Empty ⇒ no default mode.
+    default_modes: Vec<String>,
     /// PM.8a: where the plugin came from (its `.source` marker at load time).
     source: crate::source_record::SourceRecord,
 }
@@ -646,7 +646,7 @@ impl PluginLoader {
             granted,
             denied,
             health: PluginHealth::Healthy,
-            default_mode: manifest.default_mode.clone(),
+            default_modes: manifest.default_modes.clone(),
             source: plugin.source.clone(),
         };
         // EVERY host id this load issued, in DRAIN order (see the sort below —
@@ -863,7 +863,7 @@ impl PluginLoader {
         // (auto-pair on out of the box), user-overridable via `:set
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
-        self.apply_default_mode_gate(&manifest.id, manifest.default_mode.as_deref());
+        self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
@@ -878,8 +878,10 @@ impl PluginLoader {
     /// `default_mode`, then request the mode's enablement to match the option's
     /// current value. A no-op when the plugin declares no default mode, or when no
     /// config registry / bus is wired.
-    fn apply_default_mode_gate(&self, plugin_id: &str, default_mode: Option<&str>) {
-        let Some(mode) = default_mode else { return };
+    fn apply_default_mode_gate(&self, plugin_id: &str, default_modes: &[String]) {
+        if default_modes.is_empty() {
+            return;
+        }
         let (Some(registry), Some(bus)) =
             (self.env.config_registry.as_ref(), self.env.bus.as_ref())
         else {
@@ -899,10 +901,16 @@ impl PluginLoader {
             .lookup(&option)
             .map(|opt| opt.get_formatted() == "true")
             .unwrap_or(true);
-        bus.publish(lattice_protocol::Event::ModeEnablementRequested {
-            mode: mode.to_string(),
-            enabled,
-        });
+        // One gate, N modes (OC.1a). `<id>.enabled` is the PLUGIN's switch, so
+        // a plugin with two on-by-default modes gets one option rather than
+        // one per mode — the user is turning org on or off, not curating its
+        // internals.
+        for mode in default_modes {
+            bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+                mode: mode.clone(),
+                enabled,
+            });
+        }
     }
 
     /// PM.7/PM.8 follow-up: honour a `require`'s `enable-mode` sugar.
@@ -1033,8 +1041,8 @@ impl PluginLoader {
                     continue;
                 };
                 let Some(loader) = weak.upgrade() else { break };
-                // Map `<id>.enabled` → the loaded plugin's default mode.
-                let mode = {
+                // Map `<id>.enabled` → the loaded plugin's default modes.
+                let modes = {
                     let loaded = loader
                         .loaded
                         .lock()
@@ -1042,9 +1050,10 @@ impl PluginLoader {
                     loaded
                         .iter()
                         .find(|r| r.name == plugin_id)
-                        .and_then(|r| r.default_mode.clone())
+                        .map(|r| r.default_modes.clone())
+                        .unwrap_or_default()
                 };
-                if let Some(mode) = mode {
+                for mode in modes {
                     bus.publish(lattice_protocol::Event::ModeEnablementRequested {
                         mode,
                         enabled: new == "true",

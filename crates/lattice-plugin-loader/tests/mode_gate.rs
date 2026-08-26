@@ -205,3 +205,103 @@ async fn no_default_mode_means_no_gate_option() {
         "no default_mode ⇒ no gate option registered"
     );
 }
+
+/// OC.1a — a plugin with TWO on-by-default modes gets both enabled, from ONE
+/// `<id>.enabled` gate.
+///
+/// The blocker this closes: `default_mode` was a single string, so org — which
+/// contributes `org-todo-mode` for org files *and* a universal `org-global-mode`
+/// for the `<C-x>o` prefix — could name only one. The other registered
+/// correctly, reported the right kind, and never activated, because
+/// `auto_activatable_minors` filters on enablement. The symptom is a chord that
+/// does nothing at all, with no message anywhere to say why.
+///
+/// One gate rather than one per mode: `<id>.enabled` is the plugin's switch,
+/// and the user is turning org on or off, not curating its internals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_default_modes_are_both_enabled_by_the_one_gate() {
+    let Some(wasm) = auto_pair_wasm() else {
+        eprintln!("skipping: auto-pair wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    let dir = plugins_dir.join("auto-pair");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Both spellings at once, which is also the merge under test: the singular
+    // names the primary mode, the list adds the second.
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"auto-pair\"\n\
+         provides = [\"grammar\", \"modes\", \"config\"]\n\
+         editor_capabilities = [\"tree-sitter\"]\n\
+         default_mode = \"auto-pair-mode\"\n\
+         default_modes = [\"auto-pair-global-mode\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+
+    let bus = Arc::new(EventBus::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    bus.subscribe(
+        EventFilter::kind(EventKind::ModeEnablementRequested),
+        SubscriptionTarget::Channel(tx),
+    );
+    let config = Arc::new(ConfigRegistry::default());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
+    let loader = Arc::new(PluginLoader::with_services(
+        host,
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(bus.clone()),
+            command_registry: Some(empty_command_registry()),
+            mode_registry: Some(empty_mode_registry()),
+            config_registry: Some(config.clone()),
+            keymap: Some(KeymapHandle::new()),
+            ..Default::default()
+        },
+    ));
+    loader.subscribe_mode_gates();
+    loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+
+    let mut on = Vec::new();
+    for _ in 0..2 {
+        on.push(next_enablement(&mut rx).await.expect("an enable request"));
+    }
+    assert_eq!(
+        on,
+        vec![
+            ("auto-pair-mode".to_string(), true),
+            ("auto-pair-global-mode".to_string(), true),
+        ],
+        "both modes are enabled on load, singular first"
+    );
+
+    // ONE option, not two — the gate is the plugin's, not the mode's.
+    assert!(config.lookup("auto-pair.enabled").is_some());
+    assert!(config.lookup("auto-pair-global-mode.enabled").is_none());
+
+    // And toggling that one gate off must reach BOTH: a plugin half-disabled
+    // is worse than one that stayed on, because half its chords keep firing.
+    bus.publish(Event::OptionChanged {
+        name: "auto-pair.enabled".to_string(),
+        old: Some("true".to_string()),
+        new: "false".to_string(),
+    });
+    let mut off = Vec::new();
+    for _ in 0..2 {
+        off.push(next_enablement(&mut rx).await.expect("a disable request"));
+    }
+    off.sort();
+    assert_eq!(
+        off,
+        vec![
+            ("auto-pair-global-mode".to_string(), false),
+            ("auto-pair-mode".to_string(), false),
+        ],
+    );
+}

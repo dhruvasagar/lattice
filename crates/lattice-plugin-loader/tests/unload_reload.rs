@@ -244,3 +244,48 @@ async fn unload_unknown_target_is_none_and_reload_errors() {
         "reload of an unknown target errors"
     );
 }
+
+/// **A plugin already loaded is not loaded a second time by a directory scan.**
+///
+/// Boot has two paths into the user plugins root: a `require`d plugin is
+/// staged there and loaded EAGERLY (so `enable_mode` fires against a real
+/// load), and step 2's on-disk scan then walks that same root. Without the
+/// guard the second pass loaded it again — every `require`d plugin registered
+/// its modes, commands and keymaps twice and showed up twice in `:plugins`.
+///
+/// Asserted through `discover_and_load` twice over one directory, which is the
+/// same collision without needing the whole boot sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_does_not_load_a_plugin_that_is_already_loaded() {
+    let Some(grammar) = grammar_wasm() else {
+        eprintln!("SKIP: grammar fixture not built");
+        return;
+    };
+
+    let base = tempfile::tempdir().unwrap();
+    let dir = base.path().join("plugins");
+    write_plugin_dir(&dir, "grammar-fixture", "grammar", &grammar);
+
+    let r = rig(base.path());
+    assert_eq!(
+        r.loader.discover_and_load(&dir, TrustTier::Bundled).await,
+        1,
+        "the first scan loads it"
+    );
+    assert_eq!(
+        r.loader.discover_and_load(&dir, TrustTier::Bundled).await,
+        0,
+        "the second scan loads nothing new"
+    );
+
+    assert_eq!(
+        r.loader.loaded_count(),
+        1,
+        "and it is held exactly once, not twice"
+    );
+    assert_eq!(
+        r.sink.registered.lock().unwrap().len(),
+        1,
+        "one provenance record, so `:plugins` lists it once"
+    );
+}

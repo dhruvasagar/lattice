@@ -567,6 +567,27 @@ impl PluginLoader {
         let discovered = discovery::discover(dir);
         let mut loaded = 0;
         for plugin in discovered {
+            // Already loaded by something else — skip rather than load it a
+            // SECOND time. Boot has two paths into the same directory: a
+            // `require`d plugin is staged into the user root and loaded
+            // eagerly (so `enable_mode` can fire against a real load), and the
+            // on-disk scan then walks that same root. Without this, every
+            // `require`d plugin registered its modes, commands and keymaps
+            // twice and appeared twice in `:plugins`.
+            //
+            // The guard belongs here, on the SCANNING path, rather than in
+            // `load_discovered`: "load everything in this directory" can
+            // always skip what is already in, whereas an explicit
+            // `:plugin-load` is a request the user made and `reload` unloads
+            // before loading again.
+            if self.is_loaded(&plugin.manifest.id) {
+                tracing::debug!(
+                    plugin = %plugin.manifest.id,
+                    dir = %plugin.dir.display(),
+                    "already loaded; not loading it a second time"
+                );
+                continue;
+            }
             match self.load_discovered(&plugin, tier).await {
                 Ok(_) => loaded += 1,
                 Err(err) => tracing::warn!(

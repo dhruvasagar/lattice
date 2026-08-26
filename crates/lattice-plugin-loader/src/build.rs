@@ -275,6 +275,20 @@ pub fn build_plugin(
     }
 }
 
+/// Whether two paths name the same file on disk.
+///
+/// Compared after canonicalisation rather than as strings: the same directory
+/// reached as itself and as `<parent>/<name>` is one directory spelled two
+/// ways, which is precisely the init dir's case. A path that cannot be
+/// canonicalised (the destination does not exist yet — the common staging
+/// case) is not the source, so the copy proceeds.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Turn a build/stage error into the right outcome: keep a previous
 /// artifact when one exists, otherwise report a hard failure.
 fn fail(has_artifact: bool, artifact: PathBuf, error: String, name: &str) -> BuildOutcome {
@@ -308,16 +322,32 @@ fn stage(
 ) -> Result<(), String> {
     let dir = user_root.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    std::fs::copy(produced, artifact)
-        .map_err(|e| format!("stage {} → {}: {e}", produced.display(), artifact.display()))?;
+    if !is_same_file(produced, artifact) {
+        std::fs::copy(produced, artifact)
+            .map_err(|e| format!("stage {} → {}: {e}", produced.display(), artifact.display()))?;
+    }
     // The manifest travels with the artifact: discovery reads both out
     // of the user root, and a staged `.wasm` with no `plugin.toml`
     // beside it is invisible to it.
     let manifest_src = source_dir.join("plugin.toml");
     if manifest_src.is_file() {
         let manifest_dst = dir.join("plugin.toml");
-        std::fs::copy(&manifest_src, &manifest_dst)
-            .map_err(|e| format!("stage manifest → {}: {e}", manifest_dst.display()))?;
+        // **A source that IS its own staging dir must not be copied over.**
+        // `init.rs` is exactly that: `build_init_if_needed` passes
+        // `user_root = <config>/lattice` and `name = "init"`, so
+        // `user_root.join(name)` is the init dir the source lives in, and
+        // `manifest_src == manifest_dst`.
+        //
+        // `fs::copy(p, p)` does not no-op — it opens the destination with
+        // `O_TRUNC` before reading the source, then reports `Ok(0)`. The
+        // manifest is left EMPTY and the build reports success. Next boot the
+        // empty manifest has no `id`, so init.rs fails to load, and because
+        // that failure is a `debug!` the user sees an editor with no config
+        // and no message. Whatever init.rs `require`d never installs either.
+        if !is_same_file(&manifest_src, &manifest_dst) {
+            std::fs::copy(&manifest_src, &manifest_dst)
+                .map_err(|e| format!("stage manifest → {}: {e}", manifest_dst.display()))?;
+        }
     } else {
         return Err(format!(
             "source has no plugin.toml at {}",
@@ -391,6 +421,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// **The init directory's shape: the source IS the staging destination.**
+    ///
+    /// `build_init_if_needed` passes `user_root = <config>/lattice` and
+    /// `name = "init"`, so `user_root.join(name)` is the very directory the
+    /// source lives in. `fs::copy(p, p)` truncates — it opens the destination
+    /// with `O_TRUNC` before reading the source and then reports `Ok(0)` — so
+    /// staging emptied the user's own `plugin.toml` and called it a success.
+    ///
+    /// The cost was invisible and total: next boot the empty manifest has no
+    /// `id`, init.rs fails to load behind a `debug!`, and everything it
+    /// `require`d never installs. Found on a real machine whose
+    /// `~/.config/lattice/init/plugin.toml` was 0 bytes.
+    #[test]
+    fn staging_into_the_source_directory_does_not_empty_the_manifest() {
+        let root = tempdir("selfstage");
+        // The layout `build_init_if_needed` produces.
+        let user_root = root.join("lattice");
+        let init_dir = user_root.join("init");
+        std::fs::create_dir_all(init_dir.join("src")).unwrap();
+        let manifest = "id = \"init\"\nprovides = [\"modes\"]\n";
+        std::fs::write(init_dir.join("plugin.toml"), manifest).unwrap();
+        std::fs::write(init_dir.join("src").join("lib.rs"), "// init").unwrap();
+
+        let builder = FakeBuilder::ok();
+        let outcome = build_plugin(&builder, &init_dir, "init", &user_root, false);
+
+        assert!(
+            matches!(outcome, BuildOutcome::Fresh { .. }),
+            "the build still succeeds: {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(init_dir.join("plugin.toml")).unwrap(),
+            manifest,
+            "the manifest survives staging into its own directory"
+        );
+        assert!(
+            artifact_path(&user_root, "init").is_file(),
+            "and the artifact still lands"
+        );
     }
 
     /// A minimal plugin source: a manifest and one source file.

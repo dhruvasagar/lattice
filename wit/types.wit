@@ -1041,6 +1041,86 @@ interface types {
         registers: list<tuple<string, string>>,
     }
 
+    // ---- The transient seam (TR.2b, plugin-transients.md §5) ----
+    // A transient is a keyed menu: one keystroke per row, fires and closes.
+    // The mechanism is the picker's; these are the owned mirrors a plugin
+    // authors a menu against.
+
+    /// Mirrors `lattice_picker::TransientContext` — where the menu was opened
+    /// from, so a builder can vary its rows. Host→guest only (a `project_*`
+    /// fn, the `picker-context` precedent); the guest never sends one back.
+    ///
+    /// Deliberately NOT the cursor or the selection: a builder produces rows,
+    /// it does not act. Each row's action receives its own `ActionContext` at
+    /// FIRE time, when those are current.
+    record transient-context {
+        /// The active major's id, if the buffer has one. Emacs magit's
+        /// `:if-mode` question.
+        major-mode: option<string>,
+        /// The active minor ids — the looser `:if-derived` family test. A
+        /// separate field from `major-mode` on purpose: a flat list of active
+        /// mode ids can only answer one of the two questions.
+        minor-modes: list<string>,
+        /// The buffer the menu was opened over. `none` mid-boot, where a
+        /// builder degrades exactly as it does for the mode fields.
+        buffer: option<u32>,
+    }
+
+    /// An action row's target: a command **name** plus the arguments this
+    /// particular row fires it with.
+    ///
+    /// A name, not an id, because a `CommandId` is host-issued and a plugin
+    /// must not be able to forge one — the host resolves the name against the
+    /// `CommandRegistry` at build time, and an unresolvable name drops that
+    /// row rather than failing the menu.
+    ///
+    /// The args are per-ROW, which is the whole reason the slot exists: the
+    /// menu-wide `TransientState` projection cannot distinguish rows that
+    /// differ only in a parameter, and that is the shape a plugin menu has
+    /// (one row per capture template). `args::none` for a row that wants the
+    /// state projection instead, which is what every native row does.
+    record transient-action {
+        command: string,
+        args: args,
+    }
+
+    /// Mirrors `lattice_picker::TransientItemKind`. v1 crosses two of its six
+    /// variants; `submenu` / `flag` / `argument` / `variable` are deferred
+    /// with reasons in `plugin-transients.md` §5.
+    variant transient-item-kind {
+        /// Fires a command and closes the menu.
+        action(transient-action),
+        /// Closes the menu without firing anything. Free, and a menu with no
+        /// `q` is a trap.
+        dismiss,
+    }
+
+    /// One row. `key` is a list of STRINGS, not chars: magit binds multi-key
+    /// rows (`, k`, `= f`) and the resolver walks them one keystroke at a
+    /// time, so a plugin gets the same expressiveness.
+    record transient-item {
+        key: list<string>,
+        label: string,
+        description: string,
+        kind: transient-item-kind,
+    }
+
+    /// A named group of rows — one header, its items, one separator.
+    record transient-group {
+        label: string,
+        items: list<transient-item>,
+    }
+
+    /// Mirrors `lattice_picker::TransientSpec`, minus `preview`: that is a
+    /// `Box<dyn Fn(&TransientState) -> String>` and a closure has no WIT
+    /// form, so a guest-built menu has no live preview pane. Stated here
+    /// rather than discovered at bindgen.
+    record transient-spec {
+        title: string,
+        groups: list<transient-group>,
+        footer: option<string>,
+    }
+
     // ---- The grammar-extension seam (PH7.7, §4.1) ----
     // Mirrors the data types a plugin authors against when it EXTENDS the vim
     // grammar via `register_{motion,operator,text_object,ex_command,action}`.

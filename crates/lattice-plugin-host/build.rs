@@ -72,6 +72,13 @@ fn main() {
         "theme-guest",
         "THEME_GUEST_WASM",
     );
+    // TR.2b: the keyed-menu fixture. Builds its rows from the passed `ctx`, so
+    // it exercises the live-guest half of the seam rather than a static menu.
+    build_guest(
+        &fixtures.join("transient-guest"),
+        "transient-guest",
+        "TRANSIENT_GUEST_WASM",
+    );
     // CR.3: the help topic-registration fixture. Its markdown is
     // `include_str!`'d into the component, which is the seam's premise.
     build_guest(

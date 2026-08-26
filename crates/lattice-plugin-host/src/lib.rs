@@ -106,6 +106,11 @@ pub mod picker_source;
 pub mod picker_task;
 pub mod plugin_manager_host;
 pub mod teardown;
+// TR.2b — the `transient-source` guest→host keyed-menu seam. Trio mirroring
+// `picker_*`: the bindgen world, the actor bridge, the registry-builder adapter.
+pub mod transient_host;
+pub mod transient_source;
+pub mod transient_task;
 // TC.4 — the `theme` element-registration seam. Guest imports `register-element`
 // and the host inserts into the SAME registry builtins live in.
 pub mod theme_host;
@@ -131,6 +136,8 @@ pub use trace::{
     Direction, HotGate, PluginTracePushed, PluginTraceRecord, PluginTracer, PluginTracerHandle,
     TraceLevel, TraceOutcome,
 };
+pub use transient_source::{project_transient_context, spec_from_wit, transient_builder};
+pub use transient_task::{TransientActor, TransientClient};
 /// The compiled component — the return type of [`PluginHost::compile`],
 /// re-exported so callers (the plugin loader) can name it without a direct
 /// `wasmtime` dependency.

@@ -58,6 +58,13 @@ world plugin {
 	use types.{routing-payload, open-target};
 	use types.{picker-context, active-buffer-snapshot, buffer-entry, position-entry, position-source};
 
+	/// The transient seam types (TR.2b, `plugin-transients.md` §5): the keyed
+	/// menu a plugin contributes + the owned `transient-context` projection it
+	/// is built for. `transient-group` / `transient-item` /
+	/// `transient-item-kind` / `transient-action` are transitively referenced
+	/// by `transient-spec`, so they surface without a world-level `use`.
+	use types.{transient-spec, transient-context};
+
 	/// The event/hook seam types (PH7.8a, §5 `events`): the owned `event` variant
 	/// delivered to the guest `on-event` export + the `event-filter` a plugin
 	/// subscribes with. Transitively-referenced payload records

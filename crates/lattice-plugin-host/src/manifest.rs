@@ -170,6 +170,11 @@ pub enum PluginSeam {
     /// file extensions it wants offered, which is what keeps a filetype out
     /// of the host's walk.
     AgendaSource,
+    /// TR.2b — a plugin-contributed transient menu (`transient-source-plugin`
+    /// world). Async and live: `id()` is called once at load to key the
+    /// registry entry, `build(ctx)` per menu open, because a builder's rows
+    /// depend on where the user opened it from.
+    TransientSource,
     /// LG.3c — a plugin-contributed language (`language-plugin` world). Data,
     /// like `help`: the grammar bytes and query sources cross once at load and
     /// the guest is dropped. The host compiles the grammar (~100 ms) and owns
@@ -228,7 +233,12 @@ impl PluginSeam {
             | PluginSeam::ErrorParser
             | PluginSeam::AgendaSource
             | PluginSeam::Help
-            | PluginSeam::Dashboard => 5,
+            | PluginSeam::Dashboard
+            // TR.2b: a menu's rows name commands, and the resolution happens
+            // per OPEN rather than at registration — so this seam has no
+            // ordering dependency on `grammar` the way `modes` does. Rank 5
+            // with the other producers.
+            | PluginSeam::TransientSource => 5,
         }
     }
 
@@ -250,6 +260,7 @@ impl PluginSeam {
             PluginSeam::PluginManager => "plugin-manager",
             PluginSeam::ErrorParser => "error-parser",
             PluginSeam::AgendaSource => "agenda-source",
+            PluginSeam::TransientSource => "transient-source",
             PluginSeam::Help => "help",
             PluginSeam::Dashboard => "dashboard",
             PluginSeam::Language => "language",
@@ -283,6 +294,7 @@ impl FromStr for PluginSeam {
             "plugin-manager" => PluginSeam::PluginManager,
             "error-parser" => PluginSeam::ErrorParser,
             "agenda-source" => PluginSeam::AgendaSource,
+            "transient-source" => PluginSeam::TransientSource,
             "help" => PluginSeam::Help,
             "dashboard" => PluginSeam::Dashboard,
             "language" => PluginSeam::Language,
@@ -648,6 +660,19 @@ mod tests {
             PluginSeam::Media,
             PluginSeam::Keymap,
             PluginSeam::Logging,
+            // The list had drifted behind the enum — it named eleven of the
+            // eighteen while claiming every variant, so seven seams' wire
+            // words were unpinned. Completed while adding `transient-source`
+            // rather than adding a twelfth to a list that lies.
+            PluginSeam::Context,
+            PluginSeam::Theme,
+            PluginSeam::PluginManager,
+            PluginSeam::ErrorParser,
+            PluginSeam::Help,
+            PluginSeam::Dashboard,
+            PluginSeam::AgendaSource,
+            PluginSeam::Language,
+            PluginSeam::TransientSource,
         ] {
             assert_eq!(PluginSeam::from_str(seam.as_str()), Ok(seam));
         }

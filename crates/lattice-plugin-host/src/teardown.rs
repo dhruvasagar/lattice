@@ -103,6 +103,16 @@ pub struct PluginTeardown {
     /// [`ContextSourceRegistry`] — each reversed via
     /// `ContextSourceRegistry::unregister`. Mirrors `decoration_sources`.
     pub context_sources: Vec<u64>,
+    /// TR.2b: transient-menu names the plugin registered. Reversed by the
+    /// LOADER, not by [`unload`](Self::unload) — the registry is
+    /// `Arc`-shared rather than one of the `&mut` snapshots
+    /// [`TeardownRegistries`] carries, and it is the same placement
+    /// `help_topics` / `dashboard_sections` use for the same reason.
+    ///
+    /// Leaving a name registered after unload is not cosmetic: the entry holds
+    /// a `TransientClient` whose actor has ended, so the chord would report a
+    /// host error instead of "unknown source".
+    pub transient_sources: Vec<String>,
     /// TC.4: namespaced theme-element names the plugin registered. Reversed by
     /// `ThemeRegistry::unregister_element` so an unloaded plugin's elements stop
     /// appearing in `:customize` and stop resolving.
@@ -125,6 +135,7 @@ impl PluginTeardown {
             media_sources: Vec::new(),
             agenda_sources: Vec::new(),
             context_sources: Vec::new(),
+            transient_sources: Vec::new(),
             theme_elements: Vec::new(),
         }
     }
@@ -315,6 +326,11 @@ pub struct TeardownReport {
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
     pub theme_elements: usize,
+    /// TR.2b: transient menus unregistered.
+    ///
+    /// Filled by the LOADER, like `help_topics` — see the field's doc on
+    /// [`PluginTeardown`].
+    pub transient_sources: usize,
     /// CM.6b: compilation parser factories unregistered.
     pub parser_factories: usize,
     /// CR.4: dashboard sections unregistered. Filled by the loader, for the
@@ -470,6 +486,7 @@ mod tests {
                 context_sources: 0,
                 theme_elements: 0,
                 parser_factories: 0,
+                transient_sources: 0,
                 // CR.3 / CR.4 / LG.3c: always 0 from `unload` — the loader
                 // fills these after reversing the help, dashboard and
                 // language registries, which live on its side of the crate

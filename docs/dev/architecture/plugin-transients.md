@@ -1,6 +1,6 @@
 # Plugin-contributed transient menus
 
-**Status:** TR.1 + TR.2a landed; TR.2b (the WIT seam) in progress. Extends
+**Status:** TR.1, TR.2a, TR.2b landed — the seam is live. Extends
 [`plugin-host.md`](plugin-host.md)
 (the seam vocabulary). Slice plan:
 [`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md),

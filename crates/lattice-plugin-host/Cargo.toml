@@ -132,6 +132,10 @@ tracing = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+# TR.2b: the transient boundary tests build a `CommandRegistryHandle` (an
+# `Arc<ArcSwap<CommandRegistry>>`) to resolve row command names against.
+# Dev-only — the lib takes the handle from its caller and never constructs one.
+arc-swap = { workspace = true }
 # Assembles the hand-written lifecycle components (no-op / busy / spin) from
 # WebAssembly Text to component bytes inside the tests -- no wasm32-wasip2
 # target or separate guest build for the scaffold.

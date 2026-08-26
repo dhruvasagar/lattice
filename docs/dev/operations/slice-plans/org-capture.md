@@ -11,8 +11,8 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅; TR.2b is the
-WIT seam itself, mirroring `picker-source` end to end.
+**Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
+seam is live and OC.1 is next: the whole remaining plan is org-plugin work.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -48,7 +48,7 @@ for the one verb meant to work from anywhere.
 |---|---|---|
 | TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | ✅ |
 | TR.2a | `TransientBuild` (Ready/Future) + per-row `Action` args | ✅ |
-| TR.2b | `transient-source` WIT seam + loader drain + teardown | 📝 |
+| TR.2b | `transient-source` WIT seam + loader drain + teardown | ✅ |
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | 📝 |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | 📝 |
 | OC.3 | The capture transient, one key per template | 📝 |
@@ -114,22 +114,31 @@ same call); each row fires with its own args while an args-less row still reads
 the menu state, both driven through `press`
 (`transient_row_carries_its_own_args.rs`).
 
-## TR.2b — the `transient-source` seam 📝
+## TR.2b — the `transient-source` seam ✅
 
 Mirrors `picker-source`: guest exports `id()` + `build(ctx) -> result<spec>`;
-the host wraps the export as a registry builder and registers it under the
-guest's id. Loader gains a `PluginSeam::TransientSource` drain and its
-teardown counterpart.
+the host wraps the exports as a `register_async` builder and registers it under
+the guest's id. `PluginSeam::TransientSource`, `spawn_transient_source` +
+`TransientActor`/`TransientClient`, the boundary conversion, the loader's
+`drain_transient`, and the loader-side teardown reversal (the registry is
+`Arc`-shared, so it sits beside `help_topics`, not in `TeardownRegistries`).
 
-v1 mirrors `Action` (crossing as a **command name**, resolved host-side — a
-plugin cannot forge a `CommandId`) and `Dismiss`. `Submenu` / `Flag` /
-`Argument` / `Variable` are 📝 with reasons in the design fragment;
-`TransientSpec::preview` is a closure and cannot cross at all.
+v1 mirrors `Action` (crossing as a command **name plus its args**, the name
+resolved host-side — a plugin cannot forge a `CommandId`) and `Dismiss`.
+`Submenu` / `Flag` / `Argument` / `Variable` are 📝 with reasons in the design
+fragment; `TransientSpec::preview` is a closure and cannot cross at all.
 
-Tests: a fixture guest contributes a two-row menu that opens and fires; a
-guest `err` from `build` leaves the menu closed with an echo naming the
-plugin; an `Action` naming an unresolvable command drops that row and keeps
-the rest.
+Also completed the `plugin_seam_as_str_round_trips_from_str_for_every_variant`
+list, which had drifted to eleven of eighteen while claiming all of them.
+
+Tests: `transient-guest` fixture + `plugin-host/tests/transient_source.rs`
+(5 — the guest names its menu; the context projection crosses IN and rebuilds
+per open; two rows fire ONE command with different args; an unregistered
+command drops only its row; a guest `err` is typed and does not quarantine) and
+`plugin-loader/tests/transient_drain.rs` (3 — a discovered plugin registers
+under the name its own `id()` chose and builds through the registry; unload
+withdraws the name so the chord says "unknown source" rather than reaching a
+dead actor; an unrelated name stays unknown).
 
 ## OC.1 — `org-global-mode` and the prefix 📝
 

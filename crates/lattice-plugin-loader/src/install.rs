@@ -178,6 +178,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         dashboard_sections: boot
             .service::<lattice_dashboard::DashboardRegistryHandle>()
             .map(|h| (*h).clone()),
+        // TR.2b: registered by `editor_boot` in Phase A (TR.1 moved it there
+        // from magit precisely so it is present regardless of which feature
+        // crates loaded), so it is available well before this line.
+        transient_registry: boot
+            .service::<lattice_picker::TransientSourceRegistryHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

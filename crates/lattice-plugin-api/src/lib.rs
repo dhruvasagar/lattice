@@ -159,6 +159,11 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     // `None` would contradict the decision that WIT already records.
     ("project", Capability::Fs),
     ("theme", Capability::None),
+    // TR.2b. `None`: a keyed menu is pure data in both directions — the host
+    // projects where the menu was opened from, the guest answers rows naming
+    // commands. The guest touches no filesystem, no network, and cannot forge
+    // a `CommandId` (names are resolved host-side).
+    ("transient-source", Capability::None),
     ("tree-sitter", Capability::None),
     ("types", Capability::None),
     ("ui", Capability::None),

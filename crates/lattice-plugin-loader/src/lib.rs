@@ -288,6 +288,12 @@ pub struct LoaderServices {
     /// RCU-register into. Shadowing rather than overwriting (CR.2), so a
     /// plugin replacing a builtin section is reversed by unload.
     pub dashboard_sections: Option<lattice_dashboard::DashboardRegistryHandle>,
+    /// TR.2b: the transient-menu registry a `transient-source` plugin's menu
+    /// registers into — the SAME one magit's menus live in, so a plugin menu
+    /// opens through `Effect::OpenTransient` like any other. Owned by
+    /// `editor_boot` since TR.1, which is what stops a plugin menu depending
+    /// on whether magit happened to load.
+    pub transient_registry: Option<lattice_picker::TransientSourceRegistryHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -328,6 +334,8 @@ pub struct WiredSeams {
     pub media_registry: bool,
     /// OM.A1: the agenda-row producer registry.
     pub agenda_registry: bool,
+    /// TR.2b: the transient-menu registry.
+    pub transient_registry: bool,
 }
 
 impl WiredSeams {
@@ -349,6 +357,7 @@ impl WiredSeams {
             && self.parser_factories
             && self.help_topics
             && self.dashboard_sections
+            && self.transient_registry
     }
 }
 
@@ -547,6 +556,7 @@ impl PluginLoader {
             dashboard_sections: self.env.dashboard_sections.is_some(),
             media_registry: self.env.media_registry.is_some(),
             agenda_registry: self.env.agenda_registry.is_some(),
+            transient_registry: self.env.transient_registry.is_some(),
         }
     }
 
@@ -771,6 +781,15 @@ impl PluginLoader {
                     PluginSeam::AgendaSource => {
                         let id = self
                             .drain_agenda(&component, manifest, tier, &mut record)
+                            .await?;
+                        seam_ids.push(id);
+                    }
+                    // TR.2b: a keyed menu. Live, like `dashboard` — a menu's
+                    // rows depend on where it was opened from, so the guest
+                    // stays instantiated and `build` is called per open.
+                    PluginSeam::TransientSource => {
+                        let id = self
+                            .drain_transient(&component, manifest, tier, &mut record)
                             .await?;
                         seam_ids.push(id);
                     }
@@ -1408,6 +1427,19 @@ impl PluginLoader {
                 Arc::new(next)
             });
         }
+        // TR.2b: same placement and reasoning as `help` above — the registry is
+        // `Arc`-shared with interior mutability rather than one of the `&mut`
+        // snapshots below, and leaving a name registered would be worse than
+        // stale docs: the entry holds a client whose actor has ended, so the
+        // chord would report a host error rather than "unknown source".
+        let mut transient_sources_removed = 0;
+        if let Some(tr_h) = self.env.transient_registry.as_ref() {
+            for name in &teardown.transient_sources {
+                if tr_h.unregister(name) {
+                    transient_sources_removed += 1;
+                }
+            }
+        }
         let (
             Some(cmd_h),
             Some(pick_h),
@@ -1439,6 +1471,7 @@ impl PluginLoader {
                 help_topics: help_topics_removed,
                 dashboard_sections: dashboard_sections_removed,
                 languages: languages_removed,
+                transient_sources: transient_sources_removed,
                 ..TeardownReport::default()
             };
         };
@@ -1501,6 +1534,7 @@ impl PluginLoader {
         ctx_h.store(Arc::new(contexts));
         let mut report = report;
         report.help_topics = help_topics_removed;
+        report.transient_sources = transient_sources_removed;
         report.languages = languages_removed;
         report.dashboard_sections = dashboard_sections_removed;
         report
@@ -1568,6 +1602,101 @@ impl PluginLoader {
         // Teardown token: the picker registry unregisters this source by id.
         record.teardown.picker_sources.push(source_id);
         Ok(id)
+    }
+
+    /// TR.2b — drain the transient seam: spawn the menu actor, ask the guest for
+    /// the name it registers under, and install a `register_async` builder into
+    /// the editor's `TransientSourceRegistry`. Records the actor task + the
+    /// menu name on `record` for teardown.
+    ///
+    /// The `id()` call happens ONCE, here, because it keys the registry entry
+    /// and cannot change. `build` is called per open — that is the point of the
+    /// seam, and it is what makes a plugin menu context-aware the way magit's
+    /// dispatch is.
+    async fn drain_transient(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("transient-source"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("transient-source"))?;
+        let registry = self
+            .env
+            .transient_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("transient-source"))?;
+        // The builder resolves each row's command NAME at build time, so it
+        // needs the live registry rather than a snapshot taken here — a menu
+        // opened later must see commands registered later.
+        let commands = self
+            .env
+            .command_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("transient-source"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_transient_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+
+        // Drive the actor's request loop FIRST — `menu_id()` below is a guest
+        // call over the client channel, which the actor must be running to
+        // answer (else the await deadlocks). Same ordering as `drain_picker`.
+        let actor = actor.with_tracer(self.env.tracer.clone());
+        let id = client.id();
+        let task = runtime.spawn(actor.run());
+
+        // A menu with no name has nothing to register under, so a failed or
+        // blank `id()` fails the drain loudly rather than registering an
+        // unreachable menu.
+        let name = self.host_transient_name(&client, &manifest.id).await?;
+
+        registry.register_async(
+            name.clone(),
+            lattice_plugin_host::transient_builder(
+                client,
+                (*commands).clone(),
+                manifest.id.clone(),
+            ),
+        );
+
+        record.tasks.push(task);
+        record.teardown.transient_sources.push(name.clone());
+        tracing::debug!(
+            plugin = %manifest.id,
+            menu = %name,
+            "transient plugin registered its menu"
+        );
+        Ok(id)
+    }
+
+    /// Ask a transient guest for its menu name, rejecting a blank one.
+    ///
+    /// Split out so the failure reads as one sentence at the call site: a blank
+    /// name would register a menu `Effect::OpenTransient` could never address,
+    /// which is a plugin that loads "successfully" and contributes nothing.
+    async fn host_transient_name(
+        &self,
+        client: &lattice_plugin_host::TransientClient,
+        plugin: &str,
+    ) -> Result<String, PluginLoaderError> {
+        let name = client.menu_id().await?;
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            tracing::warn!(plugin, "transient plugin returned a blank menu name");
+            return Err(PluginLoaderError::NotWired("transient-source"));
+        }
+        Ok(trimmed.to_string())
     }
 
     /// Drain the config seam: run the guest's `register-options` against the live

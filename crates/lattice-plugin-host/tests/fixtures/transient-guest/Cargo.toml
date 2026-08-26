@@ -1,0 +1,27 @@
+# TR.2b transient fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `transient-source-plugin` world. It names one menu and
+# builds rows that ECHO the open context back, so the host test can prove the
+# projection crossed; a context whose major mode is `broken-mode` returns the
+# WIT typed `err`, so the menu-does-not-open path is exercised against a real
+# guest rather than a mock. Built to a component by the host crate's build.rs
+# and loaded by `tests/transient_source.rs`. Standalone workspace
+# (`[workspace]` below) so it is NOT part of the parent workspace — it targets
+# wasm32-wasip2 and must not inherit the host toolchain's lints/target.
+# Mirrors the sibling `agenda-guest` fixture's setup exactly.
+[package]
+name = "transient-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

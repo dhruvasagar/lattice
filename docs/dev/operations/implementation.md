@@ -6590,6 +6590,44 @@ Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md)
 
 ---
 
+## Plugin-contributed transient menus (2026-08-26)
+
+| Slice | What | Status |
+|---|---|---|
+| TR.1 | `TransientSourceRegistry` service registered by `editor_boot` | ✅ |
+| TR.2a | `TransientBuild::{Ready, Future}` + per-row `Action` args | ✅ |
+| TR.2b | the `transient-source` WIT seam + loader drain + teardown | ✅ |
+
+A transient is a keyed menu — one keystroke per row, fires and closes. The
+mechanism is `lattice-picker`'s and magit was its only *user*; a plugin could
+open magit's menus and none of its own, so org's capture menu (one row per
+template) was inexpressible.
+
+**The registry existed only if magit was installed.** `lattice-magit::install`
+constructed it and registered the service, so a plugin menu would have worked
+or not depending on whether an unrelated feature crate happened to load — a
+dependency nothing declared and nothing would have named at the point of
+failure. TR.1 moved the pair to `editor_boot`.
+
+**Two things had to change before a guest could answer at all.** The registry
+stored a synchronous builder, which is right for a native menu and impossible
+for a guest one (`build` is an async call on the plugin's own actor task).
+Builders now return `TransientBuild::{Ready, Future}`, the host parks a future
+in `Editor::pending_transient_build`, and it seats on the **async-landed wake**
+rather than the next keystroke. And `TransientItemKind::Action` gained an `args`
+slot: the menu's `TransientState` projection is per-MENU, so a menu whose rows
+differ only in a parameter had no expression — which is the shape every plugin
+menu has.
+
+Both renderer peers' `Effect::OpenTransient` bodies collapsed onto
+`Editor::open_named_transient` on the way, so the async path exists once.
+
+Design: [`../architecture/plugin-transients.md`](../architecture/plugin-transients.md).
+Slice plan: [`slice-plans/org-capture.md`](slice-plans/org-capture.md), which
+sequences it with the org capture overhaul that motivated it.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

@@ -223,6 +223,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(TransientClient, TransientActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -239,6 +240,16 @@ impl PluginHost {
                 .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // A menu builder reads its OWN options — org's capture menu IS
+        // `org.capture-templates` rendered as rows. Without the registry on
+        // this store every `get-option` returns `None` and the guest falls
+        // back to its compiled default, so the menu builds from nothing and
+        // says the option is unset while `:set …?` reports a value. The
+        // `context` seam wires this for exactly the same reason; a seam that
+        // runs in its own store needs it too.
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
         let (tx, rx) = mpsc::unbounded();
         let client = TransientClient { tx, id };
         let actor = TransientActor {

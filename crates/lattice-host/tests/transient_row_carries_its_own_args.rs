@@ -187,3 +187,50 @@ fn a_row_without_args_still_reads_the_menu_state() {
          projection, got: {got:?}"
     );
 }
+
+/// OC.3 — a row naming a PLUGIN's action fires it.
+///
+/// `TransientItemKind::Action` fired through the `ActionHandlerRegistry` only,
+/// which native modes register into and the plugin seams do not: a plugin's
+/// grammar action lives in the `CommandRegistry` with an `apply` closure. So a
+/// plugin could BUILD a menu through the TR.2b seam whose rows could never
+/// fire — the menu opened, the key resolved, and nothing happened.
+///
+/// It survived because the seam's own tests convert a spec and never fire a row
+/// through the editor. Same shape as OC.3a's hole on the prompt path, found the
+/// same way: by driving the whole chain instead of its pieces.
+#[test]
+fn a_row_naming_a_plugin_action_fires_it_with_the_rows_args() {
+    let editor = Editor::boot(CoreDocument::from_text("* One\n"));
+
+    // A GRAMMAR action — `CommandRegistry` + `apply`, deliberately with NO
+    // `ActionHandlerRegistry` entry, which is exactly what the plugin host's
+    // grammar seam produces.
+    let seen: Seen = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&seen);
+    let mut registry = (**editor.registry.load()).clone();
+    registry.register_action(
+        "org-capture",
+        "plugin action (test)",
+        lattice_grammar::registry::ActionSpec {
+            args_schema: Vec::new(),
+            apply: Arc::new(move |ctx: &lattice_grammar::registry::ActionContext| {
+                *sink.lock().unwrap() = Some(ctx.args.clone());
+                Ok(lattice_grammar::Effect::None)
+            }),
+        },
+    );
+    let cmd_id = registry.id_by_name("org-capture").unwrap();
+    editor.registry.store(Arc::new(registry));
+
+    let mut editor = editor;
+    seat_keyed_menu(&mut editor, cmd_id);
+    press(&mut editor, 'n');
+
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        Some(lattice_grammar::Args::String("note".into())),
+        "the plugin's action ran, with the row's own args — a menu whose rows \
+         cannot fire is a menu that does nothing"
+    );
+}

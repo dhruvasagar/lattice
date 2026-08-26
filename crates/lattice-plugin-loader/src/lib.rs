@@ -1655,7 +1655,14 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_transient_source(component, manifest, tier, PluginBudget::default(), bus)
+            .spawn_transient_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
             .await?;
 
         // Drive the actor's request loop FIRST — `menu_id()` below is a guest

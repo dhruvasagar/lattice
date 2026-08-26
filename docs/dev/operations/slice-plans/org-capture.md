@@ -12,10 +12,9 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live. OC.1a ✅ (a host fix OC.1 turned out to need), OC.1 ✅, OC.2 ✅.
-**OC.3 is next** and is what makes a multi-template set usable at all: today a
-set with more than one template echoes the keys that exist and captures
-nothing.
+seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅ — a multi-template
+set is usable end to end: `<leader>oc` opens a menu, the key picks the
+template, the prompt files the note. **OC.4 is next** (`%^{Prompt}`).
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -59,7 +58,7 @@ for the one verb meant to work from anywhere.
 | OC.1 | `org-global-mode` (Universal) owning `<C-x>o` / `oa` / `oc` | ✅ |
 | OC.2 | Parse `org.capture-templates` (TOML-in-an-option) | ✅ |
 | OC.3a | `Effect::OpenPrompt` reaches a plugin's action, with its smuggled state | ✅ |
-| OC.3 | The capture transient, one key per template | 📝 |
+| OC.3 | The capture transient, one key per template | ✅ |
 | OC.4 | `%^{Prompt}` chain via `OpenPrompt` + `buffer-name` state | 📝 |
 | OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
 | OC.6 | Docs, ledger, site nav | 📝 |
@@ -236,14 +235,48 @@ fires with the typed text; the smuggled name comes back beside it; a native
 handler still wins and the fallback does NOT also run; an unknown action still
 echoes.
 
-## OC.3 — the capture transient 📝
+## OC.3 — the capture transient ✅
 
 Built from the parsed set: one `Action` row per template, keyed by its `key`,
-labelled by its `description`, plus `q` → `Dismiss`. Each row's action is a
-grammar action carrying the template key in its args.
+labelled by its `description`, plus `q` → `Dismiss`. Each row's action is
+`org-capture` carrying the template key in its own args (the TR.2a slot), so
+one action serves every row and the key you press is what decides the template.
+Built per open, never cached — a `:set` takes effect on the next `<leader>oc`.
+
+Templates the set could not use are named in the menu's FOOTER: the one place a
+missing row is noticeable is while the user is looking at the menu, and it is
+once per open rather than once per capture.
+
+**The prefix moved from `<C-x>o` to `<leader>o`.** The design fragment
+specified `<C-x>o` and it cannot work — org's major binds a TERMINAL `<C-x>`
+(timestamp decrement), and a prefix in one layer beside a terminal binding in
+another needs an ambiguous-chord timeout this editor does not have. Found by
+driving the real chord, not by reading the keymap. `<leader>o` breaks no muscle
+memory (capture already lived at `<leader>oc`) and drops the `action:next-pane`
+shadowing the fragment had accepted as a price.
+
+**Two host holes surfaced, both the same shape as OC.3a's:**
+
+1. **A plugin's transient row could never fire.** `TransientItemKind::Action`
+   dispatched through the `ActionHandlerRegistry` only, so a plugin could build
+   a menu (TR.2b) whose rows resolved and did nothing. Fixed the same way — a
+   missing native handler falls through to the ordinary plugin-action dispatch,
+   carrying the row's own args. It survived because the seam's tests convert a
+   spec and never fire a row through the editor.
+2. **The transient seam's store had no config registry**, so the guest's
+   `get-option` answered `None` and the menu built from a template set it could
+   not read — reporting "no capture templates" while `:set …?` showed a value.
+   `spawn_transient_source` now attaches it, as the `context` seam does.
+
+Tests (org, 4): the menu opens on the chord with a row per template in
+declaration order plus a way out; the key you press decides which template
+captures (asserted on the SECOND row, so a first-wins bug cannot pass); the
+whole chain chord → menu → key → prompt → filed note through the real prompt;
+a broken set leaves the menu closed and names the option. Host (1): a row
+naming a plugin action fires it with the row's args.
 
 Duplicate keys are a user error the menu cannot resolve: the first wins and
-the later one is skipped with a warning naming both descriptions.
+the later one is skipped with a warning naming both descriptions (OC.2).
 
 ## OC.4 — the `%^{Prompt}` chain 📝
 

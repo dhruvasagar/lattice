@@ -66,6 +66,11 @@ async fn client(host: &PluginHost) -> TransientClient {
             TrustTier::Bundled,
             PluginBudget::default(),
             &Arc::new(lattice_runtime::EventBus::new()),
+            // The config registry a real load passes so the guest can read
+            // its OWN options — org's capture menu IS `org.capture-templates`
+            // rendered as rows. `None` here because this fixture reads none;
+            // the wiring is proven end to end by the org plugin's own test.
+            None,
         )
         .await
         .expect("spawn transient source");

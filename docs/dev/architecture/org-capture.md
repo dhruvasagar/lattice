@@ -150,10 +150,10 @@ second. Same channel, reachable from both sides.
 ## 6. The menu, and the prefix
 
 `org-global-mode` — a minor with `ActivationPolicy::Universal`, the
-`magit-global-mode` precedent — owns the `<C-x>o` prefix everywhere:
+`magit-global-mode` precedent — owns the `<leader>o` prefix everywhere:
 
-- `<C-x>oa` → agenda,
-- `<C-x>oc` → the capture transient, one key per template.
+- `<leader>oa` → agenda,
+- `<leader>oc` → the capture transient, one key per template.
 
 Universal because both verbs are global: capture is worthless if it only
 works where org files already are.
@@ -168,11 +168,24 @@ as a chord that silently does nothing. `default_modes` (plural) is the fix; the
 singular key still parses and folds in. Still ONE `<id>.enabled` gate, because
 the user is turning org on or off, not curating its internals.
 
-**`<C-x>o` shadows `action:next-pane`** (emacs's `other-window`,
-`emacs_keys_mode.rs`). Chosen deliberately: lattice is vim-first and `<C-w>w`
-is the native pane switch, so the cost falls only on the emacs-keys layer, and
-the user rebinds the prefix if they want it back. Recorded because it is a
-promise the emacs-keys layer otherwise makes and this breaks.
+**This fragment originally specified `<C-x>o`, and that prefix cannot work.**
+Org's own MAJOR keymap already binds a *terminal* `<C-x>` — timestamp decrement
+(OM.9, which deliberately shadows vim's decrement inside org buffers). A prefix
+in one layer and a terminal binding in another is precisely the ambiguity vim
+resolves with `timeoutlen`, and this editor has no ambiguous-chord timeout: in
+an org buffer `<C-x>` fires the decrement and the second key never arrives. The
+collision was found by driving the real chord in a test rather than by reading
+the keymap.
+
+`<leader>o` replaces it and is strictly better on every count. It breaks no
+muscle memory — capture already lived at `<leader>oc`, and the only change is
+that it now works outside an org file. It needs no new territory. And it drops
+the `action:next-pane` shadowing (emacs's `other-window`) this section had
+accepted as a price, so the emacs-keys layer keeps its promise.
+
+Layered prefixes compose: the major's `<leader>oh` and the universal minor's
+`<leader>oc` both resolve, which the tests pin — that was the one property
+worth checking before committing to the prefix.
 
 ## 7. Paramount-goal alignment
 

@@ -31718,6 +31718,27 @@ impl Editor {
                         // silently vanished).
                         apply_effect_host(self, effect, out);
                     }
+                } else {
+                    // OC.3: no native handler, so this row names a PLUGIN's
+                    // action — a grammar-seam contribution, which lives in the
+                    // `CommandRegistry` with an `apply` closure and never in
+                    // the `ActionHandlerRegistry`. Dispatch it the way every
+                    // other plugin action is dispatched.
+                    //
+                    // Without this a plugin can BUILD a menu (TR.2b) whose
+                    // rows can never fire: the menu opens, the key resolves,
+                    // and nothing happens. Same hole as OC.3a's on the prompt
+                    // path, and it survived for the same reason — the seam's
+                    // own tests convert a spec and never fire a row through
+                    // the editor.
+                    //
+                    // `args` here already prefers the ROW's own arguments over
+                    // the menu-state projection (TR.2a), which is what carries
+                    // "this row means template `t`".
+                    self.dispatch_invocation(
+                        lattice_grammar::CommandInvocation::of(cmd_id).with_args(args),
+                        out,
+                    );
                 }
             }
             lattice_picker::TransientItemKind::Dismiss => {

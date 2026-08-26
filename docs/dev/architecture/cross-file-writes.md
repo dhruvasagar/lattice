@@ -1,11 +1,15 @@
 # Cross-file writes
 
-**Status:** built (XF.0–XF.6, 2026-08-26). The primitive ships and is
-gated. Org's archive (OM.6b) landed the same day, and needed one thing
-this document did not anticipate: a guest cannot name a file *beside* its
-own without knowing which file it is in. `document.path()` (OM.6b.0) is
-that half; see [`org-mode.md`](org-mode.md). OM.11 (refile + capture)
-remains, in the plugin repo.
+**Status:** built (XF.0–XF.6, 2026-08-26), and spent — org's archive,
+refile and capture all ship on it.
+
+The effect was necessary and not sufficient, in two ways this document
+did not anticipate. A guest cannot name a file *beside* its own without
+knowing which file it is in (`document.path()`, OM.6b.0). And a guest
+that picks the target FIRST and reads the text second could not be
+called back into: a picker's `invoke-command` went through the `:` line,
+which cannot reach an action and hands an ex-command no document
+(OM.11.0). Both live in [`org-mode.md`](org-mode.md)'s slice plan.
 
 Where this document and the code disagree, the code and the slice plan are
 what happened. Two things the build changed and the slice plan records in
@@ -17,7 +21,7 @@ position stays host-side, because only the host has the buffer and the
 append position is not `Position::new(line_count, 0)`.
 
 Slice plan:
-[`../operations/slice-plans/cross-file-writes.md`](../operations/slice-plans/cross-file-writes.md).
+[`../operations/slice-plans/archive/cross-file-writes.md`](../operations/slice-plans/archive/cross-file-writes.md).
 Extends [`plugin-host.md`](plugin-host.md) (the effect vocabulary, the
 capability model). Unblocks [`org-mode.md`](org-mode.md) OM.6b and OM.11.
 

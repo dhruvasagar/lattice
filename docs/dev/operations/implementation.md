@@ -6459,8 +6459,7 @@ because that is what a user's plugin manager clones and builds.
 | Tables | OM.12 align + cell motion, OM.13 rows and columns | ✅ |
 | Agenda | OM.A1 the `agenda-source` seam, OM.A2 org semantics, OM.A3 the view's modes | ✅ |
 | Docs | OM.14 | ✅ |
-| Cross-file writes | OM.6b.0 `document.path()`, OM.6b archive | ✅ |
-| Cross-file writes | OM.11 refile + capture | 📝 |
+| Cross-file writes | OM.6b.0 `document.path()`, OM.6b archive, OM.11.0 picker→action, OM.11 refile + capture | ✅ |
 
 **The acid test, asserted rather than claimed.** Zero `Editor::` method
 additions, zero new variants in the host's `Action` enum, no
@@ -6534,7 +6533,7 @@ an effect, so there is no way to chain "open that file" into "now edit it".
 effect**, `write-to-file`, gated on the `fs:write` capability that already
 existed —
 [`../architecture/cross-file-writes.md`](../architecture/cross-file-writes.md),
-slice plan [`slice-plans/cross-file-writes.md`](slice-plans/cross-file-writes.md).
+slice plan [`slice-plans/archive/cross-file-writes.md`](slice-plans/archive/cross-file-writes.md).
 Archiving in place was rejected (it renames the command users came for, and
 does nothing for refile or capture); so was leaving the move to the user. The
 effect writes *through the document pipeline* rather than to disk, so an
@@ -6565,6 +6564,17 @@ put the path on the throwaway document it hands a guest —
 host-side test caught, because they all build a context directly and never go
 through the gate.
 
+**And refile needed a third.** Its shape is "pick a target, THEN read the
+subtree at the cursor", and a picker's `InvokeCommand` outcome rendered the
+choice into a `:` line — which cannot reach an action at all
+(`excommand::parse` answers `Unknown` for `CommandKind::Action`) and reaches an
+ex-command that gets no document handle. OM.11.0 dispatches an action with the
+typed args the source already holds, keeping the ex-line path for everything
+else; a value containing a space stops arriving as two arguments on the way.
+The fourth repeat of the TC.6 multi-seam linker rule came with it: org provides
+`grammar` AND `picker-source`, so `host-services` had to join the sync grammar
+linker or the whole component failed to load.
+
 Four bugs the slices caught, each silent and each now a test: `Path` equality
 does not collapse `..` (so a producer path containing one would have opened a
 SECOND buffer over an already-open file and lost the user's unsaved work);
@@ -6576,7 +6586,7 @@ gate's wiring is verified by mutation — unwiring `authorize` fails exactly the
 three denial tests.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
-Slice plan: [`slice-plans/org-mode.md`](slice-plans/org-mode.md).
+Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md).
 
 ---
 

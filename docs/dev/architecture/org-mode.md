@@ -1,13 +1,15 @@
 # Org-mode as a plugin
 
-**Status:** built, except OM.11 (refile + capture). Archive shipped on
-2026-08-26 once [`cross-file-writes.md`](cross-file-writes.md) supplied
-the effect and OM.6b.0 supplied the address — `document.path()`, without
-which a guest cannot name a file beside its own. Refile and capture want
-the same two plus a target picker and a template flow, which are org's
-own work. Sequencing, per-slice outcomes and the amendments
-this document records:
-[`../operations/slice-plans/org-mode.md`](../operations/slice-plans/org-mode.md).
+**Status: built** (2026-08-26). Archive, refile and capture — the three
+verbs blocked longest — closed last, on three primitives the epic turned
+out to need rather than one: `Effect::WriteToFile`
+([`cross-file-writes.md`](cross-file-writes.md)) to carry the text,
+`document.path()` to name a file beside your own, and a picker source
+able to invoke an ACTION rather than an ex-line, since an ex-command
+receives no document handle and refile has to read the subtree at the
+cursor after choosing where it goes. Sequencing, per-slice outcomes and
+the amendments this document records:
+[`../operations/slice-plans/archive/org-mode.md`](../operations/slice-plans/archive/org-mode.md).
 Ledger entry: [`../operations/implementation.md`](../operations/implementation.md)
 §"Org-mode as a plugin".
 
@@ -535,10 +537,13 @@ execution, table formulas, column view, org-roam.
 **Was blocked on a host primitive, now built:** archive, refile and
 capture all move text into a file other than the buffer's own, and no
 effect could. [`cross-file-writes.md`](cross-file-writes.md) is the
-answer — a host-mediated `write-to-file` effect gated on `fs:write` —
-and `document.path()` (OM.6b.0) is the other half, since the target of
-an archive is derived from the source file's own name. Archive ships;
-refile and capture are OM.11.
+answer — a host-mediated `write-to-file` effect gated on `fs:write`.
+Two more were needed and neither was foreseen: `document.path()`
+(OM.6b.0), because an archive's target is derived from the source file's
+own name; and a picker source able to invoke an ACTION with typed args
+(OM.11.0), because refile picks a target and only THEN reads the subtree
+at the cursor — and the ex-line route a picker had is closed to actions
+and hands an ex-command no document. All three ship.
 
 **Deferred with a reason:** clocking is cheap in edits but needs
 persistent "currently clocked" state and a modeline contribution, so it

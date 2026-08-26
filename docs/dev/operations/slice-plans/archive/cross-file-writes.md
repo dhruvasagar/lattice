@@ -2,14 +2,15 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contracts live in
-> [`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md)
+> [`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md)
 > — the effect shape, why an anchor rather than a range, why one effect
 > rather than two, where the capability gate lives, and the rejected
 > alternatives.
 
 **Status:** ✅ XF.0–XF.6 complete (2026-08-26). The primitive ships,
 gated on `fs:write` at the boundary. [`org-mode.md`](org-mode.md) OM.6b
-(archive) and OM.11 (refile + capture) are unblocked — they were the only
+(archive) and OM.11 (refile + capture) both shipped on it the same day —
+they were the only
 reason this exists, and they are now ordinary plugin work in the plugin
 repo rather than blocked on a missing host mechanism.
 
@@ -38,7 +39,7 @@ XF.4  the WIT effect + the boundary capability gate
 XF.5  a fixture guest proves the whole path
   │
   ├── OM.6b  archive subtree ✅        (plugin repo, + OM.6b.0 host)
-  └── OM.11  refile + capture 📝      (plugin repo)
+  └── OM.11  refile + capture ✅      (plugin repo, + OM.11.0 host)
   │
 XF.6  docs, ledger, site
 ```
@@ -330,9 +331,10 @@ caught something scoped runs could not.
   flow, refile's target picker).
 - Design fragment + slice-plan statuses; Zola sync.
 
-**The org plan is still not archivable**, and the header says why: 📝 is
-open work too. Archiving it now would bury the two slices this whole
-detour existed to unblock.
+**The org plan was not archivable at XF.6**, and the header said why: 📝
+is open work too, so archiving it then would have buried the two slices
+this whole detour existed to unblock. Both landed on 2026-08-26 and both
+plans are archived together.
 
 ---
 

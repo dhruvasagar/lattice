@@ -2,23 +2,28 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contracts live in
-> [`../../architecture/org-mode.md`](../../architecture/org-mode.md) —
+> [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) —
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 > The ledger entry is
-> [`../implementation.md`](../implementation.md) §"Org-mode as a plugin":
+> [`../../implementation.md`](../../implementation.md) §"Org-mode as a plugin":
 > the four generic host changes, the acid test, and the findings worth
 > carrying past org.
 >
-> **Not archivable.** OM.11 is open work — 📝 rather than ⛔ since
-> 2026-08-26, when XF shipped the cross-file write primitive it was
-> blocked on. A planned slice is still open work, so this plan stays
-> active until it goes green (the archiving rule in CLAUDE.md).
+> **Archivable.** Every slice is ✅ as of 2026-08-26, when OM.11 (refile
+> + capture) closed the last of them. Nothing is deferred and nothing is
+> planned; the plan can move to `archive/`.
 
-**Status:** OM.6b ✅ (2026-08-26) — **archiving works.** OM.6b.0 gave a
+**Status: DONE (2026-08-26).** OM.11 ✅ closed the last slice — refile
+picks a headline in any project org file and files the subtree under it;
+capture prompts and appends through a template. Both rest on the three
+cross-file primitives the epic turned out to need: `Effect::WriteToFile`
+(XF), `document.path()` (OM.6b.0), and a picker source able to invoke an
+ACTION rather than an ex-line (OM.11.0).
+
+Earlier: OM.6b ✅ (2026-08-26) — **archiving works.** OM.6b.0 gave a
 guest `document.path()`, so it can name a file beside its own; OM.6b
-spends it on `<leader>o$`. OM.11 (refile + capture) is the last slice
-open.
+spends it on `<leader>o$`.
 
 Earlier: OM.A3 ✅ (2026-08-25) — **the agenda is done.** OM.A1 the seam,
 OM.A2 org's semantics, OM.A3 the view's two modes.
@@ -27,8 +32,8 @@ Earlier: OM.13 ✅ (2026-08-25) — **the outliner and tables are done.**
 OM.8 ✅ checkboxes + cookies; OM.9 ✅ timestamps; OM.10 ✅ links;
 OM.12 ✅ `org-table-mode`; OM.13 ✅ rows and columns. OM.11 and OM.6b were
 blocked on the same cross-file write primitive; **XF shipped it on
-2026-08-26**, OM.6b landed the same day, and OM.11 is ordinary plugin
-work. The agenda group (OM.A1–A3) is done.
+2026-08-26** and both landed the same day. The agenda group (OM.A1–A3)
+is done.
 
 Earlier: OM.7 ✅ tasks, in a second mode. OM.0 ✅ seam drain order is
 structural (the gate found a real bug rather than confirming the status quo);
@@ -87,7 +92,7 @@ OM.4b plugin grammar contributions reach operator-pending
   │   OM.8   checkboxes + statistics cookies                  │
   │   OM.9   timestamps                                       │
   │   OM.10  links                                            │
-  │   OM.11  refile (own picker-source) + capture  📝           │
+  │   OM.11  refile (own picker-source) + capture ✅             │
   │                                                            │
   ├── tables ────────────────────────────────────────────────┤
   │   OM.12  org-table-mode: align + cell motion              │
@@ -127,7 +132,8 @@ files? — was retired during design by reading the excerpt model
 | OM.8 | Checkboxes + statistics cookies | ✅ |
 | OM.9 | Timestamps (`<C-a>` / `<C-x>`) | ✅ |
 | OM.10 | Links: open at point | ✅ |
-| OM.11 | Refile + capture | 📝 unblocked by XF |
+| OM.11.0 | A picker source can invoke an ACTION, with typed args | ✅ |
+| OM.11 | Refile + capture | ✅ |
 | OM.12 | `org-table-mode`: align + cell motion | ✅ |
 | OM.13 | Row / column move + insert | ✅ |
 | OM.A1 | `agenda-source` seam + host provider | ✅ |
@@ -360,11 +366,25 @@ Each slice: chord → plugin action → `Effect::Edits`, dispatched through
 a real `Editor`, with the failure path tested (malformed headline,
 cursor outside any headline, missing target).
 
-### OM.3 — promote / demote 📝
+### OM.3 — promote / demote ✅ (2026-08-24)
 `<leader>oh` / `ol` / `oH` / `oL`. First slice where the plugin edits.
-Exit: all four work through real chord dispatch, and demoting past the
-theme's six-level ramp keeps level-6 styling without error.
-*bench:* the action round-trip, against the `< 5 µs p99` grammar gate.
+All four work through real chord dispatch, and demoting past the theme's
+six-level ramp keeps level-6 styling without error.
+
+**A subtree promote is all-or-nothing.** `restar` refuses level 1 going
+up — org has no level 0, and turning `* Title` into `Title` would fold a
+headline into the body of the one above it — and refusing only the root
+while shifting its children would make a child the sibling of its own
+parent. So the whole operation declines rather than half-applying.
+
+⚠️ The refusal returns `Effect::Declined`, which OM.6 later established
+is wrong for a chord behind a plugin-owned prefix: a decline re-resolves
+with the mode's layer removed and runs the trailing key alone. Harmless
+here — the trailing keys are `h`/`l`/`H`/`L`, all motions — but it is the
+same latent shape, recorded rather than quietly left.
+
+*(Icon was stale at 📝 until the 2026-08-26 archive pass; the status
+table had it ✅ from the start.)*
 
 ### OM.4 — headline motions ✅ (2026-08-24)
 `]]` / `[[` / `g{`, kept verbatim from nvim-orgmode: `]` and `[` are trie
@@ -590,7 +610,7 @@ capture, which is the larger half. (3) is not the feature. (1) protects
 paramount-#2 in the place org actually exposed a gap: the next plugin
 that needs to write beside itself inherits it.
 
-Design: [`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md).
+Design: [`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md).
 Slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 
 **Unblocked 2026-08-26.** `Effect::WriteToFile` ships, gated on
@@ -765,7 +785,7 @@ and leaves the cursor put, because jumping to the wrong heading is worse
 than not jumping. Resolved by title comparison rather than a tree search —
 the tree can be absent, and this runs on a keystroke.
 
-### OM.11 — refile + capture ⛔ BLOCKED (2026-08-25)
+### OM.11 — refile + capture ✅ (2026-08-26)
 
 Blocked on the **same missing primitive as OM.6b**, and confirmed rather
 than assumed: no effect in the WIT surface writes to a file other than the
@@ -781,7 +801,7 @@ different, much smaller feature than the slice describes.
 
 **Decided together with OM.6b** (2026-08-25) and **shipped 2026-08-26**:
 a `write-to-file` effect, host-mediated and `fs:write`-gated. Design:
-[`../../architecture/cross-file-writes.md`](../../architecture/cross-file-writes.md);
+[`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md);
 slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 
 Refile is now expressible: pick a target (its own picker source), return
@@ -790,10 +810,103 @@ creates a missing target, which is capture's first run. What is NOT
 supplied by XF and remains this slice's own work: capture's template flow
 (a prompt, a target picker) and refile's target-selection UI.
 
-Note what stays org's own work afterwards: the cross-file *write*
-unblocks, but capture's template flow (a prompt, a target picker) is
-this slice's, not XF's. Until then the outliner is complete for
-everything that stays within one file.
+**Shipped 2026-08-26** in the plugin repo, with two host changes it
+turned out to need.
+
+#### OM.11.0 — a picker source could not call an action
+
+Refile's shape is: pick a target, THEN take the subtree at the cursor.
+The picker's accept routes back through
+`PickerAcceptOutcome::InvokeCommand`, and that arm rendered the id +
+args into a `:` line and ran it. Two consequences, and the second is a
+wall rather than a wart:
+
+1. Typed args round-tripped through text and a re-split, so a target path
+   containing a space arrived as two arguments. (The arm's own comment
+   already recorded an earlier version that dropped `args` outright,
+   which is how the magit branch pickers came to ask for the branch you
+   had just picked.)
+2. **An action is not reachable from the `:` line at all** —
+   `excommand::parse` answers `Unknown` for `CommandKind::Action`. So a
+   picker could only reach an EX-command, and an ex-command receives no
+   `borrow<document>`: it cannot read the buffer the user is sitting in.
+
+So the arm now resolves the id and, when it is an action, dispatches a
+`CommandInvocation` with the args it already holds. The ex-line path
+stays for everything else. 2 tests in
+`lattice-host/tests/picker_invokes_an_action.rs`, one of them a path
+with a space in it.
+
+The second host change: `host-services` on the SYNC grammar linker. Org
+provides both `grammar` and `picker-source`, a picker source needs
+`walk`, and instantiation must satisfy every import a world declares —
+not only the ones the seam being drained uses (the TC.6 / CR.3 / LG.3c
+rule, hit a fourth time). It adds no authority the sync path lacked:
+`add_to_linker_sync` already gives the guest WASI's filesystem view.
+`logging` stays deliberately absent, so "no logging reachable from the
+grammar hot path" is still structural. The `multiseam` fixture now
+imports `host-services` and calls it, so this is pinned in-repo rather
+than only in the org plugin's own suite — verified by removing the
+linker line and watching the fixture fail to instantiate.
+
+#### Refile
+
+`<leader>or` opens `org-refile`, a picker source org registers itself —
+a SECOND seam for this plugin, and a deliberately opposite-shaped one:
+it walks and reads the filesystem and never touches a buffer. Targets
+are every headline (to `:maxlevel`, default 3, overridable as
+`:picker org-refile 5`) in every `.org` file in the PROJECT, plus each
+file itself. Project scope because that is what the agenda already
+walks.
+
+**The picker source reads the files itself**, which needed no new seam:
+a plugin's `fs:` grants become WASI preopens *at the same path the host
+uses*, so `std::fs::read_to_string` works inside the grant and is
+refused outside it by WASI rather than by discipline. The insertion LINE
+is computed there too — the guest that read the file is the only one
+that knows where a headline's subtree ends, so the refile action
+forwards a number instead of guessing one.
+
+The chosen target crosses back as an opaque `path\tline` token and is
+decoded as UNTRUSTED input; it has crossed the boundary twice, and
+refiling a subtree somewhere nobody chose is worse than refiling it
+nowhere.
+
+#### Capture
+
+`<leader>oc` prompts, and the submit hop expands `org.capture-template`
+(`%?` / `%U` / `%T` / `%%`, org's own spelling) and appends to
+`org.capture-file`. An unknown `%x` survives verbatim — a template is
+user text, and a `%d` that did not expand is fixable where one that
+vanished is not — and a template with no `%?` still appends what was
+typed, because losing the thought is the one failure capture cannot
+have.
+
+`org.capture-file` has NO default. A key that silently creates
+`capture.org` in whichever directory the editor started in scatters
+notes somewhere the user never named; being told once to set the option
+is the better trade.
+
+#### `<leader>or` and `<leader>oc` are not pressed by any test
+
+A third and fourth creditor for the app-layer test file OM.7 opened.
+Both chords return an effect the RENDERER applies — `OpenPicker`,
+`OpenPrompt` — so at `Editor` level the chord surfaces as
+`Action::Invoke` with the effect consumed inside it and nothing happens.
+The split is: unit tests own the arithmetic, a binding test owns the
+wiring (chord bound + second-hop action registered + picker source
+exists), and everything from `open_picker` / the submit dispatch onwards
+is driven directly, because all of THAT is reachable.
+
+Two async settles the tests had to learn, both of which would otherwise
+read as a broken source: a plugin picker's `init` is a guest call, so
+`open_picker` returns with `picker == None` and a `(loading)` echo until
+`drain_pending_picker_init` seats it; and `accept` is a guest call too,
+so `do_picker_accept` only spawns it and `drain_pending_picker_accept`
+applies the outcome.
+
+Tests: 15 unit (`refile.rs` 8, `capture.rs` 6, plus the archive module's
+span logic they share) and 10 through the editor.
 
 ## Tables
 

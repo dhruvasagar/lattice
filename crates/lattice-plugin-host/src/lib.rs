@@ -1947,10 +1947,13 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
         use crate::mode_host::bindings::lattice::plugin_host::modes::{
             ActivationPolicy as WitPolicy, BindingMode as WitBindingMode,
             ModeCapabilities as WitCaps, ModeKind as WitKind,
+            OverridePriority as WitOverridePriority,
         };
-        use crate::mode_host::{PluginKeymapBinding, PluginModeDecl, PluginModeKind};
+        use crate::mode_host::{
+            PluginKeymapBinding, PluginModeDecl, PluginModeKind, PluginModeOverride,
+        };
         use lattice_keymap::BindingMode;
-        use lattice_mode::{ActivationPolicy, CapabilitySet, ModeId};
+        use lattice_mode::{ActivationPolicy, CapabilitySet, ModeId, OverridePriority};
 
         let kind = match decl.kind {
             WitKind::Major => PluginModeKind::Major,
@@ -2010,6 +2013,24 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
             })
             .collect();
 
+        // MO.1: option overrides. Name and value cross as strings and are
+        // resolved against the `ConfigRegistry` at drain — the same shape the
+        // keymap's command names take, and for the same reason: the registry
+        // they must agree with is native, and a declaration is only data.
+        let options = decl
+            .options
+            .into_iter()
+            .map(|o| PluginModeOverride {
+                name: o.name,
+                value: o.value,
+                priority: match o.priority {
+                    WitOverridePriority::Low => OverridePriority::Low,
+                    WitOverridePriority::Normal => OverridePriority::Normal,
+                    WitOverridePriority::High => OverridePriority::High,
+                },
+            })
+            .collect();
+
         self.mode_contributions.record(PluginModeDecl {
             id: decl.id,
             kind,
@@ -2020,6 +2041,7 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
             // whether it means anything (majors only) and the registry
             // indexes it.
             target_language: decl.target_language,
+            options,
         });
     }
 

@@ -99,6 +99,8 @@ impl Guest for Component {
             }],
             // OM.2: majors claim a language; this is a minor, so `none`.
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
         // AP.0.2 two-hop: a SECOND mode binding the same chord to an action
         // that handles it. Whichever of the two layers the host orders higher,
@@ -116,6 +118,8 @@ impl Guest for Component {
                 command: "multiseam-handles".to_string(),
             }],
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
     }
 

@@ -18,6 +18,7 @@ wit_bindgen::generate!({
 use lattice::plugin_host::modes;
 use lattice::plugin_host::modes::{
     ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
+    ModeOptionOverride, OverridePriority,
 };
 
 struct Component;
@@ -40,6 +41,8 @@ impl Guest for Component {
                 command: "ex:write".to_string(),
             }],
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
         // A universal minor mode requiring LSP + diagnostics, no keymap.
         modes::register_mode(&ModeDeclaration {
@@ -49,6 +52,8 @@ impl Guest for Component {
             capabilities: ModeCapabilities::LSP | ModeCapabilities::DIAGNOSTICS,
             keymap: vec![],
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
         // A mis-suffixed id — the registry's `-mode` gate rejects it, so it never
         // lands in the registry (the host reports only the accepted ids).
@@ -59,6 +64,8 @@ impl Guest for Component {
             capabilities: ModeCapabilities::empty(),
             keymap: vec![],
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
         // OM.2: a MAJOR claiming a language. This is the org shape — a plugin
         // that contributes a language contributes its major too, which is the
@@ -75,6 +82,21 @@ impl Guest for Component {
                 command: "ex:write".to_string(),
             }],
             target_language: Some("fixturelang".to_string()),
+            // MO.1: the org shape for options too — a major declaring how its
+            // buffers fold, plus one entry that CANNOT resolve, so the
+            // end-to-end test proves the good ones survive a bad neighbour.
+            options: vec![
+                ModeOptionOverride {
+                    name: "foldmethod".to_string(),
+                    value: "syntax".to_string(),
+                    priority: OverridePriority::Normal,
+                },
+                ModeOptionOverride {
+                    name: "no-such-option-at-all".to_string(),
+                    value: "1".to_string(),
+                    priority: OverridePriority::Normal,
+                },
+            ],
         });
         // OM.2: a MINOR claiming a language. It registers, but the claim is
         // dropped — a buffer has exactly one major, and honouring this would
@@ -86,6 +108,8 @@ impl Guest for Component {
             capabilities: ModeCapabilities::empty(),
             keymap: vec![],
             target_language: Some("fixturelang".to_string()),
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
     }
 }

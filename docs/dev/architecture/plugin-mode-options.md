@@ -1,7 +1,11 @@
 # Mode option overrides across the plugin seam
 
-**Status:** designed, unbuilt. Extends
-[`mode-architecture.md`](mode-architecture.md) §6 (the layered override
+**Status:** built to the recommendation — option **(a)**, name + string value,
+native options only. MO.1/MO.2 landed; MO.3 (org's own declaration) is the one
+open item and lives in the org repo. Sequencing and what each slice did:
+[slice plan](../operations/slice-plans/plugin-mode-options.md).
+
+Extends [`mode-architecture.md`](mode-architecture.md) §6 (the layered override
 resolver) and [`plugin-host.md`](plugin-host.md) §5 (the `modes` seam).
 
 ## 1. The gap

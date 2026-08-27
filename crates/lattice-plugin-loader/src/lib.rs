@@ -2008,6 +2008,12 @@ impl PluginLoader {
                 &mut next,
                 &commands_snapshot,
                 keymap,
+                // MO.1: resolves each declared option override's name + value
+                // against the registry `:set` writes to. Absent in a loader
+                // built without config (the minimal harnesses) — the overrides
+                // are then skipped with a warning naming the mode, the same
+                // logged-skip every other unwired handle takes.
+                self.env.config_registry.as_deref(),
             )
             .await?;
         mode_registry.store(Arc::new(next));

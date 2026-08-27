@@ -90,6 +90,7 @@ async fn one_component_provides_grammar_modes_and_config() {
             &mut mode_registry,
             &commands,
             &keymap,
+            None,
         )
         .await
         .expect("modes drain instantiates the combined component (async linker)");

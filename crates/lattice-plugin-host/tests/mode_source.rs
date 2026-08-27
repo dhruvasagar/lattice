@@ -60,6 +60,7 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
             &mut registry,
             &commands,
             &keymap,
+            None,
         )
         .await
         .expect("spawn mode plugin");
@@ -149,6 +150,7 @@ async fn plugin_declares_a_major_that_claims_its_language_end_to_end() {
         &mut registry,
         &commands,
         &keymap,
+        None,
     )
     .await
     .expect("spawn mode plugin");
@@ -193,5 +195,96 @@ async fn plugin_declares_a_major_that_claims_its_language_end_to_end() {
             LookupResult::Unbound
         ),
         "and not when it is not"
+    );
+}
+
+/// MO.1 end-to-end: a mode's declared option overrides survive the WASM
+/// boundary and land as typed values on the registered `Mode`.
+///
+/// The unit tests in `mode_host` prove the resolution logic against a
+/// hand-built `PluginModeDecl`. This proves the part they cannot: that the WIT
+/// record actually carries the data, that bindgen projects it, and that the
+/// value a guest wrote as a string comes out the other side as the native enum
+/// the resolver will compare. A seam wired end-to-end can still answer nothing,
+/// and the only way to know is to drive a real component through it.
+///
+/// The fixture's major declares TWO overrides — one resolvable, one that cannot
+/// be — because "the rest of the set still applies" is the failure behaviour
+/// this seam promises, and a set of one cannot demonstrate it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_modes_declared_option_overrides_cross_the_seam_end_to_end() {
+    use lattice_config::{ConfigRegistry, FoldMethodOption};
+    use lattice_core::FoldMethod;
+
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: modes fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+        .expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile modes fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+
+    let config = ConfigRegistry::new();
+    config.init_from_linkme();
+    let mut registry = ModeRegistry::default();
+    let mut commands = CommandRegistry::new();
+    let _ = lattice_grammar::ex_commands::populate(&mut commands);
+    let keymap = KeymapHandle::new();
+
+    host.spawn_mode_plugin(
+        &component,
+        &manifest,
+        TrustTier::Bundled,
+        PluginBudget::event(),
+        &mut registry,
+        &commands,
+        &keymap,
+        Some(&config),
+    )
+    .await
+    .expect("spawn mode plugin");
+
+    let major = registry
+        .get(ModeId::new("fixture-lang-mode"))
+        .expect("the major registered");
+    let set = major.options();
+
+    assert_eq!(
+        set.len(),
+        1,
+        "the resolvable override crossed and the unresolvable one was dropped"
+    );
+    let ov = set.iter().next().expect("one override");
+    assert_eq!(
+        ov.option_type_id,
+        std::any::TypeId::of::<FoldMethodOption>(),
+        "resolved to the native option identity"
+    );
+    assert_eq!(
+        ov.downcast_value::<FoldMethod>(),
+        Some(&FoldMethod::Syntax),
+        "and the guest's string became the native enum"
+    );
+
+    // A mode that declared no options still has none — an empty list must not
+    // acquire anything from the mode beside it in the same drain.
+    assert!(
+        registry
+            .get(ModeId::new("git-blame-mode"))
+            .expect("registered")
+            .options()
+            .is_empty(),
+        "a mode that declared nothing gets nothing"
+    );
+
+    // And the global value is untouched: an override is a resolution layer.
+    assert_eq!(
+        *config.get_typed::<FoldMethodOption>().expect("registered"),
+        FoldMethod::Manual,
+        "the user's global foldmethod is not written by a mode declaring one"
     );
 }

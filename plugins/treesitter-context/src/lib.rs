@@ -367,6 +367,8 @@ impl Guest for Component {
             }],
             // OM.2: majors claim a language; this is a minor, so `none`.
             target_language: None,
+            // MO.1: this mode sets no options for its buffers.
+            options: vec![],
         });
     }
 

@@ -11,8 +11,9 @@ package lattice:plugin-host@0.1.0;
 /// write-gate) are PH7.11b. **OM.2 lands major modes** — a plugin that
 /// contributes a language contributes its major too, which is the only way a
 /// plugin language can have one (`Lang::Plugin(_)` has no arm in the host's
-/// hand-written table). Lifecycle callbacks / decorations / typed
-/// option-overrides / bundled modes-as-components remain Phase 8.
+/// hand-written table). **MO.1 lands typed option-overrides** — the last part
+/// of its surface a plugin mode could not own. Lifecycle callbacks /
+/// decorations / bundled modes-as-components remain Phase 8.
 ///
 /// The CANONICAL, language-agnostic surface — any component-model language calls
 /// `register-mode` directly (see the WIT-canonical principle).
@@ -75,6 +76,47 @@ interface modes {
         command: string,
     }
 
+    /// Where a mode's option override sits in the resolver — mirrors the native
+    /// `OverridePriority`. `normal` is what a mode should almost always use;
+    /// within a layer the last-activated `normal` wins and the host fires a
+    /// `ModeEvent::OptionConflict`. `high` and `low` exist for a mode that
+    /// genuinely must out-rank or yield to its peers, and reaching for either to
+    /// win an argument with another mode is how a conflict becomes invisible
+    /// instead of reported.
+    enum override-priority {
+        low,
+        normal,
+        high,
+    }
+
+    /// MO.1: one option a mode sets for its own buffers — the plugin-facing form
+    /// of a native mode's `options()` set.
+    ///
+    /// `name` is the option's registered name (`foldmethod`), resolved host-side
+    /// against the SAME `ConfigRegistry` `:set` uses. `value` is its value in
+    /// exactly the spelling `:set name=value` accepts, coerced host-side through
+    /// the same parser and validator — so a mode declares an override in the
+    /// vocabulary the user already knows, and does not get a private settings
+    /// channel that could disagree with `:set` about what a value means.
+    ///
+    /// **This is a LAYER, not a write.** It changes what the option resolves to
+    /// in this mode's buffers; it does not alter the user's global setting, and
+    /// it does not outrank a buffer-local `:setlocal`.
+    ///
+    /// **An override the host cannot resolve is skipped, warned, and named** —
+    /// the rest of the set still applies, because one bad entry must not cost a
+    /// mode its other options. Two things do not resolve: an option name nothing
+    /// registered, and a value the option's own validator rejects. A third is
+    /// worth stating because it will surprise: an option the PLUGIN ITSELF
+    /// registered through the `config` seam has no native type identity, so it
+    /// cannot be overridden here yet. That is a known hole with a known fix
+    /// (`plugin-mode-options.md` §3c) and no consumer yet.
+    record mode-option-override {
+        name: string,
+        value: string,
+        priority: override-priority,
+    }
+
     /// A mode declaration. `id` must carry the conventional `-mode` suffix (the
     /// `ModeRegistry::register` gate, e.g. `git-blame-mode`); a bare or
     /// mis-suffixed id is rejected at registration. `keymap` bindings land at
@@ -104,6 +146,19 @@ interface modes {
         /// `markdown`, …) is NOT claimable: the built-in table is consulted
         /// first, so a claim on one is inert rather than a hijack.
         target-language: option<string>,
+
+        /// MO.1: options this mode sets for its own buffers.
+        ///
+        /// Until this existed a plugin mode owned its keymap, its handlers and
+        /// its lifecycle but NOT the options deciding how its buffers actually
+        /// behave — whether they are writable, whether they wrap, how they fold.
+        /// That was a hole in the mode-ownership rule, and org was standing in
+        /// it: org folding worked only because the user happened to set
+        /// `foldmethod` globally, making it correct by coincidence on one
+        /// machine and wrong everywhere else.
+        ///
+        /// Empty is the normal case and costs nothing.
+        options: list<mode-option-override>,
     }
 
     /// Declare a mode. Records the declaration; the host builds a `PluginMode`

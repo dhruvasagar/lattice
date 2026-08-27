@@ -14129,10 +14129,27 @@ impl Editor {
         version: u64,
     ) -> (Option<lattice_syntax::SyntaxHandle>, bool) {
         let sync = text.len() <= Self::SYNC_PARSE_MAX_BYTES;
-        let handle = match lattice_syntax::Syntax::for_language_with_registry(
-            lang,
-            self.lang_registry.clone(),
-        ) {
+        // LIVE registry, not `self.lang_registry`.
+        //
+        // `lang_registry` is a snapshot taken at boot. A plugin language RCUs
+        // its compiled grammar into the process-wide registry when the plugin
+        // loads — which is always AFTER boot — so the cached snapshot never
+        // contains it. The symptom is the nastiest kind: the extension map is
+        // global and live, so `.org` resolves to the org language and the major
+        // mode activates, and then the grammar lookup misses and the buffer
+        // gets no syntax at all. Highlighting is blank, folds fall back to the
+        // generic provider, and nothing anywhere says why.
+        //
+        // `standard()` is a wait-free `ArcSwap` load, so reading it per buffer
+        // open costs one atomic — there was never a reason to cache it here.
+        let registry = match lattice_syntax::LangRegistry::standard() {
+            Ok(r) => r,
+            // The bundled set failed to compile, which is deterministic and
+            // fatal everywhere else; degrade to the boot snapshot rather than
+            // lose highlighting for built-in languages too.
+            Err(_) => self.lang_registry.clone(),
+        };
+        let handle = match lattice_syntax::Syntax::for_language_with_registry(lang, registry) {
             Ok(Some(mut s)) => {
                 if sync {
                     s.parse_at(text, version);

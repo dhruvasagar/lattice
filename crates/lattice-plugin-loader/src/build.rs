@@ -252,6 +252,8 @@ pub fn build_plugin(
         return BuildOutcome::Cached { artifact };
     }
 
+    refresh_wit_package(source_dir);
+
     let stamp = source_stamp(source_dir);
     if has_artifact
         && !pinned
@@ -272,6 +274,52 @@ pub fn build_plugin(
             Err(error) => fail(has_artifact, artifact, error, name),
         },
         Err(error) => fail(has_artifact, artifact, error, name),
+    }
+}
+
+/// WT.2b: write the canonical `wit/` package into the source before cargo runs.
+///
+/// **This is where the plugin API stops being a folder someone remembered to
+/// copy.** `wit_bindgen::generate!` resolves its `path` at macro expansion, so
+/// the files must be on disk beside the crate — a build-time need, which the
+/// build is what should meet. Until this existed the copy was made once at
+/// scaffold time and never again: three ABI changes in one day left an
+/// `init.wasm` and the plugin it `require`d both unloadable, with no message
+/// anywhere.
+///
+/// Doing it *here* rather than in a dependency the scaffold declares is what
+/// makes the coupling exact. This is not the `lattice` binary that happens to be
+/// on `PATH` — it is the process that is about to instantiate the component it
+/// is compiling. `wit-ownership.md` §3(b) rejected an export path because it
+/// "ties the plugin's ABI to whichever lattice is on PATH"; that objection does
+/// not reach a refresh performed by the loader itself.
+///
+/// **Before the staleness check, and content-preserving.** `write_to` leaves a
+/// file already holding the right bytes untouched, so a warm boot moves no
+/// mtime and the stamp still matches — the cache survives. When the ABI has
+/// moved the rewrite does bump a mtime, which makes the source read as edited;
+/// that is a welcome side effect but it is not the mechanism relied upon, since
+/// it turns on filesystem timestamp resolution. WT.3's explicit ABI fingerprint
+/// in the stamp is the durable detector, and it also covers the case no mtime
+/// can reach: a prebuilt artifact with no source to rebuild from.
+///
+/// A source built out-of-tree may also carry a `lattice-wit` build-dependency
+/// doing the same write. That one wins, because `build.rs` runs after this — a
+/// pin the repo declares should override the ambient refresh, and WT.3's
+/// fingerprint is what makes the resulting mismatch legible rather than silent.
+///
+/// Failure is logged and skipped, never fatal: whatever `wit/` is already there
+/// may well be fine, and refusing to build a plugin because a cache refresh
+/// failed would turn a recoverable condition into a missing feature.
+fn refresh_wit_package(source_dir: &Path) {
+    let dir = source_dir.join("wit");
+    match lattice_wit::write_to(&dir) {
+        Ok(()) => tracing::debug!(dir = %dir.display(), "wit package refreshed"),
+        Err(error) => tracing::warn!(
+            dir = %dir.display(),
+            %error,
+            "could not refresh the wit package; building against whatever is there"
+        ),
     }
 }
 
@@ -569,6 +617,75 @@ mod tests {
         let second = build_plugin(&b, &src, "demo", &user, false);
         assert!(matches!(second, BuildOutcome::Cached { .. }));
         assert_eq!(b.calls(), 1);
+    }
+
+    /// WT.2b: the source is compiled against the API of the process compiling
+    /// it. A source with no `wit/` at all — a fresh clone of a repo that
+    /// gitignores it, which is the shape WT.2 gave org — becomes buildable.
+    #[test]
+    fn the_build_writes_the_wit_package_into_the_source() {
+        let root = tempdir("witwrite");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+
+        assert!(!src.join("wit").exists(), "no wit/ before the build");
+        build_plugin(&b, &src, "demo", &user, false);
+
+        for name in lattice_wit::file_names() {
+            assert!(
+                src.join("wit").join(name).is_file(),
+                "the package landed: wit/{name}"
+            );
+        }
+    }
+
+    /// A copy that drifted is repaired rather than believed. This is the
+    /// original defect in miniature: the plugin's `wit/` was a fork nothing
+    /// updated, so it compiled against an ABI the host no longer served.
+    #[test]
+    fn a_drifted_wit_file_is_repaired_before_the_build() {
+        let root = tempdir("witdrift");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+        build_plugin(&b, &src, "demo", &user, false);
+
+        let probe = src.join("wit").join("types.wit");
+        std::fs::write(&probe, "// a fork from three ABI changes ago\n").unwrap();
+
+        build_plugin(&b, &src, "demo", &user, false);
+        let repaired = std::fs::read_to_string(&probe).unwrap();
+        assert!(
+            !repaired.contains("three ABI changes ago"),
+            "the stale copy is overwritten from the canonical package"
+        );
+    }
+
+    /// **The refresh must not become a rebuild trigger.** It runs before the
+    /// staleness check and `wit/` counts toward the source stamp, so an
+    /// unconditional write would move a mtime forward every boot, make every
+    /// source read as edited, and rebuild every plugin from cold on every
+    /// start — the exact opposite of what the cache exists for. The property
+    /// that prevents it lives in `lattice_wit::write_to`; this is the test that
+    /// would catch its loss from the side that pays for it.
+    #[test]
+    fn refreshing_the_wit_package_does_not_invalidate_the_cache() {
+        let root = tempdir("witwarm");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+
+        build_plugin(&b, &src, "demo", &user, false);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = build_plugin(&b, &src, "demo", &user, false);
+
+        assert!(matches!(second, BuildOutcome::Cached { .. }));
+        assert_eq!(
+            b.calls(),
+            1,
+            "a warm boot with an untouched source stays a pure load"
+        );
     }
 
     #[test]

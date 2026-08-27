@@ -5802,6 +5802,7 @@ dependencies = [
  "lattice-runtime",
  "lattice-syntax",
  "lattice-theme",
+ "lattice-wit",
  "notify",
  "tempfile",
  "thiserror 2.0.18",

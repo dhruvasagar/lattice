@@ -34,7 +34,7 @@ dead `init.wasm`, which cannot rebuild anything, including itself.
 |---|---|---|
 | WT.1 | `lattice-wit`: embedded `wit/` + `write_to` + ABI fingerprint | ✅ |
 | WT.2 | org migrates; `wit/` gitignored generated output | ✅ |
-| WT.2b | Scaffolds — **blocked on a decision**, see below | ⛔ |
+| WT.2b | The build service refreshes `wit/` before cargo | ✅ |
 | WT.3 | Fingerprint in `.build-stamp`; ABI mismatch ⇒ rebuild from source | 📝 |
 | WT.4 | `lattice wit sync`; a failed instantiate reaches `*messages*` / `:plugins` | 📝 |
 
@@ -86,32 +86,59 @@ stale vendored copy was still satisfying the resolve. Deleting the directory
 and rebuilding is what proved it — and also proved org needs none of the four
 worlds `lattice-wit` excludes.
 
-## WT.2b — the scaffolds ⛔ blocked on a decision
+## WT.2b — the build service refreshes `wit/` ✅
 
-`lattice --init` and `lattice --new-plugin` should emit the same `build.rs`
-line and build-dependency. They cannot yet, and the reason is worth stating
-rather than working around.
+This slice was blocked, and the block turned out to be the wrong question.
 
-**A scaffold has nowhere to point the dependency.** `lattice-wit` is
-unpublished (§"What this does NOT do"), so a generated `Cargo.toml` can name it
-only by a path into a lattice checkout the user may not have, or by a git rev
-that may not match the binary that generated the scaffold — reintroducing the
-skew from the other side.
+**The block.** A scaffold has nowhere to point a build-dependency: `lattice-wit`
+is unpublished (§"What this does NOT do"), so a generated `Cargo.toml` could
+name it only by a path into a checkout the user may not have, or by a git rev
+that may not match the binary that generated the scaffold — the same skew,
+arriving from the other side. And the two scaffolds wanted different answers:
+`~/.config/lattice/init` targets the editor you run, where the ambient binary is
+the *correct* source; a plugin repo is built by CI and by other people, where a
+pinned crate is right and an ambient binary is not.
 
-Worse, the two scaffolds want *different* answers:
+**What unblocked it** was noticing that `build_plugin`
+(`crates/lattice-plugin-loader/src/build.rs`) is the single path by which the
+editor builds every local source — init via `build_init_if_needed`, every
+scaffolded plugin, every `require`d git or local tree — and that it shells out
+to cargo itself. Both framings above asked what the scaffold's manifest should
+say. The better question was who runs the compiler, and the answer is us.
 
-- **`~/.config/lattice/init`** targets the editor the user runs. There, "the
-  `lattice` on `PATH`" is not a weakness, it is the correct source — which
-  argues for the WT.4 `lattice wit sync` path, invoked from the scaffold's
-  `build.rs`.
-- **A plugin repo** is built by CI and by other people, where a pinned crate is
-  right and an ambient binary is not.
+So the refresh lives there: `lattice-plugin-loader` takes the zero-dependency
+`lattice-wit`, and `refresh_wit_package` writes the canonical package into the
+source as `build_plugin`'s first act. The component is compiled against the API
+of the process about to instantiate it — not the `lattice` on `PATH`, which is
+what design §3(b) was rightly rejected for, but the loading process itself.
 
-So the honest options are: emit `lattice wit sync` for init and a crate dep for
-plugins (two mechanisms, each correct in its context); or keep both on the
-one-shot copy until `lattice-wit` is published and then move both. Needs a
-decision, so it is not being guessed at mid-plan. `write_wit_package` stays
-until then and the scaffolds keep working exactly as they do.
+**`write_to` became content-preserving, and that is load-bearing.** The refresh
+runs *before* the staleness check, and staleness is mtime-based over a tree that
+includes `wit/`. An unconditional write would move every mtime forward on every
+boot, so every source would read as edited, so every plugin would rebuild from
+cold on every start — precisely inverting the requirement the build cache exists
+for. `refreshing_the_wit_package_does_not_invalidate_the_cache` is the test that
+catches its loss from the side that pays for it.
+
+**The scaffolds' copy stays, demoted to a seed.** `wit_bindgen::generate!` needs
+the files on disk to expand, so without it rust-analyzer resolves nothing in a
+freshly scaffolded `src/lib.rs` until the editor has built it once. Nothing
+downstream depends on it staying current any more.
+
+**Out-of-tree repos keep their build-dependency**, and it wins — `build.rs` runs
+after the refresh, so a pin the repo declares overrides the ambient one. That
+precedence is the right way round; WT.3 is what makes the resulting mismatch
+legible rather than silent.
+
+Cost, stated plainly: two lattice builds sharing one config home will
+alternately rebuild each other's plugins once WT.3 lands. That is new thrash,
+and it is correct thrash — each editor loads a component that works, where today
+one of them silently loads nothing.
+
+Tests: the package lands in a source that had no `wit/` at all (the fresh-clone
+shape WT.2 gave org); a drifted file is repaired before the build; a warm boot
+with an untouched source stays `Cached` and does not invoke the toolchain; and
+in `lattice-wit`, an identical file is not rewritten while a drifted one is.
 
 ## WT.3 — the fingerprint reaches the stamp 📝
 

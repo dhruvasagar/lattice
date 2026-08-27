@@ -29,6 +29,14 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+# WT.2b: the canonical `wit/` package, written into a plugin source immediately
+# before the build service invokes cargo on it. The binary that writes the API
+# definition is then the very one about to instantiate the component, so the two
+# cannot disagree — which is the failure this exists to make unreachable.
+#
+# Zero-dependency by construction (see the crate's own manifest), so taking it
+# here costs the loader nothing in build graph or link size.
+lattice-wit = { path = "../lattice-wit" }
 # PM.6: `Prebuilt{url}` source downloads.
 ureq = { workspace = true }
 # The Phase-7 runtime: the wasmtime engine, the WIT API, the capability/fuel/

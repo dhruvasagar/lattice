@@ -72,7 +72,7 @@ records in the lockfile.
 > `lattice-wit = "0.2"` is how a plugin says which API it wants.
 > **Heuristic #2 (paramount, not other editors):** anchored on the
 > canonical-API goal, not on how another editor vendors headers.
-> **Heuristic #3 (third option):** (b) and (c) below.
+> **Heuristic #3 (third option):** (b), (c) and (d) below.
 > **Heuristic #6 (crate boundary):** a new crate, and the dependency surface
 > it carves out is the point — `lattice-wit` must depend on *nothing*, so a
 > plugin can target the API without pulling the editor in. Today a plugin
@@ -96,7 +96,55 @@ source), and the plugin manager runs it before building a local source.
 > **Heuristic #2:** —
 > **Heuristic #3:** complements (a) rather than competing.
 
-### (c) Status quo plus a documented `cp`
+### (c) The build service refreshes it, immediately before cargo
+
+The editor already stands between a plugin's source and the compiler.
+`build_plugin` is the single path by which every local source is built —
+`~/.config/lattice/init`, every scaffolded plugin, every `require`d git or local
+tree — and it shells out to cargo itself. So it can write the canonical package
+into the source as its first act, and the component is then compiled against the
+API of the process that is about to instantiate it.
+
+`lattice-plugin-loader` takes `lattice-wit` (zero dependencies) as a normal
+dependency; the refresh happens *before* the staleness check, and `write_to`
+leaves a file already holding the right bytes untouched so a warm boot moves no
+mtime and the build cache survives.
+
+> **UX (higher court):** the reported failure becomes unreachable for every
+> source the editor builds, with no `Cargo.toml` line to point anywhere, no
+> `PATH` lookup, and nothing waiting on a crates.io release.
+> **Paramount goals:** protects #2 — the ABI a component is compiled against is
+> the ABI of the host that will load it, structurally rather than by anyone
+> remembering. Nothing at #1: one directory write in front of a cargo
+> invocation that costs seconds to minutes, already on `spawn_blocking`.
+> **Heuristic #1 (long-term fit):** the genuinely-better design, and not merely
+> the available one. (b) was rejected above for tying the plugin's ABI to
+> whichever `lattice` is on `PATH`; that objection does not reach here, because
+> this is not an ambient binary — it is the loading process itself, in the same
+> boot.
+> **Heuristic #2:** anchored on the canonical-API goal.
+> **Heuristic #3:** this is the option (a)/(b)/(d) missed. Both of those asked
+> what the scaffold's manifest should say; this asks who runs the compiler, and
+> the answer turns out to be *us*.
+> **Heuristic #6:** no new crate — an existing one takes a zero-dep dependency.
+
+**What it costs, stated plainly.** Two lattice builds sharing one config home
+will alternately rebuild each other's plugins, because each reads the other's
+ABI fingerprint as stale once §4 lands. That is new, and it is thrash — but it
+is *correct* thrash: each editor loads a component that works, where today one
+of them silently loads nothing. A hand-run `cargo build` in a source directory
+still uses whatever `wit/` is there; (b)'s `lattice wit sync` is the manual peer
+for that case, and §4 makes the resulting artifact stale rather than quietly
+broken.
+
+**It composes with (a) rather than replacing it.** A repo built out-of-tree — by
+CI, by another person, with no editor in the loop — still wants a declared pin,
+and org has one. When both are present the build-dependency *wins*, because
+`build.rs` runs after the refresh. That precedence is the right way round: a pin
+the repo declares should override an ambient one, and §4 is what makes the
+resulting mismatch legible instead of silent.
+
+### (d) Status quo plus a documented `cp`
 
 > **UX (higher court):** this is what produced the reported failure. It loses
 > on UX before any other consideration.
@@ -161,19 +209,28 @@ What changes at 1.0 is worth writing down while the reasoning is fresh:
 
 ## 6. Recommendation
 
-**(a) as the mechanism, (b) as the repair, §4 as the safety net** — they answer
-different questions and the failure needed all three:
+**(c) as the mechanism, (a) for out-of-tree repos, (b) as the repair, §4 as the
+safety net.** They answer different questions and the failure needed all four:
 
-- (a) stops the drift at its source, and makes the ABI a declared dependency
-  rather than a folder state.
-- (b) repairs an install that is *already* broken, including the case (a)
-  cannot reach: a dead `init.wasm` that cannot rebuild anything, which is the
-  knot the reported failure actually tied.
-- §4 makes the remaining breakage loud and self-healing where a source exists.
+- **(c)** stops the drift for every source the editor builds, which is every
+  source the reported failure involved. Chosen by heuristic #1: it expresses the
+  coupling that actually matters — a component is compiled against the host that
+  will load it — at the layer that already owns the compiler invocation, and it
+  needs no publish gate to be true today.
+- **(a)** remains right where no editor is in the loop: a repo built by CI or by
+  a stranger declares the ABI it targets, and a declared pin overrides the
+  ambient refresh. It is also what becomes a version pin the day `lattice-wit`
+  publishes.
+- **(b)** repairs an install that is *already* broken, including the case
+  neither (a) nor (c) can reach: a dead `init.wasm` that cannot rebuild
+  anything, which is the knot the reported failure actually tied.
+- **§4** makes the remaining breakage loud and self-healing where a source
+  exists, and refuses honestly where one does not.
 
-Named by heuristic #1: (a) is the better long-term design because it expresses
-the ABI as what it is — a versioned dependency — and that is also what makes
-the post-1.0 multi-version story reachable without redesign.
+The original recommendation here was (a)-as-mechanism, written before it was
+noticed that `build_plugin` is the single compiler-invocation path for every
+local source. (a) is not wrong — it is the correct answer to a different
+question, and it keeps that role above.
 
 ## 7. Paramount-goal alignment
 
@@ -189,7 +246,8 @@ comparison at load, a message on failure.
 | Slice | What |
 |---|---|
 | WT.1 | `lattice-wit` crate (embedded files + `write_to`), zero dependencies |
-| WT.2 | Plugin + init scaffolds gain the build-dependency and the `build.rs` line; `wit/` becomes gitignored generated output |
+| WT.2 | An out-of-tree plugin (org) takes the build-dependency; its `wit/` becomes gitignored generated output |
+| WT.2b | The build service refreshes `wit/` before every cargo invocation (§3c); the scaffolds' copy becomes a seed |
 | WT.3 | ABI fingerprint in `.build-stamp`; loader treats a mismatch as stale and rebuilds from source |
 | WT.4 | `lattice wit sync` for repair; a failed instantiate reaches `*messages*` and `:plugins` |
 

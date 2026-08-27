@@ -47,11 +47,26 @@ include!(concat!(env!("OUT_DIR"), "/wit_assets.rs"));
 /// does not, but the scaffolds' `world.wit` shape would), and deleting a file
 /// this crate did not write would be taking ownership of a directory it only
 /// contributes to.
+///
+/// **A file already holding the right bytes is not rewritten**, and that is
+/// load-bearing rather than an optimisation. WT.2b calls this from the plugin
+/// build service on every boot, immediately before the source's staleness is
+/// judged — and staleness is judged on mtime. An unconditional write would move
+/// every file's mtime forward on every boot, so every source would look edited,
+/// so every plugin would rebuild from cold on every start. The requirement the
+/// build service exists to protect is precisely the opposite one.
 pub fn write_to(dir: impl AsRef<Path>) -> io::Result<()> {
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir)?;
     for (name, contents) in FILES {
-        std::fs::write(dir.join(name), contents)?;
+        let path = dir.join(name);
+        // `read` rather than metadata+len: a truncated or hand-edited file of
+        // coincidentally equal length is exactly the drift this crate exists to
+        // repair, and it must not survive the comparison.
+        if std::fs::read(&path).is_ok_and(|on_disk| on_disk == contents.as_bytes()) {
+            continue;
+        }
+        std::fs::write(path, contents)?;
     }
     Ok(())
 }
@@ -138,6 +153,51 @@ mod tests {
             std::fs::read_to_string(tmp.join("my-world.wit")).unwrap(),
             "// mine\n"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// **A second write must not touch a file that already holds the right
+    /// bytes.** WT.2b's build service calls `write_to` on every boot just
+    /// before judging the source stale by mtime; if the write were
+    /// unconditional, every boot would move every mtime forward and every
+    /// plugin would rebuild from cold every start — inverting the one
+    /// requirement the build cache exists for.
+    ///
+    /// The sleep is what makes this a test about writing rather than about
+    /// timestamp resolution: without a gap the filesystem could report the same
+    /// mtime for a rewrite that genuinely happened, and the assertion would
+    /// pass on the broken version.
+    #[test]
+    fn an_identical_file_is_not_rewritten() {
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-wit-idem-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        write_to(&tmp).unwrap();
+
+        let probe = tmp.join(file_names().next().unwrap());
+        let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+        let before = mtime(&probe);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        write_to(&tmp).unwrap();
+        assert_eq!(
+            mtime(&probe),
+            before,
+            "a file already holding the right bytes is left entirely alone"
+        );
+
+        // ...and a file that DID drift is repaired, contents and all.
+        std::fs::write(&probe, "// someone edited the cache\n").unwrap();
+        write_to(&tmp).unwrap();
+        let repaired = std::fs::read_to_string(&probe).unwrap();
+        assert!(
+            !repaired.contains("someone edited"),
+            "a drifted file is overwritten from the package"
+        );
+        assert_ne!(mtime(&probe), before, "and its mtime moves");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

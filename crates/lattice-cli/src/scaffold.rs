@@ -8,6 +8,21 @@
 //! with no separate checkout, matched to this editor's version. The user edits
 //! `src/lib.rs`, builds to `wasm32-wasip2`, drops the artifact in, and reloads.
 //! Refuses to clobber an existing non-empty directory.
+//!
+//! ## WT.2b — the `wit/` written here is a seed, not the mechanism
+//!
+//! This copy used to be the *only* one a scaffolded project ever got, and that
+//! was the defect: it was made once and never refreshed, so it silently became a
+//! fork of an API that kept moving. The refresh now lives in the plugin build
+//! service ([`lattice_plugin_loader::build`]), which rewrites `wit/` from the
+//! canonical package immediately before it invokes cargo — so the component is
+//! always compiled against the API of the process about to instantiate it.
+//!
+//! The seed still earns its place: `wit_bindgen::generate!` needs the files on
+//! disk to expand, so without it rust-analyzer cannot resolve a single symbol in
+//! the freshly scaffolded `src/lib.rs` until the editor has built it once. It is
+//! a convenience for the first minute of editing, and nothing downstream now
+//! depends on it staying current.
 
 use std::path::Path;
 
@@ -364,7 +379,11 @@ fn prepare_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write the editor's embedded `wit/` API package into `dir/wit/`.
+/// Seed `dir/wit/` with the editor's embedded API package.
+///
+/// A seed, not a sync — see the module docs. The build service refreshes this
+/// on every build; what it buys here is a project whose `wit_bindgen::generate!`
+/// expands in an IDE before the editor has ever built it.
 fn write_wit_package(dir: &Path) -> Result<()> {
     for (name, content) in crate::WIT_FILES {
         std::fs::write(dir.join("wit").join(name), content)

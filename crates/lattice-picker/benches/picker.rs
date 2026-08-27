@@ -127,7 +127,11 @@ fn refilter(c: &mut Criterion) {
     let mut g = c.benchmark_group("picker::refilter");
     for size in [500usize, 5_000] {
         let picker = seated_picker(size);
-        for query in ["", "f", "file_"] {
+        // `"module file"` is the orderless case: two components, each
+        // running the full 5-tier ladder over every candidate. It is
+        // the worst shape the matcher sees per keystroke, so it is the
+        // one the sub-frame budget has to hold for.
+        for query in ["", "f", "file_", "module file"] {
             let id = format!("n={size},query={:?}", query);
             g.bench_with_input(BenchmarkId::from_parameter(id), &query, |b, &q| {
                 b.iter_with_setup(

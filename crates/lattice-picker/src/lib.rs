@@ -76,8 +76,8 @@ pub use transient::{
 use std::path::PathBuf;
 
 use lattice_completion::{
-    CandidateData, CompletionPipeline, FuzzyDisplayMatcher, MatchScore, MruRanker, RawCandidate,
-    RenderedCandidate,
+    CandidateData, CompletionPipeline, FuzzyDisplayMatcher, MatchScore, MruRanker,
+    OrderlessDisplayMatcher, RawCandidate, RenderedCandidate,
 };
 
 /// `CandidateData::Extension { kind_id }` value the picker stamps
@@ -436,6 +436,14 @@ pub struct Picker {
     /// [`Self::set_live_source_mode`] right after opening the
     /// picker, before the first batch lands.
     live_source_mode: bool,
+    /// Whether the query is read as a set of whitespace-separated
+    /// orderless components (`picker.orderless`, default on) or as a
+    /// single token. Mirrors the option at picker-open rather than
+    /// being read per keystroke: `lattice-picker` deliberately carries
+    /// no config dependency (the crate stays free of host types so the
+    /// off-thread guarantee is structural), and the value cannot change
+    /// under a picker that is already on screen.
+    orderless: bool,
     /// True while an async fetch for this picker is in flight
     /// (the initial grep on `:picker grep <pat>`, or a live
     /// re-query after a keystroke). Both renderers surface it as
@@ -515,6 +523,7 @@ impl Picker {
             mru_bonuses: Vec::new(),
             loading: false,
             live_source_mode: false,
+            orderless: true,
             transient: None,
             transient_state: TransientState::new(),
             transient_stack: Vec::new(),
@@ -660,6 +669,20 @@ impl Picker {
     /// other state predicates.
     pub fn is_live_source_mode(&self) -> bool {
         self.live_source_mode
+    }
+
+    /// Mirror the `picker.orderless` option onto this picker. The host
+    /// calls this once at picker-open time, alongside
+    /// [`Self::set_live_source_mode`]; the flag stays put for the
+    /// picker's lifetime so the result list cannot change semantics
+    /// underneath a user who is mid-query.
+    pub fn set_orderless(&mut self, orderless: bool) {
+        self.orderless = orderless;
+    }
+
+    /// Whether this picker splits its query into orderless components.
+    pub fn is_orderless(&self) -> bool {
+        self.orderless
     }
 
     /// Stamp the parallel `mru_bonuses` vec the matcher reads
@@ -928,9 +951,13 @@ impl Picker {
         // the shared match+rank entry point in `lattice-completion`.
         //
         // Picker-specific pipeline shape:
-        //   - matcher: `FuzzyDisplayMatcher` — picker rows match
-        //     on `display` (user-visible label), not `text` (which
-        //     carries the routing payload).
+        //   - matcher: `OrderlessDisplayMatcher` (or
+        //     `FuzzyDisplayMatcher` when `picker.orderless=false`) —
+        //     picker rows match on `display` (user-visible label), not
+        //     `text` (which carries the routing payload). The two
+        //     agree exactly on a query with no whitespace; orderless
+        //     only diverges once the user types a space, so the
+        //     option's cost is confined to multi-word queries.
         //   - rankers: `MruRanker` capturing the picker's bonus
         //     map via the same index-in-CandidateData encoding the
         //     prior inline path used. The ranker subsumes the
@@ -945,9 +972,14 @@ impl Picker {
         // as a within-tier tie-breaker rather than a tier
         // override.
         let bonuses = self.mru_bonuses.clone();
+        let matcher: std::sync::Arc<dyn lattice_completion::CandidateMatcher> = if self.orderless {
+            std::sync::Arc::new(OrderlessDisplayMatcher)
+        } else {
+            std::sync::Arc::new(FuzzyDisplayMatcher)
+        };
         let pipeline = CompletionPipeline {
             generators: Vec::new(),
-            matcher: std::sync::Arc::new(FuzzyDisplayMatcher),
+            matcher,
             rankers: vec![std::sync::Arc::new(MruRanker::new(move |raw| {
                 bonus_for_raw(raw, &bonuses)
             }))],
@@ -1444,6 +1476,106 @@ mod tests {
         p.append_query('z');
         p.append_query('z');
         assert_eq!(p.candidates.len(), 0, "non-live mode must filter");
+    }
+
+    // ---- orderless query matching ----
+
+    /// File-shaped fixture: the orderless case that matters is a path
+    /// whose memorable fragments sit in the "wrong" order relative to
+    /// how the user recalls them.
+    fn path_fixture() -> Vec<RawCandidate> {
+        [
+            "crates/lattice-picker/src/refilter.rs",
+            "crates/lattice-completion/src/orderless.rs",
+            "crates/lattice-picker/tests/refilter_test.rs",
+            "docs/dev/architecture/picker.md",
+        ]
+        .into_iter()
+        .map(|p| {
+            let mut raw = RawCandidate::plain(p, CandidateKind::Plain);
+            raw.display = p.to_string();
+            raw
+        })
+        .collect()
+    }
+
+    fn path_picker(query: &str) -> Picker {
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_raw_candidates(path_fixture());
+        for c in query.chars() {
+            p.append_query(c);
+        }
+        p
+    }
+
+    fn displays(p: &Picker) -> Vec<&str> {
+        p.candidates
+            .iter()
+            .map(|c| c.raw.display.as_str())
+            .collect()
+    }
+
+    /// The headline behaviour: two fragments, either order, matching a
+    /// path that contains neither as a contiguous run.
+    #[test]
+    fn a_space_separated_query_matches_components_in_any_order() {
+        for query in ["pick refil", "refil pick"] {
+            let p = path_picker(query);
+            assert!(
+                displays(&p).contains(&"crates/lattice-picker/src/refilter.rs"),
+                "query {query:?} should reach refilter.rs, got {:?}",
+                displays(&p)
+            );
+        }
+    }
+
+    /// Before orderless the same query matched nothing, because the
+    /// whole string had to appear contiguously. This is the regression
+    /// that would silently undo the feature.
+    #[test]
+    fn a_space_separated_query_is_not_matched_as_one_literal_token() {
+        let mut p = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        p.set_orderless(false);
+        p.set_raw_candidates(path_fixture());
+        for c in "pick refil".chars() {
+            p.append_query(c);
+        }
+        assert!(
+            p.candidates.is_empty(),
+            "with orderless off the query is one token and matches nothing"
+        );
+    }
+
+    #[test]
+    fn a_negated_component_excludes_matching_rows() {
+        let p = path_picker("refilter !test");
+        assert_eq!(displays(&p), vec!["crates/lattice-picker/src/refilter.rs"]);
+    }
+
+    /// A single-token query must behave exactly as it did before
+    /// orderless landed — same rows, same order. Orderless is only
+    /// allowed to change what happens after a space is typed.
+    #[test]
+    fn a_single_token_query_is_unchanged_by_orderless() {
+        let with = path_picker("picker");
+        let mut without = Picker::new("files", PickerSource::Files, PickerAction::OpenFile);
+        without.set_orderless(false);
+        without.set_raw_candidates(path_fixture());
+        for c in "picker".chars() {
+            without.append_query(c);
+        }
+        assert_eq!(displays(&with), displays(&without));
+    }
+
+    /// A trailing space is what the user has typed halfway through a
+    /// second component. The list must not blank out under them.
+    #[test]
+    fn a_trailing_space_does_not_empty_the_list() {
+        let p = path_picker("picker ");
+        assert!(
+            !p.candidates.is_empty(),
+            "mid-typing whitespace must be inert, not a filter"
+        );
     }
 
     #[test]

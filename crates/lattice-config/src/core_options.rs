@@ -875,6 +875,19 @@ crate::options! {
     #[name("picker.mru.persist")]
     pub PickerMruPersist: bool = true;
 
+    /// Whether a picker query is read as a set of whitespace-
+    /// separated components (`true`, the default) or as one
+    /// literal token (`false`, the pre-orderless behaviour).
+    ///
+    /// With orderless on, `pick refil` matches
+    /// `lattice-picker/src/refilter.rs` regardless of which
+    /// fragment the user recalls first; `!frag` excludes rows
+    /// containing `frag`, and `foo\ bar` matches a literal
+    /// space. A query with no whitespace behaves identically
+    /// either way, so this only changes multi-word queries.
+    #[name("picker.orderless")]
+    pub PickerOrderless: bool = true;
+
     /// Where the picker UI is drawn. `"minibuffer"` renders
     /// vertico-style: prompt sits on the cmdline row and the
     /// candidate list fans above it (TUI) / above the status

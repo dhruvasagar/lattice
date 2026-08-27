@@ -1359,6 +1359,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// End-to-end: a two-fragment query typed into a *real*
+    /// `:picker files` narrows to the file containing both, even
+    /// though neither fragment is adjacent to the other in the path.
+    ///
+    /// The unit tests in `lattice-picker` prove the matcher; this one
+    /// proves the option reaches a picker opened the way the user
+    /// opens one. `set_active_picker` is the seam that carries it, and
+    /// a picker that skipped that seam would pass every matcher test
+    /// and still ignore `picker.orderless`.
+    #[test]
+    fn orderless_query_narrows_a_real_files_picker() {
+        let tmp = crate::app::test_helpers::unique_tempdir();
+        std::fs::create_dir_all(tmp.join("alpha")).unwrap();
+        std::fs::write(tmp.join("alpha/refilter.rs"), "").unwrap();
+        std::fs::write(tmp.join("alpha/unrelated.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        for c in "alph refil".chars() {
+            app.apply(Action::PickerAppend(c));
+        }
+        let rows: Vec<String> = app
+            .editor
+            .picker
+            .as_ref()
+            .expect("picker open")
+            .candidates
+            .iter()
+            .map(|c| c.raw.display.clone())
+            .collect();
+        assert_eq!(rows.len(), 1, "expected only refilter.rs, got {rows:?}");
+        assert!(rows[0].contains("refilter.rs"), "got {rows:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The escape hatch has to actually escape: with the option off,
+    /// the same query is one literal token and matches nothing.
+    #[test]
+    fn picker_orderless_false_restores_single_token_matching() {
+        let tmp = crate::app::test_helpers::unique_tempdir();
+        std::fs::create_dir_all(tmp.join("alpha")).unwrap();
+        std::fs::write(tmp.join("alpha/refilter.rs"), "").unwrap();
+        let mut app = app_with("hi\n", 5);
+        app.editor
+            .config
+            .parse_and_set_command("picker.orderless=false")
+            .unwrap();
+        app.open_picker("files".into(), vec![tmp.display().to_string()]);
+        for c in "alph refil".chars() {
+            app.apply(Action::PickerAppend(c));
+        }
+        assert!(
+            app.editor
+                .picker
+                .as_ref()
+                .expect("picker open")
+                .candidates
+                .is_empty(),
+            "with the option off the space is part of the token"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     // ---- Slice 2: live-picker debounce + drain tests --------
     //
     // These pin the App-side wiring (state install, debounce

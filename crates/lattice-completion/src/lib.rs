@@ -26,6 +26,7 @@ pub mod builtins;
 pub mod cache;
 pub mod candidate;
 pub mod insert;
+pub mod orderless;
 pub mod path;
 pub mod pipeline;
 pub mod registry;
@@ -39,7 +40,7 @@ pub use crate::builtins::annotators::{
     KindLabelAnnotator,
 };
 pub use crate::builtins::matchers::{
-    FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher,
+    FuzzyDisplayMatcher, FuzzyMatcher, OrderlessDisplayMatcher, PrefixMatcher, SubstringMatcher,
 };
 pub use crate::builtins::rankers::{AlphabeticalRanker, MruRanker, ScoreRanker};
 pub use crate::builtins::{CompletionBuiltins, populate};
@@ -53,6 +54,9 @@ pub use crate::insert::{
     InsertContext, InsertRanker, InsertSource, LSP_COMPLETION_SOURCE_ID, PATH_SOURCE_ID,
     PerLanguageOverrides, SNIPPET_SOURCE_ID, SourceId, TREE_SITTER_SYMBOL_SOURCE_ID,
     canonical_source_id, fuzzy_match, per_language_defaults,
+};
+pub use crate::orderless::{
+    ORDER_BONUS, OrderlessComponent, orderless_match, parse_orderless_query,
 };
 pub use crate::path::PathCompletionSource;
 pub use crate::pipeline::CompletionPipeline;

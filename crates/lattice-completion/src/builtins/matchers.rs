@@ -128,6 +128,29 @@ impl CandidateMatcher for FuzzyDisplayMatcher {
     }
 }
 
+/// `match:orderless-display`. [`FuzzyDisplayMatcher`] with the query
+/// read as a *set* of whitespace-separated components rather than one
+/// token — see [`crate::orderless`] for the syntax and scoring.
+///
+/// Matches `display` for the same reason [`FuzzyDisplayMatcher`] does:
+/// picker rows carry a routing payload in `text` that the user never
+/// sees and must not be able to match against.
+///
+/// The single-component case delegates to [`crate::fuzzy_match`]
+/// verbatim, so swapping a picker from `FuzzyDisplayMatcher` to this
+/// one changes nothing until the user types a space.
+pub struct OrderlessDisplayMatcher;
+
+impl CandidateMatcher for OrderlessDisplayMatcher {
+    fn matches(
+        &self,
+        query: &str,
+        candidate: &RawCandidate,
+    ) -> Option<(MatchScore, Vec<Range<usize>>)> {
+        crate::orderless_match(query, &candidate.display)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

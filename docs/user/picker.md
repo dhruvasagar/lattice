@@ -203,6 +203,28 @@ highlighted in each row. Ranking blends the fuzzy-match score with
 a frecency bonus (see [MRU ranking](#mru-ranking)), so a strong
 match wins but recent picks break ties.
 
+**Space separates independent fragments.** A query is a *set* of
+words, all of which must match, in whatever order you type them.
+So `pick refil` finds `crates/lattice-picker/src/refilter.rs` — and
+so does `refil pick`. This is the fastest way to narrow a deep tree:
+type the part of the directory you remember, a space, then the part
+of the filename you remember, and stop thinking about which came
+first. Every fragment is highlighted in the row.
+
+Two more pieces of syntax:
+
+| Type this | To get |
+|---|---|
+| `parse !test` | rows matching `parse` but **not** containing `test` |
+| `my\ file` | one fragment with a literal space in it |
+| `\!bang` | one fragment starting with a literal `!` |
+
+Fragments that land in the order you typed them score slightly
+higher, so the natural left-to-right guess still floats to the top
+when several rows match equally well. A query with no space behaves
+exactly as it always has. If you'd rather have the old
+single-token behaviour, `:set picker.orderless=false`.
+
 **Live preview.** Moving the selection previews the candidate. For
 `lines`, `grep`, and `outline` the preview scrolls the underlying
 buffer to (and centres) the target line, so you see the result in
@@ -331,6 +353,7 @@ than refusing to open.
 
 | Option | Default | Meaning |
 |---|---|---|
+| `picker.orderless` | `true` | Read a query as space-separated fragments that must all match, in any order. Off = the whole query is one literal token. |
 | `picker.mru.enabled` | `true` | Frecency ranking on/off. Off = rank by pure match score. |
 | `picker.mru.recency-half-life-days` | `7` | Days for a pick's recency weight to halve. |
 | `picker.mru.cap-per-namespace` | `1000` | Max history entries per source before the lowest-frecency one is evicted. |

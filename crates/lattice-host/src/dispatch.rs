@@ -7031,7 +7031,27 @@ impl Editor {
     /// used to seed is gone — preview no longer swaps the active buffer, so
     /// there is no origin to remember (the pane stays committed to its own
     /// buffer throughout preview; accept clears the projection).
-    pub fn set_active_picker(&mut self, p: lattice_picker::Picker) {
+    pub fn set_active_picker(&mut self, mut p: lattice_picker::Picker) {
+        // Mirror `picker.orderless` onto the picker as it is seated.
+        // This is the seam every picker-open path funnels through, so
+        // the option is honoured once here rather than at each of the
+        // dozen-plus `Picker::new` call sites — a per-site copy is the
+        // duplication that silently grows a gap (one new picker that
+        // forgets the line, and the option quietly stops applying to
+        // it).
+        //
+        // `lattice-picker` carries no config dependency on purpose
+        // (that missing edge is what makes its off-thread guarantee
+        // structural), so the value is snapshotted here rather than
+        // read per keystroke. A picker already on screen therefore
+        // keeps the matching semantics it opened with, which is also
+        // what the user wants mid-query.
+        p.set_orderless(
+            self.config
+                .get_typed::<lattice_config::core_options::PickerOrderless>()
+                .map(|v| *v)
+                .unwrap_or(true),
+        );
         self.picker = Some(p);
     }
 

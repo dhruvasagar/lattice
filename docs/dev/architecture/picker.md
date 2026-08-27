@@ -117,6 +117,54 @@ hot path** — the only crossings are open and accept (the
 §5.5 budget targets typed call < 500ns p99; we use the
 budget twice per pick, not 50× per second).
 
+### 3.1 Orderless matching — the query is a set, not a token
+
+Stage two's matcher reads the query as a **set of
+whitespace-separated components**, all of which must match, in any
+order. `pick refil` finds `lattice-picker/src/refilter.rs` whether
+the user recalls the crate or the file first. The implementation is
+`lattice_completion::orderless_match`; the picker reaches it through
+`OrderlessDisplayMatcher`, and `picker.orderless=false` swaps back to
+the single-token `FuzzyDisplayMatcher`.
+
+| Written | Means |
+|---|---|
+| `foo bar` | both `foo` and `bar` must match, either order |
+| `!foo` | rows containing `foo` are excluded (literal, not fuzzy) |
+| `foo\ bar` | one component containing a literal space |
+| `\!foo` | one component whose first character is a literal `!` |
+
+Each component runs the full five-tier ladder (exact → prefix →
+word-boundary → substring → subsequence), rather than the stricter
+prefix-only style emacs' `orderless-prefixes` uses. The reasoning is
+the symptom, not parity: the complaint orderless answers here is
+"too few matches", and a prefix-only style narrows the result set.
+Prefix preference is preserved where it costs nothing — in the
+**ranking**. A component landing on the prefix tier scores 800
+against a substring's 400, so widening what matches does not scramble
+what sorts first.
+
+The candidate's score is the **mean** of its positive components'
+tier scores, plus a 50-point bonus when the components happen to land
+left-to-right. Mean rather than sum keeps a multi-word query inside
+the same 0..1000 band a single-word query produces, so the MRU bonus
+(0..~110, calibrated in §6 as a within-tier tie-break) keeps meaning
+the same thing. The order bonus sits below the 200-point gap between
+adjacent tiers, so it can never promote a subsequence match above a
+substring one.
+
+A query with no whitespace delegates verbatim to the single-token
+`fuzzy_match` — same score, same ranges. Orderless is only allowed to
+change behaviour after the user types a space, which is what makes it
+safe to leave on by default for every picker.
+
+`picker.orderless` is snapshotted onto the `Picker` at open time
+rather than read per keystroke. `lattice-picker` deliberately carries
+no config dependency — that missing edge is what makes its
+off-the-UI-thread guarantee structural rather than a matter of
+discipline — and a picker already on screen must not change matching
+semantics under a user who is mid-query.
+
 ---
 
 ## 4. The trait surface
@@ -1041,6 +1089,15 @@ four artefacts together):
 - `lattice-picker/tests/matcher.rs` — fuzzy/substring
   invariants, query-position-irrelevant ranking, case
   folding.
+- `lattice-completion/src/orderless.rs::tests` — §3.1
+  component parsing (escapes, negation, a half-typed
+  trailing backslash), any-order matching, score band,
+  and range validity on non-ASCII targets.
+- `lattice-picker/src/lib.rs::tests` — §3.1 through the
+  picker: a two-component query reaches a row containing
+  neither fragment contiguously, `!frag` excludes, a
+  single-token query is byte-identical with orderless on
+  and off, and a trailing space does not blank the list.
 - `lattice-picker/tests/rank.rs` — score combining,
   weight clamping, frecency monotonicity (older entries
   rank lower with all else equal).
@@ -1061,7 +1118,12 @@ four artefacts together):
 `lattice-picker/benches/picker.rs` (criterion):
 
 - `open_inline` × {100, 500, 5000} candidate counts.
-- `refilter` × {empty query, 1-char, 5-char} × {500, 5000}.
+- `refilter` × {empty query, 1-char, 5-char, 2-component
+  orderless} × {500, 5000}. The orderless row is the
+  worst per-keystroke shape the matcher sees — every
+  component runs the full tier ladder over every
+  candidate — so it is the one §7's sub-frame budget has
+  to hold for.
 - `mru_snapshot` × candidate count.
 - `mru_record` (single accept).
 
@@ -1071,6 +1133,10 @@ regressions ≥ 20% fail the bench job.
 
 ### 9.3 Graceful error handling
 
+- Malformed orderless query (a lone `!`, a trailing `\`)
+  → treated as literal text, never an error. The user is
+  mid-keystroke; a picker that emptied its list on every
+  half-typed escape would be unusable.
 - Unknown source id → echo, picker stays closed. No panic.
 - `source.init` returns error → echo `"picker: <source>: <error>"`,
   picker stays closed.

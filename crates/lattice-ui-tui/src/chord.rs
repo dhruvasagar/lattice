@@ -88,15 +88,25 @@ pub fn from_event(event: &KeyEvent) -> Option<KeyChord> {
         KeyCode::Insert => KeyKind::Special(SpecialKey::Insert),
         KeyCode::Delete => KeyKind::Special(SpecialKey::Delete),
         KeyCode::F(n) if (1..=24).contains(&n) => KeyKind::Special(SpecialKey::F(n)),
+        // A space carrying ANY modifier is `Special::Space`; a bare one is a
+        // literal char.
+        //
+        // **This was described in a comment here and never implemented**, and
+        // the gap is why a documented `<C-Space>` binding did nothing:
+        // `parse_chord_sequence("<C-Space>")` yields `Special(Space) + CTRL`,
+        // a real Ctrl+Space arrived as `Char(' ') + CTRL`, and the trie lookup
+        // missed in silence. The GPUI peer has always had the rule right
+        // (`gpui_chord.rs`: it collapses to a char only when `mods.is_empty()`),
+        // so this was a renderer-parity break too.
+        //
+        // Matched before the general `Char` arm rather than inside it, because
+        // that arm's own first branch read as though it did this and did not —
+        // the shape that hid the bug in the first place.
+        KeyCode::Char(' ') if mods == KeyMods::NONE => KeyKind::Char(' '),
+        KeyCode::Char(' ') => KeyKind::Special(SpecialKey::Space),
         KeyCode::Char(c) => {
             let ctrl_or_alt = mods.ctrl() || mods.alt();
-            if c == ' ' && !ctrl_or_alt {
-                // Plain space renders as a literal `' '` when
-                // un-modified; promote to `Special::Space` only
-                // if the chord carries a modifier (so `<C-Space>`
-                // is unambiguous).
-                KeyKind::Char(' ')
-            } else if ctrl_or_alt && c.is_ascii_alphabetic() {
+            if ctrl_or_alt && c.is_ascii_alphabetic() {
                 // Ctrl / Alt + letter normalises to lowercase.
                 // Shift on a ctrl-letter is preserved (`<C-S-c>`
                 // stays distinct from `<C-c>`).
@@ -143,6 +153,52 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }
+    }
+
+    /// **A modified space must promote to `SpecialKey::Space`.**
+    ///
+    /// This is the half of the round trip that decides whether a binding can
+    /// ever fire. `parse_chord_sequence("<C-Space>")` yields
+    /// `Special(Space) + CTRL`, so a real keypress that converts to
+    /// `Char(' ') + CTRL` cannot match it and the trie lookup silently misses —
+    /// which is exactly how org's documented `<C-Space>` checkbox toggle did
+    /// nothing while its own tests passed (they call `parse_chord_sequence` on
+    /// both sides and never reach this function).
+    ///
+    /// GPUI already gets this right (`gpui_chord.rs`, "if it carries a modifier
+    /// it stays a `SpecialKey::Space`"), so this was a renderer-parity break as
+    /// well as a bug.
+    #[test]
+    fn ctrl_space_promotes_to_the_special_key_the_parser_produces() {
+        let chord = from_event(&ev(KeyCode::Char(' '), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(chord.key, KeyKind::Special(SpecialKey::Space));
+        assert!(chord.mods.ctrl());
+    }
+
+    /// The round trip is what actually matters, so assert it directly against
+    /// the parser rather than against a hand-written expectation: whatever
+    /// `<C-Space>` means, a real Ctrl+Space must mean the same thing.
+    #[test]
+    fn a_real_ctrl_space_matches_what_the_binding_string_parses_to() {
+        let parsed = lattice_protocol::parse_chord_sequence("<C-Space>").expect("parses");
+        let pressed = from_event(&ev(KeyCode::Char(' '), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(parsed.as_slice(), &[pressed]);
+    }
+
+    /// Alt too — the rule is "any modifier", not "control".
+    #[test]
+    fn alt_space_promotes_as_well() {
+        let chord = from_event(&ev(KeyCode::Char(' '), KeyModifiers::ALT)).unwrap();
+        assert_eq!(chord.key, KeyKind::Special(SpecialKey::Space));
+    }
+
+    /// And an UNMODIFIED space stays a literal char, because that is what
+    /// typing a space in Insert mode has to be. Promoting it would break every
+    /// space a user types, which is a far worse bug than the one being fixed.
+    #[test]
+    fn a_bare_space_stays_a_literal_char() {
+        let chord = from_event(&ev(KeyCode::Char(' '), KeyModifiers::NONE)).unwrap();
+        assert_eq!(chord.key, KeyKind::Char(' '));
     }
 
     #[test]

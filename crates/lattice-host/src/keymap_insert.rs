@@ -208,7 +208,13 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
     handle.bind(
         layer,
         mode,
-        &[lit(KeyChord::ctrl(' '))],
+        // `Special(Space) + CTRL`, NOT `KeyChord::ctrl(' ')`. The two are
+        // different chords, and only this one is what
+        // `parse_chord_sequence("<C-Space>")` produces — which is what every
+        // plugin binding and user keymap goes through. Binding the other form
+        // worked only while the TUI's key decoding was wrong in the matching
+        // way; it is a chord nothing can type now.
+        &[lit(ctrl_space())],
         CommandInvocation::of(actions.completion_trigger),
         source(),
     );
@@ -344,7 +350,7 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
     bind_invocation(
         &mut trie,
         layer,
-        &[lit(KeyChord::ctrl(' '))],
+        &[lit(ctrl_space())],
         actions.completion_filter_clear,
     );
     bind_invocation(
@@ -627,8 +633,28 @@ fn literal_text_fallback(chord: &KeyChord) -> Action {
     }
     match chord.key {
         KeyKind::Char(c) => Action::Insert(c.to_string()),
+        // A modified space that no binding claimed still types a space.
+        //
+        // Without this arm, promoting a modified space to `Special(Space)`
+        // would make Shift+Space stop inserting anything — it would reach here
+        // as a `Special` and fall out as `Action::None`. Narrow (a Unix
+        // terminal reports Shift+Space with no modifier at all; the Windows
+        // console does not), but "a key that used to type a space now does
+        // nothing" is a worse bug than the one being fixed, and GPUI has been
+        // silently doing exactly that.
+        KeyKind::Special(SpecialKey::Space) => Action::Insert(" ".to_string()),
         _ => Action::None,
     }
+}
+
+/// The `<C-Space>` chord as the PARSER spells it.
+///
+/// `KeyChord::ctrl(' ')` is `Char(' ') + CTRL` and is a different chord — one
+/// no real keypress produces. Anything binding `<C-Space>` must agree with
+/// `parse_chord_sequence`, which is the path every plugin and user binding
+/// takes.
+fn ctrl_space() -> KeyChord {
+    KeyChord::new(KeyKind::Special(SpecialKey::Space), KeyMods::CTRL)
 }
 
 fn lit(chord: KeyChord) -> ChordPattern {

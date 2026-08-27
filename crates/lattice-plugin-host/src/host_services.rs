@@ -59,25 +59,37 @@ fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
     })
 }
 
-/// The same check for a FILE, gating on its **parent directory**.
+/// The same check for a FILE — on the file itself when it exists, on its parent
+/// only when it does not.
 ///
-/// [`grant_permits_walk`] canonicalizes the path itself, which a file that does
-/// not exist yet cannot do — it then falls back to the raw path, and on any
-/// platform where the granted prefix canonicalizes to something else (macOS
-/// `/var` → `/private/var`) the comparison fails and the call is refused. For a
-/// walk that is a harmless fail-safe. For a read it is a wrong answer to a
-/// question callers legitimately ask: "is there anything in this file yet?" is
-/// the ordinary first-capture case, and reporting it as a *permission* problem
-/// sends the plugin author to their manifest instead of their path.
+/// **The file itself first, and that ordering is a security property.**
+/// Canonicalizing resolves symlinks, so `<granted>/innocent.org` pointing at
+/// `/etc/passwd` resolves outside the prefix and is refused. Gating on the
+/// parent alone would pass it — the parent *is* granted — and the read would
+/// then follow the link straight out of the sandbox. Pinned by
+/// `a_symlink_out_of_the_grant_is_denied`, which failed against exactly that
+/// mistake before this ordering existed.
 ///
-/// The parent exists in that case, so canonicalizing it resolves cleanly and the
-/// gate stays exact. Escape attempts are still caught: `<granted>/../../etc` has
-/// a parent that canonicalizes outside the prefix and is denied.
+/// The parent fallback exists only for a path that does not resolve, and there
+/// it fixes a different wrong answer. [`grant_permits_walk`] falls back to the
+/// raw path, and wherever the granted prefix canonicalizes elsewhere (macOS
+/// `/var` → `/private/var`) the comparison fails and the call is refused — so a
+/// file that simply does not exist yet reports as a *permission* problem,
+/// sending a plugin author to their manifest instead of their path. "Is there
+/// anything in this file yet?" is the ordinary first-capture case and deserves
+/// a truthful answer.
+///
+/// The fallback cannot be used to smuggle anything past the check: it only
+/// applies when nothing is there to read, so the subsequent `read` fails
+/// regardless. `<granted>/../../etc/passwd` resolves as a file and is denied on
+/// the first branch.
 fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
+    if file.exists() {
+        return grant_permits_walk(grant, file);
+    }
     match file.parent() {
-        Some(parent) if parent.as_os_str().is_empty() => grant_permits_walk(grant, file),
-        Some(parent) => grant_permits_walk(grant, parent),
-        None => grant_permits_walk(grant, file),
+        Some(parent) if !parent.as_os_str().is_empty() => grant_permits_walk(grant, parent),
+        _ => grant_permits_walk(grant, file),
     }
 }
 
@@ -218,6 +230,49 @@ mod tests {
         assert!(
             !err.contains("private"),
             "and the denial does not leak what it refused to read: {err}"
+        );
+    }
+
+    /// **A symlink inside the granted directory must not read outside it.**
+    ///
+    /// The gate canonicalizes so that a path resolving out of the grant is
+    /// refused; gating on the parent directory alone would pass this — the
+    /// parent IS granted — and then `read` would follow the link. That is a
+    /// capability bypass, not a cosmetic bug: the whole point of the grant is
+    /// that a plugin reaches only what it was given.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_grant_is_denied() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let secret = other.path().join("secret");
+        std::fs::write(&secret, "private").unwrap();
+
+        let link = granted.path().join("innocent.org");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let grant = read_grant(granted.path().to_path_buf());
+        let err = read_within_grant(&grant, link.to_str().unwrap())
+            .expect_err("a symlink escaping the grant must be denied");
+        assert!(err.contains("denied"), "{err}");
+        assert!(!err.contains("private"), "and leaks nothing: {err}");
+    }
+
+    /// A symlink that stays INSIDE the grant is fine — the check is about where
+    /// the target lands, not about symlinks being suspicious.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_within_the_grant_is_permitted() {
+        let granted = tempfile::tempdir().unwrap();
+        let real = granted.path().join("real.org");
+        std::fs::write(&real, "* Tasks\n").unwrap();
+        let link = granted.path().join("alias.org");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let grant = read_grant(granted.path().to_path_buf());
+        assert_eq!(
+            read_within_grant(&grant, link.to_str().unwrap()).unwrap(),
+            "* Tasks\n"
         );
     }
 

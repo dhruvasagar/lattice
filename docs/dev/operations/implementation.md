@@ -6623,8 +6623,18 @@ Both renderer peers' `Effect::OpenTransient` bodies collapsed onto
 `Editor::open_named_transient` on the way, so the async path exists once.
 
 Design: [`../architecture/plugin-transients.md`](../architecture/plugin-transients.md).
-Slice plan: [`slice-plans/org-capture.md`](slice-plans/org-capture.md), which
-sequences it with the org capture overhaul that motivated it.
+Slice plan: [`slice-plans/archive/org-capture.md`](slice-plans/archive/org-capture.md),
+which sequences it with the org capture overhaul that motivated it.
+
+**Org capture is complete (OC.1–OC.6).** Many keyed templates, `%^{Question}`
+fields, `file` and `file+headline` targets, and the placeholder set
+(`%?` `%U` `%T` `%t` `%a` `%%`). Two host slices fell out of it: `default_modes`
+(plural) so a plugin may have more than one mode on by default, and
+**`host-services.read-file`** — a grammar action cannot read a file through
+WASI, because the grammar seam's synchronous linker blocks on a runtime that
+the dispatch thread is already inside, so the read has to be host-side. That
+constraint is now in the plugin-authoring guide; it is invisible until it
+panics.
 
 ---
 

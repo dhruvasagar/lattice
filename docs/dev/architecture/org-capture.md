@@ -1,9 +1,13 @@
 # Org capture: many templates, prompted input
 
-**Status:** designed (OC.1–OC.6). Supersedes the single-template capture that
+**Status:** built (OC.1–OC.6). Supersedes the single-template capture that
 shipped with [`org-mode.md`](org-mode.md)'s OM.11. Depends on
 [`plugin-transients.md`](plugin-transients.md) for the menu. Slice plan:
-[`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md).
+[`../operations/slice-plans/archive/org-capture.md`](../operations/slice-plans/archive/org-capture.md).
+
+**§4's read mechanism changed during the build** — the guest cannot read a file
+from a grammar action, so the target read goes through `host-services.read-file`
+rather than WASI. The section says why; read it before touching that path.
 
 ## 1. What OM.11 shipped, and why it is not enough
 

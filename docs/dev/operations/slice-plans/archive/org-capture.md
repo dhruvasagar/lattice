@@ -1,9 +1,9 @@
 # Org capture overhaul — slice plan
 
 > Design:
-> [`../../architecture/org-capture.md`](../../architecture/org-capture.md)
+> [`../../../architecture/org-capture.md`](../../../architecture/org-capture.md)
 > (the capture system) and
-> [`../../architecture/plugin-transients.md`](../../architecture/plugin-transients.md)
+> [`../../../architecture/plugin-transients.md`](../../../architecture/plugin-transients.md)
 > (the seam the menu needs).
 >
 > Sequences both, because the menu is what makes many templates usable and
@@ -11,11 +11,11 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
-seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅, TR.3a ✅,
-TR.3b ✅, OC.4 ✅ — many templates and `%^{Question}` fields both work end to
-end. OC.5a ✅ — `file+headline` targets file where they say they do, which needed
-`host-services.read-file` in the host first. **OC.5b is next**: `%t` and `%a`.
+**Status:** ✅ complete (2026-08-27). Every slice landed; nothing deferred.
+
+Two host slices fell out of this plan that were not in it: `default_modes`
+(plural), and `host-services.read-file` — the second because a grammar action
+turns out to be unable to read a file through WASI at all.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -67,8 +67,8 @@ for the one verb meant to work from anywhere.
 | TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | ✅ |
 | OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | ✅ |
 | OC.5a | `file+headline` targets (+ host `read-file`) | ✅ |
-| OC.5b | `%t` and `%a` — the last two placeholders | 📝 |
-| OC.6 | Docs, ledger, site nav | 📝 |
+| OC.5b | `%t` and `%a` — the last two placeholders | ✅ |
+| OC.6 | Docs, ledger, site nav | ✅ |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench where a
 hot path is touched, tests covering the failure mode as well as the happy
@@ -77,7 +77,7 @@ green, `scripts/precommit.sh <crate>` before each.
 
 ---
 
-## TR.1 — the registry is the editor's 📝
+## TR.1 — the registry is the editor's ✅
 
 `lattice-magit::install` currently does `TransientSourceRegistry::new()` +
 `register_service`. Move the pair to `editor_boot`, beside
@@ -412,7 +412,7 @@ duplicates resolving to the first — all pure, plus three end-to-end through a
 real component covering the headline target, the missing-headline echo, and a
 plain `file` target still appending.
 
-## OC.5b — `%t` and `%a` 📝
+## OC.5b — `%t` and `%a` ✅
 
 `%t` is the active date-only stamp, a sibling of the `%U` / `%T` already built.
 
@@ -425,15 +425,43 @@ carrying the template key) and the fields hop's `OpenTransientPayload.args`
 (already carrying it too). Both are single-string slots, so this needs an
 encoding — `refile::encode`'s tab-token is the precedent.
 
-Tests: `%t` renders date-only; `%a` names the file and line the capture fired
-from, through both the prompt hop and the fields hop; a capture fired from a
-buffer with no path degrades to something rather than an empty link.
+**Solved guest-side, not across the seam.** Both smuggle slots were wrong for
+it: the prompt hop's `buffer-name` is shown to the user and would grow a file
+path, and the fields hop's `args` already carries the template key — both would
+need an encoding for something neither the host nor the menu uses. The origin is
+state whose lifetime is exactly one capture flow, so it lives with the flow, in
+a thread-local beside the `SCAN` one that does the same job for the agenda.
 
-## OC.6 — docs, ledger, site 📝
+Consumed on use, and `capture_open` always writes (including the `None`), so an
+abandoned capture cannot leave an annotation for the next one to inherit — a
+link that would look right and point at a buffer the user was never in.
 
-`doc/org.md` (capture section rewritten, the `<C-x>o` shadowing note), the org
-README's option list, `implementation.md`'s ledger entry, both design
-fragments' statuses, Zola sync.
+`%t` renders identically to `%T` today, and that is a gap in `%T`: org gives it
+a time of day, and the only clock here reads whole days. `%t` is still correct
+now, so templates using it keep meaning what they mean when `%T` is fixed.
+
+Tests: `%t` is date-only and angle-bracketed (active, or the agenda never sees
+it); `%a` substitutes where asked and does not consume a `%^{}` answer; an empty
+annotation leaves no broken link; and end to end, the origin names the buffer
+the capture fired FROM across two dispatches, and is not reused by the next
+capture.
+
+## OC.6 — docs, ledger, site ✅
+
+`doc/org.md`'s placeholder table had listed `%?` / `%U` / `%T` / `%%` and
+stopped — wrong since OC.4 shipped `%^{Question}`, and wronger with `%t` and
+`%a`. A table that silently omits half a vocabulary is worse than no table,
+because it reads as complete.
+
+`%a` and headline targets each got a paragraph rather than a row: the row cannot
+carry the part that matters (why `%a` is what makes capture-while-reading-code
+worth having; that a headline match survives tags and TODO keywords, which a
+user would otherwise discover by losing notes). The org README's option list
+still named only the pre-OC.2 pair, and its capability note now says the write
+grant already covers the read a headline target needs.
+
+`implementation.md` records the two host slices this plan produced without
+planning them.
 
 ---
 

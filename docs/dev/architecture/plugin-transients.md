@@ -3,7 +3,7 @@
 **Status:** TR.1, TR.2a, TR.2b, TR.3a, TR.3b landed. Extends
 [`plugin-host.md`](plugin-host.md)
 (the seam vocabulary). Slice plan:
-[`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md),
+[`../operations/slice-plans/archive/org-capture.md`](../operations/slice-plans/archive/org-capture.md),
 which sequences this together with the org capture overhaul that motivated
 it.
 

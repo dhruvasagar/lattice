@@ -2,7 +2,7 @@
 
 > **Design fragment.** Contracts, data model, rationale, rejected
 > alternatives, paramount-goal alignment. Sequencing lives in
-> [`../operations/slice-plans/inline-media.md`](../operations/slice-plans/inline-media.md).
+> [`../operations/slice-plans/archive/inline-media.md`](../operations/slice-plans/archive/inline-media.md).
 
 **Status: design only.** Nothing here is built. This fragment exists
 because Path 4 was pulled back from post-1.0 (2026-08-24) and the

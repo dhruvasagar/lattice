@@ -2,10 +2,17 @@
 
 **Status:** **PHASE 7 COMPLETE (PH7.0–PH7.12 ✅) — ⭐ exit reached (2026-07-12); WIT-seam
 hardening + teardown done (2026-07-14).** The host runtime, capability/WASI model, every
-exercised WIT seam, the `fuzzy-finder` validation plugin, and the CI overhead gates all ship.
-Editor-side loading (a `.wasm` a running editor discovers + loads), the on-disk plugin manager,
-and `init.rs`-as-WASM config are **Phase 8** — the runtime is done; wiring it into the editor is
-the next phase. PH7.0 ✅,
+exercised WIT seam and the CI overhead gates all ship.
+
+> **Two header claims went stale and are corrected here (2026-08-27 audit).**
+> The `fuzzy-finder` validation plugin **no longer exists** — it was the ⭐
+> exit gate, then retired in `0d068f9b` once `plugins/auto-pair` and
+> `plugins/treesitter-context` became real bundled plugins; a stale
+> `rerun-if-changed` on the removed directory was dirtying
+> `lattice-plugin-host` on every build. Don't go looking for it.
+> And Phase 8 is **done**, not next: editor-side loading, the plugin
+> manager and `init.rs`-as-WASM all landed in `plugin-loader.md`
+> (PL8.A–H), which is this plan's completed successor. PH7.0 ✅,
 PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅** (a + b(b1a+b1b+b2) + c + d); **PH7.4 ✅** (⭐ exit,
 a–e): **4a ✅** (picker boundary mirrors + marginalia + context projection), **4b ✅**
 (host-services `walk` seam — first guest→host call, capability-gated), **4c ✅** (host adapter;
@@ -33,7 +40,7 @@ hardening before ABI freeze: crash-quarantine + `PluginCrashed`, registry/keymap
 graceful-degradation audit + fuzz). A conformance
 audit of the whole host is `../../audit/plugin-host-architecture.md` (8 findings; **F1
 resolved**). Design fragment:
-[`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
+[`../../../../architecture/plugin-host.md`](../../../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
 and the `fuzzy-finder` validation plugin.
@@ -1044,7 +1051,7 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
 
 #### PI.1 — `lattice-plugin-api` crate + build-time catalog ✅ (2026-07-13)
 	The wasmtime-free leaf crate owning Facet A's `PluginApiCatalog`, derived from `wit/` at build
-	time so it can't drift. Design fragment: [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md) §5.13.
+	time so it can't drift. Design fragment: [`../../../../architecture/plugin-host.md`](../../../../architecture/plugin-host.md) §5.13.
   - **Landed:** `crates/lattice-plugin-api/` — `build.rs` (`wit-parser` `Resolve::push_dir` over the
 	workspace-root `wit/` → generates `$OUT_DIR/catalog.rs`, two free fns building the public
 	types; `rerun-if-changed` per wit file) + `src/lib.rs` (the `PluginApiCatalog` / `ApiInterface` /
@@ -1418,7 +1425,17 @@ goal, without invalidating live handles):
 - **Test: two plugin `MinorMode` layers → `remove_layer` one → its chord gone from every layer,
   the other survives, idempotent second removal.** Green: keymap 96.
 
-#### PH7.12b.2 — Intern-leak reclamation: DEFERRED (decision C, 2026-07-14) ✅
+#### PH7.12b.2 — Intern-leak reclamation ✅ (deferred here; landed as PL8.F)
+
+> **Closed, 2026-08-27 audit.** This slice was titled "DEFERRED (decision
+> C)" while carrying ✅ — a contradiction that would otherwise block this
+> plan from archiving, and rightly, because a consciously-unbuilt
+> deliverable is open work. It is closed in fact rather than in wording:
+> the durable fix landed as **PL8.F** (`plugin-loader.md`) when the
+> deferral's own named trigger fired. `lattice-config`'s option name is a
+> `Cow<'static, str>`, the `intern` / `Box::leak` helper is gone from
+> `boundary_picker.rs`, and `lattice-plugin-loader`'s
+> `tests/config_reload_leak.rs` is the regression guard.
 The plugin-sourced spec strings (`config_host` option name/doc, `boundary_picker::intern`,
 `boundary_grammar::intern`) are `Box::leak`'d to `&'static str` because the native spec types
 (`PickerSourceSpec`/`ArgSpec`/`ConfigOption`/`SurfaceForm`) hold `&'static str`. 12b.1 already

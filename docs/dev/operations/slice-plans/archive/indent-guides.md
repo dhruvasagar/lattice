@@ -1,6 +1,6 @@
 # `indent-guides` — slice plan (IG.0–IG.6)
 
-> Sequencing for [`docs/dev/architecture/indent-guides.md`](../../../architecture/indent-guides.md).
+> Sequencing for [`docs/dev/architecture/indent-guides.md`](../../../../architecture/indent-guides.md).
 > That fragment owns the *what* and *why*; this file owns the *when* and *in
 > what order*. Opened 2026-08-16, closed 2026-08-16.
 >

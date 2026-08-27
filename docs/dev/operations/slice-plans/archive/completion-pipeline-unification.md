@@ -1,7 +1,7 @@
 # Completion-pipeline unification — slice plan
 
 Sequencing companion to
-[`docs/dev/architecture/completion-pipeline-unification.md`](../../../architecture/completion-pipeline-unification.md).
+[`docs/dev/architecture/completion-pipeline-unification.md`](../../../../architecture/completion-pipeline-unification.md).
 The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status
 per slice lives in [`../implementation.md`](../../implementation.md).

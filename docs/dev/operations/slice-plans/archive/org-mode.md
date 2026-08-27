@@ -2,7 +2,7 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contracts live in
-> [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) —
+> [`../../../../architecture/org-mode.md`](../../../../architecture/org-mode.md) —
 > the mode decomposition, the keymap rationale, the agenda seam shape,
 > rejected alternatives, paramount-goal alignment.
 > The ledger entry is
@@ -65,8 +65,8 @@ corrected as the slices land, not left to drift:
 - `crates/lattice-plugin-host/src/mode_host.rs` (the reject arm + its
   test `a_major_kind_is_rejected_in_phase_7`),
 - `wit/modes.wit` (header comment + the `mode-kind` doc),
-- `slice-plans/plugin-loader.md` PL8.G and
-  `slice-plans/plugin-host.md` PH7.11's deferral note.
+- `slice-plans/archive/plugin-loader.md` PL8.G and
+  `slice-plans/archive/plugin-host.md` PH7.11's deferral note.
 
 ## Sequencing
 
@@ -610,7 +610,7 @@ capture, which is the larger half. (3) is not the feature. (1) protects
 paramount-#2 in the place org actually exposed a gap: the next plugin
 that needs to write beside itself inherits it.
 
-Design: [`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md).
+Design: [`../../../../architecture/cross-file-writes.md`](../../../../architecture/cross-file-writes.md).
 Slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 
 **Unblocked 2026-08-26.** `Effect::WriteToFile` ships, gated on
@@ -801,7 +801,7 @@ different, much smaller feature than the slice describes.
 
 **Decided together with OM.6b** (2026-08-25) and **shipped 2026-08-26**:
 a `write-to-file` effect, host-mediated and `fs:write`-gated. Design:
-[`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md);
+[`../../../../architecture/cross-file-writes.md`](../../../../architecture/cross-file-writes.md);
 slice plan: [`cross-file-writes.md`](cross-file-writes.md).
 
 Refile is now expressible: pick a target (its own picker source), return

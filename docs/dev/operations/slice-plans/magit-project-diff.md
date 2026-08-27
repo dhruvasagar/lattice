@@ -24,6 +24,44 @@ Catalogue entry: A.1 in
 | PD.7a | Added/changed lines coloured | ✅ |
 | PD.7b | Removed lines as virtual rows | ✅ (searchability a known ceiling) |
 | PD.7c | Staleness policy after an edit | ✅ |
+| PD.8 | Excerpt ranges must name rows the file has | ✅ |
+| PD.9 | The view rides `refreshable-view-mode` / `magit-nav-mode` | ✅ |
+| PD.10 | PD.2's owed bench — throughput + actor latency during scan | 📝 |
+| PD.11 | Wire (or delete) `forget_by_document_id` — **it has no caller** | 📝 |
+| PD.12 | Per-excerpt staging | ⛔ |
+| PD.13 | `rev1..rev2` comparison | ⛔ |
+
+**Audit, 2026-08-27.** Four items of open work were sitting *inside*
+slices marked ✅, which is how a plan looks finished and is not. They now
+have IDs so they are visible:
+
+- **PD.10** — PD.2's body already said "the bench is still owed"; it is.
+  `lattice-magit` declares only `headerline` and `hunk_staging` bench
+  targets, and `benchmarks.md` has no project-diff entry. The
+  `actor_latency_during_scan` bench the plan cites as "the model" belongs
+  to the *search* provider.
+- **PD.11 is a real defect, not drift.** `ProjectDiffService::
+  forget_by_document_id` is documented as the `DocumentClosed` cleanup
+  entry point and **nothing calls it** — magit's only `DocumentClosed`
+  subscriber wires `repo_scope`'s same-named method instead. So a closed
+  document never drops its project-diff service entry. PD.1's claimed
+  test does not cover it: `service_tracks_and_forgets_view_state` calls
+  `forget(view)` directly and never drives the event, so it passes with
+  the subscriber absent — which it is. `lattice-lsp`'s `install.rs` is
+  the shape that does it correctly.
+- **PD.12 / PD.13** were deferred in prose with no ID and no successor
+  plan, which is what the archiving rule exists to catch. The design says
+  both are "deferred to a slice, not designed away".
+
+Index write-back is **not** open work: the plan filed it under Deferred,
+but the design lists it under *rejected alternatives*. It is a non-goal.
+
+Also stale: PD.7's body is still written as an unlanded problem statement
+("`project_diff.rs` contains no reference to diff signs… at all") under a
+✅ header — all of it landed. `multibuffer-providers.md`'s A.1 catalogue
+row still reads 📝. And `lattice-magit/src/lib.rs`'s comment says
+`implies` pulls in `magit-core-mode` when PD.9 changed it to
+`magit-nav-mode` — the test one file over now asserts the opposite.
 
 PD.1→PD.2→PD.4 is the spine. PD.3 can land any time after PD.1 (an
 empty view is a legitimate intermediate). PD.5 is independent.

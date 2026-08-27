@@ -8,7 +8,7 @@
 > of the paths it claimed. Every gap it found has since been closed; see
 > **Verification, 2026-08-18** at the end for what was found and what was done
 > about each. Archivable.
-> Implements [`../../../architecture/treesitter-context.md`](../../../architecture/treesitter-context.md)
+> Implements [`../../../../architecture/treesitter-context.md`](../../../../architecture/treesitter-context.md)
 > — sticky scope headers as a core bundled plugin, plus the two host seams it
 > forces.
 
@@ -309,7 +309,7 @@ registry builtins live in, under `SourceLayer::Plugin(id)` so unload reverses
 them.
 
 Closes the deferred WIT element-registration item in
-[`../../../architecture/theme-system.md`](../../../architecture/theme-system.md).
+[`../../../../architecture/theme-system.md`](../../../../architecture/theme-system.md).
 
 **Tests.** A plugin-registered element resolves through the normal lookup path;
 a theme file overrides it; `:customize` and `:describe-*` list it; unload

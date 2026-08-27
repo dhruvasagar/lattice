@@ -1,7 +1,7 @@
 # Contributable registries — slice plan
 
 **Design fragment:**
-[`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
+[`../../../architecture/contributable-registries.md`](../../../architecture/contributable-registries.md).
 
 **Status:** complete — CR.1–CR.5 ✅ (2026-08-22).
 

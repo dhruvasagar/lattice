@@ -2,7 +2,7 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contracts live in
-> [`../../architecture/inline-media.md`](../../architecture/inline-media.md).
+> [`../../../../architecture/inline-media.md`](../../../../architecture/inline-media.md).
 
 **Status:** IM.8 ✅ (2026-08-25) — **the plan is complete.** An org
 `[[file:diagram.png]]` becomes rows the host reserves and the GPUI peer
@@ -15,9 +15,10 @@ text (IM.3), pixels are decoded off-thread (IM.4), sized naturally
 (IM.5a), painted over the reserved rows (IM.5b) and landed without a
 keypress (IM.5c).
 
-**Nothing produces a block yet** — that is IM.6 (the plugin seam) and
-IM.7 (org's `[[file:…]]`), which are what make an image appear for a
-user. IM.2 remains and is polish.
+(Stale as of IM.6–IM.8, kept for the sequencing it records: at that
+point nothing produced a block yet — IM.6 the plugin seam and IM.7 org's
+`[[file:…]]` are what made an image appear for a user. Both landed; IM.2
+was then closed as not needed rather than built.)
 
 Earlier: IM.0 ✅ the gate (which
 found a real flaw and revised the design); IM.1a ✅ cursor visibility;
@@ -130,7 +131,7 @@ untouched and makes IM.1 testable with no media in existence.
 
 *paramount:* #1 — a scroll bug is a per-frame visible defect.
 
-### IM.1 — per-row weights + budget-based scroll math 📝
+### IM.1 — per-row weights + budget-based scroll math ✅ (split into IM.1a / IM.1b / IM.1c)
 
 Per IM.0. Two halves:
 

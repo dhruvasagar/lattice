@@ -2,7 +2,7 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
 > Design contracts live in
-> [`../../../architecture/cross-file-writes.md`](../../../architecture/cross-file-writes.md)
+> [`../../../../architecture/cross-file-writes.md`](../../../../architecture/cross-file-writes.md)
 > — the effect shape, why an anchor rather than a range, why one effect
 > rather than two, where the capability gate lives, and the rejected
 > alternatives.
@@ -19,7 +19,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 ## Where this sits
 
 Phase 7/8 surface work — it extends the plugin host's effect vocabulary
-and its capability model, so `slice-plans/plugin-host.md` is its
+and its capability model, so `slice-plans/archive/plugin-host.md` is its
 neighbour. The org slices it unblocks live in the plugin repo and land
 after XF.5.
 

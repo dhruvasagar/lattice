@@ -4,7 +4,7 @@
 [MG.43h](../magit-transient-completion.md); the rows MG.41d / MG.41e left
 open were closed by [MG.43](../magit-transient-completion.md). Parent plan:
 [`magit.md`](../magit.md) (MG.1–MG.40). Design fragment:
-[`../../../architecture/magit.md`](../../../architecture/magit.md).
+[`../../../../architecture/magit.md`](../../../../architecture/magit.md).
 
 Close the gap between lattice's magit transients and magit's own. The
 audit behind this plan is §"Audit" below; the short version is that

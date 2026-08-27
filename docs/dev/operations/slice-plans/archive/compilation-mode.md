@@ -7,9 +7,9 @@
 > no slice left open (none deferred ⛔, none planned 📝), this plan is
 > ready to archive. Sequencing companion to the
 > design fragments
-> [`../../../architecture/compilation-mode.md`](../../../architecture/compilation-mode.md)
+> [`../../../../architecture/compilation-mode.md`](../../../../architecture/compilation-mode.md)
 > (the runner + `*compilation*`/`*problems*`) and
-> [`../../../architecture/error-list.md`](../../../architecture/error-list.md)
+> [`../../../../architecture/error-list.md`](../../../../architecture/error-list.md)
 > (the core error-list / quickfix substrate — CM.2/CM.7/CM.8). This file
 > owns *when + in what order + status*. User docs:
 > `docs/user/compilation-mode.md`, `docs/user/error-list.md`.
@@ -172,7 +172,7 @@ green; ship doc + bench + test + graceful-error together.
     registers the handler on the per-buffer `ActionHandlerRegistry`, so search,
     `*problems*`, and narrow all get `<CR>`-jump + the excerpt-jump motions
     (`]e`/`[e`/`]E`/`[E`) for free. Documented in
-    [`../../../architecture/multibuffer-views.md`](../../../architecture/multibuffer-views.md)
+    [`../../../../architecture/multibuffer-views.md`](../../../../architecture/multibuffer-views.md)
     §3.6. (This slice belongs to the multibuffer substrate but is recorded
     here because it completes compilation's `*problems*` navigation.)
 

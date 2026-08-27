@@ -3,7 +3,7 @@
 **Status:** ✅ all four enablers landed (2026-08-05). Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md)
 (MG.41). Design fragment:
-[`../../../architecture/magit.md`](../../../architecture/magit.md).
+[`../../../../architecture/magit.md`](../../../../architecture/magit.md).
 
 MG.41 filled in every transient row that was **only** a row. What
 remains in MG.41d and MG.41e is not menu structure — each outstanding

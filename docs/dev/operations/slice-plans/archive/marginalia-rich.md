@@ -1,6 +1,6 @@
 # Slice plan: MR — rich per-segment marginalia (file metadata)
 
-**Design:** [marginalia.md §8](../../../architecture/marginalia.md).
+**Design:** [marginalia.md §8](../../../../architecture/marginalia.md).
 
 **Status:** ✅ complete (2026-06-30) — MR.1–MR.4 landed. The file/dir picker renders eza-style per-bit permission colors, gold size, and green mtime on both peers, theme-driven (recolors live on `:colorscheme`). Four sub-slices. Implements the §8 extension: `Annotation::Styled` (per-segment-colored column cell), eza-style permission/size/mtime theme slots, the file/dir picker as first producer, and closure of the TUI annotation-theme gap left open by MARG.1. Design fragment + bench + per-renderer tests + per-renderer palette ship together per CLAUDE.md heuristic #5.
 

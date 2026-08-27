@@ -1,6 +1,6 @@
 # Mode option overrides across the plugin seam — slice plan
 
-> Design: [`../../../architecture/plugin-mode-options.md`](../../../architecture/plugin-mode-options.md).
+> Design: [`../../../../architecture/plugin-mode-options.md`](../../../../architecture/plugin-mode-options.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 

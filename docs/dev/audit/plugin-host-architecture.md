@@ -4,7 +4,7 @@
 PH7.7a — does the plugin host conform to our design philosophy, and do all
 decisions fit the decision heuristics?" The audit measures the plugin host
 (design fragment `../architecture/plugin-host.md`, slice plan
-`../operations/slice-plans/plugin-host.md`, crate `lattice-plugin-host`, `wit/`)
+`../operations/slice-plans/archive/plugin-host.md`, crate `lattice-plugin-host`, `wit/`)
 against the four paramount goals, the five heuristics, and the **stated purpose
 of the extension system**:
 

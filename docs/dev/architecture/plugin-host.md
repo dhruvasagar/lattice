@@ -14,7 +14,7 @@ grammar seam, the `*plugin-trace*` buffer views, the live `plugin.trace-level` o
 `wasi:logging` guest import). This fragment is the detailed "what/why" that expands
 `design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1
 (core-vs-plugin split), §14 (risks). Slice sequencing + landed status lives in
-`docs/dev/operations/slice-plans/plugin-host.md` (+ `plugin-loader.md`, `plugin-observability.md`);
+`docs/dev/operations/slice-plans/archive/plugin-host.md` (+ `plugin-loader.md`, `plugin-observability.md`);
 a conformance review of the whole host against the paramount goals + the three extension goals
 (grammar / modes / rich UI) is `docs/dev/audit/plugin-host-architecture.md`.
 
@@ -442,6 +442,17 @@ CI with a ratchet that only moves down:
 | Major-mode event handler | < 50μs | < 250μs |
 
 Plus the cold-start budget (50 lazily-loaded plugins < 30ms; first-paint plugin work < 5ms).
+
+> **Known gap — the picker row is currently un-gated (found 2026-08-27).**
+> The ratchet enforcing it, `picker_init_round_trip_stays_within_ceiling`,
+> was removed along with the `fuzzy-finder` validation plugin (`0d068f9b`)
+> and never re-pointed at the surviving `tests/fixtures/picker-guest`. So
+> the guest→host **picker** path is benchmarked by nothing today, while the
+> other five rows still gate in `lattice-plugin-host/tests/perf_ratchet.rs`.
+> Recorded here rather than in a slice plan because both plans that owned
+> it are complete and archived — this fragment is what stays. Re-pointing
+> the ratchet at `picker-guest` is the fix; it is small, and it is the one
+> row of this table CI cannot currently defend.
 The **no-per-frame-WASM rule** is absolute: the renderer never calls into a plugin on the UI
 tick. Plugins compute on triggers; the renderer reads cached results (the same rule that
 already governs `gutter_decorations` — the host builds the decoration snapshot off the render
@@ -568,4 +579,4 @@ New: **the streaming-result WIT shape** (guest-push `result-sink` resource vs ho
   (`Editor::boot`), `lattice-host/src/boot_context.rs` (`BootContext`),
   `lattice-mode/src/subsystem_boot.rs:51` (`SubsystemBoot` — the surface plugins install
   through).
-- Slice sequencing: `docs/dev/operations/slice-plans/plugin-host.md`.
+- Slice sequencing: `docs/dev/operations/slice-plans/archive/plugin-host.md`.

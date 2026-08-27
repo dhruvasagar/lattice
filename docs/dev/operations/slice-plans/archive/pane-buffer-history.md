@@ -1,7 +1,7 @@
 # Pane buffer history — slice plan
 
 **Status:** ✅ landed (2026-08-04, PBH.1–PBH.6). Design fragment:
-[`../../../architecture/pane-buffer-history.md`](../../../architecture/pane-buffer-history.md).
+[`../../../../architecture/pane-buffer-history.md`](../../../../architecture/pane-buffer-history.md).
 
 Per-pane back/forward over visited buffers: `<C-6>` back, `<C-7>`
 forward, `:history pane-buffers` picker. Splitting a pane starts a

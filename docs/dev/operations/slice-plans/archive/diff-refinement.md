@@ -5,13 +5,13 @@
 > `docs/dev/architecture/` — only the slice plan moved.
 
 > **Status: Active.** Opened 2026-08-12. Implements
-> [`diff-refinement.md`](../../architecture/diff-refinement.md): show
+> [`diff-refinement.md`](../../../architecture/diff-refinement.md): show
 > *which part* of a changed line changed.
 
 Design owns *what* and *why*; this file owns *when* and *in what
 order*.
 
-Builds on [`span-layering.md`](../../architecture/span-layering.md) —
+Builds on [`span-layering.md`](../../../architecture/span-layering.md) —
 refinement is a new layer on the **background** axis, which is the one
 piece that does not exist yet.
 

@@ -5,6 +5,36 @@
 > Implements the design fragment `docs/dev/architecture/release-pipeline.md`
 > (read it first for the "what" and "why"). This file owns sequencing only.
 
+Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
+
+**Status:** 🚧 in progress (audited 2026-08-27). Tasks 1–4 ✅ landed
+(`233dc3d1`, `036b9dd3`, `ef9523fa`, `d1cf810c`, plus `d9dd6d01` /
+`120b27e9`). **Task 5 — the integration run — has never passed, and the
+plan calls it "the real gate."**
+
+The workflow has run exactly twice, both failures. `publish` has never
+executed once: the source archive, `SHA256SUMS`, the manifest check,
+provenance and the release upload are all code that has never run. The
+`x86_64-linux` leg died on `-fuse-ld=mold` (re-applied from
+`.cargo/config.toml` because the release legs build with an explicit
+`--target`); `120b27e9` installs `mold` to fix that, and **no run has
+happened since**, so the fix itself is untested. No tags, no releases,
+no branch.
+
+**A latent bug the audit found, which Task 5 exists to catch.** The
+`publish` manifest lists `lattice-gui-*-aarch64.AppImage` and
+`…-aarch64.deb` as **required**, but the steps producing them are gated
+on the GUI build succeeding and the `aarch64-linux` leg is
+`gui_best_effort: true`. If the ARM GUI build fails — the exact case the
+design says "must never block the release" — `publish` exits 1 and kills
+the release. The Self-Review's ✓ on "aarch64 GUI best-effort, no silent
+drop" is wrong for this pair.
+
+Also stale: Global Constraints cites the workspace version at
+`Cargo.toml:33`; it is now line 49. Task 1 Step 2's embedded YAML
+predates the `mold` install and still calls the step "Install Linux
+display libs".
+
 **Goal:** A tag-driven GitHub Actions pipeline that builds and publishes cross-platform release artefacts (Linux/macOS/Windows × x86_64/aarch64), Linux AppImage/.deb bundles, a source archive, checksums, and provenance attestation.
 
 **Architecture:** Three jobs — `prepare` (compute version/preview, assert tag↔Cargo.toml on tags), `dist` (6-leg native-runner matrix building TUI + GUI binaries and packaging them), `publish` (collect artefacts, source archive, `SHA256SUMS`, provenance, GitHub Release). Helix's pipeline is the reference (same Rust substrate).

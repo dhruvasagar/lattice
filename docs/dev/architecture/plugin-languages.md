@@ -1,7 +1,7 @@
 # Plugin-contributed languages
 
 **Status:** design. Slice plan:
-[`../operations/slice-plans/plugin-languages.md`](../operations/slice-plans/plugin-languages.md).
+[`../operations/slice-plans/archive/plugin-languages.md`](../operations/slice-plans/archive/plugin-languages.md).
 First consumer: an org-mode plugin (§7).
 
 ## 1. The gap

@@ -2,7 +2,7 @@
 
 > **Status: ✅ Complete, archived 2026-08-20.** Opened and finished the
 > same day, MR.1 … MR.6. Implements
-> [`magit-repo-scoping.md`](../../architecture/magit-repo-scoping.md):
+> [`magit-repo-scoping.md`](../../../architecture/magit-repo-scoping.md):
 > every magit surface acts on the repository containing the active
 > buffer's file, not the process's working directory.
 
@@ -455,5 +455,5 @@ watched fail is a guard nobody has tested.
 
 ## Cross-references
 
-- [`../../architecture/magit-repo-scoping.md`](../../architecture/magit-repo-scoping.md) — design (what + why)
+- [`../../../architecture/magit-repo-scoping.md`](../../../architecture/magit-repo-scoping.md) — design (what + why)
 - [`magit.md`](magit.md) — the subsystem's own plan

@@ -1,6 +1,6 @@
 # Slice plan — LSP async-result render-wake unification (AW)
 
-**Design home:** [`../../../architecture/lsp-architecture.md`](../../../architecture/lsp-architecture.md) §12
+**Design home:** [`../../../../architecture/lsp-architecture.md`](../../../../architecture/lsp-architecture.md) §12
 ("Async-result render-wake"). This plan sequences the work that makes
 `async_landed` the **single, renderer-agnostic** wake for every async LSP
 result. Cross-reference: §12 owns the *what/why*; this file owns the

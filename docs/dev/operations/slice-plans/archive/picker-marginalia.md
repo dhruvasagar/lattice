@@ -1,6 +1,6 @@
 # Slice plan: MP + PH — picker marginalia rollout & preview syntax highlighting
 
-**Designs:** [marginalia.md §9](../../../architecture/marginalia.md) (MP — annotation columns across all pickers) and [picker-preview-highlight.md](../../../architecture/picker-preview-highlight.md) (PH — syntax-highlighted preview text).
+**Designs:** [marginalia.md §9](../../../../architecture/marginalia.md) (MP — annotation columns across all pickers) and [picker-preview-highlight.md](../../../../architecture/picker-preview-highlight.md) (PH — syntax-highlighted preview text).
 
 **Status:** ✅ complete (2026-07-01). Two independent series, both landed. **MP** (MP.1–MP.5 + MP.2b) extended the §8 `Styled` mechanism to every remaining picker source (no candidate-model change). **PH** (PH.1–PH.3) added the `display_spans` field carrying tree-sitter highlight spans for code previews. They touched the same producers but different candidate fields, so they sequenced independently; **MP landed first** (lower risk — no model change), then **PH**.
 

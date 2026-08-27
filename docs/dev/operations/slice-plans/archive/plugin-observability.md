@@ -1,7 +1,7 @@
 # Plugin observability — slice plan
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../../architecture/plugin-observability.md`](../../../architecture/plugin-observability.md).
+> Design contract: [`../../../../architecture/plugin-observability.md`](../../../../architecture/plugin-observability.md).
 > Follows Phase 8 (the plugin loader + manager, [`plugin-loader.md`](../plugin-loader.md)).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial slice ships

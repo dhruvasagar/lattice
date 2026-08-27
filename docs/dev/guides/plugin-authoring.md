@@ -9,7 +9,7 @@ This is the **how-to** companion to two other docs:
 - [`../architecture/plugin-host.md`](../architecture/plugin-host.md) — the design
   fragment: *what* the host is and *why* it is shaped this way (the exercised-trait
   → WIT-mirror spine, the capability/security model, rejected alternatives).
-- [`../operations/slice-plans/plugin-host.md`](../operations/slice-plans/plugin-host.md)
+- [`../operations/slice-plans/archive/plugin-host.md`](../operations/slice-plans/archive/plugin-host.md)
   — the slice plan: what landed, in what order.
 
 For the end-user view (the `:*-plugin-api` introspection commands and the model

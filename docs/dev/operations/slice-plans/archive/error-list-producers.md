@@ -5,7 +5,7 @@
 > `docs/dev/architecture/` — only the slice plan moved.
 
 > **Status: Active.** Opened 2026-08-10. Implements
-> [`error-list.md`](../../architecture/error-list.md) §3.1–§3.3: the
+> [`error-list.md`](../../../architecture/error-list.md) §3.1–§3.3: the
 > tagged-source substrate and the language server as the error list's
 > second producer.
 
@@ -151,7 +151,7 @@ call path. Two of its three claims did not survive contact.
 
 ## EP.6 — References as a third producer ✅
 
-Design: [`error-list.md`](../../architecture/error-list.md) §3.2b.
+Design: [`error-list.md`](../../../architecture/error-list.md) §3.2b.
 Builds on LR.2's terminus routing.
 
 - `ErrorSource::References` in `lattice-protocol`.

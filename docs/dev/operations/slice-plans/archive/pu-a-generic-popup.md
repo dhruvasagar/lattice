@@ -1,7 +1,7 @@
 # PU-A — generic popup primitive (sub-slices)
 
 Decomposition of the PU-A slice (`acp-ux-enhancements.md` → "Slice PU-A") into
-landable, independently-green steps. **Design ref:** `../../../architecture/popup-api.md`.
+landable, independently-green steps. **Design ref:** `../../../../architecture/popup-api.md`.
 PU-A is the largest/riskiest of the follow-on slices — it refactors a working,
 widely-used surface and ships no user feature, so each sub-slice lands green and
 separately for clean bisection.

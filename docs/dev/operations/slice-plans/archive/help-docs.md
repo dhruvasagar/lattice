@@ -288,7 +288,7 @@ instead `include_str!`'d into its own `.wasm` and registered through a
 `help` WIT seam, against a runtime-writable `HelpTopicRegistryHandle`.
 
 Design:
-[`../../architecture/contributable-registries.md`](../../architecture/contributable-registries.md).
+[`../../../architecture/contributable-registries.md`](../../../architecture/contributable-registries.md).
 Slices: CR.1 (the handle) + CR.3 (the seam) in
 [`contributable-registries.md`](contributable-registries.md). The
 resolution-order survey and the case for keeping the embedded set as a

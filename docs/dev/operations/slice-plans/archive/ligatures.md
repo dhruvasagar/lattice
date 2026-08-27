@@ -1,7 +1,7 @@
 # Ligatures — slice plan
 
 Sequencing companion to
-[`docs/dev/architecture/ligatures.md`](../../../architecture/ligatures.md).
+[`docs/dev/architecture/ligatures.md`](../../../../architecture/ligatures.md).
 The design fragment owns *what* and *why*; this file owns *when* and
 *in what order*.
 

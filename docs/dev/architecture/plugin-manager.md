@@ -2,7 +2,7 @@
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing lives in the slice plan
-> ([`../operations/slice-plans/plugin-loader.md`](../operations/slice-plans/plugin-loader.md)).
+> ([`../operations/slice-plans/archive/plugin-loader.md`](../operations/slice-plans/archive/plugin-loader.md)).
 > Sibling fragments: [`plugin-host.md`](plugin-host.md) (the seam host + capability
 > model), [`config-and-init.md`](config-and-init.md) (init.rs lifecycle + the
 > `on-plugin-loaded` deferred-config pattern the enablement reuses),
@@ -430,7 +430,7 @@ enablement.
 ## 13. Slices
 
 See the slice plan
-([`../operations/slice-plans/plugin-loader.md`](../operations/slice-plans/plugin-loader.md))
+([`../operations/slice-plans/archive/plugin-loader.md`](../operations/slice-plans/archive/plugin-loader.md))
 once sequenced. Two tracks — the **core-plugin track ships auto-pair out of the
 box first** (no build service needed), then the **user require+build track**:
 

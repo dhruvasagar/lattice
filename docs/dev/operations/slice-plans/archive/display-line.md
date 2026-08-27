@@ -1,6 +1,6 @@
 # Slice plan — display-line model (retire the per-character cell grid)
 
-Design: `../../../architecture/display-line.md`. Goal: one per-line, windowed,
+Design: `../../../../architecture/display-line.md`. Goal: one per-line, windowed,
 incrementally-maintained, **always-text-current** display cache (`DisplayMatrix`
 of `DisplayLine`), consumed identically by both renderers, replacing the
 per-character `CellMatrix` AND the legacy `highlights_worker` /

@@ -1,6 +1,6 @@
 # `wit/` ownership and ABI skew — slice plan
 
-> Design: [`../../../architecture/wit-ownership.md`](../../../architecture/wit-ownership.md).
+> Design: [`../../../../architecture/wit-ownership.md`](../../../../architecture/wit-ownership.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 

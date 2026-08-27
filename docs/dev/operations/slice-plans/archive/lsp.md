@@ -1,7 +1,7 @@
 # LSP — slice plan
 
 Sequencing + status for the LSP polish work. **Design contracts** live
-in [`../../../architecture/lsp-architecture.md`](../../../architecture/lsp-architecture.md)
+in [`../../../../architecture/lsp-architecture.md`](../../../../architecture/lsp-architecture.md)
 §12–§15; the **per-method capability matrix** (LSP 3.17 coverage, every
 method's ✅/🚧 status) lives in
 [`../../../notes/lsp-features.md`](../../../notes/lsp-features.md). This file

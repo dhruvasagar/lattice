@@ -1153,7 +1153,7 @@ use-package `require` (git/local source, built on first boot into that cache).
 > the editor-side surface that makes it reachable. Detail lives in the fragments
 > [`plugin-host.md`](plugin-host.md) (the seam spine + capability model) and
 > [`plugin-observability.md`](plugin-observability.md) (the trace stack); slice
-> sequencing in `../operations/slice-plans/plugin-loader.md` +
+> sequencing in `../operations/slice-plans/archive/plugin-loader.md` +
 > `plugin-observability.md`.
 
 **Loading.** The `lattice-plugin-loader` crate stands the host up at boot as a

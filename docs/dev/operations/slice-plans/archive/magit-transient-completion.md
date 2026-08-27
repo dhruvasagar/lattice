@@ -8,7 +8,7 @@
 [`magit-transient-completeness.md`](archive/magit-transient-completeness.md)
 (MG.41d / MG.41e / MG.41f) and the deferred list in
 [`magit-transient-enablers.md`](archive/magit-transient-enablers.md) (MG.42).
-Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
+Design fragment: [`../../../architecture/magit.md`](../../../architecture/magit.md).
 
 MG.41 built the menu structure and MG.42 built the shared enablers.
 What is left is the tail: ~30 rows across 11 menus, plus the two items

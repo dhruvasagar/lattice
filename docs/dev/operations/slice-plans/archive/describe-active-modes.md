@@ -1,7 +1,7 @@
 # `:describe-active-modes` — buffer mode stack + buffer-scoped bindings
 
 **Status:** ✅ landed (2026-08-04, DAM.1–DAM.6). Design fragment:
-[keymap-architecture.md §12.5–§12.6](../../../architecture/keymap-architecture.md).
+[keymap-architecture.md §12.5–§12.6](../../../../architecture/keymap-architecture.md).
 
 ## Why
 

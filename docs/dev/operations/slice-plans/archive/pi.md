@@ -1,6 +1,6 @@
 # Slice plan — Pi agent integration (PI)
 
-**Design home:** [`../../../architecture/pi.md`](../../../architecture/pi.md).
+**Design home:** [`../../../../architecture/pi.md`](../../../../architecture/pi.md).
 That fragment owns *what* and *why*; this file owns *when* and *in what order*.
 Authoritative per-slice status lives in
 [`../../implementation.md`](../../implementation.md).

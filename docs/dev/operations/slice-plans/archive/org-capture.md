@@ -1,9 +1,9 @@
 # Org capture overhaul — slice plan
 
 > Design:
-> [`../../../architecture/org-capture.md`](../../../architecture/org-capture.md)
+> [`../../../../architecture/org-capture.md`](../../../../architecture/org-capture.md)
 > (the capture system) and
-> [`../../../architecture/plugin-transients.md`](../../../architecture/plugin-transients.md)
+> [`../../../../architecture/plugin-transients.md`](../../../../architecture/plugin-transients.md)
 > (the seam the menu needs).
 >
 > Sequences both, because the menu is what makes many templates usable and

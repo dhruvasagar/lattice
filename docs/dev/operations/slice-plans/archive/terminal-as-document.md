@@ -1,7 +1,7 @@
 # Terminal-as-Document — slice plan
 
 Sequencing companion to
-[`docs/dev/architecture/terminal-as-document.md`](../../../architecture/terminal-as-document.md).
+[`docs/dev/architecture/terminal-as-document.md`](../../../../architecture/terminal-as-document.md).
 The design fragment is the source of truth for *what* and *why*;
 this file owns *when* and *in what order*. Authoritative status
 per slice lives in [`../implementation.md`](../../implementation.md).

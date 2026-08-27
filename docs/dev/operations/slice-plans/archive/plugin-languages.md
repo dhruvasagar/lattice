@@ -1,7 +1,7 @@
 # Plugin-contributed languages — slice plan
 
 **Design fragment:**
-[`../../architecture/plugin-languages.md`](../../architecture/plugin-languages.md).
+[`../../../../architecture/plugin-languages.md`](../../../../architecture/plugin-languages.md).
 
 **Status:** LG.0 ✅ (2026-08-22) — the runtimes coexist. LG.1 ✅
 (2026-08-23) — 2.0× cold, 1.25× incremental; **both gates are now
@@ -226,6 +226,14 @@ the thing whose gating is still undecided.
   `Syntax` path. *bench:* snapshot cost, since `standard()` is per-buffer
   and per-hunk.
 
+*Coverage moved out of tree (`7ba51c73`).* LG.4's and LG.5's query tests
+went with the plugin to `lattice-org-plugin`, so **lattice's own CI no
+longer runs them** — the one in-tree LG.4 guard left is
+`crates/lattice-ui-gpui/src/cells_paint.rs`'s
+`org_headlines_scale_without_any_renderer_change`. The coverage still
+exists; it is just in a repo this CI does not build, which is worth
+knowing before trusting a green run here to mean org's queries are fine.
+
 *Carried to LG.3b:* nothing here loads wasm. `GrammarSpec.grammar` is a
 `tree_sitter::Language`, and where it came from is not this layer's
 business — which is the same property §2.1 relies on.
@@ -375,7 +383,8 @@ and tests rather than mechanism.
 `compute_syntax_folds` resolves `folds.scm` by language name through the
 live registry and knows nothing about where the grammar came from, so
 the plugin repo's `queries/folds.scm` was the whole change. Five tests
-in `crates/lattice-host/tests/org_folds.rs`.
+in `lattice-org-plugin`'s `tests/org_folds.rs` — moved out of tree by
+`7ba51c73`, along with LG.4's query tests.
 
 `(section)` does the load-bearing work: in this grammar a section is a
 headline plus everything beneath it *including nested sections*, so

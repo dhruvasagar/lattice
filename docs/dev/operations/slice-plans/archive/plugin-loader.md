@@ -1,9 +1,9 @@
 # Phase 8 — Editor-side plugin loading (the plugin loader / manager)
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contracts live in the design fragments — [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md)
+> Design contracts live in the design fragments — [`../../../../architecture/plugin-host.md`](../../../../architecture/plugin-host.md)
 > (the exercised-trait → WIT-mirror spine, capability/fuel/crash model, per-seam
-> rationale) and [`../../architecture/boot-composition.md`](../../architecture/boot-composition.md)
+> rationale) and [`../../../../architecture/boot-composition.md`](../../../../architecture/boot-composition.md)
 > (the Phase-A primitives → Phase-B `install(boot)` subsystem contract).
 > Global ledger: [`../implementation.md`](../implementation.md) (Phase 8 row).
 
@@ -865,7 +865,7 @@ design fragment — see the settled-decisions note above).
 
 ## Plugin manager redesign — sources, build-on-boot, core-plugin shipping (PM.x)
 
-> **Design contract:** [`../../architecture/plugin-manager.md`](../../architecture/plugin-manager.md)
+> **Design contract:** [`../../../../architecture/plugin-manager.md`](../../../../architecture/plugin-manager.md)
 > (the two roots, the source/build/require model, the settled decisions). This
 > redesign extends the finished PL8 loader (+ the `:plugins` view) with the two
 > things it lacked: **where a plugin comes from** (a git/local source) and **how a

@@ -1,7 +1,7 @@
 # Decoration retention across focus — slice plan
 
 Sequencing companion to
-[`../../../architecture/decoration-retention.md`](../../../architecture/decoration-retention.md).
+[`../../../../architecture/decoration-retention.md`](../../../../architecture/decoration-retention.md).
 The design fragment owns *what* and *why*; this file owns *when* and
 *in what order*. Each slice lands green with the four artefacts
 (doc · bench/coverage · tests · graceful failure) and keeps TUI +
@@ -250,7 +250,7 @@ product).
 ## Cross-references
 
 - Contracts, data model, rejected alternatives, paramount-goal
-  mapping: [`../../../architecture/decoration-retention.md`](../../../architecture/decoration-retention.md).
+  mapping: [`../../../../architecture/decoration-retention.md`](../../../../architecture/decoration-retention.md).
 - Related: `feedback_decorations_update_in_place`,
   `feedback_buffers_no_special_case`, `feedback_no_ui_thread_work`,
   `feedback_tui_gpui_parity`.

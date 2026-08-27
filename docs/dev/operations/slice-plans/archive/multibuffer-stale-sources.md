@@ -5,7 +5,7 @@
 > `docs/dev/architecture/` — only the slice plan moved.
 
 > **Status: Active.** Opened 2026-08-11. Implements
-> [`multibuffer-stale-sources.md`](../../architecture/multibuffer-stale-sources.md):
+> [`multibuffer-stale-sources.md`](../../../architecture/multibuffer-stale-sources.md):
 > a multibuffer must not persist a source whose on-disk content changed
 > after the view loaded it.
 

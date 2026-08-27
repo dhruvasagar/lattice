@@ -6,7 +6,7 @@
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons. Design
 > fragment (contracts, rationale, rejected alternatives):
-> [`../../architecture/search-operator.md`](../../architecture/search-operator.md).
+> [`../../../architecture/search-operator.md`](../../../architecture/search-operator.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial slice
 ships the four artefacts (doc / test / bench-or-note / graceful error handling).
@@ -72,7 +72,7 @@ section with the use-case table from the design fragment §1, noting literal /
 case-insensitive semantics and the single-line-text-object intent; cross-ref
 `docs/user/modal-editing.md` (where `/` and `*` live) so the `/` ↔ `g/`
 relationship is discoverable. Flip
-[`../../architecture/search-operator.md`](../../architecture/search-operator.md)
+[`../../../architecture/search-operator.md`](../../../architecture/search-operator.md)
 and this plan to ✅. **Deps:** SO.1, SO.2.
 
 ---
@@ -85,6 +85,6 @@ SO.1 (grammar operator) ─► SO.2 (host action + g/ binding) ─► SO.3 (docs
 
 ## Cross-references
 
-- Design contracts: [`../../architecture/search-operator.md`](../../architecture/search-operator.md).
-- Project-search path driven: [`../../architecture/multibuffer-views.md`](../../architecture/multibuffer-views.md) §3.7.
-- Grammar/operator machinery: [`../../architecture/design.md`](../../architecture/design.md) §5.2.
+- Design contracts: [`../../../architecture/search-operator.md`](../../../architecture/search-operator.md).
+- Project-search path driven: [`../../../architecture/multibuffer-views.md`](../../../architecture/multibuffer-views.md) §3.7.
+- Grammar/operator machinery: [`../../../architecture/design.md`](../../../architecture/design.md) §5.2.

@@ -1,7 +1,7 @@
 # Yank ring + yank picker — slice plan (YR)
 
 Design fragment:
-[`../../architecture/yank-ring.md`](../../architecture/yank-ring.md).
+[`../../../architecture/yank-ring.md`](../../../architecture/yank-ring.md).
 Planned 2026-08-03. **YR.1, YR.3, YR.4, YR.5 landed 2026-08-19; YR.2 and YR.6 landed 2026-08-22.** Complete.
 
 | Slice | Scope | Depends | Status |
@@ -229,6 +229,6 @@ discarding it. Two constraints, both of which are the interesting part:
 
 ## Cross-references
 
-- [`../../architecture/yank-ring.md`](../../architecture/yank-ring.md) — design (what + why)
-- [`../../architecture/clipboard.md`](../../architecture/clipboard.md) — §5 yank-only clipboard rule, §11 this feature's origin
+- [`../../../architecture/yank-ring.md`](../../../architecture/yank-ring.md) — design (what + why)
+- [`../../../architecture/clipboard.md`](../../../architecture/clipboard.md) — §5 yank-only clipboard rule, §11 this feature's origin
 - [`archive/clipboard.md`](archive/clipboard.md) — the CB series, incl. the 2026-08-03 picker-paste fix

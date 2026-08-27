@@ -2,7 +2,7 @@
 
 > **Status: ✅ COMPLETE (RV.1–RV.3, closed 2026-08-21).** Opened
 > 2026-08-10. Implements
-> [`mode-architecture.md`](../../architecture/mode-architecture.md) §5.5:
+> [`mode-architecture.md`](../../../../architecture/mode-architecture.md) §5.5:
 > `gr` as one shared chord over a `Mode::refresh_action()` declaration,
 > replacing the copied keymap entries.
 >

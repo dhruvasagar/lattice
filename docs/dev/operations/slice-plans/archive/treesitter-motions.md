@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, tree-sitter (`QueryCursor::set_byte_range`), ropey, the `lattice-grammar` command registry.
 
-**Design fragment:** [`../../../architecture/treesitter-motions.md`](../../../architecture/treesitter-motions.md) — the *what* and *why* (semantics tables, resolver-seam rationale, rejected alternatives). This plan is the *when* and *how*.
+**Design fragment:** [`../../../../architecture/treesitter-motions.md`](../../../../architecture/treesitter-motions.md) — the *what* and *why* (semantics tables, resolver-seam rationale, rejected alternatives). This plan is the *when* and *how*.
 
 ## Global Constraints
 

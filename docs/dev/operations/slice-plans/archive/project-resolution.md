@@ -4,7 +4,7 @@
 > (see below) — no slice is open, planned, or deferred, so this plan is
 > archived.
 > PR.7 has its own spec. Sequencing companion to the design fragment
-> [`../../../architecture/project-resolution.md`](../../../architecture/project-resolution.md),
+> [`../../../../architecture/project-resolution.md`](../../../../architecture/project-resolution.md),
 > which owns *what* and *why*. This file owns *when + in what order +
 > status*. User docs: `docs/user/project.md` (PR.2).
 

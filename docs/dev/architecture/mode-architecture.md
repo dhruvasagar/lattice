@@ -751,7 +751,7 @@ here"** instead of swallowing the key. A synthetic view without a
 refresh now says so. `*problems*` stops failing silently the moment the
 shared minor lands, before anyone implements its refresh body.
 
-Sequencing: [`../operations/slice-plans/refreshable-views.md`](../operations/slice-plans/refreshable-views.md).
+Sequencing: [`../operations/slice-plans/archive/refreshable-views.md`](../operations/slice-plans/archive/refreshable-views.md).
 
 ## 6. Option resolution
 

@@ -14,7 +14,7 @@ wit_bindgen::generate!({
 });
 
 use lattice::plugin_host::types::{EventFilter, EventKind};
-use lattice::plugin_host::{events, modes};
+use lattice::plugin_host::{config, events, modes};
 
 struct Component;
 
@@ -35,6 +35,14 @@ impl Guest for Component {
             // Deferred config: enable auto-pair-mode the moment auto-pair loads.
             if p.name == "auto-pair" {
                 modes::enable_mode("auto-pair-mode");
+                // …and SET one of its options, which is the other half of the
+                // documented deferred shape and the half that was never driven.
+                // `enable-mode` reaches the bus; `set-option` reaches the config
+                // registry, and the events store did not carry one — so this
+                // call warned and no-oped while the test above still passed.
+                // Full name, not the short one: `set-option` prefixes with the
+                // CALLING plugin's id, so `style` would resolve as `init.style`.
+                config::set_option("auto-pair.style", "manual");
             }
         }
     }

@@ -215,6 +215,9 @@ impl PluginHost {
     /// The caller holds the returned [`SubscriptionId`]s to `EventBus::unsubscribe`
     /// on teardown; doing so drops the sinks, closes the channel, and ends the
     /// actor loop.
+    ///
+    /// `config` is the live option registry, and the events seam needs it for
+    /// the same reason `context` and `transient` do — see the wiring site below.
     pub async fn spawn_event_plugin(
         &self,
         component: &Component,
@@ -222,6 +225,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(Vec<SubscriptionId>, EventActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -249,6 +253,23 @@ impl PluginHost {
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2),
         // also before `register-events` — a guest may narrate from there.
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // Deferred config is the whole reason `init.rs` subscribes to
+        // `plugin-loaded`: a USER plugin's options do not EXIST until it loads,
+        // so `config.set-option("org.capture-templates", …)` has to run from
+        // `on-event`, and `docs/user/init.md` documents exactly that shape.
+        // Without the registry on THIS store the call takes the
+        // "plugin has no config registry wired" branch and warns into the log,
+        // so the user's config silently does not apply and `:set …?` reports the
+        // compiled default. `context` and `transient` wire this for the same
+        // reason; a seam that runs in its own store needs it too.
+        //
+        // The gap survived because the CI.5 chain test drives the OTHER half of
+        // the documented pattern — `modes.enable-mode`, which reaches the bus
+        // rather than the registry — so the seam looked covered end to end while
+        // its config path had never been called once.
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
 
         // Drive subscription registration: the guest calls the imported
         // `events.subscribe(filter, handler)` inside `register-events`, recording

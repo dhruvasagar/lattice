@@ -361,6 +361,7 @@ async fn event_handler_stays_within_ceiling() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .unwrap();

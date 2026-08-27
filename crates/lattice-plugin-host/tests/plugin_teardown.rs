@@ -90,6 +90,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn A");
@@ -161,6 +162,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn B (reload)");

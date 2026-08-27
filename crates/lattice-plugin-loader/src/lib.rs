@@ -1849,7 +1849,14 @@ impl PluginLoader {
 
         let (subscriptions, actor) = self
             .host
-            .spawn_event_plugin(component, manifest, tier, PluginBudget::event(), bus)
+            .spawn_event_plugin(
+                component,
+                manifest,
+                tier,
+                PluginBudget::event(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
             .await?;
         let id = actor.id();
         // PO.2: attach the boundary tracer so the actor emits a trace record per

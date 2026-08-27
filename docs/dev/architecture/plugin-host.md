@@ -283,6 +283,35 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `ui` | status/gutter segments, popups, notifications, sprites (type-mirror ✅ PH7.9) | guest→host emit data (no draw calls) — emit producer deferred | ➕ |
 | `config` | `ConfigRegistry` + `OptionType`/`OptionSpec` | guest declares typed option; host registers into registry | ➕ |
 
+### A seam that spawns its own Store must be handed the config registry
+
+Store-per-plugin (§3) means each seam's `spawn_*` builds a store from
+`new_store`, which starts with `config_registry: None`. A guest calling
+`config.get-option` / `config.set-option` from *that* seam then takes the
+"plugin has no config registry wired" branch: a `warn!` into the log and a
+no-op return. Nothing traps, nothing surfaces to the user, and `:set <opt>?`
+keeps reporting the compiled default — so the symptom is "my config does not
+apply" with a working-looking plugin behind it.
+
+Every seam whose guest can read or write an option must therefore take a
+`config: Option<&Arc<ConfigRegistry>>` and set it on the store before driving
+any guest export. Today that is `config`, `context`, `transient`, `grammar`
+(via the trampoline) and `events`.
+
+**This has now been the same bug three times** — the transient seam (OC.3,
+`org-capture.md` §5), the context seam, and the events seam. Each time the
+seam was wired end to end and each time the *option* path through it was the
+one path no test took. The events case is the sharpest illustration: the CI.5
+deferred-config chain test drove `modes.enable-mode` from `on-event` and
+passed, but `enable-mode` reaches the **bus**, not the registry — so the
+documented `init.rs` pattern for configuring a user plugin
+(`docs/user/init.md`, "IMMEDIATE vs DEFERRED") had never been executed once.
+`init_deferred_config.rs` now asserts both halves.
+
+A test for a new seam that exposes `config` must set an option through it and
+read the value back off the **live registry**, not merely observe that the
+guest call returned.
+
 **Registration is into the *same* registries, never a parallel plugin registry — and the
 mechanism already exists.** Boot assembles `EventBus`, `CommandRegistry`, `ModeRegistry`,
 `ServiceRegistry`, `CompletionRegistry`, `PickerRegistry`, `ConfigRegistry` in `Editor::boot`

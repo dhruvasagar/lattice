@@ -10,6 +10,7 @@ package lattice:plugin-host@0.1.0;
 world init-fixture {
     import events;
     import modes;
+    import config;
     use types.{event};
 
     export register-events: func();

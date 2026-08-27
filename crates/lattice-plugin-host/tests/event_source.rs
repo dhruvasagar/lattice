@@ -79,6 +79,7 @@ async fn plugin_receives_subscribed_events_end_to_end() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn events plugin");
@@ -142,6 +143,7 @@ async fn plugin_declares_and_emits_a_custom_event_end_to_end() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn events plugin");
@@ -233,6 +235,7 @@ async fn poison_handler_traps_gracefully_without_affecting_others() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn events plugin");
@@ -309,6 +312,7 @@ async fn first_trap_quarantines_and_emits_one_plugin_crashed() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &bus,
+            None,
         )
         .await
         .expect("spawn events plugin");

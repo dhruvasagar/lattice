@@ -159,4 +159,35 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
         }
         other => panic!("expected ModeEnablementRequested, got {other:?}"),
     }
+
+    // 4. The OTHER half of the documented deferred shape: the same handler
+    //    called `config.set-option("auto-pair.style", "manual")`.
+    //
+    //    This assertion is the point of the whole file's second half. Steps
+    //    1–3 pass whether or not the events store carries a config registry,
+    //    because `enable-mode` reaches the BUS. `set-option` reaches the
+    //    REGISTRY, and the events seam never wired one — so a user's
+    //    `init.rs` configuring a plugin from `on-event` (which is what
+    //    `docs/user/init.md` tells them to do, and the only place a USER
+    //    plugin's options exist yet) warned into the log and did nothing,
+    //    while `:set <option>?` reported the compiled default.
+    //
+    //    Polled rather than asserted once: `on-event` runs on the events
+    //    ACTOR, so the write lands a beat after the event that triggered it.
+    let style = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(opt) = config_registry.lookup("auto-pair.style")
+                && opt.get_formatted() == "manual"
+            {
+                return opt.get_formatted();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the init handler's set-option reached the config registry within 5s");
+    assert_eq!(
+        style, "manual",
+        "deferred `set-option` from `on-event` must apply to the live registry"
+    );
 }

@@ -133,7 +133,20 @@ WIT types exist but the interface has no functions yet.
 
 | Interface | Status | What it gives you |
 |---|---|---|
-| `host-services` | **partial** | Capability-gated callbacks. Only `walk` (filesystem enumeration) is implemented; `emit-event` / `register-event` exist but no-op without a wired bus. |
+| `host-services` | **partial** | Capability-gated callbacks. `walk` (filesystem enumeration) and `read-file` are implemented; `emit-event` / `register-event` exist but no-op without a wired bus. |
+
+> **Reading a file from a grammar action: use `read-file`, not `std::fs`.**
+> Grammar actions (motions, operators, text objects, `register-action` bodies,
+> ex-commands) run on a **synchronous** linker so the host can call them on the
+> dispatch thread. `wasmtime-wasi`'s sync filesystem shim blocks on a runtime
+> internally, and that thread is already inside one — so `std::fs::read_to_string`
+> in an action does not read a file, it **panics and takes your plugin down**.
+> `host-services.read-file` is a host-side read gated on the same `fs:` grant,
+> and it works from every seam.
+>
+> Async seams — `picker-source`, `completion-source`, `transient-source` — run on
+> the async linker and may use `std::fs` directly. The distinction is invisible
+> until it panics, so when in doubt use `read-file`.
 | `project` | **usable** | Resolve a buffer or path to its project root. Walks the filesystem on a cache miss — which is why `error-parser-plugin` deliberately does **not** import it. |
 | `tree-sitter` | **usable** | Query the parse tree through a handed `tree-snapshot` borrow. |
 | `buffer` | **usable** | Read buffer text through a `document` borrow. |

@@ -14,8 +14,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 **Status:** 🚧 in progress (2026-08-26). TR.1 ✅, TR.2a ✅, TR.2b ✅ — the
 seam is live. OC.1a ✅, OC.1 ✅, OC.2 ✅, OC.3a ✅, OC.3 ✅, TR.3a ✅,
 TR.3b ✅, OC.4 ✅ — many templates and `%^{Question}` fields both work end to
-end. **OC.5 is next**: `file+headline` targets and the rest of the placeholder
-set (`%a` / `%t`).
+end. OC.5a ✅ — `file+headline` targets file where they say they do, which needed
+`host-services.read-file` in the host first. **OC.5b is next**: `%t` and `%a`.
 
 **TR.2 was carved in two while executing it.** The registry's builders were
 synchronous, so a guest-backed one had nowhere to live before the seam existed
@@ -48,7 +48,8 @@ for the one verb meant to work from anywhere.
   ├── OC.2  parse `org.capture-templates`
   ├── OC.3  the capture transient
   ├── OC.4  the %^{Prompt} fields
-  ├── OC.5  targets + the placeholder set
+  ├── OC.5a targets (+ the host `read-file` it needed)
+  ├── OC.5b %t and %a
   └── OC.6  docs, ledger, site
 ```
 
@@ -65,7 +66,8 @@ for the one verb meant to work from anywhere.
 | TR.3a | `Effect::OpenTransient` carries args → `TransientContext::args` | ✅ |
 | TR.3b | `Argument` rows cross the seam (the park/resume mechanism) | ✅ |
 | OC.4 | `%^{Prompt}` as `Argument` rows on a per-template fields menu | ✅ |
-| OC.5 | `file` / `file+headline` targets, `%a` / `%U` / `%T` / `%t` / `%%` | 📝 |
+| OC.5a | `file+headline` targets (+ host `read-file`) | ✅ |
+| OC.5b | `%t` and `%a` — the last two placeholders | 📝 |
 | OC.6 | Docs, ledger, site nav | 📝 |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench where a
@@ -372,17 +374,60 @@ Unit (expansion): answers substitute in order, a question and `%?` coexist, a
 missing answer leaves its slot without shifting the rest, an empty question
 consumes nothing and stays visible, an unclosed one survives verbatim.
 
-## OC.5 — targets and the placeholder set 📝
+## OC.5a — targets ✅
 
-`file` (append) and `file+headline` (after that headline's subtree, via the
-insertion line read through WASI inside the existing `fs:` grant — refile's
-mechanism). A missing headline appends and echoes.
+**Carved out of OC.5 while executing it**, because the two halves turned out to
+be independent and the first one uncovered a host gap the second does not have.
 
-Placeholders: `%?`, `%U`, `%T`, `%t`, `%a`, `%%`, unknown-verbatim.
+`file` appends. `file+headline` resolves the insertion line — find the headline,
+anchor at `subtree_end + 1` — sharing `headline::subtree_end` with refile so the
+two cannot drift. A missing headline appends **and echoes**: the note has been
+typed already, and losing it is the one outcome capture must never produce.
 
-Tests: a headline target lands after that subtree rather than in front of its
-children; a missing headline appends and echoes; `%a` names the buffer and
-line the capture fired from; an unknown `%x` survives.
+Matching strips a leading TODO keyword and trailing `:tags:`, ignores case and
+collapses inner spacing. A user names the target once in a config file; adding
+`:drill:` to that headline months later must not silently redirect every future
+capture to the bottom of the file. Deliberately the opposite of
+`refile::title_of`, which keeps both because its consumer is a picker.
+
+**It needed a host slice first, and that was not foreseen.** The design said the
+guest would read the target "through WASI inside the existing `fs:` grant —
+refile's mechanism". Neither half held. Refile never reads a file: it computes
+its insertion line from buffer text handed to it by a picker, and pickers run on
+the **async** linker. Capture is a *grammar action*, called synchronously on the
+dispatch thread from a **sync** linker whose WASI filesystem shim blocks on a
+runtime internally — so `std::fs::read_to_string` there panics instead of
+reading. A comment in the host asserted the opposite, which is what made it look
+safe to try.
+
+So `host-services.read-file` landed first (a host-side read, gated on the same
+`fs:` grant capture already needs to write) and org calls that. See
+`plugin-manager.md`'s neighbour note and the corrected comment at the grammar
+linker.
+
+Tests: subtree-end insertion, nested headline stopping at its sibling,
+last-headline-past-the-end, missing headline appending, tags and TODO keywords
+not breaking a match, case/spacing insensitivity, body text never matching,
+duplicates resolving to the first — all pure, plus three end-to-end through a
+real component covering the headline target, the missing-headline echo, and a
+plain `file` target still appending.
+
+## OC.5b — `%t` and `%a` 📝
+
+`%t` is the active date-only stamp, a sibling of the `%U` / `%T` already built.
+
+`%a` is the interesting one: an org link back to where the capture fired. **The
+origin is gone by submit time** — `open_prompt_line` focuses a synthetic prompt
+buffer, so the `doc` reaching `capture_submit` is the prompt, not the source.
+It has to be computed in `capture_open` (from `doc.path()` + `ctx.cursor.line`)
+and smuggled forward through both hops: the prompt hop's `buffer_name` (already
+carrying the template key) and the fields hop's `OpenTransientPayload.args`
+(already carrying it too). Both are single-string slots, so this needs an
+encoding — `refile::encode`'s tab-token is the precedent.
+
+Tests: `%t` renders date-only; `%a` names the file and line the capture fired
+from, through both the prompt hop and the fields hop; a capture fired from a
+buffer with no path degrades to something rather than an empty link.
 
 ## OC.6 — docs, ledger, site 📝
 

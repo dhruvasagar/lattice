@@ -107,10 +107,32 @@ target = { file = "…" }                        # append at end
 target = { file = "…", headline = "Projects" } # after that headline's subtree
 ```
 
-`file` is `FileAnchor::End`. `file+headline` needs the insertion **line**,
-which means reading the target — the guest does it through WASI inside the
-`fs:` grant capture already needs to write there, exactly as refile's picker
-source reads candidate files (`org-mode.md` OM.11).
+`file` is `FileAnchor::End`. `file+headline` needs the insertion **line**, which
+means reading the target file: find the headline, then anchor at the last line of
+its subtree plus one — the same computation refile makes, sharing
+`headline::subtree_end` so the two cannot drift apart.
+
+**The read goes through `host-services.read-file`, not WASI**, and this paragraph
+originally said the opposite. Capture runs as a *grammar action*, which the host
+calls synchronously on the dispatch thread from a separate sync linker;
+`wasmtime-wasi`'s sync filesystem shim blocks on a runtime internally, so a guest
+`std::fs::read_to_string` there panics rather than reading. Refile is not the
+precedent it looked like — refile never reads a file, it computes its insertion
+line from buffer text handed to it by a *picker*, and pickers run on the async
+linker where WASI works. `read-file` is gated on the same `fs:` grant capture
+already needs in order to write, so this costs no new capability.
+
+Inserting after the **whole subtree** rather than directly under the headline is
+deliberate: filing at the top would put each new entry in front of everything
+already there, so the subtree would read newest-first while the file around it
+reads oldest-first.
+
+Headline matching ignores case, collapses inner whitespace, and strips a leading
+TODO keyword and trailing `:tags:`. A user names the target once in a config
+file; adding `:drill:` to that headline months later must not silently send
+every future capture to the bottom of the file. (This is the opposite of
+`refile::title_of`, which deliberately *keeps* both — its consumer is a picker,
+where typing `TODO` is a useful way to find unfinished work.)
 
 A named headline that is absent **appends and says so**, rather than creating
 it or refusing. The note is not lost, and the echo is what tells the user

@@ -62,6 +62,35 @@ mod build_state_tests {
     }
 }
 
+/// WT.4: a plugin the loader tried to load and could not.
+///
+/// **A plugin that failed to load is indistinguishable from one that was never
+/// installed**, and that is not a cosmetic gap — it is what turned the reported
+/// failure into a debugging session rather than a glance. The editor opened, the
+/// file opened, and org was simply absent: no language, no highlighting, no
+/// folds, no chords, and nothing anywhere saying why.
+///
+/// Held separately from [`PluginStatus`] rather than as another `PluginHealth`
+/// variant, because a failed load has none of what that type carries: no
+/// host-issued id, no granted capabilities, no trust tier that was ever applied.
+/// Modelling it as a degenerate `PluginStatus` would mean inventing all three,
+/// and `:plugins`' row→plugin index mapping would then point at rows with no
+/// plugin behind them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedLoad {
+    /// The manifest id where one could be read, else the directory's file name.
+    /// A plugin whose manifest is itself the problem still needs a name in the
+    /// report, or the user cannot tell which of their plugins is being described.
+    pub name: String,
+    /// Where it was loaded from — the actionable half. The name says *what*
+    /// broke; this says *which copy on disk* to go and look at.
+    pub dir: std::path::PathBuf,
+    /// The rendered [`crate::PluginLoaderError`]. A string rather than the error
+    /// itself: this is a snapshot for a view, outliving the load that produced
+    /// it, and the view has no use for the variant.
+    pub error: String,
+}
+
 /// A read-only snapshot of one loaded plugin for the manager view. Cloned out of
 /// the loader's loaded-set under its lock (never a live borrow), so the view
 /// renders a stable frame while loads/unloads proceed.

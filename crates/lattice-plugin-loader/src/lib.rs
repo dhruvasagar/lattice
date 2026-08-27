@@ -111,7 +111,7 @@ use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
 mod status;
-pub use status::{BuildState, PluginHealth, PluginStatus};
+pub use status::{BuildState, FailedLoad, PluginHealth, PluginStatus};
 
 /// The service handle other layers reach the loader through — the ex-command
 /// surface (PL8.C), the plugin-manager view (PL8.H). Per the `ServiceRegistry`
@@ -410,6 +410,13 @@ pub struct PluginLoader {
     /// a second return value through every arm to serve one of them would put
     /// the cost on all of them.
     required: Mutex<Vec<pipeline::RequiredSpec>>,
+    /// WT.4: plugins that tried to load and could not, for `:plugins`.
+    ///
+    /// In memory, not on disk. A load failure is a fact about *this* boot
+    /// against *this* editor — persisting it would mean showing a user an error
+    /// about a plugin they have since rebuilt, which is the same reasoning
+    /// [`BuildState::Failed`] is in-memory for.
+    failed: Mutex<Vec<FailedLoad>>,
 }
 
 /// Why a plugin failed to load. Every variant is graceful-degradation input for
@@ -517,6 +524,7 @@ impl PluginLoader {
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
+            failed: Mutex::new(Vec::new()),
         }
     }
 
@@ -532,6 +540,7 @@ impl PluginLoader {
             building: Mutex::new(std::collections::HashMap::new()),
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
+            failed: Mutex::new(Vec::new()),
         }
     }
 
@@ -610,13 +619,23 @@ impl PluginLoader {
                 continue;
             }
             match self.load_discovered(&plugin, tier).await {
-                Ok(_) => loaded += 1,
-                Err(err) => tracing::warn!(
-                    plugin = %plugin.manifest.id,
-                    dir = %plugin.dir.display(),
-                    error = %err,
-                    "plugin failed to load; skipped"
-                ),
+                Ok(_) => {
+                    loaded += 1;
+                    self.clear_failure(&plugin.manifest.id);
+                }
+                Err(err) => {
+                    // WT.4: `warn!` reaches `*messages*`, and the record reaches
+                    // `:plugins`. Both, because they answer different questions:
+                    // the log says a thing went wrong just now, the record
+                    // answers "why is org not here?" asked ten minutes later.
+                    tracing::warn!(
+                        plugin = %plugin.manifest.id,
+                        dir = %plugin.dir.display(),
+                        error = %err,
+                        "plugin failed to load; skipped"
+                    );
+                    self.record_failure(&plugin.manifest.id, &plugin.dir, &err.to_string());
+                }
             }
         }
         loaded
@@ -983,6 +1002,51 @@ impl PluginLoader {
         rows
     }
 
+    /// WT.4: the plugins that tried to load this session and could not.
+    ///
+    /// Name-sorted like [`plugin_status`](Self::plugin_status), for the same
+    /// reason: the view is read down a column, and discovery order is not
+    /// something a user can predict or reproduce.
+    pub fn failed_loads(&self) -> Vec<FailedLoad> {
+        let mut rows = self.failed.lock().map(|f| f.clone()).unwrap_or_default();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
+    }
+
+    /// Record (or replace) `name`'s load failure.
+    ///
+    /// Replaces rather than appends: a `:plugin-reload` that fails again should
+    /// leave one row saying what is wrong now, not a growing pile of attempts.
+    /// The view is a description of the current state, not a history.
+    fn record_failure(&self, name: &str, dir: &std::path::Path, error: &str) {
+        let Ok(mut failed) = self.failed.lock() else {
+            // A poisoned mutex here would mean losing a diagnostic, and losing a
+            // diagnostic is not worth taking the editor down over — this whole
+            // mechanism exists because a missing message cost a debugging
+            // session, so it must not itself become a crash.
+            tracing::debug!(plugin = name, "failed-load set poisoned; not recording");
+            return;
+        };
+        failed.retain(|f| f.name != name);
+        failed.push(FailedLoad {
+            name: name.to_string(),
+            dir: dir.to_path_buf(),
+            error: error.to_string(),
+        });
+    }
+
+    /// Drop `name`'s failure record — it loaded.
+    ///
+    /// Called on every successful load rather than only on a reload, because the
+    /// paths into a load are several (boot scan, `require`, `:plugin-load`,
+    /// `:plugin-reload`) and a stale "failed" row surviving a load that worked
+    /// is a worse lie than no row at all.
+    fn clear_failure(&self, name: &str) {
+        if let Ok(mut failed) = self.failed.lock() {
+            failed.retain(|f| f.name != name);
+        }
+    }
+
     /// PL8.H.1: mark the plugin `plugin` quarantined (its instance trapped) — the
     /// body of the `Event::PluginCrashed` subscription ([`subscribe_health`]),
     /// exposed directly so a test can drive the health flip without a live bus.
@@ -1149,7 +1213,17 @@ impl PluginLoader {
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
         let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
-        self.load_discovered(&plugin, tier).await
+        // WT.4: a `discover_one` failure is deliberately NOT recorded above —
+        // that is "this directory is not a plugin", which the caller asked about
+        // and gets as an error. Past this point the directory *is* a plugin, so
+        // a failure is a plugin that should be here and is not, and it belongs
+        // in `:plugins` however the load was triggered.
+        let outcome = self.load_discovered(&plugin, tier).await;
+        match &outcome {
+            Ok(_) => self.clear_failure(&plugin.manifest.id),
+            Err(err) => self.record_failure(&plugin.manifest.id, dir, &err.to_string()),
+        }
+        outcome
     }
 
     /// PM.8b: how many builds are running right now.

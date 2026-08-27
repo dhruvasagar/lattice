@@ -40,6 +40,7 @@ use clap::Parser;
 use lattice_core::Document;
 
 mod scaffold;
+mod wit_sync;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "lattice editor", long_about = None)]
@@ -122,6 +123,26 @@ struct Cli {
     /// NAME must be lowercase kebab-case. Refuses to overwrite an existing dir.
     #[arg(long = "scaffold-plugin", value_name = "NAME")]
     scaffold_plugin: Option<String>,
+
+    /// WT.4: rewrite a plugin source's `wit/` from this editor's API package
+    /// and exit. With no DIR, syncs `~/.config/lattice/init` and every plugin
+    /// source beside it.
+    ///
+    /// The build service already does this before every build it runs, so this
+    /// is the repair path for the case it cannot reach: an `init.wasm` that
+    /// will not instantiate holds the `require` that would have rebuilt
+    /// everything else, including itself. This needs nothing to load first.
+    ///
+    /// Does not build — repair the API definition, then let the build succeed
+    /// or fail on its own terms.
+    #[arg(
+        long = "wit-sync",
+        value_name = "DIR",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["scaffold_init", "scaffold_plugin", "file"]
+    )]
+    wit_sync: Option<PathBuf>,
 }
 
 // WT.1: lattice's `wit/` API package now lives in `lattice-wit`, which is the
@@ -169,6 +190,14 @@ async fn main() -> Result<()> {
     }
     if let Some(name) = cli.scaffold_plugin.as_deref() {
         return scaffold::scaffold_plugin(name);
+    }
+    // WT.4: the repair path. Also exits without opening the editor — a user
+    // running it is fixing an install that will not boot properly.
+    if let Some(dir) = cli.wit_sync.as_deref() {
+        // `--wit-sync` with no value parses as an empty path; that is the
+        // sweep-the-defaults case, not a request to sync the current directory.
+        let explicit = (!dir.as_os_str().is_empty()).then_some(dir);
+        return wit_sync::wit_sync(explicit);
     }
 
     // 2026-05-22 messages-overhaul: removed the prior

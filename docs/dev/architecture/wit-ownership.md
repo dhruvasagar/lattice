@@ -1,8 +1,13 @@
 # Who owns `wit/`, and what happens when a plugin is behind it
 
-**Status:** designed, unbuilt. Extends
-[`plugin-host.md`](plugin-host.md) §12 (the ABI-freeze deferral) and
-[`plugin-manager.md`](plugin-manager.md) (build + staging).
+**Status:** built (WT.1–WT.4; see the
+[slice plan](../operations/slice-plans/wit-ownership.md) for sequencing and what
+each slice actually did). Extends [`plugin-host.md`](plugin-host.md) §12 (the
+ABI-freeze deferral) and [`plugin-manager.md`](plugin-manager.md) (build +
+staging).
+
+The recommendation in §6 changed during the build — the mechanism is §3(c), not
+§3(a), for a reason worth reading before touching any of this.
 
 ## 1. What went wrong
 
@@ -23,13 +28,18 @@ itself a stale plugin.
 Three separate defects, and they compound:
 
 1. **`wit/` is copied once and never refreshed.** `write_wit_package` runs at
-   scaffold time (`lattice --init`, `lattice --new-plugin`). After that the
-   plugin's `wit/` is a fork that nothing updates.
+   scaffold time (`lattice --scaffold-init`, `lattice --scaffold-plugin`). After
+   that the plugin's `wit/` is a fork that nothing updates.
+   → answered by §3(c): the build service rewrites it before every build.
 2. **A stale artifact is not rebuilt.** `build_plugin` rebuilds when the
    *source* changed. A source that did not change but was built against a
    different ABI looks current.
+   → answered by §4: the stamp records the ABI too, and a mismatch is stale.
 3. **An instantiate failure is invisible where it matters.** It is logged; it
    does not reach the user who is looking at an uncoloured file.
+   → answered by §4: `warn!` to `*messages*`, and a *Failed to load* section in
+   `:plugins`. The init-boot arm that reported this at `debug!` — conflating "no
+   init.rs" with "init.rs is broken" — was the specific line at fault.
 
 ## 2. Who owns it
 
@@ -79,7 +89,7 @@ records in the lockfile.
 > that wants the WIT has no way to get it that does not involve a checkout of
 > lattice. That is the thing that breaks without it.
 
-### (b) The editor exports it: `lattice wit sync [dir]`
+### (b) The editor exports it: `lattice --wit-sync [DIR]`
 
 The binary already embeds the files. A subcommand rewrites the `wit/` of a
 given directory (defaulting to `~/.config/lattice/init` and every local plugin
@@ -133,7 +143,7 @@ will alternately rebuild each other's plugins, because each reads the other's
 ABI fingerprint as stale once §4 lands. That is new, and it is thrash — but it
 is *correct* thrash: each editor loads a component that works, where today one
 of them silently loads nothing. A hand-run `cargo build` in a source directory
-still uses whatever `wit/` is there; (b)'s `lattice wit sync` is the manual peer
+still uses whatever `wit/` is there; (b)'s `lattice --wit-sync` is the manual peer
 for that case, and §4 makes the resulting artifact stale rather than quietly
 broken.
 
@@ -182,10 +192,21 @@ here, where it answers a question wasmtime's cache does not.
 
 **And the failure must surface.** A plugin that fails to instantiate is a
 user-visible event — the same class as "LSP server attached", not a `debug!`.
-It should reach `*messages*` with the plugin named and the reason, and
-`:plugins` should show it. A silently-absent plugin is indistinguishable from
-one that was never installed, which is precisely why this took a debugging
-session to find rather than a glance.
+It reaches `*messages*` with the plugin named and the reason, and `:plugins`
+carries a trailing *Failed to load* section giving the name, the directory, and
+the error. A silently-absent plugin is indistinguishable from one that was never
+installed, which is precisely why this took a debugging session to find rather
+than a glance.
+
+Both surfaces, not one, because they answer different questions: the log says a
+thing went wrong just now; `:plugins` answers *"why is org not here?"* asked ten
+minutes later, by which time the log has scrolled.
+
+The failure set is held apart from `PluginStatus` rather than as another
+`PluginHealth` variant. A failed load has no host-issued id, no granted
+capabilities, and no tier that was ever applied; fabricating all three to fit the
+shape would put rows in `:plugins` with no plugin behind them, and the view's
+row→plugin index mapping would then point at nothing.
 
 ## 5. "How does a plugin built against an older `wit/` work?"
 
@@ -257,7 +278,7 @@ comparison at load, a message on failure.
 | WT.2 | An out-of-tree plugin (org) takes the build-dependency; its `wit/` becomes gitignored generated output |
 | WT.2b | The build service refreshes `wit/` before every cargo invocation (§3c); the scaffolds' copy becomes a seed |
 | WT.3 | ABI fingerprint in `.build-stamp`; loader treats a mismatch as stale and rebuilds from source |
-| WT.4 | `lattice wit sync` for repair; a failed instantiate reaches `*messages*` and `:plugins` |
+| WT.4 | `lattice --wit-sync` for repair; a failed instantiate reaches `*messages*` and `:plugins` |
 
 WT.4's message is the one that would have saved the session that produced this
 fragment, so it is not the tail of the list by importance.

@@ -109,7 +109,7 @@ fn refresh(ctx: &ActionContext<'_>) {
         return;
     };
     let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-    let text = render::render_status(&loader.plugin_status());
+    let text = render::render_status_with_failures(&loader.plugin_status(), &loader.failed_loads());
     crate::mode::spawn_write(&store, buffer_id, text);
 }
 
@@ -126,7 +126,10 @@ pub fn reload_handler() -> ActionHandler {
             runtime.spawn(async move {
                 let _ = loader.reload(&name_c, TrustTier::UserInstalled).await;
                 if let Some(handle) = store.handle_for(buffer_id) {
-                    let text = render::render_status(&loader.plugin_status());
+                    let text = render::render_status_with_failures(
+                        &loader.plugin_status(),
+                        &loader.failed_loads(),
+                    );
                     crate::mode::write_all(&handle, text).await;
                 }
             });
@@ -165,7 +168,10 @@ pub fn rebuild_handler() -> ActionHandler {
             // `cached`, on failure it reads `build-failed` — both are the
             // answer the user pressed `b` to get.
             if let Some(handle) = store.handle_for(buffer_id) {
-                let text = render::render_status(&loader.plugin_status());
+                let text = render::render_status_with_failures(
+                    &loader.plugin_status(),
+                    &loader.failed_loads(),
+                );
                 crate::mode::write_all(&handle, text).await;
             }
             match result {

@@ -29,7 +29,7 @@ use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{Document, EventFilter, SubscriptionTarget};
 
 use crate::actions;
-use crate::render::{PLUGINS_MODE_ID, render_status};
+use crate::render::{PLUGINS_MODE_ID, render_status_with_failures};
 
 /// PM.8b: the headerline provider id for the build-progress row.
 pub const BUILD_HEADERLINE_PROVIDER_ID: u64 = 0x706c_7567_6862_0800; // "plug-hb"
@@ -118,7 +118,10 @@ pub(crate) async fn write_all(handle: &Arc<dyn Document>, text: String) {
 /// (a test harness with no plugin support) — the buffer stays empty, not a panic.
 fn current_status_text(ctx: &ModeContext) -> Option<String> {
     let loader = ctx.service::<PluginLoaderHandle>()?;
-    Some(render_status(&loader.plugin_status()))
+    Some(render_status_with_failures(
+        &loader.plugin_status(),
+        &loader.failed_loads(),
+    ))
 }
 
 /// Re-render the manager buffer from the pre-rendered `text`, OFF the actor
@@ -284,7 +287,10 @@ impl Mode for PluginManagerMode {
                 while rx.recv().await.is_some() {
                     // Coalesce a burst before re-rendering the whole snapshot.
                     while rx.try_recv().is_ok() {}
-                    let text = render_status(&loader.plugin_status());
+                    let text = render_status_with_failures(
+                        &loader.plugin_status(),
+                        &loader.failed_loads(),
+                    );
                     write_all(&refresh_handle, text).await;
                 }
             });

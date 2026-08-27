@@ -23,7 +23,7 @@ by hand, and the second could only be reached after the first was fixed.
   WT.1  `lattice-wit` — the API package as a zero-dependency crate
   WT.2  scaffolds depend on it; `wit/` becomes generated output
   WT.3  ABI fingerprint in `.build-stamp`; a mismatch is STALE, not a load failure
-  WT.4  `lattice wit sync` (repair) + a failed load reaches the user
+  WT.4  `lattice --wit-sync` (repair) + a failed load reaches the user
 ```
 
 WT.1 and WT.2 stop the drift at its source. WT.3 makes what is already on disk
@@ -36,7 +36,7 @@ dead `init.wasm`, which cannot rebuild anything, including itself.
 | WT.2 | org migrates; `wit/` gitignored generated output | ✅ |
 | WT.2b | The build service refreshes `wit/` before cargo | ✅ |
 | WT.3 | Fingerprint in `.build-stamp`; ABI mismatch ⇒ rebuild from source | ✅ |
-| WT.4 | `lattice wit sync`; a failed instantiate reaches `*messages*` / `:plugins` | 📝 |
+| WT.4 | `lattice --wit-sync`; a failed load reaches `*messages*` / `:plugins` | ✅ |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench where a
 hot path is touched (none here — build time, load time, and an echo), tests
@@ -182,22 +182,72 @@ rebuild again; a legacy source-only stamp is rebuilt rather than trusted; a
 pinned artifact with a skewed ABI still loads and the pin is honoured; the stamp
 round-trips and both truncated forms fail to parse.
 
-## WT.4 — repair, and saying so 📝
+## WT.4 — repair, and saying so ✅
 
-Two halves, both about the failure being *reachable by a user*:
+Two halves, both about the failure being *reachable by a user*.
 
-- **`lattice wit sync [dir]`** — rewrite the `wit/` of `~/.config/lattice/init`
-  and every local plugin source from the embedded package. This is the only
-  thing that unsticks a dead `init.wasm`, which cannot rebuild itself and which
-  holds the `require` that would have rebuilt everything else.
-- **A failed instantiate reaches `*messages*` and `:plugins`**, naming the
-  plugin and the reason. One-shot and user-actionable, so `info!`-class, not
-  `debug!` — the "LSP server attached" bar. A silently-absent plugin is
-  indistinguishable from one that was never installed, which is exactly why the
-  reported failure took a debugging session rather than a glance.
+### `lattice --wit-sync [DIR]`
 
-WT.4's message is the one that would have saved the session that produced the
-design fragment, so it is not last by importance.
+Spelled as a flag, not the `lattice --wit-sync` subcommand the plan drafted: this
+CLI is flag-shaped throughout (`--scaffold-init`, `--scaffold-plugin NAME`) and
+has a positional `FILE` argument that a bare `wit` subcommand would be
+ambiguous against. Same command, spelled the way the surface is already spelled.
+
+With no `DIR` it sweeps `~/.config/lattice/init` plus every immediate child of
+the plugins dir; with one it syncs that directory alone, consulting no config
+home, so it works against a checkout anywhere.
+
+**Why it survives WT.2b covering every build.** `init.wasm` holds the `require`
+that installs and rebuilds everything else. When `init.wasm` itself will not
+instantiate, nothing runs, so nothing rebuilds — including `init.wasm`. The
+thing that repairs stale plugins was itself the stale plugin, and that is the
+knot the reported failure actually tied. This is the one command that cuts it,
+and it needs nothing to load, boot, or build first.
+
+**It deliberately does not build.** A user whose install is broken wants the two
+steps separate: repair the API definition, then watch the build succeed or fail
+on its own terms. Folding a build in would bury the second failure inside the
+first. A directory that is not a cargo project is skipped *by name* in the
+report rather than silently — sweeping the plugins dir is a convenience, and the
+one folder a user cared about must not disappear into a success total.
+
+### A failed load reaches the user
+
+Two surfaces, because they answer different questions — the log says a thing
+went wrong just now; `:plugins` answers "why is org not here?" asked ten minutes
+later.
+
+**`*messages*`:** the boot path's `Err` arm for `init.rs` was a single `debug!`
+reading *"no user init.rs loaded"*, and **that line was the silent failure**. It
+covered two unrelated situations: the user has no `init.rs` (normal,
+uninteresting) and the user has one that would not load (the most consequential
+thing that can happen at boot, since `init.rs` holds the `require` for
+everything else). A `plugin.toml` in the init dir tells them apart — if one is
+there the user meant to have config, so its absence is a failure they must be
+told about, at `warn!`, naming the repair.
+
+**`:plugins`:** a new `FailedLoad { name, dir, error }` set, rendered as a
+trailing section. Trailing because the interactivity layer maps
+`cursor.line - HEADER_LINES` into the loaded list, so a section inserted above or
+between rows would put `u` / `r` / `b` on the wrong plugin — and a failed entry
+has no host id to act on anyway. Held separately from `PluginStatus` rather than
+as another `PluginHealth` variant: a failed load has no id, no granted
+capabilities, no tier that was ever applied, and inventing all three to fit the
+shape would produce rows with no plugin behind them.
+
+In memory, not on disk — a load failure is a fact about *this* boot against
+*this* editor, and persisting it would mean showing a user an error about a
+plugin they have since rebuilt. Recording replaces rather than appends, and a
+successful load clears: a stale "failed" row is a worse lie than no row.
+
+Tests: a broken plugin is recorded with name, directory and reason; retrying it
+three times leaves one row; a genuine successful load clears it (driven through
+a real load with the `modes-guest` fixture rather than a test-only hook, because
+a hook proves the bookkeeping and leaves the wiring untested); a path that is
+not a plugin is reported to the caller but files nothing; `:plugins` renders the
+section after every loaded row, omits it entirely when nothing failed, and shows
+it even when *nothing* loaded — which is the combination the reported failure
+actually produced.
 
 ---
 

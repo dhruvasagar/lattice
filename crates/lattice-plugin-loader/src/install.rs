@@ -313,6 +313,25 @@ pub fn install(boot: &mut impl SubsystemBoot) {
                         dir = %init_dir.display(),
                         "user init.rs config loaded"
                     ),
+                    // WT.4: **this arm was the silent failure.** One `debug!`
+                    // covered two entirely different situations — "the user has
+                    // no init.rs", which is normal and uninteresting, and "the
+                    // user has an init.rs and it would not load", which is the
+                    // most consequential thing that can happen at boot: init.rs
+                    // holds the `require` that installs and rebuilds every other
+                    // plugin, so when it dies nothing else loads either. The
+                    // editor opened, everything was absent, and this line said
+                    // it at a level nobody sees.
+                    //
+                    // A `plugin.toml` in the init dir is what tells them apart:
+                    // if one is there the user meant to have config, so its
+                    // absence is a failure they need to be told about.
+                    Err(err) if init_dir.join("plugin.toml").is_file() => tracing::warn!(
+                        dir = %init_dir.display(),
+                        error = %err,
+                        "user init.rs failed to load — plugins it requires will not install; \
+                         `lattice --wit-sync` then restart if the plugin API has changed"
+                    ),
                     Err(err) => tracing::debug!(
                         dir = %init_dir.display(),
                         error = %err,

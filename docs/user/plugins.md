@@ -373,6 +373,32 @@ then copy the component in as `<name>.wasm`) and it's discovered at boot with it
 mode on by default — toggle it any time with `:<name>-mode`. The command prints the
 exact steps; the name must be lowercase kebab-case.
 
+**The API definition keeps itself current.** That `wit/` copy is a *cache* of
+lattice's canonical API, not a fork of it. The editor rewrites it from its own
+embedded package immediately before every build it runs, so a plugin is always
+compiled against the API of the lattice that is about to load it — you never
+have to re-copy anything after an editor upgrade. `wit/` is generated output;
+there is no reason to commit it.
+
+**When a plugin silently isn't there,** check `:plugins`: anything that tried to
+load and failed is listed under *Failed to load* with the reason and the
+directory. The usual cause after an editor upgrade is a component built against
+an older API, and the usual fix is to let it rebuild — which happens on the next
+start.
+
+The exception, and the reason `--wit-sync` exists: if your **`init.rs` itself**
+will not load, nothing it `require`s installs or rebuilds either, including
+`init.rs`. Nothing can repair itself from inside that. So:
+
+```
+lattice --wit-sync      # rewrite wit/ for init and every plugin source
+```
+
+then restart, and the normal rebuild takes over. Pass a directory
+(`lattice --wit-sync path/to/plugin`) to sync just one. It repairs the API
+definition and stops there — it deliberately does not build, so a build failure
+afterwards is legible on its own terms rather than buried inside the repair.
+
 **Options are auto-namespaced.** A plugin registers config options with SHORT
 names (`register_option("style", …)`); the host prefixes them with the plugin id,
 so they land as `<id>.style` (`auto-pair.style`) and no two plugins can collide in

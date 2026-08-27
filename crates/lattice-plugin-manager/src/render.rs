@@ -5,7 +5,7 @@
 //! mode activation / a crash re-render).
 
 use lattice_plugin_host::{Capability, TrustTier};
-use lattice_plugin_loader::{PluginHealth, PluginStatus};
+use lattice_plugin_loader::{FailedLoad, PluginHealth, PluginStatus};
 
 /// The synthetic buffer's user-facing name and the major mode that owns it.
 pub const PLUGINS_BUFFER_NAME: &str = "*plugins*";
@@ -71,9 +71,28 @@ fn crash_suffix(health: &PluginHealth) -> String {
 /// whether one plugin is loaded or fifty. The empty state is an explicit line,
 /// not a bare header.
 pub fn render_status(plugins: &[PluginStatus]) -> String {
+    render_status_with_failures(plugins, &[])
+}
+
+/// WT.4: [`render_status`] plus a trailing section for plugins that tried to
+/// load and could not.
+///
+/// **Trailing, and deliberately so.** The interactivity layer maps
+/// `cursor.line - HEADER_LINES` into the loaded-plugin list, so anything
+/// inserted above or between the rows would put chords on the wrong plugin.
+/// Failed entries have no host id to unload or reload anyway — they are a
+/// report, not a row you can act on — so appending them costs the mapping
+/// nothing.
+///
+/// Why it exists at all: a plugin that failed to load is otherwise
+/// indistinguishable from one that was never installed. That is precisely what
+/// made the reported failure take a debugging session — org was absent, and
+/// absent looks the same either way.
+pub fn render_status_with_failures(plugins: &[PluginStatus], failed: &[FailedLoad]) -> String {
     let mut out = format!("# Plugins ({} loaded)\n\n", plugins.len());
     if plugins.is_empty() {
         out.push_str("No plugins are loaded. Load one with `:plugin-load <path>`.\n");
+        out.push_str(&failures_section(failed));
         return out;
     }
 
@@ -119,6 +138,26 @@ pub fn render_status(plugins: &[PluginStatus]) -> String {
             crash_suffix(&p.health),
         ));
     }
+    out.push_str(&failures_section(failed));
+    out
+}
+
+/// The trailing "failed to load" block, empty when nothing failed.
+///
+/// One entry over two lines — name and directory, then the reason indented
+/// under it — rather than a table column. A load error is a sentence (a wasm
+/// trap, a missing import, a manifest complaint), and squeezing sentences into a
+/// fixed-width cell is how the useful half gets truncated away.
+fn failures_section(failed: &[FailedLoad]) -> String {
+    if failed.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("\n## Failed to load ({})\n\n", failed.len());
+    for f in failed {
+        out.push_str(&format!("  {}  ({})\n", f.name, f.dir.display()));
+        out.push_str(&format!("      {}\n", f.error));
+    }
+    out.push_str("\nIf the plugin API changed, run `lattice --wit-sync` and restart to rebuild.\n");
     out
 }
 
@@ -168,6 +207,93 @@ mod tests {
         assert!(out.contains("git@abc1234"), "short rev in the cell: {out}");
         assert!(out.contains("stale"));
         assert!(out.contains("bundled"));
+    }
+
+    fn failure(name: &str, error: &str) -> FailedLoad {
+        FailedLoad {
+            name: name.to_string(),
+            dir: std::path::PathBuf::from(format!("/plugins/{name}")),
+            error: error.to_string(),
+        }
+    }
+
+    /// WT.4: the whole point. A plugin that failed to load must be visibly
+    /// *present and broken*, not absent — absent is indistinguishable from
+    /// never-installed, which is what made the reported failure invisible.
+    #[test]
+    fn a_failed_plugin_is_named_with_its_reason_and_its_directory() {
+        let out = render_status_with_failures(
+            &[status("fine", TrustTier::Bundled, PluginHealth::Healthy)],
+            &[failure(
+                "org",
+                "plugin runtime error: unknown import `logging`",
+            )],
+        );
+        assert!(out.contains("Failed to load (1)"), "{out}");
+        assert!(out.contains("org"), "the plugin is named: {out}");
+        assert!(
+            out.contains("unknown import `logging`"),
+            "the reason survives in full: {out}"
+        );
+        assert!(
+            out.contains("/plugins/org"),
+            "and which copy on disk to go and look at: {out}"
+        );
+        assert!(out.contains("--wit-sync"), "with the repair to try: {out}");
+    }
+
+    /// The failures trail the table. The interactivity layer maps
+    /// `cursor.line - HEADER_LINES` into the loaded list, so a section inserted
+    /// above or between rows would silently put `u` / `r` / `b` on the wrong
+    /// plugin.
+    #[test]
+    fn failures_render_after_every_loaded_row() {
+        let out = render_status_with_failures(
+            &[
+                status("aaa", TrustTier::Bundled, PluginHealth::Healthy),
+                status("zzz", TrustTier::Bundled, PluginHealth::Healthy),
+            ],
+            &[failure("broken", "nope")],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let last_row = lines.iter().rposition(|l| l.contains("zzz")).unwrap();
+        let section = lines
+            .iter()
+            .position(|l| l.contains("Failed to load"))
+            .unwrap();
+        assert!(section > last_row, "failures come last:\n{out}");
+        assert!(
+            lines[HEADER_LINES].contains("aaa"),
+            "and the first row still lands at HEADER_LINES: {out}"
+        );
+    }
+
+    /// Nothing failed, nothing said. A permanent empty "Failed to load (0)"
+    /// heading would train the eye to skip the section that matters.
+    #[test]
+    fn no_failures_renders_no_section() {
+        let out = render_status_with_failures(
+            &[status("fine", TrustTier::Bundled, PluginHealth::Healthy)],
+            &[],
+        );
+        assert!(!out.contains("Failed to load"), "{out}");
+        assert_eq!(
+            out,
+            render_status(&[status("fine", TrustTier::Bundled, PluginHealth::Healthy)]),
+            "and it is byte-identical to the no-failures renderer"
+        );
+    }
+
+    /// The empty-loaded-set case still reports failures — and this is the
+    /// combination the reported failure actually produced: init.rs died, so
+    /// nothing it required installed, so NOTHING was loaded. "No plugins are
+    /// loaded" alone would have been true and useless.
+    #[test]
+    fn a_failure_shows_even_when_nothing_loaded() {
+        let out = render_status_with_failures(&[], &[failure("init", "would not instantiate")]);
+        assert!(out.contains("No plugins are loaded"), "{out}");
+        assert!(out.contains("Failed to load (1)"), "{out}");
+        assert!(out.contains("would not instantiate"), "{out}");
     }
 
     #[test]

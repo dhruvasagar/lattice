@@ -1,11 +1,16 @@
 # Mode option overrides across the plugin seam — slice plan
 
-> Design: [`../../architecture/plugin-mode-options.md`](../../architecture/plugin-mode-options.md).
+> Design: [`../../../architecture/plugin-mode-options.md`](../../../architecture/plugin-mode-options.md).
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-27). MO.1 + MO.2 landed together; MO.3 is
-open and lives in the org repo.
+**Status:** ✅ complete (2026-08-27). MO.1 + MO.2 landed together in this repo;
+MO.3 landed in `lattice-org-plugin` (`2363ed4`).
+
+One thing stays open and is deliberately **not** a slice here: a plugin cannot
+override an option it registered itself. That is design §3(c), it has no
+consumer, and it is pinned by a test so the limit is on record. See "The known
+hole" below.
 
 ## Why now
 
@@ -19,7 +24,7 @@ folding was correct by coincidence on one machine and wrong everywhere else.
 |---|---|---|
 | MO.1 | `mode-option-override` in `wit/modes.wit`; projected onto `PluginModeDecl` | ✅ |
 | MO.2 | Resolve name→`TypeId` + coerce value; `PluginMode::options()` | ✅ |
-| MO.3 | Org declares `foldmethod = syntax` on `org-mode` | 📝 |
+| MO.3 | Org declares `foldmethod = syntax` on `org-mode` | ✅ |
 
 ## MO.1 + MO.2 — landed together, deliberately ✅
 
@@ -124,9 +129,9 @@ dropped. The unit tests prove the resolution logic; only this proves the WIT
 record actually carries the data and that bindgen projects it. A seam wired
 end-to-end can still answer nothing.
 
-## MO.3 — org declares its folding 📝
+## MO.3 — org declares its folding ✅
 
-One entry on org's `org-mode` major declaration:
+Landed in `lattice-org-plugin` (`2363ed4`). One entry on the `org-mode` major:
 
 ```rust
 options: vec![ModeOptionOverride {
@@ -136,9 +141,21 @@ options: vec![ModeOptionOverride {
 }],
 ```
 
-plus a test that an org buffer folds by syntax with the option unset globally.
+The test (`an_org_buffer_folds_by_syntax_without_the_user_setting_it`,
+`tests/org_major_mode.rs`) boots a sealed editor, loads the real component,
+opens a `.org` file and asserts both halves — `foldmethod` resolves to `syntax`
+in that buffer, and the user's global setting is still `manual`. It also pins
+the precondition that makes it mean anything: the global default is `manual`
+*before* the plugin loads, so `syntax` can only have come from the mode.
 
-Lives in the `lattice-org-plugin` repo, so it lands with the next org session
-rather than here. **This plan stays active until it does** — the mechanism has a
-consumer in a fixture, but the consumer it was built for is org, and a mechanism
-whose real consumer has not adopted it is not finished.
+**Verified by falsification**, not just by passing. Declaring `indent` instead
+and rebuilding makes the assertion fail with `Indent` — so the test reads org's
+declaration rather than something incidental. Worth the two-minute wasm rebuild:
+a seam wired end-to-end can still answer nothing, and a green test that would be
+green either way is how that goes unnoticed.
+
+Org's other four modes gained an explicit empty `options`, and its `wit/`
+regenerated itself from the `lattice-wit` build-dependency — WT.2 doing its job,
+an ABI field added upstream in the morning picked up by a rebuild.
+
+224 org tests green afterwards.

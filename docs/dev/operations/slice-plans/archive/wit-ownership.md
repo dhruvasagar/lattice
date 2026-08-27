@@ -4,7 +4,12 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-27).
+**Status:** ✅ complete (2026-08-27). WT.1–WT.4 all landed; nothing deferred.
+
+Two things are explicitly *not* in scope and never were — multi-version ABI
+support and publishing `lattice-wit` to crates.io, both gated on 1.0. See
+"What this does NOT do" at the foot of this file for why neither is an open
+slice.
 
 ## Why now
 

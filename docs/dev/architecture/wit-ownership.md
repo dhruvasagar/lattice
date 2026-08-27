@@ -1,7 +1,7 @@
 # Who owns `wit/`, and what happens when a plugin is behind it
 
 **Status:** built (WT.1–WT.4; see the
-[slice plan](../operations/slice-plans/wit-ownership.md) for sequencing and what
+[slice plan](../operations/slice-plans/archive/wit-ownership.md) for sequencing and what
 each slice actually did). Extends [`plugin-host.md`](plugin-host.md) §12 (the
 ABI-freeze deferral) and [`plugin-manager.md`](plugin-manager.md) (build +
 staging).

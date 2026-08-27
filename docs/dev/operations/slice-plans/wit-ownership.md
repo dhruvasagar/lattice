@@ -33,7 +33,8 @@ dead `init.wasm`, which cannot rebuild anything, including itself.
 | Slice | Description | Status |
 |---|---|---|
 | WT.1 | `lattice-wit`: embedded `wit/` + `write_to` + ABI fingerprint | ✅ |
-| WT.2 | Scaffolds gain the build-dep; `wit/` gitignored generated output | 📝 |
+| WT.2 | org migrates; `wit/` gitignored generated output | ✅ |
+| WT.2b | Scaffolds — **blocked on a decision**, see below | ⛔ |
 | WT.3 | Fingerprint in `.build-stamp`; ABI mismatch ⇒ rebuild from source | 📝 |
 | WT.4 | `lattice wit sync`; a failed instantiate reaches `*messages*` / `:plugins` | 📝 |
 
@@ -73,19 +74,44 @@ Tests: `FILES` is non-empty and contains the load-bearing package files;
 the fingerprint is stable across calls and changes when a file's contents
 change; the fixture worlds are absent.
 
-## WT.2 — scaffolds depend on it 📝
+## WT.2 — org migrates ✅
 
-`lattice --init` and `lattice --new-plugin` emit a `build.rs` with
-`lattice_wit::write_to("wit")` and a `[build-dependencies] lattice-wit`, plus a
-`.gitignore` line for `wit/`. `write_wit_package`'s one-shot copy goes away —
-the scaffold no longer writes `wit/` at all, because the first build does.
+org's `build.rs` writes the package from the `lattice-wit` build-dependency;
+its 31 vendored files are gone and `wit/` is gitignored. It is the only real
+consumer, and a mechanism with no consumer is not proven.
 
-The scaffold's own test already asserts a buildable layout; it gains the
-assertion that the layout is buildable *without* a vendored `wit/`.
+**Verified from a genuinely empty `wit/`.** The first attempt appeared to work
+and had not: `write_to` deliberately leaves files it does not own alone, so the
+stale vendored copy was still satisfying the resolve. Deleting the directory
+and rebuilding is what proved it — and also proved org needs none of the four
+worlds `lattice-wit` excludes.
 
-**The org plugin migrates in the same slice** — it is the only real consumer,
-and a mechanism with no consumer is not proven. Its vendored `wit/` (which has
-already drifted twice today) becomes generated.
+## WT.2b — the scaffolds ⛔ blocked on a decision
+
+`lattice --init` and `lattice --new-plugin` should emit the same `build.rs`
+line and build-dependency. They cannot yet, and the reason is worth stating
+rather than working around.
+
+**A scaffold has nowhere to point the dependency.** `lattice-wit` is
+unpublished (§"What this does NOT do"), so a generated `Cargo.toml` can name it
+only by a path into a lattice checkout the user may not have, or by a git rev
+that may not match the binary that generated the scaffold — reintroducing the
+skew from the other side.
+
+Worse, the two scaffolds want *different* answers:
+
+- **`~/.config/lattice/init`** targets the editor the user runs. There, "the
+  `lattice` on `PATH`" is not a weakness, it is the correct source — which
+  argues for the WT.4 `lattice wit sync` path, invoked from the scaffold's
+  `build.rs`.
+- **A plugin repo** is built by CI and by other people, where a pinned crate is
+  right and an ambient binary is not.
+
+So the honest options are: emit `lattice wit sync` for init and a crate dep for
+plugins (two mechanisms, each correct in its context); or keep both on the
+one-shot copy until `lattice-wit` is published and then move both. Needs a
+decision, so it is not being guessed at mid-plan. `write_wit_package` stays
+until then and the scaffolds keep working exactly as they do.
 
 ## WT.3 — the fingerprint reaches the stamp 📝
 

@@ -124,9 +124,11 @@ struct Cli {
     scaffold_plugin: Option<String>,
 }
 
-// lattice's `wit/` API package, embedded at build time (build.rs) so `--init`
-// writes a self-contained, buildable scaffold. Defines `WIT_FILES`.
-include!(concat!(env!("OUT_DIR"), "/wit_assets.rs"));
+// WT.1: lattice's `wit/` API package now lives in `lattice-wit`, which is the
+// crate a PLUGIN depends on too. This binary re-exports it under the old name
+// so the scaffold keeps one source of truth with every plugin's build rather
+// than a second embedding that could drift from it.
+pub use lattice_wit::FILES as WIT_FILES;
 
 /// Resolve the final log-level directive from CLI flags +
 /// env override. Precedence (last wins):

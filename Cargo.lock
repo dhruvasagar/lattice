@@ -5340,6 +5340,7 @@ dependencies = [
  "lattice-runtime",
  "lattice-ui-gpui",
  "lattice-ui-tui",
+ "lattice-wit",
  "tempfile",
  "tokio",
  "tracing-subscriber",
@@ -6063,6 +6064,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "lattice-wit"
+version = "0.1.0"
 
 [[package]]
 name = "lazy_static"

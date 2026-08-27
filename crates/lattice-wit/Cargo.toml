@@ -1,0 +1,25 @@
+# WT.1 — lattice's `wit/` API package, as a crate.
+#
+# **Zero dependencies, and that is the mechanism rather than a nicety.** A
+# plugin needs the API definition at build time; today the only way to get it
+# is a checkout of lattice. A crate that pulled in any editor crate would
+# defeat its own purpose — the plugin would be compiling the editor in order to
+# compile against its API.
+#
+# Not published while the editor is unreleased (`plugin-host.md` §12: the WIT
+# is unstable until ≥3 real plugins have exercised it). Publishing is what lets
+# an out-of-tree plugin pin an ABI version, and it waits for the same gate.
+[package]
+name = "lattice-wit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+
+[lints]
+workspace = true

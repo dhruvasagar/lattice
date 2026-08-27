@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/lattice-ai",
+	"crates/lattice-wit",
 	"crates/lattice-protocol",
 	"crates/lattice-config-macros",
 	"crates/lattice-mode",

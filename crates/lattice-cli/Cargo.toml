@@ -10,6 +10,10 @@ name = "lattice"
 path = "src/main.rs"
 
 [dependencies]
+# WT.1: the WIT API package `--init` scaffolds with. The SAME crate a plugin
+# build-depends on, so the scaffold cannot drift from what plugins compile
+# against.
+lattice-wit = { path = "../lattice-wit" }
 lattice-core = { path = "../lattice-core" }
 lattice-ui-tui = { path = "../lattice-ui-tui" }
 # 2026-05-22 messages-overhaul: CLI calls `set_boot_log_level`

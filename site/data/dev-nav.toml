@@ -186,6 +186,8 @@ docs = [
   "architecture/org-mode",
   "architecture/org-capture",
   "architecture/plugin-transients",
+  "architecture/plugin-mode-options",
+  "architecture/wit-ownership",
   "architecture/cross-file-writes",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",

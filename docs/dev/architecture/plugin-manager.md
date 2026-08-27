@@ -169,6 +169,108 @@ loads exactly as today — the manager layer is additive.
   fails but a previous artifact exists, the old artifact keeps loading (a broken
   new revision doesn't take the plugin down).
 
+## 5b. The gap: the on-disk scan never asks whether its artifact is current
+
+**Status:** designed, unbuilt. Slice plan:
+[`../operations/slice-plans/scan-staleness.md`](../operations/slice-plans/scan-staleness.md).
+
+§5's staleness check is real, but only two callers reach it: `init.rs`
+(`build_init_if_needed`) and the plugins init.rs `require`s (`install_all`).
+The **third** load path — the boot scan of `~/.config/lattice/plugins/`
+(`discover_and_load(dir, UserInstalled)`) — loads whatever `<name>.wasm` is
+staged beside the manifest and never consults the stamp. Core plugins skip the
+check too, but correctly: they ship prebuilt and `SourceRecord::Bundled` reports
+`is_buildable() == false`, so there is nothing to build from.
+
+Who lands in the gap: a plugin installed by an earlier boot's `require` and since
+dropped from the require list; one placed by hand; and — the case that matters —
+**every plugin on disk when `init.rs` itself fails to load.** `require` never
+runs then, so nothing is checked, and the scan loads each stale artifact in turn.
+
+That is exactly the reported failure's shape. Had the scan checked stamps, org
+would have rebuilt itself against the current ABI on the next boot *even with a
+dead `init.wasm`*, and the whole knot would have untied without
+`lattice --wit-sync`. WT.3 already put the ABI fingerprint in the stamp; this
+section is about a third caller learning to read it.
+
+### The constraint that shapes the answer
+
+`resolve_git` reaches the network unless a rev is **pinned and already
+checked out** (`resolve.rs:183`) — an unpinned Git plugin fetches on every
+`install_all`. That cost is defensible for plugins the user *declared*; paying it
+for every directory that happens to be on disk would turn a pure-load boot into a
+network-dependent one, and an offline boot into a slow one. **Any option that
+re-resolves sources at scan time is disqualified by that alone.**
+
+### (a) Run the full resolve+build pipeline from the scan
+
+> **UX (higher court):** offline or slow-network boots get slower, and a plugin
+> the user never declared can now trigger a fetch. That is a visible regression
+> on the common path to fix an uncommon one.
+> **Paramount goals:** protects #2; sacrifices #1 in the sense that matters here
+> — not per-keystroke, but boot-to-usable under a bad network.
+> **Heuristic #1:** rejected on merit, not size: it makes boot depend on the
+> network for plugins that today need nothing.
+
+### (b) Extend `install_all`'s spec list with the on-disk plugins
+
+> Same network cost as (a), by the same code path, plus it conflates *declared*
+> with *found* — `RequiredSpec` means "init.rs asked for this", and manufacturing
+> specs for directories nobody declared makes that type lie.
+> **Heuristic #1:** reuse for its own sake, buying the disqualifying cost.
+
+### (c) Check the stamp against the source already on disk; build without resolving ✅
+
+Read the `.source` marker and `.build-stamp` beside the staged artifact; if the
+recorded source is buildable **and its directory is present locally**, compare
+`Stamp::current(source_dir)` and call `build_plugin` directly on a mismatch. No
+resolver, no network, no clone. When the source is *not* local (a cleaned git
+cache), fall through to (d): report it, load what is there, build nothing.
+
+> **UX (higher court):** the silent-stale case disappears for every plugin whose
+> source is on the machine, including when `init.rs` is dead — the case that cost
+> a debugging session. No new boot-time network, so nothing regresses for users
+> who have no stale plugins, which is nearly everyone nearly always.
+> **Paramount goals:** protects #2 (a plugin that should be here is here, and
+> current). #1 untouched — the check is two small file reads per plugin on a
+> task that is already off the boot thread, and the build it may trigger is the
+> `spawn_blocking` one §5 already describes.
+> **Heuristic #1 (long-term fit):** the genuinely-better design because it
+> separates two things (a) and (b) conflate — *resolving* a source (network,
+> declared intent) and *building* one (local, mechanical). Only the second is
+> needed to answer "is this artifact current", and doing only that is what keeps
+> boot offline-clean.
+> **Heuristic #2:** anchored on #2 and on the reported failure, not on how
+> another editor refreshes extensions.
+> **Heuristic #3:** (d) is the honest floor and is retained as this option's
+> fallback rather than as a rival.
+> **Heuristic #6:** no new crate — `lattice-plugin-loader` already owns the
+> scan, the stamp and the build service.
+
+### (d) Report only — mark it stale, never build
+
+> **UX:** the user sees `stale` in `:plugins` and presses `b`. Better than
+> silence, worse than working. Keeps loading code the stamp says is wrong.
+> **Heuristic #1:** correct as (c)'s fallback for the no-local-source case,
+> insufficient as the whole answer — "we told you" is not the bar the reported
+> failure sets.
+
+### Costs and open questions, stated rather than discovered later
+
+- **A boot may now build where it previously just loaded.** Off-thread, and
+  `:plugins` already shows `building…` (PM.8b) — but the plugin's contributions
+  land seconds-to-minutes later than they used to on the boot after a source
+  edit or an editor upgrade. That is the intended trade and should be said out
+  loud in the release notes.
+- **Pinning has no expression here.** `pinned` is a `RequiredSpec` field, and a
+  scanned plugin has no spec. Either a marker file beside the artifact carries it
+  or pinning stays a `require`-only feature. **Undecided; the slice must pick
+  one before it ships**, because "the editor rebuilt the artifact I deliberately
+  froze" is a worse failure than the one being fixed.
+- **Interaction with `--wit-sync` is additive, not redundant.** (c) repairs a
+  plugin whose *source* is present. `--wit-sync` repairs the `wit/` inside that
+  source. A dead `init.wasm` with no source directory still needs the command.
+
 ## 6. Bootstrapping — init.rs is built by the same service
 
 init.rs is itself a `wasm32-wasip2` component. Today it must be pre-built. Under

@@ -185,6 +185,38 @@ mod tests {
         assert_eq!(parsed.as_slice(), &[pressed]);
     }
 
+    /// **The same round trip for a BARE space, which is the leader key.**
+    ///
+    /// `keymap.leader` defaults to `<Space>` and `<leader>` is substituted at
+    /// BIND time, so every `<leader>x` binding in the editor lands under
+    /// whatever `<Space>` parses to. When the parser said `Special(Space)` and
+    /// the keyboard said `Char(' ')`, the entire leader keymap was unreachable
+    /// — `<Space>oa` did nothing, and so did every other leader chord.
+    ///
+    /// Asserted as an equivalence rather than against a literal, so the two
+    /// sides cannot drift apart again in either direction.
+    #[test]
+    fn a_real_bare_space_matches_what_the_leader_string_parses_to() {
+        let parsed = lattice_protocol::parse_chord_sequence("<Space>").expect("parses");
+        let pressed = from_event(&ev(KeyCode::Char(' '), KeyModifiers::NONE)).unwrap();
+        assert_eq!(parsed.as_slice(), &[pressed]);
+    }
+
+    /// And the whole leader sequence, since that is what a user actually types.
+    #[test]
+    fn a_leader_chord_matches_the_keys_that_produce_it() {
+        let parsed = lattice_protocol::parse_chord_sequence("<Space>oa").expect("parses");
+        let typed: Vec<_> = [
+            ev(KeyCode::Char(' '), KeyModifiers::NONE),
+            ev(KeyCode::Char('o'), KeyModifiers::NONE),
+            ev(KeyCode::Char('a'), KeyModifiers::NONE),
+        ]
+        .iter()
+        .map(|e| from_event(e).unwrap())
+        .collect();
+        assert_eq!(parsed, typed);
+    }
+
     /// Alt too — the rule is "any modifier", not "control".
     #[test]
     fn alt_space_promotes_as_well() {

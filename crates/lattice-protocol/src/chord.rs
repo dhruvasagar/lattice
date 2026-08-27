@@ -488,6 +488,30 @@ fn parse_angle_body(body: &str, at: usize) -> Result<KeyChord, ChordParseError> 
         name: rest.to_string(),
         at,
     })?;
+    // **An UNMODIFIED `<Space>` is the literal character, not the special key.**
+    //
+    // Both key decoders already apply exactly this rule — a bare space arrives
+    // as `Char(' ')` and only a modified one becomes `Special(Space)` (TUI
+    // `chord::from_event`, GPUI `gpui_chord::from_event`). The parser did not,
+    // so the two spellings of the same keypress disagreed and anything bound
+    // via the string `<Space>` could never be typed.
+    //
+    // That is not hypothetical: the DEFAULT `keymap.leader` is `<Space>`, and
+    // `<leader>` is substituted at BIND time, so every `<leader>x` binding in
+    // the editor landed under `Special(Space)` while the keyboard produced
+    // `Char(' ')`. The entire leader keymap was unreachable.
+    //
+    // Normalising here rather than at each decoder is what makes it stay
+    // fixed: the parser is the one path every plugin binding, user keymap and
+    // `:map` command shares, and both renderers already agree with each other.
+    // `<S-Space>` / `<C-Space>` are untouched — a modifier still means the
+    // special key, because a modified space is not text.
+    if special == SpecialKey::Space && mods.is_empty() {
+        return Ok(KeyChord {
+            key: KeyKind::Char(' '),
+            mods,
+        });
+    }
     Ok(KeyChord {
         key: KeyKind::Special(special),
         mods,
@@ -601,6 +625,63 @@ pub fn last_chord_token_byte_len(text: &str) -> usize {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// **A bare `<Space>` parses to the literal char, not the special key.**
+    ///
+    /// Both key decoders produce `Char(' ')` for an unmodified space, so a
+    /// parser that produced `Special(Space)` made the two spellings of one
+    /// keypress disagree — and nothing bound as `<Space>` could be typed.
+    ///
+    /// The default `keymap.leader` IS `<Space>` and `<leader>` is substituted
+    /// at bind time, so this made the whole leader keymap unreachable.
+    #[test]
+    fn a_bare_space_parses_to_the_literal_char() {
+        let seq = parse_chord_sequence("<Space>").unwrap();
+        assert_eq!(seq.len(), 1);
+        assert_eq!(seq[0].key, KeyKind::Char(' '));
+        assert!(seq[0].mods.is_empty());
+    }
+
+    /// The leader sequence a `<leader>oa` binding actually lands under.
+    #[test]
+    fn a_leader_sequence_parses_as_a_typeable_space_then_letters() {
+        let seq = parse_chord_sequence("<Space>oa").unwrap();
+        assert_eq!(
+            seq.iter().map(|c| c.key).collect::<Vec<_>>(),
+            vec![KeyKind::Char(' '), KeyKind::Char('o'), KeyKind::Char('a')],
+            "every element must be what the keyboard produces: {seq:?}"
+        );
+    }
+
+    /// A MODIFIED space is still the special key — a modified space is not
+    /// text, and `<C-Space>` must keep matching what the decoders now build.
+    #[test]
+    fn a_modified_space_stays_the_special_key() {
+        for spelling in ["<C-Space>", "<S-Space>", "<A-Space>"] {
+            let seq = parse_chord_sequence(spelling).unwrap();
+            assert_eq!(
+                seq[0].key,
+                KeyKind::Special(SpecialKey::Space),
+                "{spelling} keeps the special key"
+            );
+            assert!(!seq[0].mods.is_empty(), "{spelling} keeps its modifier");
+        }
+    }
+
+    /// `<Space>` must survive a Display→parse round trip. Display renders the
+    /// literal char as a bare `" "` token rather than `<Space>`, and the
+    /// sequence parser has to read that back as the same chord — otherwise a
+    /// keymap listing (`:map`) would print bindings it cannot re-parse.
+    #[test]
+    fn a_space_chord_round_trips_through_display() {
+        let parsed = parse_chord_sequence("<Space>oa").unwrap();
+        let rendered: String = parsed.iter().map(|c| c.to_string()).collect();
+        assert_eq!(
+            parse_chord_sequence(&rendered).unwrap(),
+            parsed,
+            "rendered as {rendered:?}"
+        );
+    }
 
     #[test]
     fn keychord_display_round_trips_through_from_str() {

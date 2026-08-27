@@ -35,7 +35,7 @@ dead `init.wasm`, which cannot rebuild anything, including itself.
 | WT.1 | `lattice-wit`: embedded `wit/` + `write_to` + ABI fingerprint | ✅ |
 | WT.2 | org migrates; `wit/` gitignored generated output | ✅ |
 | WT.2b | The build service refreshes `wit/` before cargo | ✅ |
-| WT.3 | Fingerprint in `.build-stamp`; ABI mismatch ⇒ rebuild from source | 📝 |
+| WT.3 | Fingerprint in `.build-stamp`; ABI mismatch ⇒ rebuild from source | ✅ |
 | WT.4 | `lattice wit sync`; a failed instantiate reaches `*messages*` / `:plugins` | 📝 |
 
 Every slice ships four artefacts (CLAUDE.md heuristic #5): doc, bench where a
@@ -140,21 +140,47 @@ shape WT.2 gave org); a drifted file is repaired before the build; a warm boot
 with an untouched source stays `Cached` and does not invoke the toolchain; and
 in `lattice-wit`, an identical file is not rewritten while a drifted one is.
 
-## WT.3 — the fingerprint reaches the stamp 📝
+## WT.3 — the fingerprint reaches the stamp ✅
 
-`.build-stamp` records what the artifact was built *from*; it must also record
-what it was built *against*. `BuildState` gains the case it is missing:
+`.build-stamp` records what the artifact was built *from*; it now also records
+what it was built *against*. The stamp becomes a two-field `Stamp` — two
+prefixed lines, so it stays greppable by a human staring at a broken install and
+so a later field costs no second format break:
 
-| State | Today | After |
+```text
+abi:1c4e9f2a70b3d581
+source:mtime:1756…:files:12
+```
+
+| State | Before | Now |
 |---|---|---|
 | stamp matches, source unchanged | `Cached` | `Cached` |
 | source changed | `Stale` ⇒ rebuild | `Stale` ⇒ rebuild |
 | **ABI differs** | `Cached` ⇒ load, fail, silently | `Stale` ⇒ rebuild |
-| ABI differs, no source | `Cached` ⇒ load, fail, silently | refuse, naming both |
+| ABI differs, pinned (no rebuild allowed) | `Cached`, silently | `Cached` + a named `warn!` |
+| stamp predates the field | `Cached` on the source alone | `NotBuilt` ⇒ rebuild |
 
-Tests: an artifact stamped with a different ABI is `Stale` even when its source
-is untouched; a matching one stays `Cached`; a stamp from a lattice predating
-the field is `NotBuilt` rather than a false `Cached`.
+**The last row of the original table said "refuse, naming both". It is wrong,
+and the slice does not do it.** The fingerprint hashes the whole package, so it
+moves when *any* file changes — including files the plugin never imports. A
+mismatch therefore means "this may not load", not "this cannot load", and
+refusing on it would stop plugins that work perfectly well. A pin exists
+precisely to say *keep this build*, so the honest response to a coarse signal is
+to load the artifact and put the skew on record: `warn!` naming both
+fingerprints, one-shot and user-actionable. If the component then does fail to
+instantiate, WT.4 names that failure and this line is already there explaining
+it. Refusing would have traded a silent failure for a confident wrong one.
+
+An unparseable stamp is `NotBuilt` rather than a match, in both the build
+service and `:plugins`. That is the conservative direction and it matters:
+reading a legacy stamp as agreement would keep exactly the artifacts most likely
+to be skewed — the ones built before anyone was tracking the ABI.
+
+Tests: an untouched source whose stamp carries a foreign ABI rebuilds, records
+the ABI it actually built against, and *settles* — the boot after does not
+rebuild again; a legacy source-only stamp is rebuilt rather than trusted; a
+pinned artifact with a skewed ABI still loads and the pin is honoured; the stamp
+round-trips and both truncated forms fail to parse.
 
 ## WT.4 — repair, and saying so 📝
 

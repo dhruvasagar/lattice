@@ -166,7 +166,15 @@ loader then has three cases rather than one:
 | stamp matches, source unchanged | load | load |
 | source changed | rebuild | rebuild |
 | **ABI hash differs** | **load, fail, silently** | rebuild from source |
-| ABI differs, no source (prebuilt) | load, fail, silently | refuse, naming both versions |
+| ABI differs, no rebuild allowed (pinned) | load, fail, silently | load, naming both versions |
+
+That last row was drafted as *refuse*, and refusing is wrong. The fingerprint
+hashes the whole package, so it moves when any file changes — including files
+the plugin never imports. A mismatch means "this may not load", not "this
+cannot", and a pin exists precisely to say *keep this build*. The honest
+response to a coarse signal is to load the artifact and put the skew on record
+where the user can act on it. Trading a silent failure for a confident wrong one
+is not an improvement.
 
 `plugin-host.md` §3 originally proposed a `wit_revision` in the AOT cache key
 before wasmtime's built-in cache superseded it. The idea was right; it belongs

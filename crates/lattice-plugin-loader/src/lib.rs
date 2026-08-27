@@ -74,7 +74,7 @@ pub mod source_record;
 pub mod watch;
 
 pub use build::{
-    BuildOutcome, CargoComponentBuilder, ComponentBuilder, artifact_path, build_plugin,
+    BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, artifact_path, build_plugin,
     source_stamp,
 };
 pub use discovery::{
@@ -200,12 +200,20 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
     let Some(dir) = record.source_dir.as_ref() else {
         return BuildState::NotBuilt;
     };
-    // The stamp records what the artifact was built from; the source is what
-    // it stands at now. PM.5 owns both halves of that comparison.
+    // The stamp records what the artifact was built from and (WT.3) against;
+    // the source and this editor's ABI are what they stand at now. PM.5 owns
+    // both halves of that comparison.
     let stamp_path = dir.join(".build-stamp");
-    let Ok(stamped) = std::fs::read_to_string(&stamp_path) else {
+    let Ok(text) = std::fs::read_to_string(&stamp_path) else {
         // No stamp: the artifact was placed by hand or by a lattice predating
         // PM.5. Nothing to compare against, so nothing to claim.
+        return BuildState::NotBuilt;
+    };
+    let Some(stamped) = crate::build::Stamp::parse(&text) else {
+        // WT.3: a stamp from a lattice predating the ABI field. It cannot say
+        // what the artifact was built against, so it cannot support a `cached`
+        // claim — and `cached` is exactly the false reassurance that made the
+        // original failure invisible.
         return BuildState::NotBuilt;
     };
     let build_dir = match &source {
@@ -216,9 +224,12 @@ fn build_state_of(record: &LoadedRecord, activity: Option<&BuildActivity>) -> Bu
     if !build_dir.is_dir() {
         return BuildState::NotBuilt;
     }
-    if stamped.trim() == crate::build::source_stamp(&build_dir) {
+    if stamped == crate::build::Stamp::current(&build_dir) {
         BuildState::Cached
     } else {
+        // Either the source moved or the ABI did. Both are answered the same
+        // way — rebuild from source — so `:plugins` does not need to
+        // distinguish them, and the build log says which it was.
         BuildState::Stale
     }
 }

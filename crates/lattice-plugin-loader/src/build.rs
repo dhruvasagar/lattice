@@ -12,7 +12,15 @@
 //! would make the editor unusable, so the service is a *cache* with a
 //! build fallback, not a build step with a cache in front. That is what
 //! the `.build-stamp` is for: it records what the artifact was built
-//! from, and a matching stamp short-circuits to a pure load.
+//! from and (WT.3) what it was built *against*, and a stamp matching on
+//! both short-circuits to a pure load.
+//!
+//! The second half is not symmetry for its own sake. A source that did
+//! not change, compiled against an ABI that did, looked current under a
+//! source-only stamp — so it was loaded, failed to instantiate, and
+//! said nothing at all. That is the whole of the failure
+//! `wit-ownership.md` was written for, and no amount of source
+//! fingerprinting can see it.
 //!
 //! ## Failure is a skip, never a stall
 //!
@@ -218,6 +226,67 @@ pub fn source_stamp(source_dir: &Path) -> String {
     format!("mtime:{newest}:files:{files}")
 }
 
+/// WT.3: what a cached artifact was built **from** and **against**.
+///
+/// The stamp used to record only the source fingerprint, which left one case
+/// unrepresentable and therefore invisible: a source that did not change, built
+/// against an ABI that did. That artifact looked current, was loaded, failed to
+/// instantiate, and said nothing — which is the whole reported failure.
+///
+/// Rendered as two prefixed lines so it stays greppable by a human looking at a
+/// broken install, and so a later field can be added without another format
+/// break:
+///
+/// ```text
+/// abi:1c4e9f2a70b3d581
+/// source:mtime:1756...:files:12
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    /// The `lattice-wit` package fingerprint the component was compiled against.
+    pub abi: String,
+    /// The source-tree fingerprint from [`source_stamp`].
+    pub source: String,
+}
+
+impl Stamp {
+    /// The stamp for `source_dir` as built by *this* lattice, right now.
+    pub fn current(source_dir: &Path) -> Self {
+        Self {
+            abi: lattice_wit::ABI_FINGERPRINT.to_string(),
+            source: source_stamp(source_dir),
+        }
+    }
+
+    /// Parse a stamp file's contents.
+    ///
+    /// `None` for anything without both fields — which includes every stamp
+    /// written by a lattice predating this slice. That is deliberate and is the
+    /// conservative direction: an unparseable stamp makes no claim, so the
+    /// artifact is rebuilt rather than trusted. Treating a legacy stamp as a
+    /// match would keep exactly the artifacts most likely to be skewed.
+    pub fn parse(text: &str) -> Option<Self> {
+        let field = |key: &str| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix(key))
+                .map(str::to_string)
+        };
+        Some(Self {
+            abi: field("abi:")?,
+            source: field("source:")?,
+        })
+    }
+
+    /// Whether this artifact is current for `other` — both halves must agree.
+    fn matches(&self, other: &Stamp) -> bool {
+        self.abi == other.abi && self.source == other.source
+    }
+
+    fn render(&self) -> String {
+        format!("abi:{}\nsource:{}\n", self.abi, self.source)
+    }
+}
+
 /// Where a plugin's cached artifact lives.
 pub fn artifact_path(user_root: &Path, name: &str) -> PathBuf {
     user_root.join(name).join(format!("{name}.wasm"))
@@ -247,19 +316,23 @@ pub fn build_plugin(
     let artifact = artifact_path(user_root, name);
     let has_artifact = artifact.is_file();
 
+    let cached_stamp = || {
+        std::fs::read_to_string(stamp_path(user_root, name))
+            .ok()
+            .as_deref()
+            .and_then(Stamp::parse)
+    };
+
     // Pinned + present: never look at the source at all.
     if pinned && has_artifact {
+        warn_if_abi_skewed(cached_stamp().as_ref(), name);
         return BuildOutcome::Cached { artifact };
     }
 
     refresh_wit_package(source_dir);
 
-    let stamp = source_stamp(source_dir);
-    if has_artifact
-        && !pinned
-        && std::fs::read_to_string(stamp_path(user_root, name))
-            .is_ok_and(|cached| cached.trim() == stamp)
-    {
+    let stamp = Stamp::current(source_dir);
+    if has_artifact && !pinned && cached_stamp().is_some_and(|cached| cached.matches(&stamp)) {
         tracing::debug!(
             plugin = name,
             "build: stamp matches; loading cached artifact"
@@ -274,6 +347,32 @@ pub fn build_plugin(
             Err(error) => fail(has_artifact, artifact, error, name),
         },
         Err(error) => fail(has_artifact, artifact, error, name),
+    }
+}
+
+/// WT.3: a pinned artifact built against a different ABI — say so, load anyway.
+///
+/// **The plan proposed refusing here, and refusing is wrong.** The fingerprint
+/// hashes the whole package, so it moves when *any* file changes — including
+/// files the plugin never imports. A mismatch therefore means "this may not
+/// load", not "this cannot load", and refusing on it would stop plugins that
+/// work perfectly well. A pin exists precisely to say *keep this build*; the
+/// honest response to a coarse signal is to load it and put the skew on record.
+///
+/// `warn!` rather than `debug!` because it is one-shot and user-actionable: the
+/// answer is `:plugin-unpin` and a rebuild. If the component then fails to
+/// instantiate, WT.4 names that failure and this line is already there to
+/// explain it.
+fn warn_if_abi_skewed(stamped: Option<&Stamp>, name: &str) {
+    let Some(stamped) = stamped else { return };
+    if stamped.abi != lattice_wit::ABI_FINGERPRINT {
+        tracing::warn!(
+            plugin = name,
+            built_against = %stamped.abi,
+            this_editor = %lattice_wit::ABI_FINGERPRINT,
+            "pinned artifact was built against a different plugin ABI; \
+             loading it anyway — unpin to rebuild if it fails to load"
+        );
     }
 }
 
@@ -366,7 +465,7 @@ fn stage(
     artifact: &Path,
     user_root: &Path,
     name: &str,
-    stamp: &str,
+    stamp: &Stamp,
 ) -> Result<(), String> {
     let dir = user_root.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -402,7 +501,7 @@ fn stage(
             manifest_src.display()
         ));
     }
-    std::fs::write(stamp_path(user_root, name), stamp)
+    std::fs::write(stamp_path(user_root, name), stamp.render())
         .map_err(|e| format!("write build stamp: {e}"))?;
     Ok(())
 }
@@ -686,6 +785,116 @@ mod tests {
             1,
             "a warm boot with an untouched source stays a pure load"
         );
+    }
+
+    /// Rewrite the ABI half of a staged stamp, standing in for the editor's
+    /// `wit/` package having moved under an artifact that was already built.
+    /// The real change is a new lattice binary, which a unit test cannot have.
+    fn forge_abi(user_root: &Path, name: &str, abi: &str) {
+        let path = user_root.join(name).join(".build-stamp");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let stamp = Stamp::parse(&text).unwrap();
+        std::fs::write(
+            &path,
+            Stamp {
+                abi: abi.to_string(),
+                source: stamp.source,
+            }
+            .render(),
+        )
+        .unwrap();
+    }
+
+    /// **WT.3, the case that was unrepresentable.** A source nobody touched,
+    /// built against an ABI that has since moved, used to look `Cached`: it was
+    /// loaded, failed to instantiate, and said nothing. That is the entire
+    /// reported failure, and the source fingerprint alone cannot see it.
+    #[test]
+    fn an_artifact_built_against_another_abi_is_stale() {
+        let root = tempdir("abistale");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+
+        build_plugin(&b, &src, "demo", &user, false);
+        forge_abi(&user, "demo", "0000deadbeef0000");
+
+        let second = build_plugin(&b, &src, "demo", &user, false);
+        assert!(
+            matches!(second, BuildOutcome::Fresh { .. }),
+            "the untouched source is rebuilt against the current ABI: {second:?}"
+        );
+        assert_eq!(b.calls(), 2);
+
+        // And the rebuild records the ABI it actually built against, or the
+        // next boot would rebuild all over again.
+        let text = std::fs::read_to_string(user.join("demo").join(".build-stamp")).unwrap();
+        assert_eq!(
+            Stamp::parse(&text).unwrap().abi,
+            lattice_wit::ABI_FINGERPRINT
+        );
+        assert!(matches!(
+            build_plugin(&b, &src, "demo", &user, false),
+            BuildOutcome::Cached { .. }
+        ));
+        assert_eq!(b.calls(), 2, "and settles back to a pure load");
+    }
+
+    /// A stamp written by a lattice predating the ABI field cannot say what its
+    /// artifact was built against. It must not therefore be read as agreement —
+    /// `Cached` is precisely the false reassurance that hid the failure, and the
+    /// artifacts carrying legacy stamps are the ones most likely to be skewed.
+    #[test]
+    fn a_legacy_stamp_does_not_support_a_cached_claim() {
+        let root = tempdir("legacy");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+
+        build_plugin(&b, &src, "demo", &user, false);
+        // The pre-WT.3 format: the bare source fingerprint, no `abi:` line.
+        let stamp_file = user.join("demo").join(".build-stamp");
+        std::fs::write(&stamp_file, source_stamp(&src)).unwrap();
+
+        let second = build_plugin(&b, &src, "demo", &user, false);
+        assert!(matches!(second, BuildOutcome::Fresh { .. }));
+        assert_eq!(b.calls(), 2, "rebuilt rather than trusted");
+    }
+
+    /// **A pin means keep this build, and the fingerprint is a coarse signal.**
+    /// It hashes the whole package, so it moves when a file the plugin never
+    /// imports changes — a mismatch means "may not load", not "cannot". The
+    /// plan proposed refusing here; refusing would stop plugins that work. The
+    /// skew is warned about and the artifact still loads.
+    #[test]
+    fn a_pinned_artifact_with_a_skewed_abi_still_loads() {
+        let root = tempdir("pinskew");
+        let src = source(&root);
+        let user = root.join("user");
+        let b = FakeBuilder::ok();
+
+        build_plugin(&b, &src, "demo", &user, false);
+        forge_abi(&user, "demo", "0000deadbeef0000");
+
+        let second = build_plugin(&b, &src, "demo", &user, true);
+        assert!(
+            matches!(second, BuildOutcome::Cached { .. }),
+            "the pin is honoured: {second:?}"
+        );
+        assert_eq!(b.calls(), 1, "and no rebuild is forced behind the pin");
+    }
+
+    #[test]
+    fn a_stamp_round_trips_and_a_legacy_one_does_not_parse() {
+        let stamp = Stamp {
+            abi: "1c4e9f2a70b3d581".into(),
+            source: "mtime:42:files:3".into(),
+        };
+        assert_eq!(Stamp::parse(&stamp.render()).unwrap(), stamp);
+        // The pre-WT.3 format, and a truncated write.
+        assert!(Stamp::parse("mtime:42:files:3").is_none());
+        assert!(Stamp::parse("abi:1c4e9f2a70b3d581").is_none());
+        assert!(Stamp::parse("").is_none());
     }
 
     #[test]

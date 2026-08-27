@@ -969,6 +969,14 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         host_services::walk_within_grant(&self.grant, &root)
     }
 
+    /// OC.5a `read-file`: the read that works on every seam, including the
+    /// synchronous grammar dispatch path where the guest's own WASI view
+    /// panics rather than reads. Gate + logic in
+    /// [`host_services::read_within_grant`].
+    fn read_file(&mut self, path: String) -> Result<String, String> {
+        host_services::read_within_grant(&self.grant, &path)
+    }
+
     /// `register-event` (PH7.8b.2): declare a plugin-defined event into the
     /// runtime registry under this plugin's `plugin:<id>` provenance. Returns
     /// `false` on a built-in-shadow (the registry refuses it) OR when no emit
@@ -2443,12 +2451,22 @@ impl PluginHost {
         // seam — which is how this was found, and what the `multiseam` fixture
         // now pins (it imports `host-services` for exactly this reason).
         //
-        // `walk` is a sync, bounded host func, and it adds no authority the
-        // sync path did not already have: `add_to_linker_sync` above gives the
-        // guest WASI's filesystem view, so a grammar action could already read
-        // files on the dispatch thread. What it does NOT get is `logging`,
-        // still deliberately absent, so "no logging reachable from the grammar
-        // hot path" stays structural.
+        // `walk` and `read-file` are sync, bounded host funcs. What this does
+        // NOT wire is `logging`, still deliberately absent, so "no logging
+        // reachable from the grammar hot path" stays structural.
+        //
+        // **This comment used to claim the guest could already read files here
+        // through WASI, and that was wrong.** `add_to_linker_sync` does give the
+        // guest a filesystem view, but `wasmtime-wasi`'s sync filesystem shim
+        // blocks on a runtime internally, and this thread is already inside one
+        // — so a grammar action calling `std::fs::read_to_string` panics with
+        // "Cannot start a runtime from within a runtime" rather than reading
+        // anything. Found by org's capture trying exactly that (OC.5a).
+        //
+        // That is why `read-file` exists on `host-services`: a host-side read,
+        // capability-gated like `walk`, is the only read reachable from this
+        // seam. Async seams (picker / completion, on the async `linker` above)
+        // are unaffected and use WASI directly — org's picker source does.
         crate::lattice::plugin_host::host_services::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
             |state: &mut PluginState| state,

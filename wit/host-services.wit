@@ -7,6 +7,11 @@ package lattice:plugin-host@0.1.0;
 /// grant itself (the host is not sandboxed). Errors cross as strings (§4
 /// `result<_, string>` convention).
 ///
+/// OC.5a adds `read-file` for a second, sharper reason: the guest's WASI view is
+/// not reachable from every seam. See its doc comment — a grammar action that
+/// reads a file through WASI panics rather than reading it, so a host-side read
+/// is the only one that works on the dispatch thread.
+///
 /// PH7.4b lands the first seam: `walk`, the capability-gated workspace
 /// enumeration the `fuzzy-finder` (PH7.4d) uses to replicate the native `files`
 /// picker. The `net:http` / `proc:spawn` / tree-sitter seams follow (design.md
@@ -25,6 +30,28 @@ interface host-services {
     /// grant reaches nothing. The check runs host-side because the host, unlike
     /// the guest's WASI view, has ambient authority the grant must bound.
     walk: func(root: string) -> result<list<string>, string>;
+
+    /// Read a UTF-8 file, capability-gated the same way `walk` is.
+    ///
+    /// **This exists because the guest's own WASI filesystem view cannot serve
+    /// every seam.** The grammar seam is wired to a SEPARATE, synchronous linker
+    /// so the trampoline can call a guest action synchronously on the dispatch
+    /// thread — and `wasmtime-wasi`'s sync filesystem shim blocks on a runtime
+    /// internally, which panics on a thread already inside one. So a grammar
+    /// action calling `std::fs::read_to_string` does not read a file; it takes
+    /// the plugin down. Async seams (pickers, completion) are unaffected and may
+    /// keep using WASI directly.
+    ///
+    /// Like `walk`, this runs host-side with ambient authority, so the grant is
+    /// re-checked here rather than relied on from the sandbox: `path` must lie
+    /// within one of the plugin's granted `fs:read` (or `fs:write`) prefixes.
+    ///
+    /// `err` for a denied path, a missing file, or bytes that are not UTF-8 —
+    /// each with a message naming which, because "the read failed" tells a
+    /// plugin author nothing about whether to fix their manifest or their path.
+    /// A caller that treats absence as an ordinary case (a first capture into a
+    /// file that does not exist yet) checks for it rather than distinguishing.
+    read-file: func(path: string) -> result<string, string>;
 
     /// Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
     /// the host's RUNTIME event registry (`event_registry`) under this plugin's

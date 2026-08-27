@@ -59,6 +59,70 @@ fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
     })
 }
 
+/// The same check for a FILE, gating on its **parent directory**.
+///
+/// [`grant_permits_walk`] canonicalizes the path itself, which a file that does
+/// not exist yet cannot do — it then falls back to the raw path, and on any
+/// platform where the granted prefix canonicalizes to something else (macOS
+/// `/var` → `/private/var`) the comparison fails and the call is refused. For a
+/// walk that is a harmless fail-safe. For a read it is a wrong answer to a
+/// question callers legitimately ask: "is there anything in this file yet?" is
+/// the ordinary first-capture case, and reporting it as a *permission* problem
+/// sends the plugin author to their manifest instead of their path.
+///
+/// The parent exists in that case, so canonicalizing it resolves cleanly and the
+/// gate stays exact. Escape attempts are still caught: `<granted>/../../etc` has
+/// a parent that canonicalizes outside the prefix and is denied.
+fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
+    match file.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => grant_permits_walk(grant, file),
+        Some(parent) => grant_permits_walk(grant, parent),
+        None => grant_permits_walk(grant, file),
+    }
+}
+
+/// OC.5a: capability-gated file read (host-side, §5).
+///
+/// The reason this exists rather than the guest using WASI is structural, not a
+/// convenience: the grammar seam runs on a **synchronous** linker so an action
+/// can be called on the dispatch thread, and `wasmtime-wasi`'s sync filesystem
+/// shim blocks on a runtime internally — which panics on a thread already inside
+/// one. A grammar action reading through WASI therefore takes the plugin down
+/// instead of returning bytes. Async seams (pickers, completion) are unaffected;
+/// this is the read that works everywhere.
+///
+/// Same grant check as [`walk_within_grant`], for the same reason: the host has
+/// ambient authority the guest's sandbox would otherwise have bounded.
+///
+/// Three distinct failures rather than one, because a plugin author debugging
+/// "the read failed" needs to know whether to fix their manifest, their path, or
+/// their expectations about the file's encoding.
+pub(crate) fn read_within_grant(grant: &CapabilityGrant, path: &str) -> Result<String, String> {
+    let file = PathBuf::from(path);
+    if !grant_permits_read(grant, &file) {
+        // info!: user-actionable (a plugin was denied fs access), not per-frame
+        // noise — the log-levels rule (CLAUDE.md). Matches `walk`'s level.
+        tracing::info!(
+            path = %file.display(),
+            "host-services read denied: outside the plugin's fs grant"
+        );
+        return Err(format!(
+            "fs read denied: '{path}' is outside the plugin's granted paths"
+        ));
+    }
+    match std::fs::read(&file) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|_| format!("fs read failed: '{path}' is not valid UTF-8")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Not logged. A caller asking whether a file exists yet — a first
+            // capture into a new file — would otherwise fill the log with
+            // events that are the ordinary case, not a problem.
+            Err(format!("fs read failed: '{path}' does not exist"))
+        }
+        Err(e) => Err(format!("fs read failed: '{path}': {e}")),
+    }
+}
+
 /// Capability-gated workspace walk (host-side, §5). Returns absolute UTF-8 paths
 /// under `root`, applying the native file-picker policy (bounded entry count;
 /// skips `.git`/`target`/`node_modules`/`dist`/`.cache` and dotfiles) so a plugin
@@ -124,6 +188,87 @@ mod tests {
         assert_eq!(out.len(), 3, "walks recursively: {out:?}");
         assert!(out.iter().all(|p| p.ends_with(".rs")));
         assert!(out.iter().any(|p| p.ends_with("sub/c.rs")));
+    }
+
+    #[test]
+    fn read_file_returns_the_contents_within_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.org");
+        std::fs::write(&file, "* Tasks\nbody\n").unwrap();
+
+        let grant = read_grant(dir.path().to_path_buf());
+        let out = read_within_grant(&grant, file.to_str().unwrap()).unwrap();
+        assert_eq!(out, "* Tasks\nbody\n");
+    }
+
+    /// Same gate as `walk`, and it matters more here: `read-file` returns file
+    /// CONTENTS, so a missing check leaks the contents of any file the editor
+    /// process can reach.
+    #[test]
+    fn read_file_outside_the_grant_is_a_typed_error() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let secret = other.path().join("secret");
+        std::fs::write(&secret, "private").unwrap();
+
+        let grant = read_grant(granted.path().to_path_buf());
+        let err = read_within_grant(&grant, secret.to_str().unwrap())
+            .expect_err("a path outside the grant must be denied");
+        assert!(err.contains("denied"), "error explains the denial: {err}");
+        assert!(
+            !err.contains("private"),
+            "and the denial does not leak what it refused to read: {err}"
+        );
+    }
+
+    /// A plugin with no fs grant reads nothing — the default posture.
+    #[test]
+    fn read_file_with_an_empty_grant_reaches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.org");
+        std::fs::write(&file, "x").unwrap();
+
+        let grant = CapabilityGrant::default();
+        assert!(read_within_grant(&grant, file.to_str().unwrap()).is_err());
+    }
+
+    /// Absence is distinguishable from denial. A caller for whom "not there
+    /// yet" is an ordinary case — a first capture into a new file — must be
+    /// able to tell it apart from a manifest it needs to fix.
+    #[test]
+    fn a_missing_file_says_so_rather_than_reading_as_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = read_grant(dir.path().to_path_buf());
+        let err = read_within_grant(&grant, dir.path().join("nope.org").to_str().unwrap())
+            .expect_err("a missing file is an error");
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(
+            !err.contains("denied"),
+            "and is NOT reported as a denial: {err}"
+        );
+    }
+
+    /// A write grant implies read — it is the same directory, opened with
+    /// `READ | MUTATE`. Org relies on this: capture already needs `fs:write`
+    /// for the file it is about to append to, and OC.5a reads that same file to
+    /// find the headline. Requiring a second grant for it would be ceremony.
+    #[test]
+    fn a_write_grant_also_permits_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.org");
+        std::fs::write(&file, "* Tasks\n").unwrap();
+
+        let grant = CapabilityGrant {
+            fs: vec![FsGrant {
+                prefix: dir.path().to_path_buf(),
+                write: true,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            read_within_grant(&grant, file.to_str().unwrap()).unwrap(),
+            "* Tasks\n"
+        );
     }
 
     #[test]

@@ -6597,7 +6597,8 @@ unused. So org migrates to the tree **first** (OT.x), and clocking — deferred 
 plugin modeline API, which keeps
 [`slice-plans/modeline.md`](slice-plans/modeline.md) active).
 
-OT.1–OT.4 ✅. An earlier revision of this paragraph named a specific live bug
+**Phase 1 (OT.1–OT.8) is complete ✅**; Phase 2 (OC.x, clocking) is planned.
+An earlier revision of this paragraph named a specific live bug
 (`agenda.rs:111`, the planning line's position) and was **wrong** — org's
 grammar puts `plan` before `property_drawer`, so the old line assumption matches
 org's real rule; OT.3 retracted it after failing to reproduce it three times.
@@ -6606,11 +6607,14 @@ The genuine divergence is context a line cannot carry: a `* TODO` line inside a
 the text path invents agenda rows and resolves `dar` over spans that are not
 subtrees.
 
-OT.4 also closed two links that made the whole seam inert: `DispatchEnv` carried
-no tree snapshot, so OT.1's motions and text objects received `none` on every
-real keystroke, and org's manifest never declared the `tree-sitter` capability,
-so the trampoline would have withheld the handle anyway. Both were invisible to
-every test that built its own `GrammarEnv` — see
+The phase also closed **three** links that made the seam inert or wrong, none of
+them visible from a unit test: `DispatchEnv` carried no tree snapshot, so OT.1's
+motions and text objects received `none` on every real keystroke (OT.4); org's
+manifest never declared the `tree-sitter` capability, so the trampoline would
+have withheld the handle anyway (OT.4); and both plugin gates handed over trees
+from before the previous keystroke's edit, which is worse than handing over none
+— they now gate on `tree_reflects` (OT.7). Every existing seam test passed
+against all three, because they build the `GrammarEnv` they are testing. See
 [`../architecture/plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md)
 §5.1. Slice plan:
 [`slice-plans/org-treesitter-and-clocking.md`](slice-plans/org-treesitter-and-clocking.md).

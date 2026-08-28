@@ -7,7 +7,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-28).
+**Status:** ✅ complete (2026-08-28). AF.1–AF.4 and AG.1 all landed.
 
 ---
 
@@ -96,12 +96,12 @@ not change.
 
 | Slice | Description | Status |
 |---|---|---|
-| AF.1 | `agenda-source.roots()` — a source names what to walk | 📝 |
-| AF.2 | host: `AgendaOptions.roots`, files-or-directories, precedence | 📝 |
-| AF.3 | plugin: `org.agenda-files` + `roots()` | 📝 |
-| AF.4 | docs — design fragment, `doc/org.md`, ledger, site | 📝 |
+| AF.1 | `agenda-source.roots()` — a source names what to walk | ✅ |
+| AF.2 | host: `AgendaOptions.roots`, files-or-directories, precedence | ✅ |
+| AF.3 | plugin: `org.agenda-files` + `roots()`; the config registry the agenda store lacked | ✅ |
+| AF.4 | docs — `doc/org.md`, `agenda-view-mode`, ledger, site | ✅ |
 
-### AF.1 — `agenda-source.roots()` 📝
+### AF.1 — `agenda-source.roots()` ✅
 
 One export on `agenda-source-plugin`:
 
@@ -126,12 +126,12 @@ track `:set`.
 Every path still passes the host's existing `fs` grant check — a source naming a
 directory does not acquire the right to read it.
 
-### AF.2 — the host walks a list 📝
+### AF.2 — the host walks a list ✅
 
 `AgendaOptions.root: PathBuf` → `roots: Vec<PathBuf>`. Resolution order, most
 specific first:
 
-1. an explicit `:agenda <path>` argument — one root, unchanged;
+1. an explicit `:org-agenda <path>` argument — one root, unchanged;
 2. the roots the OPEN view already shows, so `gr` refreshes what is on screen
    rather than resetting (the PD.9 rule the current code already follows);
 3. the union of every registered source's `roots()`;
@@ -146,15 +146,16 @@ A configured path that does not exist is skipped with an `info!` — user
 actionable, and one bad entry must not fail the agenda (`error-parser`'s rule,
 which this provider already follows per file).
 
-### AF.3 — `org.agenda-files` 📝
+### AF.3 — `org.agenda-files` ✅
 
 The plugin registers the option and implements `roots()` by splitting its value.
 Unset ⇒ empty list ⇒ the host's fallback, so an org user who has configured
 nothing keeps exactly today's behaviour.
 
-### AF.4 — docs 📝
+### AF.4 — docs ✅
 
-`org-mode.md` §6.2's WIT block gains `roots`; `doc/org.md` documents the option
+`org-mode.md` §6.2's WIT block gains `roots`; `agenda-view-mode` stops naming a
+host command that no longer exists; `doc/org.md` documents the option
 with Dhruva's own config as the worked example; ledger entry; site sync.
 
 ## Tests
@@ -162,10 +163,46 @@ with Dhruva's own config as the worked example; ledger entry; site sync.
 - A directory entry and a file entry in one list both contribute rows.
 - A file entry OUTSIDE any configured directory contributes rows (the
   anniversaries case).
-- `:agenda <path>` still overrides the option — the argument is the escape
+- `:org-agenda <path>` still overrides the option — the argument is the escape
   hatch, and losing it would make the option a cage.
 - `gr` on an open view re-scans that view's roots, not the option's, when they
   differ.
 - No option set ⇒ byte-identical behaviour to today (the regression guard that
   matters most, since every existing agenda test depends on it).
 - A configured path that does not exist is skipped and the rest still scan.
+
+---
+
+## AG.1 — org owns its trigger ✅ (2026-08-28)
+
+Not in the original plan; it arrived mid-build as three related objections —
+org specifics should not leak into lattice, the command should be
+`:org-agenda`, and every command the plugin ships should carry the `org-`
+prefix. The audit found 37 of 37 plugin commands already prefixed; the single
+exception was `<leader>oa` binding to the HOST's `agenda`, so all three
+objections were one problem.
+
+`OpenProviderView` was withheld from the WIT app-effect mirror as a capability
+question — which providers may a plugin trigger? The precedent had answered it
+already: `Effect::OpenPicker` and `Effect::OpenTransient` cross ungated and open
+any registered source by name. So the effect crosses, `lattice-multibuffer`
+stops registering an ex-command, and org registers `:org-agenda` itself with its
+own `parse`/`apply` callbacks — this plugin's first ex-command.
+
+The name is the plugin's to choose rather than derived by the host from the
+plugin id. The host-derived form would make the convention unbreakable; it was
+rejected because a source's users have a name for this in their own ecosystem
+and only the source knows it. The convention is asserted as a property over the
+command registry instead, so a new command cannot quietly break it.
+
+`:agenda` is gone, not aliased.
+
+**What did NOT move, and why.** Whether the whole provider belongs in the plugin
+was raised and checked rather than assumed: all 42 occurrences of "org" in
+`providers/agenda.rs` are `.org` sample paths in its own tests, and with no org
+plugin installed there is now no command, no source and no rows. What the
+provider does — create a multibuffer view, `spawn_document` per source file, add
+excerpts, activate modes, drive batched off-thread reads — is buffer, document
+and thread work with no WIT surface, and giving it one would put buffer
+construction and off-thread I/O in the guest, which is what paramount #1 and #4
+exist to prevent. Policy is the plugin's; mechanism is the host's.

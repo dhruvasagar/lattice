@@ -1,11 +1,11 @@
 ---
-summary: "The agenda: :agenda collects every dated row plugin agenda-sources find under a project root into one multibuffer, date-grouped and globally ordered; <CR> jumps to source, gr rescans."
-related: [ex:agenda, multibuffer-mode, project-search-mode]
+summary: "The agenda: an agenda source's own command collects every dated row into one multibuffer, date-grouped and globally ordered; <CR> jumps to source, gr rescans."
+related: [multibuffer-mode, project-search-mode]
 ---
 
 # agenda-view-mode
 
-`:agenda` walks a project, asks every installed **agenda source** which
+The agenda walks the configured paths, asks every installed **agenda source** which
 of its files carry dated rows, and collects the answers into a single
 [multibuffer](help:multibuffer-mode) view — ordered by date across
 files, with one header per day.
@@ -27,8 +27,8 @@ is a lesser feature wearing the name.
 
 | Keystroke / command | Meaning |
 |---|---|
-| `:agenda` | Build the agenda over the active buffer's project |
-| `:agenda <path>` | Build it over `<path>` instead (`~` is expanded) |
+| the source's own command | Build the agenda. Each source names it — the org plugin registers `:org-agenda` |
+| `<that command> <path>` | Build it over `<path>` instead (`~` is expanded), ignoring configured paths for this one call |
 | `<CR>` | (in the agenda) Jump to the source file + line of the row under the cursor |
 | `gr` | (in the agenda) Re-scan — over the root this view already shows |
 | `]e` / `[e` | Move between rows (excerpt motions — see [`multibuffer-mode`](help:multibuffer-mode)) |
@@ -44,10 +44,10 @@ about what a dated row *is*.
 
 A plugin providing the `agenda-source` seam declares which file
 extensions it wants offered, and lattice offers it only those — so
-`:agenda` in a Rust checkout with only an org plugin installed costs a
+Opening the agenda in a Rust checkout with only an org plugin installed costs a
 directory walk and nothing else. Files nothing claims are never read.
 
-With no agenda source installed, `:agenda` declines and says so rather
+With no agenda source installed there is no command to type — the trigger belongs to the source — and the view declines and says so rather
 than opening an empty view you have to guess about.
 
 The reference source is the org plugin, where a row is an open headline
@@ -94,7 +94,7 @@ bad file must not cost you the agenda.
 
 `gr` re-runs the scan over **the root this view already shows**, not
 over the current buffer's project. Refreshing an agenda you opened with
-`:agenda ~/notes` keeps it pointed at `~/notes`; a refresh that silently
+opening it over `~/notes` keeps it pointed at `~/notes`; a refresh that silently
 re-targets itself is not a refresh.
 
 `gr` in the agenda comes from
@@ -106,7 +106,7 @@ buffer.
 
 ## One agenda at a time
 
-The view is named `*agenda*` and is reused: a second `:agenda`
+The view is named `*agenda*` and is reused: a second open
 re-scans into the same buffer rather than accumulating views. The
 existing rows are cleared before the new scan starts, so you never see
 two scans' results at once.

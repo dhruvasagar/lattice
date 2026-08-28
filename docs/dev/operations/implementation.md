@@ -6512,10 +6512,12 @@ status and refresh from machinery that already ships — and the second of those
 is what decided it, because org's agenda is a place you change TODO states
 *from*. Host-side this added `providers::agenda` (the walk, the cross-file
 stable sort, the excerpt build), `agenda-view-mode` (`gr`), the
-`AgendaSourceRegistry` seam and the `:agenda` ex-command; none of it knows what
+`AgendaSourceRegistry` seam and an `:agenda` ex-command; none of it knows what
 an org file is, because the guest declares which extensions it wants offered.
-`:agenda` reaches the view through PV.1's generic provider-view seam, so it
+The command reaches the view through PV.1's generic provider-view seam, so it
 needed no dispatch arm at all.
+
+**AG.1 later moved the ex-command out of the host** — see below.
 
 **Two pre-existing bugs surfaced by the agenda work**, both silent: `WiredSeams`
 never reported `media_registry`, and the loader never stored its media teardown
@@ -6618,6 +6620,55 @@ against all three, because they build the `GrammarEnv` they are testing. See
 [`../architecture/plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md)
 §5.1. Slice plan:
 [`slice-plans/org-treesitter-and-clocking.md`](slice-plans/org-treesitter-and-clocking.md).
+
+
+---
+
+## The agenda's files, and its trigger (AF / AG, 2026-08-28)
+
+| Slice | What | Status |
+|---|---|---|
+| AF.1 | `agenda-source.roots()` — a source names what to walk | ✅ |
+| AF.2 | `AgendaOptions.roots`, files-or-directories, precedence | ✅ |
+| AF.3 | `org.agenda-files`, and the config registry the agenda store lacked | ✅ |
+| AF.4 | docs | ✅ |
+| AG.1 | `open-provider-view` crosses; org owns `:org-agenda` | ✅ |
+
+The agenda scanned ONE root, derived from the working directory unless
+`:agenda <path>` said otherwise — so it answered a different question depending
+on which checkout you were in. Org's agenda is not that; it is the set of files
+you keep your life in, the same set from anywhere. There was no option at all.
+
+**The list belongs to the source, not the host.** The recommendation was the
+opposite — the walk, the file offering and the multibuffer are all host-side —
+and it was decided the other way on the argument that outweighs it: every
+source's users already have a name for this list in whatever ecosystem the
+source came from, and a host-side setting would have to pick one of those names
+or invent a neutral one nobody's fingers know. So the host asks each source and
+merges, and never learns any option's name.
+
+**AG.1 moved the trigger too.** `:agenda` lived in `lattice-multibuffer` because
+a plugin could not open a provider view — `OpenProviderView` was withheld from
+the WIT app-effect mirror as a capability question. The precedent had already
+answered it: `Effect::OpenPicker` and `Effect::OpenTransient` both cross ungated
+and open any registered source by name. Withholding it never withheld the
+capability; it only stopped the one seam that needed it from naming its own
+trigger, so a feature every user calls `org-agenda` shipped as `:agenda`.
+`:agenda` is gone rather than aliased.
+
+**A third dead gate, found the same way as OT.4's two.** `config.get-option`
+answered `none` inside every agenda call: the agenda store was the only seam
+store never handed the option registry (`context` / `event` / `transient` /
+`grammar` all get it; 73842466 fixed the same omission for events). Org's
+`todo-keywords` was already being ignored in `begin`. It survived because every
+agenda test drove `extensions` / `begin` / `scan`, none of which reads an
+option — the config path had never been called once. The WIT world had the
+matching hole: `agenda-source-plugin` did not import `config`, so it declared an
+export whose whole purpose is to answer from configuration while giving a pure
+agenda-source plugin no way to read any.
+
+Slice plan:
+[`slice-plans/org-agenda-files.md`](slice-plans/org-agenda-files.md).
 
 ---
 

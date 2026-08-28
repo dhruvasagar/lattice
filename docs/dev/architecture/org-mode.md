@@ -18,7 +18,7 @@ whose first consumer is the same plugin) and
 [`plugin-host.md`](plugin-host.md) (`grammar`, `modes`, `config`,
 `picker-source`). The agenda's host half is a multibuffer provider —
 [`multibuffer-views.md`](multibuffer-views.md) §3.7 for the provider shape and
-§3.7a for the provider-view seam `:agenda` triggers through.
+§3.7a for the provider-view seam the agenda triggers through.
 
 **Two sections carry amendments made during the build**, each marked in place
 rather than rewritten over: §4.2 (the view carries two minors, not one) and
@@ -409,6 +409,12 @@ world agenda-source-plugin {
     /// Called once at load. See "the host does not know what an org
     /// file is", below.
     export extensions: func() -> list<string>;
+    /// AF.1: the paths to scan — each a FILE or a DIRECTORY. Called PER
+    /// SCAN, unlike `extensions`: this comes from user configuration
+    /// (org reads `org.agenda-files`) and has to follow a `:set`.
+    /// Empty = "no opinion", and the host scans the project root as
+    /// before. The world imports `config` so a source can answer it.
+    export roots: func() -> list<string>;
     /// Drop per-scan state. Called before the first file of a scan.
     export begin: func();
     /// Scan one file; return its agenda rows.

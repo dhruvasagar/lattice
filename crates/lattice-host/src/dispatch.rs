@@ -19109,38 +19109,51 @@ impl Editor {
                             as lattice_runtime::IndentResolverHandle
                     })
             });
-        lattice_runtime::block_on(
-            self.document.dispatch_with_env(
-                invocation,
-                self.cursor,
-                lattice_protocol::CancellationToken::never(),
-                lattice_runtime::DispatchEnv {
-                    scope_resolver,
-                    comment_syntax,
-                    // OT.4: the same `h.snapshot()` bump the Action gate takes a
-                    // few hundred lines above, on the same terms — O(1) `ArcSwap`
-                    // load, no parse on the dispatch thread — so a PLUGIN motion or
-                    // text object can mint a `tree-snapshot` resource from it. A
-                    // native motion never touches it and pays only the Arc bump.
-                    syntax: self
-                        .syntax
-                        .as_ref()
-                        .map(|h| h.snapshot() as std::sync::Arc<dyn std::any::Any + Send + Sync>),
-                    // IN.0: `>` / `<` read this. Resolved per-buffer so
-                    // `:setlocal shiftwidth=2` and a major mode's
-                    // contribution both apply.
-                    indent: self.indent_unit(self.active_buffer_id()),
-                    // IN.7: `=` reads this. Only supplied when the
-                    // published snapshot actually reflects the buffer --
-                    // reindenting an existing range against a stale tree
-                    // would move lines to where they belonged one edit
-                    // ago, which is worse than leaving them alone. `=` is
-                    // user-initiated, so "press it again" is a real
-                    // recovery; a silently wrong reindent is not.
-                    indent_resolver,
-                },
-            ),
-        )
+        lattice_runtime::block_on(self.document.dispatch_with_env(
+            invocation,
+            self.cursor,
+            lattice_protocol::CancellationToken::never(),
+            lattice_runtime::DispatchEnv {
+                scope_resolver,
+                comment_syntax,
+                // OT.4: the same `h.snapshot()` bump the Action gate takes —
+                // O(1) `ArcSwap` load, no parse on the dispatch thread — so
+                // a PLUGIN motion or text object can mint a `tree-snapshot`
+                // resource from it. A native motion never touches it and
+                // pays only the Arc bump.
+                //
+                // OT.7: gated on `tree_reflects`, exactly as
+                // `indent_resolver` below is, and found the same way — by an
+                // operation run twice in a row. Reparsing is off-thread, so
+                // the published snapshot still describes the buffer as it
+                // was BEFORE the edit the previous chord made. A plugin
+                // handed that tree resolves real structure at stale line
+                // numbers, which is worse than resolving none: `none` is a
+                // contract the guest already handles (every OT.x locator
+                // falls back to its line logic), while a confidently wrong
+                // subtree is an edit in the wrong place. The symptom was
+                // `<leader>tr` then `<leader>tc` — insert a table row, then
+                // a column — with the column landing against the one-row
+                // table that no longer existed.
+                syntax: self.syntax.as_ref().and_then(|h| {
+                    let snapshot = h.snapshot();
+                    let fresh = snapshot.tree_reflects(self.document.text_version());
+                    fresh.then_some(snapshot as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                }),
+                // IN.0: `>` / `<` read this. Resolved per-buffer so
+                // `:setlocal shiftwidth=2` and a major mode's
+                // contribution both apply.
+                indent: self.indent_unit(self.active_buffer_id()),
+                // IN.7: `=` reads this. Only supplied when the
+                // published snapshot actually reflects the buffer --
+                // reindenting an existing range against a stale tree
+                // would move lines to where they belonged one edit
+                // ago, which is worse than leaving them alone. `=` is
+                // user-initiated, so "press it again" is a real
+                // recovery; a silently wrong reindent is not.
+                indent_resolver,
+            },
+        ))
     }
 
     /// 5.5.E.7.3: apply a single [`Edit`] to the active buffer as
@@ -39449,10 +39462,20 @@ impl Editor {
             // bump (no parse on the dispatch thread — paramount #1). Type-erased
             // to `Arc<dyn Any>` so `lattice-grammar` stays syntax-free; the
             // trampoline downcasts it. `None` when the buffer has no parse.
-            let syntax_any: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = self
-                .syntax
-                .as_ref()
-                .map(|h| h.snapshot() as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+            //
+            // OT.7: and `None` when the parse is STALE. "Same instant" bounds
+            // the read against a concurrent republish; it does not make an
+            // off-thread reparse finish. After an edit the published snapshot
+            // still describes the previous text, and a grammar action handed
+            // that tree edits at line numbers that have moved. Same
+            // `tree_reflects` gate `dispatch_blocking` and the `=` indent
+            // resolver use, for the same reason.
+            let syntax_any: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+                self.syntax.as_ref().and_then(|h| {
+                    let snapshot = h.snapshot();
+                    let fresh = snapshot.tree_reflects(self.document.text_version());
+                    fresh.then_some(snapshot as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                });
             let env = lattice_grammar::GrammarEnv {
                 syntax: syntax_any.as_ref(),
                 ..Default::default()

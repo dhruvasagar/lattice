@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 / OT.6 ✅.
+**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 / OT.6 / OT.7 ✅. OT.8 next.
 
 ---
 
@@ -91,6 +91,12 @@ states it for the action path specifically: the tree is "acquired the same
 instant as `doc` so their versions agree". A stale tree yielding a stale line
 number was the objection; version agreement is a contract, so it does not
 arise. `none` means plain-text or parse-pending only.
+
+**OT.7 corrected this.** "Acquired at the same instant" bounds the read against
+a concurrent republish; it does not make an off-thread reparse finish, and those
+are different claims. The objection was right and the answer was wrong. The host
+now gates both plugin gates on `tree_reflects`, so `none` also means
+parse-behind-the-buffer — see OT.7.
 
 **D2 — Off-buffer parsing is a missing primitive, not a structural barrier.**
 `lattice-syntax/src/syntax.rs:347` is `pub fn parse(&mut self, source: &str)`;
@@ -176,7 +182,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | ✅ |
 | OT.5 | the plan's date from `(plan (entry))`; stepping stays text | ✅ |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | ✅ |
-| OT.7 | `table.rs` → `(table)` / `(row)` / `(cell)` | 📝 |
+| OT.7 | `table.rs` → `(table)`; the shared `tree.rs`; the staleness gate | ✅ |
 | OT.8 | capture target + refile picker → `parse-file` | 📝 |
 
 ### OT.1 — motions and text objects get a tree ✅ (2026-08-28)
@@ -598,10 +604,62 @@ headline has no children by the indent rule and its cookie never moves. The tree
 has no such problem (a `list` is a child of the section's `body` whatever its
 column), and the fallback runs only when there is no grammar for the buffer.
 
-### OT.7 — `table.rs` on the tree 📝
+### OT.7 — `table.rs` on the tree ✅ (2026-08-28)
 
-`(table)` / `(row)` / `(cell)`. Cell and row motion, row/column insert and
-move. Alignment stays a rendering concern computed from cell extents.
+`table: (row | hr)+`, so a `table` node IS the contiguous run `table_bounds`
+reconstructs by walking outward while lines still start with `|`. Same answer
+for real org; different for a table drawn inside `#+BEGIN_SRC`, which parses as
+`block contents:` — `<leader>o|` was realigning example content in a code block.
+
+**Only the bounds moved, and the slice's own wording was wrong about the rest.**
+It said "alignment stays a rendering concern computed from cell extents". It is
+not a rendering concern at all — alignment REWRITES the table as an edit, so the
+cell offsets the caret needs are offsets into a line that is not in the buffer
+yet, and no tree describes a buffer that does not exist. `parse_row`, `align`,
+`cell_at` and `cell_start` stay text for that reason, not for a rendering one.
+
+#### The staleness gate — the finding that outlives this slice
+
+Running one operation TWICE is what exposed it. `<leader>tr` then `<leader>tc`
+(insert a table row, then a column) put the column into the one-row table that
+no longer existed, because reparsing is off-thread and the published snapshot
+still described the buffer as it was before the first chord's edit.
+
+TS.1's comment says the tree and the document handle are acquired "at the same
+instant … so their versions agree". That bounds the read against a concurrent
+republish; it does **not** make an off-thread reparse finish. Two different
+claims, and only the first was true. D1 in this plan repeats the same conflation
+and should be read with this correction.
+
+Both plugin gates now gate on `tree_reflects` — the predicate a few lines away
+already used for the `=` operator's indent resolver, for the same reason. A
+plugin handed a stale tree does not fail; it resolves real structure at line
+numbers that have moved and edits there. `none` is strictly better: it is a
+contract every OT.x locator already handles by falling back to its line logic.
+
+**Every slice before this one ran a single chord per assertion**, which is why
+five slices of tree migration did not surface it.
+
+#### `src/tree.rs`
+
+The dedup OT.7 made unavoidable: by OT.6 there were three copies of
+`last_content_line`, each with its own paragraph explaining the same
+exclusive-end off-by-one, and two of `ancestor` / `children_of_kind`. Three
+copies of a subtle rule is the shape of a rule about to drift — this phase's own
+thesis, reproduced inside the plugin — so they live in one module now.
+`tree::enclosing` carries OT.6's lesson in its doc-comment: `byte` is a column
+and 0 is not always right, because a node starting after indentation does not
+contain column 0.
+
+#### The fallback bug the gate exposed
+
+`checkbox`'s indent walk required a child to be indented MORE than its parent,
+and a headline's indent reads as 0 — so a list flush at column 0 under a
+headline had no children and its cookie never moved. Ordinary org, invisible
+because every existing test indents its lists. Fixed rather than documented: a
+headline owns every list beneath it until the next headline, whatever column
+they start at. An item parent still requires a deeper indent, which is what
+tells its children from its siblings.
 
 ### OT.8 — capture and refile stop hand-parsing 📝
 

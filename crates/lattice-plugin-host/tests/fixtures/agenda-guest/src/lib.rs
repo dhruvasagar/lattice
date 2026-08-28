@@ -48,24 +48,25 @@ impl Guest for Component {
         FILES_SEEN.set(0);
     }
 
-    fn scan(_path: String, input: ScanInput) -> Result<Vec<Entry>, String> {
-        // OT.3: the host lends a tree when the file's extension resolves to a
-        // registered language, and the text otherwise. This fixture answers
-        // both arms so the host test can tell which one it got — the tree arm
-        // reports the ROOT KIND, which no text scan could produce.
-        let text = match input {
-            ScanInput::Tree(snapshot) => {
-                let root = snapshot.root();
-                return Ok(vec![Entry {
-                    line: 0,
-                    end_line: 0,
-                    group: "tree".to_string(),
-                    label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
-                    sort_key: 0,
-                }]);
-            }
-            ScanInput::Text(text) => text,
-        };
+    fn scan(
+        _path: String,
+        text: String,
+        tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Entry>, String> {
+        // OT.3: text is always here; the tree comes beside it when the file's
+        // extension resolves to a registered language. This fixture reports the
+        // ROOT KIND when it got a tree — something no text scan could produce —
+        // so the host test can tell the two apart.
+        if let Some(snapshot) = tree {
+            let root = snapshot.root();
+            return Ok(vec![Entry {
+                line: 0,
+                end_line: 0,
+                group: "tree".to_string(),
+                label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
+                sort_key: 0,
+            }]);
+        }
         if text.contains("BROKEN") {
             return Err("agenda-guest: malformed file".to_string());
         }

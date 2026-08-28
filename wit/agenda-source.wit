@@ -17,26 +17,34 @@ package lattice:plugin-host@0.1.0;
 /// *line* rather than a rendered string: an agenda you can only read is a
 /// lesser feature wearing the name.
 ///
-/// ## A tree when there is one, text when there is not
+/// ## Text AND a tree — structure from one, characters from the other
 ///
-/// This section used to justify handing the guest the whole file's text:
-/// "a scan reads EVERY line, so a handle would cost one boundary crossing
-/// per line where one copy costs one." That is circular, and OT.3 retired
-/// it. The guest reads every line only *because it hand-parses*; given a
-/// parse tree it runs one query and the host answers with ranges, so
-/// neither the text nor the per-line crossings happen.
+/// The text was always here. OT.3 adds the tree beside it, because a scan
+/// that recognises structure by matching line prefixes diverges from the
+/// grammar and eventually gets it wrong (org's agenda assumed a planning
+/// line sits immediately below its headline, so a `:PROPERTIES:` drawer
+/// silently dropped the row).
 ///
-/// So `scan` takes a [`scan-input`]: a borrowed `tree-snapshot` when the
-/// file's extension resolves to a registered language, and the text
-/// otherwise. Both arms survive deliberately — a source is independent of
-/// the `language` seam (see `extensions` below), so one whose filetype has
-/// no grammar must still be able to scan.
+/// **Both, not either.** An earlier draft of this slice replaced the text
+/// with the tree, on the theory that the per-file copy was the cost worth
+/// removing. Two measurements killed that: the copy is **217 ns** per file
+/// (`benches/agenda_scan_input.rs`), and the parse that buys the tree is
+/// **1–2 ms** — so the copy was never the expense. Worse, a tree alone
+/// cannot answer what a scanner asks: this seam exposes node kinds and
+/// ranges but no node TEXT, so a guest would need one boundary crossing per
+/// headline to read a TODO keyword — about 50 µs per file, 200× the copy it
+/// was avoiding. Structure from the tree, characters from the text.
+///
+/// `tree` is `none` when the extension resolves to no registered language or
+/// the parse yields nothing. A source is independent of the `language` seam
+/// (see `extensions` below), so a filetype with no grammar must still scan —
+/// it simply scans text, as it always did.
 ///
 /// **The guest still touches no filesystem** — no preopens, no `walk`, and
 /// not `tree-sitter.parse-file` either. The host must read the file anyway
 /// to build the source `Document`, so it reads once and parses once, and
-/// the guest is handed the result. That keeps this the one seam that needs
-/// no capability at all.
+/// the guest is handed both results. That keeps this the one seam that
+/// needs no capability at all.
 ///
 /// ## Where it runs
 ///
@@ -50,23 +58,6 @@ package lattice:plugin-host@0.1.0;
 /// Validates and drops, never traps. A malformed file must not fail the
 /// agenda — `error-parser`'s rule, because it is the same failure class.
 interface agenda-source {
-    use tree-sitter.{tree-snapshot};
-
-    /// OT.3: what the host hands a `scan` for one file.
-    ///
-    /// `tree` whenever the extension resolves to a registered language and the
-    /// parse succeeds; `text` otherwise. A guest that only understands one arm
-    /// returns `err` for the other, which skips that file with a `debug` log
-    /// and continues the scan — the same graceful path a malformed file takes.
-    variant scan-input {
-        /// A borrowed parse tree for this file, on the same terms as a
-        /// buffer's: the host owns it, the tree never crosses, and it is
-        /// reclaimed when `scan` returns.
-        tree(borrow<tree-snapshot>),
-        /// The file's text, for a filetype with no registered grammar.
-        text(string),
-    }
-
     /// One agenda row the guest recognised in a file.
     record entry {
         /// **0-based** line of the row's anchor, `error-parser`'s
@@ -109,9 +100,10 @@ world agenda-source-plugin {
     import logging;
     import project;
 
-    use agenda-source.{entry, scan-input};
-    /// OT.3: the host lends a parse tree per file, so the `scan-input::tree`
-    /// arm resolves. The guest never parses and never reads — it is handed the
+    use agenda-source.{entry};
+    use tree-sitter.{tree-snapshot};
+    /// OT.3: the host lends a parse tree per file, so `scan`'s `tree` param
+    /// resolves. The guest never parses and never reads — it is handed the
     /// result of the read the host had to do anyway.
     import tree-sitter;
 
@@ -164,5 +156,9 @@ world agenda-source-plugin {
     ///
     /// An `err` skips this file with a `debug` log and the scan continues.
     /// One bad file must not fail the agenda.
-    export scan: func(path: string, input: scan-input) -> result<list<entry>, string>;
+    export scan: func(
+        path: string,
+        text: string,
+        tree: option<borrow<tree-snapshot>>,
+    ) -> result<list<entry>, string>;
 }

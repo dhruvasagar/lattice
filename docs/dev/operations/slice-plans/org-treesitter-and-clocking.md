@@ -287,7 +287,30 @@ yields `none` rather than a trap; an unregistered extension yields `none`.
 
 **Deps:** OT.2.
 
-`scan` currently takes `path: string, text: string`. Both shapes must survive:
+**Final shape: `scan(path, text, tree: option<borrow<tree-snapshot>>)`** — text
+always, tree beside it, mirroring `apply-action(callback, ctx, doc, tree)`.
+
+The first attempt *replaced* text with a `scan-input` variant, on the theory
+that the per-file copy was the cost worth removing. Two findings killed it, both
+worth keeping:
+
+1. **The copy was never the expense.** 217 ns against a 1–2 ms parse (bench
+   above). Removing it optimised the wrong end by four orders of magnitude.
+2. **A tree alone cannot answer what a scanner asks.** The `tree-sitter` seam
+   exposes node kinds, ranges and navigation — but **no node TEXT**. Nothing had
+   ever needed characters (auto-pair reads kinds, treesitter-context reads
+   ranges), so the gap was invisible until now. Without the string a guest needs
+   one crossing per headline to read a TODO keyword: ~50 µs per file, 200× the
+   copy it was avoiding.
+
+So the rule for every OT slice is **structure from the tree, characters from the
+text** — and no `node.text()` primitive is needed anywhere, because each seam
+already carries text beside its tree: `scan` here, `borrow<document>` on the
+grammar seams (OT.4–OT.7), and `read-file` / WASI beside `parse-file` (OT.8).
+
+**Original plan text follows.**
+
+`scan` previously took `path: string, text: string`. Both inputs must survive:
 `agenda-source.wit` deliberately keeps a source independent of the `language`
 seam ("would make an agenda source *require* a language when the two are
 independent contributions"), so a source whose extension has no registered

@@ -33,7 +33,6 @@ use crate::{
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
 pub use crate::agenda_host::bindings::lattice::plugin_host::agenda_source::Entry;
-use crate::agenda_host::bindings::lattice::plugin_host::agenda_source::ScanInput;
 
 /// OT.3: parse one scanned file, from text the host has already read.
 ///
@@ -267,8 +266,11 @@ impl AgendaActor {
         arm_store(&mut self.store, self.budget)?;
         let start = std::time::Instant::now();
         // OT.3: parse here, from the text the host already read, and lend the
-        // guest a borrow. The text then never crosses the boundary — which is
-        // the whole saving, since `scan` runs once per project file.
+        // guest a borrow ALONGSIDE that text. Not instead of it — the copy is
+        // 217 ns (`benches/agenda_scan_input.rs`) while the parse buying the
+        // tree is 1-2 ms, and the seam exposes no node TEXT, so a guest without
+        // the string would need a crossing per headline to read a TODO keyword.
+        // Structure from the tree, characters from the text.
         //
         // NOT `tree-sitter.parse-file`: that is `fs:read` gated, and this is the
         // one seam whose guest holds no capability at all (`agenda-source.wit`
@@ -276,8 +278,8 @@ impl AgendaActor {
         // result.
         //
         // `None` when the extension resolves to no language or the parse yields
-        // no tree, and the text arm carries the file instead — a source is
-        // independent of the `language` seam, so a filetype with no grammar
+        // no tree; the guest then scans text alone, as it always did — a source
+        // is independent of the `language` seam, so a filetype with no grammar
         // must still scan.
         let snapshot = parse_for_scan(path, text);
         let owned_tree = match &snapshot {
@@ -292,11 +294,13 @@ impl AgendaActor {
             ),
             None => None,
         };
-        let input = match &owned_tree {
-            Some(owned) => ScanInput::Tree(wasmtime::component::Resource::new_borrow(owned.rep())),
-            None => ScanInput::Text(text.to_string()),
-        };
-        let result = self.bindings.call_scan(&mut self.store, path, &input).await;
+        let tree_borrow = owned_tree
+            .as_ref()
+            .map(|owned| wasmtime::component::Resource::new_borrow(owned.rep()));
+        let result = self
+            .bindings
+            .call_scan(&mut self.store, path, text, tree_borrow)
+            .await;
         // Reclaim the lent entry — the host owns it throughout (the
         // `apply-action` pattern), and a scan leaking one per file would grow
         // the resource table for the length of a project walk.

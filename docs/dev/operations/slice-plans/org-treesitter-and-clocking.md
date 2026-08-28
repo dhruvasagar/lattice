@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 ✅.
+**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 / OT.6 ✅.
 
 ---
 
@@ -175,7 +175,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.3b | **Persistent** result cache — survives restarts | ✅ |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | ✅ |
 | OT.5 | the plan's date from `(plan (entry))`; stepping stays text | ✅ |
-| OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | 📝 |
+| OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | ✅ |
 | OT.7 | `table.rs` → `(table)` / `(row)` / `(cell)` | 📝 |
 | OT.8 | capture target + refile picker → `parse-file` | 📝 |
 
@@ -561,11 +561,42 @@ The **civil-date arithmetic stays** as specced: `weekday` (Zeller) and
 records the reason — a `chrono` dependency tree in a wasm guest to replace twenty
 lines of arithmetic. Nothing about tree-sitter changes that.
 
-### OT.6 — `checkbox.rs` on the tree 📝
+### OT.6 — `checkbox.rs` on the tree ✅ (2026-08-28)
 
-`(listitem)` / `(checkbox)`. Statistics cookies (`[2/5]`) are computed from the
-sibling listitems the tree yields rather than from a line scan, which is also
-what makes a cookie correct when a nested list sits between siblings.
+`(list)` / `(listitem)` / `(checkbox)`, all real nodes, with a nested list as a
+`contents` child of the item that owns it — so "the direct children of this
+item" became a walk where `tally` reconstructed it from indentation plus a
+lock-on-the-first-child-level rule.
+
+The divergence is OT.4's, one construct along: a `- [ ] example` line inside a
+`#+BEGIN_SRC` block is block text and indentation cannot say so. `<C-Space>`
+rewrote it, and the enclosing cookie counted it — a one-item list next to a code
+sample read `[1/2]`.
+
+**The slice's own claim needed narrowing.** It said cookies "are computed from
+the sibling listitems the tree yields". Half true: the *count* is, but the cookie
+itself stays text. `* Shopping [1/3]` parses as `item: (item (expr) (expr))` —
+the grammar does not model a statistics cookie, the same finding OT.5 recorded
+for timestamps.
+
+**What the split has to be, and why.** `Checkboxes` answers only STRUCTURE from
+the tree; each box's state is read from the caller's text. That is not stylistic:
+the cookie is recomputed against the buffer as it will be AFTER the toggle, and
+the tree describes it as it is BEFORE. Reading a tick from the tree would leave
+every cookie one keypress behind — the exact bug the `after` overlay exists to
+prevent.
+
+**A probe-cost worth recording.** An indented item's `listitem` node starts at
+its bullet, so `enclosing` at byte 0 lands in the enclosing `list` and the
+ancestor walk finds no item at all. Every indented list in the suite went silent
+until the probe moved to the checkbox's own column. `Headlines` is not exposed to
+this because a headline starts at column 0 — which is why OT.4 never hit it.
+
+**The fallback's limit is now written down**: a child must be indented more than
+its parent and a headline's indent is 0, so a list flush at column 0 under a
+headline has no children by the indent rule and its cookie never moves. The tree
+has no such problem (a `list` is a child of the section's `body` whatever its
+column), and the fallback runs only when there is no grammar for the buffer.
 
 ### OT.7 — `table.rs` on the tree 📝
 

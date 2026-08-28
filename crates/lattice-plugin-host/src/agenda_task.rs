@@ -370,6 +370,9 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        // AF.3: the editor's option registry, so `config.get-option` answers
+        // inside a `roots` / `begin` / `scan` call.
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(AgendaClient, AgendaActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -385,6 +388,21 @@ impl PluginHost {
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // AF.3: without this, `config.get-option` answers `none` in every
+        // agenda call and the guest silently falls back to its compiled
+        // defaults — org's `agenda-files` would read as unset however the user
+        // set it, and its TODO keywords would ignore `org.todo-keywords`
+        // entirely.
+        //
+        // `context`, `event`, `transient` and `grammar` all wire this; the
+        // agenda store did not, and 73842466 fixed exactly this omission for
+        // the events store. It survived here because every agenda test drove
+        // `extensions` / `begin` / `scan`, none of which read an option until
+        // `roots` did — a seam covered end to end with its config path never
+        // called once.
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
         let (tx, rx) = mpsc::unbounded();
         let client = AgendaClient { tx, id };
         let actor = AgendaActor {

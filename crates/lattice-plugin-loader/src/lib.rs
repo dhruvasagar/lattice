@@ -2708,7 +2708,14 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_agenda_source(component, manifest, tier, PluginBudget::default(), bus)
+            .spawn_agenda_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
             .await?;
         let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());

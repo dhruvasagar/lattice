@@ -55,6 +55,16 @@ impl Guest for Component {
     /// `~` is left unexpanded on purpose: expansion is the host's job and the
     /// second entry is what proves it happens on the far side.
     fn roots() -> Vec<String> {
+        // AF.3: read from an OPTION when one is set, so the test can tell a
+        // wired config path from an unwired one. The agenda store was the only
+        // seam store never handed the registry, and every agenda test drove
+        // `extensions` / `begin` / `scan` — none of which reads an option — so
+        // the gap was invisible until `roots` needed it.
+        if let Some(v) = crate::lattice::plugin_host::config::get_option("roots") {
+            if !v.trim().is_empty() {
+                return v.lines().map(str::trim).map(str::to_string).collect();
+            }
+        }
         vec![
             "/agenda-guest/notes".to_string(),
             "~/agenda-guest/one.org".to_string(),

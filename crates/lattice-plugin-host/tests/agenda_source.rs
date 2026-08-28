@@ -45,6 +45,7 @@ async fn source(host: &PluginHost) -> WasmAgendaSource {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .expect("spawn agenda source");
@@ -266,6 +267,77 @@ async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
     assert!(
         !rows[0].label.starts_with("tree:"),
         "no grammar for this extension, so the guest must have been handed text"
+    );
+}
+
+/// AF.3 — a source reads its own configuration inside `roots`.
+///
+/// The gap this guards was invisible for the life of the seam: the agenda
+/// store was the ONLY seam store never handed the option registry (`context`,
+/// `event`, `transient` and `grammar` all get it; 73842466 fixed the same
+/// omission for events). Every agenda test drove `extensions` / `begin` /
+/// `scan`, none of which reads an option, so the config path had never been
+/// called once — and `get-option` answered `none` for anything a guest asked.
+///
+/// The world had the matching hole: `agenda-source-plugin` did not import
+/// `config`, so it declared an export it gave no way to implement. Either half
+/// alone still leaves `roots` answerable only with a compiled-in constant,
+/// which is why both moved together and why this test asserts through the
+/// option rather than through the fixture's fallback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_source_answers_roots_from_its_own_option() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: agenda fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+
+    let config = std::sync::Arc::new(lattice_config::ConfigRegistry::new());
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .expect("compile agenda fixture");
+    let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
+    let (client, actor) = host
+        .spawn_agenda_source(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            Some(&config),
+        )
+        .await
+        .expect("spawn agenda source");
+    tokio::spawn(actor.run());
+    let src = WasmAgendaSource::new(client, normalise_extensions(vec!["org".to_string()]), None);
+
+    // Unset: the fixture's own fallback, which is also the pre-AF.3 answer.
+    assert_eq!(
+        src.roots().await.unwrap(),
+        vec![
+            "/agenda-guest/notes".to_string(),
+            "~/agenda-guest/one.org".to_string(),
+        ],
+        "with nothing configured the guest answers its compiled default"
+    );
+
+    // Set it, and the guest must see the new value — this is the assertion
+    // that fails against a store with no registry.
+    // Registered under the plugin's namespace, which is how `get-option`
+    // resolves a short name (`roots` → `agenda-fixture.roots`).
+    assert!(lattice_plugin_host::config_host::register_plugin_option(
+        &config,
+        "agenda-fixture.roots",
+        lattice_plugin_host::config_host::PluginOptionKind::String,
+        "/from/the/option",
+        "test: the roots this fixture reports",
+    ));
+    assert_eq!(
+        src.roots().await.unwrap(),
+        vec!["/from/the/option".to_string()],
+        "`config.get-option` must answer inside an agenda call; `none` here \
+         means the agenda store was never handed the option registry"
     );
 }
 

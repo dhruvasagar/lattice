@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 ✅.
+**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 ✅.
 
 ---
 
@@ -173,7 +173,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | ✅ |
 | OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | ✅ |
 | OT.3b | **Persistent** result cache — survives restarts | ✅ |
-| OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
+| OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | ✅ |
 | OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | 📝 |
 | OT.7 | `table.rs` → `(table)` / `(row)` / `(cell)` | 📝 |
@@ -450,23 +450,66 @@ case), survival across a simulated restart, `Drop` persisting without an
 explicit flush, corrupt bytes recovering, a schema bump refusing to read the old
 shape, and two sources not reading each other's rows.
 
-### OT.4 — `headline.rs` on the tree 📝
+### OT.4 — `headline.rs` on the tree ✅ (2026-08-28)
 
 **Deps:** OT.1.
 
-The big one. `headline_level`, `enclosing_headline`, `subtree_end`,
-`next_headline`, `prev_headline`, `parent_headline`, `prev_sibling`,
-`next_sibling` become tree walks over `(section)` / `(headline)` / `(stars)`.
-`folds.scm` already documents why `(section)` is the load-bearing node: "a
-section is a headline plus everything beneath it *including nested sections*",
-which is `subtree_end` by construction.
+The big one, and it landed as specced plus **two links that were not in the
+plan because nobody knew they were missing**. Both were found the same way — by
+writing the first test that drove a chord through a real editor instead of
+calling the walk directly — and both had the same shape: a seam that reads as
+wired end to end and delivers `none`.
 
-`restar` / `shift_headlines` / `toggle_heading` **stay text rewrites** — the
-tree locates the `stars` node, the edit is still an edit. Locating with the
-tree and rewriting text is the correct split, not a half-migration.
+**What was specced.** `headline_level`, `enclosing_headline`, `subtree_end`,
+`next_headline`, `prev_headline`, `parent_headline`, `prev_sibling`,
+`next_sibling` are now tree walks over `(section)` / `(headline)` / `(stars)`.
+`grammar.js` makes each one short: `section` is `headline, plan?,
+property_drawer?, body?, subsection*`, so a section node IS a subtree, its
+extent IS `subtree_end`, the parent is the nearest `section` ancestor, and
+siblings are sibling nodes. `]]` is the pre-order successor; `[[` from body text
+is the enclosing headline itself and from a headline line the pre-order
+predecessor.
+
+They live behind one `headline::Headlines` locator holding `Option<&tree>` plus
+the line accessor, tree-first with the text logic as the fallback. That shape
+replaced a `match tree { … }` that had already been written out three times in
+the same function — a fourth site forgetting it would be the only one still
+hand-parsing, which is this phase's own bug class reproduced inside the plugin.
+
+`restar` / `shift_headlines` / `toggle_heading` stayed text rewrites as planned.
+
+**Link 1 — the actor path carried no snapshot.** `GrammarEnv::syntax` is filled
+on two routes: the host's Action gate, and `dispatch_blocking → DispatchEnv →
+actor.rs`. TS.1 wired the first (actions were then the only consumer) and left
+the second a hard `syntax: None` with a comment saying why. OT.1 made motions
+and text objects consumers — and they come through the second. So the WIT, the
+trampoline, the guest and `tree_seam.rs` were all correct and org's `ar` / `]]` /
+`g{` received `none` on every keystroke. `tree_seam.rs` missed it by building
+`GrammarEnv { syntax: Some(&snapshot) }` by hand: a seam test that supplies its
+own context tests everything except the gate. `DispatchEnv` gains a type-erased
+`syntax` field; `lattice-runtime` and `lattice-host` each gained a test that
+fails on the old code.
+
+**Link 2 — org never asked for the `tree-sitter` capability.** The seam is
+capability-gated, and org's manifest declared `provides = ["language", …]` but
+no `editor_capabilities`. Registering a grammar is not asking to read one. With
+link 1 fixed the trampoline still handed back `none`, silently, because the gate
+was doing exactly its job.
+
+Neither link is visible from the guest side, from a unit test, or from a test
+that constructs the context it is testing. What found them was one test that
+pressed a key in an editor and looked at the buffer.
+
+**Also recorded, not fixed:** `dar` leaves a blank line where the subtree was.
+The object's range stops short of the last line's newline, so `d` empties the
+lines without closing the gap — unchanged by this slice (the text path leaves
+the same blank), and a different question from where a subtree *ends*.
+`archive.rs` already works out which line break travels with a subtree and `ar`
+does not consult it. Pinned in `dar_inside_a_source_block_does_not_split_the_block`.
 
 Every motion, text object and promote/demote action rides this, so its test
-surface is the widest in the phase.
+surface is the widest in the phase: five new dispatch-through-the-editor tests
+in `org_structure.rs` plus the two host-side gate tests above.
 
 ### OT.5 — `timestamp.rs` on the tree 📝
 

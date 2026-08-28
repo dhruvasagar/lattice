@@ -1983,8 +1983,15 @@ impl MultibufferDocumentHandle {
                 // the per-excerpt source's comment leader -- deferred (a
                 // follow-up, like N.1.5's scope resolver was). v1: None.
                 comment_syntax: None,
-                // TS.1: multibuffer dispatch resolves motions/text-objects, not
-                // grammar actions; no tree-snapshot handle needed.
+                // A composed view has no tree of its own, and there is no ONE
+                // source snapshot to hand over — an excerpt list spans several
+                // files. `ComposedScopeResolver` above exists precisely because
+                // the composed↔source mapping has to be applied per excerpt,
+                // and a raw handle carries no mapping. So `None` here is the
+                // honest answer rather than a gap: a plugin text object inside
+                // a multibuffer view resolves from text, as it did before OT.1.
+                // The composed peer of this handle is the same shape N.1.5
+                // built for the resolver, and is deferred with it.
                 syntax: None,
                 indent,
                 // IN.7: `=` inside a multibuffer view would need a

@@ -148,6 +148,46 @@ host owns parsing). A plugin without the grant gets no `tree-snapshot` handle.
 Bundled plugins are pre-granted; user-installed plugins declare it and the tier
 gates it.
 
+**Registering a grammar does not imply the grant.** A plugin can contribute a
+language through the `language` seam and still have no `tree-sitter` capability,
+in which case it registers a grammar the host parses with and it cannot read the
+result. Nothing fails; every handle is simply `none` and the plugin falls back to
+whatever it does without structure. Org shipped in exactly that state until OT.4
+— an org grammar, an org `folds.scm`, an org `highlights.scm`, and a guest that
+had never once seen a tree. The gate is doing its job; the manifest has to ask.
+
+### 5.1 How the handle reaches a seam — two dispatch paths, not one
+
+`GrammarEnv::syntax` is populated on **two** separate routes, and a consumer
+added to one of them does not automatically get the other:
+
+| Route | Built in | Consumers |
+|---|---|---|
+| The **Action gate** | `Editor::dispatch_invocation` | grammar actions (`apply-action`) |
+| The **document actor** | `Editor::dispatch_blocking` → `DispatchEnv` → `actor.rs` | motions, operators, text objects |
+
+TS.1 wired only the first, because grammar actions were then the only consumer,
+and the actor arm carried a hard `syntax: None` with a comment saying so. OT.1
+gave motions and text objects the same handle in the WIT, the trampoline and the
+guest — but not in `DispatchEnv`, which had no field to carry it. The seam read
+as wired end to end and delivered `none` on every real keystroke.
+
+Two things made that survivable for a whole slice, and both are worth naming
+because they generalise past this seam:
+
+* **The tests built the env by hand.** `tree_seam.rs` constructs
+  `GrammarEnv { syntax: Some(&snapshot), .. }` directly, which proves the guest
+  and the trampoline and says nothing about who fills the field in production.
+  A seam test that supplies its own context tests everything except the gate.
+* **`scope_resolver` looks like it already covers this.** It does not: it is
+  deliberately erased to one question for the native structural objects, and the
+  concrete `SyntaxSnapshot` cannot be recovered from it to mint a resource. The
+  two fields coexist for that reason.
+
+A composed multibuffer view is the one place the answer is legitimately `none`:
+an excerpt list spans several files, so there is no single snapshot to hand over
+(the composed↔source mapping is what `ComposedScopeResolver` exists to apply).
+
 ## 6. Performance
 
 - **Host-side execution.** Queries + walks run against the host's `Tree`; only

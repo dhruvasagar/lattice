@@ -83,6 +83,24 @@ pub type IndentResolverHandle = Arc<dyn lattice_grammar::IndentResolver + Send +
 pub struct DispatchEnv {
     pub scope_resolver: Option<ScopeResolverHandle>,
     pub comment_syntax: Option<Arc<lattice_grammar::CommentSyntax>>,
+    /// OT.4: the buffer's tree-sitter snapshot, type-erased so
+    /// `lattice-runtime` stays syntax-free (the plugin trampoline
+    /// downcasts it back to an `Arc<SyntaxSnapshot>`).
+    ///
+    /// Distinct from `scope_resolver` rather than replacing it, and the
+    /// distinction is why this field had to exist. The resolver answers
+    /// "what scope encloses this point" for the NATIVE structural objects
+    /// and is deliberately erased to that one question — the concrete
+    /// snapshot cannot be recovered from it, so it cannot mint a plugin's
+    /// `tree-snapshot` resource.
+    ///
+    /// TS.1 left this out because grammar *actions* were the only
+    /// tree-snapshot consumer, and those dispatch through the host's Action
+    /// gate rather than this channel. OT.1 made motions and text objects
+    /// consumers too, and they come through here — so without this field
+    /// org's `ar` / `]]` / `g{` received `none` on every real keystroke
+    /// while every test that built a `GrammarEnv` by hand passed.
+    pub syntax: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// IN.0: one level of indentation, resolved by the host from
     /// `shiftwidth` / `expandtab` / `tabstop`. Read by `>` / `<`.
     /// `Default` is the registered option defaults, so the actor path

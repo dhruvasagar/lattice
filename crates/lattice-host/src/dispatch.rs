@@ -19109,27 +19109,38 @@ impl Editor {
                             as lattice_runtime::IndentResolverHandle
                     })
             });
-        lattice_runtime::block_on(self.document.dispatch_with_env(
-            invocation,
-            self.cursor,
-            lattice_protocol::CancellationToken::never(),
-            lattice_runtime::DispatchEnv {
-                scope_resolver,
-                comment_syntax,
-                // IN.0: `>` / `<` read this. Resolved per-buffer so
-                // `:setlocal shiftwidth=2` and a major mode's
-                // contribution both apply.
-                indent: self.indent_unit(self.active_buffer_id()),
-                // IN.7: `=` reads this. Only supplied when the
-                // published snapshot actually reflects the buffer --
-                // reindenting an existing range against a stale tree
-                // would move lines to where they belonged one edit
-                // ago, which is worse than leaving them alone. `=` is
-                // user-initiated, so "press it again" is a real
-                // recovery; a silently wrong reindent is not.
-                indent_resolver,
-            },
-        ))
+        lattice_runtime::block_on(
+            self.document.dispatch_with_env(
+                invocation,
+                self.cursor,
+                lattice_protocol::CancellationToken::never(),
+                lattice_runtime::DispatchEnv {
+                    scope_resolver,
+                    comment_syntax,
+                    // OT.4: the same `h.snapshot()` bump the Action gate takes a
+                    // few hundred lines above, on the same terms — O(1) `ArcSwap`
+                    // load, no parse on the dispatch thread — so a PLUGIN motion or
+                    // text object can mint a `tree-snapshot` resource from it. A
+                    // native motion never touches it and pays only the Arc bump.
+                    syntax: self
+                        .syntax
+                        .as_ref()
+                        .map(|h| h.snapshot() as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+                    // IN.0: `>` / `<` read this. Resolved per-buffer so
+                    // `:setlocal shiftwidth=2` and a major mode's
+                    // contribution both apply.
+                    indent: self.indent_unit(self.active_buffer_id()),
+                    // IN.7: `=` reads this. Only supplied when the
+                    // published snapshot actually reflects the buffer --
+                    // reindenting an existing range against a stale tree
+                    // would move lines to where they belonged one edit
+                    // ago, which is worse than leaving them alone. `=` is
+                    // user-initiated, so "press it again" is a real
+                    // recovery; a silently wrong reindent is not.
+                    indent_resolver,
+                },
+            ),
+        )
     }
 
     /// 5.5.E.7.3: apply a single [`Edit`] to the active buffer as
@@ -49437,6 +49448,61 @@ mod tests {
                 .with_text(text)
                 .build(),
         )
+    }
+
+    /// OT.4: `dispatch_blocking` hands the buffer's tree-sitter snapshot to the
+    /// motion / operator / text-object path, not only to the Action gate.
+    ///
+    /// TS.1 wired the snapshot into the Action gate alone, on the reasoning that
+    /// grammar actions were its only consumer. OT.1 made plugin motions and text
+    /// objects consumers too — and they come through `dispatch_blocking`, whose
+    /// `DispatchEnv` had no field to carry it. The result was a seam that looked
+    /// wired end to end (WIT, trampoline, guest, unit tests) and handed `none` to
+    /// every plugin motion and object on every real keystroke.
+    ///
+    /// Asserts the snapshot is a PARSED one, so the test fails the same way a
+    /// user would see it rather than merely proving a field is populated.
+    #[test]
+    fn a_text_object_receives_the_buffers_parsed_snapshot() {
+        use std::sync::{Arc, Mutex};
+
+        let mut editor = rust_editor("fn a() {}\nfn b() {}\n");
+        // Outer = "the object ran"; inner = "it got a snapshot with a tree".
+        let observed: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+        let probe = observed.clone();
+
+        let mut reg = (**editor.registry.load()).clone();
+        let tobj = reg.register_text_object(
+            "test-host-syntax-probe",
+            "OT.4 test: records the syntax handle the host dispatch supplied",
+            lattice_grammar::TextObjectSpec {
+                apply: Arc::new(move |ctx| {
+                    let parsed = ctx
+                        .syntax
+                        .and_then(|any| {
+                            any.clone()
+                                .downcast::<lattice_syntax::SyntaxSnapshot>()
+                                .ok()
+                        })
+                        .is_some_and(|snap| snap.tree().is_some());
+                    *probe.lock().unwrap() = Some(parsed);
+                    Ok(lattice_protocol::position::Range::empty(ctx.at))
+                }),
+                args_schema: Vec::new(),
+            },
+        );
+        editor.registry.store(Arc::new(reg));
+
+        let mut out = DispatchOutcome::default();
+        editor.dispatch_invocation(lattice_grammar::CommandInvocation::of(tobj.0), &mut out);
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(true),
+            "a text object must receive the active buffer's parsed snapshot; \
+             `Some(false)` means the handle arrived unparsed, `None` means it \
+             never arrived at all"
+        );
     }
 
     fn line_at(editor: &Editor, line: u32) -> String {

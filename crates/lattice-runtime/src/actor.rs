@@ -255,14 +255,15 @@ impl DocumentActor {
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
-                    // TS.1: the actor path carries no raw tree snapshot — its
-                    // `DispatchEnv` only holds the resolver-erased
-                    // `Arc<dyn ScopeResolver>` (motions/text-objects need nothing
-                    // more), from which the concrete `SyntaxSnapshot` can't be
-                    // recovered for a `tree-snapshot` resource. Grammar *actions*
-                    // (the only tree-snapshot consumer) dispatch through the
-                    // host's Action gate, which carries the concrete snapshot.
-                    syntax: None,
+                    // OT.4: the actor path DOES carry the raw snapshot now.
+                    // TS.1 left it `None` on the reasoning that grammar actions
+                    // were the only tree-snapshot consumer and they dispatch
+                    // through the host's Action gate — true when it was written,
+                    // and stale from OT.1, which gave motions and text objects
+                    // the same handle. Those come through here, so a hard `None`
+                    // meant org's `ar` / `]]` / `g{` saw no tree on any real
+                    // keystroke while the seam looked wired end to end.
+                    syntax: env.syntax.as_ref(),
                     indent: env.indent,
                     indent_resolver,
                 };
@@ -594,6 +595,94 @@ mod tests {
             *observed.lock().unwrap(),
             Some(None),
             "without a resolver the text object's scope_resolver must be None"
+        );
+    }
+
+    /// OT.4: the raw syntax snapshot reaches a text object through this path.
+    ///
+    /// The peer of the test above, and it exists because the two fields are NOT
+    /// interchangeable. `scope_resolver` is erased to one question ("what scope
+    /// encloses this point") for the native structural objects; a PLUGIN object
+    /// needs the concrete snapshot to mint a `tree-snapshot` resource, and it
+    /// cannot be recovered from the resolver.
+    ///
+    /// Until OT.4 this arm passed a hard `None`, so org's `ar` / `]]` / `g{`
+    /// saw no tree on any real keystroke. Every existing test missed it by
+    /// constructing a `GrammarEnv` by hand with the snapshot already in it —
+    /// which is the shape that passes against the broken version.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_syntax_snapshot_reaches_a_text_object() {
+        use lattice_grammar::{CommandInvocation, TextObjectSpec};
+        use lattice_protocol::CancellationToken;
+        use std::sync::Mutex;
+
+        // Any `Send + Sync` payload will do: the actor's job is to pass the
+        // handle through untouched, and the trampoline downcasts it. Using a
+        // stand-in rather than a real `SyntaxSnapshot` keeps `lattice-runtime`
+        // syntax-free, which is the reason the field is type-erased at all.
+        #[derive(Debug, PartialEq)]
+        struct Marker(u32);
+
+        // Outer Option = "apply ran at all"; inner = what it downcast to.
+        let observed: Arc<Mutex<Option<Option<u32>>>> = Arc::new(Mutex::new(None));
+        let probe = observed.clone();
+
+        let mut registry = CommandRegistry::new();
+        let tobj = registry.register_text_object(
+            "test-syntax-probe",
+            "OT.4 test: records the syntax handle it is handed",
+            TextObjectSpec {
+                apply: Arc::new(move |ctx| {
+                    let seen = ctx
+                        .syntax
+                        .and_then(|any| any.clone().downcast::<Marker>().ok())
+                        .map(|m| m.0);
+                    *probe.lock().unwrap() = Some(seen);
+                    Ok(lattice_protocol::position::Range::empty(ctx.at))
+                }),
+                args_schema: Vec::new(),
+            },
+        );
+
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("fn a() {}\n"),
+            Arc::new(arc_swap::ArcSwap::from_pointee(registry)),
+        );
+
+        handle
+            .dispatch_with_env(
+                CommandInvocation::of(tobj.0),
+                Position::ZERO,
+                CancellationToken::never(),
+                crate::document::DispatchEnv {
+                    syntax: Some(Arc::new(Marker(7))),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(Some(7)),
+            "the snapshot handed to `dispatch_with_env` must reach the text \
+             object's context"
+        );
+
+        // Negative, so a hard-coded `Some` cannot pass either.
+        *observed.lock().unwrap() = None;
+        handle
+            .dispatch_with_cancel(
+                CommandInvocation::of(tobj.0),
+                Position::ZERO,
+                CancellationToken::never(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(None),
+            "with no snapshot supplied the text object must see None"
         );
     }
 }

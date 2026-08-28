@@ -6588,16 +6588,31 @@ three denial tests.
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
 Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md).
 
-**Next for org (📝 planned, 2026-08-28):** the plugin registers the org grammar
-and then parses org with hand-rolled string scanning everywhere — `TreeSnapshot`
-reaches `apply-action` and is dropped unused. That divergence is already a live
-bug (`agenda.rs:111` assumes the planning line sits immediately below its
-headline, so a `:PROPERTIES:` drawer or an external edit silently drops the row).
-So org migrates to tree queries **first**, and clocking — deferred by
+**Org on tree-sitter, then org clocking (🚧 in progress, 2026-08-28):** the
+plugin registered the org grammar and then parsed org with hand-rolled string
+scanning everywhere — `TreeSnapshot` reached `apply-action` and was dropped
+unused. So org migrates to the tree **first** (OT.x), and clocking — deferred by
 `org-mode.md` §9 and the reason `org-capture.md` §3 cut `:clock-in` /
-`:clock-resume` — lands on the migrated base. Seven host slices between them,
-including **ML.6** (the plugin modeline API, which keeps
-[`slice-plans/modeline.md`](slice-plans/modeline.md) active). Slice plan:
+`:clock-resume` — lands on the migrated base (OC.x), including **ML.6** (the
+plugin modeline API, which keeps
+[`slice-plans/modeline.md`](slice-plans/modeline.md) active).
+
+OT.1–OT.4 ✅. An earlier revision of this paragraph named a specific live bug
+(`agenda.rs:111`, the planning line's position) and was **wrong** — org's
+grammar puts `plan` before `property_drawer`, so the old line assumption matches
+org's real rule; OT.3 retracted it after failing to reproduce it three times.
+The genuine divergence is context a line cannot carry: a `* TODO` line inside a
+`#+BEGIN_SRC` block is example text to the grammar and a headline to `^\*+ `, so
+the text path invents agenda rows and resolves `dar` over spans that are not
+subtrees.
+
+OT.4 also closed two links that made the whole seam inert: `DispatchEnv` carried
+no tree snapshot, so OT.1's motions and text objects received `none` on every
+real keystroke, and org's manifest never declared the `tree-sitter` capability,
+so the trampoline would have withheld the handle anyway. Both were invisible to
+every test that built its own `GrammarEnv` — see
+[`../architecture/plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md)
+§5.1. Slice plan:
 [`slice-plans/org-treesitter-and-clocking.md`](slice-plans/org-treesitter-and-clocking.md).
 
 ---

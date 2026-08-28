@@ -44,8 +44,13 @@ impl Guest for Component {
         Some("agenda-guest-mode".to_string())
     }
 
-    fn begin() {
+    fn begin() -> u64 {
         FILES_SEEN.set(0);
+        // OT.3b: this fixture's rows do not depend on the day or on any option,
+        // so a constant is the honest generation — its results stay valid until
+        // the files themselves change. A guest WITH scan-wide state (org's today
+        // anchor, its keyword set) derives the key from that instead.
+        1
     }
 
     fn scan(

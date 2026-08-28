@@ -142,12 +142,30 @@ world agenda-source-plugin {
     /// would take the multibuffer's own motions away.
     export view-mode: func() -> option<string>;
 
-    /// Drop per-scan state. Called before the first file of a scan.
+    /// Drop per-scan state, and declare what would invalidate this scan's
+    /// results. Called before the first file of a scan.
     ///
     /// Every scan is a fresh one — `gr` re-runs from `begin`, so a guest
     /// accumulating across a scan (a "seen headlines" set, a today anchor
     /// captured once) clears here rather than leaking into the next.
-    export begin: func();
+    ///
+    /// ## The return value is a GENERATION KEY (OT.3b)
+    ///
+    /// An opaque `u64` the guest computes from everything scan-wide that
+    /// changes what its rows would say — for org, the day the scan is anchored
+    /// to and the configured TODO keywords. The host caches results under it
+    /// and discards the whole cache when it changes.
+    ///
+    /// **Opaque on purpose.** The host must be able to persist a scan's rows
+    /// across restarts without re-running the guest, and it cannot key that on
+    /// state it can only guess at: `today` and the keyword set live inside the
+    /// guest. Handing back an integer lets the guest declare its own
+    /// invalidation without the host learning what a date group or a TODO
+    /// keyword is — the property this whole seam is built to protect.
+    ///
+    /// A guest with nothing to declare returns a constant, and its results are
+    /// then cached until the files themselves change.
+    export begin: func() -> u64;
 
     /// Scan one file; return its agenda rows.
     ///

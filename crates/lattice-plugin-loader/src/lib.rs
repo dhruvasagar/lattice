@@ -2748,7 +2748,14 @@ impl PluginLoader {
                 None
             }
         };
+        // OT.3b: persist this source's rows beside the plugin's own data, so a
+        // restart does not reparse the whole project. A plugin whose id is not
+        // a safe directory name gets no cache and simply scans as before.
         let source = lattice_plugin_host::WasmAgendaSource::new(client, extensions, view_mode);
+        let source = match self.host.plugin_data_dir(&manifest.id) {
+            Some(dir) => source.with_cache(dir.as_path()),
+            None => source,
+        };
         let id = source.plugin_id();
 
         // Copy-on-write RCU into the wait-free registry, like every other

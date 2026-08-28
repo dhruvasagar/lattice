@@ -77,9 +77,9 @@ enum AgendaCall {
     ViewMode {
         reply: oneshot::Sender<CallResult<Option<String>>>,
     },
-    /// `begin()` — drop per-scan state.
+    /// `begin()` — drop per-scan state, and return the generation key (OT.3b).
     Begin {
-        reply: oneshot::Sender<CallResult<()>>,
+        reply: oneshot::Sender<CallResult<u64>>,
     },
     /// `scan(path, text)` — one file's agenda rows.
     Scan {
@@ -124,8 +124,11 @@ impl AgendaClient {
             .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?
     }
 
-    /// Call the guest's `begin()` — the start of a scan.
-    pub async fn begin(&self) -> CallResult<()> {
+    /// Call the guest's `begin()` — the start of a scan. Returns the guest's
+    /// generation key (OT.3b): an opaque `u64` that changes when anything
+    /// scan-wide would change its rows, so the host can invalidate cached
+    /// results without knowing what those things are.
+    pub async fn begin(&self) -> CallResult<u64> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .unbounded_send(AgendaCall::Begin { reply })
@@ -231,7 +234,7 @@ impl AgendaActor {
         )
     }
 
-    async fn call_begin(&mut self) -> CallResult<()> {
+    async fn call_begin(&mut self) -> CallResult<u64> {
         if self.quarantine.is_tripped() {
             return Err(PluginHostError::Quarantined { func: "begin" });
         }

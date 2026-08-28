@@ -6,12 +6,14 @@
 //! about WASM; this is the only place the two meet.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use lattice_mode::agenda_source::{
     AgendaBeginFuture, AgendaEntry, AgendaFuture, AsyncAgendaSource,
 };
 
 use crate::PluginId;
+use crate::agenda_cache::AgendaCache;
 use crate::agenda_task::{AgendaClient, Entry};
 
 /// An async agenda-row producer over a plugin's [`AgendaClient`].
@@ -26,6 +28,18 @@ pub struct WasmAgendaSource {
     /// Resolved once at load, like `extensions` and for the same reason: the
     /// provider reads it on every open, and the answer cannot change.
     view_mode: Option<String>,
+    /// OT.3b: scan results, persisted across restarts.
+    ///
+    /// It lives HERE, above `client`, because that is the layer where a hit can
+    /// skip the guest call as well as the parse — a cache below the boundary
+    /// could only ever have saved the parse. `Mutex` because `AsyncAgendaSource`
+    /// hands out `&self` and the source is cloned into the scan task; `Arc` so
+    /// every clone shares one cache rather than one each, which would make the
+    /// hit rate depend on how many times the source was cloned.
+    ///
+    /// `None` when the host could not resolve a data directory. A cache that
+    /// cannot be stored is simply not used.
+    cache: Option<Arc<Mutex<AgendaCache>>>,
 }
 
 impl AsyncAgendaSource for WasmAgendaSource {
@@ -43,23 +57,52 @@ impl AsyncAgendaSource for WasmAgendaSource {
 
     fn begin(&self) -> AgendaBeginFuture<'_> {
         Box::pin(async move {
-            self.client
+            // OT.3b: `begin` now answers with the guest's generation key, and
+            // handing it to the cache is what discards rows computed under an
+            // anchor that no longer holds (org: yesterday's day, an old keyword
+            // set). The host never learns what the key means.
+            let generation = self
+                .client
                 .begin()
                 .await
-                .map_err(|e| format!("agenda plugin: {e}"))
+                .map_err(|e| format!("agenda plugin: {e}"))?;
+            if let Some(cache) = &self.cache
+                && let Ok(mut cache) = cache.lock()
+            {
+                cache.begin(generation);
+            }
+            Ok(())
         })
     }
 
     fn scan(&self, path: PathBuf, text: String) -> AgendaFuture<'_> {
         Box::pin(async move {
             let display = path.display().to_string();
-            let raw: Vec<Entry> = match self.client.scan(display.clone(), text).await {
+            // OT.3b: an unchanged file skips the parse AND the guest call. The
+            // read already happened upstream — you cannot know a file is
+            // unchanged without looking at it — and a warm read is ~10-50 us
+            // against the ~2 ms parse this avoids.
+            if let Some(cache) = &self.cache
+                && let Ok(mut cache) = cache.lock()
+                && let Some(rows) = cache.get(&display, &text)
+            {
+                return Ok(rows
+                    .into_iter()
+                    .filter_map(|e| validate(&display, e))
+                    .collect());
+            }
+            let raw: Vec<Entry> = match self.client.scan(display.clone(), text.clone()).await {
                 // The guest's own `err` and a host-surface failure land in the
                 // same place because the caller does the same thing with both:
                 // skip this file, keep scanning.
                 Ok(inner) => inner?,
                 Err(host_err) => return Err(format!("agenda plugin: {host_err}")),
             };
+            if let Some(cache) = &self.cache
+                && let Ok(mut cache) = cache.lock()
+            {
+                cache.put(&display, &text, &raw);
+            }
             Ok(raw
                 .into_iter()
                 .filter_map(|e| validate(&display, e))
@@ -74,7 +117,21 @@ impl WasmAgendaSource {
             client,
             extensions,
             view_mode,
+            cache: None,
         }
+    }
+
+    /// OT.3b: give this source a persistent result cache rooted at `dir`
+    /// (the plugin's own data directory, so two plugins cannot collide and
+    /// uninstalling one removes its cache).
+    ///
+    /// Opt-in rather than built in `new`: a caller with no data directory —
+    /// tests, benches — gets an uncached source that behaves identically, just
+    /// slower, which is also what makes the cache easy to A/B.
+    pub fn with_cache(mut self, dir: &std::path::Path) -> Self {
+        let id = self.plugin_id().0 as u64;
+        self.cache = Some(Arc::new(Mutex::new(AgendaCache::open(dir, id))));
+        self
     }
 
     pub fn plugin_id(&self) -> PluginId {

@@ -50,6 +50,7 @@ dirs = { workspace = true }
 # parses the file. The Phase-8 plugin manager will discover + parse it; the
 # host consumes the already-parsed `PluginManifest`.
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 # PH7.2 provenance: the host stamps `SourceLayer::Plugin(id)` for every plugin
 # contribution from its own ground truth (a plugin cannot forge provenance --

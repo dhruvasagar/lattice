@@ -172,7 +172,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | ✅ |
 | OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | ✅ |
 | OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | ✅ |
-| OT.3b | Snapshot cache keyed on path + mtime — the refresh cost | 📝 |
+| OT.3b | **Persistent** result cache — survives restarts | ✅ |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
 | OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | 📝 |
@@ -389,36 +389,66 @@ path, two rows, same corpus). Plus: the tree arm proven host-side with `.rs`,
 the text fallback proven with an unknown extension, and a malformed file still
 skipping with a `debug` log.
 
-### OT.3b — the refresh cost: cache snapshots on path + mtime 📝
+### OT.3b — scan results, persisted across restarts ✅ (2026-08-28)
 
 **Deps:** OT.3.
 
-OT.3's bench priced the parse at ~1–2 ms per file. An agenda is refreshed far
-more often than its files change — `gr`, reopening the view, an autocmd — and
-every refresh currently reparses every file from scratch.
+**Not the snapshot cache this plan first specified.** Two things redirected it.
 
-Cache the `Arc<SyntaxSnapshot>` in the agenda scan, keyed on path + mtime + len,
-so an unchanged file costs a stat rather than a parse. Host-side entirely; the
-guest never learns a cache exists, which is what keeps this a performance change
-rather than a seam change.
+**Tree-sitter trees cannot be serialised** — no `to_bytes` / `from_bytes` on
+`Tree` anywhere in the crate. So a cache that survives a restart physically
+cannot hold snapshots; it must hold what the scan *derived*. That is also why
+org-roam uses a database of extracted nodes rather than of parse trees.
 
-Two things to get right, both of which are why this is its own slice rather than
-a footnote on OT.3: **mtime lies** on some filesystems and at 1-second
-granularity, so the key needs length beside it and the cache must be safe to be
-wrong (a stale entry shows a stale agenda row — bounded by `gr`, but real); and
-the cache needs a **bound**, or a long session over a large tree grows it without
-limit.
+And that is the better layer anyway: caching rows means a hit skips **the parse
+and the guest call**, where a snapshot cache would only ever have skipped the
+parse. The in-memory snapshot cache written first was deleted as the weaker
+version of the same idea, not kept alongside.
 
-**Not the org-roam answer.** org-roam's scale (thousands of files) wants an
-index, and org-roam itself uses a database for precisely this. That is a
-different mechanism for a different problem and belongs to whatever slice plan
-brings org-roam in — this slice is about not reparsing an unchanged file twice
-in a row.
+**What a hit does not skip: the read.** You cannot know a file is unchanged
+without looking at it, and the host reads it upstream regardless. A warm read is
+~10–50 µs against the ~2 ms parse, so this is the cheap end — not worth an
+`mtime` pre-filter's correctness risk.
 
-**Test:** a second scan over untouched files parses nothing (assert via a parse
-counter, not by timing — a timing assertion is a flaky test); touching a file
-reparses exactly that one; a file whose mtime is unchanged but whose length
-differs reparses.
+**Key: `(generation, path, content-hash)`.** Content hash rather than mtime
+because the text is already in hand: hashing costs ~2–5 µs against the ~2 ms it
+protects, and it is exactly right — no one-second granularity, no filesystem
+that lies, no length collision to paper over.
+
+**`generation` needed one small seam change**, and the plan should record why it
+was unavoidable rather than a preference. Cached rows embed presentation
+computed against the scan's `today` anchor (`"tomorrow"`, `"overdue by 2
+day(s)"`), so serving them under a different anchor renders yesterday's
+"tomorrow" as tomorrow — silently wrong at midnight, the exact bug the anchor
+exists to prevent. But `today` and the keyword set are *guest-side* state the
+host cannot see. So `begin` now returns an opaque `u64` the guest derives from
+its own scan-wide state. The host compares two integers and still learns nothing
+about dates or keywords (**paramount #2**).
+
+A rejected alternative split `entry` into content-derived and today-derived
+halves so the cache could survive midnight too. That buys one avoided daily
+rebuild for an ABI change, a per-scan rendering hop, and org's grouping
+semantics moving partly host-side — the property this seam exists to protect.
+**Heuristic #1**: the cheaper design is also the one that keeps the boundary
+honest.
+
+**Failure behaviour, all degrading to "no cache" and never to a wrong answer:**
+a missing file, schema-version mismatch, corrupt bytes, an unreadable directory,
+a failed write. Written to a temp file and renamed, so a kill mid-write leaves
+the previous cache intact rather than a truncated one. Flushed every 64 entries
+and on `Drop`, bounding what an unclean exit loses. Capped at 4096 files, then
+cleared wholesale — eviction *order* does not matter, because a scan repopulates
+exactly what it touches.
+
+Stored under the plugin's own data dir (`plugin_data_dir`), so two plugins
+cannot collide and uninstalling one removes what it cached.
+
+**Tests:** seven, asserting on hit/miss counters rather than on timing — a
+timing assertion for "did it reparse?" is a flaky test. Hit on unchanged text,
+miss on changed text, generation change discarding everything (the midnight
+case), survival across a simulated restart, `Drop` persisting without an
+explicit flush, corrupt bytes recovering, a schema bump refusing to read the old
+shape, and two sources not reading each other's rows.
 
 ### OT.4 — `headline.rs` on the tree 📝
 

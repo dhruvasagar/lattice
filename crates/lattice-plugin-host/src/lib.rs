@@ -96,6 +96,7 @@ pub mod grammar_trampoline;
 pub mod help_host;
 pub mod media_task;
 // LG.3c: the `language` guest→host registration seam.
+pub mod agenda_cache;
 pub mod host_services;
 pub mod keymap_host;
 pub mod language_host;
@@ -2559,6 +2560,19 @@ impl PluginHost {
             cancel: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
         })
+    }
+
+    /// OT.3b: where a plugin's private data lives — `<base>/<id>/data/`, the
+    /// same directory `build_plugin_wasi` grants it.
+    ///
+    /// Exposed so a seam adapter can persist across restarts beside the
+    /// plugin's own data (the agenda result cache), and so uninstalling a
+    /// plugin removes what it cached. `None` for an id that is not a safe
+    /// directory name — the same refusal `build_plugin_wasi` makes, rather
+    /// than a second opinion about it.
+    pub fn plugin_data_dir(&self, plugin_id: &str) -> Option<PathBuf> {
+        crate::manifest::is_safe_plugin_id(plugin_id)
+            .then(|| self.data_dir_base.join(plugin_id).join("data"))
     }
 
     /// Install the boundary tracer (PO.5) — the loader calls this once, after it

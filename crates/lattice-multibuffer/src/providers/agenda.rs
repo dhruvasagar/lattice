@@ -71,23 +71,49 @@ const PROGRESS_INTERVAL: usize = 50;
 // ─────────────────────────────────────────────────────────────────
 
 /// What a scan walks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AgendaOptions {
-    /// Project root the walk starts from.
-    pub root: PathBuf,
+    /// AF.2: the paths to scan — each a FILE or a DIRECTORY. A directory is
+    /// walked; a file is taken as given, without asking whether any source
+    /// claimed its extension, because naming a file IS the claim.
+    ///
+    /// **Empty means "not resolved yet", not "scan nothing".** The scan then
+    /// asks every live source for its own roots and falls back to the project
+    /// root if none answers. It cannot be resolved here, because a source's
+    /// answer comes from the guest and the opener runs on the dispatch path.
+    ///
+    /// That is why `Default` is now empty where it used to be the project
+    /// root: the fallback moved to the one place that can see every source's
+    /// answer, rather than being baked in before any of them was asked.
+    pub roots: Vec<PathBuf>,
     /// Cap on files *offered to a source* (not files walked). `None` =
     /// unlimited. A bound exists because the walk is unattended: a user who
-    /// runs `:agenda` from `$HOME` should get a slow answer, not a hung one.
+    /// runs the agenda from `$HOME` should get a slow answer, not a hung one.
+    ///
+    /// Applies to the UNION across roots, not per root — a cap that reset for
+    /// each configured path would not be a bound.
     pub max_files: Option<usize>,
 }
 
-impl Default for AgendaOptions {
-    fn default() -> Self {
-        Self {
-            root: lattice_core::project::root_from_cwd().unwrap_or_else(|| PathBuf::from(".")),
-            max_files: None,
-        }
+impl AgendaOptions {
+    /// The directory a view's `:files` / `:search` should answer for.
+    ///
+    /// The first configured root when there is one, else the project root. A
+    /// source-supplied root cannot land here: the scope is set when the view
+    /// opens and those are resolved in the scan. Recorded rather than papered
+    /// over — the consequence is that `:files` from an agenda opened with no
+    /// argument answers for the project, which is also what it did before AF.2.
+    fn scope_dir(&self) -> PathBuf {
+        self.roots
+            .first()
+            .cloned()
+            .unwrap_or_else(project_root_from_cwd)
     }
+}
+
+/// The root the agenda falls back to when nothing else names one.
+fn project_root_from_cwd() -> PathBuf {
+    lattice_core::project::root_from_cwd().unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Per-view scan state. OM.A3's `gr` reads the root back out of this so a
@@ -211,7 +237,10 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
     if let Args::String(s) = args {
         let trimmed = s.trim();
         if !trimmed.is_empty() {
-            options.root = PathBuf::from(shellexpand_tilde(trimmed));
+            // An explicit argument REPLACES the list rather than joining it:
+            // `:org-agenda ~/notes` means "this, instead of what I configured",
+            // which is what makes the argument an escape hatch and not a filter.
+            options.roots = vec![PathBuf::from(shellexpand_tilde(trimmed))];
         }
     }
 
@@ -260,7 +289,7 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
     // The root this view scanned, so `:files` / `:search` from inside the
     // agenda answer for the project the rows came from rather than for the
     // process working directory. The view has no path of its own.
-    activator.set_buffer_scope_dir(view, options.root.clone());
+    activator.set_buffer_scope_dir(view, options.scope_dir());
 
     // OM.A3: the view's own minor. `gr` arrives through the implies cascade
     // (`refresh_action` returns `Some`), so this one call is the whole of the
@@ -385,15 +414,52 @@ pub fn spawn_agenda_scan(
             return;
         }
 
-        let root = options.root.clone();
+        // AF.2: resolve the roots, most specific first.
+        //
+        //   1. what the caller named (an explicit argument, or the open view's
+        //      own stored root on `gr`);
+        //   2. what the live sources ask for — their users' configuration;
+        //   3. the project root, which is what an editor with no agenda
+        //      configuration has always scanned.
+        //
+        // Asked here rather than at open because a source's answer comes from
+        // the guest, and the opener runs on the dispatch path where a guest
+        // call does not belong.
+        let mut roots = options.roots.clone();
+        if roots.is_empty() {
+            for source in &live {
+                match source.roots().await {
+                    Ok(named) => roots.extend(
+                        named
+                            .iter()
+                            .map(|r| PathBuf::from(shellexpand_tilde(r.trim())))
+                            .filter(|p| !p.as_os_str().is_empty()),
+                    ),
+                    // A source that cannot say where to look must not be able
+                    // to make the agenda scan nothing.
+                    Err(e) => tracing::debug!(
+                        source = source.source_id(),
+                        error = %e,
+                        "agenda: a source could not name its roots; ignoring it"
+                    ),
+                }
+            }
+            roots.sort();
+            roots.dedup();
+        }
+        if roots.is_empty() {
+            roots.push(project_root_from_cwd());
+        }
+
         let max_files = options.max_files.unwrap_or(usize::MAX);
         let extensions: Vec<String> = live
             .iter()
             .flat_map(|s| s.extensions().iter().cloned())
             .collect();
 
+        let walk_roots = roots.clone();
         let candidates = match tokio::task::spawn_blocking(move || {
-            walk_candidates(&root, &extensions, max_files)
+            collect_candidates(&walk_roots, &extensions, max_files)
         })
         .await
         {
@@ -547,6 +613,60 @@ impl ScanOutcome {
 ///
 /// `ignore::Walk` respects `.gitignore` / `.ignore`, which is what stops an
 /// agenda over a checkout from scanning `target/`.
+/// AF.2: every candidate across `roots`, capped at `max_files` in TOTAL.
+///
+/// A root that is a FILE is taken as given without the extension test — naming
+/// a file is the claim, and a user who writes `~/notes/birthdays.txt` in their
+/// agenda files meant it. A root that is a directory is walked as before.
+///
+/// A root that does not exist is skipped at `info!`: user-actionable (it is
+/// their configuration), and one bad entry must not fail the agenda, which is
+/// the same rule the per-file reads already follow.
+///
+/// De-duplicated, because a configured file inside a configured directory is an
+/// ordinary way to write "everything here, and that one too" and must not scan
+/// twice.
+fn collect_candidates(roots: &[PathBuf], extensions: &[String], max_files: usize) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for root in roots {
+        if out.len() >= max_files {
+            break;
+        }
+        let meta = match std::fs::metadata(root) {
+            Ok(meta) => meta,
+            Err(error) => {
+                tracing::info!(
+                    path = %root.display(),
+                    %error,
+                    "agenda: a configured path could not be read; skipping it"
+                );
+                continue;
+            }
+        };
+        let found = if meta.is_file() {
+            vec![root.clone()]
+        } else {
+            walk_candidates(root, extensions, max_files - out.len())
+        };
+        for path in found {
+            let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen.insert(key) {
+                out.push(path);
+            }
+            if out.len() >= max_files {
+                break;
+            }
+        }
+    }
+    // No silent truncation: a short agenda that looks complete is worse than a
+    // slow one, so the cap says what it dropped.
+    if out.len() >= max_files {
+        tracing::info!(max_files, "agenda: hit the file cap; the agenda is partial");
+    }
+    out
+}
+
 fn walk_candidates(root: &Path, extensions: &[String], max_files: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for entry in ignore::Walk::new(root) {
@@ -810,10 +930,19 @@ impl lattice_mode::Mode for AgendaViewMode {
                     .get::<AgendaServiceHandle>()
                     .and_then(|svc| svc.state(view))
                     .and_then(|state| {
-                        state
-                            .read()
-                            .ok()
-                            .map(|s| Args::String(s.options.root.display().to_string()))
+                        state.read().ok().map(|s| match s.options.roots.first() {
+                            // AF.2: only a root the USER named is replayed.
+                            // Roots that came from a source are deliberately
+                            // NOT — re-asking picks up a `:set` of the
+                            // source's own option, so `gr` after editing
+                            // your agenda files shows the new set. What the
+                            // replay protects is the explicit argument, and
+                            // that is the case that arrives as one root.
+                            Some(root) if s.options.roots.len() == 1 => {
+                                Args::String(root.display().to_string())
+                            }
+                            _ => Args::None,
+                        })
                     })
                     .unwrap_or(Args::None);
                 Some(lattice_grammar::Effect::AppAction(
@@ -1162,7 +1291,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             vec![source],
@@ -1218,7 +1347,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
@@ -1246,7 +1375,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
@@ -1279,7 +1408,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             vec![source],
@@ -1342,7 +1471,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             // The healthy source still contributes: one bad producer must not
@@ -1396,7 +1525,7 @@ mod tests {
         spawn_agenda_scan(
             view,
             AgendaOptions {
-                root: dir.clone(),
+                roots: vec![dir.clone()],
                 max_files: None,
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
@@ -1469,14 +1598,143 @@ mod tests {
             view,
             AgendaState {
                 options: AgendaOptions {
-                    root: PathBuf::from("/p"),
+                    roots: vec![PathBuf::from("/p")],
                     max_files: Some(10),
                 },
             },
         );
         let got = svc.state(view).unwrap();
-        assert_eq!(got.read().unwrap().options.root, PathBuf::from("/p"));
+        assert_eq!(got.read().unwrap().options.roots, vec![PathBuf::from("/p")]);
         svc.clear(view);
         assert!(svc.state(view).is_none());
+    }
+}
+
+#[cfg(test)]
+mod af2_roots {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    /// The sibling module's helper, restated rather than imported: it is
+    /// `#[cfg(test)]` in a private module, and a counter is what keeps parallel
+    /// `cargo test` runs from colliding ([[tempdir-helpers-need-a-counter]]).
+    fn tempdir() -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lattice-af2-{nanos}-{n}"));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        dir
+    }
+
+    fn touch(dir: &Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&p, "* TODO x\n").unwrap();
+        p
+    }
+
+    fn names(paths: &[PathBuf]) -> Vec<String> {
+        let mut v: Vec<String> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The two shapes one list has to carry: a directory that gets walked, and
+    /// a file taken as given. Both are ordinary org usage — `org-agenda-files`
+    /// holding `org-directory` plus a single `anniversaries.org` is the case
+    /// this exists for.
+    #[test]
+    fn a_root_may_be_a_directory_or_a_file() {
+        let base = tempdir();
+        let notes = base.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        touch(&notes, "a.org");
+        touch(&notes, "b.org");
+        let loose = touch(&base, "anniversaries.org");
+        // A file the walk would NOT have offered: nothing claims `.txt`.
+        // Naming it is the claim, which is why the extension test is skipped
+        // for a root that is a file.
+        let odd = base.join("birthdays.txt");
+        std::fs::write(&odd, "* TODO y\n").unwrap();
+
+        let exts = vec!["org".to_string()];
+        let got = collect_candidates(&[notes.clone(), loose, odd], &exts, usize::MAX);
+        assert_eq!(
+            names(&got),
+            vec!["a.org", "anniversaries.org", "b.org", "birthdays.txt"]
+        );
+    }
+
+    /// A file inside a configured directory is an ordinary way to write
+    /// "everything here, and that one too" — and must not scan twice, or its
+    /// rows appear twice in the view.
+    #[test]
+    fn a_file_inside_a_configured_directory_is_not_scanned_twice() {
+        let base = tempdir();
+        let notes = base.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let a = touch(&notes, "a.org");
+
+        let exts = vec!["org".to_string()];
+        let got = collect_candidates(&[notes, a], &exts, usize::MAX);
+        assert_eq!(names(&got), vec!["a.org"], "deduplicated across roots");
+    }
+
+    /// One bad entry in a config list is the same failure class as one bad
+    /// file: skip it and scan the rest. Refusing the whole agenda because a
+    /// path was renamed would be the worse answer by far.
+    #[test]
+    fn a_configured_path_that_is_gone_does_not_fail_the_scan() {
+        let base = tempdir();
+        let notes = base.join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        touch(&notes, "a.org");
+
+        let exts = vec!["org".to_string()];
+        let got = collect_candidates(&[base.join("does-not-exist"), notes], &exts, usize::MAX);
+        assert_eq!(names(&got), vec!["a.org"]);
+    }
+
+    /// The cap bounds the UNION. A cap that reset per root would not be a
+    /// bound, which is the whole reason it exists — the walk is unattended.
+    #[test]
+    fn the_file_cap_applies_across_roots_not_per_root() {
+        let base = tempdir();
+        let one = base.join("one");
+        let two = base.join("two");
+        std::fs::create_dir_all(&one).unwrap();
+        std::fs::create_dir_all(&two).unwrap();
+        touch(&one, "a.org");
+        touch(&one, "b.org");
+        touch(&two, "c.org");
+        touch(&two, "d.org");
+
+        let exts = vec!["org".to_string()];
+        let got = collect_candidates(&[one, two], &exts, 3);
+        assert_eq!(got.len(), 3, "three across both roots, not three from each");
+    }
+
+    /// With nothing configured the options are EMPTY, not the project root —
+    /// the fallback moved into the scan, where every source has been asked.
+    /// A default that still baked in the project root would mean a source's
+    /// roots could never be reached.
+    #[test]
+    fn the_default_names_no_root_so_the_scan_can_ask() {
+        assert!(
+            AgendaOptions::default().roots.is_empty(),
+            "the fallback belongs to the scan, which is the only place that \
+             has heard from the sources"
+        );
+        // …and the view's scope still resolves to something usable.
+        assert!(!AgendaOptions::default().scope_dir().as_os_str().is_empty());
     }
 }

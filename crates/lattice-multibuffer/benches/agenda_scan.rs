@@ -121,7 +121,7 @@ fn bench_agenda_scan(c: &mut Criterion) {
                 spawn_agenda_scan(
                     view_id,
                     AgendaOptions {
-                        root: dir.clone(),
+                        roots: vec![dir.clone()],
                         max_files: None,
                     },
                     vec![Arc::new(BenchSource {

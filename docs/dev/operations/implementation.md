@@ -6588,6 +6588,18 @@ three denial tests.
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
 Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md).
 
+**Next for org (📝 planned, 2026-08-28):** the plugin registers the org grammar
+and then parses org with hand-rolled string scanning everywhere — `TreeSnapshot`
+reaches `apply-action` and is dropped unused. That divergence is already a live
+bug (`agenda.rs:111` assumes the planning line sits immediately below its
+headline, so a `:PROPERTIES:` drawer or an external edit silently drops the row).
+So org migrates to tree queries **first**, and clocking — deferred by
+`org-mode.md` §9 and the reason `org-capture.md` §3 cut `:clock-in` /
+`:clock-resume` — lands on the migrated base. Seven host slices between them,
+including **ML.6** (the plugin modeline API, which keeps
+[`slice-plans/modeline.md`](slice-plans/modeline.md) active). Slice plan:
+[`slice-plans/org-treesitter-and-clocking.md`](slice-plans/org-treesitter-and-clocking.md).
+
 ---
 
 ## Plugin-contributed transient menus (2026-08-26)

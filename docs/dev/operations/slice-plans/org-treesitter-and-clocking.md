@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 ✅.
+**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 ✅.
 
 ---
 
@@ -174,7 +174,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | ✅ |
 | OT.3b | **Persistent** result cache — survives restarts | ✅ |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | ✅ |
-| OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
+| OT.5 | the plan's date from `(plan (entry))`; stepping stays text | ✅ |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | 📝 |
 | OT.7 | `table.rs` → `(table)` / `(row)` / `(cell)` | 📝 |
 | OT.8 | capture target + refile picker → `parse-file` | 📝 |
@@ -511,13 +511,55 @@ Every motion, text object and promote/demote action rides this, so its test
 surface is the widest in the phase: five new dispatch-through-the-editor tests
 in `org_structure.rs` plus the two host-side gate tests above.
 
-### OT.5 — `timestamp.rs` on the tree 📝
+### OT.5 — the plan's date from the tree; the stepping path retracted ✅ (2026-08-28)
 
-`stamp_at` and `first_stamp` become `(timestamp)` lookups. The **civil-date
-arithmetic stays**: `weekday` (Zeller) and `epoch_day` (Hinnant) are integer
-math, not parsing, and `timestamp.rs:76` records the deliberate reason — a
-`chrono` dependency tree in a wasm guest to replace twenty lines of arithmetic.
-Nothing about tree-sitter changes that.
+**This slice specced more than the grammar can support, and the retraction is
+the more useful half.** It said "`stamp_at` and `first_stamp` become
+`(timestamp)` lookups". Dumping the parse tree says otherwise:
+
+```
+* TODO Task <2026-09-05 Sat>
+  DEADLINE: <2026-08-25 Tue> SCHEDULED: <2026-08-20 Thu>
+```
+```
+(section
+  headline: (headline stars: (stars) item: (item (expr) (expr) (expr) (expr)))
+  plan: (plan (entry name: (entry_name) timestamp: (timestamp date: (date) day: (day)))
+              (entry name: (entry_name) timestamp: (timestamp date: (date) day: (day)))))
+```
+
+**`timestamp` is a node only inside `(plan (entry))`.** The headline's own stamp
+is four undifferentiated `expr` tokens, and one in body text is
+`(paragraph (expr) …)`. So the `<C-a>` / `<C-x>` stepping path — `stamp_at`,
+`part_at`, `step` — has no node to migrate to. It stays on the text scanner, and
+that is not a compromise: with no grammar rule to diverge from, the scanner is
+the only parser of the construct rather than a second one. Half-migrating would
+make it two.
+
+Two further facts the dump settled, both of which correct comments that were in
+the code:
+
+* **A plan is exactly one line.** `plan: seq(repeat1(entry), _eol)`, so several
+  entries on one line are several `entry` nodes, and a `SCHEDULED:` written on a
+  SECOND line parses as body text. `date_for`'s doc-comment claimed the tree path
+  had to scan multiple plan lines; it never did, because the node is one line.
+* **Entry order is not precedence.** The text path does
+  `line.trim_start().strip_prefix("DEADLINE:")`, which requires the keyword to
+  come first — so `SCHEDULED: <+5> DEADLINE: <+1>` files the entry five days
+  late. The tree sees two `entry` nodes and has no opinion about their order.
+
+So what landed is the half the grammar supports: `agenda::plan_date` reads
+`entry`'s `name` and `timestamp` fields, and the prefix match and bracket scan
+are gone from the tree path. `scan_file` keeps both, deliberately — it runs only
+when there is no grammar for the file, and fixing a second parser to agree with a
+tree it cannot see is what this phase exists to stop doing. The pair is pinned:
+`a_deadline_outranks_a_scheduled_written_before_it` (tree) and
+`the_text_path_reads_the_first_keyword_on_the_plan_line_not_the_strongest` (text).
+
+The **civil-date arithmetic stays** as specced: `weekday` (Zeller) and
+`epoch_day` (Hinnant) are integer math, not parsing, and `timestamp.rs:76`
+records the reason — a `chrono` dependency tree in a wasm guest to replace twenty
+lines of arithmetic. Nothing about tree-sitter changes that.
 
 ### OT.6 — `checkbox.rs` on the tree 📝
 

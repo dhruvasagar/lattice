@@ -837,11 +837,12 @@ struct PluginState {
     event_subscriptions: events_host::EventContributions,
     /// The publish-side handle for the `register-event` / `emit-event`
     /// host-services (PH7.8b.2) — the plugin's identity (for the `plugin:<id>`
-    /// provenance) plus the bus it emits onto. `Some` only for a plugin spawned
-    /// onto a bus ([`PluginHost::spawn_event_plugin`]); `None` otherwise, in
+    /// provenance) plus the bus it emits onto. `Some` on the two paths that are
+    /// handed a bus: [`PluginHost::spawn_event_plugin`] (PH7.8b.2) and
+    /// [`PluginHost::instantiate_grammar_plugin`] (OC.1 — a grammar action
+    /// bridging a chord to the plugin's own async side). `None` elsewhere, in
     /// which case an `emit-event` is a warn + drop (the honest "no bus wired
-    /// yet" degradation — the host isn't boot-wired into the `Editor`, so this
-    /// slice is validation-only).
+    /// here" degradation).
     event_emit: Option<EventEmitCtx>,
     /// The `ConfigRegistry` a config plugin registers options into / reads via the
     /// `config` seam (PH7.10). `Some` only for a plugin spawned onto a registry

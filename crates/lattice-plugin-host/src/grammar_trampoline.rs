@@ -688,6 +688,29 @@ impl PluginHost {
         // AP.3: wire the shared config registry so a grammar action's
         // `config::get-option` reads the live editor options.
         store.data_mut().config_registry = config_registry.cloned();
+        let id = self.alloc_id();
+        // OC.1: wire the emit context, for the same reason and at the same point
+        // in the sequence `spawn_event_plugin` does — BEFORE `register-grammar`
+        // runs, since a guest may `register-event` from there and will
+        // `emit-event` later from an `apply-*` callback.
+        //
+        // `host-services` (and therefore `emit-event`) has been linked into this
+        // sync store since OM.11, so the seam has *looked* available all along;
+        // what was missing is the context behind it, and a call took the `None`
+        // arm of `PluginState::emit_event` — a warn-and-drop. That is the
+        // `plugin-gates-hand-guests-throwaway-contexts` shape: wired end to end,
+        // answering nothing. It is a defect independent of clocking (any plugin
+        // bridging a chord to its own async side hits it); clocking is only what
+        // found it.
+        //
+        // Safe on the keystroke path: `EventBus::publish` snapshots subscribers
+        // under a short lock and dispatches into unbounded channels with the lock
+        // dropped — bounded, non-blocking work. The `Quarantine` below already
+        // publishes on this same bus from this same trampoline.
+        store.data_mut().event_emit = Some(crate::EventEmitCtx {
+            plugin_id: id,
+            bus: Arc::clone(bus),
+        });
         // SYNC instantiate against the sync grammar linker — no async import to
         // drive, so a plain `instantiate` is correct (the PH7.7 fork).
         let bindings = GrammarPlugin::instantiate(&mut store, component, &self.grammar_linker)
@@ -699,7 +722,6 @@ impl PluginHost {
             .call_register_grammar(&mut store)
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let recorded = store.data_mut().grammar_contributions.take();
-        let id = self.alloc_id();
 
         // PO.3: fetch this plugin's published hot-path gate (seeded to its current
         // effective level), or a permanently-off gate when no tracer is wired.

@@ -113,6 +113,16 @@ impl Guest for Component {
             &spec(),
             7,
         );
+        // OC.1: bridge a chord to the plugin's own async side. The action emits
+        // a plugin event and nothing else — a `warn`-and-drop (what the host did
+        // before OC.1) is indistinguishable from success on the guest side, so
+        // this is only meaningful when a NATIVE subscriber asserts the delivery.
+        grammar::register_action(
+            "multiseam-emit",
+            "emit a plugin event from the sync grammar seam (OC.1)",
+            &spec(),
+            8,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -266,6 +276,17 @@ impl GrammarCallbacks for Component {
                     level: EchoLevel::Info,
                     text,
                 })])
+            }
+            // OC.1: emit onto the host's event bus from inside a grammar
+            // callback. The payload is the cursor line so the subscriber can
+            // prove the bytes crossed verbatim rather than matching on a
+            // constant that a stub could also produce.
+            8 => {
+                host_services::emit_event(
+                    "multiseam/pinged",
+                    &[ctx.cursor.line as u8, ctx.cursor.byte as u8],
+                );
+                Ok(Vec::new())
             }
             // OT.2: parse an off-buffer file and report what came back, so the
             // test can tell "the tree crossed" from "the host said none".

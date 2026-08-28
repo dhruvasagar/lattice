@@ -722,7 +722,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 
 | Slice | Description | Status |
 |---|---|---|
-| OC.1 | `EventEmitCtx` on the grammar store — finish a half-wired import | 📝 |
+| OC.1 | `EventEmitCtx` on the grammar store — finish a half-wired import | ✅ |
 | OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | 📝 |
 | OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | 📝 |
 | OC.4 | `host-services.local-utc-offset-seconds` | 📝 |
@@ -731,7 +731,26 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.7 | `:clock-in` / `:clock-resume` capture keys | 📝 |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
-### OC.1 — a grammar action can reach the bus 📝
+### OC.1 — a grammar action can reach the bus ✅ (2026-08-28)
+
+**Landed as specced, and the two-line estimate was right** — but the *placement*
+matters more than the size, and the plan did not say where. The wiring goes
+**before** `call_register_grammar`, not after the registration drain where the
+id happened to be allocated: a guest may `register-event` from inside
+`register-grammar`, and `spawn_event_plugin` already orders it that way with a
+comment saying so. So `alloc_id()` moved up to sit beside the store setup and
+the context is stamped there, matching the events path line for line.
+
+**Verified by mutation**, because a passing test proves nothing here on its own:
+removing the two lines fails the new test with `Err(Empty)` — the emit went
+nowhere — and restoring them passes it. That is the check the slice is for.
+
+Two doc comments were stale and are corrected: `PluginState::event_emit` said
+`Some` "only for a plugin spawned onto a bus", which is now two paths, and its
+"the host isn't boot-wired into the `Editor`, so this slice is validation-only"
+clause has not been true for some time.
+
+**Original plan text follows.**
 
 `EventEmitCtx` is populated in exactly one place, `event_task.rs:249` — the
 events store. `host-services` including `emit-event` is nonetheless linked into

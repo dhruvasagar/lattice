@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-28). Specced, not started.
+**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 ✅.
 
 ---
 
@@ -37,18 +37,30 @@ the host threads in and the guest drops on the floor.
 `headline.rs` counts `*` characters, `timestamp.rs` byte-scans for `[` / `<`,
 `checkbox.rs` and `table.rs` scan lines, `agenda.rs` prefix-matches
 `SCHEDULED:`. That is roughly 2,500 lines of parser that must agree with a
-grammar it never consults, and it does not:
+grammar it never consults.
 
-> `agenda.rs:111` — "The planning line is the one immediately below the
-> headline, and ONLY that one."
+**An earlier revision of this plan claimed a specific live bug here and was
+wrong.** It read `agenda.rs:111` — "The planning line is the one immediately
+below the headline, and ONLY that one" — as a divergence a `:PROPERTIES:`
+drawer would trigger. OT.3 tried to reproduce it three times and could not: org's
+grammar puts `plan` *before* `property_drawer` in the section rule, so the
+planning line genuinely does come first, and org's planning info is a single
+line so `DEADLINE:` / `SCHEDULED:` on two lines is not a case either. **The old
+line assumption matches org's real grammar.** The claim is retracted here rather
+than left to be re-derived.
 
-Anything between a headline and its `SCHEDULED:` line — a `:PROPERTIES:`
-drawer, a blank line, an edit by an external tool or an agent — silently drops
-that row from the agenda. The grammar has `field('plan', $.plan)` on the
-`section` node and would not care. **This is the divergence class the phase
-exists to end**, and it is live today. Files increasingly change under tools
-we do not control, which is exactly when a bespoke parser's assumptions rot
-without announcing themselves.
+What a line matcher genuinely cannot do is see **context**. `* TODO ` at the
+start of a line inside a `#+BEGIN_SRC` block is example text, not a headline,
+and no care in the matcher fixes it because the fact is not on the line — the
+text scan invents a phantom agenda row. That is verified in both directions
+(`a_headline_inside_a_source_block_is_not_a_row`, and its text-path twin
+`the_text_fallback_cannot_tell_a_source_block_from_a_headline`).
+
+So the case for the phase is the one originally made for it: **a bespoke parser
+must agree with a grammar it never consults, and over time it will not** —
+especially as files change under tools we do not control. That is a forward-looking
+argument about a whole class, not a claim that each file is buggy today, and the
+plan should not have dressed it as the latter.
 
 The substrate is ready: TS.1 / TS.2 / TS.3 are all ✅, `tree_resource.rs`
 implements `compile-query` / `run-query` / `run-query-ranges` with predicates
@@ -88,17 +100,17 @@ draft of this plan recorded "no tree off-buffer" as a carve-out for
 and OT.2 supplies the primitive instead. **Heuristic #1:** the carve-out was
 risk-aversion wearing the costume of a constraint.
 
-**D3 — The agenda's bulk text copy is circular, and dies with the migration.**
-`agenda-source.wit` justifies passing whole file text as: "a scan reads EVERY
-line, so a handle would cost one boundary crossing per line where one copy
-costs one." That holds only *because* the guest hand-parses. With a
-host-side parse and `run-query-ranges` returning ranges, neither the text nor
-per-line crossings happen. Today `scan(path, text)` copies every project org
-file's full text across the WASM boundary — the exact bulk crossing the
-`document` handle exists to prevent everywhere else. **Paramount #1**, via
-boundary traffic. Note honestly: raw tree-sitter parsing is *slower* than a
-line-prefix scan, so the net is not assumed — OT.3 benches it, and the agenda
-scan is a producer critical path.
+**D3 — RETRACTED by its own bench.** This said the agenda's per-file text copy
+was a bulk crossing worth removing, and that removing it was a paramount-#1 win.
+It required the net be measured rather than assumed, and the measurement killed
+it: the copy is **217 ns** against a **1–2 ms** parse, and a tree alone cannot
+answer a scanner's questions because the seam exposes no node text. `scan` ends
+up taking **text AND tree**, not tree instead of text.
+
+What replaces it: **structure from the tree, characters from the text** — which
+governs every remaining OT slice, and means no `node.text()` primitive is needed
+anywhere, since each seam already carries text beside its tree (`scan` here,
+`borrow<document>` on the grammar seams, `read-file` / WASI beside `parse-file`).
 
 **D4 — The buffer is the clock's durable record; there is no clock-persist.**
 An unterminated `CLOCK: [start]` with no `--end` *is* a running clock, so
@@ -159,7 +171,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 |---|---|---|
 | OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | ✅ |
 | OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | ✅ |
-| OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | 🚧 |
+| OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | ✅ |
 | OT.3b | Snapshot cache keyed on path + mtime — the refresh cost | 📝 |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
 | OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
@@ -328,8 +340,12 @@ Host supplies `tree` when the file's language is registered, `text` otherwise.
 Org handles `tree` and errs on `text` — a loud, logged, single-file skip.
 
 `agenda.rs` then reads `(section)` with its `plan` field rather than
-prefix-matching the line below the headline, **which fixes the `agenda.rs:111`
-bug named in Why**. `civil_from_epoch_day`, `sort_key`, `group_key` and
+prefix-matching the line below the headline. **It fixes no pre-existing dated-row
+bug** — see the retraction in Why — but it stops counting headlines that only
+look like headlines, and one real bug DID fall out of writing it: a tree-sitter
+node's end position is exclusive and org's `plan` rule swallows its newline, so
+a one-line plan reports an end on the following line and every scheduled row's
+excerpt was one line too tall. `civil_from_epoch_day`, `sort_key`, `group_key` and
 `group_label` are date arithmetic, not parsing, and stay.
 
 **Bench (required, D3) — ran, and it falsified D3's performance premise.**
@@ -366,9 +382,12 @@ wants a real index (org-roam itself uses a database for exactly this reason).
 OT.3b is the near-term fix for refresh cost; the DB is the eventual answer for
 scale, and they are different mechanisms for different problems.
 
-**Test:** a headline whose `SCHEDULED:` is separated from it by a
-`:PROPERTIES:` drawer produces a row (fails on today's code); a malformed file
-skips with a `debug` log and the scan continues.
+**Test:** verified as a PAIR, so the difference is documented rather than only
+its good half — `a_headline_inside_a_source_block_is_not_a_row` (tree path, one
+row) beside `the_text_fallback_cannot_tell_a_source_block_from_a_headline` (text
+path, two rows, same corpus). Plus: the tree arm proven host-side with `.rs`,
+the text fallback proven with an unknown extension, and a malformed file still
+skipping with a `debug` log.
 
 ### OT.3b — the refresh cost: cache snapshots on path + mtime 📝
 

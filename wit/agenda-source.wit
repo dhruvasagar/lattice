@@ -20,10 +20,10 @@ package lattice:plugin-host@0.1.0;
 /// ## Text AND a tree — structure from one, characters from the other
 ///
 /// The text was always here. OT.3 adds the tree beside it, because a scan
-/// that recognises structure by matching line prefixes diverges from the
-/// grammar and eventually gets it wrong (org's agenda assumed a planning
-/// line sits immediately below its headline, so a `:PROPERTIES:` drawer
-/// silently dropped the row).
+/// that recognises structure by matching line prefixes cannot see CONTEXT.
+/// `* TODO ` at the start of a line inside a `#+BEGIN_SRC` block is example
+/// text, not a headline, and no line matcher can tell — the fact is not on
+/// the line. org's text scan invented a phantom agenda row there.
 ///
 /// **Both, not either.** An earlier draft of this slice replaced the text
 /// with the tree, on the theory that the per-file copy was the cost worth

@@ -26,10 +26,20 @@ pub(crate) mod bindings {
         // thread — and it is never on the keystroke path.
         exports: { default: async },
         with: {
-            // Only `logging` is shared: an `entry` is declared in this seam's
-            // own interface rather than in `types`, and the guest touches no
+            // `logging` is shared: an `entry` is declared in this seam's own
+            // interface rather than in `types`, and the guest touches no
             // filesystem so there is no `host-services` import to reuse.
             "lattice:plugin-host/logging": crate::lattice::plugin_host::logging,
+            // OT.3, for `context-plugin`'s reason stated verbatim there: this
+            // must point at the GRAMMAR world's `tree-sitter` module, where
+            // `HostTreeSnapshot` / `HostNode` are implemented and whose
+            // resources are already on the async linker. Letting this world
+            // generate its own would mint a second, incompatible set of
+            // resource types for the same host objects — and the `scan-input`
+            // borrow the host lends would not typecheck against the one the
+            // guest receives.
+            "lattice:plugin-host/tree-sitter":
+                crate::grammar_host::bindings::lattice::plugin_host::tree_sitter,
         },
     });
 }

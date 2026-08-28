@@ -159,7 +159,8 @@ therefore `emit-event` — is *already* linked into the grammar store
 |---|---|---|
 | OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | ✅ |
 | OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | ✅ |
-| OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | 📝 |
+| OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | 🚧 |
+| OT.3b | Snapshot cache keyed on path + mtime — the refresh cost | 📝 |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
 | OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | 📝 |
@@ -308,14 +309,74 @@ prefix-matching the line below the headline, **which fixes the `agenda.rs:111`
 bug named in Why**. `civil_from_epoch_day`, `sort_key`, `group_key` and
 `group_label` are date arithmetic, not parsing, and stay.
 
-**Bench (required, D3):** agenda scan over a synthetic project — wall-clock
-and bytes-crossed, before and after. The crossing win is structural; the parse
-cost is a regression that must be shown to be paid for. Lands in
-`benchmarks.md`.
+**Bench (required, D3) — ran, and it falsified D3's performance premise.**
+`benches/agenda_scan_input.rs`, per 400-line file:
+
+| | |
+|---|---|
+| `parse` (markdown) | 2.20 ms |
+| `parse` (rust — simpler, single-pass grammar) | 1.16 ms |
+| `text_copy` — what crossing the boundary cost | 0.217 µs |
+
+So parsing costs **~1–2 ms per file** whatever the grammar, against a **217 ns**
+copy: the boundary saving D3 called "structural" is real and four orders of
+magnitude too small to matter. Parser construction is not the cause — reused and
+fresh parsers measure identically, so hoisting it out of the per-file loop saves
+nothing.
+
+**OT.3 ships anyway, on the accuracy argument alone**, which was always the
+stronger one and which this does not touch: `agenda.rs:111` drops any row whose
+`SCHEDULED:` line is separated from its headline, and the tree ends that. The
+plan no longer claims a performance win here. What it claims is a correctness
+win at a measured price.
+
+**The price is smaller than the first estimate, because the estimate used the
+wrong workload.** It scaled to a 200-file project (~300 ms/refresh). A real
+agenda works over tens of files, not hundreds — **the large file counts live in
+org-roam, not the agenda** — so the true cost is ~20–80 ms per refresh,
+off-thread, behind headerline progress. That is acceptable; 300 ms would not
+have been.
+
+**OT.3b exists so that "optimise later" is a numbered slice rather than a good
+intention.** And org-roam, when it comes, does not want a snapshot cache — it
+wants a real index (org-roam itself uses a database for exactly this reason).
+OT.3b is the near-term fix for refresh cost; the DB is the eventual answer for
+scale, and they are different mechanisms for different problems.
 
 **Test:** a headline whose `SCHEDULED:` is separated from it by a
 `:PROPERTIES:` drawer produces a row (fails on today's code); a malformed file
 skips with a `debug` log and the scan continues.
+
+### OT.3b — the refresh cost: cache snapshots on path + mtime 📝
+
+**Deps:** OT.3.
+
+OT.3's bench priced the parse at ~1–2 ms per file. An agenda is refreshed far
+more often than its files change — `gr`, reopening the view, an autocmd — and
+every refresh currently reparses every file from scratch.
+
+Cache the `Arc<SyntaxSnapshot>` in the agenda scan, keyed on path + mtime + len,
+so an unchanged file costs a stat rather than a parse. Host-side entirely; the
+guest never learns a cache exists, which is what keeps this a performance change
+rather than a seam change.
+
+Two things to get right, both of which are why this is its own slice rather than
+a footnote on OT.3: **mtime lies** on some filesystems and at 1-second
+granularity, so the key needs length beside it and the cache must be safe to be
+wrong (a stale entry shows a stale agenda row — bounded by `gr`, but real); and
+the cache needs a **bound**, or a long session over a large tree grows it without
+limit.
+
+**Not the org-roam answer.** org-roam's scale (thousands of files) wants an
+index, and org-roam itself uses a database for precisely this. That is a
+different mechanism for a different problem and belongs to whatever slice plan
+brings org-roam in — this slice is about not reparsing an unchanged file twice
+in a row.
+
+**Test:** a second scan over untouched files parses nothing (assert via a parse
+counter, not by timing — a timing assertion is a flaky test); touching a file
+reparses exactly that one; a file whose mtime is unchanged but whose length
+differs reparses.
 
 ### OT.4 — `headline.rs` on the tree 📝
 

@@ -201,3 +201,70 @@ async fn a_file_with_no_rows_returns_empty_rather_than_erring() {
         .expect("no rows is not an error");
     assert!(rows.is_empty());
 }
+
+/// OT.3: the host parses the file it already read and lends the guest a
+/// borrowed `tree-snapshot`, so the file's text never crosses the boundary.
+///
+/// `.rs` rather than `.org` because these tests load no `language` plugin — the
+/// org grammar is registered by the org plugin, not the host — so `.org` here
+/// resolves to no language and takes the text arm, which every OTHER test in
+/// this file covers. Rust is bundled, so it is the extension that proves the
+/// tree arm without standing up a whole language seam.
+///
+/// The fixture reports the ROOT KIND, which no text scan could produce: seeing
+/// `tree:source_file:2` is proof the parse happened host-side and the handle
+/// crossed, not that the guest re-derived something from a string.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_lends_a_tree_when_the_extension_has_a_language() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let rows = src
+        .scan(
+            PathBuf::from("/p/a.rs"),
+            "fn a() {}\nfn b() {}\n".to_string(),
+        )
+        .await
+        .expect("scan");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].label, "tree:source_file:2",
+        "the host parsed off-buffer and lent the tree; the guest read it"
+    );
+}
+
+/// The text arm is not a leftover — it is what keeps an agenda source
+/// independent of the `language` seam, which `agenda-source.wit` calls out
+/// explicitly ("would make an agenda source *require* a language when the two
+/// are independent contributions").
+///
+/// A filetype with no registered grammar must still scan, and it must scan
+/// through the guest's text path rather than being skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let rows = src
+        .scan(PathBuf::from("/p/a.unknownext"), org(&[7]))
+        .await
+        .expect("scan");
+
+    assert_eq!(rows.len(), 1, "the text arm still produced the row");
+    assert_eq!(rows[0].sort_key, 7);
+    assert!(
+        !rows[0].label.starts_with("tree:"),
+        "no grammar for this extension, so the guest must have been handed text"
+    );
+}

@@ -209,6 +209,14 @@ harness = false
 name = "tree_enclosing"
 harness = false
 
+# OT.3: the agenda `scan-input` trade — the per-file parse the host now pays
+# against the per-file text copy it no longer sends across the boundary. The
+# slice plan (D3) says the net must be measured rather than assumed, because
+# parsing is slower than a line scan and the agenda is a producer critical path.
+[[bench]]
+name = "agenda_scan_input"
+harness = false
+
 # CR.4: the actor-thread guest call a plugin dashboard section costs per
 # compose, plus its one-time spawn. The design fragment argues the call is
 # acceptable because composition is Display-class; this is the number that

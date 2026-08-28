@@ -33,6 +33,39 @@ use crate::{
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
 pub use crate::agenda_host::bindings::lattice::plugin_host::agenda_source::Entry;
+use crate::agenda_host::bindings::lattice::plugin_host::agenda_source::ScanInput;
+
+/// OT.3: parse one scanned file, from text the host has already read.
+///
+/// `None` means "hand the guest the text instead" — an extension that resolves
+/// to no registered language, a grammar that will not load, or a parse that
+/// yields no tree. None of those is an error: `agenda-source.wit` keeps a
+/// source independent of the `language` seam, so a filetype with no grammar
+/// must still be scannable.
+///
+/// `debug!`, never `info!` — this runs once per file of a project-wide walk,
+/// and a tree of unparseable files is the ordinary case rather than a problem.
+fn parse_for_scan(path: &str, text: &str) -> Option<Arc<lattice_syntax::SyntaxSnapshot>> {
+    let lang = lattice_syntax::Lang::detect_from_path(Some(std::path::Path::new(path)));
+    let mut syntax = match lattice_syntax::Syntax::for_language(lang) {
+        Ok(Some(syntax)) => syntax,
+        Ok(None) => {
+            tracing::debug!(%path, ?lang, "agenda scan: no grammar; handing the guest text");
+            return None;
+        }
+        Err(error) => {
+            tracing::debug!(%path, ?lang, %error, "agenda scan: grammar load failed; handing the guest text");
+            return None;
+        }
+    };
+    syntax.parse(text);
+    let snapshot = Arc::new(syntax.snapshot_owned());
+    if snapshot.tree().is_none() {
+        tracing::debug!(%path, ?lang, "agenda scan: parsed to no tree; handing the guest text");
+        return None;
+    }
+    Some(snapshot)
+}
 
 type CallResult<T> = Result<T, PluginHostError>;
 
@@ -233,7 +266,43 @@ impl AgendaActor {
         }
         arm_store(&mut self.store, self.budget)?;
         let start = std::time::Instant::now();
-        let result = self.bindings.call_scan(&mut self.store, path, text).await;
+        // OT.3: parse here, from the text the host already read, and lend the
+        // guest a borrow. The text then never crosses the boundary — which is
+        // the whole saving, since `scan` runs once per project file.
+        //
+        // NOT `tree-sitter.parse-file`: that is `fs:read` gated, and this is the
+        // one seam whose guest holds no capability at all (`agenda-source.wit`
+        // — "no preopens, no `walk`"). The host reads; the guest is handed the
+        // result.
+        //
+        // `None` when the extension resolves to no language or the parse yields
+        // no tree, and the text arm carries the file instead — a source is
+        // independent of the `language` seam, so a filetype with no grammar
+        // must still scan.
+        let snapshot = parse_for_scan(path, text);
+        let owned_tree = match &snapshot {
+            Some(snap) => Some(
+                self.store
+                    .data_mut()
+                    .table
+                    .push(crate::tree_resource::TreeSnapshotResource::new(
+                        snap.clone(),
+                    ))
+                    .map_err(|e| PluginHostError::Linker(e.into()))?,
+            ),
+            None => None,
+        };
+        let input = match &owned_tree {
+            Some(owned) => ScanInput::Tree(wasmtime::component::Resource::new_borrow(owned.rep())),
+            None => ScanInput::Text(text.to_string()),
+        };
+        let result = self.bindings.call_scan(&mut self.store, path, &input).await;
+        // Reclaim the lent entry — the host owns it throughout (the
+        // `apply-action` pattern), and a scan leaking one per file would grow
+        // the resource table for the length of a project walk.
+        if let Some(owned) = owned_tree {
+            let _ = self.store.data_mut().table.delete(owned);
+        }
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,

@@ -5769,6 +5769,7 @@ dependencies = [
  "linkme",
  "proptest",
  "serde",
+ "serde_json",
  "streaming-iterator",
  "tempfile",
  "thiserror 2.0.18",

@@ -15,7 +15,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). OT.1 / OT.2 / OT.3 / OT.3b / OT.4 / OT.5 / OT.6 / OT.7 ✅. OT.8 next.
+**Status:** 🚧 in progress (2026-08-28). **Phase 1 (OT.1–OT.8) complete ✅.** Phase 2 (OC.1–OC.8) planned.
 
 ---
 
@@ -183,7 +183,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.5 | the plan's date from `(plan (entry))`; stepping stays text | ✅ |
 | OT.6 | `checkbox.rs` → `(listitem)` / `(checkbox)` | ✅ |
 | OT.7 | `table.rs` → `(table)`; the shared `tree.rs`; the staleness gate | ✅ |
-| OT.8 | capture target + refile picker → `parse-file` | 📝 |
+| OT.8 | capture target + refile picker → `parse-file` | ✅ |
 
 ### OT.1 — motions and text objects get a tree ✅ (2026-08-28)
 
@@ -661,20 +661,60 @@ headline owns every list beneath it until the next headline, whatever column
 they start at. An item parent still requires a deeper indent, which is what
 tells its children from its siblings.
 
-### OT.8 — capture and refile stop hand-parsing 📝
+### OT.8 — capture and refile stop hand-parsing ✅ (2026-08-28)
 
 **Deps:** OT.2.
 
-Two remaining off-buffer parsers, same bug class as the agenda:
+Both remaining off-buffer parsers move to `parse-file`, which OT.2 added for
+exactly this.
 
-- capture's `file+headline` target reads through `host-services.read-file` and
-  finds the headline to compute an insertion line (`org-capture.md` §4).
-- refile's picker source walks project org files listing every headline.
+The failure removed is the quiet kind, and it is worth stating precisely because
+the obvious guess is wrong. A template naming `headline = "Vocabulary"` matched a
+`* Vocabulary` line written as an example inside a `#+BEGIN_SRC` block — and it
+did **not** file into the block. `subtree_end` stops at the next real headline,
+so the note landed just past `#+END_SRC`, attributed to a heading that does not
+exist, and capture reported success. Quieter than filing into the block, and
+therefore worse: the note sits where the user has no reason to look. With the
+tree the target is absent, and absent already has a contract (append, and warn —
+OC.5a). Refile's picker had the same shape one worse: it *offered* such a
+headline as a destination, with an insertion line.
 
-Both move to `parse-file`. Refile's picker can then stop reading files through
-WASI entirely. `headline::subtree_end` is shared between them and must stay
-shared — `org-capture.md` §4 makes the point that the two computations "cannot
-drift apart", and that is more true, not less, once it is a tree walk.
+**Neither gains reach.** `parse-file` makes the identical grant check
+`read-file` does, and refile's paths already came from a grant-checked `walk`.
+What refile loses is the WASI read it no longer needs for structure — the text is
+still read, because `parse-file` returns structure and no node text and the
+picker's labels are headline titles (D3's split, again).
+
+**The sharing the slice asked for, one level up.** It said `headline::subtree_end`
+"must stay shared". It is better than that now: both consumers share
+`headline::Entry` and one `targets_from` / `resolve_in` body over it, with
+`outline` (tree) and `outline_text` (fallback) as interchangeable sources. That
+is what let the structure source be swapped underneath without either consumer
+changing.
+
+---
+
+## Phase 1 is complete (2026-08-28)
+
+OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's own
+"Why" was partly wrong when it was written:
+
+- **Two slices were retracted or narrowed by evidence, not by preference.** OT.5
+  specced a `(timestamp)` migration for a node the grammar only has inside a
+  `plan`; OT.6 and OT.7 each specced a cookie/alignment migration for constructs
+  the grammar does not model. Dumping the tree settled all three in minutes,
+  where reasoning from the slice text would have produced half-migrations.
+- **Three separate links were dead, and none was visible from a unit test.**
+  `DispatchEnv` carried no snapshot (OT.4), org's manifest never asked for the
+  `tree-sitter` capability (OT.4), and both gates handed over stale trees (OT.7).
+  Every one was found by a test that pressed a key in a real editor; every
+  existing seam test passed against all three, because they build the context
+  they are testing.
+- **The divergence the phase was for is real and is one thing:** the grammar
+  knows what a line is *inside*. `dar`, `]]`, `<Tab>`, `<C-Space>`, a statistics
+  cookie, `<leader>o|`, an agenda row, a capture target and a refile destination
+  were each wrong for a headline, checkbox or table written inside a
+  `#+BEGIN_SRC` block, and no care in a line matcher fixes any of them.
 
 ---
 

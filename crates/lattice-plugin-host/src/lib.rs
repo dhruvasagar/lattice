@@ -1026,6 +1026,13 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             }
         }
     }
+
+    /// OC.4 `local-utc-offset-seconds`: the host's current offset from UTC.
+    /// Ungated, and resolved per call so DST is correct — see
+    /// [`host_services::local_utc_offset_seconds`].
+    fn local_utc_offset_seconds(&mut self) -> i32 {
+        host_services::local_utc_offset_seconds()
+    }
 }
 
 /// Host impl of the `plugin-manager` guest→host seam (PM.7).

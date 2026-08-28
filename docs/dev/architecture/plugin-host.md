@@ -376,6 +376,30 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   unwired context here uses, rather than a fabricated tick. Rejected: a host-owned scheduler
   thread (mirrors `EpochTicker`, but adds a thread and needs its own teardown story) and taking
   a real `tokio` dependency (breaks the stated invariant for one function).
+- **Local wall-clock offset (✅ OC.4)**: `host-services.local-utc-offset-seconds() -> s32`,
+  east-positive. A component's `SystemTime::now()` resolves through `wasi:clocks`, which is UTC,
+  and the host builds each plugin's `WasiCtxBuilder` with **no environment inheritance** — so
+  there is no `TZ` either. A guest thus has a correct *instant* and no way to render the
+  wall-clock time the user reads. Org's `CLOCK: [2026-08-28 Fri 16:02]` is local by definition,
+  so without this every clock line, every `%U`/`%T`/`%t` capture stamp and the agenda's "today"
+  anchor is wrong by the user's offset — near midnight, wrong by a day.
+
+  **Not capability-gated**, unlike its `walk` / `read-file` neighbours: it names no path and
+  reaches no resource, and gating it would mean a plugin with no filesystem grant renders every
+  timestamp in the wrong zone. **Resolved per call, never cached** — the offset changes at a DST
+  boundary and when the user changes their system zone, so caching would make an editor left
+  open overnight write clock lines an hour wrong for the rest of the session.
+
+  This is the workspace's **first timezone dependency**, and the absence was deliberate:
+  `lattice-agent`'s log formatter renders UTC and says so, because a log line in UTC is legible.
+  A `CLOCK:` line in UTC is not — it is a wrong number in the user's file. `chrono` with
+  `default-features = false, features = ["clock"]`, used for exactly
+  `Local::now().offset().local_minus_utc()`. Chosen over the `time` crate because `time`'s
+  `local-offset` deliberately refuses in a multi-threaded process (it would answer UTC here,
+  always) unless `unsound_local_offset` is on; chrono resolves the zone through
+  `iana-time-zone` — already in the graph via `wasmtime-wasi` — rather than `localtime_r`.
+  Rejected: an `org.utc-offset` option, which makes the user maintain what the OS knows and
+  breaks twice a year.
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an
   auto-generated `:<mode-name>` toggle ex-command, built by the shared helper
   `lattice_grammar::registry::mode_toggle_ex_command_spec` — the *same* helper boot's

@@ -72,6 +72,23 @@ anyhow = "1.0"
 # Async (lattice-runtime + future Phase 4 LSP, Phase 7 plugin host)
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
 futures = "0.3"
+# OC.4: the workspace's FIRST timezone dependency, and it is worth naming why
+# there was none until now. `lattice-agent`'s log formatter says outright that
+# it renders UTC because "rendering local time would need a timezone dependency
+# neither logger carries" — a log line in UTC is legible. An org `CLOCK:` line
+# is not: org defines it as local wall-clock time, so a plugin writing one in
+# UTC writes a wrong number into the user's file, and near midnight a wrong
+# day.
+#
+# `default-features = false` + `clock`: no serde, no `oldtime`, no formatting
+# machinery. What is used is exactly `Local::now().offset().local_minus_utc()`.
+# Chosen over the `time` crate because `time`'s `local-offset` deliberately
+# refuses in a multi-threaded process (it would answer UTC here, always) unless
+# its `unsound_local_offset` feature is on. Chrono resolves the zone through
+# `iana-time-zone` + its own TZif reader rather than `localtime_r`, so it is
+# sound under threads — and `iana-time-zone` is already in the graph via
+# `wasmtime-wasi`.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 arc-swap = "1.7"
 
 # SIMD-optimized substring search (lattice-core::search). Already a

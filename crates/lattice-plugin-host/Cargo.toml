@@ -131,6 +131,12 @@ tracing = { workspace = true }
 # its own multi-thread runtime (the lib owns no runtime; `tokio` remains a
 # dev-dependency only). Chosen over `tokio::sync` to keep that invariant.
 futures = { workspace = true }
+# OC.4: `local-utc-offset-seconds`. A guest has `wasi:clocks` (UTC) and no `TZ`
+# (the host builds its `WasiCtxBuilder` with no environment inheritance), so it
+# cannot work out the user's offset — the host has to answer. See the workspace
+# manifest for why chrono rather than `time`, and `host-services.wit` for why
+# the seam is not capability-gated.
+chrono = { workspace = true }
 
 [dev-dependencies]
 # TR.2b: the transient boundary tests build a `CommandRegistryHandle` (an

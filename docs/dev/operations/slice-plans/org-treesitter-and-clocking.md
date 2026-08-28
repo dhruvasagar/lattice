@@ -725,7 +725,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.1 | `EventEmitCtx` on the grammar store — finish a half-wired import | ✅ |
 | OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | ✅ |
 | OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | 📝 |
-| OC.4 | `host-services.local-utc-offset-seconds` | 📝 |
+| OC.4 | `host-services.local-utc-offset-seconds` | ✅ |
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | 📝 |
 | OC.6 | The four actions, the session owner, the modeline segment | 📝 |
 | OC.7 | `:clock-in` / `:clock-resume` capture keys | 📝 |
@@ -860,7 +860,48 @@ priority), so ownership stays with the mode (**mode-owns-its-surface**).
 a plugin element renders through the same path a native one already does, so
 the audit is expected to find nothing to change. Confirm rather than assume.
 
-### OC.4 — local wall-clock time 📝
+### OC.4 — local wall-clock time ✅ (2026-08-28)
+
+**The plan named the signature and the rejected alternative; what it did not
+name is that this is the workspace's FIRST timezone dependency, and that the
+absence was deliberate.** `lattice-agent/src/log/ai_log.rs:97` says it in as many
+words: it renders UTC because "rendering local time would need a timezone
+dependency neither logger carries." That was a good trade for a log line, where
+UTC is merely unfamiliar. It is not the same trade for a `CLOCK:` line, which org
+*defines* as local wall-clock time — there, UTC is a wrong number written into
+the user's file.
+
+`chrono`, `default-features = false, features = ["clock"]`, used for exactly
+`Local::now().offset().local_minus_utc()`. **The `time` crate was the obvious
+alternative and does not work here:** its `local-offset` deliberately refuses in
+a multi-threaded process (soundness of `localtime_r`) unless `unsound_local_offset`
+is enabled, so in this editor it would answer UTC every time — a silent wrong
+answer, which is worse than no seam. Chrono resolves the zone through
+`iana-time-zone`, already in the graph via `wasmtime-wasi`, plus its own TZif
+reader.
+
+**Resolved per call, never cached** — and that is not a micro-decision. The
+offset changes at a DST boundary and when the user changes their system zone, so
+a cache would make an editor left open overnight write clock lines an hour wrong
+for the rest of the session: the exact bug class the seam exists to prevent,
+reintroduced as an optimisation of a call org makes twice a minute.
+
+**Ungated, unlike its `walk` / `read-file` neighbours.** It names no path and
+reaches no resource, and gating it would mean a plugin with no filesystem grant
+renders every timestamp in the wrong zone. The test instantiates with
+`CapabilitySet::empty()` to pin that.
+
+**Test honesty, stated rather than papered over.** The strong assertion — guest
+value equals the host's own `chrono::Local` answer — is *degenerate on a machine
+configured to UTC*, where both sides are `0` and a stubbed seam would pass. The
+module doc says so. Pinning `TZ` to fix it would mean mutating process-global env
+to test a function whose whole job is reading process-global env. The
+shape-assertions (a real offset is whole minutes, inside the range zones occupy)
+hold everywhere, and the guest also echoes its own `wasi:clocks` reading so the
+test can prove the two are independent sources rather than one value copied
+twice. Mutation-verified: stubbing the host to `0` fails it here (+05:30).
+
+**Original plan text follows.**
 
 ```wit
 local-utc-offset-seconds: func() -> s32;

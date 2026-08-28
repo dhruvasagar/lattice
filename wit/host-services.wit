@@ -69,4 +69,27 @@ interface host-services {
     /// the bus is observation-only (§5.10), so there is no reply. Subscribers
     /// (native or other plugins) filter by `name` in their handler.
     emit-event: func(name: string, payload: list<u8>);
+
+    /// The host's offset from UTC, in seconds, **at this instant** (OC.4).
+    /// East of Greenwich is positive: `+05:30` is `19800`, `-08:00` is `-28800`.
+    ///
+    /// A guest cannot work this out. `wasi:clocks` is UTC, and the host builds
+    /// each plugin's `WasiCtxBuilder` with no environment inheritance — so there
+    /// is no `TZ` either, and `SystemTime::now()` in a component is UTC with no
+    /// way to know it. Org writes `CLOCK: [2026-08-28 Fri 16:02]` in **local**
+    /// time by definition, so without this every clock line, every `%U` / `%T` /
+    /// `%t` capture stamp and the agenda's "today" anchor is wrong by the user's
+    /// offset — and near midnight, wrong by a day.
+    ///
+    /// **At this instant**, not a fixed configured number, so DST is simply
+    /// correct: the offset is resolved per call against the current time. A
+    /// rejected alternative was an `org.utc-offset` option, which makes the user
+    /// maintain what the OS already knows and is wrong twice a year.
+    ///
+    /// Not capability-gated. It is a scalar the user's own clock displays, it
+    /// names no path and reaches no resource, and gating it would mean a plugin
+    /// with no filesystem grant renders timestamps in the wrong timezone.
+    /// `0` if the platform cannot answer — UTC, which is a legible wrong answer
+    /// rather than a fabricated one.
+    local-utc-offset-seconds: func() -> s32;
 }

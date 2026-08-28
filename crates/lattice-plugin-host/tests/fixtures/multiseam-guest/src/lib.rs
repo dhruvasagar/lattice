@@ -123,6 +123,14 @@ impl Guest for Component {
             &spec(),
             8,
         );
+        // OC.4: the wall-clock offset a guest cannot work out for itself —
+        // `wasi:clocks` is UTC and there is no `TZ` in a plugin's environment.
+        grammar::register_action(
+            "multiseam-utc-offset",
+            "echo the host's local UTC offset in seconds (OC.4)",
+            &spec(),
+            9,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -287,6 +295,20 @@ impl GrammarCallbacks for Component {
                     &[ctx.cursor.line as u8, ctx.cursor.byte as u8],
                 );
                 Ok(Vec::new())
+            }
+            // OC.4: echo the host's offset AND what the guest's own clock says,
+            // so a test can prove the two are different sources rather than one
+            // value copied twice. `wasi:clocks` is UTC; the offset is not.
+            9 => {
+                let utc = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let offset = host_services::local_utc_offset_seconds();
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{offset}:{utc}"),
+                })])
             }
             // OT.2: parse an off-buffer file and report what came back, so the
             // test can tell "the tree crossed" from "the host said none".

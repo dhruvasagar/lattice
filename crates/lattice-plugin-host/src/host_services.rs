@@ -45,6 +45,23 @@ pub(crate) fn emit_plugin_event(bus: &EventBus, name: String, payload: Vec<u8>) 
     bus.publish(NativeEvent::Plugin { name, payload });
 }
 
+/// The `local-utc-offset-seconds` host-service body (OC.4) — the host's offset
+/// from UTC right now, east-positive.
+///
+/// **Resolved per call, not cached.** The offset is not a constant: it changes
+/// at a DST boundary, and it changes if the user changes their system timezone
+/// while the editor is running. Caching it would make an editor left open
+/// overnight write clock lines an hour wrong for the rest of the session — the
+/// exact bug class this seam exists to prevent, reintroduced as an optimisation
+/// of a call org makes twice a minute.
+///
+/// Not capability-gated (see the WIT): it names no path and reaches no resource,
+/// and gating it would mean a plugin with no filesystem grant renders every
+/// timestamp in the wrong timezone.
+pub(crate) fn local_utc_offset_seconds() -> i32 {
+    chrono::Local::now().offset().local_minus_utc()
+}
+
 /// True if `root` lies within one of the grant's fs prefixes (read *or* write —
 /// a walk only reads). Both sides are canonicalized first so a `..` segment
 /// cannot escape a granted prefix. If canonicalization fails (e.g. the path does

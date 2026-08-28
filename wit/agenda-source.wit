@@ -142,6 +142,42 @@ world agenda-source-plugin {
     /// would take the multibuffer's own motions away.
     export view-mode: func() -> option<string>;
 
+    /// AF.1: the paths this source wants scanned. Called per scan.
+    ///
+    /// Each entry is a **file** or a **directory**: the host walks a directory
+    /// (applying `extensions` as it does today) and takes a file as given
+    /// without asking whether anyone claims its extension — naming a file IS
+    /// the claim. `~` is expanded host-side. Relative paths resolve against the
+    /// editor's working directory.
+    ///
+    /// **Empty means "no opinion", not "scan nothing".** The host then uses the
+    /// root it would have used anyway, so a source that does not implement this
+    /// behaves exactly as it did before, and a user who has configured nothing
+    /// keeps the project-root scan.
+    ///
+    /// **Per scan, unlike `extensions` and `view-mode`.** Those are facts about
+    /// the source and are resolved once at load. This one comes from user
+    /// configuration and has to follow a `:set` without a reload — caching it
+    /// would make the option appear not to work until the editor restarted,
+    /// which is the worst shape of "configured and behaving as if it were not".
+    ///
+    /// The grant is unchanged: every path still passes the host's `fs` check,
+    /// so naming a directory does not acquire the right to read it. A path
+    /// outside the grant, or one that does not exist, is skipped with a log and
+    /// the rest of the scan continues — `error-parser`'s rule, because one bad
+    /// entry in a config list is the same failure class as one bad file.
+    ///
+    /// ## Why the source answers this and not the host
+    ///
+    /// The host owns the walk, so the host owning the *list* was the obvious
+    /// design and was recommended. It was decided the other way, on the one
+    /// argument that outweighs it: the name users already know is
+    /// `org-agenda-files`, and muscle memory is the dominant cost on a
+    /// user-facing surface. What that buys back is real — the host still never
+    /// learns any option's name, so a second source configures its own file set
+    /// with its own option and none of this code changes.
+    export roots: func() -> list<string>;
+
     /// Drop per-scan state, and declare what would invalidate this scan's
     /// results. Called before the first file of a scan.
     ///

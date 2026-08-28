@@ -77,6 +77,10 @@ enum AgendaCall {
     ViewMode {
         reply: oneshot::Sender<CallResult<Option<String>>>,
     },
+    /// AF.1: `roots()` — the paths this source wants scanned.
+    Roots {
+        reply: oneshot::Sender<CallResult<Vec<String>>>,
+    },
     /// `begin()` — drop per-scan state, and return the generation key (OT.3b).
     Begin {
         reply: oneshot::Sender<CallResult<u64>>,
@@ -122,6 +126,17 @@ impl AgendaClient {
             .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?
+    }
+
+    /// AF.1: call the guest's `roots()`. Per scan, not once at load — the
+    /// answer comes from user configuration and must follow a `:set`.
+    pub async fn roots(&self) -> CallResult<Vec<String>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(AgendaCall::Roots { reply })
+            .map_err(|_| PluginHostError::PluginGone { func: "roots" })?;
+        rx.await
+            .map_err(|_| PluginHostError::PluginGone { func: "roots" })?
     }
 
     /// Call the guest's `begin()` — the start of a scan. Returns the guest's
@@ -188,6 +203,9 @@ impl AgendaActor {
                 AgendaCall::ViewMode { reply } => {
                     let _ = reply.send(self.call_view_mode().await);
                 }
+                AgendaCall::Roots { reply } => {
+                    let _ = reply.send(self.call_roots().await);
+                }
                 AgendaCall::Begin { reply } => {
                     let _ = reply.send(self.call_begin().await);
                 }
@@ -229,6 +247,24 @@ impl AgendaActor {
             crate::PluginSeam::AgendaSource,
             &mut self.quarantine,
             "view-mode",
+            start,
+            result,
+        )
+    }
+
+    async fn call_roots(&mut self) -> CallResult<Vec<String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "roots" });
+        }
+        arm_store(&mut self.store, self.budget)?;
+        let start = std::time::Instant::now();
+        let result = self.bindings.call_roots(&mut self.store).await;
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::AgendaSource,
+            &mut self.quarantine,
+            "roots",
             start,
             result,
         )

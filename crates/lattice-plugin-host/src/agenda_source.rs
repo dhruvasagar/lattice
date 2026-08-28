@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use lattice_mode::agenda_source::{
-    AgendaBeginFuture, AgendaEntry, AgendaFuture, AsyncAgendaSource,
+    AgendaBeginFuture, AgendaEntry, AgendaFuture, AgendaRootsFuture, AsyncAgendaSource,
 };
 
 use crate::PluginId;
@@ -53,6 +53,25 @@ impl AsyncAgendaSource for WasmAgendaSource {
 
     fn view_mode(&self) -> Option<&str> {
         self.view_mode.as_deref()
+    }
+
+    /// AF.1. NOT cached beside `extensions` / `view_mode`, and that asymmetry
+    /// is the point: those are facts about the source, this is a fact about the
+    /// user's config. Caching it would make `:set org.agenda-files` appear not
+    /// to work until the editor restarted.
+    ///
+    /// A guest that traps or is quarantined answers empty rather than failing
+    /// the scan — the same degradation `begin` gets, one step earlier.
+    fn roots(&self) -> AgendaRootsFuture<'_> {
+        Box::pin(async move {
+            match self.client.roots().await {
+                Ok(roots) => Ok(roots),
+                Err(e) => {
+                    tracing::debug!(error = %e, "agenda: a source could not name its roots");
+                    Ok(Vec::new())
+                }
+            }
+        })
     }
 
     fn begin(&self) -> AgendaBeginFuture<'_> {

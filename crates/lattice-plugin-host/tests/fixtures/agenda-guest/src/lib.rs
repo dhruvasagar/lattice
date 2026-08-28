@@ -44,6 +44,23 @@ impl Guest for Component {
         Some("agenda-guest-mode".to_string())
     }
 
+    /// AF.1: two paths that could only have come from the guest.
+    ///
+    /// Deliberately fixed and obviously synthetic. The question this fixture
+    /// answers is "does what the guest said reach the host, verbatim" — the
+    /// failure OT.4 spent a slice on was a seam that looked wired and delivered
+    /// nothing, and a fixture returning the empty list every real source also
+    /// returns cannot tell the two apart.
+    ///
+    /// `~` is left unexpanded on purpose: expansion is the host's job and the
+    /// second entry is what proves it happens on the far side.
+    fn roots() -> Vec<String> {
+        vec![
+            "/agenda-guest/notes".to_string(),
+            "~/agenda-guest/one.org".to_string(),
+        ]
+    }
+
     fn begin() -> u64 {
         FILES_SEEN.set(0);
         // OT.3b: this fixture's rows do not depend on the day or on any option,

@@ -57,6 +57,10 @@ pub type AgendaFuture<'a> =
 /// invites a producer to return rows from it that the scan would drop.
 pub type AgendaBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
+/// The boxed future an [`AsyncAgendaSource::roots`] returns (AF.1).
+pub type AgendaRootsFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
+
 /// An async, off-keystroke-path producer of agenda rows.
 pub trait AsyncAgendaSource: Send + Sync + std::fmt::Debug {
     /// Stable id of the producing plugin — the teardown key. Two producers
@@ -80,6 +84,24 @@ pub trait AsyncAgendaSource: Send + Sync + std::fmt::Debug {
     /// this is the source naming what.
     fn view_mode(&self) -> Option<&str> {
         None
+    }
+
+    /// AF.1: the paths this source wants scanned — each a FILE or a DIRECTORY.
+    ///
+    /// Empty means "no opinion": the host uses the root it would have used, so
+    /// a source that does not implement this behaves exactly as before. That is
+    /// why it has a default and `extensions` does not — a source with no
+    /// extensions scans nothing and is a bug worth surfacing, while a source
+    /// with no roots is the ordinary unconfigured case.
+    ///
+    /// Called PER SCAN, unlike `extensions` and `view_mode`, which are facts
+    /// about the source and are cached at load. This answer comes from user
+    /// configuration and must follow a `:set` without a reload.
+    ///
+    /// An `Err` is logged and treated as empty: a source that cannot say where
+    /// to look should not be able to make the agenda scan nothing.
+    fn roots(&self) -> AgendaRootsFuture<'_> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Drop per-scan state. Called once before the first file of a scan.

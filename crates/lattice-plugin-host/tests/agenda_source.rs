@@ -268,3 +268,43 @@ async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
         "no grammar for this extension, so the guest must have been handed text"
     );
 }
+
+/// AF.1 — what the guest names as its roots reaches the host verbatim.
+///
+/// The regression this guards is the one OT.4 spent a slice on: a seam wired
+/// through the WIT, the trampoline and the guest that delivers nothing, because
+/// nothing in production actually calls it. So this asserts on the ADAPTER —
+/// `AsyncAgendaSource::roots`, the method the scan calls — rather than on the
+/// `AgendaClient` beneath it, and it asserts the exact strings rather than
+/// merely "not empty".
+///
+/// Unexpanded on this side deliberately. `~` expansion is the host's, and a
+/// fixture that pre-expanded would hide whether it happens at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_source_names_the_paths_it_wants_scanned() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: agenda fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    let roots = src.roots().await.expect("roots never fails the scan");
+    assert_eq!(
+        roots,
+        vec![
+            "/agenda-guest/notes".to_string(),
+            "~/agenda-guest/one.org".to_string(),
+        ],
+        "the guest's list crosses back in order and unmodified"
+    );
+
+    // Per scan, not once at load: a second call must reach the guest again,
+    // because the answer comes from user config and has to follow a `:set`.
+    let again = src.roots().await.expect("a second scan asks again");
+    assert_eq!(
+        again, roots,
+        "and answers consistently while config is stable"
+    );
+}

@@ -108,7 +108,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // refresh action the view mode's `refresh_action` names.
     #[cfg(feature = "agenda")]
     {
-        crate::providers::agenda::register_agenda_ex_command(boot.commands_mut());
+        // AG.1: no ex-command here any more. The provider is registered above
+        // and is generic; the TRIGGER belongs to whoever produces the rows,
+        // because only they can name it in their users' vocabulary. `:agenda`
+        // was the host naming an org feature generically and the plugin having
+        // no way to fix it — org registers `:org-agenda` itself now, through
+        // `app-effect::open-provider-view`.
         crate::providers::agenda::register_agenda_actions(boot.commands_mut());
     }
 

@@ -18,7 +18,8 @@
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
     AppEffect as WitAppEffect, Hscroll as WitHscroll, InsertLineEdit as WitInsertLineEdit,
-    NarrowLinesPayload as WitNarrowLinesPayload, PaneDirection as WitPaneDirection,
+    NarrowLinesPayload as WitNarrowLinesPayload,
+    OpenProviderViewPayload as WitOpenProviderViewPayload, PaneDirection as WitPaneDirection,
     ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
 };
 use lattice_grammar::app_effect::{
@@ -477,21 +478,44 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
-            // PV.1: the generic provider-view seam. Its WIT surface is
-            // deferred deliberately rather than incidentally — exposing
-            // it would let a plugin open any registered provider's view
-            // by name, which is a capability question (which providers
-            // is a plugin allowed to trigger?) that belongs with the
-            // plugin host's capability model, not ahead of it. Typed
-            // error, never lossy.
-            NativeAppEffect::OpenProviderView { .. } => {
-                return Err(
-                    "AppEffect::OpenProviderView opens a registered provider's multibuffer view \
-                     by name; its plugin (WIT) surface is deferred with the plugin host, pending \
-                     the capability model for which providers a plugin may trigger \
-                     (multibuffer-views.md §3.7a)"
-                        .to_string(),
-                );
+            // AG.1: the generic provider-view seam, no longer deferred.
+            //
+            // PV.1 withheld it as a capability question — which providers may a
+            // plugin trigger? — to be answered with the host's capability model
+            // rather than ahead of it. The precedent had already answered it:
+            // `Effect::OpenPicker` and `Effect::OpenTransient` both cross
+            // UNGATED and let a guest open any registered source by name. This
+            // is the same authority in the same shape, so withholding it never
+            // withheld the capability; it only stopped the one seam that needed
+            // it from naming its own trigger.
+            //
+            // That cost was concrete: the agenda's ex-command lived in the host
+            // because the plugin had no way to open the view, so a feature every
+            // user calls `org-agenda` shipped as `:agenda` and the plugin could
+            // not fix it from its own side.
+            //
+            // The argument crosses as `option<string>`: every provider view
+            // takes at most one free-text parameter (a root, a query), and
+            // mirroring the recursive `Args` enum would add a second args
+            // encoding to the boundary for cases no provider has. Anything
+            // richer is a typed error rather than a silent flattening — the
+            // `NarrowTrigger` precedent two arms up.
+            NativeAppEffect::OpenProviderView { provider, args } => {
+                let argument = match args {
+                    lattice_grammar::args::Args::None => None,
+                    lattice_grammar::args::Args::String(s) => Some(s.clone()),
+                    other => {
+                        return Err(format!(
+                            "AppEffect::OpenProviderView carries args the provider-view boundary \
+                             does not mirror ({other:?}); a provider view takes at most one \
+                             free-text argument"
+                        ));
+                    }
+                };
+                WitAppEffect::OpenProviderView(WitOpenProviderViewPayload {
+                    provider: provider.clone(),
+                    argument,
+                })
             }
         })
     }
@@ -651,6 +675,16 @@ impl WitBoundary for NativeAppEffect {
             },
             WitAppEffect::SearchTrigger(query) => NativeAppEffect::SearchTrigger { query },
             WitAppEffect::SearchRefresh => NativeAppEffect::SearchRefresh,
+            // AG.1: the direction that matters — a plugin's ex-command opening
+            // the view. `none` becomes `Args::None`, which is what a bare
+            // `:org-agenda` with no root means.
+            WitAppEffect::OpenProviderView(p) => NativeAppEffect::OpenProviderView {
+                provider: p.provider,
+                args: match p.argument {
+                    Some(s) => lattice_grammar::args::Args::String(s),
+                    None => lattice_grammar::args::Args::None,
+                },
+            },
             WitAppEffect::InsertLineEdit(edit) => {
                 NativeAppEffect::InsertLineEdit(NativeInsertLineEdit::from_wit(edit)?)
             }

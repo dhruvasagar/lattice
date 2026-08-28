@@ -158,7 +158,7 @@ world agenda-source-plugin {
     /// **Per scan, unlike `extensions` and `view-mode`.** Those are facts about
     /// the source and are resolved once at load. This one comes from user
     /// configuration and has to follow a `:set` without a reload — caching it
-    /// would make the option appear not to work until the editor restarted,
+    /// would make the setting appear not to work until the editor restarted,
     /// which is the worst shape of "configured and behaving as if it were not".
     ///
     /// The grant is unchanged: every path still passes the host's `fs` check,
@@ -169,13 +169,17 @@ world agenda-source-plugin {
     ///
     /// ## Why the source answers this and not the host
     ///
-    /// The host owns the walk, so the host owning the *list* was the obvious
-    /// design and was recommended. It was decided the other way, on the one
-    /// argument that outweighs it: the name users already know is
-    /// `org-agenda-files`, and muscle memory is the dominant cost on a
-    /// user-facing surface. What that buys back is real — the host still never
-    /// learns any option's name, so a second source configures its own file set
-    /// with its own option and none of this code changes.
+    /// The host owns the walk, so the host owning the *list* is the obvious
+    /// design. It is not the one here, because the list is the user's
+    /// configuration and every source's users already have a name for it in
+    /// whatever ecosystem the source came from. A host-side setting would have
+    /// to pick one of those names, or invent a neutral one nobody's fingers
+    /// know.
+    ///
+    /// So each source configures its own file set under its own option, and the
+    /// host never learns any option's name — it asks and merges. Two sources
+    /// with completely different configuration vocabularies coexist without a
+    /// line of host code knowing either.
     export roots: func() -> list<string>;
 
     /// Drop per-scan state, and declare what would invalidate this scan's

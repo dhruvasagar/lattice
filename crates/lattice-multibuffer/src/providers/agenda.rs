@@ -891,53 +891,6 @@ pub fn register_agenda_provider(services: &ServiceRegistry) {
     }
 }
 
-/// Register the `:agenda [root]` ex-command.
-///
-/// One dashed name, no collapsed spelling, no new 1–2 letter short (the
-/// ex-command naming rule). It is `agenda` rather than `org-agenda` because
-/// nothing about the host's half is org: a markdown TODO scanner registering
-/// an `agenda-source` appears in the same view.
-pub fn register_agenda_ex_command(registry: &mut CommandRegistry) {
-    use lattice_grammar::app_effect::AppEffect;
-    use lattice_grammar::args::{ArgKind, ArgSpec};
-    use lattice_grammar::command::LatencyClass;
-    use lattice_grammar::effect::Effect;
-    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
-
-    registry.register_ex_command(
-        "agenda",
-        "Open the agenda: every dated row plugin agenda-sources find under the project root, \
-         grouped and ordered by the source, as editable excerpts. Pass a path to scan elsewhere.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            // The root rides as a plain string so the opener owns the parse —
-            // the ex-command must not learn the provider's vocabulary.
-            parse_args: Arc::new(|line: &str, _bang: bool| {
-                let trimmed = line.trim();
-                Ok(if trimmed.is_empty() {
-                    Args::None
-                } else {
-                    Args::String(trimmed.to_string())
-                })
-            }),
-            apply: Arc::new(|ctx| {
-                Ok(Effect::AppAction(AppEffect::OpenProviderView {
-                    provider: PROVIDER_NAME.to_string(),
-                    args: ctx.args.clone(),
-                }))
-            }),
-            args_schema: vec![ArgSpec::optional(
-                "root",
-                ArgKind::String,
-                "directory to scan; defaults to the active buffer's project",
-            )],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

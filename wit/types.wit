@@ -746,6 +746,23 @@ interface types {
         end-line: u32,
     }
 
+    /// AG.1: what `app-effect::open-provider-view` carries.
+    ///
+    /// `provider` is the name a provider registered on the generic
+    /// provider-view seam (`"agenda"`, `"search"`).
+    ///
+    /// `argument` is `option<string>` and not the full `args` shape a command
+    /// handler receives, deliberately. A provider view takes at most one
+    /// free-text parameter today — a root for the agenda, a query for search —
+    /// and mirroring the recursive `Args` enum here would cost a second args
+    /// encoding on the boundary to express cases no provider has. A native
+    /// caller passing anything richer is refused with a typed error rather than
+    /// silently flattened, which is the `NarrowTrigger` precedent.
+    record open-provider-view-payload {
+        provider: string,
+        argument: option<string>,
+    }
+
     /// Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`
     /// is absent by design (recursive `Range`; see the note above).
     variant app-effect {
@@ -872,6 +889,22 @@ interface types {
         narrow-lines(narrow-lines-payload),
         search-trigger(string),
         search-refresh,
+        /// AG.1: open a registered provider's multibuffer view by name.
+        ///
+        /// Withheld from this mirror until now, on the reasoning that letting a
+        /// plugin open any registered provider by name is a capability question
+        /// belonging with the host's capability model. The precedent had
+        /// already answered it: `effect::open-picker` and
+        /// `effect::open-transient` both let a guest open any registered source
+        /// by name, ungated, and this is the same authority in the same shape.
+        /// Withholding it did not withhold the capability — it only made the
+        /// one seam that needed it borrow a host ex-command instead.
+        ///
+        /// What that borrowing cost is the reason this landed: a plugin whose
+        /// trigger is a host command cannot name it. The agenda's `:agenda`
+        /// therefore had a generic name for a feature every user calls
+        /// `org-agenda`, and the plugin could not fix that from its own side.
+        open-provider-view(open-provider-view-payload),
     }
 
     // ---- The picker-source seam (PH7.4a, §4.2 / §5 `picker-source`) ----

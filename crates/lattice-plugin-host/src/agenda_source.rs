@@ -57,7 +57,7 @@ impl AsyncAgendaSource for WasmAgendaSource {
 
     /// AF.1. NOT cached beside `extensions` / `view_mode`, and that asymmetry
     /// is the point: those are facts about the source, this is a fact about the
-    /// user's config. Caching it would make `:set org.agenda-files` appear not
+    /// user's config. Caching it would make the source's own setting appear not
     /// to work until the editor restarted.
     ///
     /// A guest that traps or is quarantined answers empty rather than failing

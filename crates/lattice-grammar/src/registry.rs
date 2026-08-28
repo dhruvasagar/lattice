@@ -93,6 +93,19 @@ pub struct MotionContext<'a> {
     /// already borrowing, so carrying it costs nothing on the keystroke path
     /// (motions fire on every `j`). `None` for a buffer with no file.
     pub path: Option<&'a std::path::Path>,
+    /// OT.1: the same type-erased tree-sitter snapshot [`ActionContext::syntax`]
+    /// carries, so a plugin motion can resolve structurally instead of scanning
+    /// text. Copied straight from [`GrammarEnv::syntax`], which the host has
+    /// always threaded here — until OT.1 motions simply did not read it.
+    ///
+    /// **Borrowed, not cloned**, unlike the owned `ActionContext` peer: motions
+    /// fire on every `j`, so a native motion (which ignores this) must pay
+    /// nothing, and only a plugin motion that actually mints a `tree-snapshot`
+    /// resource pays the `Arc` bump. Same reasoning as `path` above.
+    ///
+    /// Acquired the same instant as `buffer`, so tree and text versions agree
+    /// (`plugin-treesitter-seam.md` §7). `None` when the buffer has no parse.
+    pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// What a motion's evaluator returned.
@@ -346,6 +359,15 @@ pub struct TextObjectContext<'a> {
     /// OM.6b: the file the object's buffer is backed by — the borrowed peer of
     /// [`MotionContext::path`], for the same reason.
     pub path: Option<&'a std::path::Path>,
+    /// OT.1: the type-erased tree-sitter snapshot — the borrowed peer of
+    /// [`MotionContext::syntax`], for the same reason, and carrying the same
+    /// version-agreement guarantee.
+    ///
+    /// Distinct from `scope_resolver` above rather than replacing it: the
+    /// resolver answers "what scope encloses this point" for the native
+    /// structural objects, while this hands a plugin the whole tree to query.
+    /// A plugin object resolving a subtree needs the second, not the first.
+    pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 type TextObjectFn = Arc<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;

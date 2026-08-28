@@ -239,10 +239,41 @@ fn convert_args_schema(schema: Vec<WitArgSpec>) -> Result<Vec<NativeArgSpec>, Pl
         .collect()
 }
 
+/// TS.1 / OT.1: resolve the `tree-snapshot` a grammar callback should see.
+///
+/// Three seams mint this identically — action (TS.1), motion and text object
+/// (OT.1) — so the gate lives in one place rather than being re-derived per
+/// seam, where one copy could silently drop a condition. All three are real:
+///
+/// * **the capability gate** — no `tree-sitter` grant means `none` even on a
+///   parsed buffer (design §5, the read-only structural seam is gated);
+/// * **the downcast** — `lattice-grammar` type-erases the snapshot as
+///   `Arc<dyn Any>` to keep its lean dep set, so the concrete type is recovered
+///   here and a foreign payload yields `none` rather than a panic;
+/// * **the parse check** — a `SyntaxSnapshot` can exist with no tree behind it
+///   (plain text / parse pending), and handing the guest a treeless snapshot
+///   would make `root()` answer nothing while `none` says so honestly.
+///
+/// Takes a borrow so the motion and text-object contexts (which hold
+/// `Option<&Arc<…>>` to stay free on the keystroke path) pay the `Arc` bump only
+/// on the branch that actually mints a resource.
+fn resolve_tree_snapshot(
+    tree_sitter_granted: bool,
+    syntax: Option<&Arc<dyn std::any::Any + Send + Sync>>,
+) -> Option<Arc<SyntaxSnapshot>> {
+    tree_sitter_granted
+        .then_some(syntax)
+        .flatten()
+        .and_then(|any| any.clone().downcast::<SyntaxSnapshot>().ok())
+        .filter(|snap| snap.tree().is_some())
+}
+
 fn build_motion_spec(
     guest: &Arc<Mutex<GrammarGuest>>,
     spec: WitMotionSpec,
     callback: u32,
+    // OT.1: same gate the action seam applies, for the same reason.
+    tree_sitter_granted: bool,
 ) -> Result<MotionSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
     let guest = guest.clone();
@@ -255,9 +286,7 @@ fn build_motion_spec(
             // OM.4: mint a point-in-time `document` from the motion's buffer,
             // exactly as `build_action_spec` does (O(1) rope clone). A motion
             // that reads text — org's headline motions are the first — needs
-            // the same handle an action gets. No tree: the native
-            // `MotionContext` carries a `ScopeResolver`, not a
-            // `SyntaxSnapshot`, so there is nothing to mint.
+            // the same handle an action gets.
             let snapshot = Arc::new(DocumentSnapshot {
                 buffer: ctx.buffer.clone(),
                 // OM.6b: so `document.path()` answers on this seam too. A
@@ -266,18 +295,39 @@ fn build_motion_spec(
                 path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                 ..Default::default()
             });
+            // OT.1: and the tree, on the action seam's terms. `ctx.syntax` is
+            // already a borrow, so an ungranted or unparsed buffer costs a
+            // branch and no `Arc` traffic — which matters here and not on the
+            // action seam, because motions fire on every `j`.
+            let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
             let wit = run_callback(&guest, "apply-motion", |b, s| {
-                // Lend as a borrow and reclaim after the call — the host owns
-                // the entry throughout (the `apply-action` pattern).
+                // Lend as borrows and reclaim after the call — the host owns
+                // the entries throughout (the `apply-action` pattern).
                 let owned_doc = s
                     .data_mut()
                     .table
                     .push(DocumentResource::new(snapshot.clone()))?;
                 let doc_borrow = Resource::new_borrow(owned_doc.rep());
-                let result = b
-                    .lattice_plugin_host_grammar_callbacks()
-                    .call_apply_motion(&mut *s, callback, &wit_ctx, doc_borrow);
+                let owned_tree = match &tree_snapshot {
+                    Some(snap) => Some(
+                        s.data_mut()
+                            .table
+                            .push(TreeSnapshotResource::new(snap.clone()))?,
+                    ),
+                    None => None,
+                };
+                let tree_borrow = owned_tree.as_ref().map(|o| Resource::new_borrow(o.rep()));
+                let result = b.lattice_plugin_host_grammar_callbacks().call_apply_motion(
+                    &mut *s,
+                    callback,
+                    &wit_ctx,
+                    doc_borrow,
+                    tree_borrow,
+                );
                 let _ = s.data_mut().table.delete(owned_doc);
+                if let Some(owned_tree) = owned_tree {
+                    let _ = s.data_mut().table.delete(owned_tree);
+                }
                 result
             })?;
             MotionResult::from_wit(wit).map_err(CommandError::Plugin)
@@ -333,6 +383,8 @@ fn build_text_object_spec(
     guest: &Arc<Mutex<GrammarGuest>>,
     spec: WitTextObjectSpec,
     callback: u32,
+    // OT.1: same gate the action and motion seams apply.
+    tree_sitter_granted: bool,
 ) -> Result<TextObjectSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
     let guest = guest.clone();
@@ -351,16 +403,37 @@ fn build_text_object_spec(
                     path: ctx.path.map(|p| Arc::new(p.to_path_buf())),
                     ..Default::default()
                 });
+                // OT.1: and the tree — org's `ir` / `ar` resolve a subtree,
+                // which is the `(section)` node rather than a star count.
+                let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
                     let owned_doc = s
                         .data_mut()
                         .table
                         .push(DocumentResource::new(snapshot.clone()))?;
                     let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                    let owned_tree = match &tree_snapshot {
+                        Some(snap) => Some(
+                            s.data_mut()
+                                .table
+                                .push(TreeSnapshotResource::new(snap.clone()))?,
+                        ),
+                        None => None,
+                    };
+                    let tree_borrow = owned_tree.as_ref().map(|o| Resource::new_borrow(o.rep()));
                     let result = b
                         .lattice_plugin_host_grammar_callbacks()
-                        .call_apply_text_object(&mut *s, callback, &wit_ctx, doc_borrow);
+                        .call_apply_text_object(
+                            &mut *s,
+                            callback,
+                            &wit_ctx,
+                            doc_borrow,
+                            tree_borrow,
+                        );
                     let _ = s.data_mut().table.delete(owned_doc);
+                    if let Some(owned_tree) = owned_tree {
+                        let _ = s.data_mut().table.delete(owned_tree);
+                    }
                     result
                 })?;
                 NativeRange::from_wit(wit).map_err(CommandError::Plugin)
@@ -400,17 +473,12 @@ fn build_action_spec(
                 path: ctx.path.clone(),
                 ..Default::default()
             });
-            // TS.1: downcast the type-erased tree snapshot the `ActionContext`
-            // carries (`Arc<dyn Any>` → `Arc<SyntaxSnapshot>`) and mint a
-            // `tree-snapshot` handle ONLY when the buffer actually has a parse
-            // tree — else the guest gets `none` (plain text / parse pending). The
+            // TS.1: mint a `tree-snapshot` handle only when the grant, the
+            // downcast and the parse all hold — see `resolve_tree_snapshot`,
+            // shared with the motion and text-object seams since OT.1. The
             // snapshot was acquired the same instant as `buffer` above, so the
             // tree + text handles agree on version (§7).
-            let tree_snapshot: Option<Arc<SyntaxSnapshot>> = tree_sitter_granted
-                .then_some(ctx.syntax.as_ref())
-                .flatten()
-                .and_then(|any| any.clone().downcast::<SyntaxSnapshot>().ok())
-                .filter(|snap| snap.tree().is_some());
+            let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax.as_ref());
             let wit = run_callback(&guest, "apply-action", |b, s| {
                 // Lend the resources as borrows: push owned entries, pass
                 // non-owning borrow handles to the guest, then reclaim the owned
@@ -669,9 +737,11 @@ impl PluginHost {
                     doc,
                     spec,
                     callback,
-                } => set
-                    .motions
-                    .push((name, doc, build_motion_spec(&guest, spec, callback)?)),
+                } => set.motions.push((
+                    name,
+                    doc,
+                    build_motion_spec(&guest, spec, callback, tree_sitter_granted)?,
+                )),
                 RecordedContribution::Operator {
                     name,
                     doc,
@@ -688,7 +758,7 @@ impl PluginHost {
                 } => set.text_objects.push((
                     name,
                     doc,
-                    build_text_object_spec(&guest, spec, callback)?,
+                    build_text_object_spec(&guest, spec, callback, tree_sitter_granted)?,
                 )),
                 RecordedContribution::Action {
                     name,

@@ -461,6 +461,7 @@ impl GrammarCallbacks for Component {
         _c: u32,
         _ctx: MotionContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<MotionResult, String> {
         Err("auto-pair: no motions".into())
     }
@@ -471,6 +472,7 @@ impl GrammarCallbacks for Component {
         _c: u32,
         _ctx: TextObjectContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Range, String> {
         Err("auto-pair: no text objects".into())
     }

@@ -190,6 +190,7 @@ pub fn execute_motion_only(
         // behind it (help and the other non-document buffer kinds), so there
         // is no file to name.
         path: None,
+        syntax: env.syntax,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -239,6 +240,7 @@ fn execute_motion(
         cancel,
         scope_resolver: env.scope_resolver,
         path: document.path(),
+        syntax: env.syntax,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions emit a cursor-only jump — the modal engine's caller
@@ -267,6 +269,7 @@ fn execute_text_object(
         scope_resolver: env.scope_resolver,
         comment_syntax: env.comment_syntax,
         path: document.path(),
+        syntax: env.syntax,
     };
     let range = (tobj.apply)(&ctx)?;
     // A bare text object (no operator) sets the selection to the object's
@@ -657,6 +660,7 @@ fn resolve_target(
                 cancel,
                 scope_resolver: env.scope_resolver,
                 path: document.path(),
+                syntax: env.syntax,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -694,6 +698,7 @@ fn resolve_target(
                 scope_resolver: env.scope_resolver,
                 comment_syntax: env.comment_syntax,
                 path: document.path(),
+                syntax: env.syntax,
             };
             (tobj.apply)(&ctx)
         }

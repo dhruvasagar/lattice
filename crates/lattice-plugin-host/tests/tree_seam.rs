@@ -238,3 +238,165 @@ fn a_buffer_with_no_parse_gets_no_tree_handle() {
     .expect_err("no snapshot → the guest's tree query is a typed CommandError");
     assert!(matches!(err, lattice_grammar::CommandError::Plugin(_)));
 }
+
+// --- OT.1: the tree reaches motions and text objects, not only actions -------
+//
+// Before OT.1 the trampoline minted a `tree-snapshot` on the action seam alone;
+// `apply-motion` / `apply-text-object` took only `borrow<document>`, and
+// `grammar.wit` said so explicitly ("no motion has yet needed one. When one
+// does, that is the slice that adds it"). Org's headline motions (`]]` / `[[`)
+// and subtree objects (`ir` / `ar`) are that motion and that object.
+//
+// Both fixtures answer FROM THE TREE ALONE, so a regression that reverts either
+// seam to `none` fails these loudly instead of returning a plausible position.
+
+#[test]
+fn a_granted_plugin_motion_receives_the_tree() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let (commands, _dirs) = register_grammar(CapabilitySet::TREE_SITTER);
+    let id = commands.id_by_name("multiseam-tree-motion").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let buffer = lattice_core::Buffer::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let target = lattice_grammar::execute_motion_only(
+        &commands,
+        &buffer,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect("a plugin motion dispatches with a tree handle");
+
+    // The guest returns `root().byte_range().end` — where the parse tree ends,
+    // which for `fn m() { let x = 1; }\n` is the start of the line after it.
+    // Asserting the tree's own answer (not a hand-written coordinate) is what
+    // makes this fail if the handle stops crossing rather than if the fixture
+    // text is edited.
+    let root_end = {
+        let mut syntax = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        syntax.parse(SRC);
+        syntax
+            .snapshot_owned()
+            .tree()
+            .unwrap()
+            .root_node()
+            .end_byte()
+    };
+    let expected = buffer.byte_to_position(root_end).unwrap();
+    assert_eq!(
+        target, expected,
+        "the motion resolved against the parse tree the host minted for it"
+    );
+}
+
+#[test]
+fn a_motion_without_the_grant_gets_no_tree_handle() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    // The capability gate applies to the motion seam on the action seam's terms:
+    // the buffer parses, but no TREE_SITTER grant means `none`, and the guest
+    // degrades to a typed err rather than trapping.
+    let (commands, _dirs) = register_grammar(CapabilitySet::empty());
+    let id = commands.id_by_name("multiseam-tree-motion").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let buffer = lattice_core::Buffer::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let err = lattice_grammar::execute_motion_only(
+        &commands,
+        &buffer,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect_err("no grant → the guest motion's tree query is a typed CommandError");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "the ungranted motion degrades to CommandError::Plugin, got {err:?}"
+    );
+}
+
+#[test]
+fn a_granted_plugin_text_object_receives_the_tree() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let (commands, _dirs) = register_grammar(CapabilitySet::TREE_SITTER);
+    let id = commands.id_by_name("multiseam-tree-object").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    // A bare text object sets the selection to the object's span, so a
+    // non-empty selection IS the observable proof the guest resolved a range
+    // from the tree — an object that got `none` returns err and never gets here.
+    let effect = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect("a plugin text object dispatches with a tree handle");
+    assert!(
+        !matches!(effect, lattice_grammar::effect::Effect::None),
+        "the whole-tree object spans the file, so it must not resolve empty: {effect:?}"
+    );
+}
+
+#[test]
+fn a_text_object_without_the_grant_gets_no_tree_handle() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let (commands, _dirs) = register_grammar(CapabilitySet::empty());
+    let id = commands.id_by_name("multiseam-tree-object").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let err = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect_err("no grant → the guest object's tree query is a typed CommandError");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "the ungranted text object degrades to CommandError::Plugin, got {err:?}"
+    );
+}

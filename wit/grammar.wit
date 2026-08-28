@@ -80,15 +80,29 @@ interface grammar-callbacks {
     /// it" — and org's headline motions (`]]` / `[[` / `g{`) are the first that
     /// do: finding the next headline means reading lines.
     ///
-    /// A motion gets the document but NOT the tree, unlike an action. The
-    /// native `MotionContext` carries a `ScopeResolver` rather than a
-    /// `SyntaxSnapshot`, so there is no tree handle to mint here without
+    /// OT.1: a motion receives the tree too, on the same terms as an action —
+    /// acquired the same instant as `doc`, `none` when the buffer has no parse.
+    ///
+    /// This doc-comment used to say a motion gets the document but NOT the tree,
+    /// because "the native `MotionContext` carries a `ScopeResolver` rather than
+    /// a `SyntaxSnapshot`, so there is no tree handle to mint here without
     /// changing the native context — and no motion has yet needed one. When one
-    /// does, that is the slice that adds it.
+    /// does, that is the slice that adds it." Org's headline motions are that
+    /// motion: they resolve `(section)` / `(headline)` structure, and hand-rolled
+    /// star-counting is what OT.x exists to end.
+    ///
+    /// The native change was smaller than that paragraph predicted.
+    /// `GrammarEnv::syntax` already carried the type-erased snapshot on every
+    /// dispatch — `execute_action` cloned it into `ActionContext` and the motion
+    /// and text-object contexts simply never read it. So this cost two borrowed
+    /// fields, not new plumbing. Borrowed rather than cloned because motions fire
+    /// on every `j`: a native motion pays nothing, and only a plugin motion that
+    /// actually mints the resource pays the `Arc` bump.
     apply-motion: func(
         callback: u32,
         ctx: motion-context,
         doc: borrow<document>,
+        tree: option<borrow<tree-snapshot>>,
     ) -> result<motion-result, string>;
     apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
     /// OM.4b: a text object receives `borrow<document>` too — `text-object-context`
@@ -96,10 +110,17 @@ interface grammar-callbacks {
     /// handle", and AP.0.1 simply wired the action path first. Org's headline
     /// and subtree objects are the first plugin ones, and resolving a subtree's
     /// bounds means reading lines.
+    ///
+    /// OT.1: and the tree, for the `apply-motion` reason above — org's `ir` / `ar`
+    /// resolve a subtree, which IS the `(section)` node. A text object gets the
+    /// tree rather than only the `scope-resolver` the native structural objects
+    /// use, because the resolver answers "what encloses this point" while a
+    /// plugin object needs to query the tree itself.
     apply-text-object: func(
         callback: u32,
         ctx: text-object-context,
         doc: borrow<document>,
+        tree: option<borrow<tree-snapshot>>,
     ) -> result<range, string>;
     apply-action: func(
         callback: u32,

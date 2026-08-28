@@ -236,6 +236,7 @@ mod tests {
             cancel: &cancel,
             scope_resolver: None,
             path: None,
+            syntax: None,
         };
         let wit = project_motion_context(&ctx).unwrap();
         assert_eq!(wit.buffer_id, 9);
@@ -284,6 +285,7 @@ mod tests {
             scope_resolver: None,
             comment_syntax: None,
             path: None,
+            syntax: None,
         };
         let wit = project_text_object_context(&ctx).unwrap();
         assert_eq!(wit.at.byte, 2);

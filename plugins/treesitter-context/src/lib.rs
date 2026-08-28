@@ -505,6 +505,7 @@ impl CallbacksGuest for Component {
         _callback: u32,
         _ctx: lattice::plugin_host::types::MotionContext,
         _doc: &lattice::plugin_host::buffer::Document,
+        _tree: Option<&lattice::plugin_host::tree_sitter::TreeSnapshot>,
     ) -> Result<lattice::plugin_host::types::MotionResult, String> {
         Err("treesitter-context contributes no motions".to_string())
     }
@@ -520,6 +521,7 @@ impl CallbacksGuest for Component {
         _callback: u32,
         _ctx: lattice::plugin_host::types::TextObjectContext,
         _doc: &lattice::plugin_host::buffer::Document,
+        _tree: Option<&lattice::plugin_host::tree_sitter::TreeSnapshot>,
     ) -> Result<lattice::plugin_host::types::Range, String> {
         Err("treesitter-context contributes no text objects".to_string())
     }

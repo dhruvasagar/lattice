@@ -139,6 +139,7 @@ impl Callbacks for Component {
         callback: u32,
         ctx: MotionContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<MotionResult, String> {
         match callback {
             1 => Ok(MotionResult {
@@ -159,6 +160,7 @@ impl Callbacks for Component {
         callback: u32,
         ctx: TextObjectContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Range, String> {
         match callback {
             2 => Ok(Range {

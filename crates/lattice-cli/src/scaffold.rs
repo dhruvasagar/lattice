@@ -255,13 +255,23 @@ impl GrammarCallbacks for Plugin {
     }
 
     // Unused grammar callbacks — return an err (logged, no-op). Fill in as needed.
-    fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {
+    fn apply_motion(
+        _c: u32,
+        _ctx: MotionContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<MotionResult, String> {
         Err("__NAME__: no motions".into())
     }
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
         Err("__NAME__: no operators".into())
     }
-    fn apply_text_object(_c: u32, _ctx: TextObjectContext) -> Result<Range, String> {
+    fn apply_text_object(
+        _c: u32,
+        _ctx: TextObjectContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Range, String> {
         Err("__NAME__: no text objects".into())
     }
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {

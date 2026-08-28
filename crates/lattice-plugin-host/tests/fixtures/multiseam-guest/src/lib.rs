@@ -25,8 +25,8 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
-    Effect, ExCommandContext, MotionContext, MotionResult, OperatorContext, Position, Range,
-    TextObjectContext,
+    Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext, Position,
+    Range, TextObjectContext, TextObjectSpec,
 };
 use lattice::plugin_host::{config, grammar, host_services, modes};
 
@@ -42,6 +42,29 @@ impl Guest for Component {
         };
         grammar::register_action("multiseam-read", "echo the char at the cursor", &spec(), 1);
         grammar::register_action("multiseam-declines", "always declines (AP.0.2)", &spec(), 2);
+        // OT.1: the tree reaches motions and text objects too, not only actions.
+        // Both of these answer FROM THE TREE ALONE — a host that hands them
+        // `none` (as every host did before OT.1) fails them loudly rather than
+        // returning a plausible-looking position. That is the whole point:
+        // org's `]]` / `[[` and `ir` / `ar` resolve `(section)` structure.
+        grammar::register_motion(
+            "multiseam-tree-motion",
+            "jump to where the parse tree ends (OT.1)",
+            &MotionSpec {
+                jump: false,
+                exclusive: false,
+                args_schema: Vec::new(),
+            },
+            20,
+        );
+        grammar::register_text_object(
+            "multiseam-tree-object",
+            "the span of the whole parse tree (OT.1)",
+            &TextObjectSpec {
+                args_schema: Vec::new(),
+            },
+            21,
+        );
         // TS.1: echo the enclosing `block` scope through the tree-snapshot handle.
         grammar::register_action(
             "multiseam-enclosing",
@@ -241,21 +264,43 @@ impl GrammarCallbacks for Component {
     }
 
     fn apply_motion(
-        _c: u32,
+        c: u32,
         _ctx: MotionContext,
         _doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<MotionResult, String> {
-        Err("multiseam: no motions".into())
+        match c {
+            // OT.1: target the end of the parse tree's own span. Unanswerable
+            // without the tree, so `none` surfaces as a guest err rather than a
+            // wrong-but-believable line.
+            20 => {
+                let tree = tree.ok_or_else(|| "multiseam: motion got no tree".to_string())?;
+                Ok(MotionResult {
+                    target: tree.root().byte_range().end,
+                    linewise: true,
+                })
+            }
+            other => Err(format!("multiseam: unknown motion callback {other}")),
+        }
     }
     fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
         Err("multiseam: no operators".into())
     }
     fn apply_text_object(
-        _c: u32,
+        c: u32,
         _ctx: TextObjectContext,
         _doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Range, String> {
-        Err("multiseam: no text objects".into())
+        match c {
+            // OT.1: the structural peer — org's `ir` / `ar` resolve a subtree,
+            // which IS a tree node rather than a star count.
+            21 => {
+                let tree = tree.ok_or_else(|| "multiseam: text object got no tree".to_string())?;
+                Ok(tree.root().byte_range())
+            }
+            other => Err(format!("multiseam: unknown text-object callback {other}")),
+        }
     }
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
         Err("multiseam: no ex-commands".into())

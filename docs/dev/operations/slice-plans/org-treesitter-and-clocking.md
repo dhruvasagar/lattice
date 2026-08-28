@@ -157,7 +157,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 
 | Slice | Description | Status |
 |---|---|---|
-| OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | 📝 |
+| OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | ✅ |
 | OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | 📝 |
 | OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | 📝 |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
@@ -166,7 +166,46 @@ therefore `emit-event` — is *already* linked into the grammar store
 | OT.7 | `table.rs` → `(table)` / `(row)` / `(cell)` | 📝 |
 | OT.8 | capture target + refile picker → `parse-file` | 📝 |
 
-### OT.1 — motions and text objects get a tree 📝
+### OT.1 — motions and text objects get a tree ✅ (2026-08-28)
+
+**Landed smaller than specced, for a reason worth recording.** This slice
+predicted native plumbing, quoting `grammar.wit`: "the native `MotionContext`
+carries a `ScopeResolver` rather than a `SyntaxSnapshot`, so there is no tree
+handle to mint here without changing the native context." Half right.
+**`GrammarEnv::syntax` already carried the type-erased snapshot on every
+dispatch** (`registry.rs:305`) — `execute_action` cloned it into
+`ActionContext`, and its own doc-comment said "motions / text-objects /
+operators ignore it." So the native cost was two borrowed fields and five
+assignments, not a plumbing project. Borrowed rather than cloned because
+motions fire on every `j`: a native motion pays nothing, and only a plugin
+motion that mints the resource pays the `Arc` bump.
+
+The trampoline's mint is now `resolve_tree_snapshot`, shared by all three
+seams. It was three conditions duplicated per seam — capability grant, downcast,
+and a parse check — and one copy quietly dropping one is exactly the class of
+bug the seam cannot afford.
+
+**A latent bug fell out.** `lattice-cli`'s scaffold template still declared
+`apply_motion(_c, _ctx)` / `apply_text_object(_c, _ctx)` — never updated for
+`doc` when OM.4 / OM.4b added it. `lattice plugin new` emitted a plugin that
+could not compile (`E0050`). Fixed here because this slice touches both
+signatures anyway.
+
+**Tests:** four in `tree_seam.rs` (granted + ungranted × motion + text object),
+against `multiseam-guest` contributions that answer **from the tree alone** — so
+a regression to `none` fails them loudly rather than returning a plausible
+position. Verified by mutation: forcing both seams back to `none` fails exactly
+the two granted tests with the guest's own "got no tree" message, and leaves the
+ungranted pair passing.
+
+**Blast radius, as predicted and all mechanical:** `plugins/auto-pair`,
+`plugins/treesitter-context`, both fixtures, the scaffold, the projection bench,
+and the two `boundary_grammar.rs` unit tests. Note the failure mode found while
+doing it — an out-of-date guest fixture builds as a **warning**, not an error,
+and its tests then silently *skip*. `cargo check` looked clean while four guests
+were broken.
+
+**Original plan text follows.**
 
 **Design:** `plugin-treesitter-seam.md` §7; `grammar.wit:83–87` pre-authorises
 this exact slice — "no motion has yet needed one. **When one does, that is the

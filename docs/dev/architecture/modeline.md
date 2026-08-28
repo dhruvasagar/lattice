@@ -199,7 +199,7 @@ NEVER carries:
 |---|---|---|---|
 | Host built-ins (`core.*`) | at boot | `build_render_state` | host action (built-in only) |
 | Modes (`lsp`, `diagnostics`, diff, …) | `on_activate` / remove `on_deactivate` | `ModelineElementUpdate` | mode's `ActionId` + closure in the mode crate |
-| Plugins (WIT, ML.6) | on load via host API | `ModelineElementUpdate` over the boundary | plugin-exported handler via capability-gated effect |
+| Plugins (WIT, ML.6 ✅) | `ui.register-segment` from a registration export | `ui.emit-segment` → `ModelineElementUpdate` on the bus | *not yet* — see the cut below |
 
 The host exposes only generic primitives — `ModelineService`
 (register/update/remove), the event bus, the action-handler registry,
@@ -209,6 +209,29 @@ additions and **zero** new variants in the host `Action` enum. A
 half-migration (mode registers the element but the host wires its click)
 does **not** satisfy the rule — the binding choice AND the handler body
 both stay with the owner.
+
+**The plugin row landed at ML.6 / OC.3**, and it is narrower than this
+table originally described. Three things were cut, each for a reason
+rather than for time:
+
+- **No click handler.** The row above promised "plugin-exported handler
+  via capability-gated effect". That needs a `CommandId` a plugin owns
+  and a router entry, which is a real design question (a plugin's
+  `ActionId` is not a native `CommandId`) and not one org's clock asks.
+  Deferred with its own slice rather than half-built.
+- **`Global` scope only.** A plugin has no buffer to scope a segment to.
+  LSP and MCP status are per-buffer because they *track* buffers; the
+  parameter arrives with the first plugin that does the same.
+- **No per-span theme role.** The two renderers match role names against
+  a closed set and **disagree on the fallback** (TUI unstyled, GPUI the
+  path colour), so a role parameter would ship a silent cross-renderer
+  difference. Every plugin span is `modeline.mode_item` — the one role
+  both peers resolve identically, and the only one either native
+  modeline producer uses. It returns when a plugin registers its own
+  theme element (TC.4) and can be styled coherently in both.
+
+What the seam does keep whole is ownership: the plugin names the id, the
+zone and the priority, and the host branches on none of them.
 
 The `Mode::status_line_items` trait + its `StatusLineCtx`/`StatusLineItem`
 were a thin built-in adapter through ML.1–ML.2, then **retired in ML.3**

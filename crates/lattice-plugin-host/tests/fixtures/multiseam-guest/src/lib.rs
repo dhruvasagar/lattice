@@ -28,7 +28,8 @@ use lattice::plugin_host::types::{
     Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext, Position,
     Range, TextObjectContext, TextObjectSpec,
 };
-use lattice::plugin_host::{config, grammar, host_services, modes, tree_sitter};
+use lattice::plugin_host::types::UiZone;
+use lattice::plugin_host::{config, grammar, host_services, modes, tree_sitter, ui};
 
 struct Component;
 
@@ -131,6 +132,15 @@ impl Guest for Component {
             &spec(),
             9,
         );
+        // OC.3: the modeline calls, from the SYNC grammar seam, where they must
+        // reach nothing. Echoes what `register-segment` answered so a test can
+        // tell "refused" from "the action never ran".
+        grammar::register_action(
+            "multiseam-modeline",
+            "try to reach the modeline from the sync grammar seam (OC.3)",
+            &spec(),
+            10,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -181,6 +191,11 @@ impl Guest for Component {
             "auto",
             "spike option proving the config seam co-registers from one component",
         );
+        // OC.3 / ML.6: register a modeline element and push content, from an
+        // ASYNC seam's registration export. Short id — the host auto-namespaces
+        // it to `multiseam.clock`, the same way it namespaces the option above.
+        ui::register_segment("clock", UiZone::Right, 7);
+        ui::emit_segment("clock", "\u{25f7} 0:14");
     }
 }
 
@@ -295,6 +310,17 @@ impl GrammarCallbacks for Component {
                     &[ctx.cursor.line as u8, ctx.cursor.byte as u8],
                 );
                 Ok(Vec::new())
+            }
+            // OC.3: the modeline must be unreachable here. Both calls are made
+            // so the test covers register AND emit; the echo reports what
+            // `register-segment` answered.
+            10 => {
+                let registered = ui::register_segment("grammar-clock", UiZone::Right, 7);
+                ui::emit_segment("grammar-clock", "should not appear");
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("registered:{registered}"),
+                })])
             }
             // OC.4: echo the host's offset AND what the guest's own clock says,
             // so a test can prove the two are different sources rather than one

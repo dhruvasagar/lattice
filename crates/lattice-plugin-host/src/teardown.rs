@@ -117,6 +117,17 @@ pub struct PluginTeardown {
     /// `ThemeRegistry::unregister_element` so an unloaded plugin's elements stop
     /// appearing in `:customize` and stop resolving.
     pub theme_elements: Vec<String>,
+    /// OC.3 / ML.6: the plugin's element **namespace** — its manifest id — not
+    /// a list of the ids it registered.
+    ///
+    /// Reversal is by prefix on purpose. A plugin may register a segment at any
+    /// point in its life (org's clock could arm one the first time you clock
+    /// in), so a token list collected at load would miss a later one and leave
+    /// its descriptor behind — and that matters because the renderer iterates
+    /// DESCRIPTORS, so an orphan renders the plugin's last segment forever with
+    /// nobody left to update or clear it. A prefix has nothing to forget. Same
+    /// reasoning as the compilation parser factories, reversed by provenance.
+    pub modeline_namespace: Option<String>,
 }
 
 impl PluginTeardown {
@@ -137,6 +148,7 @@ impl PluginTeardown {
             context_sources: Vec::new(),
             transient_sources: Vec::new(),
             theme_elements: Vec::new(),
+            modeline_namespace: None,
         }
     }
 
@@ -252,6 +264,31 @@ impl PluginTeardown {
                 report.theme_elements += 1;
             }
         }
+        // OC.3: modeline elements. BOTH halves, and the second is easy to miss:
+        // `remove` drops the descriptor (which is what stops it rendering), but
+        // the pushed content stays in the store keyed by an id nothing names —
+        // invisible, and leaked across every `:plugin-reload`.
+        // OC.3: modeline elements, by namespace. BOTH halves per id, and the
+        // second is easy to miss: `remove` drops the descriptor (which is what
+        // stops it rendering), but the pushed content stays in the store keyed
+        // by an id nothing names — invisible, and leaked across every
+        // `:plugin-reload`. Guarded on `Some` so the overwhelmingly common
+        // unload (no plugin segment anywhere) takes no snapshot at all.
+        if let (Some(ns), Some(modeline)) = (&self.modeline_namespace, reg.modeline) {
+            let prefix = format!("{ns}.");
+            let doomed: Vec<_> = modeline
+                .snapshot()
+                .registry
+                .ids()
+                .filter(|id| id.as_str().starts_with(&prefix))
+                .cloned()
+                .collect();
+            for element in doomed {
+                modeline.clear(lattice_mode::modeline::ModelineKey::Global, &element);
+                modeline.remove(&element);
+                report.modeline_elements += 1;
+            }
+        }
         // CM.6b: compilation parser factories, reversed by PROVENANCE like
         // the command surface above — there is no per-factory token to
         // record or forget, because the registry already keys them by the
@@ -297,6 +334,18 @@ pub struct TeardownRegistries<'a> {
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).
     pub theme: &'a dyn lattice_theme::ThemeRegistry,
+    /// OC.3 / ML.6: the modeline element registry (`clear` + `remove` by
+    /// namespaced id). A handle, not a `&mut` — `ModelineService` is
+    /// `ArcSwap`-backed interior-mutable, like `theme` above.
+    ///
+    /// `Option`, unlike its neighbours, and the reason is a bug this field
+    /// caused before it was one: the loader gates the whole reversal on a
+    /// single all-or-nothing tuple of registry handles, so making the modeline
+    /// a required member turned every unload in a harness that had not wired
+    /// one into a silent no-op — options, commands and all. A modeline is not a
+    /// precondition for reversing a config option. Wired-ness is still checked
+    /// where it belongs, in `WiredSeams::all()`, which the boot pin asserts.
+    pub modeline: Option<&'a lattice_mode::ModelineServiceHandle>,
     /// CM.6b: the compilation parser-factory registry (`unregister_plugin`
     /// by host-issued id, RCU'd like the other `ArcSwap`-held registries).
     pub parsers: &'a lattice_compilation::CompilationParserFactoriesHandle,
@@ -326,6 +375,8 @@ pub struct TeardownReport {
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
     pub theme_elements: usize,
+    /// OC.3: modeline elements unregistered.
+    pub modeline_elements: usize,
     /// TR.2b: transient menus unregistered.
     ///
     /// Filled by the LOADER, like `help_topics` — see the field's doc on
@@ -448,6 +499,8 @@ mod tests {
         let mut decorations = GutterDecorationSourceRegistry::new();
         let mut contexts = ContextSourceRegistry::new();
         let theme_reg = lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette());
+        let modeline: lattice_mode::ModelineServiceHandle =
+            std::sync::Arc::new(lattice_mode::ModelineService::new());
         let parsers = lattice_compilation::CompilationParserFactories::new_handle();
         let report = {
             let mut reg = TeardownRegistries {
@@ -462,6 +515,7 @@ mod tests {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &theme_reg,
+                modeline: Some(&modeline),
                 parsers: &parsers,
             };
             teardown.unload(&mut reg)
@@ -485,6 +539,7 @@ mod tests {
                 agenda_sources: 0,
                 context_sources: 0,
                 theme_elements: 0,
+                modeline_elements: 0,
                 parser_factories: 0,
                 transient_sources: 0,
                 // CR.3 / CR.4 / LG.3c: always 0 from `unload` — the loader
@@ -525,6 +580,7 @@ mod tests {
             decorations: &mut decorations,
             contexts: &mut contexts,
             theme: &theme_reg,
+            modeline: Some(&modeline),
             parsers: &parsers,
         };
         assert_eq!(teardown.unload(&mut reg), TeardownReport::default());

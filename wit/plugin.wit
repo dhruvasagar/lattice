@@ -78,7 +78,7 @@ world plugin {
 	/// deferred producer). Transitively-referenced records (`gutter-diff`,
 	/// `gutter-severity`) surface under `crate::lattice::plugin_host::types::*`.
 	use types.{gutter-decoration, gutter-diff-kind, gutter-severity-level, decoration-context};
-	use types.{ui-zone, ui-segment, ui-notification};
+	use types.{ui-zone, ui-notification};
 
 	/// The owned `buffer-snapshot` projection record (PH7.3c, §4.2). `use`d (not
 	/// `import`ed) so `bindgen!` emits the Rust mirror the host projects into
@@ -108,6 +108,12 @@ world plugin {
 	/// the guest asks — so core never depends on a plugin being alive.
 	/// Inert for guests that don't call it.
 	import project;
+
+	/// OC.3 / ML.6: guest→host UI contribution — a plugin-owned modeline
+	/// element. Imported here so bindgen generates the one `Host` trait +
+	/// `add_to_linker` every seam world reuses via `with`-mapping, exactly as
+	/// `host-services` and `logging` do. Inert for guests that don't call it.
+	import ui;
 
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.

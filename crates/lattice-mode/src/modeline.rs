@@ -257,6 +257,19 @@ impl ModelineRegistry {
         self.elements.get(id)
     }
 
+    /// Every registered id, in no particular order.
+    ///
+    /// Added for OC.3's teardown, which reverses a plugin's elements **by
+    /// namespace** rather than by a recorded token list: a plugin may register
+    /// a segment at any point in its life, so a token list collected at load
+    /// would miss a later one and leave its descriptor rendering forever with
+    /// nobody to update it. Reversing by prefix has nothing to forget — the
+    /// same reasoning the compilation parser factories are torn down by
+    /// provenance.
+    pub fn ids(&self) -> impl Iterator<Item = &ElementId> {
+        self.elements.keys()
+    }
+
     pub fn len(&self) -> usize {
         self.elements.len()
     }

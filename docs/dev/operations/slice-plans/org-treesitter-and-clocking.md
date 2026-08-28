@@ -724,7 +724,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 |---|---|---|
 | OC.1 | `EventEmitCtx` on the grammar store — finish a half-wired import | ✅ |
 | OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | ✅ |
-| OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | 📝 |
+| OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | ✅ |
 | OC.4 | `host-services.local-utc-offset-seconds` | ✅ |
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | 📝 |
 | OC.6 | The four actions, the session owner, the modeline segment | 📝 |
@@ -840,7 +840,71 @@ has no `unsubscribe` for the same reason).
 teardown cancels a live wake; a trapping `on-wake` quarantines without
 wedging the actor.
 
-### OC.3 — a plugin can push a modeline segment (ML.6) 📝
+### OC.3 — a plugin can push a modeline segment (ML.6) ✅ (2026-08-29)
+
+**The one thing this slice got wrong was the mechanism, and it was worth
+correcting rather than working around.** The plan said `ui` would be "wired on
+the **async linker only**, so the modeline is structurally unreachable from the
+keystroke path." That does not survive the Component Model, and the repo has
+already learned it four times (TC.6, CR.3, LG.3c, OM.11): a component's import
+set is fixed for the whole artefact, and org — the plugin this seam exists for —
+provides `grammar` too, so the *same* `.wasm` instantiates against the sync
+grammar linker. An import absent there fails the **whole plugin**, not one seam.
+Org's own world comment records being broken exactly this way by a single
+`logging::log` call.
+
+So `ui` is on both linkers and the guarantee moved one layer in:
+`instantiate_grammar_plugin` clears the store's modeline context, so a grammar
+action's `emit-segment` finds nothing and warns. That is a weaker *mechanism*
+and a strictly stronger *test* — a linker omission cannot be checked at all, and
+`a_grammar_action_cannot_reach_the_modeline` can, and does (mutation-verified:
+leaving the context in place fails it).
+
+**Three cuts, each for a reason and not for time.** The plan inherited ML.6's
+"register/update/remove elements + export click handlers", and only the first
+three shipped.
+
+- **No click handler.** It needs a `CommandId` the plugin owns plus a router
+  entry, and a plugin's `ActionId` is not a native `CommandId`. That is a real
+  design question; org's clock does not ask it. Deferred whole rather than
+  half-built.
+- **`Global` scope only.** A plugin has no buffer to scope a segment to. LSP and
+  MCP status are per-buffer because they *track* buffers; the parameter arrives
+  with the first plugin that does.
+- **No per-span theme role**, and this one is a genuine finding rather than a
+  deferral. Both renderers match role names against a closed five-constant set
+  and **disagree on the fallback** — TUI renders unstyled, GPUI renders in the
+  path colour — so a role parameter would have shipped a silent cross-renderer
+  difference. Every plugin span is fixed to `modeline.mode_item`, the one role
+  both peers resolve identically and the only one either native modeline
+  producer uses.
+
+**The type mirror was reshaped, which is what the deferral note asked for.**
+`types.wit`'s `ui-segment` bundled `zone` with `text` and `role`; building
+against a real consumer showed that conflates two lifetimes — the zone belongs
+to a descriptor registered once, the text is content pushed many times. So the
+record dissolved into `register-segment(id, zone, priority)` +
+`emit-segment(id, text)`, leaving `ui-zone` as the only piece with a native
+counterpart worth mirroring.
+
+**Teardown is by NAMESPACE, not a token list**, and the plan did not mention
+teardown at all. A token list collected at load misses a segment registered
+later in the plugin's life (org could arm one the first time you clock in), and
+the orphan matters: the renderer iterates *descriptors*, so a left-behind one
+renders the plugin's last segment forever with nobody to update or clear it.
+Reversing by prefix has nothing to forget — the same reasoning the compilation
+parser factories are reversed by provenance. Both halves go: `remove` drops the
+descriptor, `clear` drops the content, which is invisible without the descriptor
+but leaks on every `:plugin-reload`.
+
+**Parity: confirmed, not assumed**, as the slice required. Both peers do exactly
+two things per element — take `resolve_layout`'s ordering, then branch on a
+`core.` id prefix — so a plugin element rides the identical path in each and
+neither needed a line. That is now pinned by
+`a_plugin_element_orders_and_resolves_like_a_native_one` at the layer the two
+share, rather than by a grep.
+
+**Original plan text follows.**
 
 **Design:** `modeline.md` §6 (plugin row). **This slice closes ML.6**, which
 `modeline.md`'s plan carries as ⛔ deferred-to-the-plugin-phase and which keeps

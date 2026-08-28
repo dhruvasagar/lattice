@@ -1635,26 +1635,38 @@ interface types {
         line-count: u32,
     }
 
-    // --- UI-contribution seam (PH7.9, plugin-host.md §5 `ui`) — TYPE-MIRROR ----
+    // --- UI-contribution seam (plugin-host.md §5 `ui`) — TYPE-MIRROR ----------
     //
-    // Sized for the ABI freeze (§14) but the guest→host EMIT producer is DEFERRED
-    // (the PH7.6 matcher/ranker-mirror precedent): a plugin pushes modeline
-    // segments today via the event-bus element path (ML.3) and notifications via
-    // the `effect.echo` vocabulary, so a dedicated `ui.emit` interface waits for a
-    // real plugin that needs more (§5.5 "the API grows from real plugins").
-    // Sprites (§5.6.7) have no native struct yet — not mirrored (mirroring a
-    // non-existent surface violates exercised-trait-first).
+    // Sized for the ABI freeze (§14) when the emit producer was still deferred.
+    // **OC.3 / ML.6 landed that producer for the modeline half** (`ui.wit`), and
+    // building it against a real consumer reshaped the mirror — which is what the
+    // deferral note said should happen ("waits for a real plugin that needs
+    // more", §5.5).
+    //
+    // What changed and why: `ui-segment` bundled `zone` with `text` and `role`,
+    // which turned out to conflate two different lifetimes. The zone belongs to
+    // the *descriptor*, registered once and owned by the plugin for its whole
+    // life (`modeline.md` §6); the text is *content*, pushed many times per
+    // descriptor. A record carrying both forces a plugin to restate its zone on
+    // every push and gives the host no way to tell a re-registration from an
+    // update. So `ui.register-segment(id, zone, priority)` takes the descriptor
+    // half and `ui.emit-segment(id, text)` the content half, and the record
+    // dissolves — leaving `ui-zone` as the only piece with a native counterpart
+    // to mirror.
+    //
+    // `role` did not survive the same review. Both renderers match role names
+    // against a closed set and *disagree* on the fallback (TUI defaults to no
+    // style, GPUI to the path colour), so a role parameter would have shipped a
+    // silent cross-renderer difference. Neither native modeline producer uses
+    // more than one role either. It returns when a plugin registers its own
+    // theme element (TC.4) and can be styled coherently.
+    //
+    // Notifications remain a mirror with no producer — `effect.echo` still
+    // carries them. Sprites (§5.6.7) have no native struct yet, so mirroring one
+    // would violate exercised-trait-first.
 
-    /// A modeline zone (mirrors `lattice_host::modeline::Zone`).
+    /// A modeline zone (mirrors `lattice_mode::modeline::Zone`).
     enum ui-zone { left, center, right }
-
-    /// A pushed modeline segment (the ML.3 element-update shape): the zone, the
-    /// content text, and an optional themed role/element key for styling.
-    record ui-segment {
-        zone: ui-zone,
-        text: string,
-        role: option<string>,
-    }
 
     /// A user notification a plugin emits — reuses the `echo-level` severity the
     /// `effect.echo` path already carries.

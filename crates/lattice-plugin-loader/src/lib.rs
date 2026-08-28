@@ -287,6 +287,11 @@ pub struct LoaderServices {
     /// SAME one builtins use, so a plugin element is themeable and
     /// `:customize`-able like any other.
     pub theme_registry: Option<lattice_theme::ThemeRegistryHandle>,
+    /// OC.3 / ML.6: the modeline element registry a plugin's `ui.register-segment`
+    /// declares into — the SAME one built-ins and native modes use, so a plugin
+    /// segment lays out, orders and hides exactly like `lsp` or `claude-code`
+    /// with no renderer branch anywhere.
+    pub modeline: Option<lattice_mode::ModelineServiceHandle>,
     /// CM.6b: the compilation parser-factory registry an `error-parser`
     /// plugin's factory RCU-registers into. The compilation service reads
     /// the same handle once per run to mint each pipe reader's parser.
@@ -329,6 +334,8 @@ pub struct WiredSeams {
     pub decoration_registry: bool,
     pub context_registry: bool,
     pub theme_registry: bool,
+    /// OC.3 / ML.6: the modeline element registry.
+    pub modeline: bool,
     /// CM.6b: the compilation parser-factory registry.
     pub parser_factories: bool,
     /// CR.3: the help-topic registry.
@@ -365,6 +372,7 @@ impl WiredSeams {
             && self.decoration_registry
             && self.context_registry
             && self.theme_registry
+            && self.modeline
             && self.parser_factories
             && self.help_topics
             && self.dashboard_sections
@@ -571,6 +579,7 @@ impl PluginLoader {
             decoration_registry: self.env.decoration_registry.is_some(),
             context_registry: self.env.context_registry.is_some(),
             theme_registry: self.env.theme_registry.is_some(),
+            modeline: self.env.modeline.is_some(),
             parser_factories: self.env.parser_factories.is_some(),
             help_topics: self.env.help_topics.is_some(),
             dashboard_sections: self.env.dashboard_sections.is_some(),
@@ -671,7 +680,16 @@ impl PluginLoader {
             source_dir: Some(plugin.dir.clone()),
             lifecycle: None,
             tasks: Vec::new(),
-            teardown: PluginTeardown::new(PluginId(0)),
+            teardown: {
+                let mut t = PluginTeardown::new(PluginId(0));
+                // OC.3 / ML.6: recorded up front rather than per drain, because
+                // reversal is by NAMESPACE — any seam of this plugin may
+                // register a modeline segment, at any point in its life, and a
+                // per-drain token list would miss the late ones and leave an
+                // orphan descriptor rendering forever.
+                t.modeline_namespace = Some(manifest.id.clone());
+                t
+            },
             tier,
             granted,
             denied,
@@ -1601,6 +1619,11 @@ impl PluginLoader {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &**theme_h,
+                // OC.3: NOT part of the guard tuple above. That tuple is
+                // all-or-nothing — a missing handle skips the ENTIRE unload —
+                // and a modeline is not a precondition for reversing a config
+                // option. `WiredSeams::all()` is where its absence is caught.
+                modeline: self.env.modeline.as_ref(),
                 // CM.6b: RCU'd inside `unload` (it holds the `ArcSwap`
                 // handle directly rather than a `&mut` snapshot), because a
                 // compilation run may be reading it concurrently and the

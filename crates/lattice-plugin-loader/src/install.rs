@@ -132,6 +132,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // leaves the seam answering `none` rather than half-answering.
     // CG.4: hand the host the foreground-cancel registry so `<C-g>`
     // interrupts a running guest call, not just the next one.
+    // OC.3 / ML.6: hand the host what a plugin's modeline calls act on. Both
+    // halves together — a registry with no bus lets a plugin register a
+    // descriptor and push content that nothing ever repaints, which is
+    // half-wired in the exact way this seam is most likely to be.
+    if let Some(modeline) = boot.service::<lattice_mode::ModelineServiceHandle>() {
+        host.set_modeline((*modeline).clone(), boot.event_bus().clone());
+    } else {
+        tracing::debug!("modeline seam unwired: plugin segments will not register");
+    }
     // OC.2: hand the host a timer for the `wake-every` seam. `lattice-plugin-host`
     // owns no runtime by design, so it cannot make one — this crate, which spawns
     // every actor, is where an executor is actually in scope.
@@ -181,6 +190,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .map(|h| (*h).clone()),
         theme_registry: boot
             .service::<lattice_theme::ThemeRegistryHandle>()
+            .map(|h| (*h).clone()),
+        // OC.3 / ML.6: registered by `editor_boot` in Phase A, alongside the
+        // built-in element registration — well before this line.
+        modeline: boot
+            .service::<lattice_mode::ModelineServiceHandle>()
             .map(|h| (*h).clone()),
         // CM.6b: registered by `lattice_compilation::install`, which runs
         // early in Phase B — well before this line.

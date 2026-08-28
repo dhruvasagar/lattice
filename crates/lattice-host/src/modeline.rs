@@ -702,6 +702,75 @@ mod tests {
         assert_eq!(zone_ids(&layout.right), ["core.lang", "core.position"]);
     }
 
+    /// OC.3 / ML.6 — a **plugin-contributed** element rides the same layout
+    /// path a native one does, in both renderer peers, with no new renderer
+    /// code.
+    ///
+    /// This is the cross-renderer parity check for that slice, made at the layer
+    /// the peers actually share. Both `lattice-ui-tui::render::modeline_segments`
+    /// and `lattice-ui-gpui::window::modeline_row` do exactly two things per
+    /// element: take [`resolve_layout`]'s zone ordering, then branch on a
+    /// `core.` id prefix — built-ins resolved host-side, everything else looked
+    /// up with [`ModelineSnapshot::resolve`]. So proving a `Global`-scoped
+    /// non-`core.` element orders correctly and resolves for *any* pane buffer
+    /// proves it in both, and a grep for `Effect::` / renderer match arms finds
+    /// nothing to add because there is nothing kind-specific to add.
+    ///
+    /// The one place the peers genuinely diverge is the theme role: each matches
+    /// a closed five-constant set and their fallbacks differ (TUI unstyled, GPUI
+    /// the path colour). That is why the `ui` seam fixes every plugin span to
+    /// `modeline.mode_item` rather than taking a role parameter — it is the role
+    /// both peers resolve identically, and the only one either native modeline
+    /// producer uses.
+    #[test]
+    fn a_plugin_element_orders_and_resolves_like_a_native_one() {
+        use lattice_mode::modeline::{ElementContent, ModelineKey, ModelineRole, Scope, Span};
+
+        // Built through the real service, exactly as boot + `ui_host` do.
+        let svc = ModelineService::new();
+        register_builtin_elements(&svc);
+        // Shaped exactly as `ui_host::register_segment` builds it: a namespaced
+        // id, `Right`, `Global` scope.
+        svc.register(
+            ModelineElement::new(ElementId::new("org.clock"), Zone::Right, 7)
+                .with_scope(Scope::Global),
+        );
+        let reg = svc.snapshot().registry;
+        let layout = resolve_layout(&reg, &modeline_config());
+        assert_eq!(
+            zone_ids(&layout.right),
+            ["org.clock", "core.position", "core.lang"],
+            "priority orders a plugin element among the built-ins with no \
+             special case — 7 sits below core.position's 10"
+        );
+
+        // And its content resolves for whichever buffer a pane happens to show,
+        // because a plugin element is global — it has no buffer to scope to.
+        svc.update(
+            ModelineKey::Global,
+            ElementId::new("org.clock"),
+            ElementContent {
+                spans: vec![Span::new("◷ 0:14", ModelineRole::new("modeline.mode_item"))],
+            },
+        );
+        let snap = svc.snapshot();
+        let el = snap
+            .registry
+            .get(&ElementId::new("org.clock"))
+            .expect("registered above");
+        for buffer in [
+            lattice_core::BufferId(1),
+            lattice_core::BufferId(2),
+            lattice_core::BufferId(99),
+        ] {
+            assert_eq!(
+                snap.resolve(el, buffer).map(|c| c.spans[0].text.as_str()),
+                Some("◷ 0:14"),
+                "a global plugin element shows in every pane"
+            );
+        }
+    }
+
     /// Unknown / unregistered ids in an explicit list are skipped (and
     /// logged) — never panic.
     #[test]

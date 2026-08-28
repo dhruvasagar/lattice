@@ -358,10 +358,26 @@ non-left-button) + 2 (host parity contract) = **20**. *doc* — design
 dead space is a no-op that does not arm the perf timer. **Deps:** ML.3,
 MO.1.
 
-### ML.6 — WIT plugin API  ⛔ deferred (plugin phase)
-**Design:** §6 (plugin row). Plugins register/update/remove elements +
-export click handlers over the capability-gated boundary. Lands with the
-Plugin Architecture phase (mirrors LSP M.10). **Deps:** ML.4 + plugin host.
+### ML.6 — WIT plugin API  ✅ (2026-08-29, as OC.3)
+**Design:** §6 (plugin row). **Landed as OC.3** in
+[`org-treesitter-and-clocking.md`](org-treesitter-and-clocking.md) — org's
+running clock is the "real plugin that needs more" the `ui` seam was
+deferred for, so the slice was carved there and the detail lives with it.
+
+Shipped: `ui.register-segment(id, zone, priority)` /
+`ui.emit-segment(id, text)` / `ui.clear-segment(id)`. Ids are namespaced
+with the plugin's manifest id, so a plugin cannot shadow `core.*` or
+another plugin. Content publishes `ModelineElementUpdate` on the bus —
+the same path `lattice-lsp::modeline` uses, so the §12 wake repaints
+off-keystroke. Unload reverses by namespace.
+
+**Cut from the original scope, deliberately:** click handlers, per-buffer
+scope, and a per-span theme role. Each was cut for a stated reason rather
+than for time — see OC.3 in the org plan. A plugin segment is `Global`
+and styled `modeline.mode_item`, the one role both renderer peers resolve
+identically.
+
+**Deps:** ML.4 + plugin host — both satisfied.
 
 ---
 
@@ -369,14 +385,22 @@ Plugin Architecture phase (mirrors LSP M.10). **Deps:** ML.4 + plugin host.
 
 ```
 ML.0a ─► ML.0b-1 ─► ML.0b-2 ─► ML.1 ─► ML.2 ─► ML.3 ─► ML.5
-                                                 └► MO.1 ─► ML.4 ✅ ─► ML.6 (deferred)
+                                                 └► MO.1 ─► ML.4 ✅ ─► ML.6 ✅ (= OC.3)
 ```
 
 ML.0–ML.3 + ML.5 landed the configurable, themed, event-driven,
 zone-based modeline; **ML.4 (interaction) landed 2026-08-21** on the
 `Interaction` model ML.0 shipped, once MO.1 supplied the terminal mouse
-primitive. **ML.6 (WIT plugin API) remains ⛔** — it needs the plugin
-phase, so this plan stays active.
+primitive. **ML.6 (WIT plugin API) landed 2026-08-29 as OC.3**, carved
+into the org clocking plan because org's running clock is the real
+consumer the seam was waiting for.
+
+Every slice in this plan is now ✅, so it is archivable — with one thing
+to check first, per the archiving rule: ML.6 shipped a *narrower* surface
+than this plan described (no click handlers, no per-buffer scope, no
+per-span role). Those are recorded as deliberate cuts in OC.3 rather than
+as open slices here, so they do not keep this plan active; a future slice
+that wants plugin click handlers opens a new one.
 
 ---
 

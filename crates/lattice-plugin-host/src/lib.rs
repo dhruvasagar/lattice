@@ -118,6 +118,7 @@ pub mod theme_host;
 pub mod trace;
 pub mod trampoline;
 pub mod tree_resource;
+pub mod ui_host;
 pub mod wake;
 
 pub use boundary::WitBoundary;
@@ -922,6 +923,19 @@ struct PluginState {
     /// be polled, so `budget.epoch_deadline` is enforced by counting
     /// rather than by wasmtime's own countdown. Reset per call.
     epoch_spent: u64,
+    /// OC.3 / ML.6: what the `ui` seam's modeline calls act on — the element
+    /// registry plus the bus content updates publish onto. `Some` on the async
+    /// spawn paths that are handed a modeline; `None` on the sync grammar store.
+    ///
+    /// That `None` is the guarantee, not an oversight. The plan for OC.3 said
+    /// the seam would be "wired on the async linker only", which does not
+    /// survive the Component Model — a plugin's import set is fixed for the
+    /// whole component and the same artefact instantiates against the grammar
+    /// linker too, so an import missing there fails the WHOLE plugin (TC.6 /
+    /// CR.3 / LG.3c / OM.11, and org has been broken exactly this way once).
+    /// So `ui` is linked on both and the modeline is kept off the keystroke path
+    /// here instead, where it is testable.
+    ui: Option<ui_host::UiCtx>,
     /// OC.2: the plugin's armed periodic wakes. `Some` only on a store whose
     /// actor can fire them — [`PluginHost::spawn_event_plugin`], and only when a
     /// [`SleeperHandle`] was installed. `None` everywhere else, in which case
@@ -1032,6 +1046,60 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// [`host_services::local_utc_offset_seconds`].
     fn local_utc_offset_seconds(&mut self) -> i32 {
         host_services::local_utc_offset_seconds()
+    }
+}
+
+/// Host impl of the `ui` guest→host contribution seam (OC.3 / ML.6, §5). Three
+/// sync, non-trapping functions — the `host-services` shape — over a plugin's
+/// own modeline element. Every id is namespaced with the plugin's name before it
+/// reaches the registry, so one plugin cannot address another's element or a
+/// built-in. Logic + the namespacing live in [`ui_host`] so they are testable
+/// without a `Store`; this impl is the wiring and the absent-context arm.
+impl crate::lattice::plugin_host::ui::Host for PluginState {
+    fn register_segment(
+        &mut self,
+        id: String,
+        zone: crate::lattice::plugin_host::types::UiZone,
+        priority: i32,
+    ) -> bool {
+        let id = ui_host::namespaced_id(self.plugin_name.as_deref(), &id);
+        let Some(ctx) = self.ui.as_ref() else {
+            tracing::warn!(
+                element = %id,
+                "register-segment ignored: no modeline wired on this seam"
+            );
+            return false;
+        };
+        match ui_host::register_segment(ctx, id.clone(), zone, priority) {
+            // No teardown token is recorded here: unload reverses this plugin's
+            // elements by NAMESPACE (`PluginTeardown::modeline_namespace`), so a
+            // segment registered later in the plugin's life is covered too.
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(element = %id, %error, "register-segment refused");
+                false
+            }
+        }
+    }
+
+    fn emit_segment(&mut self, id: String, text: String) {
+        let id = ui_host::namespaced_id(self.plugin_name.as_deref(), &id);
+        match self.ui.as_ref() {
+            Some(ctx) => ui_host::emit_segment(ctx, id, text),
+            None => {
+                tracing::warn!(
+                    element = %id,
+                    "emit-segment dropped: no modeline wired on this seam"
+                );
+            }
+        }
+    }
+
+    fn clear_segment(&mut self, id: String) {
+        let id = ui_host::namespaced_id(self.plugin_name.as_deref(), &id);
+        if let Some(ctx) = self.ui.as_ref() {
+            ui_host::clear_segment(ctx, id);
+        }
     }
 }
 
@@ -2287,6 +2355,12 @@ pub struct PluginHost {
     // → `wake-every` answers `0`, which is what every harness that never wires
     // one gets.
     sleeper: std::sync::OnceLock<wake::SleeperHandle>,
+    // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
+    // and the bus content updates publish onto. Both halves are required (a
+    // registry with no bus registers descriptors nothing ever repaints), so
+    // they are set together like `project`'s resolver + buffer store. Unset →
+    // `register-segment` returns false and `emit-segment` warns and drops.
+    ui: std::sync::OnceLock<ui_host::UiCtx>,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
@@ -2452,6 +2526,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OC.3 / ML.6: the `ui` modeline-contribution seam. Sync host funcs (a
+        // registry write and a bus publish), wired here beside `logging` /
+        // `project` and inert for worlds that don't import it.
+        crate::lattice::plugin_host::ui::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // Multi-seam support (AP.1 spike): a single plugin `.wasm` may `provide`
         // grammar AND async seams (auto-pair: grammar + modes + config). Its
         // import set is fixed, so the async linker (used for the mode/config
@@ -2601,6 +2683,27 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OC.3 / ML.6, for the same TC.6 reason, and the plan for that slice
+        // predicted otherwise — it said `ui` would be "wired on the async linker
+        // only, so the modeline is structurally unreachable from the keystroke
+        // path". That mechanism does not survive the Component Model. A
+        // component's import set is fixed for the whole artefact, and org — the
+        // plugin this seam exists for — provides `grammar` too, so an import
+        // absent here fails the WHOLE plugin rather than one seam. Org has
+        // already been broken in exactly this way once, by a single
+        // `logging::log` call (see its world comment).
+        //
+        // The guarantee the plan wanted is kept one layer in instead:
+        // `instantiate_grammar_plugin` clears `PluginState::ui`, so a grammar
+        // action's `emit-segment` finds no context and warns + drops. That is
+        // the `config` / `theme` / `keymap` shape, and unlike a linker omission
+        // it is testable — `a_grammar_action_cannot_reach_the_modeline` is the
+        // test.
+        crate::lattice::plugin_host::ui::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL)?;
 
         Ok(Self {
@@ -2614,6 +2717,7 @@ impl PluginHost {
             project: std::sync::OnceLock::new(),
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
+            ui: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -2679,6 +2783,19 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_sleeper(&self, sleeper: wake::SleeperHandle) {
         let _ = self.sleeper.set(sleeper);
+    }
+
+    /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
+    ///
+    /// Both halves at once, on the `set_project_context` reasoning: a registry
+    /// with no bus would let a plugin register a descriptor and push content
+    /// that nothing ever repaints — half-wired, and half-wired is the failure
+    /// mode this seam is most likely to have (`plugin-gates-hand-guests-
+    /// throwaway-contexts`). Unset leaves `register-segment` returning `false`.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_modeline(&self, modeline: lattice_mode::ModelineServiceHandle, bus: Arc<EventBus>) {
+        let _ = self.ui.set(ui_host::UiCtx { modeline, bus });
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -2864,6 +2981,12 @@ impl PluginHost {
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,
+            // OC.3: stamped for every store here rather than per-spawn-path, on
+            // the `project` reasoning — there is nothing to wait for, so no path
+            // can forget it. The one store that must NOT have it, the sync
+            // grammar store, clears it explicitly in
+            // `instantiate_grammar_plugin`, which is a line a reader can find.
+            ui: self.ui.get().cloned(),
             // OC.2: only `spawn_event_plugin` fills this in — it is the one path
             // whose actor has somewhere to deliver an `on-wake`.
             wake: None,

@@ -79,6 +79,10 @@ fn rig(base: &std::path::Path, config: Arc<ConfigRegistry>) -> PluginLoader {
             theme_registry: Some(std::sync::Arc::new(
                 lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette()),
             )),
+            // OC.3: wired so the reversal covers modeline elements too. Not
+            // required for the rest of the unload — it is deliberately outside
+            // the loader's all-or-nothing registry guard.
+            modeline: Some(std::sync::Arc::new(lattice_mode::ModelineService::new())),
             tracer: None,
             meta_sink: None,
             ..Default::default()

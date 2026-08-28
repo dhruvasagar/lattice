@@ -26,6 +26,11 @@ world multiseam-fixture {
     import modes;
     import config;
     import host-services;
+    // OC.3 / ML.6: the modeline-contribution seam. Declared here for the same
+    // reason `host-services` is — one artefact, one import set, instantiated
+    // against BOTH linkers, so the fixture proves the async seam registers a
+    // segment AND that the same component's grammar seam cannot.
+    import ui;
 
     export register-grammar: func();
     export grammar-callbacks;

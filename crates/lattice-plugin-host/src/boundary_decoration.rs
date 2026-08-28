@@ -16,12 +16,19 @@
 //!     triggers the producer. Bulk buffer text rides `host-services` / the
 //!     deferred `document` handle, not this record.
 //!
-//! The `ui` emit surface (segment / notification) is **type-mirror-only** (the
-//! PH7.6 matcher/ranker precedent): the WIT records exist so the ABI is sized for
-//! the freeze, but there is no guest→host emit producer in v1 (a plugin pushes
-//! modeline content via the event-bus element path, ML.3, and notifications via
-//! `effect.echo`). No native `UiSegment`/`UiNotification` type exists to convert
-//! against, so no `WitBoundary` impl — only a construction smoke test.
+//! The `ui` emit surface **had** a modeline half here that was type-mirror-only,
+//! and OC.3 / ML.6 gave it a real producer — `ui.wit` plus [`ui_host`], which
+//! builds native `ModelineElement` / `ModelineElementUpdate` values directly
+//! rather than round-tripping a record, so nothing here converts for it. The
+//! `ui-segment` record that used to be mirrored is gone with it: building the
+//! producer against a real consumer showed it conflated the descriptor's zone
+//! with the content's text (see the note in `types.wit`).
+//!
+//! `ui-notification` is still mirror-only and still has no producer — a plugin
+//! notifies via `effect.echo` — so the smoke test below keeps sizing it for the
+//! freeze.
+//!
+//! [`ui_host`]: crate::ui_host
 
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
@@ -137,7 +144,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::lattice::plugin_host::types::{EchoLevel, UiNotification, UiSegment, UiZone};
+    use crate::lattice::plugin_host::types::{EchoLevel, UiNotification};
 
     #[test]
     fn gutter_diff_kind_round_trips_every_arm() {
@@ -212,14 +219,10 @@ mod tests {
 
     #[test]
     fn ui_type_mirror_is_constructible() {
-        // Type-mirror-only (no emit producer in v1): assert the `ui` records
-        // exist and are shaped correctly so the ABI is sized for the freeze.
-        let seg = UiSegment {
-            zone: UiZone::Right,
-            text: "main*".to_string(),
-            role: Some("modeline.branch".to_string()),
-        };
-        assert!(matches!(seg.zone, UiZone::Right));
+        // Still mirror-only (no emit producer): assert the record exists and is
+        // shaped correctly so the ABI stays sized for the freeze. The modeline
+        // half of `ui` grew a real producer at OC.3 and is covered by
+        // `ui_host`'s own tests and `tests/modeline_seam.rs`.
         let note = UiNotification {
             level: EchoLevel::Warn,
             message: "plugin loaded with reduced function".to_string(),

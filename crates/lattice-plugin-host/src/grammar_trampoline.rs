@@ -688,6 +688,14 @@ impl PluginHost {
         // AP.3: wire the shared config registry so a grammar action's
         // `config::get-option` reads the live editor options.
         store.data_mut().config_registry = config_registry.cloned();
+        // OC.3 / ML.6: and take the modeline handle AWAY. `new_store` stamps it
+        // on every store so no async path can forget it; this is the one store
+        // that must not have it. `ui` has to be on the sync grammar linker (a
+        // component's imports must resolve on every linker it instantiates
+        // against, or the whole plugin fails to load), so the "modeline is
+        // unreachable from the keystroke path" guarantee lives here rather than
+        // in the linker's import set — where it is one line, and testable.
+        store.data_mut().ui = None;
         let id = self.alloc_id();
         // OC.1: wire the emit context, for the same reason and at the same point
         // in the sequence `spawn_event_plugin` does — BEFORE `register-grammar`

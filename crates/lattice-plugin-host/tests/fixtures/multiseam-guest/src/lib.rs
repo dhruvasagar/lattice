@@ -28,7 +28,7 @@ use lattice::plugin_host::types::{
     Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext, Position,
     Range, TextObjectContext, TextObjectSpec,
 };
-use lattice::plugin_host::{config, grammar, host_services, modes};
+use lattice::plugin_host::{config, grammar, host_services, modes, tree_sitter};
 
 struct Component;
 
@@ -42,6 +42,14 @@ impl Guest for Component {
         };
         grammar::register_action("multiseam-read", "echo the char at the cursor", &spec(), 1);
         grammar::register_action("multiseam-declines", "always declines (AP.0.2)", &spec(), 2);
+        // OT.2: parse a file that is NOT an open buffer. The path arrives via
+        // `ctx.args` so one fixture proves the granted and every denied case.
+        grammar::register_action(
+            "multiseam-parse-file",
+            "parse an off-buffer file via the tree-sitter seam (OT.2)",
+            &spec(),
+            22,
+        );
         // OT.1: the tree reaches motions and text objects too, not only actions.
         // Both of these answer FROM THE TREE ALONE — a host that hands them
         // `none` (as every host did before OT.1) fails them loudly rather than
@@ -257,6 +265,22 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text,
+                })])
+            }
+            // OT.2: parse an off-buffer file and report what came back, so the
+            // test can tell "the tree crossed" from "the host said none".
+            // Echoes `<root-kind>:<named-child-count>`.
+            22 => {
+                let path = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    other => return Err(format!("multiseam: parse-file wants a path, got {other:?}")),
+                };
+                let snapshot = tree_sitter::parse_file(&path)
+                    .ok_or_else(|| format!("multiseam: parse-file returned none for {path}"))?;
+                let root = snapshot.root();
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{}:{}", root.kind(), root.named_child_count()),
                 })])
             }
             other => Err(format!("multiseam: unknown action callback {other}")),

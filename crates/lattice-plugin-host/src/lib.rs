@@ -1322,9 +1322,82 @@ impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument f
     }
 }
 
-// TS.1: the `tree-sitter` interface `Host` marker (empty — bindgen requires it
-// alongside `HostTreeSnapshot` / `HostNode`, the `buffer::Host` shape).
-impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::Host for PluginState {}
+// TS.1: the `tree-sitter` interface `Host` — the marker bindgen requires
+// alongside `HostTreeSnapshot` / `HostNode` (the `buffer::Host` shape), plus
+// OT.2's one free function.
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::Host for PluginState {
+    /// OT.2: parse an off-buffer file and mint a `tree-snapshot` for it.
+    ///
+    /// Every failure is `None`, never a trap — see the WIT for why the caller
+    /// cannot usefully tell them apart. Each arm logs at the level its cause
+    /// deserves: a denied grant is user-actionable (`info!`, matching
+    /// `read-file`'s and `walk`'s level), everything else is diagnostic
+    /// (`debug!`) because a project walk hitting unparseable files is the
+    /// ordinary case, not a problem, and `info!` here would flood
+    /// `*messages*` on a refile over a large tree.
+    fn parse_file(
+        &mut self,
+        path: String,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>> {
+        // The capability gate first: cheapest, and the one that is a policy
+        // answer rather than a fact about the file.
+        if !self
+            .grant
+            .editor
+            .contains(lattice_mode::CapabilitySet::TREE_SITTER)
+        {
+            tracing::info!(
+                %path,
+                "parse-file denied: plugin lacks the tree-sitter capability"
+            );
+            return None;
+        }
+        // Then the fs grant — the SAME check `read-file` makes, so a plugin
+        // cannot reach further with a parse than it can with a read.
+        let source = match host_services::read_within_grant(&self.grant, &path) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::debug!(%path, %error, "parse-file: read failed");
+                return None;
+            }
+        };
+        // Resolve the language exactly as a buffer's would — native arms first,
+        // then the plugin registry — so a plugin gets a tree for its own
+        // registered extension for the same reason the editor would.
+        let lang = lattice_syntax::Lang::detect_from_path(Some(std::path::Path::new(&path)));
+        let mut syntax = match lattice_syntax::Syntax::for_language(lang) {
+            Ok(Some(syntax)) => syntax,
+            // `Plain`, or a language whose grammar is not loadable here.
+            Ok(None) => {
+                tracing::debug!(%path, ?lang, "parse-file: no grammar for this extension");
+                return None;
+            }
+            Err(error) => {
+                tracing::debug!(%path, ?lang, %error, "parse-file: grammar load failed");
+                return None;
+            }
+        };
+        syntax.parse(&source);
+        let snapshot = std::sync::Arc::new(syntax.snapshot_owned());
+        // A snapshot can exist with no tree behind it. Minting a handle whose
+        // every method answers nothing would be worse than `none`, which says
+        // so — the same filter the buffer path applies.
+        if snapshot.tree().is_none() {
+            tracing::debug!(%path, ?lang, "parse-file: parsed to no tree");
+            return None;
+        }
+        match self
+            .table
+            .push(crate::tree_resource::TreeSnapshotResource::new(snapshot))
+        {
+            Ok(resource) => Some(resource),
+            Err(error) => {
+                tracing::debug!(%path, %error, "parse-file: resource table push failed");
+                None
+            }
+        }
+    }
+}
 
 impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeSnapshot
     for PluginState

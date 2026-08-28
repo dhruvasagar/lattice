@@ -400,3 +400,164 @@ fn a_text_object_without_the_grant_gets_no_tree_handle() {
         "the ungranted text object degrades to CommandError::Plugin, got {err:?}"
     );
 }
+
+// --- OT.2: parse-file — structure for content that is not an open buffer -----
+//
+// Every other snapshot here belongs to a buffer the editor parsed. A plugin
+// acting on project files it never opened (org's capture target, its refile
+// picker) had no way to get structure and hand-parsed text instead. Each denied
+// arm answers `none` rather than trapping, because the caller is making one
+// decision — "can I read structure here?" — and every failure means no.
+
+/// Register the multiseam grammar seam with BOTH an editor capability set and a
+/// filesystem grant — `parse-file` needs `tree-sitter` to parse and `fs:read`
+/// to read, and the denial tests turn each off independently.
+fn register_grammar_with_fs(
+    editor: CapabilitySet,
+    caps: Vec<lattice_plugin_host::Capability>,
+) -> (CommandRegistry, tempfile::TempDir) {
+    let path = guest_wasm().expect("caller checked the fixture exists");
+    let dirs = tempfile::tempdir().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let manifest = PluginManifest::new("multiseam", caps, editor);
+    let bus = Arc::new(lattice_runtime::EventBus::new());
+    let grammar_set = host
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None, None)
+        .expect("grammar drain instantiates");
+    let mut commands = CommandRegistry::new();
+    grammar_set.register_all(&mut commands);
+    (commands, dirs)
+}
+
+/// Fire `multiseam-parse-file <path>` and hand back whatever the dispatch gave.
+fn run_parse_file(
+    commands: &CommandRegistry,
+    path: &std::path::Path,
+) -> Result<lattice_grammar::effect::Effect, lattice_grammar::CommandError> {
+    let id = commands.id_by_name("multiseam-parse-file").unwrap();
+    let mut document = lattice_core::Document::from_text("unused\n");
+    let cancel = CancellationToken::never();
+    lattice_grammar::execute_with_env(
+        commands,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(id).with_args(lattice_grammar::args::Args::String(
+            path.to_string_lossy().into_owned(),
+        )),
+        &cancel,
+        GrammarEnv::default(),
+    )
+}
+
+#[test]
+fn a_granted_plugin_parses_a_file_it_never_opened() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let workdir = tempfile::tempdir().unwrap();
+    let file = workdir.path().join("off_buffer.rs");
+    // Two items at the top level, so the echoed named-child count distinguishes
+    // "the tree crossed" from any fixed-shape default.
+    std::fs::write(&file, "fn a() {}\nfn b() {}\n").unwrap();
+
+    let (commands, _dirs) = register_grammar_with_fs(
+        CapabilitySet::TREE_SITTER,
+        vec![lattice_plugin_host::Capability::FsRead(
+            workdir.path().to_path_buf(),
+        )],
+    );
+    // NOTE: `GrammarEnv::default()` — no `syntax` on the dispatch at all. The
+    // tree under test cannot have come from the buffer, because there isn't one.
+    let effect = run_parse_file(&commands, &file).expect("parse-file dispatches");
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(
+                text, "source_file:2",
+                "the host resolved .rs, parsed off-buffer, and the tree crossed"
+            );
+        }
+        other => panic!("expected an Echo from parse-file, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_file_needs_the_tree_sitter_capability() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let workdir = tempfile::tempdir().unwrap();
+    let file = workdir.path().join("off_buffer.rs");
+    std::fs::write(&file, "fn a() {}\n").unwrap();
+
+    // fs:read granted, tree-sitter withheld — so the read would succeed and the
+    // refusal is unambiguously the editor capability.
+    let (commands, _dirs) = register_grammar_with_fs(
+        CapabilitySet::empty(),
+        vec![lattice_plugin_host::Capability::FsRead(
+            workdir.path().to_path_buf(),
+        )],
+    );
+    let err =
+        run_parse_file(&commands, &file).expect_err("no tree-sitter grant → none → guest err");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "an ungranted parse-file degrades to CommandError::Plugin, got {err:?}"
+    );
+}
+
+#[test]
+fn parse_file_cannot_read_outside_the_fs_grant() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let granted = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let file = elsewhere.path().join("secret.rs");
+    std::fs::write(&file, "fn a() {}\n").unwrap();
+
+    // tree-sitter granted, but the file lives outside the fs grant. A parse must
+    // not reach further than a read would — otherwise `parse-file` is a way to
+    // learn the structure of files the plugin was refused.
+    let (commands, _dirs) = register_grammar_with_fs(
+        CapabilitySet::TREE_SITTER,
+        vec![lattice_plugin_host::Capability::FsRead(
+            granted.path().to_path_buf(),
+        )],
+    );
+    let err = run_parse_file(&commands, &file).expect_err("outside the grant → none → guest err");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "an out-of-grant parse-file degrades to CommandError::Plugin, got {err:?}"
+    );
+}
+
+#[test]
+fn parse_file_answers_none_for_an_extension_with_no_language() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let workdir = tempfile::tempdir().unwrap();
+    let file = workdir.path().join("notes.unknownext");
+    std::fs::write(&file, "just some text\n").unwrap();
+
+    // Fully granted and perfectly readable — the extension simply maps to no
+    // grammar. `none` rather than a trap: one unparseable file must not fail the
+    // walk that found it (`error-parser`'s rule).
+    let (commands, _dirs) = register_grammar_with_fs(
+        CapabilitySet::TREE_SITTER,
+        vec![lattice_plugin_host::Capability::FsRead(
+            workdir.path().to_path_buf(),
+        )],
+    );
+    let err = run_parse_file(&commands, &file).expect_err("no language → none → guest err");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "an unparseable extension degrades to CommandError::Plugin, got {err:?}"
+    );
+}

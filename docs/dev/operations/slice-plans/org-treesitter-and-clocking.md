@@ -158,7 +158,7 @@ therefore `emit-event` — is *already* linked into the grammar store
 | Slice | Description | Status |
 |---|---|---|
 | OT.1 | `option<borrow<tree-snapshot>>` on `apply-motion` + `apply-text-object` | ✅ |
-| OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | 📝 |
+| OT.2 | `tree-sitter.parse-file` — the off-buffer parse primitive | ✅ |
 | OT.3 | `agenda-source.scan` takes a tree; `agenda.rs` migrates | 📝 |
 | OT.4 | `headline.rs` → `(section)` / `(headline)` / `(stars)` | 📝 |
 | OT.5 | `timestamp.rs` → `(timestamp)` | 📝 |
@@ -232,7 +232,35 @@ regenerates its `wit/` per WT.2.
 **Test:** a fixture motion that resolves its target through the tree and would
 fail with `none`; the existing grammar round-trip benches must not regress.
 
-### OT.2 — `tree-sitter.parse-file` 📝
+### OT.2 — `tree-sitter.parse-file` ✅ (2026-08-28)
+
+**Two consumers, not three — the plan miscounted.** It listed OT.3 alongside
+OT.8's two, but `agenda-source.wit` is explicit that its guest "touches no
+filesystem: no preopens, no `walk` capability", and `parse-file` is `fs:read`
+gated. Having the agenda call it would hand a filesystem capability to the one
+seam deliberately built without one. So OT.3 keeps the host doing the read and
+the parse (which it must do anyway to build the source `Document`) and lends the
+guest a borrow; `parse-file` serves OT.8's capture target and refile picker,
+both of which are already filesystem-capable.
+
+**Gated twice**, and the second gate is the load-bearing one: `tree-sitter` for
+the parse, and the same `fs:read` grant `read-file` enforces for the read — so a
+plugin cannot learn the structure of a file it was refused the contents of.
+
+**Cost recorded in the WIT rather than buried.** This is reachable from the sync
+grammar linker, whose sibling comment promises reads are "no I/O, no parse — the
+tree is already there". `parse-file` is both. `read-file` set the I/O precedent
+at OC.5a; this adds a parse on top, so it belongs on explicit user actions and
+not in a motion or text object.
+
+**Tests:** four in `tree_seam.rs`. The granted case parses a two-function Rust
+file with `GrammarEnv::default()` — *no* `syntax` on the dispatch at all, so the
+tree provably did not come from a buffer — and asserts `source_file:2`. Three
+denial arms, each isolating one cause: capability withheld (fs granted), path
+outside the fs grant (capability granted), and an extension with no language
+(both granted, file readable).
+
+**Original plan text follows.**
 
 ```wit
 /// Parse off-buffer content with a registered language. The host reads and

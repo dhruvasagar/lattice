@@ -22,6 +22,41 @@ package lattice:plugin-host@0.1.0;
 interface tree-sitter {
     use types.{position, range};
 
+    /// OT.2: parse a file that is **not an open buffer**, and hand back a
+    /// snapshot on the same terms as a buffer's.
+    ///
+    /// Every other snapshot in this interface belongs to a buffer the editor
+    /// already parsed. A plugin acting on project files it never opened — org's
+    /// capture resolving a `file+headline` target, its refile picker listing
+    /// every headline in the project — had no way to get structure, so it
+    /// hand-parsed text and diverged from the grammar. That divergence is the
+    /// bug class OT.x exists to end, and this is the primitive that ends it for
+    /// off-buffer content.
+    ///
+    /// Names no plugin and no language: the extension resolves through the same
+    /// registry a buffer's does (native languages first, then plugin-registered
+    /// ones), so a plugin gets a tree for `.org` for exactly the reason the
+    /// editor would.
+    ///
+    /// **`none`, never a trap**, when any link in the chain is missing: no
+    /// `tree-sitter` capability, the path is outside the plugin's `fs:` grant,
+    /// the file is unreadable or not UTF-8, the extension maps to no language,
+    /// or the parse yields no tree. A caller that cannot tell these apart is
+    /// making one decision — "can I read structure here?" — and the answer is
+    /// no. `error-parser`'s rule: one bad file must not fail the walk.
+    ///
+    /// **The host reads and parses; only the path crosses.** The tree never
+    /// crosses the boundary (§7) and neither does the file's text, so this is
+    /// strictly cheaper than `read-file` plus a guest-side scan.
+    ///
+    /// **Cost, stated rather than buried.** Reachable from the SYNC grammar
+    /// linker, where the sibling comment says reads are "no I/O, no parse — the
+    /// tree is already there". This one is both, so it belongs on explicit user
+    /// actions (capture's chord) and NOT in a motion or text object, which fire
+    /// per keystroke. `read-file` set the I/O precedent here; this adds the
+    /// parse on top of it.
+    parse-file: func(path: string) -> option<tree-snapshot>;
+
     /// A host-owned, point-in-time view of a buffer's parse tree — backed by an
     /// `Arc<SyntaxSnapshot>` (an O(1) `ArcSwap` bump, no parse, no copy). An
     /// `apply-action` receives it as `option<borrow<tree-snapshot>>` (absent

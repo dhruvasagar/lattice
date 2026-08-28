@@ -353,6 +353,29 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   filter crosses (a custom `predicate` is the guest filtering inside `on-event`). §5.10.4. *(A
   component trap taints its instance, so a trapping plugin's later deliveries also fail —
   dead-until-reinstantiation, PH7.12; the guarantee is cross-plugin/host isolation.)*
+- **Periodic wakes (✅ OC.2)**: the same world carries `wake-every(ms) -> wake-id` /
+  `cancel-wake(id)` and an `on-wake(id)` export. A plugin whose *display* changes without the
+  buffer changing has otherwise no way to say so — org's running clock re-renders once a minute
+  over a file that is already correct — and before this its segment could only advance on the
+  next keystroke, which is the "works, but only after I hit something" failure the
+  boot-composition rules exist to design out.
+
+  It lives on the **events actor**, not on a scheduler of its own: a wake is a future on the
+  actor's `FuturesUnordered`, selected against the bus channel, so it inherits the actor's
+  budget, its quarantine and its task-abort teardown without any of them being re-implemented.
+  `events` is not on the sync grammar linker, so a wake is unreachable from the keystroke path
+  structurally (paramount #4). Two consequences worth naming: the actor loop now ends when the
+  channel is closed **and** nothing is armed (a plugin that subscribes to nothing but arms a
+  wake is a real shape); and a trapping `on-wake` quarantines exactly as a trapping `on-event`
+  does, cancelling the plugin's wakes so a dead store is not re-entered once a period forever.
+
+  The **timer is injected**, not owned: `lattice-plugin-host` keeps `tokio` a dev-dependency on
+  purpose (`futures` was chosen over `tokio::sync` so the lib owns no runtime and every actor is
+  spawned by its caller), so the host holds a `Sleeper` trait object the loader supplies. A
+  harness that wires none leaves `wake-every` answering `0` — the same honest degradation every
+  unwired context here uses, rather than a fabricated tick. Rejected: a host-owned scheduler
+  thread (mirrors `EpochTicker`, but adds a thread and needs its own teardown story) and taking
+  a real `tokio` dependency (breaks the stated invariant for one function).
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an
   auto-generated `:<mode-name>` toggle ex-command, built by the shared helper
   `lattice_grammar::registry::mode_toggle_ex_command_spec` — the *same* helper boot's

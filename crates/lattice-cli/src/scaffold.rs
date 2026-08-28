@@ -71,8 +71,13 @@ world init {
     export register-keymap: func();
     export register-events: func();
     export on-event: func(handler: u32, ev: event);
+    // A periodic wake you asked for with `events::wake_every(ms)`. Required
+    // even if you arm none — the host instantiates this world against the
+    // events bindings, which name every export.
+    export on-wake: func(id: wake-id);
 
     use types.{event};
+    use events.{wake-id};
 }
 "#;
 
@@ -132,6 +137,11 @@ impl Guest for Config {
             }
         }
     }
+
+    // Periodic work, off the keystroke path. Arm one with
+    // `events::wake_every(60_000)` (it returns the id you get back here) and
+    // stop it with `events::cancel_wake(id)`. Leave this empty if you arm none.
+    fn on_wake(_id: u32) {}
 }
 
 export!(Config);

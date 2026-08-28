@@ -118,6 +118,7 @@ pub mod theme_host;
 pub mod trace;
 pub mod trampoline;
 pub mod tree_resource;
+pub mod wake;
 
 pub use boundary::WitBoundary;
 pub use capability::{
@@ -139,6 +140,9 @@ pub use trace::{
 };
 pub use transient_source::{project_transient_context, spec_from_wit, transient_builder};
 pub use transient_task::{TransientActor, TransientClient};
+/// OC.2: the injected timer the wake seam sleeps on. The lib owns no runtime, so
+/// the caller supplies this (the loader's is backed by `tokio::time::sleep`).
+pub use wake::{Sleeper, SleeperHandle};
 /// The compiled component — the return type of [`PluginHost::compile`],
 /// re-exported so callers (the plugin loader) can name it without a direct
 /// `wasmtime` dependency.
@@ -918,6 +922,17 @@ struct PluginState {
     /// be polled, so `budget.epoch_deadline` is enforced by counting
     /// rather than by wasmtime's own countdown. Reset per call.
     epoch_spent: u64,
+    /// OC.2: the plugin's armed periodic wakes. `Some` only on a store whose
+    /// actor can fire them — [`PluginHost::spawn_event_plugin`], and only when a
+    /// [`SleeperHandle`] was installed. `None` everywhere else, in which case
+    /// `wake-every` answers `0` and logs; a guest that treats a `0` as armed
+    /// simply never hears back, which is a visible nothing rather than a
+    /// plausible wrong answer.
+    ///
+    /// Notably `None` on the sync grammar store: `events` is not on the grammar
+    /// linker, so the seam is unreachable from the keystroke path structurally,
+    /// and this field is the second, redundant answer to the same question.
+    wake: Option<wake::WakeCtx>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1759,6 +1774,31 @@ impl crate::events_host::bindings::lattice::plugin_host::events::Host for Plugin
     fn subscribe(&mut self, filter: crate::lattice::plugin_host::types::EventFilter, handler: u32) {
         self.event_subscriptions.record(filter, handler);
     }
+
+    /// OC.2 `wake-every`: arm a periodic wake, answered by `on-wake(id)` on this
+    /// plugin's own actor task. Returns `0` when no wake context is wired — a
+    /// store whose actor cannot fire one, or a host with no [`SleeperHandle`]
+    /// installed. Degrading rather than trapping is the four-artefact
+    /// graceful-failure clause; the `warn!` is what makes the nothing visible.
+    fn wake_every(&mut self, ms: u32) -> u32 {
+        let plugin = self.event_emit.as_ref().map_or(0, |c| c.plugin_id.0);
+        match self.wake.as_mut() {
+            Some(ctx) => ctx.arm(plugin, ms),
+            None => {
+                tracing::warn!(ms, "wake-every refused: no wake mechanism on this seam");
+                0
+            }
+        }
+    }
+
+    /// OC.2 `cancel-wake`: disarm. Idempotent by contract, including on a store
+    /// with no wake context at all.
+    fn cancel_wake(&mut self, id: u32) {
+        let plugin = self.event_emit.as_ref().map_or(0, |c| c.plugin_id.0);
+        if let Some(ctx) = self.wake.as_mut() {
+            ctx.cancel(plugin, id);
+        }
+    }
 }
 
 /// Host impl of the `config` guest→host option seam (PH7.10, §5). The guest calls
@@ -2233,6 +2273,13 @@ pub struct PluginHost {
     // budget and cannot be interrupted early, which is the pre-CG.4
     // behaviour.
     cancel: std::sync::OnceLock<lattice_mode::ForegroundCancelHandle>,
+    // OC.2: the timer the wake seam sleeps on. Injected rather than owned
+    // because this crate deliberately has no runtime — `tokio` is a
+    // dev-dependency and `futures` was chosen over `tokio::sync` to keep it
+    // that way. Set once by boot, like `tracer` / `project` / `cancel`; unset
+    // → `wake-every` answers `0`, which is what every harness that never wires
+    // one gets.
+    sleeper: std::sync::OnceLock<wake::SleeperHandle>,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
@@ -2559,6 +2606,7 @@ impl PluginHost {
             tracer: std::sync::OnceLock::new(),
             project: std::sync::OnceLock::new(),
             cancel: std::sync::OnceLock::new(),
+            sleeper: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -2613,6 +2661,17 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_foreground_cancel(&self, cancel: lattice_mode::ForegroundCancelHandle) {
         let _ = self.cancel.set(cancel);
+    }
+
+    /// OC.2: hand the host the timer the `wake-every` seam sleeps on.
+    ///
+    /// This crate owns no runtime, so it cannot construct one — the caller that
+    /// spawns the actors is the one that has an executor to sleep on, and it
+    /// supplies the [`Sleeper`] here. Unset leaves `wake-every` answering `0`.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_sleeper(&self, sleeper: wake::SleeperHandle) {
+        let _ = self.sleeper.set(sleeper);
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -2798,6 +2857,9 @@ impl PluginHost {
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,
+            // OC.2: only `spawn_event_plugin` fills this in — it is the one path
+            // whose actor has somewhere to deliver an `on-wake`.
+            wake: None,
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

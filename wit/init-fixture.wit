@@ -12,7 +12,13 @@ world init-fixture {
     import modes;
     import config;
     use types.{event};
+    use events.{wake-id};
 
     export register-events: func();
     export on-event: func(handler: u32, ev: event);
+    /// OC.2: the events drain instantiates against the `events-plugin`
+    /// bindings, and a component must export every function those bindings
+    /// name — so a world that declares its own event exports declares this one
+    /// too, even when (as here) it arms no wakes and the host never calls it.
+    export on-wake: func(id: wake-id);
 }

@@ -29,6 +29,41 @@ interface events {
     /// guest filtering inside `on-event`). The host delivers each match to the
     /// world's `on-event(handler, ev)` export.
     subscribe: func(filter: event-filter, handler: u32);
+
+    /// The host-issued handle for one armed periodic wake (OC.2). Host-allocated
+    /// rather than guest-chosen — unlike `handler` above, which the guest picks
+    /// because it is a *dispatch key*. A wake is a live resource the host must be
+    /// able to cancel unambiguously, so the host names it; `0` is never a valid
+    /// id and is what a refused `wake-every` returns.
+    type wake-id = u32;
+
+    /// Ask to be woken every `ms` milliseconds, forever, until `cancel-wake`
+    /// (OC.2). Delivery is `on-wake(id)` on the plugin's own actor task — the
+    /// SAME channel `on-event` arrives on, so a wake is subject to the same
+    /// budget, the same quarantine, and the same "never on the keystroke path"
+    /// guarantee (paramount #4). It is not a precise timer: a wake fires no
+    /// sooner than the interval and may be late under load, and a late one does
+    /// not queue a backlog — the period restarts when the wake is delivered.
+    ///
+    /// Intended for the low-frequency "recompute my own display string" shape
+    /// (org's clock re-renders its modeline segment once a minute, `design.md`
+    /// Appendix B's idle hooks). It is NOT a frame or animation source: each
+    /// firing is a full guest call, so a small `ms` buys a guest call at that
+    /// rate for as long as the plugin is loaded.
+    ///
+    /// Returns `0` when no wake mechanism is wired on this seam — a plugin
+    /// instantiated on a store with no timer (the sync grammar seam, a test
+    /// harness). Like every other seam here that answers rather than traps, the
+    /// degradation is honest and visible in the log, and a guest that treats a
+    /// `0` as armed simply never hears back.
+    wake-every: func(ms: u32) -> wake-id;
+
+    /// Disarm a wake. Unknown / already-cancelled / `0` ids are ignored — a
+    /// cancel is idempotent, because the alternative is a guest that must track
+    /// host state to avoid a trap. There is deliberately no bulk form: wakes are
+    /// cancelled en masse on deactivate / quarantine by the host, for the same
+    /// reason `events` has no `unsubscribe`.
+    cancel-wake: func(id: wake-id);
 }
 
 /// The world an event-observing plugin implements (PH7.8). **Async** (unlike the
@@ -55,6 +90,7 @@ world events-plugin {
     /// Inert for guests that don't call it.
     import project;
     use types.{event};
+    use events.{wake-id};
 
     /// Called once by the host to drive subscription registration; the guest
     /// calls the imported `events.subscribe(filter, handler)` inside it.
@@ -65,4 +101,11 @@ world events-plugin {
     /// delivery, the plugin stays subscribed, other subscribers are untouched
     /// (§8; PH7.8c bounds it with the event budget, PH7.8d).
     export on-event: func(handler: u32, ev: event);
+
+    /// OC.2: an armed `wake-every` came due. Same task, same budget, same
+    /// graceful-degradation contract as `on-event` — a trap here quarantines the
+    /// plugin exactly as one there does, and the actor keeps running for every
+    /// other plugin. A plugin that arms no wakes exports an empty body the host
+    /// never calls.
+    export on-wake: func(id: wake-id);
 }

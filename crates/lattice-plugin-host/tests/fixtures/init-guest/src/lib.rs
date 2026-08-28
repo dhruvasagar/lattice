@@ -46,6 +46,10 @@ impl Guest for Component {
             }
         }
     }
+
+    /// OC.2: this fixture arms no wakes, but the world's exports must satisfy
+    /// the `events-plugin` bindings the host instantiates against.
+    fn on_wake(_id: u32) {}
 }
 
 export!(Component);

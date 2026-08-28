@@ -55,6 +55,25 @@ struct PluginEventDelivery {
     event: NativeEvent,
 }
 
+/// A pending `wake-every` sleep, resolving to the id that came due. Boxed
+/// because the [`Sleeper`](crate::Sleeper) is a trait object — the crate owns no
+/// runtime, so the concrete future type belongs to the caller, not here.
+type BoxWake = futures::future::BoxFuture<'static, u32>;
+
+/// What the actor's `select` produced this turn.
+///
+/// OC.2 gave the loop a second input. A wake does **not** ride the bus channel:
+/// it is a future on the actor's own `FuturesUnordered`, so it needs no sender
+/// and — the load-bearing part — cannot keep the bus channel open. A plugin's
+/// actor still ends exactly when its last subscription is pruned *and* it has no
+/// wake armed, which is the property the `drop(tx)` below exists to give.
+enum Turn {
+    Event(PluginEventDelivery),
+    /// An armed `wake-every` came due. The id may since have been cancelled;
+    /// [`EventActor::deliver_wake`] is what checks.
+    Wake(u32),
+}
+
 /// The per-plugin actor: owns the `Store` + events bindings for the plugin's
 /// life and drives `on-event` for each delivery the bus pushes onto its channel.
 /// Construct via [`PluginHost::spawn_event_plugin`]; drive by spawning
@@ -96,9 +115,175 @@ impl EventActor {
     /// (quarantine / reload is PH7.12). The guarantee held here is **isolation**:
     /// the publisher, the bus, every other subscriber, and every other plugin are
     /// untouched — only the trapping plugin degrades.
+    ///
+    /// **OC.2 gave the loop a second mouth.** Besides bus deliveries it drains a
+    /// set of pending `wake-every` sleeps, firing `on-wake(id)` for each and
+    /// re-arming it. Both inputs land on this one task, so a wake is bounded by
+    /// the same budget, tripped by the same quarantine and dropped by the same
+    /// task abort as an event — none of which had to be re-implemented for it.
+    ///
+    /// The loop now ends when the channel is closed **and** nothing is armed. A
+    /// plugin that subscribes to nothing but arms a wake is a legitimate shape
+    /// (org's clock does exactly that between clock-in and clock-out), and under
+    /// the old `while let Some(..)` its actor would have exited before the first
+    /// tick.
     pub async fn run(mut self) {
-        while let Some(delivery) = self.rx.next().await {
-            self.deliver(delivery).await;
+        use futures::stream::{FusedStream, FuturesUnordered};
+
+        let mut wakes: FuturesUnordered<futures::future::BoxFuture<'static, u32>> =
+            FuturesUnordered::new();
+        // Wakes armed from inside `register-events`, before this loop existed.
+        self.arm_pending(&mut wakes);
+
+        loop {
+            if self.rx.is_terminated() && wakes.is_empty() {
+                return;
+            }
+            // Borrow `rx` explicitly so the select's futures are temporaries of
+            // this block — `deliver` below takes `&mut self`.
+            let turn = {
+                let rx = &mut self.rx;
+                if wakes.is_empty() {
+                    match rx.next().await {
+                        Some(d) => Turn::Event(d),
+                        None => continue, // re-check the exit condition above
+                    }
+                } else if rx.is_terminated() {
+                    match wakes.next().await {
+                        Some(id) => Turn::Wake(id),
+                        None => continue,
+                    }
+                } else {
+                    futures::select! {
+                        d = rx.next() => match d {
+                            Some(d) => Turn::Event(d),
+                            None => continue,
+                        },
+                        id = wakes.next() => match id {
+                            Some(id) => Turn::Wake(id),
+                            None => continue,
+                        },
+                    }
+                }
+            };
+            match turn {
+                Turn::Event(delivery) => self.deliver(delivery).await,
+                Turn::Wake(id) => self.deliver_wake(id, &mut wakes).await,
+            }
+            // A guest call may have armed more wakes (`on-event` arming one is
+            // org's clock-in path exactly), so re-check after every turn rather
+            // than only at the top.
+            self.arm_pending(&mut wakes);
+        }
+    }
+
+    /// Turn every newly-armed wake into a pending sleep. A no-op on a store with
+    /// no wake context (no `Sleeper` installed), which is why the whole seam can
+    /// be absent without the loop knowing.
+    fn arm_pending(&mut self, wakes: &mut futures::stream::FuturesUnordered<BoxWake>) {
+        let Some(ctx) = self.store.data_mut().wake.as_mut() else {
+            return;
+        };
+        let armed = ctx.take_newly_armed();
+        for id in armed {
+            if let Some(period) = ctx.period(id) {
+                wakes.push(ctx.sleep_for(id, period));
+            }
+        }
+    }
+
+    /// Fire one due wake at the guest, then re-arm it.
+    ///
+    /// Three ways this delivers nothing, each deliberate: the plugin is
+    /// quarantined (its store is dead — cancel everything so the timer stops
+    /// rather than re-entering a corpse once a minute forever); the id was
+    /// cancelled while its sleep was in flight (this is how `cancel-wake`
+    /// reaches an already-running timer); or arming the budget failed.
+    ///
+    /// Re-arming happens **after** delivery, so the interval is a gap between
+    /// wakes rather than a fixed schedule a slow guest could fall behind and
+    /// then be flooded to catch up on.
+    async fn deliver_wake(
+        &mut self,
+        id: u32,
+        wakes: &mut futures::stream::FuturesUnordered<BoxWake>,
+    ) {
+        if self.quarantine.is_tripped() {
+            if let Some(ctx) = self.store.data_mut().wake.as_mut() {
+                ctx.cancel_all();
+            }
+            return;
+        }
+        let still_armed = self
+            .store
+            .data()
+            .wake
+            .as_ref()
+            .is_some_and(|c| c.period(id).is_some());
+        if !still_armed {
+            // Cancelled mid-flight. Drop it; do not re-arm.
+            return;
+        }
+        if let Err(error) = arm_store(&mut self.store, self.budget) {
+            tracing::warn!(plugin = self.id.0, wake = id, %error, "wake skipped: arm failed");
+            return;
+        }
+        let __trace_start = std::time::Instant::now();
+        let call_result = self.bindings.call_on_wake(&mut self.store, id).await;
+        match call_result {
+            Ok(()) => {
+                if let Some(tracer) = self.tracer.as_ref() {
+                    use crate::trace::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+                    tracer.trace(PluginTraceRecord {
+                        plugin: self.id.0,
+                        seam: crate::PluginSeam::Events,
+                        direction: Direction::GuestExport,
+                        call: std::borrow::Cow::Borrowed("on-wake"),
+                        level: TraceLevel::Debug,
+                        outcome: TraceOutcome::Ok {
+                            micros: __trace_start.elapsed().as_micros() as u64,
+                            fuel_delta: 0,
+                        },
+                        detail: None,
+                    });
+                }
+                // Still armed? (`on-wake` itself may have cancelled it — org's
+                // clock-out does exactly that from a handler.)
+                if let Some(ctx) = self.store.data().wake.as_ref()
+                    && let Some(period) = ctx.period(id)
+                {
+                    wakes.push(ctx.sleep_for(id, period));
+                }
+            }
+            Err(source) => {
+                let kind = classify_trap(&source);
+                tracing::warn!(
+                    plugin = self.id.0,
+                    wake = id,
+                    ?kind,
+                    "plugin wake handler trapped; wake cancelled"
+                );
+                if let Some(tracer) = self.tracer.as_ref() {
+                    use crate::trace::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+                    tracer.trace(PluginTraceRecord {
+                        plugin: self.id.0,
+                        seam: crate::PluginSeam::Events,
+                        direction: Direction::GuestExport,
+                        call: std::borrow::Cow::Borrowed("on-wake"),
+                        level: TraceLevel::Error,
+                        outcome: TraceOutcome::Trap {
+                            kind: kind.label().to_string(),
+                            func: "on-wake".to_string(),
+                        },
+                        detail: None,
+                    });
+                }
+                self.quarantine.trip("on-wake", kind);
+                // The store is dead; a re-armed wake would only re-enter it.
+                if let Some(ctx) = self.store.data_mut().wake.as_mut() {
+                    ctx.cancel_all();
+                }
+            }
         }
     }
 
@@ -197,6 +382,12 @@ impl EventActor {
                     });
                 }
                 self.quarantine.trip("on-event", kind);
+                // OC.2: the store is dead, so every armed wake would now be a
+                // guest call into a corpse once per period, forever. Cancel them
+                // here rather than letting `deliver_wake` discover it each time.
+                if let Some(ctx) = self.store.data_mut().wake.as_mut() {
+                    ctx.cancel_all();
+                }
             }
         }
     }
@@ -270,6 +461,15 @@ impl PluginHost {
         if let Some(registry) = config {
             store.data_mut().config_registry = Some(Arc::clone(registry));
         }
+
+        // OC.2: the wake context, wired BEFORE `register-events` for the same
+        // reason `event_emit` is — a guest may arm its first wake from there.
+        // `None` when no `Sleeper` was installed, which leaves `wake-every`
+        // answering `0` rather than pretending.
+        store.data_mut().wake = self
+            .sleeper
+            .get()
+            .map(|s| crate::wake::WakeCtx::new(Arc::clone(s)));
 
         // Drive subscription registration: the guest calls the imported
         // `events.subscribe(filter, handler)` inside `register-events`, recording

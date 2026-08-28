@@ -24,6 +24,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
 
+/// OC.2: the concrete timer behind the `wake-every` seam.
+///
+/// It lives here rather than in `lattice-plugin-host` because that crate keeps
+/// `tokio` a dev-dependency on purpose — `futures` was picked over `tokio::sync`
+/// so the lib owns no runtime and every actor is spawned by its caller. This
+/// crate IS that caller, so the executor dependency lands where the executor
+/// already is.
+struct TokioSleeper;
+
+impl lattice_plugin_host::Sleeper for TokioSleeper {
+    fn sleep(&self, dur: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(tokio::time::sleep(dur))
+    }
+}
+
 /// Process-global opt-**in** to boot-time plugin auto-discovery, set by
 /// [`enable_autoload`]. Checked (together with the
 /// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var, which still overrides) in
@@ -117,6 +132,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // leaves the seam answering `none` rather than half-answering.
     // CG.4: hand the host the foreground-cancel registry so `<C-g>`
     // interrupts a running guest call, not just the next one.
+    // OC.2: hand the host a timer for the `wake-every` seam. `lattice-plugin-host`
+    // owns no runtime by design, so it cannot make one — this crate, which spawns
+    // every actor, is where an executor is actually in scope.
+    host.set_sleeper(Arc::new(TokioSleeper));
     if let Some(cancel) = boot.service::<lattice_mode::ForegroundCancelHandle>() {
         host.set_foreground_cancel((*cancel).clone());
     } else {

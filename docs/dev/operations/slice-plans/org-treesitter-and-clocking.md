@@ -723,7 +723,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | Slice | Description | Status |
 |---|---|---|
 | OC.1 | `EventEmitCtx` on the grammar store — finish a half-wired import | ✅ |
-| OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | 📝 |
+| OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | ✅ |
 | OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | 📝 |
 | OC.4 | `host-services.local-utc-offset-seconds` | 📝 |
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | 📝 |
@@ -767,7 +767,60 @@ already takes `bus: &Arc<EventBus>` for the `Quarantine`.
 **Test:** a fixture grammar action emits an event; a native subscriber receives
 it. This is the test whose absence let the gap survive.
 
-### OC.2 — a plugin can ask to be woken 📝
+### OC.2 — a plugin can ask to be woken ✅ (2026-08-28)
+
+**The plan's shape was right and its arithmetic was one input short.** "A wake
+rides that existing channel as a second `Delivery` variant" reads as the cheap
+option, and it is not the cheap option — putting a wake on the bus channel means
+something must hold a sender, and a store-held sender never closes, so the
+actor's "end when the last subscription is pruned" property dies for every event
+plugin whether it arms a wake or not. **A wake is a future on the actor's own
+`FuturesUnordered` instead**, selected against the channel. No sender, no
+lifecycle inversion, and the actor's exit condition becomes the honest one:
+closed channel **and** nothing armed.
+
+That last clause is a real behaviour change, not bookkeeping. A plugin that
+subscribes to nothing and only arms a wake is exactly org's clock between
+clock-in and clock-out, and under the old `while let Some(..)` its actor exits
+before the first tick. `an_actor_with_a_live_wake_outlives_its_last_subscription`
+is that case.
+
+**The timer had to be injected, and this was the slice's one genuine fork.**
+`lattice-plugin-host` states twice in its own `Cargo.toml` that it owns no
+runtime — `tokio` is a dev-dependency and `futures` was picked over `tokio::sync`
+to keep it so. `tokio::time::sleep` inside `wake-every` would have ended that for
+one function. Two options were weighed: a host-owned scheduler thread (mirrors
+the in-crate `EpochTicker`) versus a `Sleeper` trait object the loader supplies,
+with the sleeps living on the actor. The second won on **heuristic #1** — the
+wake is a general primitive (`design.md` Appendix B wants it for idle hooks), and
+scoping each one to the plugin's actor means cancellation, budget and teardown
+are inherited rather than re-implemented. It also spends no thread and needs no
+cross-thread hop. Unwired, `wake-every` answers `0`, which is the same honest
+degradation `event_emit` and `config_registry` use.
+
+**Blast radius the plan did not list:** every world that declares its own event
+exports must now declare `on-wake` too, because a component is instantiated
+against the `events-plugin` bindings and those name every export. That is
+`init-fixture.wit` + its guest, and `lattice-cli`'s `init` scaffold — the same
+scaffold-drift class OT.1 found, caught here before it shipped.
+
+**Also spec'd here, not in the plan:** a `MIN_WAKE_MS` floor of 50 ms. `ms` is a
+`u32` the guest chooses, and `wake-every(0)` is a request to re-enter the guest
+as fast as the executor allows — a busy loop that would starve the plugin's own
+event deliveries, since they share the actor. Clamped and logged rather than
+refused, so a slightly-too-eager plugin still works.
+
+**Tests:** four in `wake_seam.rs`, each written the way the seam fails —
+**nothing is published on the bus in any of them**, so a wake that only arrives
+alongside some other delivery reads as an empty log rather than as a pass. Real
+clock, not a paused one: the bug is "nothing ever wakes me", and a fake clock the
+test advances by hand is precisely the shape that passes on a broken host.
+Verified by mutation twice — making `arm_pending` a no-op fails three of the four
+(the fourth is the no-timer-wired arm, which correctly still passes), and making
+`cancel-wake` not remove the entry fails the cancel assertion with ten ticks
+where three were expected.
+
+**Original plan text follows.**
 
 ```wit
 wake-every:  func(ms: u32) -> wake-id;

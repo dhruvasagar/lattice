@@ -44,6 +44,29 @@ struct SavedEcho {
 
 struct Component;
 
+/// OC.2 wake state. A component is single-threaded, but `RefCell` says so
+/// without `unsafe` and costs nothing at this call rate.
+mod wake_state {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The periodic wake armed from `register-events` — the "org's clock
+        /// re-renders once a minute" shape.
+        pub static TICKER: Cell<u32> = const { Cell::new(0) };
+        /// How many times it has fired. The guest cancels itself at
+        /// [`CANCEL_AFTER`] so a test can prove `cancel-wake` actually stops the
+        /// timer rather than merely being callable.
+        pub static FIRES: Cell<u32> = const { Cell::new(0) };
+        /// A wake armed from *inside* `on-event` (org clocks in from a chord's
+        /// event, not from registration) whose `on-wake` traps — the
+        /// quarantine-without-wedging arm.
+        pub static POISON: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Fires after which the ticker cancels itself.
+    pub const CANCEL_AFTER: u32 = 3;
+}
+
 /// A one-kind declarative filter (the common `:autocmd <kind>` shape).
 fn kind_filter(kind: EventKind) -> EventFilter {
     EventFilter {
@@ -87,17 +110,32 @@ impl Guest for Component {
         // No-op handler: returns immediately (no fs) — the clean per-delivery
         // dispatch path the perf ratchet (PH7.8d) measures.
         events::subscribe(&kind_filter(EventKind::DocumentChanged), 4);
+        // OC.2: arms the poison wake when it fires (see `on_event`). A separate
+        // kind so the existing delivery assertions are untouched.
+        events::subscribe(&kind_filter(EventKind::DocumentOpened), 5);
         // PH7.8b.2/3: declare a plugin-defined event via the `register-event`
         // host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).
         // It self-registers into the host's runtime event registry under this
         // plugin's provenance; `on-event` handler 1 emits it on save.
         host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
+        // OC.2: arm a periodic wake from registration. 50 ms is the seam's
+        // floor — fast enough that a test does not sit on a real clock, and the
+        // guest cancels itself after a few fires so it cannot run away.
+        wake_state::TICKER.with(|t| t.set(events::wake_every(50)));
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
     /// perf-ratchet dispatch path); the rest append their kind to the data-dir
     /// log so the test can observe end-to-end delivery.
     fn on_event(handler: u32, ev: Event) {
+        // OC.2: a wake armed from inside a handler — the shape org's clock-in
+        // uses (a chord fires, the mode's actor arms the minute tick). This one's
+        // `on-wake` traps, so a test can prove a trapping wake quarantines the
+        // plugin without wedging the actor for everyone else.
+        if handler == 5 {
+            wake_state::POISON.with(|p| p.set(events::wake_every(50)));
+            return;
+        }
         if handler == 3 {
             // Deliberate trap: the host catches it, logs, and skips this
             // delivery — the plugin stays subscribed (§8).
@@ -128,6 +166,36 @@ impl Guest for Component {
                 },
             };
             host_services::emit_event(SavedEcho::NAME, &echo.encode());
+        }
+    }
+
+    /// OC.2: an armed wake came due.
+    ///
+    /// Two arms. The **ticker** appends `wake:<n>` to the same log the event
+    /// deliveries write, so a test can see it advance with no event published at
+    /// all — the whole point of the seam — and then cancels itself, so the log
+    /// stops growing and a test can prove `cancel-wake` reached a live timer.
+    /// The **poison** wake traps, exercising the same graceful-degradation
+    /// contract `on-event`'s handler 3 does.
+    fn on_wake(id: u32) {
+        if id != 0 && wake_state::POISON.with(|p| p.get()) == id {
+            unreachable!("fixture poison wake traps on delivery");
+        }
+        let n = wake_state::FIRES.with(|f| {
+            let n = f.get() + 1;
+            f.set(n);
+            n
+        });
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/data/received.log")
+        {
+            let _ = f.write_all(format!("wake:{n}\n").as_bytes());
+        }
+        if n >= wake_state::CANCEL_AFTER {
+            events::cancel_wake(id);
         }
     }
 }

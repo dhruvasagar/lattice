@@ -5788,6 +5788,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dirs 5.0.1",
+ "futures",
  "lattice-compilation",
  "lattice-completion",
  "lattice-config",

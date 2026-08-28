@@ -107,7 +107,11 @@ lattice-core = { path = "../lattice-core" }
 lattice-compilation = { path = "../lattice-compilation" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
-tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+# OC.2 adds "time": the wake seam's `Sleeper` is implemented here (see
+# `install.rs`) because `lattice-plugin-host` deliberately owns no runtime.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }
+# OC.2: the `Sleeper` trait returns a `BoxFuture`, so the impl names it.
+futures = { workspace = true }
 # Cross-platform plugins-dir resolution (`<data>/lattice/plugins/`, XDG on
 # Linux / Application Support on macOS / LocalAppData on Windows).
 dirs = { workspace = true }

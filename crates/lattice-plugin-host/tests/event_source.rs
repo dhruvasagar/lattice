@@ -83,8 +83,9 @@ async fn plugin_receives_subscribed_events_end_to_end() {
         )
         .await
         .expect("spawn events plugin");
-    // register-events subscribed 4 handlers (saved / quit / modal / no-op).
-    assert_eq!(sub_ids.len(), 4, "guest subscribed four handlers");
+    // register-events subscribed 5 handlers (saved / quit / modal / no-op, plus
+    // OC.2's opened → arms the poison wake).
+    assert_eq!(sub_ids.len(), 5, "guest subscribed five handlers");
 
     // Publish two subscribed events + one NON-subscribed (DocumentOpened has no
     // handler) → only the two subscribed deliveries queue on the actor channel.

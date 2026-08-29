@@ -106,7 +106,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | ✅ |
-| OR.4 | `org.roam-directory` and the indexer | 📝 |
+| OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.6 | `:org-roam-find-node` | 📝 |
 | OR.7 | `:org-roam-insert-node` | 📝 |
@@ -241,7 +241,7 @@ tail random); ungated — no capability requested; callable from the grammar
 (sync) linker specifically — the whole reason it exists, and the one a test that
 calls it from the async path would not catch.
 
-### OR.4 — the index 📝
+### OR.4 — the index ✅
 
 **Deps:** OR.1, OR.2.
 
@@ -249,12 +249,36 @@ calls it from the async path would not catch.
 and the four key families in `org-roam.md` §4.2. The async event seam is the
 sole writer.
 
-**Extraction is tree-native**, per the rule OT.x established: file-level and
-headline-level `:ID:` drawers, `#+title:`, `#+filetags:`, `:ROAM_ALIASES:`,
-`:ROAM_REFS:`, and outgoing `[[id:…]]` links. Structure from the tree —
-otherwise an `:ID:` written inside a `#+BEGIN_SRC` example becomes a phantom
-node, which is the same class of bug OT.3's `a_headline_inside_a_source_block_is_not_a_row`
-pins for the agenda.
+**Structure from the tree, characters from the text** — `agenda.rs`'s rule, and
+OR.4 needed it stated sharply because a real parse does not say what
+`grammar.js` reads like. Both facts below were established by dumping a real
+tree *before* writing the extraction, and both would have been guessed wrong:
+
+- **A file-level `:PROPERTIES:` drawer is not a `property_drawer`.** The grammar
+  attaches `property_drawer` to a `section`, so a drawer above the first
+  headline parses as a generic `drawer` in the document `body` — and its
+  innards are not `property` nodes but an undifferentiated run of `expr`s in
+  which `:ID:` and its value are separate untyped siblings. The two grains
+  therefore need different readers, and the file grain reads its properties from
+  the *lines* the drawer spans. Since 81% of the reference corpus is
+  file-level, a shared reader written from the grammar source would have dropped
+  four notes in five and said nothing.
+- **`[[id:…]]` links are not reliably one node.** In the same dump one link
+  survived whole as a single `expr` and the next was split across two, because
+  org breaks a paragraph on whitespace and a description contains spaces. Link
+  extraction is textual; the tree's job is deciding **which node owns** the line
+  a link sits on, which is the structural question a text scan cannot answer.
+
+The tree still earns its keep on exactly the thing it is for: an `:ID:` written
+inside a `#+BEGIN_SRC` example is example text, not a phantom node — the same
+class of bug OT.3's `a_headline_inside_a_source_block_is_not_a_row` pins for the
+agenda, and pinned here too.
+
+**The code is split so the rules are testable.** A `tree-snapshot` is a WIT
+resource with no constructor, so anything reached through one is unreachable
+from a host-side unit test. `roam.rs` is a pure function of `(path, text,
+outline)` with 16 unit tests; `roam_tree.rs` harvests the outline and is covered
+by the integration tests that run a real editor.
 
 **Tag inheritance resolves here, not at query time.** A headline node's tags are
 its own plus its ancestors' plus the file's, flattened into the record. Deferring
@@ -276,14 +300,30 @@ number is the one that justifies persistence at all, and it belongs in
 `benchmarks.md` rather than in this paragraph.
 
 **Tests:** a file node; a headline node; both in one file; tag inheritance
-through two headline levels; case-insensitive id matching; an `:ID:` inside a
-`#+BEGIN_SRC` block **not** becoming a node (paired with its text-path twin, so
-the difference is documented rather than only its good half); a malformed file
-skipped with the scan continuing; a duplicate `:ID:` keeping the first and
-warning with both paths; a node deleted from a file disappearing from `nodes`,
-from `n/<id>` and from every `b/<id>` that named it; case-insensitive `#+TITLE:`
-/ `#+title:` / `#+Filetags:`; boot rescan catching a change made while the
-editor was closed.
+through two headline levels (including through an intermediate section that is
+NOT itself a node); case-insensitive id matching; quoted aliases; an `:ID:`
+inside a `#+BEGIN_SRC` block **not** becoming a node; a malformed property line
+skipped rather than costing the node its id; a node deleted from a file
+disappearing from `nodes`, from `n/<id>` and from every `b/<id>` that named it;
+case-insensitive `#+TITLE:` / `#+title:` / `#+Filetags:`; a note written while
+the editor runs reaching the index **with no key pressed**; roam inert with the
+directory unset, asserted as *zero store writes* rather than an empty result.
+
+**Two bugs the tests found, both of which would have shipped silently.**
+
+The first was mine to make: reading the file grain as a `property_drawer` (see
+above). The second was in OR.2 and only a deletion test could see it —
+**`notify` reports canonical paths while `walk` reports the ones it was
+given**, so on macOS the index was keyed under `/var/…` and looked up under
+`/private/var/…`. Additions still worked (nothing to look up); changes and
+deletions silently never retracted. The host now re-roots a watcher's paths onto
+the spelling the watch was armed with, with its own regression test.
+
+**Not yet done in this slice:** a duplicate `:ID:` across two files keeps the
+first, but the `warn` naming both paths is missing — the guest cannot log
+(`logging` is absent from the grammar linker and importing it fails the whole
+component, the OC.2 scar), so surfacing it needs a host-side channel. Carried
+into OR.12.
 
 ### OR.5 — the picker offers to create what it could not find ✅
 

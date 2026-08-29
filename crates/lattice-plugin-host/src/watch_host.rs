@@ -43,7 +43,7 @@
 //! stale.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
@@ -70,6 +70,31 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 /// an index quietly wrong, which is the failure this whole seam exists to
 /// prevent.
 const MAX_BATCH: usize = 4096;
+
+/// Re-root `path` onto the spelling the guest used.
+///
+/// **`notify` reports canonical paths; `walk` reports the ones it was given.**
+/// On macOS a tempdir handed in as `/var/folders/…` comes back from the watcher
+/// as `/private/var/folders/…`, and the two disagree for the whole life of the
+/// watch. That is not cosmetic: a guest keys its index by path, so the walk
+/// writes one key and the watcher looks up another — additions still work
+/// (nothing to look up) and **changes and deletions silently stop retracting**,
+/// which is exactly the "an index that cannot see deletions offers destinations
+/// that do not exist" failure, arriving through a door nobody was watching.
+///
+/// So the host makes them agree, at the only point where both spellings are
+/// known. Re-rooting rather than canonicalizing everywhere, because `walk`'s
+/// output is what a guest already has and changing that would move the problem
+/// rather than fix it.
+fn reroot(path: PathBuf, canonical_root: &Path, given_root: &Path) -> PathBuf {
+    match path.strip_prefix(canonical_root) {
+        Ok(rest) => given_root.join(rest),
+        // Not under the canonical root — either the roots are already the same
+        // (Linux, usually) or this is a path the re-rooting does not apply to.
+        // Either way the original is the honest answer.
+        Err(_) => path,
+    }
+}
 
 /// One armed watch. Dropping it stops the OS watch, which closes the coalescing
 /// thread's channel, which ends the thread.
@@ -124,6 +149,11 @@ pub(crate) fn watch_within_grant(
         return Err(format!("fs watch failed: '{path}' does not exist"));
     }
 
+    // Both spellings of the root, so the coalescing thread can report paths in
+    // the one the guest actually uses. See `reroot`.
+    let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let given_root = root.clone();
+
     let (tx, rx) = channel::<Vec<PathBuf>>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         forward(&tx, res);
@@ -136,7 +166,7 @@ pub(crate) fn watch_within_grant(
     let name = format!("lattice-plugin-watch-{plugin}");
     let spawned = std::thread::Builder::new()
         .name(name)
-        .spawn(move || coalesce(rx, bus, plugin));
+        .spawn(move || coalesce(rx, bus, plugin, canonical_root, given_root));
     if let Err(e) = spawned {
         return Err(format!(
             "fs watch failed: '{path}': cannot spawn the coalescing thread: {e}"
@@ -177,8 +207,21 @@ fn forward(tx: &Sender<Vec<PathBuf>>, res: notify::Result<notify::Event>) {
 
 /// Block for a burst, drain it until quiet, publish it as one batch. Ends when
 /// the channel closes — which is what dropping the [`Watch`] causes.
-fn coalesce(rx: std::sync::mpsc::Receiver<Vec<PathBuf>>, bus: Arc<EventBus>, plugin: u32) {
+fn coalesce(
+    rx: std::sync::mpsc::Receiver<Vec<PathBuf>>,
+    bus: Arc<EventBus>,
+    plugin: u32,
+    canonical_root: PathBuf,
+    given_root: PathBuf,
+) {
+    let reroot_all = |paths: Vec<PathBuf>| -> Vec<PathBuf> {
+        paths
+            .into_iter()
+            .map(|p| reroot(p, &canonical_root, &given_root))
+            .collect()
+    };
     while let Ok(first) = rx.recv() {
+        let first = reroot_all(first);
         // A `BTreeSet` because a burst repeats paths (truncate, write, rename
         // on one file is three events) and because sorted output makes the
         // batch reproducible in a test. Dedup is also what keeps `MAX_BATCH`
@@ -187,7 +230,7 @@ fn coalesce(rx: std::sync::mpsc::Receiver<Vec<PathBuf>>, bus: Arc<EventBus>, plu
         let mut disconnected = false;
         while paths.len() < MAX_BATCH {
             match rx.recv_timeout(DEBOUNCE) {
-                Ok(more) => paths.extend(more),
+                Ok(more) => paths.extend(reroot_all(more)),
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
                     disconnected = true;
@@ -414,6 +457,61 @@ mod tests {
             .is_err(),
             "a plugin with no fs grant reaches nothing"
         );
+    }
+
+    /// **The paths a batch reports are spelled the way the guest asked**, not
+    /// the way the OS canonicalizes them.
+    ///
+    /// This is the macOS `/var` → `/private/var` case, and it is not cosmetic:
+    /// a guest keys its index by path, so a walk that wrote one spelling and a
+    /// watcher that reported another would leave changes and deletions
+    /// silently never retracting — additions would still work, which is what
+    /// makes it so easy to miss. Found by org-roam's deletion test, which is
+    /// the only assertion that could see it.
+    #[test]
+    fn reported_paths_use_the_spelling_the_watch_was_armed_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let given = dir.path().to_path_buf();
+        let canonical = std::fs::canonicalize(&given).unwrap();
+
+        let bus = EventBus::new();
+        let mut rx = watch_bus(&bus);
+        let _watch = watch_within_grant(
+            &read_grant(&given),
+            Arc::new(bus),
+            1,
+            given.to_str().unwrap(),
+        )
+        .unwrap();
+
+        std::fs::write(given.join("note.org"), "x").unwrap();
+        let (_, paths) = next_batch(&mut rx, Duration::from_secs(5)).expect("a batch arrives");
+
+        assert!(
+            paths.iter().all(|p| p.starts_with(&given)),
+            "every path is under the root AS GIVEN ({}): {paths:?}",
+            given.display()
+        );
+        if canonical != given {
+            assert!(
+                !paths.iter().any(|p| p.starts_with(&canonical)),
+                "and none leaked the canonical spelling ({}): {paths:?}",
+                canonical.display()
+            );
+        }
+    }
+
+    /// Re-rooting leaves a path it does not recognise alone, rather than
+    /// mangling it.
+    #[test]
+    fn a_path_outside_the_canonical_root_is_returned_unchanged() {
+        let path = PathBuf::from("/elsewhere/note.org");
+        let got = reroot(
+            path.clone(),
+            Path::new("/private/var/root"),
+            Path::new("/var/root"),
+        );
+        assert_eq!(got, path);
     }
 
     /// A missing directory is distinguishable from a denial, because the two

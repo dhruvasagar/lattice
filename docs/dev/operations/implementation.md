@@ -6840,7 +6840,7 @@ meant to exist.
 | OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | ✅ |
-| OR.4 | `org.roam-directory` and the indexer | 📝 |
+| OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.6 | `:org-roam-find-node` | 📝 |
 | OR.7 | `:org-roam-insert-node` | 📝 |

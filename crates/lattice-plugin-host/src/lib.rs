@@ -2980,6 +2980,24 @@ impl PluginHost {
         Some(handle)
     }
 
+    /// OR.1: read one key out of a plugin's store, host-side.
+    ///
+    /// The store is the guest's schema and the host never interprets it — this
+    /// hands back the same opaque bytes `store-get` would, without
+    /// instantiating anything. It exists because a *reader* of a plugin's index
+    /// may be host-side (a multibuffer provider) and because a test that asked
+    /// the writing guest what it wrote would pass against a per-instance store,
+    /// which is the exact drift the store exists to prevent.
+    ///
+    /// `None` for an unknown plugin id, an unsafe one, or a key with nothing
+    /// under it — the three are indistinguishable to a caller, and all three
+    /// mean "build it".
+    pub fn plugin_store_get(&self, plugin_id: &str, key: &str) -> Option<Vec<u8>> {
+        let store = self.store_for(plugin_id)?;
+        let guard = store.lock().unwrap_or_else(|p| p.into_inner());
+        guard.get(key)
+    }
+
     /// Install the boundary tracer (PO.5) — the loader calls this once, after it
     /// builds the tracer, so every subsequent instantiate/spawn stamps the
     /// plugin's `log_ctx` and the guest `logging` seam routes into the ring.

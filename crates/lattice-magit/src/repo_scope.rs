@@ -906,6 +906,15 @@ mod tests {
             register: Default::default(),
             count: Default::default(),
             buffer_id: active(),
+            // OC.10 added these four so a PLUGIN ex-command could name the
+            // buffer its `Effect::ApplyEdit` targets. `:magit-status` ignores
+            // all of them — it resolves the repository from `buffer_id` — so
+            // they are the empty defaults here rather than a fabricated cursor
+            // into a buffer this test never builds.
+            cursor: Default::default(),
+            buffer: Default::default(),
+            path: None,
+            syntax: None,
             cancel: lattice_protocol::CancellationToken::never(),
         };
         let from_ex = (spec.apply)(&ex_ctx).expect("apply");

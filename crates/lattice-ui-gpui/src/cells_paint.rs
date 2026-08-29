@@ -638,6 +638,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([(2u32, 5u32)] as [(u32, u32); 1]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: text.chars().count() as u32,
             fold: None,
         };
@@ -687,6 +688,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: text.chars().count() as u32,
             fold: None,
         };
@@ -748,6 +750,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: text.chars().count() as u32,
             fold: None,
         };
@@ -778,6 +781,7 @@ mod tests {
                     .into_boxed_slice(),
                 ),
                 col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+                conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
                 col_count: 3,
                 fold: None,
             };
@@ -827,6 +831,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: text.chars().count() as u32,
             fold: None,
         };
@@ -851,6 +856,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: 5,
             fold: None,
         };
@@ -895,6 +901,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: text.chars().count() as u32,
             fold: None,
         };
@@ -947,6 +954,7 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count: 2,
             fold: None,
         };

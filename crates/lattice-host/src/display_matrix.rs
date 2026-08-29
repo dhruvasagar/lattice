@@ -86,6 +86,25 @@ pub struct DisplayLine {
     /// (inlay text + tab expansion). Drives source-byte ↔ display-col
     /// translation. Same shape as `CellRow::inlay_offsets`.
     pub col_map: Arc<[(u32, u32)]>,
+    /// H.1: source-byte ranges this line hides — `[start, end)`,
+    /// sorted ascending and non-overlapping (the builder coalesces
+    /// before storing; two overlapping ranges would have their
+    /// shared width subtracted twice and every column past them
+    /// would be wrong).
+    ///
+    /// A hidden range occupies zero display columns and its bytes
+    /// are absent from [`Self::text`], so this is what lets a
+    /// source position still be located: see
+    /// [`lattice_cells::source_byte_to_display_col`]. Empty for
+    /// every line of a buffer whose language declares no conceal
+    /// rules, which is the path that must stay free.
+    ///
+    /// Deliberately NOT folded into [`Self::col_map`] as a signed
+    /// delta. `col_map`'s columns are already char-resolved, so a
+    /// hidden range removes exactly `end - start` of them — the
+    /// width is derivable from the range and a second encoding of
+    /// it could only ever disagree with the first.
+    pub conceals: Arc<[lattice_cells::ConcealRange]>,
     /// Display width in columns (char count of `text`). Soft-wrap
     /// geometry reads this via [`DisplayMatrix::segment_count`].
     pub col_count: u32,
@@ -103,6 +122,7 @@ impl DisplayLine {
             text: self.text.clone(),
             runs: self.runs.clone(),
             col_map: self.col_map.clone(),
+            conceals: self.conceals.clone(),
             col_count: self.col_count,
             fold: self.fold,
         }
@@ -117,16 +137,15 @@ impl DisplayLine {
     /// positioning is identical across the cell and display substrates.
     /// `col_map` is sorted ascending by `orig_byte` (build invariant),
     /// so the walk can stop at the first breakpoint past `byte`.
+    ///
+    /// H.1: also subtracts [`Self::conceals`], and a byte falling
+    /// *inside* a hidden range resolves to that range's start column.
+    /// The arithmetic lives in [`lattice_cells::source_byte_to_display_col`]
+    /// rather than here because three carriers ask this question and an
+    /// elision the cursor agrees with and the search highlight does not
+    /// is a caret sitting off its own match.
     pub fn byte_to_combined_col(&self, byte: u32) -> u32 {
-        let mut col = byte;
-        for (orig_byte, width) in self.col_map.iter() {
-            if *orig_byte <= byte {
-                col = col.saturating_add(*width);
-            } else {
-                break;
-            }
-        }
-        col
+        lattice_cells::source_byte_to_display_col(byte, &self.col_map, &self.conceals)
     }
 }
 
@@ -366,9 +385,62 @@ mod tests {
                 .into_boxed_slice(),
             ),
             col_map: Arc::from([] as [(u32, u32); 0]),
+            conceals: Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count,
             fold: None,
         }
+    }
+
+    /// A line carrying both tables, for the H.1 coordinate tests.
+    fn line_with(
+        text: &str,
+        col_map: &[(u32, u32)],
+        conceals: &[lattice_cells::ConcealRange],
+    ) -> DisplayLine {
+        let mut l = line(0, text);
+        l.col_map = Arc::from(col_map.to_vec().into_boxed_slice());
+        l.conceals = Arc::from(conceals.to_vec().into_boxed_slice());
+        l
+    }
+
+    #[test]
+    fn h1_no_conceals_is_the_pre_h1_behaviour() {
+        // The regression guard for every buffer in the editor: with an
+        // empty conceal list the delegating implementation must agree
+        // with the inlay-only walk it replaced, entry for entry.
+        let l = line_with("hello world", &[(1, 2), (3, 1)], &[]);
+        assert_eq!(l.byte_to_combined_col(0), 0);
+        assert_eq!(l.byte_to_combined_col(1), 3);
+        assert_eq!(l.byte_to_combined_col(2), 4);
+        assert_eq!(l.byte_to_combined_col(3), 6);
+        assert_eq!(l.byte_to_combined_col(5), 8);
+    }
+
+    #[test]
+    fn h1_a_byte_inside_a_concealed_range_clamps_to_its_start() {
+        // `[[a][hi]]` in miniature: hide [0,4), show 4..6, hide [6,9).
+        let l = line_with("[[a][hi]]", &[], &[(0, 4), (6, 9)]);
+        assert_eq!(l.byte_to_combined_col(0), 0, "before anything visible");
+        assert_eq!(l.byte_to_combined_col(2), 0, "inside the first hidden run");
+        assert_eq!(l.byte_to_combined_col(4), 0, "first visible byte");
+        assert_eq!(l.byte_to_combined_col(5), 1);
+        assert_eq!(l.byte_to_combined_col(7), 2, "inside the second hidden run");
+        assert_eq!(l.byte_to_combined_col(9), 2, "past both");
+    }
+
+    #[test]
+    fn h1_with_source_line_shares_the_conceal_arc() {
+        // The incremental-rebuild shift reuses payload Arcs so unedited
+        // lines stay byte-identical and therefore pixel-stable. A new
+        // field that got cloned instead of shared would not fail any
+        // behaviour test — only this one.
+        let l = line_with("x", &[], &[(0, 1)]);
+        let shifted = l.with_source_line(7);
+        assert_eq!(shifted.source_line, 7);
+        assert!(
+            Arc::ptr_eq(&l.conceals, &shifted.conceals),
+            "conceals must be shared, not re-allocated"
+        );
     }
 
     #[test]

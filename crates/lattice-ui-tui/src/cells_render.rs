@@ -320,6 +320,7 @@ mod tests {
             text: std::sync::Arc::from(text.as_str()),
             runs: std::sync::Arc::from(runs.into_boxed_slice()),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
+            conceals: std::sync::Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count,
             fold: None,
         }

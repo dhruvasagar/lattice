@@ -34,6 +34,10 @@
 
 pub mod cell;
 pub mod chunk;
+// H.1 (2026-08-29): source-byte → display-column, shared by every
+// carrier that holds an inlay table and a conceal list. See
+// `docs/dev/architecture/conceal.md`.
+pub mod coords;
 // Style types + ExcerptHighlighter trait. Defined here (not in
 // lattice-syntax) to break the lattice-syntax → lattice-mode →
 // lattice-runtime cycle that would block lattice-runtime's Document
@@ -64,6 +68,7 @@ pub mod context;
 
 pub use cell::{Cell, flags as cell_flags};
 pub use chunk::CellChunk;
+pub use coords::{ConcealRange, source_byte_to_display_col};
 pub use edit_delta::EditDelta;
 pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};
 pub use matrix::{

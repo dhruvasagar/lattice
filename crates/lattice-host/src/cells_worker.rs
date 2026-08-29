@@ -522,6 +522,7 @@ fn publish_sticky_context(
             text: Arc::from(dtext),
             runs: Arc::from(runs.into_boxed_slice()),
             col_map: Arc::from(col_map.into_boxed_slice()),
+            conceals: Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count,
             fold: None,
         };
@@ -1950,6 +1951,7 @@ fn build_display_rows(
             text: Arc::from(text),
             runs: Arc::from(runs.into_boxed_slice()),
             col_map: Arc::from(col_map.into_boxed_slice()),
+            conceals: Arc::from([] as [lattice_cells::ConcealRange; 0]),
             col_count,
             // Fold-head metadata is wired when the renderers consume
             // `DisplayMatrix` (B2); the cell path carried no fold info

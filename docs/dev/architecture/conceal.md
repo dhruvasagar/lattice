@@ -76,22 +76,51 @@ does nothing new is already correct.
 
 ## Data model
 
-Three changes, all in `display_matrix.rs` and `lattice-cells/src/version.rs`.
+**A `conceals` list on `DisplayLine`.** `Arc<[(u32, u32)]>`, sorted and
+non-overlapping source-byte ranges, each hiding `[start, end)`. The builder
+coalesces before storing: two overlapping ranges would have their shared width
+subtracted twice, and every column past them on that line would be wrong.
 
-**`col_map` goes signed.** Today it is `(source_byte, extra_display_cols)`, an
-unsigned count of columns *inserted* ahead of a byte. Conceal removes columns
-where inlays add them; they are the same axis with opposite sign, so the field
-becomes `(u32, i32)` and `byte_to_combined_col` walks it with
-`saturating_add_signed`. One table, not two — a second parallel table would let
-the insert and the elide disagree about the same byte, which is the class of bug
-that produces a caret half a glyph off.
+**`col_map` is unchanged, and an earlier revision of this document was wrong
+about that.** It specified widening `col_map` to `(u32, i32)` so inlay
+insertions and conceal elisions would be "one table, not two". The rationale did
+not survive contact with the code, and the correction is recorded here rather
+than left to be re-derived:
 
-**A `conceals` list.** `Arc<[(u32, u32)]>`, sorted source-byte ranges. It exists
-because the signed walk alone is not sufficient: a byte *inside* a concealed
-range has no column of its own, and the walk would hand back a partial one.
-`byte_to_combined_col` clamps such a byte to the column of its range's start.
-Every consumer that maps source bytes to columns already goes through that one
-function, so they all inherit the clamp rather than each re-deriving it.
+- `build_display_row`'s column counter is documented as *"display columns
+  emitted so far (== char count == cell count)"*, and `byte_to_combined_col`'s
+  own note says callers hand it an already-char-resolved byte. In that space a
+  hidden range removes exactly `end - start` columns — **the width is derivable
+  from the range**, so conceal needs no width table at all.
+- `conceals` has to exist regardless, for the clamp. So the choice was never
+  "one table or two"; it was "two tables, or two tables *and* a signed rewrite
+  of the first". The two encode different quantities and the removal is derived
+  from the ranges, so they cannot disagree — which was the whole worry.
+- The signed form would additionally have widened `col_map` through
+  `cells_worker`, `CellRow`, `cells_paint` and ten GPU call sites, for a slice
+  that changes no behaviour.
+
+The only thing signed would have bought is `cchar`-style replacement expressed
+as a net delta, and that is deferred below — and would want `(start, end,
+replacement_width)` rather than a sign anyway.
+
+**One shared function, in `lattice-cells`.** `source_byte_to_display_col(byte,
+inlay_offsets, conceals)` (`coords.rs`). Three carriers hold these tables —
+`CellRow`, `DisplayLine`, and the GPU peer's per-row arrays — and before conceal
+each had its own copy of a four-line loop, which was survivable with one term in
+the sum. With two it is not: an elision the cursor agrees with and the search
+highlight does not is a caret sitting off its own match, in whichever copy was
+not updated.
+
+The clamp then falls out of the arithmetic instead of being a special case.
+Subtracting only the hidden width lying *strictly before* `byte` yields, for a
+byte inside a range, exactly that range's start column:
+
+```
+col = byte
+    + Σ extra_cols  for every inlay breakpoint at or before byte
+    − Σ (min(end, byte) − start)  for every conceal range starting before byte
+```
 
 **A `conceal` axis on `MatrixVersion`.** Painting-class, not rebuild-class — the
 distinction `indent`'s doc comment already draws (`version.rs:57`): axes that

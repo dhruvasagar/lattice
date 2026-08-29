@@ -71,10 +71,22 @@ reasoning belongs where the work is rather than only in the design fragment.
    content, which is a standing veto. `links.rs` already recorded the same
    reasoning for its own text scanning.
 
-3. **`col_map` goes signed rather than gaining a sibling table.** Inlays insert
-   columns, conceal removes them; they are one axis with opposite sign. Two
-   tables could disagree about the same byte, and the symptom of that
-   disagreement is a caret half a glyph off its highlight.
+3. **~~`col_map` goes signed rather than gaining a sibling table.~~
+   Retracted at H.1 — `col_map` is unchanged.** The premise was that inlay
+   insertion and conceal elision are one axis with opposite sign. Reading the
+   code killed it: display columns in this space are already char-resolved, so a
+   hidden range removes exactly `end - start` of them and conceal needs no width
+   table. `conceals` had to exist anyway for the clamp, so the real choice was
+   "two tables" versus "two tables *and* a signed rewrite of the first" — and
+   the second would have widened `col_map` through `cells_worker`, `CellRow`,
+   `cells_paint` and ten GPU call sites for a behaviour-preserving slice. See
+   `conceal.md` §Data model, which records the correction rather than
+   overwriting it.
+
+3b. **The arithmetic lives in `lattice-cells`, not in each carrier.** Three
+   carriers hold these tables and each had its own copy of the walk. One term in
+   the sum made that survivable; two does not, and the symptom of a stale copy
+   is a caret sitting off its own search match.
 
 4. **Insert reveals buffer-wide.** Chosen over vim's `concealcursor` line-scoped
    reveal, with the cost accepted explicitly: `i` repaints every visible line
@@ -109,37 +121,51 @@ later without hand-vendoring.
 
 | Slice | Description | Status |
 |---|---|---|
-| H.1 | signed `col_map`, the `conceals` range list, the clamp | 📝 |
+| H.1 | the shared coordinate fn, the `conceals` range list, the clamp | ✅ |
 | H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | 📝 |
 | H.3 | the matrix build elides; the `conceal` axis; the bench | 📝 |
 | H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
 
-### H.1 — the substrate learns that a display line can be shorter 📝
+### H.1 — the substrate learns that a display line can be shorter ✅ (2026-08-29)
 
 **Deps:** none.
 
-`DisplayLine.col_map` becomes `Arc<[(u32, i32)]>` and `byte_to_combined_col`
-walks it with `saturating_add_signed`. A new `conceals: Arc<[(u32, u32)]>` of
-sorted, coalesced source-byte ranges rides beside it, and the same function
-clamps a byte falling *inside* a range to the column of that range's start.
+`lattice_cells::coords::source_byte_to_display_col(byte, inlay_offsets,
+conceals)` is the one place the translation lives; `DisplayLine` gains
+`conceals: Arc<[ConcealRange]>` and its `byte_to_combined_col` delegates.
 
-**Behaviour is unchanged by this slice.** Nothing populates `conceals` yet and
-every existing `col_map` entry is a positive inlay/tab delta, so the signed walk
-computes what the unsigned one did. That is the point: the substrate change
-lands and stays green on its own, and H.3 turns it on.
+**The slice changed shape once the code was read, and the plan's own decision #3
+is retracted above rather than quietly amended.** `col_map` stays unsigned:
+display columns here are already char-resolved, so a hidden range removes
+exactly `end - start` of them and conceal needs no width table. The signed
+rewrite would have touched `cells_worker`, `CellRow`, `cells_paint` and ten GPU
+call sites to change no behaviour.
 
-**Why the clamp is a separate list rather than falling out of the walk.** A byte
-inside a concealed range has no column of its own. A pure cumulative walk hands
-back a partial column for it — a position between the range's start and where
-its end would have been — and that is worse than either endpoint because it is
-*plausible*: a caret one column into a hidden span looks like a rounding bug
-rather than a missing rule.
+**The clamp fell out of the arithmetic rather than needing a branch**, which is
+the sign the representation is right. Subtracting only the hidden width lying
+*strictly before* `byte` lands a byte inside a range on that range's start
+column with no special case:
 
-**Tests:** the clamp for a byte before / at the start of / inside / at the end
-of / after a concealed range; a line with an inlay *and* a conceal, asserting the
-two deltas compose in byte order rather than by category; `with_source_line`
-sharing the new `Arc`; and the existing inlay + tab-expansion coordinate tests
-re-run unchanged, which is the evidence the sign change is behaviour-preserving.
+```
+col = byte + Σ inlay_width(≤ byte) − Σ (min(end, byte) − start)
+```
+
+**Behaviour is unchanged by this slice** — nothing populates `conceals` yet — so
+it lands and stays green on its own, and H.3 turns it on. `CellRow` is
+deliberately untouched: **`CellRow::byte_to_combined_col` turns out to have no
+production caller**, only its own tests, so widening the cell path would have
+been churn on a dead method.
+
+**Landed:** 10 tests in `coords.rs` plus 3 on `DisplayLine`. The two worth
+naming because neither would fail for the obvious reason: `h1_no_conceals_is_the_pre_h1_behaviour`
+re-asserts `CellRow`'s own inlay cases against the new function, so it is pinned
+as a drop-in rather than a re-derivation; and `h1_with_source_line_shares_the_conceal_arc`
+asserts `Arc::ptr_eq`, because a new field cloned instead of shared breaks
+pixel-stability for unedited lines and **no behaviour test would catch it**.
+
+Gates green on `lattice-cells` + `lattice-host` (1420 tests) and on
+`lattice-ui-gpui` + `lattice-ui-tui` (1765) — the renderer crates because their
+`DisplayLine` literals needed the new field, and gpui is not in a default build.
 
 ### H.2 — a language can declare what to hide 📝
 

@@ -13,7 +13,11 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-29).
+**Status:** ✅ complete (2026-08-29). Phase H (H.1–H.4) and phase OL
+(OL.1–OL.4) both landed. Two design claims died during the build — the signed
+`col_map` at H.1 and the rule-ordering rule at H.3 — and a third, `<CR>`'s
+fall-through target, turned out to describe vim rather than lattice. All three
+retractions are recorded in place rather than overwritten.
 
 ---
 
@@ -340,12 +344,12 @@ two renderer crates **separately**.
 
 | Slice | Description | Status |
 |---|---|---|
-| OL.1 | `Target::Id` — a recognised kind that fails honestly | 📝 |
-| OL.2 | org declares its two conceal rules | 📝 |
-| OL.3 | `<CR>` follows, and declines when there is nothing to follow | 📝 |
-| OL.4 | docs — design §7, the org help page, the ledger, the site | 📝 |
+| OL.1 | `Target::Id` — a recognised kind that fails honestly | ✅ |
+| OL.2 | org declares its two conceal rules | ✅ |
+| OL.3 | `<CR>` follows, and declines when there is nothing to follow | ✅ |
+| OL.4 | docs — design §7, the org help page, the ledger, the site | ✅ |
 
-### OL.1 — `id:` becomes a link kind before anything can resolve it 📝
+### OL.1 — `id:` becomes a link kind before anything can resolve it ✅ (2026-08-29)
 
 **Deps:** none. Lands independently of phase H.
 
@@ -367,7 +371,7 @@ absent index rather than an absent file; `file:id-something.org` still
 classifying as a file (the arm must key on the scheme, not on the substring);
 an empty `id:` rejected like every other empty target.
 
-### OL.2 — org declares what to hide 📝
+### OL.2 — org declares what to hide ✅ (2026-08-29)
 
 **Deps:** H.2, H.3, H.4.
 
@@ -400,7 +404,7 @@ blocks, and that is the correct and documented behaviour rather than a bug to be
 surprised by later; two links on one line; a malformed `[[` with no closing
 `]]` left entirely alone.
 
-### OL.3 — `<CR>` follows 📝
+### OL.3 — `<CR>` follows ✅ (2026-08-29)
 
 **Deps:** OL.1.
 
@@ -409,22 +413,37 @@ surprised by later; two links on one line; a malformed `[[` with no closing
 stays — it is the explicit form, it works when the cursor is outside the span,
 and removing a working chord to make room costs muscle memory for nothing.
 
-**`Effect::Declined` is correct here and the general rule says otherwise, so the
-slice records why.** The standing hazard is that `Declined` re-runs a multi-key
-chord's *trailing key alone*, which is why a plugin-owned prefix must return
-`Effect::None`. `<CR>` is a single key. There is no trailing key, so the hazard
-cannot arise — and the test pins that by asserting the builtin motion runs
-exactly once, not twice.
+**Two actions, and the split is forced rather than chosen.** `org-open-link`
+(`<leader>oo`) answers `Effect::None` on a miss; a new `org-follow-link`
+(`<CR>`) answers `Effect::Declined`. The vocabulary cannot say "it depends",
+and the reason they differ is the standing hazard: `Declined` re-runs a
+multi-key chord's *trailing key alone*, so declining from `<leader>oo` would
+fire bare `o` — "open a line below and enter Insert". A missed link would start
+editing the buffer. `<CR>` is a single key, so no trailing key and no hazard.
 
-**Tests:** `<CR>` on a link opening it; `<CR>` on ordinary prose performing the
-builtin first-non-blank-of-next-line motion **once**; `<CR>` on the last line
-behaving as the builtin does there; `<CR>` in the agenda multibuffer still doing
-what the agenda binds it to (org-mode's major is not active in that buffer, and
-the test is what makes that a fact rather than an expectation); the round-trip
-in a real editor rather than against a synthesised context — the failure mode
-OC.10 and OT.4 both hit was a seam that answered nothing when reached for real.
+**The plan said `<CR>` declines to the builtin first-non-blank-of-next-line
+motion. That is vim, not lattice, and the test written to pin it found out.**
+`<CR>` is unbound in Normal for a Document buffer: `keymap_normal.rs` carries it
+only as the `z<CR>` suffix, and `input.rs` routes a bare `<CR>` to
+`Action::FollowLink` only for Help / Dashboard / Oil / FileTree. **Lattice has
+no `+` / `<CR>` motion at all** — a real vim-grammar gap, and separate work from
+this plan.
 
-### OL.4 — docs 📝
+So the decline is observationally a no-op today, and no test can distinguish it
+from `Effect::None` — the limitation OM.5 already records for `<Tab>`. It stays
+`Declined` for two reasons a test cannot see: it is the honest answer, and org
+composes for free the day `<CR>` gains a Document-buffer meaning.
+
+**Tests** assert what is real and what is dangerous rather than what was
+planned: `<CR>` on a link following it; `<CR>` on an `id:` link being *consumed*
+(org echoed, it did not decline); the buffer and caret untouched off a link;
+and — the one that matters — `<CR>` pressed twice never entering Insert or
+splitting a line, which is the outcome if the key ever fell through to Insert
+handling. All in a real editor, not against a synthesised context: the failure
+mode OC.10 and OT.4 both hit was a seam that answered nothing when reached for
+real.
+
+### OL.4 — docs ✅ (2026-08-29)
 
 **Deps:** OL.1–OL.3.
 

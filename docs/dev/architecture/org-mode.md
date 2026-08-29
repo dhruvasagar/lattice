@@ -527,18 +527,37 @@ the same chain §4.3 describes and tests:
 ```
 <CR>  →  org-mode  : on a link?  open it
                      else        [declined]
-      →  Builtin   : first non-blank of the next line
+      →  (nothing, today — see below)
 ```
+
+**An earlier revision of this section put "Builtin: first non-blank of
+the next line" on that last row. That was vim, not lattice.** `<CR>` is
+unbound in Normal mode for a Document buffer: `keymap_normal.rs` binds
+it only as the `z<CR>` suffix, and `input.rs` routes a bare `<CR>` to
+`Action::FollowLink` only for Help, Dashboard, Oil and FileTree
+buffers. Lattice has no equivalent of vim's `+` / `<CR>` motion, which
+is a real gap in the vim grammar and a separate piece of work from
+this one.
+
+So today the decline is observationally a no-op, and a test cannot
+distinguish it from `Effect::None` — the same limitation OM.5 records
+for `<Tab>`. It is still the right answer for two reasons a test cannot
+see: it is the honest one, and org composes for free the day `<CR>`
+gains a Document-buffer meaning.
+
+**Two actions, not one, and this is forced rather than chosen.**
+`org-open-link` (bound to `<leader>oo`) must answer `Effect::None` on a
+miss; `org-follow-link` (bound to `<CR>`) must answer
+`Effect::Declined`. The vocabulary has no way to say "it depends", and
+the reason they differ is the standing hazard: `Declined` re-runs a
+multi-key chord's *trailing key alone*, so declining from `<leader>oo`
+would fire bare `o` — "open a line below and enter Insert". A missed
+link would start editing the buffer. `<CR>` is a single key, so there
+is no trailing key and no hazard.
 
 `<leader>oo` stays. It is the explicit form, it works when the cursor
 is not inside the link's span, and removing a working chord to make
 room for a new one costs a user's muscle memory for nothing.
-
-**The decline is safe on `<CR>` specifically, and this is worth saying
-because the general case is not.** `Effect::Declined` re-runs a
-multi-key chord's *trailing key alone*, which is why a plugin-owned
-prefix must return `Effect::None` instead. `<CR>` is a single key.
-There is no trailing key to re-run, so the hazard does not arise.
 
 The cost is one guest round-trip per `<CR>` in an org buffer even when
 the cursor is nowhere near a link — the same honest cost §4.3 already

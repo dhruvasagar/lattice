@@ -6778,14 +6778,14 @@ rules so a Rust buffer never enters the path.
 
 ---
 
-## Org links render and follow (OL, 2026-08-29 — design landed, not built)
+## Org links render and follow (OL, 2026-08-29 — ✅ complete)
 
 | Slice | What | Status |
 |---|---|---|
-| OL.1 | `Target::Id` — a recognised kind that fails honestly | 📝 |
-| OL.2 | org declares its two conceal rules | 📝 |
-| OL.3 | `<CR>` follows, and declines when there is nothing to follow | 📝 |
-| OL.4 | docs — design §7, the org help page, the ledger, the site | 📝 |
+| OL.1 | `Target::Id` — a recognised kind that fails honestly |✅ |
+| OL.2 | org declares its two conceal rules |✅ |
+| OL.3 | `<CR>` follows, and declines when there is nothing to follow |✅ |
+| OL.4 | docs — design §7, the org help page, the ledger, the site |✅ |
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §7.
 Slice plan:
@@ -6806,11 +6806,22 @@ over** and the retraction is recorded rather than overwritten: rule spans are
 change the output; and independently the bare pattern's `[^]]+` stops at the
 first `]`, so it never matches a described link at all.
 
-`<CR>` declines to the builtin motion when the cursor is not inside a link.
-**`Effect::Declined` is safe here even though the standing rule warns against
-it**: the hazard is that Declined re-runs a multi-key chord's *trailing key
-alone*, and `<CR>` is a single key with no trailing key to re-run. OL.3's test
-pins it by asserting the builtin motion runs exactly once.
+`<CR>` binds to a **second** action, `org-follow-link`, and the split is forced
+rather than chosen: `org-open-link` (`<leader>oo`) must answer `Effect::None`
+on a miss while `<CR>` must answer `Effect::Declined`, and the vocabulary
+cannot say "it depends". Declining from `<leader>oo` would re-run its trailing
+`o` — "open a line below and enter Insert" — so a missed link would start
+editing the buffer. `<CR>` is a single key, so no trailing key and no hazard.
+
+**A third claim died here.** This row and `org-mode.md` §7.2 both said `<CR>`
+declines to the builtin first-non-blank-of-next-line motion. That is vim, not
+lattice: `<CR>` is unbound in Normal for a Document buffer (`keymap_normal.rs`
+has it only as the `z<CR>` suffix; `input.rs` routes a bare `<CR>` to
+`FollowLink` only for Help / Dashboard / Oil / FileTree). **Lattice has no
+`+` / `<CR>` motion at all** — a real vim-grammar gap, noted here and left as
+separate work. The decline is therefore a no-op today and stays `Declined` for
+meaning and future composition, which is the limitation OM.5 already records
+for `<Tab>`.
 
 `Target` gains an `Id` arm that org cannot resolve — that is
 [`../architecture/org-roam.md`](../architecture/org-roam.md)'s index. It is a

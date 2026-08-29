@@ -497,7 +497,7 @@ The modeline redesign (configurable element system — Left/Center/Right
 zones, per-span theme roles, event-bus content updates, mode/plugin-
 registered + interactive elements) is specified in
 [`../architecture/modeline.md`](../architecture/modeline.md), with
-sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
+sequencing in [`slice-plans/archive/modeline.md`](slice-plans/archive/modeline.md)
 (ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
 
 Picker preview isolation (in-pane live preview renders the previewed
@@ -6590,16 +6590,27 @@ three denial tests.
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md).
 Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md).
 
-**Org on tree-sitter, then org clocking (🚧 in progress, 2026-08-28):** the
+**Org on tree-sitter, then org clocking (✅ complete, 2026-08-29):** the
 plugin registered the org grammar and then parsed org with hand-rolled string
 scanning everywhere — `TreeSnapshot` reached `apply-action` and was dropped
 unused. So org migrates to the tree **first** (OT.x), and clocking — deferred by
 `org-mode.md` §9 and the reason `org-capture.md` §3 cut `:clock-in` /
 `:clock-resume` — lands on the migrated base (OC.x), including **ML.6** (the
-plugin modeline API, which keeps
-[`slice-plans/modeline.md`](slice-plans/modeline.md) active).
+plugin modeline API, which is why
+[`slice-plans/archive/modeline.md`](slice-plans/archive/modeline.md) could
+finally be archived).
 
-**Phase 1 (OT.1–OT.8) is complete ✅**; Phase 2 (OC.x, clocking) is planned.
+**Both phases are complete ✅** — OT.1–OT.8 and OC.1–OC.11. Phase 2 grew three
+slices it did not start with, and the reason is one thing said three ways:
+clocking kept walking into seams that were wired end to end and answered
+nothing. A grammar action could call `emit-event` and be silently dropped
+(OC.1). A plugin could not be woken at all, so anything periodic waited for a
+keystroke (OC.2). An ex-command was handed no cursor and no buffer id while
+still being offered an `apply-edit` effect it had no way to construct (OC.10) —
+which is also why `:org-clock-in` could not exist until it was fixed. None was
+reachable by a test that builds its own context, which is what all three have in
+common. Clocking itself also turned out to need **no persistent state**: an
+unterminated `CLOCK:` line IS a running clock, so the buffer is the record.
 An earlier revision of this paragraph named a specific live bug
 (`agenda.rs:111`, the planning line's position) and was **wrong** — org's
 grammar puts `plan` before `property_drawer`, so the old line assumption matches

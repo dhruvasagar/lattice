@@ -7,7 +7,8 @@
 > [`../../architecture/plugin-treesitter-seam.md`](../../architecture/plugin-treesitter-seam.md)
 > (the TS.1–TS.3 snapshot + query seam this leans on),
 > [`../../architecture/modeline.md`](../../architecture/modeline.md) §6 (the plugin row —
-> **OC.3 below IS ML.6**, and [`modeline.md`](modeline.md) stays active until it lands).
+> **OC.3 below IS ML.6** — landed, and [`archive/modeline.md`](archive/modeline.md)
+> is archived because of it).
 >
 > Plugin repo: [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).
 > Its `wit/` is generated from `lattice-wit` (WT.2), so every WIT change here
@@ -15,7 +16,10 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-28). **Phase 1 (OT.1–OT.8) complete ✅.** Phase 2 (OC.1–OC.8) planned.
+**Status:** ✅ complete (2026-08-29). Phase 1 (OT.1–OT.8) and Phase 2
+(OC.1–OC.11) both landed. Phase 2 grew three slices it did not start with —
+OC.9, OC.10 and OC.11 — and the reason is the same each time: clocking kept
+walking into seams that were wired end to end and answered nothing.
 
 ---
 
@@ -729,10 +733,10 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | ✅ |
 | OC.6 | The four actions, the session owner, the modeline segment | ✅ |
 | OC.7 | `:org-clock-*` ex-commands (the capture key moved to OC.11) | ✅ |
-| OC.9 | `:org-clock-resume`, on the last-clocked target | 📝 |
-| OC.11 | the `:clock-in` capture-template key | 📝 |
+| OC.9 | `:org-clock-resume`, on the last-clocked target | ✅ |
+| OC.11 | the `:clock-in` capture-template key | ✅ |
 | OC.10 | a plugin ex-command can reach the buffer — **unblocks OC.7** | ✅ |
-| OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
+| OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | ✅ |
 
 ### OC.1 — a grammar action can reach the bus ✅ (2026-08-28)
 
@@ -1232,7 +1236,23 @@ assignments, not a plumbing project"), not a threading project.
 before this slice, so a regression to the old context fails it loudly rather
 than returning a plausible no-op.
 
-### OC.11 — the `:clock-in` capture-template key 📝
+### OC.11 — the `:clock-in` capture-template key ✅ (2026-08-29)
+
+**The drawer rides in the captured TEXT**, which is what makes this possible at
+all rather than merely convenient: capture files into another file, and an
+`apply-edit` names a buffer id an unopened file does not have. Building the
+`:LOGBOOK:` into the entry means one write, and the record is correct the moment
+it lands — no window in which the entry exists and its clock does not.
+
+The insertion line is already computed on both target paths, so the goto target
+came free; the End-anchored path reads the file for its line count only when a
+clock is actually wanted, so an ordinary capture pays nothing.
+
+`:clock-resume` is deliberately NOT a template key. Resuming is something you do
+to the last entry you clocked, not something a template describes — it is an
+ex-command (OC.9).
+
+**Original plan text follows.**
 
 **Deps:** OC.7.
 
@@ -1246,7 +1266,34 @@ a word.
 
 `:clock-resume` is NOT here — it needs the last-clocked target, which is OC.9.
 
-### OC.9 — `:org-clock-resume` 📝
+### OC.9 — `:org-clock-resume` ✅ (2026-08-29)
+
+**Cheap for the reason predicted, and cross-file for one that was not.** The
+target reuse worked exactly as sketched — clock-out now KEEPS `(path, line)` as
+"the last entry clocked" rather than clearing it, which also makes
+`org-clock-goto` match org (current *or* last).
+
+The open question this slice carried — what resume does when the target is in an
+unopened buffer — resolved the same way OC.11's did, and neither needed the
+`OpenBufferAt`-then-edit ordering problem solved. `clock::Logbook` takes a line
+accessor, not a buffer, so `read-file` + `parse-file` drive OC.5's drawer
+primitive over file text unchanged and the result is ONE `WriteToFile`. The
+in-buffer path is kept for the current buffer so unsaved edits are respected.
+
+**The limit is stated in the code**: the cross-file path reads DISK while
+`WriteToFile` edits the target's BUFFER, so a target open with unsaved changes
+can disagree. A guest cannot see another buffer, so it wants a host-side
+path-to-open-buffer primitive that no seam has and nothing else has needed.
+
+**Two harness lessons, both cheap to re-learn and now written down.**
+`out.effects` is a RECORD of what a dispatch did, not a to-do list —
+`Effect::WriteToFile` is applied INLINE by the host (deliberately: it returns a
+`Result`, which is what makes "cut only if the insert landed" expressible), so
+draining it again writes the entry twice. And `WriteToFile` opens its target and
+edits the BUFFER, so a cross-file write is visible there and not on disk until a
+save — reading the disk is how a working resume first looked broken.
+
+**Original plan text follows.**
 
 **Deps:** OC.7.
 
@@ -1274,7 +1321,20 @@ describes. Resolve that before writing code; do not half-build it.
 `org-capture.md` §3 lists as cut, with "clocking is not built" as the reason.
 The reason expires here.
 
-### OC.8 — docs 📝
+### OC.8 — docs ✅ (2026-08-29)
+
+`org-mode.md` §9's deferral is replaced, and the replacement records that **half
+its stated reason was wrong in a useful way**: clocking needs no persistent
+state at all. The buffer is the record, so losing guest state costs a modeline
+segment and never a fact. The modeline half was real and closed a gap rather
+than consuming one — plugins could not contribute an element at all, so clocking
+landed ML.6 on the way past.
+
+`org-capture.md` §3's two cut rows are struck with what replaced them.
+`doc/org.md` gains a Clocking section; `archive/modeline.md` is archived now
+ML.6 is closed, with its inbound references repointed.
+
+**Original plan text follows.**
 
 `org-mode.md` §9 moves clocking out of "Deferred with a reason" into "In", and
 gains the tree-sitter statement as a design position rather than an

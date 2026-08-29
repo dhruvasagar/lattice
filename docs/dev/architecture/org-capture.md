@@ -101,8 +101,13 @@ that did not expand can be found and fixed; one that vanished cannot.
   vocabulary decision, not a parser one.
 - `%:from` / `%:subject` — these read a *capture context* supplied by mail or
   org-protocol. Lattice has neither, so the placeholder would always be empty.
-- `:clock-in` / `:clock-resume` — clocking is not built (deferred in
-  `org-mode.md` §9: it needs persistent state and a modeline contribution).
+- ~~`:clock-in` / `:clock-resume`~~ — **both ship** (OC.11, OC.9); clocking
+  landed at OC.1–OC.11. `clock-in = true` on a template starts a clock on the
+  entry it captures, with the `:LOGBOOK:` drawer written into the captured text
+  so it rides the same single write — capture files into another file, and an
+  `apply-edit` names a buffer id an unopened file does not have. `:clock-resume`
+  is an ex-command rather than a template key, because resuming is something you
+  do to the last entry you clocked, not something a template describes.
 
 ## 4. Targets
 

@@ -7,7 +7,7 @@ built-ins, modes, and plugins all contribute styled, positioned,
 optionally-interactive elements, updated over the event bus.
 
 Sequencing + status live in the slice plan
-[`../operations/slice-plans/modeline.md`](../operations/slice-plans/modeline.md);
+[`../operations/slice-plans/archive/modeline.md`](../operations/slice-plans/archive/modeline.md);
 canonical design context is [design.md §5.9](design.md). The wake
 mechanism reused here is [lsp-architecture.md §12](lsp-architecture.md).
 
@@ -479,7 +479,7 @@ echo untouched, so a real message (`:w` → "written") is never clobbered.
 
 ## See also
 
-- [`../operations/slice-plans/modeline.md`](../operations/slice-plans/modeline.md) — slice plan (ML-series sequencing + status).
+- [`../operations/slice-plans/archive/modeline.md`](../operations/slice-plans/archive/modeline.md) — slice plan (ML-series sequencing + status).
 - [`headerline.md`](headerline.md) — the *other* status surface (top view-header virtual row).
 - [`theme-system.md`](theme-system.md) — element+style+palette registry the spans resolve through.
 - [`lsp-architecture.md`](lsp-architecture.md) §12 — the async render-wake reused for content updates.

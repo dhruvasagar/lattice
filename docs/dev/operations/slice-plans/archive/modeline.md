@@ -7,6 +7,16 @@ file owns *when* and *in what order*.
 
 Status legend: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
+**Complete (2026-08-29).** Every slice is ✅; ML.6, the last one, landed as OC.3
+in [`archive/org-treesitter-and-clocking.md`](org-treesitter-and-clocking.md).
+Archived per the archiving rule — verified against source rather than icons
+(ML.1 was implemented but its heading had never been marked, and is now).
+
+ML.6 shipped a narrower surface than this plan described — no click handlers, no
+per-buffer scope, no per-span theme role. Those are recorded as **deliberate
+cuts with reasons** in OC.3, not as open work, so they do not keep this plan
+active. A slice that wants plugin modeline click handlers opens a new one.
+
 The redesign turns the per-pane status footer (today a single formatted
 string from `Mode::status_line_items`) into a **registry of styled,
 positioned, optionally-interactive elements** contributed by host
@@ -69,7 +79,7 @@ param through all 5 `ModeContext::new` callers; no Arc/TypeId footgun
 (register the `…Handle` alias, look it up, deref one layer).
 **Deps:** ML.0b-1. **Unblocks:** ML.1.
 
-### ML.1 — TUI render: zones + built-ins as elements
+### ML.1 — TUI render: zones + built-ins as elements  ✅
 **Design:** §3 (ordering), §4 (per-pane resolution), §7, §8.
 **Locked decision (per-pane content model = option A):** descriptors are
 global/uniform; content is resolved per pane — built-ins computed

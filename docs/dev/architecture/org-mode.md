@@ -551,9 +551,32 @@ own name; and a picker source able to invoke an ACTION with typed args
 at the cursor — and the ex-line route a picker had is closed to actions
 and hands an ex-command no document. All three ship.
 
-**Deferred with a reason:** clocking is cheap in edits but needs
-persistent "currently clocked" state and a modeline contribution, so it
-wants its own slice after the rest lands. `<leader>o'` ships as a narrow
+**Clocking ships** (OC.1–OC.11). It was deferred here for needing
+"persistent 'currently clocked' state and a modeline contribution", and
+the first half of that turned out to be wrong in a useful way: **there is
+no persistent state.** An unterminated `CLOCK: [start]` with no `--end`
+*is* a running clock, so the buffer is the whole record — clock-out and
+clock-cancel re-derive their target structurally, and clocking out works
+on a clock started before the editor was last opened. Guest state exists
+only to feed the modeline and to remember the last clocked entry for
+`:org-clock-goto` / `:org-clock-resume`, and losing it costs a segment,
+never a fact.
+
+The modeline half was real, and it closed a gap rather than consuming
+one: plugins had no way to contribute a modeline element at all, so
+clocking landed ML.6 (the `ui` seam) on the way past.
+
+What clocking exposed is worth more than the feature. Three seams
+promised something they could not deliver, each invisible from the guest
+side: a grammar action could call `emit-event` and be silently dropped
+(OC.1); a plugin could not be woken at all, so anything periodic waited
+for a keystroke (OC.2); and an ex-command was handed no cursor and no
+buffer id while still being offered an `apply-edit` effect it had no way
+to construct (OC.10). Each is the same shape — a seam wired end to end
+that answers nothing — and none was reachable by a test that built its
+own context.
+
+`<leader>o'` ships as a narrow
 to the block body (`AppEffect::NarrowLines`); a true indirect buffer in
 the block's own major mode is post-v1.
 

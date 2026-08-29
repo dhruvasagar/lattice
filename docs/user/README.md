@@ -158,6 +158,7 @@ same surface).
 | TOML                       | [`toml-mode`](help:toml-mode) | ✅      |
 | YAML                       | [`yaml-mode`](help:yaml-mode) | ✅      |
 | SQL                        | [`sql-mode`](help:sql-mode) | ✅      |
+| WIT                        | [`wit-mode`](help:wit-mode) | ✅      |
 | Markdown                   | [`markdown-mode`](help:markdown-mode) | ✅      |
 | Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
 | Registers, marks, macros   | _covered in modal-editing_               | 🟡      |

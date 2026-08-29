@@ -56,6 +56,7 @@ the structural text objects (see
 | [Bash](help:bash-mode)       | `sh`/`bash`/`zsh`/`fish` | ✅        | —                              | —      | ✅    | ✅      | ✅       |
 | [SQL](help:sql-mode)        | `sql`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
 | [Lua](help:lua-mode)        | `lua`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [WIT](help:wit-mode)        | `wit`                   | ✅         | —                              | —      | ✅    | —      | —       |
 | [Markdown](help:markdown-mode)   | `md`/`markdown`/`mdown`/`mkd` | ✅  | ✅ (block→inline, fenced code) | —      | ✅    | —       | —        |
 
 Plain text and any unrecognised extension fall through to the
@@ -66,9 +67,9 @@ that as untyped buffer content.
 
 The plan is a tiered rollout, not "Helix parity in one PR":
 
-- **Tier 1 (in core, target by v1.0)**: 19 mainstream languages
+- **Tier 1 (in core, target by v1.0)**: 20 mainstream languages
   — Rust, Python, JavaScript, TypeScript, TSX, Go, C, C++, Java,
-  Ruby, HTML, CSS, JSON, YAML, TOML, Bash, SQL, Lua, Markdown.
+  Ruby, HTML, CSS, JSON, YAML, TOML, Bash, SQL, Lua, Markdown, WIT.
 - **Tier 2+ (plugin-host era, post Phase 7)**: anything beyond
   tier 1 ships as a `lattice-language-<name>` WASM plugin that
   contributes the grammar + queries through the `lattice:syntax`

@@ -25,6 +25,14 @@ pub enum Lang {
     Sql,
     Toml,
     TypeScript,
+    /// WebAssembly Interface Types — the language `wit/` is written in, and
+    /// therefore the language this editor's own plugin API is written in.
+    /// Highlighted with a repo-held query rather than the grammar crate's own:
+    /// `tree_sitter_wit::HIGHLIGHTS_QUERY` uses TextMate capture names
+    /// (`entity.name.type.interface`), and [`crate::style::name_to_style`]
+    /// keys on the first dot-segment — so every `interface` / `record` /
+    /// `world` NAME would have rendered unstyled.
+    Wit,
     /// TypeScript + JSX (React) via `tree-sitter-typescript`'s TSX
     /// grammar. Separate from `TypeScript` because the two are
     /// different dialects — TSX adds JSX element syntax on top of
@@ -78,6 +86,7 @@ impl Lang {
             Lang::Sql,
             Lang::Toml,
             Lang::TypeScript,
+            Lang::Wit,
             Lang::Tsx,
             Lang::Yaml,
             Lang::Markdown,
@@ -127,6 +136,7 @@ impl Lang {
             Some("rb") | Some("ruby") => Lang::Ruby,
             Some("sql") => Lang::Sql,
             Some("toml") => Lang::Toml,
+            Some("wit") => Lang::Wit,
             Some("ts") | Some("mts") | Some("cts") => Lang::TypeScript,
             Some("tsx") => Lang::Tsx,
             Some("yaml") | Some("yml") => Lang::Yaml,
@@ -163,6 +173,7 @@ impl Lang {
             Lang::TypeScript => "typescript",
             Lang::Tsx => "tsx",
             Lang::Yaml => "yaml",
+            Lang::Wit => "wit",
             Lang::Markdown => "markdown",
             // The interned name IS the identity — a field read, not a
             // table lookup. See `plugin_lang`.
@@ -195,6 +206,7 @@ impl Lang {
             Lang::TypeScript => "typescript",
             Lang::Tsx => "tsx",
             Lang::Yaml => "yaml",
+            Lang::Wit => "wit",
             Lang::Markdown => "markdown",
             // The interned name IS the identity — a field read, not a
             // table lookup. See `plugin_lang`.
@@ -213,7 +225,9 @@ impl Lang {
                 (Some("//"), Some(("/*", "*/")))
             }
             Lang::Python | Lang::Ruby | Lang::Bash | Lang::Yaml | Lang::Toml => (Some("#"), None),
-            Lang::Go | Lang::C | Lang::Cpp | Lang::Java | Lang::Sql => {
+            // WIT sits here rather than with the `#` languages: it takes its
+            // comment syntax from C, including the `///` doc form.
+            Lang::Go | Lang::C | Lang::Cpp | Lang::Java | Lang::Sql | Lang::Wit => {
                 (Some("//"), Some(("/*", "*/")))
             }
             Lang::Css => (None, Some(("/*", "*/"))),
@@ -306,6 +320,45 @@ mod tests {
         assert_eq!(Lang::Python.label(), "python");
         assert_eq!(Lang::JavaScript.label(), "javascript");
         assert_eq!(Lang::Markdown.label(), "markdown");
+    }
+
+    /// `.wit` is the language this editor's own plugin API is written in, and
+    /// until now every file under `wit/` opened as plain text.
+    #[test]
+    fn detects_wit_files() {
+        assert_eq!(
+            Lang::detect_from_path(Some(&PathBuf::from("wit/grammar.wit"))),
+            Lang::Wit
+        );
+    }
+
+    /// Compiling the query is not the same as highlighting anything, and the
+    /// two came apart here: the crate ships a `HIGHLIGHTS_QUERY` that compiles
+    /// perfectly and leaves every declaration NAME unstyled, because its
+    /// captures are TextMate names and `style::name_to_style` keys on the first
+    /// dot-segment. So this asserts the tokens a reader actually scans for —
+    /// the `interface` keyword and the interface's own name — carry a style.
+    #[test]
+    fn a_wit_declaration_and_its_name_are_both_styled() {
+        let src = "interface ui {\n  register-segment: func(id: string);\n}\n";
+        let mut syntax = crate::Syntax::for_language(Lang::Wit)
+            .expect("registry builds")
+            .expect("wit has a grammar");
+        syntax.parse(src);
+        let lines = syntax.highlight_lines_native(0, 3).expect("spans");
+        let first = &lines[0];
+        assert!(
+            !first.is_empty(),
+            "the `interface ui {{` line produced no styled spans at all"
+        );
+        // Two distinct styles on line 0: the keyword and the name. One style
+        // would mean the name fell through to the keyword's span or to default.
+        let styles: std::collections::BTreeSet<String> =
+            first.iter().map(|s| format!("{:?}", s.style)).collect();
+        assert!(
+            styles.len() >= 2,
+            "keyword and declaration name must style differently, got {styles:?}"
+        );
     }
 
     #[test]

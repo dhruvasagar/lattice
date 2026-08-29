@@ -325,6 +325,12 @@ tree-sitter-css = "0.23"
 tree-sitter-json = "0.23"
 tree-sitter-yaml = "0.7"
 tree-sitter-toml-ng = "0.7"
+# WIT — the canonical plugin API language (design §9), so the editor that owns
+# `wit/` should be able to read it. On crates.io, which is what makes it a
+# BUILT-IN rather than a plugin: the rule org's grammar established is that a
+# grammar maintained outside crates.io is the plugin's build artefact, and one
+# published there is the editor's (design §1).
+tree-sitter-wit = "0.2"
 tree-sitter-bash = "0.23"
 tree-sitter-sequel = "0.3"
 tree-sitter-lua = "0.5"

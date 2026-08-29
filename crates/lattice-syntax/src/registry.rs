@@ -106,6 +106,8 @@ const SQL_FOLDS_QUERY: &str = include_str!("../queries/sql/folds.scm");
 const SQL_SYMBOLS_QUERY: &str = include_str!("../queries/sql/symbols.scm");
 const SQL_TEXTOBJECTS_QUERY: &str = include_str!("../queries/sql/textobjects.scm");
 
+const WIT_HIGHLIGHTS_QUERY: &str = include_str!("../queries/wit/highlights.scm");
+const WIT_FOLDS_QUERY: &str = include_str!("../queries/wit/folds.scm");
 const TOML_FOLDS_QUERY: &str = include_str!("../queries/toml/folds.scm");
 const TOML_SYMBOLS_QUERY: &str = include_str!("../queries/toml/symbols.scm");
 const TOML_TEXTOBJECTS_QUERY: &str = include_str!("../queries/toml/textobjects.scm");
@@ -477,6 +479,28 @@ impl LangRegistry {
                 Some(SQL_TEXTOBJECTS_QUERY),
             )?,
         );
+        // WIT. Two things differ from every sibling here, both forced:
+        //   * `tree_sitter_wit` exposes `language()` — a plain fn returning a
+        //     `Language` — rather than a `LanguageFn` constant, so there is no
+        //     `.into()`.
+        //   * the highlights query is OURS (`queries/wit/highlights.scm`). The
+        //     crate ships one, but in the TextMate capture vocabulary, and
+        //     `style::name_to_style` keys on the first dot-segment — so
+        //     `entity.name.type.interface` and its peers resolve to
+        //     `Style::Default` and every declaration NAME would render plain.
+        configs.insert(
+            "wit",
+            build_config(
+                tree_sitter_wit::language(),
+                "wit",
+                WIT_HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(WIT_FOLDS_QUERY),
+                None,
+                None,
+            )?,
+        );
         configs.insert(
             "toml",
             build_config(
@@ -751,6 +775,7 @@ mod tests {
             "toml",
             "typescript",
             "tsx",
+            "wit",
             "yaml",
         ] {
             assert!(r.has_lang(name), "missing language: {name}");
@@ -791,6 +816,7 @@ mod tests {
             "toml",
             "typescript",
             "tsx",
+            "wit",
             "yaml",
         ];
         for lang in with_folds {

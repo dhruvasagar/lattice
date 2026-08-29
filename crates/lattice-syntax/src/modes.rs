@@ -160,6 +160,7 @@ lang_mode!(
 );
 lang_mode!(SqlMode, "sql-mode");
 lang_mode!(TomlMode, "toml-mode");
+lang_mode!(WitMode, "wit-mode");
 lang_mode!(
     TypeScriptMode,
     "typescript-mode",
@@ -232,6 +233,7 @@ pub fn major_mode_id_for_lang(lang: Lang) -> Option<ModeId> {
         Lang::Ruby => Some(RubyMode::mode_id()),
         Lang::Sql => Some(SqlMode::mode_id()),
         Lang::Toml => Some(TomlMode::mode_id()),
+        Lang::Wit => Some(WitMode::mode_id()),
         Lang::TypeScript => Some(TypeScriptMode::mode_id()),
         Lang::Tsx => Some(TsxMode::mode_id()),
         Lang::Yaml => Some(YamlMode::mode_id()),
@@ -259,6 +261,7 @@ pub fn lang_for_mode_id(id: ModeId) -> Option<Lang> {
         "ruby-mode" => Some(Lang::Ruby),
         "sql-mode" => Some(Lang::Sql),
         "toml-mode" => Some(Lang::Toml),
+        "wit-mode" => Some(Lang::Wit),
         "typescript-mode" => Some(Lang::TypeScript),
         "tsx-mode" => Some(Lang::Tsx),
         "yaml-mode" => Some(Lang::Yaml),
@@ -320,6 +323,9 @@ pub fn register_language_modes(registry: &mut ModeRegistry) {
     registry
         .register(TomlMode)
         .expect("toml-mode register without conflict");
+    registry
+        .register(WitMode)
+        .expect("wit-mode register without conflict");
     registry
         .register(TypeScriptMode)
         .expect("typescript-mode register without conflict");
@@ -526,6 +532,7 @@ mod tests {
             RubyMode::mode_id(),
             SqlMode::mode_id(),
             TomlMode::mode_id(),
+            WitMode::mode_id(),
             TypeScriptMode::mode_id(),
             TsxMode::mode_id(),
             YamlMode::mode_id(),
@@ -562,6 +569,7 @@ mod tests {
             (Lang::Ruby, Some(RubyMode::mode_id())),
             (Lang::Sql, Some(SqlMode::mode_id())),
             (Lang::Toml, Some(TomlMode::mode_id())),
+            (Lang::Wit, Some(WitMode::mode_id())),
             (Lang::TypeScript, Some(TypeScriptMode::mode_id())),
             (Lang::Tsx, Some(TsxMode::mode_id())),
             (Lang::Yaml, Some(YamlMode::mode_id())),
@@ -599,6 +607,7 @@ mod tests {
             (Lang::Ruby, RubyMode::mode_id()),
             (Lang::Sql, SqlMode::mode_id()),
             (Lang::Toml, TomlMode::mode_id()),
+            (Lang::Wit, WitMode::mode_id()),
             (Lang::TypeScript, TypeScriptMode::mode_id()),
             (Lang::Tsx, TsxMode::mode_id()),
             (Lang::Yaml, YamlMode::mode_id()),
@@ -633,6 +642,7 @@ mod tests {
                 "ruby-mode" => Box::new(RubyMode),
                 "sql-mode" => Box::new(SqlMode),
                 "toml-mode" => Box::new(TomlMode),
+                "wit-mode" => Box::new(WitMode),
                 "typescript-mode" => Box::new(TypeScriptMode),
                 "tsx-mode" => Box::new(TsxMode),
                 "yaml-mode" => Box::new(YamlMode),

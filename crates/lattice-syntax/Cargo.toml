@@ -60,6 +60,7 @@ tree-sitter-css = { workspace = true }
 tree-sitter-json = { workspace = true }
 tree-sitter-yaml = { workspace = true }
 tree-sitter-toml-ng = { workspace = true }
+tree-sitter-wit = { workspace = true }
 tree-sitter-bash = { workspace = true }
 tree-sitter-sequel = { workspace = true }
 tree-sitter-lua = { workspace = true }

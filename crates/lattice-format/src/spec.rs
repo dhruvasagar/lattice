@@ -56,7 +56,10 @@ impl FormatterSpec {
             // No consensus formatter: Ruby is split between rubocop
             // and standardrb, SQL between a dozen tools with
             // incompatible opinions, and `Plain` has nothing to format.
-            Lang::Ruby | Lang::Sql | Lang::Plain => return None,
+            // WIT has no stdin-oriented consensus formatter — `wasm-tools
+            // component wit` reformats a file in place, which is a different
+            // shape from the pipe every arm above uses.
+            Lang::Ruby | Lang::Sql | Lang::Plain | Lang::Wit => return None,
             // No built-in formatter for a language the editor learned
             // about at runtime. `formatprg` still works — it overrides
             // this table per buffer and is the documented answer for

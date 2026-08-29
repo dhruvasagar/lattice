@@ -180,6 +180,7 @@ docs = [
   "yaml-mode",
   "sql-mode",
   "markdown-mode",
+  "wit-mode",
 ]
 
 [[section.group]]

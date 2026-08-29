@@ -728,8 +728,9 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.4 | `host-services.local-utc-offset-seconds` | ✅ |
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | ✅ |
 | OC.6 | The four actions, the session owner, the modeline segment | ✅ |
-| OC.7 | `:org-clock-*` ex-commands + the `:clock-in` capture key | 📝 |
+| OC.7 | `:org-clock-*` ex-commands (the capture key moved to OC.11) | ✅ |
 | OC.9 | `:org-clock-resume`, on the last-clocked target | 📝 |
+| OC.11 | the `:clock-in` capture-template key | 📝 |
 | OC.10 | a plugin ex-command can reach the buffer — **unblocks OC.7** | ✅ |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
@@ -1106,7 +1107,32 @@ inside tree-land and is a consequence of the OT phase, not a limitation of it.
 any action** — a test that presses a key first passes on the broken version
 too. Assert clock-out works on a fresh session with no recorded clock (**D4**).
 
-### OC.7 — the ex-commands, and the capture key 📝
+### OC.7 — the ex-commands ✅ (2026-08-29)
+
+**The four are ex-commands now, and the chords bind to them by name.** One
+registration, both surfaces — a mode keymap binding resolves by NAME without
+filtering on kind, so this is design §5.2.1's unification made real rather than
+restated. Verified rather than assumed, as this entry demanded:
+`excommand.rs:170` is `CommandKind::Action => Err(Unknown)`, so OC.6's
+`register_action` gave the chord and nothing else, and `:org-clock-in` answered
+"unknown command" while `<leader>oi` worked. No chord-driven test can see that.
+
+**The test harness was wrong before the code was, and it is worth recording.**
+`execute_ex_line` dispatches and leaves its effects in the `DispatchOutcome` for
+the caller to drain; `dispatch_chord` drains its own. So the first run looked
+like a broken command — and the plugin had produced the correct `ApplyEdit` all
+along, sitting in `out`. A `:`-line test that forgets this reads identically to
+a real failure. The `ex()` helper now carries the explanation.
+
+There is also a test that the CHORD still works now that it binds an
+ex-command. That property belongs to the host; org is what depends on it, so org
+pins it.
+
+**The `:clock-in` capture key did NOT land here** — it is OC.11. It shares
+nothing with the ex-command work beyond the word "clock", and folding it in
+would have made this slice two unrelated things.
+
+**Original plan text follows.**
 
 **Deps:** OC.6.
 
@@ -1205,6 +1231,20 @@ assignments, not a plumbing project"), not a threading project.
 **Test:** a fixture ex-command that edits the buffer at the cursor — impossible
 before this slice, so a regression to the old context fails it loudly rather
 than returning a plausible no-op.
+
+### OC.11 — the `:clock-in` capture-template key 📝
+
+**Deps:** OC.7.
+
+`:clock-in` as an `org.capture-templates` key: clock into the entry the capture
+just created. `org-capture.md` §3 lists it as cut with "clocking is not built" as
+the reason, and that reason expired at OC.6.
+
+Carved out of OC.7 rather than bundled with it: the ex-command work is about the
+command surface and this is about capture's template vocabulary. They share only
+a word.
+
+`:clock-resume` is NOT here — it needs the last-clocked target, which is OC.9.
 
 ### OC.9 — `:org-clock-resume` 📝
 

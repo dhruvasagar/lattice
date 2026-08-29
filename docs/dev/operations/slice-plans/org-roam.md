@@ -1,7 +1,7 @@
 # A note is an id, not a path — slice plan (OR)
 
 > Design: [`../../architecture/org-roam.md`](../../architecture/org-roam.md).
-> Depends on [`conceal-and-org-links.md`](conceal-and-org-links.md) phase OL —
+> Depends on [`archive/conceal-and-org-links.md`](archive/conceal-and-org-links.md) phase OL —
 > specifically OL.1, which makes `id:` a recognised link kind that OR.8 then
 > teaches to resolve.
 >

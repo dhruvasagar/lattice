@@ -1,10 +1,10 @@
 # Markup that exists to be parsed stops being shown — slice plan (H / OL)
 
-> Design: [`../../architecture/conceal.md`](../../architecture/conceal.md) (the
+> Design: [`../../architecture/conceal.md`](../../../architecture/conceal.md) (the
 > host primitive, phase H),
-> [`../../architecture/org-mode.md`](../../architecture/org-mode.md) §7 (links —
+> [`../../architecture/org-mode.md`](../../../architecture/org-mode.md) §7 (links —
 > rendering and following, which phase OL implements),
-> [`../../architecture/display-line.md`](../../architecture/display-line.md) (the
+> [`../../architecture/display-line.md`](../../../architecture/display-line.md) (the
 > `DisplayLine` substrate H.1 changes).
 >
 > Plugin repo: [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).

@@ -6742,7 +6742,7 @@ panics.
 
 Design: [`../architecture/conceal.md`](../architecture/conceal.md).
 Slice plan:
-[`slice-plans/conceal-and-org-links.md`](slice-plans/conceal-and-org-links.md).
+[`slice-plans/archive/conceal-and-org-links.md`](slice-plans/archive/conceal-and-org-links.md).
 
 `design.md:3414` named concealment as a v1 carve-out and recorded that nothing
 implements it; nothing has since. Help buffers look like a counter-example and
@@ -6789,7 +6789,7 @@ rules so a Rust buffer never enters the path.
 
 Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §7.
 Slice plan:
-[`slice-plans/conceal-and-org-links.md`](slice-plans/conceal-and-org-links.md).
+[`slice-plans/archive/conceal-and-org-links.md`](slice-plans/archive/conceal-and-org-links.md).
 
 Org's links already work — `links.rs` classifies `file:`, `http(s):`, `mailto:`
 and `*Headline`, and `<leader>oo` opens them. What is wrong is the surface. A

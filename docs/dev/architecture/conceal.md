@@ -1,7 +1,7 @@
 # Concealment
 
 Status: design fragment (2026-08-29). Slice plan:
-`../operations/slice-plans/conceal-and-org-links.md`.
+`../operations/slice-plans/archive/conceal-and-org-links.md`.
 
 Anchors: `display-line.md` (the `DisplayLine` substrate this extends),
 `cell-grid-renderer.md` (the two renderer peers), `design.md` §5.6 (rich text —

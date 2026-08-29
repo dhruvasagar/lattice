@@ -6833,11 +6833,11 @@ meant to exist.
 
 ---
 
-## Org-roam (OR, 2026-08-29 — design landed, not built)
+## Org-roam (OR, 2026-08-29 — 🚧 in progress)
 
 | Slice | What | Status |
 |---|---|---|
-| OR.1 | `host-services.store` — durable, plugin-scoped, opaque bytes | 📝 |
+| OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | 📝 |
 | OR.3 | `host-services.new-uuid` | 📝 |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |

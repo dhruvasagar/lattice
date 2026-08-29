@@ -232,5 +232,13 @@ harness = false
 name = "dashboard_section"
 harness = false
 
+# OR.1: the plugin byte store. `nodes` at 90 KB (one picker open), an `n/<id>`
+# record at 200 bytes (one `<CR>`, on the keystroke path), and a prefix scan
+# over 1000 keys. These bound the roam indexer (OR.4) and find-node (OR.6), so
+# they are measured before either is written.
+[[bench]]
+name = "plugin_store"
+harness = false
+
 [lints]
 workspace = true

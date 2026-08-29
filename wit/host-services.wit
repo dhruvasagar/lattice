@@ -92,4 +92,66 @@ interface host-services {
     /// `0` if the platform cannot answer — UTC, which is a legible wrong answer
     /// rather than a fabricated one.
     local-utc-offset-seconds: func() -> s32;
+
+    // ---------------------------------------------------------------------
+    // OR.1 — durable, plugin-scoped key/value storage.
+    //
+    // Scoped to the plugin's own data dir **by manifest id**, so every seam
+    // instance of one plugin sees ONE store and two plugins cannot collide.
+    // That scoping is the whole point rather than an implementation note:
+    // `spawn_event_plugin`, `spawn_config_plugin` and
+    // `instantiate_grammar_plugin` build SEPARATE `wasmtime::Store`s with
+    // separate guest memory, so "keep it in guest state" means N copies
+    // drifting — and the drift is invisible, because each instance stays
+    // internally consistent while answering a different question.
+    //
+    // **The host stores bytes under strings and never interprets either.**
+    // Keys are guest-chosen strings, NOT paths: nothing derives a path from a
+    // key (the store encodes them into its own layout), so there is no
+    // traversal to defend against and no path sanitiser to keep correct.
+    //
+    // These are five functions on `host-services` rather than a `store`
+    // interface of their own, and that is deliberate. A component's import set
+    // is fixed for the whole artefact and must resolve on EVERY linker it is
+    // instantiated against — including the grammar seam's sync one. A new
+    // interface is a new import each world must declare and both linkers must
+    // wire, and a miss there does not degrade one seam: it fails the WHOLE
+    // component at instantiation (OC.2 did exactly this with one `logging`
+    // call). `host-services` is already imported by every world that wants a
+    // store and already wired on both linkers, so putting them here makes the
+    // half-wiring structurally impossible instead of merely tested for.
+    //
+    // Capability-gated on `state:write`. A plugin without the grant gets `err`
+    // from `store-put` / `store-delete`, `none` from `store-get` and an empty
+    // list from `store-keys` — the honest "no store wired" degradation the
+    // `config_registry` and `event_emit` seams already use, never a panic.
+    // ---------------------------------------------------------------------
+
+    /// Persist `value` under `key`. `err` names why — no grant, no data dir,
+    /// a value larger than the whole store may hold, or a write that failed.
+    store-put: func(key: string, value: list<u8>) -> result<_, string>;
+
+    /// The bytes stored under `key`, or `none` when nothing is stored there.
+    ///
+    /// `none` also covers every degraded case (no grant, no data dir, a store
+    /// discarded as corrupt). A reader for whom absence is ordinary — a first
+    /// index that has not run yet — cannot distinguish them, and does not need
+    /// to: the answer to all four is "build it".
+    store-get: func(key: string) -> option<list<u8>>;
+
+    /// Forget `key`. Deleting a key that is not there is `ok` — a retraction
+    /// that has already happened is not an error.
+    store-delete: func(key: string) -> result<_, string>;
+
+    /// Keys carrying `prefix`, sorted. `""` lists everything.
+    store-keys: func(prefix: string) -> list<string>;
+
+    /// Bumped on every successful mutation, never on a read. A reader compares
+    /// it against what it last built from and rebuilds only when it moved.
+    ///
+    /// This is what makes one-writer/many-readers work across separate `Store`s
+    /// (see the block comment above): the number is host-side, so a reader
+    /// instance sees the writer instance's bump without sharing memory with it.
+    /// `0` for a plugin with no store.
+    store-generation: func() -> u64;
 }

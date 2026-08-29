@@ -149,6 +149,23 @@ impl Guest for Component {
             &spec(),
             11,
         );
+        // OR.1: the store, read from the SYNC grammar seam. The write happens
+        // on the async config seam (`register_options` below), so a read that
+        // sees it proves the two `wasmtime::Store`s share ONE store — which is
+        // the entire claim of the slice, and the thing a single-instance test
+        // would pass against a per-instance store.
+        grammar::register_action(
+            "multiseam-store-read",
+            "read what another seam wrote to the plugin store (OR.1)",
+            &spec(),
+            12,
+        );
+        grammar::register_action(
+            "multiseam-store-write",
+            "write to the plugin store from the sync grammar seam (OR.1)",
+            &spec(),
+            13,
+        );
         // OC.10: an EX-COMMAND that edits the buffer at the cursor. Before that
         // slice this was not merely awkward, it was impossible: the guest got no
         // cursor to locate the edit and no buffer id to name as the target, so
@@ -221,6 +238,10 @@ impl Guest for Component {
         // it to `multiseam.clock`, the same way it namespaces the option above.
         ui::register_segment("clock", UiZone::Right, 7);
         ui::emit_segment("clock", "\u{25f7} 0:14");
+        // OR.1: write from the ASYNC seam. The grammar seam's
+        // `multiseam-store-read` reads it back out of a different
+        // `wasmtime::Store` — one plugin, one store, N instances.
+        let _ = host_services::store_put("multiseam/probe", b"from-config");
     }
 }
 
@@ -371,6 +392,31 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{offset}:{utc}"),
+                })])
+            }
+            // OR.1: what does the sync grammar seam see of what the async
+            // config seam wrote? Echoes `<generation>:<value|none>`, so a test
+            // can tell "the store is shared" from "the store is empty" from
+            // "the call was refused".
+            12 => {
+                let value = host_services::store_get("multiseam/probe")
+                    .and_then(|b| String::from_utf8(b).ok())
+                    .unwrap_or_else(|| "none".to_string());
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{}:{}", host_services::store_generation(), value),
+                })])
+            }
+            // OR.1: the reverse direction plus `keys`. Echoes
+            // `<put-result>:<comma-joined keys under "multiseam/">`.
+            13 => {
+                let put = match host_services::store_put("multiseam/from-grammar", b"g") {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => format!("err({e})"),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{put}:{}", host_services::store_keys("multiseam/").join(",")),
                 })])
             }
             // OT.2: parse an off-buffer file and report what came back, so the

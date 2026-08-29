@@ -103,7 +103,7 @@ unlinked references additionally wants a term map the index does not carry.
 
 | Slice | Description | Status |
 |---|---|---|
-| OR.1 | `host-services.store` — durable, plugin-scoped, opaque bytes | 📝 |
+| OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | 📝 |
 | OR.3 | `host-services.new-uuid` | 📝 |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |
@@ -116,14 +116,23 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.11 | roam capture templates and `${field}` | 📝 |
 | OR.12 | docs | 📝 |
 
-### OR.1 — a plugin can persist something 📝
+### OR.1 — a plugin can persist something ✅
 
 **Deps:** none.
 
-The `store` interface from `org-roam.md` §4.2: `put` / `get` / `delete` /
-`keys(prefix)` / `generation`. Scoped to the plugin's data dir **by manifest
-id**, so every seam instance of one plugin sees one store and two plugins cannot
-collide.
+The store from `org-roam.md` §4.2: `store-put` / `store-get` / `store-delete` /
+`store-keys(prefix)` / `store-generation`. Scoped to the plugin's data dir **by
+manifest id**, so every seam instance of one plugin sees one store and two
+plugins cannot collide.
+
+**Landed as five functions on `host-services`, not a `store` interface of its
+own.** A component's import set is fixed for the whole artefact and must resolve
+on every linker it is instantiated against, including the grammar seam's sync
+one; a new interface is a new import each world declares and both linkers wire,
+and a miss there fails the WHOLE component rather than degrading one seam —
+which is the OC.2 scar exactly. `host-services` is already imported everywhere a
+store is wanted and already wired on both linkers. Design fragment §4.2 amended
+in place.
 
 **Scoping by manifest id rather than by instance is the slice's whole point**,
 and it is the thing to assert first: the test that matters spawns two instances

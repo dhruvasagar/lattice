@@ -106,6 +106,9 @@ pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
 pub mod plugin_manager_host;
+// OR.1: the durable, plugin-scoped byte store the `host-services` `store-*`
+// calls act on. One per manifest id, shared across every seam's `Store`.
+pub mod plugin_store;
 pub mod teardown;
 // TR.2b — the `transient-source` guest→host keyed-menu seam. Trio mirroring
 // `picker_*`: the bindgen world, the actor bridge, the registry-builder adapter.
@@ -150,8 +153,8 @@ pub use wake::{Sleeper, SleeperHandle};
 pub use wasmtime::component::Component;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -947,6 +950,18 @@ struct PluginState {
     /// linker, so the seam is unreachable from the keystroke path structurally,
     /// and this field is the second, redundant answer to the same question.
     wake: Option<wake::WakeCtx>,
+    /// OR.1: the plugin's durable byte store, shared with every other seam
+    /// instance of the SAME manifest id. `None` for a store built without a
+    /// manifest name (the degenerate `instantiate` path and internal harnesses)
+    /// — there is no id to scope a store to, so `store-get` answers `none` and
+    /// `store-put` says why.
+    ///
+    /// Stamped for every store here rather than per-spawn-path, on the
+    /// `project` / `ui` reasoning: the handle needs no plugin id allocation and
+    /// nothing to wait for, so no path can forget it. Forgetting it is exactly
+    /// the failure this seam exists to prevent — a picker seam holding a store
+    /// the grammar seam cannot see is the drift, not a degradation of it.
+    store: Option<plugin_store::PluginStoreHandle>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1046,6 +1061,94 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// [`host_services::local_utc_offset_seconds`].
     fn local_utc_offset_seconds(&mut self) -> i32 {
         host_services::local_utc_offset_seconds()
+    }
+
+    /// OR.1 `store-put`. Gated on `state:write`; `err` names which of the three
+    /// refusals happened, because "the put failed" sends a plugin author
+    /// nowhere.
+    fn store_put(&mut self, key: String, value: Vec<u8>) -> Result<(), String> {
+        match self.writable_store()? {
+            Some(mut store) => store.put(&key, value),
+            None => Err(
+                "store put failed: this plugin has no store (loaded without a manifest id)".into(),
+            ),
+        }
+    }
+
+    /// OR.1 `store-get`. `none` for every absent case — nothing stored, no
+    /// grant, no store — because a reader for whom absence is ordinary cannot
+    /// act differently on any of them.
+    fn store_get(&mut self, key: String) -> Option<Vec<u8>> {
+        self.readable_store()?.get(&key)
+    }
+
+    /// OR.1 `store-delete`. Deleting what is not there is `ok`.
+    fn store_delete(&mut self, key: String) -> Result<(), String> {
+        match self.writable_store()? {
+            Some(mut store) => store.delete(&key),
+            None => Err(
+                "store delete failed: this plugin has no store (loaded without a manifest id)"
+                    .into(),
+            ),
+        }
+    }
+
+    /// OR.1 `store-keys`. Empty for an ungranted or storeless plugin.
+    fn store_keys(&mut self, prefix: String) -> Vec<String> {
+        self.readable_store()
+            .map(|s| s.keys(&prefix))
+            .unwrap_or_default()
+    }
+
+    /// OR.1 `store-generation`. `0` for an ungranted or storeless plugin — a
+    /// number that never moves, so a reader polling it simply never rebuilds
+    /// rather than rebuilding forever.
+    fn store_generation(&mut self) -> u64 {
+        self.readable_store().map(|s| s.generation()).unwrap_or(0)
+    }
+}
+
+impl PluginState {
+    /// The store for a READ (`store-get` / `store-keys` / `store-generation`),
+    /// or `None` when this plugin has none or was not granted `state:write`.
+    ///
+    /// Reads are gated on the same grant as writes. A plugin that may not
+    /// persist has nothing of its own to read back, and letting it read would
+    /// only expose what an earlier, granted version of itself had left there.
+    fn readable_store(&self) -> Option<std::sync::MutexGuard<'_, plugin_store::PluginStore>> {
+        if !self.grant.state_write {
+            return None;
+        }
+        // Poisoning is recovered rather than propagated: a panic in another
+        // thread's guest call must not turn every later store read into a
+        // panic on the keystroke path. The bytes are unaffected — the map is
+        // only ever mutated through methods that cannot leave it half-updated.
+        Some(
+            self.store
+                .as_ref()?
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    /// The store for a WRITE. `Err` when the grant is missing (named, so the
+    /// author fixes their manifest); `Ok(None)` when there is no store at all.
+    #[allow(clippy::type_complexity)]
+    fn writable_store(
+        &self,
+    ) -> Result<Option<std::sync::MutexGuard<'_, plugin_store::PluginStore>>, String> {
+        if !self.grant.state_write {
+            // info!: user-actionable (a plugin was denied persistence), the
+            // level `walk` / `read-file` denials use.
+            tracing::info!("host-services store denied: the plugin has no `state:write` grant");
+            return Err(
+                "store denied: this plugin did not request the `state:write` capability".into(),
+            );
+        }
+        Ok(self
+            .store
+            .as_ref()
+            .map(|s| s.lock().unwrap_or_else(|poisoned| poisoned.into_inner())))
     }
 }
 
@@ -2352,6 +2455,17 @@ pub struct PluginHost {
     // Base dir under which each plugin's private data dir is created:
     // `<data_dir_base>/<plugin-id>/data/` (PH7.2, fragment §6).
     data_dir_base: PathBuf,
+    // OR.1: one durable byte store per MANIFEST ID, handed to every
+    // `PluginState` built for that id.
+    //
+    // Keyed by id rather than by instance, and that is the slice's whole point
+    // rather than a caching detail. The picker seam, the grammar seam and the
+    // event seam are separate `wasmtime::Store`s with separate memory; a store
+    // per instance would mean N copies drifting, with find-node offering a node
+    // `<CR>` cannot open and nothing reporting an error. Sharing the handle
+    // makes a write on one seam visible to a read on another immediately —
+    // before any flush, and without a reload.
+    stores: Mutex<std::collections::HashMap<String, plugin_store::PluginStoreHandle>>,
     // Monotonic source of host-issued `PluginId`s. `&self` methods allocate,
     // so this is atomic.
     next_id: AtomicU32,
@@ -2762,6 +2876,7 @@ impl PluginHost {
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
+            stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
         })
     }
@@ -2777,6 +2892,33 @@ impl PluginHost {
     pub fn plugin_data_dir(&self, plugin_id: &str) -> Option<PathBuf> {
         crate::manifest::is_safe_plugin_id(plugin_id)
             .then(|| self.data_dir_base.join(plugin_id).join("data"))
+    }
+
+    /// OR.1: the shared byte store for `plugin_id`, opened on first use and
+    /// reused for every later seam instance of the same id.
+    ///
+    /// `None` for an id that is not a safe directory name — the same refusal
+    /// [`plugin_data_dir`](Self::plugin_data_dir) makes, rather than a second
+    /// opinion about it. Such a plugin gets no data mount either, so a store
+    /// would have nowhere to live.
+    fn store_for(&self, plugin_id: &str) -> Option<plugin_store::PluginStoreHandle> {
+        let dir = self.plugin_data_dir(plugin_id)?;
+        let mut stores = self
+            .stores
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = stores.get(plugin_id) {
+            return Some(existing.clone());
+        }
+        // The dir is created by `build_plugin_wasi` on the manifest paths, but
+        // not on every path that names a plugin, so create it here too rather
+        // than depending on an ordering the compiler cannot check. A failure
+        // degrades at flush time (logged, dropped), never here.
+        let _ = std::fs::create_dir_all(&dir);
+        let handle: plugin_store::PluginStoreHandle =
+            Arc::new(Mutex::new(plugin_store::PluginStore::open(&dir)));
+        stores.insert(plugin_id.to_string(), handle.clone());
+        Some(handle)
     }
 
     /// Install the boundary tracer (PO.5) — the loader calls this once, after it
@@ -3034,6 +3176,12 @@ impl PluginHost {
             // OC.2: only `spawn_event_plugin` fills this in — it is the one path
             // whose actor has somewhere to deliver an `on-wake`.
             wake: None,
+            // OR.1: stamped for every store here, on the `project` / `ui`
+            // reasoning — it needs no allocated plugin id, so there is nothing
+            // to wait for and no spawn path that can forget it. A seam holding
+            // a store its sibling seams cannot see IS the drift this exists to
+            // prevent, so the wiring must not be per-path.
+            store: name.and_then(|id| self.store_for(id)),
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

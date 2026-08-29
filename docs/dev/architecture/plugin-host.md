@@ -398,6 +398,46 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   `local-offset` deliberately refuses in a multi-threaded process (it would answer UTC here,
   always) unless `unsound_local_offset` is on; chrono resolves the zone through
   `iana-time-zone` — already in the graph via `wasmtime-wasi` — rather than `localtime_r`.
+- **Durable plugin storage (✅ OR.1)**: `host-services.store-put` / `store-get` / `store-delete` /
+  `store-keys(prefix)` / `store-generation`. Opaque bytes under guest-chosen strings; **the host
+  never interprets either**. Scoped to the plugin's private data dir **by manifest id**.
+
+  Scoping by id rather than by instance is the whole point, not a caching detail. There is no
+  single guest instance: `spawn_event_plugin`, `spawn_config_plugin`, `spawn_help_plugin`,
+  `spawn_dashboard_sections` and `instantiate_grammar_plugin` each build a separate
+  `wasmtime::Store` with separate linear memory, so a plugin that keeps an index "in guest state"
+  keeps *N copies, drifting* — and the drift is invisible, because every instance stays
+  internally consistent while answering a different question from its neighbour. The host holds
+  one `PluginStore` per manifest id and hands the same handle to every `PluginState`, so a write
+  on the event seam is visible to a read on the grammar seam immediately: no flush, no reload.
+  `store-generation` is the freshness signal that makes one-writer/many-readers work across those
+  stores — it is host-side, so a reader sees the writer's bump without sharing memory with it.
+
+  **Keys are not paths.** Nothing derives a filesystem location from a key (the store
+  length-prefixes them into one file), so there is no traversal to defend against and no path
+  sanitiser to keep correct. `f/../../etc/passwd` is data.
+
+  Gated on a new **`state:write`** capability, granted at either trust tier. Its own capability
+  rather than a corollary of `fs:write` because the two answer different questions: `fs:write` is
+  *reach* over the user's files, which persisting an index needs none of. An ungranted plugin gets
+  `err` from `put`/`delete` (naming the capability), `none` from `get` and an empty `keys` — the
+  `config_registry` / `event_emit` degradation posture, never a trap.
+
+  **Five functions on `host-services` rather than a `store` interface of its own.** A component's
+  import set is fixed for the whole artefact and must resolve on *every* linker it is instantiated
+  against, including the grammar seam's sync one; a new interface is a new import each world must
+  declare and both linkers must wire, and a miss there fails the WHOLE component at instantiation
+  rather than degrading one seam (OC.2 did exactly that with one `logging::log` call).
+  `host-services` is already imported everywhere a store is wanted and already wired on both
+  linkers, so the `store-` prefix buys structural impossibility where `store.put` would have
+  bought a nicer name.
+
+  The failure policy is `agenda_cache.rs`'s, promoted from an agenda special case to a primitive:
+  temp-file-and-rename, a schema version that refuses an older shape, a size cap that clears
+  wholesale, flush-on-drop, and degradation to **empty** on any corruption — never to a partial
+  read, which is how a store starts serving plausible nonsense. The on-disk format is a
+  hand-rolled length-prefixed frame rather than a serde format because the payload is *bytes* and
+  every serde encoder in the tree writes a `Vec<u8>` as an array of tagged integers.
   Rejected: an `org.utc-offset` option, which makes the user maintain what the OS knows and
   breaks twice a year.
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an
@@ -470,7 +510,8 @@ The WIT package above *is* the plugin API. Rather than re-document it by hand, a
 
 - **Manifest-declared capabilities.** Each plugin ships a manifest declaring requested
   capabilities: `fs:read:<prefix>`, `fs:write:<prefix>`, `net:http:<host-allowlist>`,
-  `proc:spawn`, plus editor capabilities via the existing `CapabilitySet`
+  `proc:spawn`, `state:write` (OR.1 — the `host-services` `store-*` calls),
+  plus editor capabilities via the existing `CapabilitySet`
   (`Mode::required_capabilities`). The runtime enforces via wasmtime's WASI configuration —
   a plugin's `Store` is built with exactly its granted `wasi:filesystem`/`wasi:http` view.
   > **Refined (PH7.2, 2026-07-01):** WASI-layer enforcement covers **filesystem only**. Each

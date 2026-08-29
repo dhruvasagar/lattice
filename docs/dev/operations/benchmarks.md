@@ -113,6 +113,51 @@ be compared against.
 
 ---
 
+## OR.1 — the plugin byte store (2026-08-30)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-plugin-host --bench plugin_store`.
+
+The durable, plugin-scoped key/value store org-roam's index lives in.
+Design: [`../architecture/plugin-host.md`](../architecture/plugin-host.md)
+§5, [`../architecture/org-roam.md`](../architecture/org-roam.md) §4.2.
+These numbers bound OR.4 (the indexer) and OR.6 (find-node), so they
+were taken before either was written.
+
+| Workload | Time |
+|---|---|
+| `get_record_200b_of_585` — one `n/<id>`, keystroke path | **76.6 ns** |
+| `get_blob_90k` — the whole `nodes` blob, one picker open | 1.62 µs |
+| `keys_prefix_of_1000` — a prefix scan, 500 of 1000 match | 10.8 µs |
+| `put_record_200b` | 18.7 µs |
+| `put_blob_90k` | 17.3 µs |
+
+**76.6 ns is the number that mattered.** `<CR>` on an `[[id:…]]` link is
+one exact-key `get` plus one `generation` compare, and the whole
+grammar-extension round trip is budgeted at 5 µs p99 — so the store is
+~1.5% of it. That is what justifies §4.2 keeping `n/<id>` as a separate
+key from `nodes`: deserializing a 90 KB blob to answer one question is
+not a thing to do while someone holds a key down, and now there is a
+measurement rather than an assertion behind that sentence.
+
+**The two `put` rows being the same is the finding, not a coincidence.**
+A 90 KB value and a 200-byte value cost within 8% of each other, because
+neither is measuring the insert — both are measuring 1/64th of a
+file write. The store flushes every 64 mutations
+(`agenda_cache.rs`'s policy, promoted to a primitive), so a `put` is a
+`BTreeMap` insert plus an amortized temp-file-and-rename. Two
+consequences worth naming: the cold index's ~2000 writes cost ~37 ms of
+flushing, off-thread, which is nothing against the parse they accompany;
+and tuning `FLUSH_EVERY` is the lever if that ever matters, not the
+encoding.
+
+**`get` clones.** 1.62 µs for 90 KB is a `memcpy` at ~55 GB/s, which is
+what crossing into a guest costs anyway — the bytes have to be copied
+into linear memory regardless, so returning a borrow would move the copy
+rather than remove it.
+
+---
+
 ## H.3 — conceal matching, per display line (2026-08-29)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p

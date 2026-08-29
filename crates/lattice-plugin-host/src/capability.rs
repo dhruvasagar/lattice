@@ -67,6 +67,11 @@ pub struct CapabilityGrant {
     /// Whether the plugin may spawn subprocesses (enforced at the
     /// host-services proc seam, PH7.3+).
     pub proc_spawn: bool,
+    /// OR.1: whether the plugin may persist bytes in its own key/value store
+    /// (enforced at the `host-services` `store-*` seam — the store lives in the
+    /// plugin's private data dir, which WASI already mounts, so this gate is
+    /// host-side like `net:http` rather than a preopen).
+    pub state_write: bool,
     /// The editor capabilities a plugin-declared mode requires (enforced at
     /// mode activation, PH7.11).
     pub editor: CapabilitySet,
@@ -110,6 +115,12 @@ pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
                 write: true,
             }),
             Capability::NetHttp(h) => g.net_http.push(h.clone()),
+            // OR.1: granted at either tier. The store reaches only the
+            // plugin's own data dir, which every plugin already has mounted
+            // writable, so withholding it from a user-installed plugin would
+            // deny nothing it could not already do through WASI — it would
+            // only deny the crash-safe, versioned, cross-instance shape.
+            Capability::StateWrite => g.state_write = true,
             Capability::ProcSpawn => match tier {
                 TrustTier::Bundled => g.proc_spawn = true,
                 // proc:spawn is bundled-only in v1 — a user plugin's request

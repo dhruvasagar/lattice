@@ -128,25 +128,41 @@ and would get one of them wrong.
 
 ### 4.2 The store
 
-A new capability-gated `host-services` interface. **The host stores bytes under
-strings and never interprets either.**
+Five new capability-gated calls on `host-services`. **The host stores bytes
+under strings and never interprets either.**
 
 ```wit
 /// Durable, plugin-scoped key/value. Scoped to the plugin's own data dir by
 /// manifest id, so every seam instance of a plugin sees ONE store and two
 /// plugins cannot collide. Keys are guest-chosen strings, not paths — there
 /// is no traversal to defend against.
-interface store {
-    put:    func(key: string, value: list<u8>) -> result<_, string>;
-    get:    func(key: string) -> option<list<u8>>;
-    delete: func(key: string) -> result<_, string>;
-    /// Keys carrying `prefix`, sorted. `""` lists everything.
-    keys:   func(prefix: string) -> list<string>;
-    /// Bumped on every successful mutation. A reader compares it against
-    /// what it last built from and rebuilds when it moved.
-    generation: func() -> u64;
-}
+store-put:        func(key: string, value: list<u8>) -> result<_, string>;
+store-get:        func(key: string) -> option<list<u8>>;
+store-delete:     func(key: string) -> result<_, string>;
+/// Keys carrying `prefix`, sorted. `""` lists everything.
+store-keys:       func(prefix: string) -> list<string>;
+/// Bumped on every successful mutation. A reader compares it against
+/// what it last built from and rebuilds when it moved.
+store-generation: func() -> u64;
 ```
+
+**Five functions on `host-services` rather than a `store` interface of their
+own**, which is what OR.1 landed after weighing the naming against the failure
+mode. A component's import set is fixed for the whole artefact and must resolve
+on *every* linker it is instantiated against, including the grammar seam's sync
+one; a new interface is a new import each world must declare and both linkers
+must wire, and a miss there does not degrade one seam — it fails the whole
+component at instantiation. That is not hypothetical: OC.2 added a single
+`logging::log` call and the entire org plugin stopped loading. `host-services`
+is already imported by every world that would want a store and already wired on
+both linkers, so the prefix buys structural impossibility where `store.put`
+would have bought a nicer name.
+
+The gate is a new `state:write` capability rather than `fs:write`. The two
+answer different questions: `fs:write:<prefix>` is *reach* — which of the user's
+files a plugin may alter — and a plugin that persists an index needs none of it.
+Folding them together would make "remember something between restarts" require a
+grant over the user's documents.
 
 Roam's key layout — **the guest's schema, invisible to the host**:
 

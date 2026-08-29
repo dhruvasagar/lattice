@@ -40,8 +40,9 @@ use serde::{Deserialize, Serialize};
 /// WASI view (filesystem / network / process).
 ///
 /// Wire form (manifest + [`Display`]): `fs:read:<prefix>`, `fs:write:<prefix>`,
-/// `net:http:<host>`, `proc:spawn`. The `<prefix>` may itself contain `:`
-/// (paths, `host:port`); only the first two segments are the discriminator.
+/// `net:http:<host>`, `proc:spawn`, `state:write`. The `<prefix>` may itself
+/// contain `:` (paths, `host:port`); only the first two segments are the
+/// discriminator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Capability {
     /// Read access to a host path prefix (`fs:read:<prefix>`).
@@ -53,12 +54,22 @@ pub enum Capability {
     /// Permission to spawn subprocesses (`proc:spawn`). Bundled-only in v1
     /// (dropped from a user-installed plugin's grant — fragment §6).
     ProcSpawn,
+    /// OR.1: permission to persist bytes in the plugin's own key/value store
+    /// (`state:write`, the `host-services` `store-*` calls).
+    ///
+    /// Its own capability rather than a corollary of `fs:write`, because the
+    /// two answer different questions. `fs:write:<prefix>` is *reach* — which
+    /// of the user's files a plugin may alter — and a plugin that persists an
+    /// index needs none of that. Folding the store into `fs:write` would make
+    /// "remember something between restarts" require a grant over the user's
+    /// documents, which is the wrong trade in the direction that matters.
+    StateWrite,
 }
 
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn` / `state:write`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -80,6 +91,7 @@ impl FromStr for Capability {
                 Ok(Capability::NetHttp(h.to_string()))
             }
             (Some("proc"), Some("spawn"), None) => Ok(Capability::ProcSpawn),
+            (Some("state"), Some("write"), None) => Ok(Capability::StateWrite),
             _ => Err(CapabilityParseError(s.to_string())),
         }
     }
@@ -92,6 +104,7 @@ impl std::fmt::Display for Capability {
             Capability::FsWrite(p) => write!(f, "fs:write:{}", p.display()),
             Capability::NetHttp(h) => write!(f, "net:http:{h}"),
             Capability::ProcSpawn => f.write_str("proc:spawn"),
+            Capability::StateWrite => f.write_str("state:write"),
         }
     }
 }

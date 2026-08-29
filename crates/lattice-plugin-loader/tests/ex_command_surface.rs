@@ -114,6 +114,14 @@ fn invoke(commands: &CommandRegistryHandle, name: &str, arg: Option<&str>) -> Ef
         register: Register::default(),
         count: Count(1),
         buffer_id: lattice_core::BufferId::default(),
+        // OC.10 added these four. The three commands under test are
+        // native and read none of them, so an empty buffer with the
+        // caret at the origin is the honest stand-in: a fixture that
+        // invented content would imply these commands consult it.
+        cursor: Default::default(),
+        buffer: Default::default(),
+        path: None,
+        syntax: None,
         cancel: CancellationToken::never(),
     };
     (spec.apply)(&ctx).expect("apply returns an effect")

@@ -13,34 +13,39 @@
 ; (they parse as `ty`), so there is nothing to capture for them separately.
 
 ; --- Comments ------------------------------------------------------------
-; `///` gets its own node in this grammar, so a doc comment can carry the
-; documentation style rather than the ordinary comment one.
-(doc_comment) @comment.doc
+; Captured with the SAME names Rust's query uses, so `///` in a `.wit` file and
+; `///` in a `.rs` file resolve to the same style. `name_to_style` keys on the
+; first dot-segment, so `comment.documentation` and `comment` both land on
+; `Style::Comment` — there is no separate doc style to reach for, and inventing
+; a capture name for one would only have looked like it worked.
+(doc_comment) @comment.documentation
 (block_comment) @comment
 (slash_comment) @comment
 
 ; --- Declaration names ---------------------------------------------------
-; Through the `name:` field, so an identifier of the same shape elsewhere in the
-; item is not swept up with it.
-(world_item name: (identifier)) @type
-(interface_item name: (identifier)) @type
-(record_item name: (identifier)) @type
-(enum_item name: (identifier)) @type
-(variant_item name: (identifier)) @type
-(flags_item name: (identifier)) @type
-(resource_item name: (identifier)) @type
-(type_item name: (identifier)) @type
+; The capture closes INSIDE the parens, on the identifier. Written the other way
+; — `(interface_item name: (identifier)) @type` — the capture attaches to the
+; whole `interface_item`, so the item's entire span takes the style: doc comment,
+; body and all. That is what the upstream query does, and it is why a `.wit` file
+; rendered as one long block of `type` with its comments swallowed.
+(world_item name: (identifier) @type)
+(interface_item name: (identifier) @type)
+(record_item name: (identifier) @type)
+(enum_item name: (identifier) @type)
+(variant_item name: (identifier) @type)
+(flags_item name: (identifier) @type)
+(resource_item name: (identifier) @type)
+(type_item name: (identifier) @type)
 
-(func_item name: (identifier)) @function
-(static_method name: (identifier)) @function
-(resource_method (func_item name: (identifier))) @function
+(func_item name: (identifier) @function)
+(static_method name: (identifier) @function)
 
 ; --- Types and parameters ------------------------------------------------
 ; `ty` is every type position — builtins (`u32`, `string`) and references to
 ; declared types alike. The grammar does not distinguish them and neither does a
 ; reader: both are "the type here".
 (ty) @type.builtin
-(named_type name: (identifier)) @variable.parameter
+(named_type name: (identifier) @variable.parameter)
 
 ; --- Keywords ------------------------------------------------------------
 [
@@ -67,9 +72,15 @@
 "static" @keyword
 "constructor" @function
 
-; --- Literals, attributes, punctuation -----------------------------------
+; --- Literals and punctuation --------------------------------------------
 (semver) @constant
-(attribute) @attribute
+
+; `(attribute)` is deliberately NOT captured. In this grammar an attribute node
+; SPANS the doc comment attached to the same item, so capturing it paints the
+; `///` line as an attribute — which is how `///` in a `.wit` file came to look
+; nothing like `///` in a `.rs` file. Its constituent tokens still style through
+; the keyword and punctuation rules; a real `@since(...)` capture needs the
+; attribute's inner nodes, and belongs with whoever needs it.
 
 "->" @operator
 [ "," ";" "." ] @punctuation.delimiter

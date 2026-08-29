@@ -18,8 +18,8 @@ existed they opened as plain text.
 - **Syntax highlighting** — declarations (`world`, `interface`, `record`,
   `enum`, `variant`, `flags`, `resource`, `type`) and their names, function
   names, parameter names, types, `@`-attributes and package versions.
-  `///` doc comments are styled apart from ordinary `//` comments, which
-  matters in a corpus where the doc comment carries the contract.
+  `///` doc comments style exactly as they do in Rust — lattice's syntax
+  vocabulary has one comment style, so a doc comment is a comment.
 - **Folds** — every braced item. A `wit/` file is often one long interface, so
   folding is how you see its shape at all. `za` toggles, `zR` / `zM` open and
   close everything.
@@ -30,6 +30,10 @@ existed they opened as plain text.
 - **No formatter.** `:format` does nothing here. There is no consensus
   stdin-oriented WIT formatter — `wasm-tools component wit` rewrites a file in
   place, which is a different shape from the pipe every other language uses.
+- **No attribute highlighting.** `@since(...)` and friends style through their
+  constituent tokens rather than as a unit: in this grammar an attribute node
+  *spans the doc comment attached to its item*, so capturing it whole paints the
+  `///` line as an attribute.
 - **No symbol list or text objects yet.** `:symbols` will not find WIT items.
   Both want query files this mode does not ship; they are additive when a real
   need appears.

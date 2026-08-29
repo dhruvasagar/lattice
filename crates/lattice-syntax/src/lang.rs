@@ -361,6 +361,38 @@ mod tests {
         );
     }
 
+    /// `///` must look the same in a `.wit` file as in a `.rs` one.
+    ///
+    /// It did not. Two separate query bugs stacked: declaration captures were
+    /// written `(interface_item name: (identifier)) @type`, which attaches the
+    /// capture to the WHOLE item rather than the identifier, so an item's entire
+    /// span — comments included — rendered as a type; and `(attribute)`, which
+    /// in this grammar spans the doc comment attached to its item, painted the
+    /// `///` line as an attribute. Neither is visible from a query that
+    /// compiles, which is why this asserts resolved STYLES against Rust rather
+    /// than asserting that anything parsed.
+    #[test]
+    fn a_doc_comment_styles_the_same_in_wit_as_in_rust() {
+        fn styles(lang: Lang, src: &str) -> Vec<crate::Style> {
+            let mut s = crate::Syntax::for_language(lang)
+                .expect("registry builds")
+                .expect("language has a grammar");
+            s.parse(src);
+            s.highlight_lines_native(0, 2)
+                .expect("spans")
+                .iter()
+                .flat_map(|line| line.iter().map(|sp| sp.style))
+                .collect()
+        }
+        let wit = styles(Lang::Wit, "/// Doc.\n// Plain.\ninterface ui {\n}\n");
+        let rust = styles(Lang::Rust, "/// Doc.\n// Plain.\nfn f() {}\n");
+        assert_eq!(
+            wit, rust,
+            "a doc comment and a line comment must resolve to the same styles in \
+             both languages; WIT rendered them as Attribute and Type"
+        );
+    }
+
     #[test]
     fn detects_markdown_extensions() {
         for ext in ["md", "markdown", "mdown", "mkd"] {

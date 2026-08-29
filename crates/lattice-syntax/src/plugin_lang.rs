@@ -324,16 +324,41 @@ pub fn register_with_grammar(
     grammar: &crate::registry::GrammarSpec,
     provenance: u64,
 ) -> Result<LanguageName, LanguageRegistrationError> {
+    register_with_grammar_themed(name, extensions, grammar, provenance, None)
+}
+
+/// [`register_with_grammar`], with the theme registry in hand (TK.1).
+///
+/// A capture name in this language's `highlights.scm` that is not a
+/// builtin category but IS a registered theme element resolves to
+/// [`Style::Element`](crate::Style::Element) — which is how org's TODO
+/// keywords get one colour each without the editor learning what a TODO
+/// keyword is.
+///
+/// **The elements must already be registered when this is called.** The
+/// loader drains the `theme` seam before the `language` seam for that
+/// reason; a capture naming an element that does not exist yet resolves
+/// to `Style::Default` and renders unstyled, which is a silent failure
+/// rather than a loud one. It is the same drain-order gate OM.0
+/// established for `grammar` before `modes`.
+pub fn register_with_grammar_themed(
+    name: &str,
+    extensions: &[&str],
+    grammar: &crate::registry::GrammarSpec,
+    provenance: u64,
+    theme: Option<&dyn lattice_theme::ThemeRegistry>,
+) -> Result<LanguageName, LanguageRegistrationError> {
     let normalised = validate(name, extensions)?;
     let interned = LanguageName::intern(name);
 
     // Compile BEFORE claiming the name: this is the step that fails, and
     // failing here has installed nothing anywhere.
-    let config = crate::registry::compile_plugin_config(interned.as_str(), grammar, provenance)
-        .map_err(|e| LanguageRegistrationError::QueryCompile {
-            name: name.to_owned(),
-            detail: e.to_string(),
-        })?;
+    let config =
+        crate::registry::compile_plugin_config(interned.as_str(), grammar, provenance, theme)
+            .map_err(|e| LanguageRegistrationError::QueryCompile {
+                name: name.to_owned(),
+                detail: e.to_string(),
+            })?;
 
     claim(interned, normalised, provenance).map_err(|_| {
         LanguageRegistrationError::AlreadyRegistered {

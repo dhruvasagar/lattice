@@ -1019,6 +1019,11 @@ pub(crate) fn compile_plugin_config(
     name: &'static str,
     spec: &GrammarSpec,
     provenance: u64,
+    // TK.1: resolves capture names that name a registered theme element
+    // rather than a builtin category. `None` restricts the query to the
+    // builtin vocabulary — the pre-TK.1 behaviour, and what any caller
+    // with no registry in hand should pass.
+    theme: Option<&dyn lattice_theme::ThemeRegistry>,
 ) -> Result<Arc<LangConfig>, SyntaxError> {
     let compile = |what: &str, src: &str| -> Result<Query, SyntaxError> {
         Query::new(&spec.grammar, src)
@@ -1040,10 +1045,13 @@ pub(crate) fn compile_plugin_config(
         Some(src) if !src.trim().is_empty() => compile("highlights.scm", src)?,
         _ => compile("highlights.scm", "")?,
     };
+    // TK.1: resolved ONCE per language, not per span. An element lookup
+    // is one hash probe per distinct capture NAME in the query — a
+    // handful — at registration, on the loader's off-boot thread.
     let highlight_styles = highlights
         .capture_names()
         .iter()
-        .map(|n| crate::style::name_to_style_pub(n))
+        .map(|n| crate::style::name_to_style_with_theme(n, theme))
         .collect();
     let highlight_priorities = highlights
         .capture_names()

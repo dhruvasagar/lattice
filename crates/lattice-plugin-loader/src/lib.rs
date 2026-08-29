@@ -2496,11 +2496,17 @@ impl PluginLoader {
                 conceal_rules: spec.conceal_rules.clone(),
             };
             let exts: Vec<&str> = spec.extensions.iter().map(String::as_str).collect();
-            match lattice_syntax::plugin_lang::register_with_grammar(
+            // TK.1: hand over the theme registry so a query capture may
+            // name a registered element. The `theme` seam drains before
+            // this one, so a plugin's own elements already exist —
+            // without that order a capture would resolve to
+            // `Style::Default` and render unstyled, silently.
+            match lattice_syntax::plugin_lang::register_with_grammar_themed(
                 &spec.name,
                 &exts,
                 &grammar_spec,
                 id.0 as u64,
+                self.env.theme_registry.as_deref(),
             ) {
                 Ok(_) => registered += 1,
                 Err(err) => tracing::warn!(

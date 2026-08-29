@@ -80,7 +80,7 @@ with reasons, the last three for the same structural one.
 
 | Slice | Description | Status |
 |---|---|---|
-| TK.1 | a capture name may name a theme element | 📝 |
+| TK.1 | a capture name may name a theme element | ✅ |
 | TK.2 | the `org-todo-keywords` grammar | 📝 |
 | TK.3 | elements, and defaults that reference the palette | 📝 |
 | TK.4 | the query is generated from the keywords | 📝 |
@@ -88,7 +88,7 @@ with reasons, the last three for the same structural one.
 | TK.6 | fast select | 📝 |
 | TK.7 | docs | 📝 |
 
-### TK.1 — a capture name may name a theme element 📝
+### TK.1 — a capture name may name a theme element ✅ (2026-08-29)
 
 **Deps:** none. Host-side, in `lattice-syntax`.
 
@@ -107,13 +107,28 @@ overlap and paints nothing. So the test asserts the overlap directly: an element
 capture over the same range as `@text.title.1` wins, exactly as `@keyword` does
 today.
 
-**Tests:** a registered element name resolving to `Style::Element`; an
-unregistered dotted name still resolving to `Style::Default` (no accidental
-match); a builtin name unaffected (`keyword` stays `Style::Keyword`, never an
-element even if one is registered under that name); the overlap test above;
-`capture_priority` equal to `keyword`'s for an element name; the resolution
-happening at query-compile time rather than per span (asserted by construction —
-`highlight_styles` is built once).
+**Threaded, not global.** The theme registry lives in `ServiceRegistry`, not in
+a process-wide `OnceLock`, so `compile_plugin_config` takes
+`Option<&dyn ThemeRegistry>` and `register_with_grammar_themed` is the entry
+point the loader calls — it already holds `env.theme_registry`. `None` is the
+honest answer for the native `LangRegistry::standard()` path and every test that
+does not care, and it reproduces the pre-TK.1 mapping exactly. Adding a global
+would have been smaller and would have undone the reason the service registry
+exists.
+
+**Drain order is a gate, again.** The elements must exist before the language
+registers, or a capture naming one resolves to `Style::Default` and renders
+unstyled — silent. The loader already drains `theme` before `language`; the
+`register_with_grammar_themed` doc records the dependency, the same way OM.0
+recorded `grammar` before `modes`.
+
+**Landed:** 7 tests. Beyond the obvious ones, three carry their reason:
+`tk1_an_element_capture_outranks_a_title_capture` is the silent-failure guard;
+`tk1_a_builtin_capture_name_is_never_shadowed_by_an_element` pins that a plugin
+cannot redefine `keyword` for every language at once; and
+`tk1_no_registry_is_exactly_the_pre_tk1_mapping` compares the new function
+against the old one name for name, so the `None` path is proven identical rather
+than assumed.
 
 ### TK.2 — the `org-todo-keywords` grammar 📝
 

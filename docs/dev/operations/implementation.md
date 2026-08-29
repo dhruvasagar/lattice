@@ -6901,7 +6901,7 @@ noise.
 
 | Slice | What | Status |
 |---|---|---|
-| TK.1 | a capture name may name a theme element | 📝 |
+| TK.1 | a capture name may name a theme element | ✅ |
 | TK.2 | the `org-todo-keywords` grammar | 📝 |
 | TK.3 | elements, and defaults that reference the palette | 📝 |
 | TK.4 | the query is generated from the keywords | 📝 |

@@ -86,6 +86,34 @@ interface theme {
     /// is free. `err` when the spec is malformed — never a trap, and never a
     /// partially-registered element.
     register-element: func(name: string, doc: string, default: style-spec) -> result<_, string>;
+
+    /// TK.5: override an element this plugin owns, ABOVE the theme.
+    ///
+    /// `register-element` supplies a *default*, which sits BELOW the active
+    /// theme in the resolution stack (`theme-system.md` §5) — so a plugin
+    /// cannot express "the user configured this and it must win" with a
+    /// default alone. This is that missing step, and it is what lets an
+    /// org-shaped `org.todo-keyword-styles` behave the way
+    /// `org-todo-keyword-faces` does in emacs.
+    ///
+    /// **Auto-namespaced exactly like `register-element`**, which is what
+    /// bounds it: the prefix is the calling plugin's id, so a plugin can only
+    /// ever name elements inside its own namespace and cannot restyle a
+    /// builtin or another plugin's element. The host re-checks ownership
+    /// anyway — namespacing is the mechanism, the check is the guarantee.
+    ///
+    /// `err` for an element this plugin has not registered, so a typo is a
+    /// named refusal rather than an override that lands nowhere.
+    ///
+    /// ## Lifetime, which is a real limitation
+    ///
+    /// `:colorscheme` replaces the palette AND the whole override map
+    /// atomically, so an override set here does not survive one. Re-applying
+    /// after a colourscheme change needs the `theme` import to be reachable
+    /// from a path that is alive when the change happens; today this seam's
+    /// store is dropped when `register-theme-elements` returns. Documented
+    /// rather than worked around.
+    set-element-override: func(name: string, style: style-spec) -> result<_, string>;
 }
 
 /// The world a theme-contributing plugin implements. Imports the `theme`

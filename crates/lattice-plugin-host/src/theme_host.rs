@@ -110,6 +110,42 @@ pub fn register_plugin_element(
     full
 }
 
+/// TK.5: the `set-element-override` body — an override for an element this
+/// plugin owns, above the theme.
+///
+/// **Ownership is checked, not assumed.** Namespacing already bounds what a
+/// plugin can name, so this check should be unreachable; it exists because
+/// "should be unreachable" is exactly the reasoning that makes a security
+/// boundary depend on a call site staying correct. Refusing here means a
+/// future caller that forgets to namespace is refused rather than allowed to
+/// restyle a builtin.
+pub fn set_plugin_element_override(
+    registry: &dyn ThemeRegistry,
+    plugin_id: &str,
+    name: &str,
+    spec: StyleSpec,
+) -> Result<(), String> {
+    let full = format!("{plugin_id}.{name}");
+    let element = ElementName::from(full.clone());
+    let Some(info) = registry.describe(&element) else {
+        // A typo is a named refusal rather than an override that lands
+        // nowhere and looks like the feature not working.
+        return Err(format!(
+            "set-element-override: `{full}` is not a registered element"
+        ));
+    };
+    match &info.owner {
+        ElementOwner::Plugin(owner) if owner.as_ref() == plugin_id => {}
+        _ => {
+            return Err(format!(
+                "set-element-override: `{full}` is not owned by `{plugin_id}`"
+            ));
+        }
+    }
+    registry.set_override(element, spec);
+    Ok(())
+}
+
 impl PluginHost {
     /// Instantiate a `theme-plugin` component under its capability grant, drive
     /// its `register-theme-elements` export once, and return the host-issued id
@@ -254,5 +290,85 @@ mod tests {
         );
         // Unnamespaced must NOT exist — a plugin cannot squat a bare name.
         assert!(reg.id(&ElementName::from("background")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tk5_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use lattice_theme::{ColorRef, InMemoryThemeRegistry, StyleSpec, default_palette};
+
+    fn rig() -> InMemoryThemeRegistry {
+        // The POPULATED palette, not `Palette::default()` — an empty one
+        // has no `yellow` or `orange`, so every palette reference resolves
+        // to `None` and an override would be indistinguishable from a
+        // default. The first version of this test asserted `None != None`.
+        let r = InMemoryThemeRegistry::new(default_palette());
+        register_plugin_element(
+            &r,
+            "org",
+            "todo.WAITING",
+            "a TODO state",
+            StyleSpec {
+                fg: Some(ColorRef::Palette("yellow".into())),
+                ..Default::default()
+            },
+        );
+        r
+    }
+
+    /// The point of the slice: an override BEATS the element's default,
+    /// which is what a default alone could never express — a default sits
+    /// below the active theme, so a plugin could not say "the user
+    /// configured this and it must win".
+    #[test]
+    fn tk5_an_override_beats_the_registered_default() {
+        let r = rig();
+        let name = ElementName::from("org.todo.WAITING".to_string());
+        let before = r.resolved().get(r.id(&name).unwrap()).fg;
+
+        set_plugin_element_override(
+            &r,
+            "org",
+            "todo.WAITING",
+            StyleSpec {
+                fg: Some(ColorRef::Palette("orange".into())),
+                ..Default::default()
+            },
+        )
+        .expect("the plugin owns this element");
+
+        let after = r.resolved().get(r.id(&name).unwrap()).fg;
+        assert_ne!(before, after, "the override must change the resolved style");
+    }
+
+    /// Namespacing already bounds what a plugin can name, so this refusal
+    /// should be unreachable. It is checked anyway, because "should be
+    /// unreachable" is exactly the reasoning that makes a boundary depend on
+    /// every call site staying correct.
+    #[test]
+    fn tk5_a_plugin_cannot_override_an_element_it_does_not_own() {
+        let r = rig();
+        r.register(
+            ElementName::from_static("pane.separator"),
+            ElementOwner::Core,
+            StyleSpec::default(),
+            "a builtin",
+        );
+        // Reaching past the namespace, as a miswired caller would.
+        let err = set_plugin_element_override(&r, "pane", "separator", StyleSpec::default())
+            .expect_err("a builtin is not the plugin's to restyle");
+        assert!(err.contains("not owned by"), "{err}");
+    }
+
+    /// A typo must be a named refusal rather than an override that lands
+    /// nowhere and reads as the feature not working.
+    #[test]
+    fn tk5_overriding_an_unregistered_element_says_so() {
+        let r = rig();
+        let err = set_plugin_element_override(&r, "org", "todo.NOPE", StyleSpec::default())
+            .expect_err("no such element");
+        assert!(err.contains("not a registered element"), "{err}");
     }
 }

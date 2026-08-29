@@ -1914,6 +1914,32 @@ impl crate::theme_host::bindings::lattice::plugin_host::theme::Host for PluginSt
         self.theme_contributions.push(full);
         Ok(())
     }
+
+    /// TK.5: an override for an element this plugin owns, above the theme.
+    ///
+    /// `register-element` supplies a default, which sits BELOW the active
+    /// theme — so a plugin could not express "the user configured this and it
+    /// must win" without this.
+    fn set_element_override(
+        &mut self,
+        name: String,
+        style: crate::theme_host::bindings::lattice::plugin_host::theme::StyleSpec,
+    ) -> Result<(), String> {
+        let Some(registry) = self.theme_registry.clone() else {
+            // Same graceful shape as `register_element`: a harness with no
+            // theme service is a test shape, not a plugin error.
+            tracing::warn!(
+                element = %name,
+                "set-element-override ignored: plugin has no theme registry wired"
+            );
+            return Ok(());
+        };
+        let Some(plugin_id) = self.plugin_name.clone() else {
+            return Err("set-element-override requires a plugin identity".to_string());
+        };
+        let spec = crate::theme_host::style_spec_from_wit(style);
+        crate::theme_host::set_plugin_element_override(&*registry, &plugin_id, &name, spec)
+    }
 }
 
 /// CR.3: the `help` seam's single host func.

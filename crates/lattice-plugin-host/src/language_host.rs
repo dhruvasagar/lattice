@@ -64,6 +64,13 @@ pub struct LanguageSpec {
     pub injections: Option<String>,
     pub indents: Option<String>,
     pub textobjects: Option<String>,
+    /// H.2: `(pattern, hide-groups)` as declared, uncompiled.
+    ///
+    /// Not compiled here for the same reason the queries are not: this
+    /// runs with the guest's store alive, and compilation belongs in the
+    /// loader's drain beside the grammar. The shape checks that DO run
+    /// here are the ones that need no engine — see [`validate_language`].
+    pub conceal_rules: Vec<(String, Vec<u32>)>,
 }
 
 /// The wire record, as bindgen generates it. Taken whole by
@@ -109,6 +116,7 @@ pub fn validate_language(raw: WitLanguageSpec) -> Result<LanguageSpec, String> {
         injections,
         indents,
         textobjects,
+        conceal_rules,
     } = raw;
     let name = name.trim();
     if name.is_empty() {
@@ -172,6 +180,31 @@ pub fn validate_language(raw: WitLanguageSpec) -> Result<LanguageSpec, String> {
         injections: blank_to_none(injections),
         indents: blank_to_none(indents),
         textobjects: blank_to_none(textobjects),
+        // Shape only. A blank pattern or an empty `hide` cannot become a
+        // working rule under any engine, so refusing them here spares the
+        // loader a compile and gives the guest the reason while it is
+        // still alive to log it. Everything that needs the regex engine —
+        // does it compile, does group N exist — happens at compile time
+        // in `lattice-syntax`, where a refusal drops one rule rather than
+        // failing the language.
+        conceal_rules: conceal_rules
+            .into_iter()
+            .filter_map(|r| {
+                if r.pattern.trim().is_empty() {
+                    tracing::warn!(language = name, "conceal rule dropped: empty pattern");
+                    return None;
+                }
+                if r.hide.is_empty() {
+                    tracing::warn!(
+                        language = name,
+                        pattern = %r.pattern,
+                        "conceal rule dropped: hide is empty, so it would hide nothing"
+                    );
+                    return None;
+                }
+                Some((r.pattern, r.hide))
+            })
+            .collect(),
     })
 }
 
@@ -238,11 +271,52 @@ mod tests {
             injections: None,
             indents: None,
             textobjects: None,
+            conceal_rules: vec![],
         }
     }
 
     fn spec(name: &str, exts: &[&str]) -> Result<LanguageSpec, String> {
         validate_language(wire(name, exts))
+    }
+
+    /// H.2: the boundary keeps rules whose shape could work under any
+    /// engine and drops the two that could not, without failing the
+    /// language. Compilation — does the pattern parse, does group N
+    /// exist — happens in `lattice-syntax`, deliberately not here: this
+    /// runs with the guest's store alive.
+    #[test]
+    fn h2_shape_invalid_conceal_rules_drop_without_failing_the_language() {
+        use crate::language_host::bindings::lattice::plugin_host::language::ConcealRule;
+        let mut w = wire("org", &["org"]);
+        w.conceal_rules = vec![
+            ConcealRule {
+                pattern: r"(\[\[)([^]]+)(\]\])".to_string(),
+                hide: vec![1, 3],
+            },
+            ConcealRule {
+                pattern: "   ".to_string(),
+                hide: vec![1],
+            },
+            ConcealRule {
+                pattern: "(x)".to_string(),
+                hide: vec![],
+            },
+            // Refused later, in lattice-syntax — the boundary has no
+            // engine and must not pretend to.
+            ConcealRule {
+                pattern: "(unclosed".to_string(),
+                hide: vec![1],
+            },
+        ];
+        let s = validate_language(w).expect("a bad rule must not fail the language");
+        assert_eq!(s.conceal_rules.len(), 2);
+        assert_eq!(s.conceal_rules[0].0, r"(\[\[)([^]]+)(\]\])");
+        assert_eq!(s.conceal_rules[1].0, "(unclosed");
+    }
+
+    #[test]
+    fn h2_a_language_declaring_no_conceal_rules_is_unchanged() {
+        assert!(spec("org", &["org"]).unwrap().conceal_rules.is_empty());
     }
 
     #[test]

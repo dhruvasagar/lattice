@@ -108,6 +108,20 @@ memchr = "2.7"
 # backtracking that emacs/vim cannot prevent.
 fancy-regex = "0.13"
 
+# H.2 (2026-08-29): the RE2-style engine on its own, for conceal rules.
+# Not a second engine by accident — `fancy-regex` above is right where a
+# HUMAN writes the pattern (`/`, `:s`) and wants vim/emacs-class
+# backrefs. A conceal rule is written by a PLUGIN and matched against
+# every rebuilt display line, so the property that matters is that
+# backtracking is not reachable at all. `fancy-regex`'s recursion limit
+# bounds a pathological pattern rather than preventing it, and a bounded
+# backtracker inside a per-viewport loop still burns its whole budget on
+# every line of every rebuild before failing. `regex` has no such input.
+# Already in the tree transitively (`fancy-regex` routes through it), so
+# this is a direct edge to something we ship regardless, not new
+# supply-chain surface.
+regex = "1"
+
 # Reserved for future parallel paths (tree-sitter query batches,
 # index rebuilds, file-glob walks). Tried for `lattice-core::search`
 # in B-γ but reverted: memmem scans rare-prefix needles at ~30GB/s

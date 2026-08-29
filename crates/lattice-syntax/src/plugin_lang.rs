@@ -607,6 +607,7 @@ mod tests {
             injections: None,
             indents: None,
             textobjects: None,
+            conceal_rules: vec![],
         }
     }
 
@@ -696,6 +697,66 @@ mod tests {
         );
     }
 
+    /// H.2: rules reach the compiled config, and a broken one costs
+    /// only itself.
+    #[test]
+    fn h2_conceal_rules_survive_registration_and_a_bad_one_drops_alone() {
+        let (name, ext, plugin) = unique("conceal");
+        let mut spec = json_grammar("(string) @string");
+        spec.conceal_rules = vec![
+            (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2]),
+            // Refused: does not compile.
+            ("(unclosed".to_string(), vec![1]),
+            // Refused: group 4 does not exist.
+            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![4]),
+            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3]),
+        ];
+        let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
+        let reg = crate::registry::live().expect("registry");
+        let rules = reg.conceal_rules(interned.as_str());
+        assert_eq!(rules.len(), 2, "the two good rules survive, the two do not");
+        assert_eq!(rules[0].hide(), &[1, 2]);
+        assert_eq!(rules[1].hide(), &[1, 3]);
+        unregister_plugin(plugin);
+    }
+
+    /// Teardown takes the rules with the language. Not a separate
+    /// cleanup path — they ride `LangConfig`, which `unregister_plugin`
+    /// already retains by provenance, and this test is what pins that
+    /// they were not put somewhere with its own lifetime.
+    #[test]
+    fn h2_unloading_the_plugin_takes_its_conceal_rules() {
+        let (name, ext, plugin) = unique("conceal-teardown");
+        let mut spec = json_grammar("(string) @string");
+        spec.conceal_rules = vec![(r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3])];
+        let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
+        assert_eq!(
+            crate::registry::live()
+                .expect("registry")
+                .conceal_rules(interned.as_str())
+                .len(),
+            1
+        );
+        unregister_plugin(plugin);
+        assert!(
+            crate::registry::live()
+                .expect("registry")
+                .conceal_rules(interned.as_str())
+                .is_empty(),
+            "rules must go when the language does"
+        );
+    }
+
+    /// The zero-cost path, asserted rather than assumed: a language that
+    /// declares nothing answers with an empty slice, and so does a name
+    /// that is not a language at all.
+    #[test]
+    fn h2_a_language_with_no_rules_answers_empty() {
+        let reg = crate::registry::live().expect("registry");
+        assert!(reg.conceal_rules("rust").is_empty());
+        assert!(reg.conceal_rules("not-a-language").is_empty());
+    }
+
     /// An absent query means "that feature is unavailable for this
     /// language", never an error — the design says so explicitly.
     #[test]
@@ -708,6 +769,7 @@ mod tests {
             injections: None,
             indents: None,
             textobjects: None,
+            conceal_rules: vec![],
         };
         let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
         let mut syntax = crate::Syntax::for_language(Lang::Plugin(interned))

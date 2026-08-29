@@ -16,6 +16,13 @@ doctest = false
 
 [dependencies]
 arc-swap = { workspace = true }
+# H.2 (2026-08-29): conceal-rule patterns. `regex`, NOT `fancy-regex`:
+# these run against every rebuilt display line and come from a plugin,
+# so an engine that can backtrack would be a plugin's ability to freeze
+# the renderer. See `conceal.rs`.
+regex = { workspace = true }
+# H.2: the registration-time refusal log for a bad conceal rule.
+tracing = { workspace = true }
 lattice-cells = { path = "../lattice-cells" }
 lattice-config = { path = "../lattice-config" }
 lattice-core = { path = "../lattice-core" }

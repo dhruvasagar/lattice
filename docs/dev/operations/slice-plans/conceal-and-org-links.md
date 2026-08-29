@@ -122,7 +122,7 @@ later without hand-vendoring.
 | Slice | Description | Status |
 |---|---|---|
 | H.1 | the shared coordinate fn, the `conceals` range list, the clamp | ✅ |
-| H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | 📝 |
+| H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | ✅ |
 | H.3 | the matrix build elides; the `conceal` axis; the bench | 📝 |
 | H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
 
@@ -167,28 +167,68 @@ Gates green on `lattice-cells` + `lattice-host` (1420 tests) and on
 `lattice-ui-gpui` + `lattice-ui-tui` (1765) — the renderer crates because their
 `DisplayLine` literals needed the new field, and gpui is not in a default build.
 
-### H.2 — a language can declare what to hide 📝
+### H.2 — a language can declare what to hide ✅ (2026-08-29)
 
 **Deps:** none (parallel with H.1).
 
 `conceal-rule { pattern: string, hide: list<u32> }` joins the `language` seam's
-spec in `language.wit`; the host compiles each pattern once when the language
-registers and holds the compiled set beside the language's other contributions.
+spec; the compiled rules land on **`LangConfig`**, beside `highlights`.
 
-**Validation happens at registration, never per line.** A pattern that does not
-compile, a `hide` index naming a group the pattern lacks, and `hide: [0]` are
-each logged at `warn` once with the offending rule named, and that rule alone is
-dropped — the language's other rules still apply, and a plugin does not lose a
-language over one bad regex. Per-line validation would log at rebuild rate,
-which is the `debug!`-not-`info!` mistake in a different costume.
+**`LangConfig` rather than `LanguageRegistration`, and the choice pays off
+immediately.** This is per-language *render* config, the same shelf the
+highlight query sits on — which means a **native** language gains rules by
+populating one field in `build_native_config`, with no new plumbing at all.
+Markdown's `**`/`[]()` set becomes a rule list rather than a mechanism. It also
+means teardown is already correct: `unregister_plugin` retains `LangConfig` by
+provenance, so the rules leave with the language and there is no second
+lifetime to get wrong. `h2_unloading_the_plugin_takes_its_conceal_rules` pins
+that rather than assuming it.
 
-Rules are capped per language and each pattern is length-bounded. Not because
-the engine backtracks — it is linear-time — but because an unbounded rule list
-turns every rebuild into a scan of someone else's configuration.
+**Validation is split across the two crates, deliberately.** The boundary
+(`language_host.rs`) drops the two shapes that could not work under *any* engine
+— blank pattern, empty `hide` — because that needs no regex and the guest is
+still alive to be told. Everything needing the engine (does it compile, does
+group N exist) happens at compile time in `lattice-syntax`, mirroring why the
+queries are not compiled at the boundary either: that path runs with the guest's
+`Store` held open.
 
-**Tests:** a valid rule set compiling; each of the three rejection cases dropping
-exactly one rule and leaving the rest live; the cap refusing the overflow rule
-and saying so; teardown removing a plugin's rules with its language.
+**`regex`, not `fancy-regex`, and this is the slice's one new dependency edge.**
+The workspace's existing engine is right where a *human* writes the pattern
+(`/`, `:s`) and wants backrefs. A conceal rule is written by a *plugin* and
+matched against every rebuilt display line, so the property that matters is that
+backtracking is not reachable. `fancy-regex`'s recursion limit *bounds* a
+pathological pattern rather than preventing it, and a bounded backtracker inside
+a per-viewport loop still burns its whole budget on every line of every rebuild
+before failing. `regex` is already in the tree transitively, so this is a direct
+edge to something we ship regardless.
+
+**A refused rule is dropped, never fatal** — asymmetric with query compilation,
+which rejects the whole language, and the asymmetry is proportionality. A broken
+`folds.scm` means the language cannot fold at all and silence is
+indistinguishable from the feature not existing. A broken conceal rule means one
+pattern does not hide. Losing org over a typo in a cosmetic regex costs more
+than it protects.
+
+**⚠️ Landing this rebuilds the org plugin, or it stops loading.** `language-spec`
+gained a field, and Component Model records are structural — an existing
+compiled guest declaring the old shape will fail to instantiate against the new
+world. Only language-contributing plugins are affected (org is the only one).
+This is the accepted pre-1.0 API-churn risk `design.md` §14 names, and the
+`wit/` regeneration from `lattice-wit` is the mechanism, but it is a rebuild
+rather than a no-op.
+
+**Landed:** 18 tests. `conceal.rs` carries 11 (org's real two rules compiling;
+each rejection dropping exactly one; the cap keeping `MAX_CONCEAL_RULES` and
+refusing the overflow; a duplicated group normalised so its width cannot be
+subtracted twice; and `a_regex_error_renders_on_one_line`, because `regex`
+renders errors as a five-row diagram and a log line nobody reads is not a log
+line). `plugin_lang.rs` carries 3 registration/teardown tests and
+`language_host.rs` 2 boundary ones.
+
+**Found on the way:** `crates/lattice-plugin-loader/tests/ex_command_surface.rs`
+did not compile against `ExCommandContext`'s post-OC.10 shape, so that crate's
+whole test binary had been failing to build and none of its five tests were
+running. Proven pre-existing by stashing, fixed in its own commit.
 
 ### H.3 — the display line elides 📝
 

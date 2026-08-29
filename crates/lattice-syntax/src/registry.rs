@@ -190,6 +190,17 @@ pub(crate) struct LangConfig {
     /// is `retain(|c| c.provenance != Some(id))` — by provenance, not by
     /// a token list the caller has to remember to keep.
     pub(crate) provenance: Option<u64>,
+    /// H.2: compiled display-time elision rules
+    /// (`docs/dev/architecture/conceal.md`). Empty for every language
+    /// that declares none, which is every language today except one —
+    /// and the emptiness is what makes the zero-cost path zero-cost.
+    ///
+    /// Lives here rather than on `LanguageRegistration` because this is
+    /// per-language *render* config, the same shelf `highlights` sits
+    /// on. That also means a NATIVE language gains rules by populating
+    /// one field in `build_native_config`, with no new plumbing —
+    /// markdown's `**`/`[]()` set is a rule list, not a mechanism.
+    pub(crate) conceal_rules: Arc<[crate::conceal::ConcealRule]>,
 }
 
 /// Catalog of every supported language's parser + highlight + injection
@@ -634,6 +645,22 @@ impl LangRegistry {
         self.lookup(name).map(|c| c.language.clone())
     }
 
+    /// H.2: this language's compiled conceal rules, or an empty slice.
+    ///
+    /// Returns the `Arc` rather than a borrow so the display-matrix
+    /// build can hold the rules across a rebuild without pinning the
+    /// whole registry snapshot, and so a plugin unloading mid-rebuild
+    /// cannot pull them out from under it.
+    ///
+    /// **Empty is the answer for every language but one**, and callers
+    /// are expected to branch on that before doing any per-line work —
+    /// the conceal path must cost a Rust buffer nothing at all.
+    pub fn conceal_rules(&self, name: &str) -> Arc<[crate::conceal::ConcealRule]> {
+        self.lookup(name)
+            .map(|c| Arc::clone(&c.conceal_rules))
+            .unwrap_or_else(|| Arc::from([] as [crate::conceal::ConcealRule; 0]))
+    }
+
     /// Internal lookup that returns the full per-language config
     /// (includes the raw `Language` plus -- after Step 2 -- the
     /// compiled folds / textobjects / indents queries).
@@ -744,6 +771,7 @@ fn build_config(
         textobjects,
         indents,
         provenance: None,
+        conceal_rules: Arc::from([] as [crate::conceal::ConcealRule; 0]),
     })
 }
 
@@ -967,6 +995,12 @@ pub fn live() -> Result<Arc<LangRegistry>, SyntaxError> {
 #[derive(Debug, Clone)]
 pub struct GrammarSpec {
     pub grammar: Language,
+    /// H.2: `(pattern, hide-groups)` as the guest declared them,
+    /// uncompiled. Compiled in [`compile_plugin_config`], where a
+    /// refused rule is dropped and logged rather than failing the
+    /// language — see `conceal.rs` for why that is asymmetric with
+    /// query compilation.
+    pub conceal_rules: Vec<(String, Vec<u32>)>,
     pub highlights: Option<String>,
     pub folds: Option<String>,
     pub injections: Option<String>,
@@ -1017,6 +1051,19 @@ pub(crate) fn compile_plugin_config(
         .map(|n| crate::style::capture_priority(n))
         .collect();
 
+    // Refusals are logged HERE, once, at registration — naming the
+    // language and which rule. Deferring the check to match time would
+    // log at rebuild rate, which is the `debug!`-not-`info!` mistake in
+    // a different costume.
+    let (conceal_rules, conceal_errs) = crate::conceal::compile_rules(&spec.conceal_rules);
+    for (i, e) in &conceal_errs {
+        tracing::warn!(
+            language = name,
+            rule = i,
+            "conceal rule refused, the language's other rules still apply: {e}"
+        );
+    }
+
     let config = LangConfig {
         language: spec.grammar.clone(),
         folds: opt("folds.scm", &spec.folds)?,
@@ -1030,6 +1077,7 @@ pub(crate) fn compile_plugin_config(
         textobjects: opt("textobjects.scm", &spec.textobjects)?,
         indents: opt("indents.scm", &spec.indents)?,
         provenance: Some(provenance),
+        conceal_rules: Arc::from(conceal_rules.into_boxed_slice()),
     };
 
     Ok(Arc::new(config))

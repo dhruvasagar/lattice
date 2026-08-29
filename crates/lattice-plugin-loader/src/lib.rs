@@ -2493,6 +2493,7 @@ impl PluginLoader {
                 injections: spec.injections.clone(),
                 indents: spec.indents.clone(),
                 textobjects: spec.textobjects.clone(),
+                conceal_rules: spec.conceal_rules.clone(),
             };
             let exts: Vec<&str> = spec.extensions.iter().map(String::as_str).collect();
             match lattice_syntax::plugin_lang::register_with_grammar(

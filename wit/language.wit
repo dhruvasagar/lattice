@@ -35,6 +35,34 @@ package lattice:plugin-host@0.1.0;
 /// costs ~100 ms (Cranelift), which is exactly why it happens here and once,
 /// rather than on first open of a matching file.
 interface language {
+    /// H.2: one display-time elision rule.
+    ///
+    /// The host compiles the pattern once at registration and matches it
+    /// against each display line during a matrix rebuild — never per frame,
+    /// and never for a language that declares none. See
+    /// `docs/dev/architecture/conceal.md`.
+    ///
+    /// The engine is RE2-style and cannot backtrack. That is a property, not
+    /// an implementation note: these patterns come from a plugin and run over
+    /// every rebuilt line, so an engine with a pathological input would be a
+    /// plugin's ability to freeze the renderer. Lookaround and backreferences
+    /// are therefore unavailable, and a pattern using them is refused at
+    /// registration rather than being slow later.
+    record conceal-rule {
+        /// Regex matched against a single line. Anchoring is the rule's
+        /// business; the host adds none.
+        pattern: string,
+        /// 1-based capture-group indices whose spans are hidden.
+        ///
+        /// Group 0 (the whole match) is REFUSED — a rule that hides its
+        /// entire match is a deletion rather than a concealment, and is
+        /// almost always a pattern that forgot its capture parentheses.
+        /// An index the pattern has no group for is refused too, at
+        /// registration, because checking it per line would log at
+        /// rebuild rate.
+        hide: list<u32>,
+    }
+
     /// Everything the host needs to make a language real.
     record language-spec {
         /// The grammar's tree-sitter name — `org` for `tree_sitter_org`.
@@ -79,6 +107,19 @@ interface language {
         injections: option<string>,
         indents: option<string>,
         textobjects: option<string>,
+        /// H.2: what to hide when rendering this language, empty for
+        /// most languages.
+        ///
+        /// **A refused rule is dropped, not fatal** — deliberately unlike a
+        /// malformed query above, which rejects the whole language. The
+        /// asymmetry is the proportionality: a broken `folds.scm` means the
+        /// language cannot fold at all, and silence there is
+        /// indistinguishable from the feature not existing; a broken conceal
+        /// rule means one pattern does not hide, the others are unaffected,
+        /// and the language is otherwise entirely usable. Losing a language
+        /// over a typo in a cosmetic regex would cost far more than it
+        /// protects.
+        conceal-rules: list<conceal-rule>,
     }
 
     /// Register one language.

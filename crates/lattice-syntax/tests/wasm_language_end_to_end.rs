@@ -81,6 +81,7 @@ fn a_wasm_grammar_registered_as_a_plugin_language_highlights_like_the_native_one
         injections: Some(tree_sitter_md::INJECTION_QUERY_BLOCK.to_string()),
         indents: None,
         textobjects: None,
+        conceal_rules: vec![],
     };
     let interned =
         plugin_lang::register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
@@ -126,6 +127,7 @@ fn repeated_highlighting_of_a_wasm_language_stays_correct() {
         injections: Some(tree_sitter_md::INJECTION_QUERY_BLOCK.to_string()),
         indents: None,
         textobjects: None,
+        conceal_rules: vec![],
     };
     plugin_lang::register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
     let lang = Lang::detect_from_path(Some(&PathBuf::from(format!("a.{ext}"))));
@@ -157,6 +159,7 @@ fn unload_withdraws_a_wasm_backed_language() {
         injections: None,
         indents: None,
         textobjects: None,
+        conceal_rules: vec![],
     };
     let interned =
         plugin_lang::register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");

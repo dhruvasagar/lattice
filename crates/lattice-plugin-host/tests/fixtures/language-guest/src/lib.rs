@@ -79,6 +79,7 @@ fn spec(name: &str, exts: &[&str], grammar: Vec<u8>) -> LanguageSpec {
         injections: None,
         indents: None,
         textobjects: None,
+        conceal_rules: vec![],
     }
 }
 

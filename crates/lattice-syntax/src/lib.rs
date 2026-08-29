@@ -60,6 +60,9 @@ pub mod modes;
 // LG.2: languages registered at runtime rather than compiled in.
 pub mod motions;
 pub mod oneshot;
+// H.2 (2026-08-29): per-language display-time elision rules.
+// See `docs/dev/architecture/conceal.md`.
+pub mod conceal;
 pub mod plugin_lang;
 pub mod registry;
 pub mod style;

@@ -6731,6 +6731,53 @@ panics.
 
 ---
 
+## Concealment (H, 2026-08-29 — design landed, not built)
+
+| Slice | What | Status |
+|---|---|---|
+| H.1 | signed `col_map`, the `conceals` range list, the clamp | 📝 |
+| H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | 📝 |
+| H.3 | the matrix build elides; the `conceal` axis; the bench | 📝 |
+| H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
+
+Design: [`../architecture/conceal.md`](../architecture/conceal.md).
+Slice plan:
+[`slice-plans/conceal-and-org-links.md`](slice-plans/conceal-and-org-links.md).
+
+`design.md:3414` named concealment as a v1 carve-out and recorded that nothing
+implements it; nothing has since. Help buffers look like a counter-example and
+are not — they *strip* `[label](url)` down to `label` at build time and keep
+byte ranges as metadata (`lattice-help/src/lib.rs:196`), which is legitimate for
+a synthetic read-only buffer and unavailable for a file the user edits. The
+mechanism does not generalise, so the first editable buffer wanting rendered
+markup needs a display-time one. Org links are that buffer.
+
+Conceal **bakes into `DisplayLine.text`** rather than into either renderer, so
+TUI/GPUI parity is structural: `text` + `runs` are what both peers already
+consume, and a renderer that does nothing new is already correct. `col_map` goes
+signed — inlays insert columns and conceal removes them, one axis with opposite
+sign — beside a `conceals` range list that clamps a byte falling *inside* a
+hidden span to that span's start column.
+
+**Rules are patterns, not tree-sitter captures**, and the reason is worth
+recording because the tree looks like the obvious source. `tree-sitter-org` has
+no `link` rule at all: `[[id:X][Title]]` is undifferentiated `expr` tokens
+inside `item` / `paragraph`, so there is nothing to capture. And a tree is
+absent mid-reparse, so tree-driven conceal would flicker between concealed and
+raw while typing — a pixel change to unedited content, which is a standing veto.
+`links.rs` already recorded the same reasoning for its own text scanning. The
+`language` seam gains `conceal-rule { pattern, hide }`; the host learns to
+evaluate rules and never learns what an org link is.
+
+Insert reveals **buffer-wide**, chosen over vim's line-scoped `concealcursor`
+with the cost stated rather than buried: `i` repaints every visible line
+carrying a concealed range. It is a caused change at a mode boundary that is
+already a visual event, `:set list` already does the same class of thing through
+the same kind of axis, and the bump is gated on the buffer's language having
+rules so a Rust buffer never enters the path.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

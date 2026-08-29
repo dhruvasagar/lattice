@@ -90,6 +90,7 @@ description = "How a buffer becomes pixels — the cell grid, display lines, spa
 docs = [
   "architecture/cell-grid-renderer",
   "architecture/display-line",
+  "architecture/conceal",
   "architecture/soft-wrap",
   "architecture/horizontal-scroll",
   "architecture/virtual-rows",

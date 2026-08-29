@@ -6897,6 +6897,61 @@ noise.
 
 ---
 
+## Org TODO keywords (TK, 2026-08-29 — design landed, not built)
+
+| Slice | What | Status |
+|---|---|---|
+| TK.1 | a capture name may name a theme element | 📝 |
+| TK.2 | the `org-todo-keywords` grammar | 📝 |
+| TK.3 | elements, and defaults that reference the palette | 📝 |
+| TK.4 | the query is generated from the keywords | 📝 |
+| TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling | 📝 |
+| TK.6 | fast select | 📝 |
+| TK.7 | docs | 📝 |
+
+Design: [`../architecture/org-todo-keywords.md`](../architecture/org-todo-keywords.md).
+Slice plan: [`slice-plans/org-todo-keywords.md`](slice-plans/org-todo-keywords.md).
+
+Reported from use: *"TODO looks weird purple and all other states seem like a
+comment."* Three causes compound. `org.todo-keywords` is **one flat string**, so
+a real emacs configuration cannot be written down — `WAITING(w@/!)` becomes a
+keyword whose name is `WAITING(w@/!)`. `queries/highlights.scm` carries a
+**hardcoded** word list and admits it (*"a static query cannot read an
+option"*), so nine of thirteen keywords in a three-sequence config render as
+plain title text. And the four that match borrow the wrong meaning: `TODO` →
+`Style::Keyword`, which is whatever the theme paints `if` and `return`.
+
+**Tree-sitter, which is the opposite of what `conceal.md` concluded, from the
+same premises.** Org's grammar *does* model the keyword position
+(`(headline (item . (expr)))`), and highlighting changes colour rather than
+text — which the keystroke contract explicitly permits to be eventual
+(*"syntax recolour may be eventual"*). Conceal is on the wrong side of that
+sentence; highlighting is on the right one. A regex would also have to know the
+headline is not inside a `#+BEGIN_SRC` block, which is the phantom-match class
+OT.3 spent a phase eliminating.
+
+The one host change is **generic**: a tree-sitter capture name that is not a
+builtin category but *is* a registered theme element resolves to
+`Style::Element`. That variant exists for exactly this and says so — a plugin
+"can register a theme element by name but can never add a variant to a Rust
+enum" — and it was reachable from decorations and listing icons but not from a
+query. Every language gains the whole theme vocabulary; org is the first
+consumer, not the reason.
+
+**The priority half is what would fail silently.** `capture_priority` returns
+`u32::MAX` — lowest — for an unrecognised name, and org's query captures the
+whole `(item)` as `@text.title.N`. A naive element capture would lose that
+overlap and paint nothing with every part correct in isolation. Element
+captures therefore take `keyword`'s priority, which also makes the change
+behaviour-preserving in every dimension except colour.
+
+`org-todo-keyword-faces` needs **no new mechanism**: an element override in the
+theme scope is that feature, with `org.todo.<KEYWORD>` inheriting
+`org.todo.active` / `.done` so a keyword added later is styled sensibly rather
+than unstyled.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

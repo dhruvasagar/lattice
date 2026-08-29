@@ -187,6 +187,7 @@ docs = [
   "architecture/org-mode",
   "architecture/org-capture",
   "architecture/org-roam",
+  "architecture/org-todo-keywords",
   "architecture/plugin-transients",
   "architecture/plugin-mode-options",
   "architecture/wit-ownership",

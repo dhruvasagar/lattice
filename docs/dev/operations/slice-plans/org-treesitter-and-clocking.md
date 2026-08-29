@@ -728,7 +728,8 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.4 | `host-services.local-utc-offset-seconds` | ✅ |
 | OC.5 | `clock.rs` — the drawer primitive, tree-native | ✅ |
 | OC.6 | The four actions, the session owner, the modeline segment | ✅ |
-| OC.7 | `:clock-in` / `:clock-resume` capture keys | 📝 |
+| OC.7 | `:org-clock-*` ex-commands + the `:clock-in` capture key | 📝 |
+| OC.9 | `:org-clock-resume`, on the last-clocked target | 📝 |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
 ### OC.1 — a grammar action can reach the bus ✅ (2026-08-28)
@@ -1104,9 +1105,46 @@ inside tree-land and is a consequence of the OT phase, not a limitation of it.
 any action** — a test that presses a key first passes on the broken version
 too. Assert clock-out works on a fresh session with no recorded clock (**D4**).
 
-### OC.7 — the capture keys 📝
+### OC.7 — the ex-commands, and the capture key 📝
 
 **Deps:** OC.6.
+
+**The four are `:`-commands, not only chords** — `:org-clock-in`,
+`:org-clock-out`, `:org-clock-goto`, `:org-clock-resume`. OC.6 registered them
+through `register_action`, which gives each a name and a chord; whether the `:`
+line resolves an `Action` name is a **separate `CommandKind`** in the registry
+and has to be verified rather than assumed. If it does not, this slice adds the
+four `register_ex_command` entries. Dashed and namespaced per the ex-command
+naming rule; no collapsed or generic aliases, and no new 1–2 letter shorts.
+
+`:clock-in` as an `org.capture-templates` key lands here too — clock into the
+entry the capture just created, which needs nothing beyond OC.6.
+
+`:clock-resume` does NOT land here; it is OC.9.
+
+### OC.9 — `:org-clock-resume` 📝
+
+**Deps:** OC.7.
+
+**Carved out of OC.7 because it needs state, and then because it turned out we
+already keep it.** Org's `:clock-resume` resumes the clock a capture
+interrupted, which reads as "remember the last clocked entry" — and OC.6 already
+records exactly that for `org-clock-goto`: `(path, line)`, written by the action
+that wrote the clock line and therefore already holding both.
+
+So the slice is mostly a semantic change to state that exists. Today clock-out
+*clears* the target; it should instead **keep** it as "the last clocked entry"
+and let the session (in the events store) be the only thing that says whether a
+clock is currently running. That is also more faithful to org, whose
+`org-clock-goto` jumps to the current *or last* clocked entry — so `goto` gets
+better as a side effect rather than paying a cost.
+
+**The open question this slice must answer** is what resume does when the target
+is in a *different* buffer from the one you are in. A grammar action's
+`ApplyEdit` names a `buffer-id`, and the id of a file that is not open yet is
+not knowable at the time the effect is built — so "open it and clock in" is not
+one effect, and two effects have the ordering problem `cross-file-writes.md` §5
+describes. Resolve that before writing code; do not half-build it.
 
 `:clock-in` and `:clock-resume` as `org.capture-templates` keys — the two
 `org-capture.md` §3 lists as cut, with "clocking is not built" as the reason.

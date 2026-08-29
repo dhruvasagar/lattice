@@ -730,6 +730,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.6 | The four actions, the session owner, the modeline segment | ✅ |
 | OC.7 | `:org-clock-*` ex-commands + the `:clock-in` capture key | 📝 |
 | OC.9 | `:org-clock-resume`, on the last-clocked target | 📝 |
+| OC.10 | a plugin ex-command can reach the buffer — **blocks OC.7** | 📝 |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
 ### OC.1 — a grammar action can reach the bus ✅ (2026-08-28)
@@ -1109,6 +1110,12 @@ too. Assert clock-out works on a fresh session with no recorded clock (**D4**).
 
 **Deps:** OC.6.
 
+**Deps: OC.10.** Verified rather than assumed, as this entry required:
+`excommand.rs:170` is `CommandKind::Action => Err(ExCommandError::Unknown(..))`,
+so a `register_action` name is NOT reachable from the `:` line, and there is no
+`action:` kind-prefix either. The four must be `register_ex_command`, which is
+what OC.10 makes possible.
+
 **The four are `:`-commands, not only chords** — `:org-clock-in`,
 `:org-clock-out`, `:org-clock-goto`, `:org-clock-resume`. OC.6 registered them
 through `register_action`, which gives each a name and a chord; whether the `:`
@@ -1121,6 +1128,54 @@ naming rule; no collapsed or generic aliases, and no new 1–2 letter shorts.
 entry the capture just created, which needs nothing beyond OC.6.
 
 `:clock-resume` does NOT land here; it is OC.9.
+
+### OC.10 — a plugin ex-command can reach the buffer 📝
+
+**Blocks OC.7.** Found while starting it: `:org-clock-in` cannot be written at
+all today, and the reason is a defect in the ex-command seam rather than
+anything about clocking.
+
+`apply-ex-command(callback, ctx)` hands a guest `bang`, `args`, `register`,
+`count` — **no cursor, no buffer-id, no document handle**. It returns
+`list<effect>`, and `Effect::ApplyEdit` requires a `target` buffer id the guest
+has no way to obtain. So the seam ships an effect vocabulary a plugin
+structurally cannot use: the `plugin-gates-hand-guests-throwaway-contexts` shape
+OC.1 found on the event bus, in a second place.
+
+**This argument is already in the tree, made by someone else.** MR.2 added
+`buffer_id` to the NATIVE `ExCommandContext` with the reasoning verbatim: "vim's
+ex-commands are buffer-scoped by definition, the `:` line is a parser front-end
+onto the one dispatcher (design §5.2.1), and a command reached that way was
+seeing strictly less than the same command reached by a chord." `:magit-status`
+found it natively; org's clock finds that the WIT mirror never followed.
+
+**The change, and it is smaller than it sounds** — `execute_ex_command` is
+called from `dispatcher.rs:105`, where `document`, `cursor` and `env` are
+**already in scope**, being exactly what the `execute_action` arm on the next
+line receives. So this is OT.1's shape ("two borrowed fields and five
+assignments, not a plumbing project"), not a threading project.
+
+1. `ExCommandContext` (`lattice-grammar/src/registry.rs:398`) gains `cursor`,
+   `buffer`, `path`, `syntax` — the four `ActionContext` already has.
+   `buffer_id` is there since MR.2.
+2. `execute_ex_command` (`dispatcher.rs:199`) takes `document` / `cursor` /
+   `env` and fills them, copying the `execute_action` arm.
+3. `wit/types.wit`: `ex-command-context` gains `cursor` + `buffer-id`.
+4. `wit/grammar.wit`: `apply-ex-command` gains `doc: borrow<document>` and
+   `tree: option<borrow<tree-snapshot>>`, mirroring `apply-action`.
+5. `grammar_trampoline.rs`: the ex builder mints both, reusing
+   `resolve_tree_snapshot` — the same block `build_action_spec` already runs at
+   `:464`.
+6. **Blast radius, all mechanical and all of it must land in the same commit**
+   (an ABI change half-applied fails every guest's instantiation): org's
+   `apply_ex_command`, the `grammar-guest` and `multiseam-guest` fixtures,
+   `lattice-cli`'s scaffold template, and the grammar benches. The OT.1 lesson
+   applies — an out-of-date guest fixture builds as a WARNING and its tests then
+   silently skip, so check the warning count, not just that the build finished.
+
+**Test:** a fixture ex-command that edits the buffer at the cursor — impossible
+before this slice, so a regression to the old context fails it loudly rather
+than returning a plausible no-op.
 
 ### OC.9 — `:org-clock-resume` 📝
 

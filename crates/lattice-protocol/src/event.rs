@@ -231,6 +231,33 @@ pub enum Event {
         label: String,
         outcome: TaskOutcome,
     },
+    /// OR.2: files under a directory a plugin asked the host to watch
+    /// (`host-services.watch`) changed on disk.
+    ///
+    /// **Addressed, not broadcast.** `plugin` is the host-issued numeric id of
+    /// the plugin whose watch produced this, and the event-delivery actor drops
+    /// any delivery whose `plugin` is not its own. The bus is a broadcast and a
+    /// watch is a capability: a plugin granted `fs:read` over one directory
+    /// must not learn which files under *another* plugin's watched directory
+    /// changed, and it would if this rode [`Self::Plugin`] — every
+    /// `EventKind::Plugin` subscriber sees every plugin event. The id never
+    /// crosses to a guest, because by the time it does it is always the guest's
+    /// own.
+    ///
+    /// **Many paths, one event.** A `git pull` that rewrites two hundred files
+    /// produces one delivery carrying two hundred paths, not two hundred
+    /// deliveries: the host coalesces a burst behind a quiet window before
+    /// publishing. A consumer re-reads what changed, so ordering within the
+    /// batch carries no meaning and the paths are deduplicated and sorted.
+    FilesChanged {
+        /// The host-issued numeric plugin id that armed the watch.
+        plugin: u32,
+        /// Absolute paths that changed, created or were removed. A removal is
+        /// reported as a change — the consumer stats the path — because an
+        /// index that cannot see deletions offers destinations that no longer
+        /// exist.
+        paths: Vec<std::path::PathBuf>,
+    },
 }
 
 /// MG.41g: how a [`Event::BackgroundTaskFinished`] ended.
@@ -280,6 +307,7 @@ impl Event {
             Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
             Event::ModeEnablementRequested { .. } => EventKind::ModeEnablementRequested,
             Event::BackgroundTaskFinished { .. } => EventKind::BackgroundTaskFinished,
+            Event::FilesChanged { .. } => EventKind::FilesChanged,
         }
     }
 }
@@ -321,6 +349,11 @@ pub enum EventKind {
     ModeEnablementRequested,
     /// Discriminator for [`Event::BackgroundTaskFinished`] (MG.41g).
     BackgroundTaskFinished,
+    /// Discriminator for [`Event::FilesChanged`] (OR.2) — a plugin's
+    /// `host-services.watch` fired. One kind for every watch; the delivery
+    /// actor, not the filter, is what scopes a batch to the plugin that armed
+    /// it (see the variant's doc).
+    FilesChanged,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

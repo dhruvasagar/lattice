@@ -119,6 +119,8 @@ impl WitBoundary for NativeEventKind {
                     "event-kind `background-task-finished` is not yet mirrored in WIT".to_string(),
                 );
             }
+            // OR.2: a plugin's own directory watch fired.
+            NativeEventKind::FilesChanged => WitEventKind::FilesChanged,
         })
     }
 
@@ -140,6 +142,8 @@ impl WitBoundary for NativeEventKind {
             WitEventKind::Plugin => NativeEventKind::Plugin,
             WitEventKind::PluginLoaded => NativeEventKind::PluginLoaded,
             WitEventKind::PluginUnloaded => NativeEventKind::PluginUnloaded,
+            // OR.2: what a guest passes to `subscribe` to hear its own watch.
+            WitEventKind::FilesChanged => NativeEventKind::FilesChanged,
         })
     }
 }
@@ -260,6 +264,18 @@ impl WitBoundary for NativeEvent {
                     "event `background-task-finished` is not yet mirrored in WIT".to_string(),
                 );
             }
+            // OR.2. The plugin id does NOT cross: the delivery actor has
+            // already established that this batch belongs to the guest it is
+            // about to hand it to, so sending the id would be telling a plugin
+            // its own name. A non-UTF-8 path is SKIPPED rather than failing the
+            // batch — `walk`'s rule, for `walk`'s reason: one oddly-named file
+            // must not cost an index every other file in the same burst.
+            NativeEvent::FilesChanged { paths, .. } => WitEvent::FilesChanged(
+                paths
+                    .iter()
+                    .filter_map(|p| p.to_str().map(str::to_string))
+                    .collect(),
+            ),
         })
     }
 
@@ -334,6 +350,15 @@ impl WitBoundary for NativeEvent {
             WitEvent::PluginUnloaded(p) => NativeEvent::PluginUnloaded {
                 name: p.name,
                 id: p.id,
+            },
+            // OR.2. A guest never publishes one of these — the host originates
+            // every watch batch — so `plugin` has no source but `0`. That is
+            // the honest value rather than a fabricated one: an unaddressed
+            // batch matches no actor's id and is therefore delivered to nobody,
+            // which is the correct outcome for an event a guest invented.
+            WitEvent::FilesChanged(paths) => NativeEvent::FilesChanged {
+                plugin: 0,
+                paths: paths.into_iter().map(std::path::PathBuf::from).collect(),
             },
         })
     }

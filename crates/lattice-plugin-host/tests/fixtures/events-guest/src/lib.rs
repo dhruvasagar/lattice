@@ -44,6 +44,19 @@ struct SavedEcho {
 
 struct Component;
 
+/// Append one line to the log the host test reads. Factored out at OR.2, when a
+/// second and third writer appeared; the behaviour is unchanged.
+fn record(line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/data/received.log")
+    {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
 /// OC.2 wake state. A component is single-threaded, but `RefCell` says so
 /// without `unsafe` and costs nothing at this call rate.
 mod wake_state {
@@ -96,8 +109,16 @@ fn label(ev: &Event) -> &'static str {
         Event::Plugin(_) => "plugin",
         Event::PluginLoaded(_) => "plugin-loaded",
         Event::PluginUnloaded(_) => "plugin-unloaded",
+        Event::FilesChanged(_) => "files-changed",
     }
 }
+
+/// OR.2. The host path the guest watches, handed in through the data-dir mount
+/// because a guest cannot know where its own `/data` lives on the host — and,
+/// more to the point, because a real plugin learns its corpus root from
+/// configuration too (`org.roam-directory`). Absent → no watch is armed, which
+/// is what every pre-OR.2 test gets.
+const WATCH_TARGET: &str = "/data/watch-target";
 
 impl Guest for Component {
     /// The host calls this once; the guest subscribes through the imported
@@ -122,6 +143,28 @@ impl Guest for Component {
         // floor — fast enough that a test does not sit on a real clock, and the
         // guest cancels itself after a few fires so it cannot run away.
         wake_state::TICKER.with(|t| t.set(events::wake_every(50)));
+        // OR.2: arm a directory watch, if the test handed us one. Handler 6
+        // records each batch — the point being that it records it with NO
+        // action dispatched afterwards, which is the failure mode this seam is
+        // most likely to have.
+        if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {
+            let target = target.trim();
+            events::subscribe(&kind_filter(EventKind::FilesChanged), 6);
+            let outcome = match host_services::watch(target) {
+                Ok(()) => "watch:ok".to_string(),
+                Err(e) => format!("watch:err({e})"),
+            };
+            record(&outcome);
+            // …and a path the plugin was NOT granted. Recording the refusal
+            // beside the success is what makes the grant check observable
+            // rather than assumed: a seam that permitted everything would
+            // produce the same first line.
+            let denied = match host_services::watch("/") {
+                Ok(()) => "denied:ok".to_string(),
+                Err(e) => format!("denied:err({e})"),
+            };
+            record(&denied);
+        }
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -145,15 +188,35 @@ impl Guest for Component {
             // No-op: pure dispatch, no side effect (perf measurement).
             return;
         }
-        use std::io::Write;
-        let line = format!("{handler}:{}\n", label(&ev));
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/data/received.log")
-        {
-            let _ = f.write_all(line.as_bytes());
+        // OR.2: a watch batch. Record how many paths arrived and their
+        // basenames, so the host test can assert BOTH that the change crossed
+        // and that a burst arrived as one batch rather than as N.
+        if handler == 6 {
+            let Event::FilesChanged(paths) = &ev else {
+                record("6:not-files-changed");
+                return;
+            };
+            let names: Vec<&str> = paths
+                .iter()
+                .filter_map(|p| p.rsplit('/').next())
+                .filter(|n| !n.is_empty())
+                .collect();
+            record(&format!("6:files-changed:{}:{}", names.len(), names.join(",")));
+            // A batch naming `stop.org` disarms the watch, so a test can prove
+            // `unwatch` reaches a live watcher rather than merely being
+            // callable.
+            if names.contains(&"stop.org") {
+                if let Ok(target) = std::fs::read_to_string(WATCH_TARGET) {
+                    let outcome = match host_services::unwatch(target.trim()) {
+                        Ok(()) => "unwatch:ok".to_string(),
+                        Err(e) => format!("unwatch:err({e})"),
+                    };
+                    record(&outcome);
+                }
+            }
+            return;
         }
+        record(&format!("{handler}:{}", label(&ev)));
         // PH7.8b.2/3: on a save, EMIT a plugin-defined event. The SDK derive
         // MessagePack-encodes a typed struct (`SavedEcho`) into the opaque
         // payload; it crosses to the bus verbatim and a consumer sharing the type
@@ -186,14 +249,7 @@ impl Guest for Component {
             f.set(n);
             n
         });
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/data/received.log")
-        {
-            let _ = f.write_all(format!("wake:{n}\n").as_bytes());
-        }
+        record(&format!("wake:{n}"));
         if n >= wake_state::CANCEL_AFTER {
             events::cancel_wake(id);
         }

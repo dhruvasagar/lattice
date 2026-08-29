@@ -1418,6 +1418,11 @@ interface types {
         // deferred config against a now-present plugin (`with-eval-after-load`).
         plugin-loaded,
         plugin-unloaded,
+        // OR.2: a directory this plugin asked the host to watch changed. One
+        // kind for every watch; the host addresses each batch to the plugin
+        // that armed it, so subscribing to this kind never surfaces another
+        // plugin's watch.
+        files-changed,
     }
 
     /// Mirrors `lattice_runtime::EventFilter` — the DECLARATIVE subset a plugin
@@ -1455,6 +1460,16 @@ interface types {
         plugin(event-plugin),
         plugin-loaded(event-plugin-lifecycle),
         plugin-unloaded(event-plugin-lifecycle),
+        /// OR.2: absolute paths that changed under a directory this plugin
+        /// watches, coalesced — a `git pull` rewriting two hundred files
+        /// arrives as ONE delivery carrying two hundred paths. Deduplicated and
+        /// sorted; a removal is reported as a change (the consumer stats it),
+        /// because an index that cannot see deletions offers destinations that
+        /// no longer exist. A non-UTF-8 path is skipped rather than failing the
+        /// batch — `walk`'s rule, for `walk`'s reason.
+        ///
+        /// No plugin id crosses: a guest only ever receives its own watch.
+        files-changed(list<string>),
     }
 
     /// `Event::PluginLoaded` / `Event::PluginUnloaded` payload (CI.1). `name` is

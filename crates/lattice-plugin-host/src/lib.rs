@@ -121,8 +121,11 @@ pub mod theme_host;
 pub mod trace;
 pub mod trampoline;
 pub mod tree_resource;
+// OR.2: the `host-services.watch` / `unwatch` seam — a debounced directory
+// watch whose batches are addressed to the plugin that armed them.
 pub mod ui_host;
 pub mod wake;
+mod watch_host;
 
 pub use boundary::WitBoundary;
 pub use capability::{
@@ -962,6 +965,14 @@ struct PluginState {
     /// the failure this seam exists to prevent — a picker seam holding a store
     /// the grammar seam cannot see is the drift, not a degradation of it.
     store: Option<plugin_store::PluginStoreHandle>,
+    /// OR.2: the directory watches this guest armed, keyed by the path it named.
+    ///
+    /// **On the `Store`, not in a host-side registry**, and that is the whole
+    /// teardown story: a watch's lifetime is exactly this plugin instance's, so
+    /// dropping the `Store` — on unload, on quarantine, on the event actor's
+    /// channel closing — stops every watch with no bookkeeping anyone can
+    /// forget to write. `unwatch` is then a `remove` on this map.
+    watches: std::collections::HashMap<PathBuf, watch_host::Watch>,
     /// PM.7: plugins this guest declared via `plugin-manager.require` during
     /// `register-plugins`. Recorded here, drained by
     /// [`PluginHost::spawn_plugin_manager_plugin`] after the export returns —
@@ -1061,6 +1072,47 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// [`host_services::local_utc_offset_seconds`].
     fn local_utc_offset_seconds(&mut self) -> i32 {
         host_services::local_utc_offset_seconds()
+    }
+
+    /// OR.2 `watch`. Gated on the same `fs:read` grant `walk` and `read-file`
+    /// check — a watch reveals filesystem activity, so it is the same
+    /// authorization question, answered by the same function.
+    ///
+    /// Requires an event bus on this seam, because a watch with nowhere to
+    /// deliver is not a degraded watch, it is a thread that runs forever and
+    /// tells nobody. The refusal names that, so a plugin author arming one from
+    /// the grammar seam learns why it is silent rather than assuming the
+    /// watcher is broken.
+    fn watch(&mut self, path: String) -> Result<(), String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                path = %path,
+                "watch refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "fs watch denied: '{path}' — this seam has no event bus, so a watch could \
+                 never be delivered (arm it from the plugin's events seam)"
+            ));
+        };
+        let key = PathBuf::from(&path);
+        if self.watches.contains_key(&key) {
+            // Idempotent: re-arming would leave the first watch orphaned and
+            // double every batch.
+            return Ok(());
+        }
+        let watch =
+            watch_host::watch_within_grant(&self.grant, ctx.bus.clone(), ctx.plugin_id.0, &path)?;
+        self.watches.insert(key, watch);
+        Ok(())
+    }
+
+    /// OR.2 `unwatch`. Dropping the entry stops the OS watch and ends its
+    /// coalescing thread. Unwatching what is not watched is `ok` — a disarm is
+    /// idempotent, because the alternative is a guest that must track host
+    /// state to avoid an error.
+    fn unwatch(&mut self, path: String) -> Result<(), String> {
+        self.watches.remove(&PathBuf::from(&path));
+        Ok(())
     }
 
     /// OR.1 `store-put`. Gated on `state:write`; `err` names which of the three
@@ -3182,6 +3234,8 @@ impl PluginHost {
             // a store its sibling seams cannot see IS the drift this exists to
             // prevent, so the wiring must not be per-path.
             store: name.and_then(|id| self.store_for(id)),
+            // OR.2: empty until the guest arms one; dropped with this `Store`.
+            watches: std::collections::HashMap::new(),
             require_contributions: Default::default(),
         };
         let mut store = Store::new(&self.engine, state);

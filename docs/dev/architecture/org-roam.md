@@ -202,6 +202,18 @@ Debounced host-side, emitting an event carrying the changed paths. Gated on the
 same `fs:read` grant `walk` and `read-file` already use — the check is one line
 because the mechanism exists.
 
+Delivery is the `files-changed` arm of the WIT `event`, through the
+`events.subscribe` a plugin already uses. It is **addressed**, not broadcast:
+`Event::FilesChanged` carries the host-issued plugin id and the delivery actor
+drops any batch that is not its own. The bus is a broadcast and a watch is a
+capability — without that, a plugin holding `fs:read` over one directory would
+learn what changed under another plugin's watched directory, which it holds no
+grant over. The id is dropped on projection, because by the time a guest sees a
+batch it is always the guest's own.
+
+A watch lives on the guest's own `PluginState`, so unload, quarantine and the
+actor's channel closing each stop it with no teardown wiring to forget.
+
 `notify` is already a host dependency and already drives autoread, so this is
 wiring rather than invention. It is the right mechanism rather than a
 save-triggered reindex because **the corpus is edited from outside lattice**:

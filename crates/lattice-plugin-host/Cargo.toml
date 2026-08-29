@@ -86,6 +86,12 @@ linkme = { workspace = true }
 # A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
 # rope). `DocumentSnapshot` lives in lattice-runtime.
 lattice-runtime = { path = "../lattice-runtime" }
+# OR.2: the `host-services.watch` seam. `notify` is already a host dependency
+# (it drives autoread and the init-artifact auto-reload), so this is wiring
+# rather than new supply-chain surface. Each watch owns one coalescing thread
+# rather than an async task — this crate deliberately owns no runtime, and a
+# thread blocked on `recv_timeout` needs none.
+notify = { workspace = true }
 # TS.1: the tree-sitter seam. The host publishes each buffer's immutable
 # `SyntaxSnapshot` to a plugin (read-only) as a `tree-snapshot` resource; the
 # trampoline downcasts the type-erased snapshot the grammar `ActionContext`

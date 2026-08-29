@@ -724,7 +724,13 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::ModeEnablementRequested { .. }
         // MG.41g: no path, and no major mode — a background task is
         // not buffer-scoped.
-        | Event::BackgroundTaskFinished { .. } => None,
+        | Event::BackgroundTaskFinished { .. }
+        // OR.2: a watch batch carries MANY paths, and this filter answers with
+        // at most one. Reporting the first would make a `path_glob` subscription
+        // match or miss a whole batch on the basis of an arbitrary member, which
+        // is worse than not matching at all — a plugin filters the batch inside
+        // its own handler, which is where it re-reads the files anyway.
+        | Event::FilesChanged { .. } => None,
     }
 }
 
@@ -765,7 +771,10 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::ModeEnablementRequested { .. }
         // MG.41g: no path, and no major mode — a background task is
         // not buffer-scoped.
-        | Event::BackgroundTaskFinished { .. } => None,
+        | Event::BackgroundTaskFinished { .. }
+        // OR.2: a watch batch is about files on disk, most of which are not
+        // open in any buffer and therefore in no major mode at all.
+        | Event::FilesChanged { .. } => None,
     }
 }
 

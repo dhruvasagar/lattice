@@ -5768,6 +5768,7 @@ dependencies = [
  "lattice-syntax",
  "lattice-theme",
  "linkme",
+ "notify",
  "proptest",
  "serde",
  "serde_json",

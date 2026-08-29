@@ -6838,7 +6838,7 @@ meant to exist.
 | Slice | What | Status |
 |---|---|---|
 | OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
-| OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | 📝 |
+| OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | 📝 |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |
 | OR.5 | the picker offers to create what it could not find | 📝 |
@@ -6874,7 +6874,10 @@ plugin sees one store — this promotes `agenda_cache.rs`'s crash-safety policy
 (temp-and-rename, schema version, degrade to empty never to a partial read) from
 an agenda special case to a primitive. A **debounced directory watch**, chosen
 over a save hook because the corpus is edited from outside lattice and a picker
-missing notes you know you wrote reads as data loss. And **`new-uuid`**, which
+missing notes you know you wrote reads as data loss — **addressed** rather than
+broadcast (`Event::FilesChanged` carries the host-issued plugin id and the
+delivery actor drops what is not its own), because the bus is a broadcast and a
+watch is a capability. And **`new-uuid`**, which
 exists for `read-file`'s exact reason: `:org-roam-id-create` is a grammar
 action, and the grammar seam's synchronous linker cannot serve WASI, so a
 guest-minted id would work on the picker path and take the plugin down on the

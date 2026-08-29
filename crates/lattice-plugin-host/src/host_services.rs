@@ -68,7 +68,7 @@ pub(crate) fn local_utc_offset_seconds() -> i32 {
 /// not exist), the raw path is used: that still requires a literal prefix match,
 /// so it can never *widen* the grant — at worst it denies a walk that a
 /// resolvable path would have permitted, which fails safe.
-fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
+pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
     let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     grant.fs.iter().any(|g| {
         let canon_prefix = std::fs::canonicalize(&g.prefix).unwrap_or_else(|_| g.prefix.clone());
@@ -100,7 +100,7 @@ fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
 /// applies when nothing is there to read, so the subsequent `read` fails
 /// regardless. `<granted>/../../etc/passwd` resolves as a file and is denied on
 /// the first branch.
-fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
+pub(crate) fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
     if file.exists() {
         return grant_permits_walk(grant, file);
     }

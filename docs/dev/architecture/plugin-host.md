@@ -438,6 +438,43 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   read, which is how a store starts serving plausible nonsense. The on-disk format is a
   hand-rolled length-prefixed frame rather than a serde format because the payload is *bytes* and
   every serde encoder in the tree writes a `Vec<u8>` as an array of tagged integers.
+- **Directory watch (✅ OR.2)**: `host-services.watch(path)` / `unwatch(path)`, gated on the same
+  `fs:read` (or `fs:write`) grant `walk` and `read-file` check — a watch reveals filesystem
+  activity, so it is the same authorization question and gets the same answer from the same
+  function.
+
+  A **watcher, not a save hook**, and that is a UX argument rather than an architectural one: the
+  corpus a plugin indexes is edited from outside lattice (emacs writes a note, a `git pull` lands
+  twenty, a sync daemon rewrites a directory). A save hook observes none of those, and the symptom
+  — an index missing files you know you wrote — reads as *data loss* rather than as a stale cache.
+
+  Delivery is the `files-changed` arm of the WIT `event`, through the `events.subscribe` a plugin
+  already uses, so it arrives on the plugin's own actor task — **off the keystroke path, and
+  without one**. `Event::FilesChanged` carries the host-issued plugin id and the delivery actor
+  drops any batch whose id is not its own: the bus is a broadcast and a watch is a capability, so
+  without that line a plugin holding `fs:read` over one directory would learn what changed under
+  *another* plugin's. The id never crosses to a guest, because by then it is always the guest's own.
+
+  **Coalesced.** Each watch owns one thread that blocks for the first event, drains everything
+  arriving within a 300 ms quiet window, deduplicates and publishes ONE batch — so a `git pull`
+  rewriting 200 files is a handful of guest calls carrying many paths, not 200 carrying one. A
+  thread rather than a task because this crate deliberately owns no runtime and a thread blocked on
+  `recv_timeout` needs none; per-watch rather than shared because a shared one would need its own
+  routing table, shutdown protocol and teardown to save a thread that spends its life blocked. The
+  batch cap bounds *event size, not coverage*: an over-large burst spills into the next batch
+  rather than dropping paths, because a cap that silently discarded them would leave an index
+  quietly wrong, which is the failure the seam exists to prevent.
+
+  **A watch lives on the guest's own `PluginState`**, not in a host registry keyed by plugin. Its
+  lifetime is then exactly the plugin instance's, so unload, quarantine and the actor's channel
+  closing each stop it with no teardown wiring anyone can forget to write; `unwatch` is a `remove`
+  on that map. A removal is reported as a change (the consumer stats the path), because an index
+  that cannot see deletions offers destinations that no longer exist.
+
+  A watch that cannot be armed is a typed `Err` naming which of the four refusals happened — outside
+  the grant, no event bus on this seam, a missing path, or a watcher the platform refused — and
+  never fatal: the plugin falls back to indexing on boot plus an explicit resync, which is degraded
+  and honest rather than appearing to work and going stale.
   Rejected: an `org.utc-offset` option, which makes the user maintain what the OS knows and
   breaks twice a year.
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an

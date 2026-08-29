@@ -16,7 +16,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-29).
+**Status:** 🚧 in progress (2026-08-30) — OR.1 and OR.2 landed.
 
 ---
 
@@ -104,7 +104,7 @@ unlinked references additionally wants a term map the index does not carry.
 | Slice | Description | Status |
 |---|---|---|
 | OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
-| OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | 📝 |
+| OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | 📝 |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |
 | OR.5 | the picker offers to create what it could not find | 📝 |
@@ -167,7 +167,7 @@ a schema bump refusing the old shape; the size cap clearing wholesale;
 `generation` moving on mutation and **not** moving on a `get`; a plugin without
 the grant degrading rather than failing.
 
-### OR.2 — a plugin can be told a file changed 📝
+### OR.2 — a plugin can be told a file changed ✅
 
 **Deps:** none (parallel with OR.1).
 
@@ -184,16 +184,31 @@ paths, not 200 events.
 **The wake is the part that silently does not work if missed.** A watcher event
 that lands with no wake sits until the user happens to press a key, and the
 symptom — "it updates, but only after I hit something" — reads as a rendering
-bug. The event goes through the bus with `wake_on_event`, and the **test
-asserts the guest observed the change without any action being dispatched
-afterwards.** A test that presses a key first passes against the broken version,
-which is the hole `test_helpers::settle` exists for.
+bug. The **test asserts the guest observed the change without any action being
+dispatched afterwards.** A test that presses a key first passes against the
+broken version, which is the hole `test_helpers::settle` exists for.
+
+As built, the guest side needs no `wake_on_event`: delivery rides the plugin's
+own event actor, which is a live tokio task draining an mpsc, so a batch reaches
+`on-event` on its own. `wake_on_event` becomes relevant at OR.9, where the
+*view* has to repaint — the guest hearing about a change and the screen showing
+it are two different questions, and only the second needs the editor woken.
+
+**The event is addressed, which is the design decision this slice added.**
+`Event::FilesChanged` carries the host-issued plugin id and the delivery actor
+drops a batch that is not its own. The alternative — riding `Event::Plugin`,
+which needs no new native surface — leaks: every `EventKind::Plugin` subscriber
+sees every plugin event, so a plugin with no grant over a directory would learn
+which files under it changed.
 
 **Tests:** a single write observed; a burst of 200 writes coalescing into a
-bounded event count; the guest observing without an intervening keypress;
-`unwatch` stopping delivery; a denied path refused with the grant named; a
-watcher that fails to register logging and leaving the plugin working;
-a deleted file reported as a change (OR.4 needs deletions).
+bounded event count *and* into batches that carry many paths (collapsing the
+count without keeping the breadth would be coalescing that lost data); the guest
+observing without an intervening keypress; `unwatch` stopping delivery; a denied
+path refused with the grant named; a granted plugin's SECOND, ungranted watch
+still refused (a gate that armed once and stopped checking passes every other
+test here); the refused plugin still delivering ordinary events; a deleted file
+reported as a change (OR.4 needs deletions).
 
 ### OR.3 — the host mints ids 📝
 

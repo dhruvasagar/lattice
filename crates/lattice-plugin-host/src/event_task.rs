@@ -301,6 +301,17 @@ impl EventActor {
         if self.quarantine.is_tripped() {
             return;
         }
+        // OR.2: a watch batch is ADDRESSED, and this is where the address is
+        // read. The bus is a broadcast, so without this line every plugin
+        // subscribed to `files-changed` would learn which files changed under
+        // every *other* plugin's watched directory — a capability leak, since
+        // that plugin holds no `fs:read` grant over it. The id is dropped on
+        // projection, so a guest is never told its own name.
+        if let NativeEvent::FilesChanged { plugin, .. } = &event
+            && *plugin != self.id.0
+        {
+            return;
+        }
         let wit = match event.to_wit() {
             Ok(w) => w,
             Err(error) => {

@@ -146,6 +146,50 @@ interface host-services {
     /// Keys carrying `prefix`, sorted. `""` lists everything.
     store-keys: func(prefix: string) -> list<string>;
 
+    // ---------------------------------------------------------------------
+    // OR.2 — a plugin can be told a file changed.
+    //
+    // A **watcher, not a save hook**, because the corpus a plugin indexes is
+    // edited from outside lattice: emacs writes a note, a `git pull` lands
+    // twenty, a sync daemon rewrites a directory. A save hook observes none of
+    // those, and the symptom — an index missing files you know you wrote —
+    // reads as data loss rather than as a stale cache.
+    //
+    // Delivery is the `files-changed` arm of `event`, through the same
+    // `events.subscribe` a plugin already uses. It is **addressed**: the host
+    // routes a batch only to the plugin that armed the watch, so a plugin
+    // granted `fs:read` over one directory never learns what changed under
+    // another plugin's. Because delivery rides the plugin's own event actor,
+    // it reaches the guest on that actor's task — no keystroke required, which
+    // is the failure mode ("it works, but only after I hit something") this
+    // seam is most likely to have.
+    //
+    // Gated on the same `fs:read` (or `fs:write`) grant `walk` and `read-file`
+    // check — a watch reveals filesystem activity, so it is the same
+    // authorization question, answered by the same line.
+    // ---------------------------------------------------------------------
+
+    /// Watch `path` (a directory, recursively) for changes. Bursts are
+    /// coalesced host-side behind a quiet window, so a `git pull` rewriting two
+    /// hundred files delivers one event carrying two hundred paths rather than
+    /// two hundred events.
+    ///
+    /// Watching the same path twice is `ok` and arms nothing new. The watch
+    /// lives as long as this plugin instance: it is torn down when the instance
+    /// is unloaded or quarantined, with no bookkeeping on the guest's part.
+    ///
+    /// `err` names which of the four refusals happened — outside the grant, no
+    /// event bus wired on this seam, an unwatchable path, or a watcher the
+    /// platform refused to create. A plugin whose watch fails should fall back
+    /// to indexing on boot plus an explicit resync command, which is degraded
+    /// and honest rather than appearing to work and going stale.
+    watch: func(path: string) -> result<_, string>;
+
+    /// Stop watching `path`. Unwatching a path that is not watched is `ok` — a
+    /// disarm is idempotent, because the alternative is a guest that must track
+    /// host state to avoid an error.
+    unwatch: func(path: string) -> result<_, string>;
+
     /// Bumped on every successful mutation, never on a read. A reader compares
     /// it against what it last built from and rebuilds only when it moved.
     ///

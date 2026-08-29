@@ -1,9 +1,9 @@
 # A TODO state is not a language keyword — slice plan (TK)
 
-> Design: [`../../architecture/org-todo-keywords.md`](../../architecture/org-todo-keywords.md).
-> Anchors [`../../architecture/theme-system.md`](../../architecture/theme-system.md)
+> Design: [`../../architecture/org-todo-keywords.md`](../../../architecture/org-todo-keywords.md).
+> Anchors [`../../architecture/theme-system.md`](../../../architecture/theme-system.md)
 > §3.1 + §5 (element identity and the override stack) and
-> [`../../architecture/plugin-transients.md`](../../architecture/plugin-transients.md)
+> [`../../architecture/plugin-transients.md`](../../../architecture/plugin-transients.md)
 > (TK.6's menu).
 >
 > Plugin repo: [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).

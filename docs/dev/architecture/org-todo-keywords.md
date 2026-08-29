@@ -1,7 +1,7 @@
 # Org TODO keywords, and what colour they are
 
 Status: design fragment (2026-08-29). Slice plan:
-`../operations/slice-plans/org-todo-keywords.md`.
+`../operations/slice-plans/archive/org-todo-keywords.md`.
 
 Anchors: [`org-mode.md`](org-mode.md) §4 (the mode decomposition —
 `org-todo-mode` owns this surface), [`theme-system.md`](theme-system.md)

@@ -6910,7 +6910,7 @@ noise.
 | TK.7 | docs |✅ |
 
 Design: [`../architecture/org-todo-keywords.md`](../architecture/org-todo-keywords.md).
-Slice plan: [`slice-plans/org-todo-keywords.md`](slice-plans/org-todo-keywords.md).
+Slice plan: [`slice-plans/archive/org-todo-keywords.md`](slice-plans/archive/org-todo-keywords.md).
 
 Reported from use: *"TODO looks weird purple and all other states seem like a
 comment."* Three causes compound. `org.todo-keywords` is **one flat string**, so

@@ -6819,6 +6819,70 @@ meant to exist.
 
 ---
 
+## Org-roam (OR, 2026-08-29 — design landed, not built)
+
+| Slice | What | Status |
+|---|---|---|
+| OR.1 | `host-services.store` — durable, plugin-scoped, opaque bytes | 📝 |
+| OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | 📝 |
+| OR.3 | `host-services.new-uuid` | 📝 |
+| OR.4 | `org.roam-directory` and the indexer | 📝 |
+| OR.5 | the picker offers to create what it could not find | 📝 |
+| OR.6 | `:org-roam-find-node` | 📝 |
+| OR.7 | `:org-roam-insert-node` | 📝 |
+| OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
+| OR.9 | the backlinks view | 📝 |
+| OR.10 | dailies | 📝 |
+| OR.11 | roam capture templates and `${field}` | 📝 |
+| OR.12 | docs | 📝 |
+
+Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
+Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
+
+`org-mode.md` §10 lists org-roam as a cut, and OT.3b's note on why the agenda's
+cache could not serve it — *"org-roam, when it comes, does not want a snapshot
+cache; it wants a real index"* — is the sentence this plan starts from.
+
+**The constraint that reshapes the obvious design is that there is no single org
+guest instance.** `spawn_event_plugin`, `spawn_config_plugin`,
+`spawn_help_plugin`, `spawn_dashboard_sections` and `instantiate_grammar_plugin`
+are separate paths, each with its own `wasmtime::Store`, so the picker seam
+running find-node and the sync grammar seam running `<CR>` have different
+memory. "Keep the index in guest state" therefore means *N copies, drifting* —
+and the drift is invisible, because each instance stays internally consistent
+while find-node offers a node `<CR>` cannot open. Hence **one indexer, many
+readers**: the async event seam is the sole writer, which is also what makes
+denormalizing the records safe.
+
+Three generic `host-services` additions, none of which names org. A **durable
+plugin-scoped byte store**, scoped by manifest id so every seam instance of one
+plugin sees one store — this promotes `agenda_cache.rs`'s crash-safety policy
+(temp-and-rename, schema version, degrade to empty never to a partial read) from
+an agenda special case to a primitive. A **debounced directory watch**, chosen
+over a save hook because the corpus is edited from outside lattice and a picker
+missing notes you know you wrote reads as data loss. And **`new-uuid`**, which
+exists for `read-file`'s exact reason: `:org-roam-id-create` is a grammar
+action, and the grammar seam's synchronous linker cannot serve WASI, so a
+guest-minted id would work on the picker path and take the plugin down on the
+grammar path.
+
+The corpus was measured rather than assumed (706 files, 585 nodes, 795 `id:`
+links, 71 aliases). Two numbers changed the design: **110 of the nodes are
+headline-level**, so a file-only model would silently drop 19% of the corpus and
+every link into it; and a filename is a fossil —
+`20250603103551-chicken_breast_honey_garlic.org` holds a node titled *Honey
+Garlic Chicken Breast* — so the picker matches titles and aliases and never
+filenames.
+
+**Create-on-no-match is generic picker surface** (OR.5), not roam surface. The
+synthetic row is present whenever the query is non-empty rather than only on
+zero matches, because otherwise you cannot create *Rust* while *Rust Async*
+exists; and it is pinned last and never ranked, because a create row that could
+sort above a real match would let `<CR>` produce a duplicate through ranking
+noise.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

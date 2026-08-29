@@ -186,6 +186,7 @@ docs = [
   "architecture/plugin-auto-pair",
   "architecture/org-mode",
   "architecture/org-capture",
+  "architecture/org-roam",
   "architecture/plugin-transients",
   "architecture/plugin-mode-options",
   "architecture/wit-ownership",

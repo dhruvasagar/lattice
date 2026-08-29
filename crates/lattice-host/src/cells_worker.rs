@@ -503,7 +503,7 @@ fn publish_sticky_context(
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let syntax = pane.syntax_handle.as_deref().map(|h| h.snapshot());
-    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref(), pane.conceal_reveal);
     let mut rows: Vec<StickyContextRow> = Vec::with_capacity(pane.sticky_context_lines.len());
 
     for &line in pane.sticky_context_lines.iter() {
@@ -784,6 +784,7 @@ pub fn recompute_pane(
                 pane.scroll,
                 pane.version,
                 whitespace,
+                pane.conceal_reveal,
             );
             dm.wrap_width = effective_wrap;
             (dm, WorkerDecision::Recomputed)
@@ -2103,8 +2104,17 @@ pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> 
 /// reaches the matcher at all.
 fn conceal_rules_for(
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
+    reveal: bool,
 ) -> std::sync::Arc<[lattice_syntax::conceal::ConcealRule]> {
     let empty = || std::sync::Arc::from([] as [lattice_syntax::conceal::ConcealRule; 0]);
+    // H.4: revealing IS having no rules. Expressing the mode gate as an
+    // empty rule set rather than as a second flag threaded beside them
+    // is what makes the `conceal` version axis and the built rows unable
+    // to disagree — both derive from this one call, so there is no state
+    // in which the axis says "concealed" and the row says otherwise.
+    if reveal {
+        return empty();
+    }
     let Some(h) = syntax_handle else {
         return empty();
     };
@@ -2118,8 +2128,11 @@ fn conceal_rules_for(
 ///
 /// Zero when there are no rules, so the axis is a constant for every
 /// language but org and cannot cost those buffers a rebuild.
-pub(crate) fn conceal_version_for(syntax_handle: Option<&lattice_syntax::SyntaxHandle>) -> u64 {
-    lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle))
+pub(crate) fn conceal_version_for(
+    syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
+    reveal: bool,
+) -> u64 {
+    lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle, reveal))
 }
 
 fn build_display_matrix(
@@ -2138,6 +2151,8 @@ fn build_display_matrix(
     scroll: u32,
     version: MatrixVersion,
     whitespace: &WhitespaceConfig,
+    // H.4: Insert/Replace on THIS pane's buffer renders raw.
+    conceal_reveal: bool,
 ) -> crate::display_matrix::DisplayMatrix {
     use crate::display_matrix::{DisplayChunk, DisplayMatrix};
     // CV.2: the row range, in **content** space. This is where the
@@ -2160,7 +2175,7 @@ fn build_display_matrix(
     // H.3: resolved ONCE per matrix build, not per line. Empty for a
     // buffer with no syntax handle, an unavailable registry, or — the
     // overwhelmingly common case — a language that declares no rules.
-    let conceal_rules = conceal_rules_for(syntax_handle);
+    let conceal_rules = conceal_rules_for(syntax_handle, conceal_reveal);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // K.4.7: multibuffer panes use per-excerpt handles.
@@ -2282,7 +2297,7 @@ fn try_incremental_display_build(
     // rows it rebuilds must conceal exactly as a full build would — a
     // link that renders raw only on the line you just touched would be
     // the most visible possible version of this bug.
-    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref(), pane.conceal_reveal);
     let edit = pane.last_edit?;
     if published.chunks.is_empty() {
         return None;
@@ -3051,6 +3066,7 @@ mod tests {
         // `matrix_cell` (see `display_cell_for`).
         let display_cell = display_cell_for(&matrix_cell);
         let pane_entry = crate::render_state::PaneCellsInputs {
+            conceal_reveal: false,
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
@@ -3970,6 +3986,72 @@ mod tests {
     /// the `DisplayLine` runs back to cells yields the same codepoints +
     /// resolved fg + flags, and `col_map` equals `inlay_offsets`. Guards
     /// against drift while both builders coexist (B1→B4).
+    // ---- H.4: mode scoping ----
+
+    #[test]
+    fn h4_revealing_is_the_same_as_having_no_rules() {
+        // The gate is expressed as an empty rule set rather than as a
+        // flag threaded beside them, so the version axis and the built
+        // rows cannot disagree about what is concealed. This asserts
+        // the equivalence directly.
+        let r = org_conceal_rules();
+        let concealed = lattice_syntax::conceal::conceal_spans(&r, "[[id:A][one]]");
+        let revealed = lattice_syntax::conceal::conceal_spans(&[], "[[id:A][one]]");
+        assert_eq!(concealed.len(), 2);
+        assert!(revealed.is_empty());
+    }
+
+    #[test]
+    fn h4_the_conceal_axis_moves_between_reveal_and_conceal() {
+        let r = org_conceal_rules();
+        let concealed = lattice_syntax::conceal::rules_version(&r);
+        let revealed = lattice_syntax::conceal::rules_version(&[]);
+        assert_ne!(
+            concealed, revealed,
+            "crossing the insert boundary must invalidate the matrix"
+        );
+        assert_eq!(revealed, 0, "revealing is indistinguishable from no rules");
+    }
+
+    /// **The gate, asserted as an absence.**
+    ///
+    /// A buffer whose language declares no conceal rules must produce
+    /// the SAME axis value in every modal state — otherwise every `i` in
+    /// every Rust file in the editor costs a viewport rebuild that
+    /// changes not one pixel. That is a regression no behaviour test
+    /// would catch, because nothing would look wrong; it would only be
+    /// slower.
+    #[test]
+    fn h4_a_language_with_no_rules_never_moves_the_axis() {
+        for reveal in [false, true] {
+            assert_eq!(
+                lattice_syntax::conceal::rules_version(&[]),
+                0,
+                "no rules, reveal={reveal}: the axis must not move"
+            );
+        }
+        // And the same through the resolver the render path actually
+        // calls, with no syntax handle — the plain-text / synthetic
+        // buffer case.
+        assert_eq!(conceal_version_for(None, false), 0);
+        assert_eq!(conceal_version_for(None, true), 0);
+    }
+
+    #[test]
+    fn h4_a_revealed_row_is_byte_identical_to_the_source() {
+        // What Insert mode actually has to produce: the file's own text.
+        let r = org_conceal_rules();
+        let line = "* See [[id:6F39][Project Kickoff]] before Friday.";
+        let (concealed, _, _) = row(line, &r);
+        assert_ne!(concealed, line);
+        // Revealing resolves to an empty rule set, and an empty rule set
+        // is H.3's byte-identical path.
+        let (revealed, spans, cols) = row(line, &[]);
+        assert_eq!(revealed, line);
+        assert!(spans.is_empty());
+        assert_eq!(cols, line.chars().count() as u32);
+    }
+
     // ---- H.3: the display row elides ----
 
     /// Org's real two rules, compiled.
@@ -4229,6 +4311,7 @@ mod tests {
             0,
             v(1),
             &ws,
+            false,
         );
         let row0 = dm.row_at_source_line(0).expect("line 0 row");
         let first = row0.runs.first().expect("at least one run on line 0");
@@ -4311,6 +4394,7 @@ mod tests {
             0,
             v(1),
             &ws,
+            false,
         );
         let projected = display_matrix_to_cell_matrix(&dm, ct);
 
@@ -5860,6 +5944,7 @@ mod tests {
                     ..MatrixVersion::ZERO
                 };
                 let inputs = crate::render_state::PaneCellsInputs {
+                    conceal_reveal: false,
                     // IG.2: default guide inputs — enabled with the default indent
                     // unit, which is the shape a test pane has unless it is
                     // exercising guides specifically.
@@ -6024,6 +6109,7 @@ mod tests {
                 ..MatrixVersion::ZERO
             };
             let inputs = crate::render_state::PaneCellsInputs {
+                conceal_reveal: false,
                 // IG.2: default guide inputs — enabled with the default indent
                 // unit, which is the shape a test pane has unless it is
                 // exercising guides specifically.
@@ -6128,6 +6214,7 @@ mod tests {
         viewport_height: u32,
     ) -> crate::render_state::PaneCellsInputs {
         crate::render_state::PaneCellsInputs {
+            conceal_reveal: false,
             // IG.2: default guide inputs — enabled with the default indent
             // unit, which is the shape a test pane has unless it is
             // exercising guides specifically.

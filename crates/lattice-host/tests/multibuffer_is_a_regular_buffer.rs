@@ -673,6 +673,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         .into();
 
     let pane = PaneCellsInputs {
+        conceal_reveal: false,
         // IG.2: default guide inputs — enabled with the default indent
         // unit, which is the shape a test pane has unless it is
         // exercising guides specifically.

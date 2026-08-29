@@ -124,7 +124,7 @@ later without hand-vendoring.
 | H.1 | the shared coordinate fn, the `conceals` range list, the clamp | ✅ |
 | H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | ✅ |
 | H.3 | the matrix build elides; the `conceal` axis; the bench | ✅ |
-| H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
+| H.4 | mode scoping — Insert reveals, gated on the language having rules | ✅ |
 
 ### H.1 — the substrate learns that a display line can be shorter ✅ (2026-08-29)
 
@@ -292,7 +292,7 @@ every other buffer in the editor.
 **A design claim was disproved here and is retracted rather than quietly
 dropped** — see the OL.2 note below on rule ordering.
 
-### H.4 — Normal reads, Insert edits 📝
+### H.4 — Normal reads, Insert edits ✅ (2026-08-29)
 
 **Deps:** H.3.
 
@@ -300,18 +300,39 @@ Crossing the insert/non-insert boundary bumps the conceal axis. Insert and
 Replace render raw; Normal, Visual, Select, Operator-pending, Command, Search
 and Prompt render concealed.
 
-**The gate is the slice's real content.** Mode changes happen constantly and in
-every buffer; an axis that bumped globally would put a viewport rebuild on every
-`i` in every Rust file in the editor. The bump is conditional on the buffer's
-language having compiled rules, so a buffer with none never enters the path —
-and the test for that asserts the version is *unchanged* across `i` in a Rust
-buffer, which is the only way to catch a regression that costs performance
-without changing a pixel.
+**Revealing is expressed as having no rules**, not as a flag threaded beside
+them. `conceal_rules_for(handle, reveal)` returns the empty set when revealing,
+and both the `conceal` version axis and the built rows derive from that one
+call — so there is no state in which the axis says "concealed" and the row says
+otherwise. It also means revealing reuses H.3's byte-identical empty-rules path
+rather than needing a second one.
 
-**Tests:** `i` revealing and `<Esc>` re-concealing; `R` revealing; `v` and `:`
-not revealing; a Rust buffer's matrix version unchanged across a full
-Normal→Insert→Normal cycle; the one-frame drop-to-raw on a version mismatch
-being raw rather than corrupt.
+**The gate is two conditions, and the second was not in the plan.**
+`ModalState` is editor-**global**, so gating on the mode alone would repaint
+every visible org buffer in every split the moment `i` was pressed in one of
+them — a pixel change to content the user did not touch, which is the standing
+veto. So a pane reveals iff `is_active_buffer && conceal_reveal()`. The
+parameter was already there; the conjunction is the fix.
+
+**Visual stays concealed**, deliberately: the split is "am I editing text",
+not "am I in a modal state". Insert and Replace reveal; Normal, Visual, Select,
+Operator-pending, Command, Search and Prompt do not.
+
+**The zero-cost gate is asserted as an absence.**
+`h4_a_language_with_no_rules_never_moves_the_axis` checks the version is
+*unchanged* across the reveal boundary for a language with no rules — the only
+way to catch a regression that costs a viewport rebuild per `i` in every Rust
+file and changes not one pixel while doing it.
+
+**Landed:** 6 tests — 4 in `cells_worker` (reveal ≡ no rules; the axis moving
+across the boundary; the zero-cost absence; a revealed row byte-identical to
+its source) and 2 in `dispatch` (every modal state's reveal answer; reveal
+being an editor property that the pane-level conjunction narrows).
+
+**Gate note:** `scripts/precommit.sh lattice-ui-gpui lattice-ui-tui` in ONE run
+flakes the magit `settle_mode` tests under the extra parallel load — reproduced
+on clean HEAD with changes stashed, failing set differing run to run. Gate the
+two renderer crates **separately**.
 
 ---
 

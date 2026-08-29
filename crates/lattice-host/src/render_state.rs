@@ -1463,6 +1463,17 @@ pub struct PaneCellsInputs {
     /// the same snapshot and with the same version stamp — the two are
     /// two projections of one build, not two caches.
     pub indent_guides: Arc<arc_swap::ArcSwap<crate::indent_guides::IndentGuides>>,
+    /// H.4 (2026-08-29): this pane renders links raw rather than
+    /// concealed. True iff the editor is in Insert/Replace **and** this
+    /// pane holds the buffer being edited.
+    ///
+    /// The active-pane condition is not incidental. `ModalState` is
+    /// editor-global, so revealing on the mode alone would repaint every
+    /// visible org buffer in every split the moment you pressed `i` in
+    /// one of them — a pixel change to content the user did not touch,
+    /// which is the standing veto. A pane that is not being edited has
+    /// no reason to show editing affordances.
+    pub conceal_reveal: bool,
     /// IG.2: this buffer's resolved indent level. Guides are spaced by
     /// `shiftwidth` (one level of indent), not by `tabstop` (the width
     /// of a tab byte); `tabstop` is here too because measuring a

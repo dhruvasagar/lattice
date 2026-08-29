@@ -128,6 +128,7 @@ fn rs_for_with_strip(
     let folds: Arc<[lattice_core::Fold]> =
         Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice());
     let pane_entry = PaneCellsInputs {
+        conceal_reveal: false,
         indent_guides: Default::default(),
         indent_unit: lattice_core::IndentUnit::default(),
         indent_guides_enabled: true,

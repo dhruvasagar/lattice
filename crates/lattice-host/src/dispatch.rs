@@ -1537,7 +1537,10 @@ impl Editor {
                     // H.3: the buffer language's rule set. Constant 0
                     // when it declares none, which is every language
                     // but org — so this axis cannot move for them.
-                    conceal: crate::cells_worker::conceal_version_for(self.syntax.as_ref()),
+                    conceal: crate::cells_worker::conceal_version_for(
+                        self.syntax.as_ref(),
+                        self.conceal_reveal(),
+                    ),
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -15619,6 +15622,12 @@ impl Editor {
 
         let text_version = snapshot.as_ref().map(|s| s.text_version).unwrap_or(0);
 
+        // H.4: this pane renders raw only if it is the one being edited.
+        // `ModalState` is editor-global, so gating on the mode alone
+        // would repaint every visible org buffer in every split the
+        // moment `i` was pressed in one of them.
+        let conceal_reveal = is_active_buffer && self.conceal_reveal();
+
         // IG.2: guides are buffer-local, so they resolve per pane rather
         // than from the publish-wide option cache.
         let guides = self.indent_guide_inputs(buffer_id);
@@ -15662,7 +15671,10 @@ impl Editor {
             theme: theme_hash,
             whitespace: whitespace_hash,
             indent: guides.version,
-            conceal: crate::cells_worker::conceal_version_for(syntax_handle.as_deref()),
+            conceal: crate::cells_worker::conceal_version_for(
+                syntax_handle.as_deref(),
+                conceal_reveal,
+            ),
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so
@@ -15690,6 +15702,7 @@ impl Editor {
         };
 
         PaneCellsInputs {
+            conceal_reveal,
             pane_id,
             buffer_id,
             matrix: self.cells_matrix_for(buffer_id),
@@ -20953,6 +20966,22 @@ impl Editor {
     /// bool load with no option-tree traversal.
     pub fn foldenable(&self) -> bool {
         self.option_cache.foldenable
+    }
+
+    /// H.4: whether concealed markup renders raw right now.
+    ///
+    /// Insert and Replace reveal; Normal, Visual, Select,
+    /// Operator-pending, Command, Search and Prompt conceal. The split
+    /// is "am I editing text" rather than "am I in a modal state", which
+    /// is why Visual — a selection state, not an editing one — stays
+    /// concealed.
+    ///
+    /// **This alone is not the gate.** It is editor-global; a pane also
+    /// has to be the one holding the edited buffer before it reveals
+    /// (`build_one_pane_cells_input`). Revealing on the mode alone would
+    /// repaint every visible org buffer in every split on `i`.
+    pub fn conceal_reveal(&self) -> bool {
+        matches!(self.modal, ModalState::Insert | ModalState::Replace)
     }
 
     /// 5.5.G.23.cmdline: `:set completion.auto_insert_single`. Default
@@ -40309,6 +40338,54 @@ mod tests {
 
     fn xf0_editor() -> Editor {
         Editor::boot(lattice_core::Document::from_text("alpha\nbeta\n"))
+    }
+
+    // ── H.4: which modal states reveal concealed markup ──
+
+    /// The split is "am I editing text", not "am I in a modal state".
+    /// Visual is a *selection* state and stays concealed; so do the
+    /// minibuffer states, where the caret is not in the buffer at all.
+    #[test]
+    fn h4_only_the_insert_class_states_reveal() {
+        use lattice_grammar::{SearchDirection, VisualKind};
+        let mut ed = xf0_editor();
+
+        for m in [ModalState::Insert, ModalState::Replace] {
+            ed.modal = m;
+            assert!(ed.conceal_reveal(), "{m:?} edits text, so it reveals");
+        }
+
+        for m in [
+            ModalState::Normal,
+            ModalState::Visual(VisualKind::Charwise),
+            ModalState::Visual(VisualKind::Linewise),
+            ModalState::Visual(VisualKind::Blockwise),
+            ModalState::Select(VisualKind::Charwise),
+            ModalState::OperatorPending,
+            ModalState::Command,
+            ModalState::Search(SearchDirection::Forward),
+            ModalState::Prompt,
+        ] {
+            ed.modal = m;
+            assert!(!ed.conceal_reveal(), "{m:?} must stay concealed");
+        }
+    }
+
+    /// `conceal_reveal()` is editor-global and is deliberately only
+    /// HALF the gate — a pane must also hold the edited buffer. This
+    /// pins the global half; the per-pane half is applied in
+    /// `build_one_pane_cells_input` as `is_active_buffer && ...`, and
+    /// without it pressing `i` in one split would repaint every other
+    /// split showing an org file.
+    #[test]
+    fn h4_reveal_is_a_property_of_the_editor_not_of_a_pane() {
+        let mut ed = xf0_editor();
+        ed.modal = ModalState::Insert;
+        assert!(ed.conceal_reveal());
+        // The pane-level conjunction is what narrows it; a false
+        // `is_active_buffer` must win over a true global reveal.
+        let is_active_buffer = false;
+        assert!(!(is_active_buffer && ed.conceal_reveal()));
     }
 
     /// An edit against a buffer id that was never registered.

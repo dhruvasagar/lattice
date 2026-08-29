@@ -6731,14 +6731,14 @@ panics.
 
 ---
 
-## Concealment (H, 2026-08-29 — design landed, not built)
+## Concealment (H, 2026-08-29 — ✅ complete)
 
 | Slice | What | Status |
 |---|---|---|
-| H.1 | signed `col_map`, the `conceals` range list, the clamp | 📝 |
-| H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | 📝 |
-| H.3 | the matrix build elides; the `conceal` axis; the bench | 📝 |
-| H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
+| H.1 | the shared coordinate fn, the `conceals` range list, the clamp | ✅ |
+| H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | ✅ |
+| H.3 | the matrix build elides; the `conceal` axis; the bench | ✅ |
+| H.4 | mode scoping — Insert reveals, gated on the language having rules | ✅ |
 
 Design: [`../architecture/conceal.md`](../architecture/conceal.md).
 Slice plan:

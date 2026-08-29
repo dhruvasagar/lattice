@@ -1534,6 +1534,10 @@ impl Editor {
                     // entries resolve their own (guides are buffer-local);
                     // this is the top-level aggregate.
                     indent: self.indent_guide_inputs(self.document_buffer_id).version,
+                    // H.3: the buffer language's rule set. Constant 0
+                    // when it declares none, which is every language
+                    // but org — so this axis cannot move for them.
+                    conceal: crate::cells_worker::conceal_version_for(self.syntax.as_ref()),
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -15658,6 +15662,7 @@ impl Editor {
             theme: theme_hash,
             whitespace: whitespace_hash,
             indent: guides.version,
+            conceal: crate::cells_worker::conceal_version_for(syntax_handle.as_deref()),
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so

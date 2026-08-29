@@ -62,15 +62,36 @@ pub fn source_byte_to_display_col(
             break;
         }
     }
+    subtract_conceals(col, byte, conceals)
+}
+
+/// Remove the concealed columns lying before `source_col` from an
+/// otherwise-computed display column.
+///
+/// Split out from [`source_byte_to_display_col`] because the GPU peer
+/// computes its inlay term differently — it resolves the source byte
+/// to a char column itself and filters inlays by *byte* rather than by
+/// column. Reconciling that is a separate question with its own
+/// non-ASCII risk; what must not happen meanwhile is two
+/// implementations of the conceal clamp, because the symptom of a
+/// stale one is a caret sitting off its own match on one renderer and
+/// not the other.
+///
+/// `col` is the display column before conceal; `source_col` is the
+/// position in the source line's own column space, which is what
+/// conceal ranges are expressed in.
+pub fn subtract_conceals(col: u32, source_col: u32, conceals: &[ConcealRange]) -> u32 {
+    let mut col = col;
     for (start, end) in conceals {
-        if *start >= byte {
+        if *start >= source_col {
             break;
         }
-        // Only the part of this range lying strictly before `byte`
-        // is subtracted. For a `byte` past the range that is its
-        // whole width; for a `byte` inside it, exactly enough to
-        // land on `start`.
-        col = col.saturating_sub(end.min(&byte) - start);
+        // Only the part of this range lying strictly before
+        // `source_col` is subtracted. For a position past the range
+        // that is its whole width; for one inside it, exactly enough
+        // to land on `start` — which is the clamp, falling out of the
+        // arithmetic rather than needing a branch.
+        col = col.saturating_sub(end.min(&source_col) - start);
     }
     col
 }

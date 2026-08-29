@@ -210,6 +210,110 @@ pub fn compile_rules(
     (ok, errs)
 }
 
+/// A stamp identifying a rule set, for the matrix's `conceal` axis.
+///
+/// **Zero for an empty rule set, and that is the load-bearing case.**
+/// Every buffer whose language declares no rules gets a constant, so
+/// the axis cannot move for it — which is what keeps `i` in a Rust
+/// file from costing a viewport rebuild once H.4 folds the modal state
+/// in here. The check is `is_empty()` before any hashing, so those
+/// buffers pay a branch.
+///
+/// Hashes the declarations rather than the `Arc`'s address: a pointer
+/// would change on any reallocation that did not change a rule, and
+/// would compare equal across two different rule sets that happened to
+/// land at the same address after a free.
+pub fn rules_version(rules: &[ConcealRule]) -> u64 {
+    if rules.is_empty() {
+        return 0;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for r in rules {
+        r.source().hash(&mut h);
+        r.hide().hash(&mut h);
+    }
+    // Fold in a non-zero marker so a rule set cannot hash to 0 and
+    // become indistinguishable from "no rules".
+    h.finish() | 1
+}
+
+/// The byte ranges `rules` hide in `line` — sorted and coalesced.
+///
+/// Rules are tried in declaration order and every match of every rule
+/// contributes; the result is the **union** of their hidden groups.
+///
+/// ## Why the union is coalesced before it is returned
+///
+/// Two rules hiding overlapping spans must produce one hidden span.
+/// The consumer subtracts `end - start` per range to find a display
+/// column, so an un-merged overlap subtracts its shared width twice
+/// and every column past it on that line is wrong. Merging here rather
+/// than trusting callers means the invariant holds at the one place it
+/// can be established.
+///
+/// ## Declaration order does not affect the result
+///
+/// Stated because the design originally claimed the opposite, and a
+/// test caught it. Every rule is tried at every position and the
+/// hidden spans are unioned, so no rule can consume text before
+/// another sees it — the output is the same under any permutation of
+/// the rule list.
+///
+/// The worry that motivated the retracted claim was that a described
+/// org link `[[a][b]]` would be matched as a *bare* one, hiding the
+/// outer brackets and leaving `a][b` on screen. It cannot happen, for
+/// a second and independent reason: the bare pattern's `[^]]+` stops
+/// at the first `]`, so it never reaches the closing `]]` of a
+/// described link and does not match it at all. The two patterns are
+/// disjoint by construction, which is a property of how they are
+/// written rather than of the order they are declared in.
+///
+/// What a rule author must therefore get right is the *pattern*, not
+/// its position: a rule that matches more than it means to will hide
+/// more than it means to no matter where it sits.
+///
+/// Returns empty immediately when there are no rules, which is the
+/// path every buffer in the editor but one takes.
+pub fn conceal_spans(rules: &[ConcealRule], line: &str) -> Vec<(u32, u32)> {
+    if rules.is_empty() || line.is_empty() {
+        return Vec::new();
+    }
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+    for rule in rules {
+        for caps in rule.pattern.captures_iter(line) {
+            for g in rule.hide() {
+                // A group that did not participate in this match is
+                // `None` — legal and common with alternations, and not
+                // an error: it hid nothing here. An empty match is
+                // dropped for the same reason, before it can become a
+                // zero-width range the coalescer has to reason about.
+                if let Some(m) = caps.get(*g as usize)
+                    && m.start() < m.end()
+                {
+                    spans.push((m.start() as u32, m.end() as u32));
+                }
+            }
+        }
+    }
+    if spans.len() > 1 {
+        spans.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(spans.len());
+        for (s, e) in spans {
+            match merged.last_mut() {
+                // `<=` not `<`: two ranges that merely touch are one
+                // hidden run, and leaving them adjacent-but-separate
+                // would be a correct-but-noisier list the consumer has
+                // to walk twice.
+                Some(last) if s <= last.1 => last.1 = last.1.max(e),
+                _ => merged.push((s, e)),
+            }
+        }
+        return merged;
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +424,176 @@ mod tests {
         let c = compile_rule(BARE, &[1]).unwrap();
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    // ---- H.3: matching ----
+
+    fn org_rules() -> Vec<ConcealRule> {
+        // Described BEFORE bare — the order org declares them in, and
+        // the reason is asserted below.
+        let (ok, errs) = compile_rules(&[
+            (DESCRIBED.to_string(), vec![1, 2]),
+            (BARE.to_string(), vec![1, 3]),
+        ]);
+        assert!(errs.is_empty());
+        ok
+    }
+
+    /// Apply the spans to get what the user would actually see.
+    fn rendered(rules: &[ConcealRule], line: &str) -> String {
+        let spans = conceal_spans(rules, line);
+        let mut out = String::new();
+        let mut at = 0usize;
+        for (s, e) in spans {
+            out.push_str(&line[at..s as usize]);
+            at = e as usize;
+        }
+        out.push_str(&line[at..]);
+        out
+    }
+
+    #[test]
+    fn no_rules_is_free_and_hides_nothing() {
+        assert!(conceal_spans(&[], "[[id:X][Title]]").is_empty());
+    }
+
+    #[test]
+    fn a_described_link_collapses_to_its_description() {
+        let r = org_rules();
+        assert_eq!(
+            rendered(&r, "* See [[id:6F39][Project Kickoff]] before Friday."),
+            "* See Project Kickoff before Friday."
+        );
+    }
+
+    #[test]
+    fn a_bare_link_keeps_its_target() {
+        // Emacs draws the same line: a link whose only text IS its
+        // target has nothing left to show once the target is hidden.
+        let r = org_rules();
+        assert_eq!(
+            rendered(&r, "see [[https://example.com]] ok"),
+            "see https://example.com ok"
+        );
+    }
+
+    /// The design claimed org's described rule "must be tried first",
+    /// or a described link would be matched as a bare one and render
+    /// as `id:6F39][Project Kickoff`. This test was written to pin
+    /// that and instead disproved it, twice over. Kept in the shape
+    /// that found the error.
+    #[test]
+    fn declaration_order_cannot_change_what_is_hidden() {
+        let described_first = org_rules();
+        let (bare_first, errs) = compile_rules(&[
+            (BARE.to_string(), vec![1, 3]),
+            (DESCRIBED.to_string(), vec![1, 2]),
+        ]);
+        assert!(errs.is_empty());
+
+        for line in [
+            "[[id:6F39][Project Kickoff]]",
+            "see [[https://example.com]] ok",
+            "[[id:A][one]] and [[id:B][two]]",
+            "[[id:A][one]] and [[https://x.test]]",
+        ] {
+            assert_eq!(
+                conceal_spans(&described_first, line),
+                conceal_spans(&bare_first, line),
+                "spans must be order-independent: {line}"
+            );
+        }
+    }
+
+    /// The second, independent reason the ordering worry was unfounded:
+    /// the two patterns cannot both match the same link. `[^]]+` stops
+    /// at the first `]`, so the bare pattern never reaches a described
+    /// link's closing `]]`.
+    ///
+    /// This is a property of how the patterns are WRITTEN, so it is
+    /// asserted here — a future edit to either pattern that made them
+    /// overlap would silently reintroduce the failure the retracted
+    /// ordering rule was worried about.
+    #[test]
+    fn orgs_two_patterns_are_disjoint_by_construction() {
+        let described = compile_rule(DESCRIBED, &[1, 2]).unwrap();
+        let bare = compile_rule(BARE, &[1, 3]).unwrap();
+        let link = "[[id:6F39][Project Kickoff]]";
+        assert!(
+            bare.pattern().find(link).is_none(),
+            "the bare pattern must not match a described link"
+        );
+        assert!(described.pattern().find(link).is_some());
+        // And the converse, so neither pattern is silently doing the
+        // other's job.
+        let plain = "[[https://example.com]]";
+        assert!(described.pattern().find(plain).is_none());
+        assert!(bare.pattern().find(plain).is_some());
+    }
+
+    #[test]
+    fn two_links_on_one_line_both_collapse() {
+        let r = org_rules();
+        assert_eq!(
+            rendered(&r, "[[id:A][one]] and [[id:B][two]]"),
+            "one and two"
+        );
+    }
+
+    #[test]
+    fn a_malformed_link_is_left_entirely_alone() {
+        let r = org_rules();
+        let line = "[[id:6F39][unterminated";
+        assert!(conceal_spans(&r, line).is_empty());
+        assert_eq!(rendered(&r, line), line);
+    }
+
+    #[test]
+    fn overlapping_rules_coalesce_into_one_span() {
+        // The invariant the consumer depends on: an un-merged overlap
+        // would have its shared width subtracted twice and every
+        // column past it would be wrong.
+        let (rules, _) = compile_rules(&[
+            (r"(abcd)ef".to_string(), vec![1]),
+            (r"ab(cdef)".to_string(), vec![1]),
+        ]);
+        assert_eq!(conceal_spans(&rules, "abcdef"), vec![(0, 6)]);
+    }
+
+    #[test]
+    fn touching_spans_merge_rather_than_staying_adjacent() {
+        let (rules, _) = compile_rules(&[(r"(ab)(cd)".to_string(), vec![1, 2])]);
+        assert_eq!(conceal_spans(&rules, "abcd"), vec![(0, 4)]);
+    }
+
+    #[test]
+    fn spans_come_back_sorted() {
+        let r = org_rules();
+        let spans = conceal_spans(&r, "[[id:A][one]] and [[id:B][two]]");
+        assert!(
+            spans.windows(2).all(|w| w[0].1 <= w[1].0),
+            "sorted and disjoint: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn a_group_that_did_not_participate_is_not_an_error() {
+        // An alternation leaves one branch's group unmatched. That hid
+        // nothing here; it is not a refusal.
+        let (rules, errs) = compile_rules(&[(r"(?:(aa)|(bb))cc".to_string(), vec![1, 2])]);
+        assert!(errs.is_empty());
+        assert_eq!(conceal_spans(&rules, "aacc"), vec![(0, 2)]);
+        assert_eq!(conceal_spans(&rules, "bbcc"), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn a_link_inside_a_source_block_still_conceals() {
+        // Documented behaviour, not a bug to be surprised by later:
+        // conceal is textual and knows nothing about blocks. The
+        // tree-driven alternative that WOULD know is rejected in
+        // conceal.md for flickering on every reparse.
+        let r = org_rules();
+        assert_eq!(rendered(&r, "  [[id:A][shown]]"), "  shown");
     }
 
     #[test]

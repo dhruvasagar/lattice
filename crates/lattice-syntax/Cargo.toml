@@ -96,6 +96,11 @@ harness = false
 name = "lang_detect"
 harness = false
 
+# H.3: the one new per-line cost conceal adds to a matrix rebuild.
+[[bench]]
+name = "conceal"
+harness = false
+
 # LG.1. The wasm runtime is unconditional as of LG.3b, so this needs no
 # feature flag — only the built artefact (scripts/build-wasm-grammar.sh).
 [[bench]]

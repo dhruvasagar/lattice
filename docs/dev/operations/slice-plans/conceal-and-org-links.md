@@ -123,7 +123,7 @@ later without hand-vendoring.
 |---|---|---|
 | H.1 | the shared coordinate fn, the `conceals` range list, the clamp | ✅ |
 | H.2 | `conceal-rule` on the `language` seam; compile + validate at registration | ✅ |
-| H.3 | the matrix build elides; the `conceal` axis; the bench | 📝 |
+| H.3 | the matrix build elides; the `conceal` axis; the bench | ✅ |
 | H.4 | mode scoping — Insert reveals, gated on the language having rules | 📝 |
 
 ### H.1 — the substrate learns that a display line can be shorter ✅ (2026-08-29)
@@ -230,7 +230,7 @@ did not compile against `ExCommandContext`'s post-OC.10 shape, so that crate's
 whole test binary had been failing to build and none of its five tests were
 running. Proven pre-existing by stashing, fixed in its own commit.
 
-### H.3 — the display line elides 📝
+### H.3 — the display line elides ✅ (2026-08-29)
 
 **Deps:** H.1, H.2.
 
@@ -250,24 +250,47 @@ not the final UX. H.4 is what makes it mode-scoped, and the two are separate
 because "conceal exists" and "conceal is mode-scoped" fail in different ways and
 deserve to be bisectable apart.
 
-**Both renderers need no change, and the plan says so rather than leaving an
-empty grep to be read as an oversight.** `text` + `runs` are what TUI and GPUI
-already consume; conceal changes their contents, not their shape. The standing
-cross-renderer audit (`grep -rn "conceal" crates/lattice-ui-gpui/`) is expected
-to be empty *for that reason*, and H.3's test asserts both peers emit the
-concealed string from the same matrix — aligned by evidence, not by silence.
+**The claim that "both renderers need no change" was half wrong, and the half
+that was wrong is the one that matters.** The *text* does come free — `text` +
+`runs` are what both peers already consume. But GPUI computes its own
+source-byte→column mapping for the caret and every overlay quad
+(`byte_to_combined_col` in `editor_element.rs`), and that mapping has to
+subtract concealed columns or the caret sits off its own match on that renderer
+and not the other. So GPUI *did* change, in this patch, per the standing rule.
 
-**Bench (required, heuristic #5):** `benches/conceal_rebuild.rs` — matrix rebuild
-over a viewport of link-dense org with rules active against the same viewport
-with rules disabled. The number lands in `benchmarks.md` so the axis's cost is
-visible rather than asserted.
+Two decisions came out of doing it. The conceal clamp lives in
+`lattice_cells::subtract_conceals`, called by both the display substrate and the
+GPU peer — the peer computes its inlay term differently (it resolves the byte to
+a column itself and filters inlays by *byte*), and reconciling that is a
+separate question with its own non-ASCII risk, but two copies of the *clamp* is
+exactly the drift this design refuses. And the peer's per-row tables became one
+`RowCoords { inlays, conceals }` value rather than two parallel vectors, because
+a row that carried one without the other would place the caret confidently in
+the wrong column, and pairing them is what stops a future row-producing path
+from remembering one and forgetting the other.
 
-**Tests:** a described link collapsing to its description; a bare link keeping
-its target; two links on one line; overlapping rules coalescing to one span; a
-line with no match untouched byte-for-byte (the `Arc` reuse that keeps unedited
-lines pixel-stable); a buffer whose language declares no rules taking the
-zero-cost path; cursor, search highlight and selection all landing on the same
-column for a byte inside a concealed range.
+**Conceal ranges are stored in COLUMN space, not byte space.**
+`byte_to_combined_col`'s baseline is `col = byte` — callers hand it an
+already-char-resolved position — so byte ranges would be right only for ASCII
+and wrong by exactly the number of extra UTF-8 bytes earlier on the line.
+`h3_conceal_ranges_are_in_column_space_not_byte_space` uses `café [[id:A][x]]`,
+where byte 6 is column 5, and is the test that fails if this is got wrong.
+
+**Bench (heuristic #5):** `lattice-syntax/benches/conceal.rs`, and it is a
+per-line bench rather than the per-rebuild one the plan specified — reaching the
+rules through `recompute` needs a registered wasm grammar, so that bench would
+have measured Cranelift. Numbers in `benchmarks.md`: **3.25 ns** for the
+no-rules path (the zero-cost claim, now a measurement rather than a sentence),
+99 ns for org's rules over prose, 1.54 µs over a line with three links — ~5 µs
+per 50-line viewport of real org, off-thread, per rebuild.
+
+**Tests:** 8 in `cells_worker`, plus 14 more on the matcher in `conceal.rs`. The
+two worth naming: the column-space one above, and
+`h3_no_rules_leaves_the_row_byte_identical`, which is the regression guard for
+every other buffer in the editor.
+
+**A design claim was disproved here and is retracted rather than quietly
+dropped** — see the OL.2 note below on rule ordering.
 
 ### H.4 — Normal reads, Insert edits 📝
 
@@ -335,11 +358,19 @@ mechanism, the coordinate maths and the mode scoping are all H's.
 (\[\[)([^]]+)(\]\])            hide [1, 3]   bare link
 ```
 
-The described-link rule must be tried first: a described link also matches the
-bare-link pattern, and matching it as bare would hide `[[` and `]]` while
-leaving `id:6F398E54-…][Project Kickoff Checklist` on screen — worse than not
-concealing at all. Ordering is the rule list's order, so this is a property of
-how org declares them and is asserted rather than assumed.
+**An earlier revision of this plan said the described rule "must be tried
+first", and H.3 disproved it twice over.** The worry was that a described link
+also matches the bare pattern, so matching it as bare would hide `[[` and `]]`
+and leave `id:6F398E54-…][Project Kickoff Checklist` on screen. Neither half
+holds: `conceal_spans` unions every rule's hidden spans, so no rule can consume
+text before another sees it and the output is identical under any permutation;
+and independently, the bare pattern's `[^]]+` stops at the first `]`, so it
+never reaches a described link's closing `]]` and does not match it at all.
+
+What must be asserted instead is what is actually true — and both are, because
+the second is a property of how the patterns are *written* and a future edit
+could destroy it: `declaration_order_cannot_change_what_is_hidden` and
+`orgs_two_patterns_are_disjoint_by_construction`.
 
 **Tests, and the corpus is the fixture.** A described link collapsing to its
 description; a bare link keeping its target; a link inside a `#+BEGIN_SRC`

@@ -6798,10 +6798,13 @@ saying four words; and following one takes a three-keystroke leader chord where
 every other editor, and lattice's own help buffers, use `<CR>`.
 
 Rendering is phase H's; org contributes two `conceal-rule`s and nothing else.
-The described-link rule must be ordered before the bare-link one — a described
-link matches both patterns, and matching it as bare would hide the outer
-brackets while leaving `id:…][Project Kickoff Checklist` on screen, which is
-worse than not concealing.
+An earlier revision of this row claimed the described-link rule had to be
+ordered before the bare-link one, or a described link would be matched as bare
+and render as `id:…][Project Kickoff Checklist`. **H.3 disproved that twice
+over** and the retraction is recorded rather than overwritten: rule spans are
+*unioned*, so no rule consumes text before another sees it and order cannot
+change the output; and independently the bare pattern's `[^]]+` stops at the
+first `]`, so it never matches a described link at all.
 
 `<CR>` declines to the builtin motion when the cursor is not inside a link.
 **`Effect::Declined` is safe here even though the standing rule warns against

@@ -74,12 +74,14 @@
 - [ ] tmux pane zoom
 - [ ] magit-status under unmerged / recent commits, it would be nice to show how old the commit is in a human readable form (3 hours ago, 2 days ago, etc.)
 - [ ] project detection should work from synthetic buffers too like oil, file-tree, magit, etc.
+- [ ] in-built agent harness tooling that can be used to build agents for specific use cases (could be similar to gptel)
 
 * Plugins
 - [X] plugin manager
 - [ ] project.el
 - [X] Claude Code IDE
 - [ ] Org Mode
+    - [ ] org todo colors should be overridable as I do in ~/dotfiles/emacs/ds/init-org.el
 - [X] treesitter context
 - [ ] lsp breadcrumbs
 - [ ] which key
@@ -211,6 +213,9 @@
 - [X] folding still gets messed up when opening a file in vertical split.
 - [ ] `zj` should go to the next visible fold, right now it goes to the next fold and if that fold is nested within the current fold, the cursor remains on that line. `zk` should also follow same concept.
 - [ ] popup actions such as `search` causes cursor jumps in the buffer underneath, the experience should be just like any other buffer, cursor is within the popup and jumps or any interactivity should also be only within this popup, nowhere else
+- [ ] % matcher does not seem to be very accurate especially with inline comments, strings, etc. I would prefer more semantic matching maybe leveraging tree-sitter for precision
+- [ ] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
+- [ ] hlsearch bleeds across tabs
 
 * Documentation
 - [X] lattice-tutor

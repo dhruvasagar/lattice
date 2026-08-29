@@ -113,6 +113,42 @@ be compared against.
 
 ---
 
+## H.3 — conceal matching, per display line (2026-08-29)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-syntax --bench conceal`.
+
+`conceal_spans` is the one new per-line cost concealment adds to a
+display-matrix rebuild. Design: [`../architecture/conceal.md`](../architecture/conceal.md).
+
+| Workload | Per line |
+|---|---|
+| `no_rules` — every language but org | **3.25 ns** |
+| org's two rules, prose (no match) | 99.4 ns |
+| org's two rules, three links on the line | 1.54 µs |
+
+**The zero-cost claim is now a measurement.** `conceal.md` says a buffer
+whose language declares no rules "pays nothing"; 3.25 ns is the
+`is_empty()` branch and the empty `Vec`, and it is what keeps this
+feature off every Rust, Python and Markdown buffer in the editor.
+
+**Read the org numbers per *rebuild*, not per frame.** A ~50-line
+viewport of ordinary org prose costs ~5 µs; a pathological viewport
+where every line carries three links costs ~77 µs. Both are off the UI
+thread, on a matrix rebuild rather than a paint, and a real org file is
+overwhelmingly the first case — links cluster in a few lines rather
+than spreading over all of them.
+
+**1.54 µs for three links is higher than a linear-time engine suggests**,
+and the cause is `captures_iter`'s per-match allocation rather than the
+matching. It is recorded rather than optimised because the number that
+would justify the work is the per-rebuild one, and 77 µs off-thread is
+not where a rebuild's time goes. If a future workload makes it matter,
+`captures_read` with a reused `Locations` is the fix and needs no
+design change.
+
+---
+
 ## LG.3a — the live language registry (2026-08-23)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**

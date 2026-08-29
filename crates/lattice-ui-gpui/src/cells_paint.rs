@@ -156,15 +156,16 @@ pub fn cell_row_to_text_runs(
 /// grouping — so the shaped output is byte-identical to the projected-cell
 /// path the GPU consumed pre-B3 (`reverse`/`dim`/bg handling included).
 ///
-/// Returns `(combined_text, runs, inlay_offsets)` over `line.text` (inlays
+/// Returns `(combined_text, runs, coords)` over `line.text` (inlays
 /// are inline in the display text, unlike the TUI's source-span path which
-/// drops them); `inlay_offsets` is `line.col_map` verbatim.
+/// drops them); `coords.inlays` is `line.col_map` verbatim and
+/// `coords.conceals` is `line.conceals` verbatim.
 pub fn display_line_to_text_runs(
     line: &DisplayLine,
     resolved: &lattice_host::ui::theme::ResolvedTheme,
     ids: &lattice_host::ui::theme::BuiltinElementIds,
     font: &Font,
-) -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
+) -> (String, Vec<TextRun>, RowCoords) {
     use lattice_host::ui::theme::resolve_syntax_style;
     let default_fg = resolve_syntax_style(resolved, ids, lattice_syntax::Style::Default)
         .fg
@@ -206,8 +207,29 @@ pub fn display_line_to_text_runs(
         runs.push(rich_cell_to_text_run(&sample, &sample_rich, len, font));
     }
 
-    let inlay_offsets: Vec<(u32, u32)> = line.col_map.iter().copied().collect();
-    (line.text.to_string(), runs, inlay_offsets)
+    let coords = RowCoords {
+        inlays: line.col_map.iter().copied().collect(),
+        conceals: line.conceals.iter().copied().collect(),
+    };
+    (line.text.to_string(), runs, coords)
+}
+
+/// H.3: the two per-row tables that map a source position to a display
+/// column — inlay splices, which add columns, and conceal ranges, which
+/// remove them.
+///
+/// They travel together because `byte_to_combined_col` needs both to
+/// answer at all, and a row that carried one without the other would
+/// place the caret confidently in the wrong column. Pairing them in one
+/// value is what stops a future row-producing path from remembering the
+/// inlays and forgetting the conceals.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RowCoords {
+    /// `(source_byte, extra_display_cols)` — see `DisplayLine::col_map`.
+    pub inlays: Vec<(u32, u32)>,
+    /// `[start, end)` source-column ranges occupying no display column.
+    /// Empty for every buffer whose language declares no conceal rules.
+    pub conceals: Vec<lattice_cells::ConcealRange>,
 }
 
 /// F.2 (Thread F): split a display line into a base-size leading prefix
@@ -658,7 +680,15 @@ mod tests {
             rgb(inlay_fg).into(),
             "inlay run takes the inlay-hint fg"
         );
-        assert_eq!(offsets, vec![(2, 5)], "col_map transfers as inlay_offsets");
+        assert_eq!(
+            offsets.inlays,
+            vec![(2, 5)],
+            "col_map transfers as inlay_offsets"
+        );
+        assert!(
+            offsets.conceals.is_empty(),
+            "a line with no conceal ranges carries none"
+        );
     }
 
     /// T.10: a `syntax.heading.1` run resolves to the rich-vocabulary

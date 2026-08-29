@@ -65,6 +65,22 @@ pub struct MatrixVersion {
     /// fallback when the display text is not affected at all. This axis
     /// gates the rebuild only — like `syntax`, `folds` and `theme`.
     pub indent: u64,
+    /// H.3 (2026-08-29): the conceal inputs — the buffer language's
+    /// rule set plus whether the modal state reveals (H.4). Bumps when
+    /// either moves. See `docs/dev/architecture/conceal.md`.
+    ///
+    /// **Painting-class, like `whitespace` and unlike `indent`.** The
+    /// distinction is on `indent` above: conceal changes the display
+    /// *text*, so a renderer painting a matrix stamped with a stale
+    /// conceal axis would show the wrong characters, not merely a
+    /// missing decoration. A mismatch therefore drops the viewport to
+    /// raw text for one frame — which is the correct degradation, and
+    /// is the same frame the mode transition was going to repaint.
+    ///
+    /// **Constant for every buffer whose language declares no rules.**
+    /// That is what keeps `i` in a Rust file from costing a viewport
+    /// rebuild: the axis cannot move if there is nothing to conceal.
+    pub conceal: u64,
 }
 
 impl MatrixVersion {
@@ -77,6 +93,7 @@ impl MatrixVersion {
         theme: 0,
         whitespace: 0,
         indent: 0,
+        conceal: 0,
     };
 
     /// `true` when any component differs from `other`. Used by the
@@ -111,6 +128,7 @@ mod tests {
             MatrixVersion { folds: 1, ..base },
             MatrixVersion { theme: 1, ..base },
             MatrixVersion { indent: 1, ..base },
+            MatrixVersion { conceal: 1, ..base },
         ];
         for v in bumps {
             assert!(v.differs_from(&base), "expected differs: {v:?}");
@@ -128,6 +146,7 @@ mod tests {
             theme: 1,
             whitespace: 0,
             indent: 0,
+            conceal: 0,
         };
         assert!(!v.differs_from(&v));
     }

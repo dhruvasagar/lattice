@@ -503,6 +503,7 @@ fn publish_sticky_context(
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let syntax = pane.syntax_handle.as_deref().map(|h| h.snapshot());
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
     let mut rows: Vec<StickyContextRow> = Vec::with_capacity(pane.sticky_context_lines.len());
 
     for &line in pane.sticky_context_lines.iter() {
@@ -515,14 +516,18 @@ fn publish_sticky_context(
             .and_then(|s| s.highlight_lines(line, line + 1).ok())
             .and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
             .unwrap_or_default();
-        let (dtext, runs, col_map, col_count) =
-            build_display_row(&text, &spans, &[], whitespace, &[]);
+        // Sticky context reuses the buffer's rules so a concealed link
+        // in a pinned header reads the same as it does in the body —
+        // two renderings of one line that disagreed would be worse
+        // than either.
+        let (dtext, runs, col_map, conceals, col_count) =
+            build_display_row(&text, &spans, &[], whitespace, &[], &conceal_rules);
         let dl = crate::display_matrix::DisplayLine {
             source_line: line,
             text: Arc::from(dtext),
             runs: Arc::from(runs.into_boxed_slice()),
             col_map: Arc::from(col_map.into_boxed_slice()),
-            conceals: Arc::from([] as [lattice_cells::ConcealRange; 0]),
+            conceals: Arc::from(conceals.into_boxed_slice()),
             col_count,
             fold: None,
         };
@@ -1032,6 +1037,9 @@ fn try_incremental_build(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
+                // The cell path is the legacy parity oracle (deleted at B4)
+                // and builds via `build_chunk_rows`, which never reads these.
+                conceal_rules: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, new_version));
@@ -1072,6 +1080,7 @@ fn try_incremental_build(
             default_flags,
             whitespace,
             refine_by_line: &[],
+            conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
         };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
         // Suffix: lines past the edit — reuse with shifted source line.
@@ -1167,6 +1176,7 @@ fn try_incremental_build(
         default_flags,
         whitespace,
         refine_by_line: &[],
+        conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
     };
     let mut cur = rebuild_lo;
     while cur < rebuild_hi {
@@ -1286,6 +1296,7 @@ fn build_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
+                conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
             };
             let rows = build_chunk_rows(&inputs, 0, line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, version));
@@ -1313,6 +1324,7 @@ fn build_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
+                conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
             };
             let mut chunks: Vec<Arc<CellChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -1458,6 +1470,11 @@ struct ChunkInputs<'a> {
     /// line (unlike `per_line_spans`, which is relative to
     /// `spans_base`). Empty for every buffer that publishes none.
     refine_by_line: &'a [Vec<lattice_cells::RefineSpan>],
+    /// H.3: the buffer language's compiled conceal rules
+    /// (`docs/dev/architecture/conceal.md`). Empty for every language
+    /// that declares none, and the emptiness is what makes the conceal
+    /// path cost a Rust buffer nothing.
+    conceal_rules: &'a [lattice_syntax::conceal::ConcealRule],
 }
 
 /// Build the row vector for one chunk covering source lines
@@ -1732,10 +1749,16 @@ fn build_display_row(
     // for every buffer that publishes none, which is all of them until
     // DR.3 — hence byte-identical output in that case.
     line_refine: &[lattice_cells::RefineSpan],
+    // H.3: this line's compiled conceal rules. Empty for every language
+    // that declares none — which is every language but org today — and
+    // the emptiness is checked before any matching, so those buffers
+    // pay nothing at all.
+    conceal_rules: &[lattice_syntax::conceal::ConcealRule],
 ) -> (
     Box<str>,
     Vec<crate::display_matrix::DisplayRun>,
     Vec<(u32, u32)>,
+    Vec<lattice_cells::ConcealRange>,
     u32,
 ) {
     use crate::display_matrix::DisplayRun;
@@ -1809,8 +1832,49 @@ fn build_display_row(
         }
     }
 
+    // H.3: byte ranges to elide, sorted and coalesced. `conceal_spans`
+    // returns immediately on an empty rule list, so a Rust buffer never
+    // reaches the matcher.
+    let conceal_bytes = lattice_syntax::conceal::conceal_spans(conceal_rules, text);
+    // The stored `conceals` list is in COLUMN space, not byte space,
+    // because that is the space `byte_to_combined_col` works in — its
+    // baseline is `col = byte`, i.e. callers hand it an already
+    // char-resolved position (the byte-vs-char note on
+    // `CellRow::byte_to_combined_col`). Converting here, once, as the
+    // walk crosses each boundary keeps both tables in one coordinate
+    // system; storing byte ranges would be correct only for ASCII, and
+    // wrong in exactly the buffers where it is hardest to notice.
+    let mut conceal_cols: Vec<lattice_cells::ConcealRange> =
+        Vec::with_capacity(conceal_bytes.len());
+    let mut conceal_open: Option<u32> = None;
+    let mut conceal_idx = 0usize;
+    let mut char_idx: u32 = 0;
+
     let mut inlay_idx = 0usize;
     for (byte, ch) in text.char_indices() {
+        // Close a range this char has passed the end of, then open one
+        // it has reached the start of. Recorded during the walk because
+        // this is the only point the byte↔column correspondence is
+        // known without a second pass over the line.
+        while conceal_idx < conceal_bytes.len() && conceal_bytes[conceal_idx].1 as usize <= byte {
+            if let Some(start_col) = conceal_open.take() {
+                conceal_cols.push((start_col, char_idx));
+            }
+            conceal_idx += 1;
+        }
+        let concealed = conceal_idx < conceal_bytes.len()
+            && byte >= conceal_bytes[conceal_idx].0 as usize
+            && byte < conceal_bytes[conceal_idx].1 as usize;
+        if concealed {
+            if conceal_open.is_none() {
+                conceal_open = Some(char_idx);
+            }
+            // Emitted nowhere and counted in no display column.
+            // `char_idx` still advances: it indexes the SOURCE line,
+            // which is what a conceal range has to be expressed in.
+            char_idx += 1;
+            continue;
+        }
         while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
             let (orig_byte, t, istyle) = line_inlays[inlay_idx];
             col_map.push((orig_byte, t.chars().count() as u32));
@@ -1891,6 +1955,12 @@ fn build_display_row(
             );
             col += 1;
         }
+        char_idx += 1;
+    }
+    // A range running to end-of-line never meets a char past its end,
+    // so it is closed here rather than in the loop.
+    if let Some(start_col) = conceal_open.take() {
+        conceal_cols.push((start_col, char_idx));
     }
     while inlay_idx < line_inlays.len() {
         let (orig_byte, t, istyle) = line_inlays[inlay_idx];
@@ -1900,7 +1970,7 @@ fn build_display_row(
         inlay_idx += 1;
     }
 
-    (out.into_boxed_str(), runs, col_map, col)
+    (out.into_boxed_str(), runs, col_map, conceal_cols, col)
 }
 
 /// B1: per-chunk display-row build — the `DisplayLine` analogue of
@@ -1935,7 +2005,7 @@ fn build_display_rows(
             .get(&line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let (text, runs, col_map, col_count) = build_display_row(
+        let (text, runs, col_map, conceals, col_count) = build_display_row(
             &text,
             line_spans,
             line_inlays,
@@ -1945,13 +2015,14 @@ fn build_display_rows(
                 .get(line_idx as usize)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
+            inputs.conceal_rules,
         );
         rows.push(DisplayLine {
             source_line: line_idx,
             text: Arc::from(text),
             runs: Arc::from(runs.into_boxed_slice()),
             col_map: Arc::from(col_map.into_boxed_slice()),
-            conceals: Arc::from([] as [lattice_cells::ConcealRange; 0]),
+            conceals: Arc::from(conceals.into_boxed_slice()),
             col_count,
             // Fold-head metadata is wired when the renderers consume
             // `DisplayMatrix` (B2); the cell path carried no fold info
@@ -2019,6 +2090,38 @@ pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> 
 /// *canonical* build once B2.2b flips `recompute_pane` over; the
 /// `CellMatrix` is then a projection ([`display_matrix_to_cell_matrix`]).
 #[allow(clippy::too_many_arguments)]
+/// H.3: the buffer language's conceal rules, or an empty set.
+///
+/// Resolved once per matrix build. Three ways to get nothing, and all
+/// three are ordinary rather than exceptional: a buffer with no syntax
+/// handle (a synthetic view, a plain-text file), a registry that is not
+/// live yet (the boot frame), and — for every language but org today —
+/// a language that simply declares no rules.
+///
+/// The empty `Arc` costs one allocation-free clone, and
+/// `conceal_spans` returns immediately on it, so a Rust buffer never
+/// reaches the matcher at all.
+fn conceal_rules_for(
+    syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
+) -> std::sync::Arc<[lattice_syntax::conceal::ConcealRule]> {
+    let empty = || std::sync::Arc::from([] as [lattice_syntax::conceal::ConcealRule; 0]);
+    let Some(h) = syntax_handle else {
+        return empty();
+    };
+    match lattice_syntax::registry::live() {
+        Ok(reg) => reg.conceal_rules(h.lang().name()),
+        Err(_) => empty(),
+    }
+}
+
+/// H.3: the `conceal` axis value for a buffer with this syntax handle.
+///
+/// Zero when there are no rules, so the axis is a constant for every
+/// language but org and cannot cost those buffers a rebuild.
+pub(crate) fn conceal_version_for(syntax_handle: Option<&lattice_syntax::SyntaxHandle>) -> u64 {
+    lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle))
+}
+
 fn build_display_matrix(
     snapshot: &lattice_runtime::DocumentSnapshot,
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
@@ -2054,6 +2157,10 @@ fn build_display_matrix(
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let inlays_by_line = bucket_inlays_by_line(inlay_hints, line_count);
     let fold_index = crate::folds::FoldIndex::from_folds(folds, foldenable);
+    // H.3: resolved ONCE per matrix build, not per line. Empty for a
+    // buffer with no syntax handle, an unavailable registry, or — the
+    // overwhelmingly common case — a language that declares no rules.
+    let conceal_rules = conceal_rules_for(syntax_handle);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // K.4.7: multibuffer panes use per-excerpt handles.
@@ -2108,6 +2215,7 @@ fn build_display_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: extra_refine,
+                conceal_rules: &conceal_rules,
             };
             let rows = build_display_rows(&inputs, 0, line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, version));
@@ -2127,6 +2235,7 @@ fn build_display_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: extra_refine,
+                conceal_rules: &conceal_rules,
             };
             let mut chunks: Vec<Arc<DisplayChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -2169,6 +2278,11 @@ fn try_incremental_display_build(
     allow_highlight: bool,
 ) -> Option<crate::display_matrix::DisplayMatrix> {
     use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix};
+    // H.3: the incremental path rebuilds only the edited zone, but the
+    // rows it rebuilds must conceal exactly as a full build would — a
+    // link that renders raw only on the line you just touched would be
+    // the most visible possible version of this bug.
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
     let edit = pane.last_edit?;
     if published.chunks.is_empty() {
         return None;
@@ -2283,6 +2397,7 @@ fn try_incremental_display_build(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
+                conceal_rules: &conceal_rules,
             };
             let rows = build_display_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
@@ -2315,6 +2430,7 @@ fn try_incremental_display_build(
             default_flags,
             whitespace,
             refine_by_line: &[],
+            conceal_rules: &conceal_rules,
         };
         rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
         rows.extend(
@@ -2422,6 +2538,7 @@ fn try_incremental_display_build(
         default_flags,
         whitespace,
         refine_by_line: &[],
+        conceal_rules: &conceal_rules,
     };
 
     // Assemble the zone rows in source-line order:
@@ -2680,8 +2797,14 @@ mod tests {
 
     #[test]
     fn no_refine_spans_leaves_every_run_unrefined() {
-        let (_t, runs, _cm, _c) =
-            build_display_row("let x = 1;", &[], &[], &WhitespaceConfig::default(), &[]);
+        let (_t, runs, _cm, _c, _cc) = build_display_row(
+            "let x = 1;",
+            &[],
+            &[],
+            &WhitespaceConfig::default(),
+            &[],
+            &[],
+        );
         assert!(
             runs.iter().all(|r| r.refine.is_none()),
             "a buffer publishing no refinement must be byte-identical to before DR.2"
@@ -2692,7 +2815,7 @@ mod tests {
     fn a_refine_span_splits_runs_and_marks_only_its_bytes() {
         use lattice_cells::{RefineKind, RefineSpan};
         // Refine "x" only (byte 4..5) in `let x = 1;`.
-        let (_t, runs, _cm, _c) = build_display_row(
+        let (_t, runs, _cm, _c, _cc) = build_display_row(
             "let x = 1;",
             &[],
             &[],
@@ -2702,6 +2825,7 @@ mod tests {
                 end: 5,
                 kind: RefineKind::Added,
             }],
+            &[],
         );
         let refined: u32 = runs
             .iter()
@@ -2724,7 +2848,7 @@ mod tests {
             ..WhitespaceConfig::default()
         };
         // "\tab" — refine "ab" at source bytes 1..3.
-        let (_t, runs, _cm, _c) = build_display_row(
+        let (_t, runs, _cm, _c, _cc) = build_display_row(
             "\tab",
             &[],
             &[],
@@ -2734,6 +2858,7 @@ mod tests {
                 end: 3,
                 kind: RefineKind::Removed,
             }],
+            &[],
         );
         let refined: u32 = runs
             .iter()
@@ -2748,7 +2873,7 @@ mod tests {
     #[test]
     fn an_out_of_range_refine_span_is_ignored() {
         use lattice_cells::{RefineKind, RefineSpan};
-        let (_t, runs, _cm, _c) = build_display_row(
+        let (_t, runs, _cm, _c, _cc) = build_display_row(
             "ab",
             &[],
             &[],
@@ -2758,6 +2883,7 @@ mod tests {
                 end: 60,
                 kind: RefineKind::Added,
             }],
+            &[],
         );
         assert!(runs.iter().all(|r| r.refine.is_none()));
     }
@@ -3011,6 +3137,7 @@ mod tests {
             theme: 0,
             whitespace: 0,
             indent: 0,
+            conceal: 0,
         }
     }
 
@@ -3460,6 +3587,7 @@ mod tests {
             theme: 0,
             whitespace: 0,
             indent: 0,
+            conceal: 0,
         };
         let v_b = MatrixVersion {
             inlay_hints: 1,
@@ -3842,6 +3970,142 @@ mod tests {
     /// the `DisplayLine` runs back to cells yields the same codepoints +
     /// resolved fg + flags, and `col_map` equals `inlay_offsets`. Guards
     /// against drift while both builders coexist (B1→B4).
+    // ---- H.3: the display row elides ----
+
+    /// Org's real two rules, compiled.
+    fn org_conceal_rules() -> Vec<lattice_syntax::conceal::ConcealRule> {
+        let (ok, errs) = lattice_syntax::conceal::compile_rules(&[
+            (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2]),
+            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3]),
+        ]);
+        assert!(errs.is_empty(), "{errs:?}");
+        ok
+    }
+
+    fn row(
+        text: &str,
+        rules: &[lattice_syntax::conceal::ConcealRule],
+    ) -> (String, Vec<(u32, u32)>, u32) {
+        let (t, _runs, _cm, conceals, col_count) =
+            build_display_row(text, &[], &[], &WhitespaceConfig::default(), &[], rules);
+        (t.to_string(), conceals, col_count)
+    }
+
+    #[test]
+    fn h3_a_described_link_collapses_to_its_description() {
+        let r = org_conceal_rules();
+        let (text, conceals, cols) = row("* See [[id:6F39][Project Kickoff]] before Friday.", &r);
+        assert_eq!(text, "* See Project Kickoff before Friday.");
+        assert_eq!(
+            cols,
+            text.chars().count() as u32,
+            "col_count follows the elision"
+        );
+        assert_eq!(conceals.len(), 2);
+    }
+
+    #[test]
+    fn h3_a_bare_link_keeps_its_target() {
+        let r = org_conceal_rules();
+        let (text, _, _) = row("see [[https://example.com]] ok", &r);
+        assert_eq!(text, "see https://example.com ok");
+    }
+
+    #[test]
+    fn h3_two_links_on_one_line_both_collapse() {
+        let r = org_conceal_rules();
+        let (text, _, _) = row("[[id:A][one]] and [[id:B][two]]", &r);
+        assert_eq!(text, "one and two");
+    }
+
+    /// The zero-cost path: with no rules the output must be what it was
+    /// before H.3 existed, byte for byte, and carry no conceal ranges.
+    /// This is the guard for every buffer in the editor.
+    #[test]
+    fn h3_no_rules_leaves_the_row_byte_identical() {
+        let line = "* See [[id:6F39][Project Kickoff]] before Friday.";
+        let (text, conceals, cols) = row(line, &[]);
+        assert_eq!(text, line);
+        assert!(conceals.is_empty());
+        assert_eq!(cols, line.chars().count() as u32);
+    }
+
+    #[test]
+    fn h3_a_malformed_link_is_left_alone() {
+        let r = org_conceal_rules();
+        let line = "[[id:6F39][unterminated";
+        let (text, conceals, _) = row(line, &r);
+        assert_eq!(text, line);
+        assert!(conceals.is_empty());
+    }
+
+    /// **Conceal ranges are COLUMN ranges, not byte ranges**, and this
+    /// is the test that would fail if they were stored in byte space.
+    ///
+    /// `é` is two bytes and one column. With a multi-byte char before
+    /// the link, the link's byte offset and its column diverge — and
+    /// `byte_to_combined_col`'s baseline is `col = byte`, i.e. it works
+    /// in columns. Storing bytes would place every conceal range too
+    /// far right, by exactly the number of extra UTF-8 bytes earlier on
+    /// the line, in precisely the buffers where nobody looks.
+    #[test]
+    fn h3_conceal_ranges_are_in_column_space_not_byte_space() {
+        let r = org_conceal_rules();
+        let line = "café [[id:A][x]]";
+        let (text, conceals, _) = row(line, &r);
+        assert_eq!(text, "café x");
+        // "café " is 5 columns and 6 bytes. The first hidden run starts
+        // at the `[[`, i.e. COLUMN 5 — not byte 6.
+        assert_eq!(conceals[0].0, 5, "start is a column, not a byte");
+        assert!(
+            line.find("[[").unwrap() == 6,
+            "the fixture must actually have byte != column here"
+        );
+    }
+
+    /// The whole point of the range list: every consumer that maps a
+    /// source position to a column agrees, including for a position
+    /// that has no column of its own.
+    #[test]
+    fn h3_a_source_position_inside_a_hidden_run_resolves_to_its_start() {
+        let r = org_conceal_rules();
+        let (_t, _runs, col_map, conceals, col_count) = build_display_row(
+            "[[id:A][one]]",
+            &[],
+            &[],
+            &WhitespaceConfig::default(),
+            &[],
+            &r,
+        );
+        let dl = crate::display_matrix::DisplayLine {
+            source_line: 0,
+            text: Arc::from("one"),
+            runs: Arc::from([] as [crate::display_matrix::DisplayRun; 0]),
+            col_map: Arc::from(col_map.into_boxed_slice()),
+            conceals: Arc::from(conceals.into_boxed_slice()),
+            col_count,
+            fold: None,
+        };
+        // `[[id:A][` is columns 0..8; every one of them resolves to 0.
+        for c in 0..=8 {
+            assert_eq!(dl.byte_to_combined_col(c), 0, "column {c}");
+        }
+        // `one` occupies columns 8..11 in the source → 0..3 on screen.
+        assert_eq!(dl.byte_to_combined_col(9), 1);
+        assert_eq!(dl.byte_to_combined_col(11), 3);
+    }
+
+    #[test]
+    fn h3_a_conceal_run_reaching_end_of_line_is_still_closed() {
+        // The post-loop fixup: a range whose end is EOL never meets a
+        // char past it, so the in-loop close never fires.
+        let r = org_conceal_rules();
+        let (text, conceals, _) = row("x [[id:A][y]]", &r);
+        assert_eq!(text, "x y");
+        assert_eq!(conceals.len(), 2);
+        assert_eq!(conceals[1].1, 13, "the trailing ]] run is closed at EOL");
+    }
+
     #[test]
     fn display_build_parity_with_cells_ws_off() {
         use lattice_cells::cell_flags;
@@ -3866,7 +4130,8 @@ mod tests {
 
         let (cells, inlay_offsets) =
             build_row_cells(text, &spans, &inlays, ct, default_fg, default_flags, &ws);
-        let (dtext, runs, col_map, col_count) = build_display_row(text, &spans, &inlays, &ws, &[]);
+        let (dtext, runs, col_map, _conceals, col_count) =
+            build_display_row(text, &spans, &inlays, &ws, &[], &[]);
 
         // Project display runs → cells (the ws-off resolution path).
         let mut projected: Vec<Cell> = Vec::new();
@@ -4210,6 +4475,7 @@ mod tests {
             theme: 0xaa,
             whitespace: 0,
             indent: 0,
+            conceal: 0,
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 

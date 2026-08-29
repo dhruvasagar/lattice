@@ -75,7 +75,7 @@ use lattice_host::display_matrix::DisplayMatrix;
 use lattice_syntax::{Style as SyntaxStyle, StyledSpan};
 
 use crate::GpuiTheme;
-use crate::cells_paint::display_line_to_text_runs;
+use crate::cells_paint::{RowCoords, display_line_to_text_runs};
 use crate::glyph_resolver::GlyphResolver;
 
 /// Adapter: host-canonical syntax style -> packed 24-bit `0xRRGGBB`.
@@ -671,7 +671,7 @@ pub(crate) struct EditorElementPrepaintState {
     /// (e.g. hover-on-inlay, click-to-jump) can access it without
     /// changing the struct shape.
     #[allow(dead_code)]
-    inlay_offsets_per_row: Vec<Vec<(u32, u32)>>,
+    inlay_offsets_per_row: Vec<RowCoords>,
     /// Per-visible-row diagnostic underline segments (slice
     /// X3.full.4). Each entry is `(col_start, col_end_exclusive,
     /// color)` in combined-column space (after inlay splicing).
@@ -1148,7 +1148,7 @@ impl Element for EditorElement {
         let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
         // F.2: per-row heading split (None for ordinary rows).
         let mut row_split: Vec<Option<ScaledLine>> = Vec::with_capacity(row_capacity);
-        let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> = Vec::with_capacity(row_capacity);
+        let mut inlay_offsets_per_row: Vec<RowCoords> = Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
         let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(row_capacity);
@@ -1186,7 +1186,7 @@ impl Element for EditorElement {
         // `visible_rows` prepaint cache the fallback used to read was
         // deleted — the fallback now renders default-styled text.)
         let build_runs =
-            |line: &str, _rel: usize, line_idx: u32| -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
+            |line: &str, _rel: usize, line_idx: u32| -> (String, Vec<TextRun>, RowCoords) {
                 // 2026-06-02: parity with TUI cells-empty fallback. A
                 // display row may exist but be empty (transient
                 // doc-switch / new-buffer publish race); in that case
@@ -1214,15 +1214,30 @@ impl Element for EditorElement {
                         .filter(|h| h.line == line_idx)
                         .map(|h| (h.byte as usize, h.text.as_str()))
                         .collect();
-                    build_line_with_inlays(
-                        line,
-                        line_spans,
-                        &inlays_on_line,
-                        &font,
-                        self.inlay_color,
-                        &self.resolved_theme,
-                        &self.theme_ids,
-                    )
+                    // The uncovered-row fallback splices inlays but has
+                    // no DisplayLine, so it has no conceal ranges either
+                    // — correct rather than a gap: an uncovered row is
+                    // rendered from the rope, unconcealed, exactly as it
+                    // is rendered unstyled.
+                    {
+                        let (t, r, inlays) = build_line_with_inlays(
+                            line,
+                            line_spans,
+                            &inlays_on_line,
+                            &font,
+                            self.inlay_color,
+                            &self.resolved_theme,
+                            &self.theme_ids,
+                        );
+                        (
+                            t,
+                            r,
+                            RowCoords {
+                                inlays,
+                                conceals: Vec::new(),
+                            },
+                        )
+                    }
                 }
             };
 
@@ -1255,39 +1270,38 @@ impl Element for EditorElement {
         // `self.diagnostic_underlines` against (line_idx, line_text,
         // inlay_offsets); returns (col_start, col_end_excl, color)
         // tuples in combined-column space.
-        let diag_segments_for_row = |line_idx: u32,
-                                     line_text: &str,
-                                     inlay_offsets: &[(u32, u32)]|
-         -> Vec<(u32, u32, u32)> {
-            let mut segs = Vec::new();
-            let line_len = line_text.len();
-            for d in &self.diagnostic_underlines {
-                let r = &d.range;
-                if line_idx < r.start.line || line_idx > r.end.line {
-                    continue;
+        let diag_segments_for_row =
+            |line_idx: u32, line_text: &str, inlay_offsets: &RowCoords| -> Vec<(u32, u32, u32)> {
+                let mut segs = Vec::new();
+                let line_len = line_text.len();
+                for d in &self.diagnostic_underlines {
+                    let r = &d.range;
+                    if line_idx < r.start.line || line_idx > r.end.line {
+                        continue;
+                    }
+                    let start_byte = if line_idx == r.start.line {
+                        (r.start.byte as usize).min(line_len)
+                    } else {
+                        0
+                    };
+                    let end_byte = if line_idx == r.end.line {
+                        (r.end.byte as usize).min(line_len)
+                    } else {
+                        line_len
+                    };
+                    if end_byte <= start_byte {
+                        continue;
+                    }
+                    let col_start =
+                        byte_to_combined_col(line_text, start_byte, inlay_offsets) as u32;
+                    let col_end = byte_to_combined_col(line_text, end_byte, inlay_offsets) as u32;
+                    if col_end <= col_start {
+                        continue;
+                    }
+                    segs.push((col_start, col_end, d.color));
                 }
-                let start_byte = if line_idx == r.start.line {
-                    (r.start.byte as usize).min(line_len)
-                } else {
-                    0
-                };
-                let end_byte = if line_idx == r.end.line {
-                    (r.end.byte as usize).min(line_len)
-                } else {
-                    line_len
-                };
-                if end_byte <= start_byte {
-                    continue;
-                }
-                let col_start = byte_to_combined_col(line_text, start_byte, inlay_offsets) as u32;
-                let col_end = byte_to_combined_col(line_text, end_byte, inlay_offsets) as u32;
-                if col_end <= col_start {
-                    continue;
-                }
-                segs.push((col_start, col_end, d.color));
-            }
-            segs
-        };
+                segs
+            };
 
         // Perf-plan slice E.1: per-row overlay quads. Walks the
         // five overlay layers in fixed precedence and emits
@@ -1379,7 +1393,7 @@ impl Element for EditorElement {
                                      vis_row: usize,
                                      src_off: usize,
                                      line_text: &str,
-                                     inlay_offsets: &[(u32, u32)]|
+                                     inlay_offsets: &RowCoords|
          -> Vec<(u32, u32, u32)> {
             let mut quads: Vec<(u32, u32, u32)> = Vec::new();
             // D.3.e: full-row diff tint, painted FIRST so
@@ -1391,7 +1405,7 @@ impl Element for EditorElement {
             // backdrop is still visible.
             if let Some(&Some(tint_color)) = diff_tint_per_row.get(vis_row) {
                 let source_cols = line_text.chars().count() as u32;
-                let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
+                let inlay_cols: u32 = inlay_offsets.inlays.iter().map(|(_, w)| *w).sum();
                 let total_cols = source_cols + inlay_cols;
                 let width = total_cols.max(1);
                 quads.push((0, width, tint_color));
@@ -1401,7 +1415,7 @@ impl Element for EditorElement {
             let compilation_tint_per_row = &self.compilation_location_tint_per_row;
             if let Some(&Some(tint_color)) = compilation_tint_per_row.get(vis_row) {
                 let source_cols = line_text.chars().count() as u32;
-                let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
+                let inlay_cols: u32 = inlay_offsets.inlays.iter().map(|(_, w)| *w).sum();
                 let total_cols = source_cols + inlay_cols;
                 let width = total_cols.max(1);
                 quads.push((0, width, tint_color));
@@ -2002,10 +2016,10 @@ impl Element for EditorElement {
                         // via the cursor row's inlay offsets so the
                         // block cursor stays under the right glyph
                         // when inlays are present earlier on the line.
-                        let cursor_row_inlays: &[(u32, u32)] = inlay_offsets_per_row
+                        let default_coords = RowCoords::default();
+                        let cursor_row_inlays: &RowCoords = inlay_offsets_per_row
                             .get(row as usize)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]);
+                            .unwrap_or(&default_coords);
                         let char_col = byte_to_combined_col(line, byte, cursor_row_inlays) as u32;
                         // W.5 (soft-wrap): the combined column splits
                         // into a segment index (which display row of the
@@ -3000,7 +3014,7 @@ impl Element for EditorElement {
 ///
 /// Saturating: `byte >= line.len()` returns the line's char count
 /// plus the sum of every inlay's `char_width`.
-pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)]) -> usize {
+pub fn byte_to_combined_col(line: &str, byte: usize, coords: &RowCoords) -> usize {
     // Defensive (2026-06-03): a `byte` that lands inside a
     // multi-byte char (e.g. an em-dash `—`, 3 bytes) would panic
     // the `line[..byte]` slice below. Floor to the containing
@@ -3018,12 +3032,20 @@ pub fn byte_to_combined_col(line: &str, byte: usize, inlay_offsets: &[(u32, u32)
     } else {
         line[..byte].chars().count()
     };
-    let inlay_shift: usize = inlay_offsets
+    let inlay_shift: usize = coords
+        .inlays
         .iter()
         .filter(|(orig, _)| (*orig as usize) <= byte)
         .map(|(_, w)| *w as usize)
         .sum();
-    base + inlay_shift
+    // H.3: conceal removes columns where inlays add them. The clamp for
+    // a position INSIDE a hidden range lives in `lattice-cells` so this
+    // peer and the display substrate cannot drift — the symptom of a
+    // stale copy is a caret sitting off its own match on one renderer
+    // and not the other. `base` is the source column, which is the
+    // space conceal ranges are expressed in.
+    lattice_cells::subtract_conceals((base + inlay_shift) as u32, base as u32, &coords.conceals)
+        as usize
 }
 
 /// Push a `(col_start, col_end_exclusive, color)` tuple for every
@@ -3049,7 +3071,7 @@ pub fn push_range_quads(
     ranges: &[lattice_core::protocol::position::Range],
     line_idx: u32,
     line_text: &str,
-    inlay_offsets: &[(u32, u32)],
+    inlay_offsets: &RowCoords,
     color: u32,
 ) {
     let line_len = line_text.len();
@@ -3360,7 +3382,7 @@ fn push_wrapped_doc_row(
     line_text: &str,
     combined: &str,
     runs: &[TextRun],
-    inlay_offsets: Vec<(u32, u32)>,
+    inlay_offsets: RowCoords,
     full_diag: &[(u32, u32, u32)],
     full_overlay: &[(u32, u32, u32)],
     seg_count: u32,
@@ -3379,7 +3401,7 @@ fn push_wrapped_doc_row(
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
     row_split: &mut Vec<Option<ScaledLine>>,
-    inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
+    inlay_offsets_per_row: &mut Vec<RowCoords>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
 ) -> bool {
@@ -3491,7 +3513,7 @@ fn push_wrapped_doc_row(
         inlay_offsets_per_row.push(if seg == 0 {
             inlay_offsets.clone()
         } else {
-            Vec::new()
+            RowCoords::default()
         });
         if single {
             diagnostic_segments_per_row.push(full_diag.to_vec());
@@ -3605,7 +3627,7 @@ fn push_virtual_row(
     row_segment: &mut Vec<u32>,
     row_scale: &mut Vec<f32>,
     row_split: &mut Vec<Option<ScaledLine>>,
-    inlay_offsets_per_row: &mut Vec<Vec<(u32, u32)>>,
+    inlay_offsets_per_row: &mut Vec<RowCoords>,
     diagnostic_segments_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     overlay_quads_per_row: &mut Vec<Vec<(u32, u32, u32)>>,
     branding_rows: &mut Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)>,
@@ -3644,7 +3666,7 @@ fn push_virtual_row(
                 row_segment.push(0);
                 row_scale.push(1.0);
                 row_split.push(None);
-                inlay_offsets_per_row.push(Vec::new());
+                inlay_offsets_per_row.push(RowCoords::default());
                 diagnostic_segments_per_row.push(Vec::new());
                 overlay_quads_per_row.push(Vec::new());
                 return;
@@ -3686,7 +3708,7 @@ fn push_virtual_row(
         row_segment.push(0);
         row_scale.push(1.0);
         row_split.push(None);
-        inlay_offsets_per_row.push(Vec::new());
+        inlay_offsets_per_row.push(RowCoords::default());
         diagnostic_segments_per_row.push(Vec::new());
         overlay_quads_per_row.push(Vec::new());
         return;
@@ -3833,7 +3855,7 @@ fn push_virtual_row(
     // pieces (or `None` for an all-base row, the fast path).
     row_scale.push(row_scale_val);
     row_split.push(scaled_line);
-    inlay_offsets_per_row.push(Vec::new());
+    inlay_offsets_per_row.push(RowCoords::default());
     diagnostic_segments_per_row.push(Vec::new());
     overlay_quads_per_row.push(quads);
 }
@@ -4551,10 +4573,10 @@ mod tests {
     fn byte_to_combined_col_no_inlays_matches_char_count() {
         // 'café' is 5 bytes utf-8 (c=1, a=1, f=1, é=2). Char-col at
         // byte 3 (start of é) is 3; the EOL byte (5) is 4 chars.
-        assert_eq!(byte_to_combined_col("café", 3, &[]), 3);
-        assert_eq!(byte_to_combined_col("café", 5, &[]), 4); // EOL
+        assert_eq!(byte_to_combined_col("café", 3, &RowCoords::default()), 3);
+        assert_eq!(byte_to_combined_col("café", 5, &RowCoords::default()), 4); // EOL
         // ASCII fast path: char-col == byte for the whole prefix.
-        assert_eq!(byte_to_combined_col("abc", 2, &[]), 2);
+        assert_eq!(byte_to_combined_col("abc", 2, &RowCoords::default()), 2);
     }
 
     #[test]
@@ -4564,7 +4586,10 @@ mod tests {
         // AFTER the inlay -- the inlay's orig_byte (5) is <= cursor
         // byte (5), so col shifts by 5.
         let line = "let x = 1;";
-        let inlays = vec![(5u32, 5u32)];
+        let inlays = RowCoords {
+            inlays: vec![(5u32, 5u32)],
+            conceals: Vec::new(),
+        };
         assert_eq!(byte_to_combined_col(line, 5, &inlays), 5 + 5);
         // Cursor at byte 4 ("x") sits BEFORE the inlay -- no shift.
         assert_eq!(byte_to_combined_col(line, 4, &inlays), 4);
@@ -4650,8 +4675,22 @@ mod tests {
         let line_text = "hello world";
         let mut out = Vec::new();
         let ranges = [range(5, 0, 5, 5)];
-        push_range_quads(&mut out, &ranges, 3, line_text, &[], 0xaaaaaa);
-        push_range_quads(&mut out, &ranges, 7, line_text, &[], 0xaaaaaa);
+        push_range_quads(
+            &mut out,
+            &ranges,
+            3,
+            line_text,
+            &RowCoords::default(),
+            0xaaaaaa,
+        );
+        push_range_quads(
+            &mut out,
+            &ranges,
+            7,
+            line_text,
+            &RowCoords::default(),
+            0xaaaaaa,
+        );
         assert!(out.is_empty(), "rows outside the range emit no quads");
     }
 
@@ -4660,7 +4699,14 @@ mod tests {
         let line_text = "hello world";
         let mut out = Vec::new();
         // Range covers bytes 6..11 ("world").
-        push_range_quads(&mut out, &[range(2, 6, 2, 11)], 2, line_text, &[], 0xbeef);
+        push_range_quads(
+            &mut out,
+            &[range(2, 6, 2, 11)],
+            2,
+            line_text,
+            &RowCoords::default(),
+            0xbeef,
+        );
         assert_eq!(out, vec![(6, 11, 0xbeef)]);
     }
 
@@ -4669,7 +4715,14 @@ mod tests {
         let line_text = "abcdef";
         let mut out = Vec::new();
         // Range spans lines 4..=6; line 5 is fully covered.
-        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 5, line_text, &[], 1);
+        push_range_quads(
+            &mut out,
+            &[range(4, 2, 6, 3)],
+            5,
+            line_text,
+            &RowCoords::default(),
+            1,
+        );
         assert_eq!(out, vec![(0, 6, 1)], "middle row gets [0, line_len) cols");
     }
 
@@ -4677,7 +4730,14 @@ mod tests {
     fn push_range_quads_multi_line_range_start_row_uses_start_byte() {
         let line_text = "abcdef";
         let mut out = Vec::new();
-        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 4, line_text, &[], 2);
+        push_range_quads(
+            &mut out,
+            &[range(4, 2, 6, 3)],
+            4,
+            line_text,
+            &RowCoords::default(),
+            2,
+        );
         assert_eq!(
             out,
             vec![(2, 6, 2)],
@@ -4689,7 +4749,14 @@ mod tests {
     fn push_range_quads_multi_line_range_end_row_uses_end_byte() {
         let line_text = "abcdef";
         let mut out = Vec::new();
-        push_range_quads(&mut out, &[range(4, 2, 6, 3)], 6, line_text, &[], 3);
+        push_range_quads(
+            &mut out,
+            &[range(4, 2, 6, 3)],
+            6,
+            line_text,
+            &RowCoords::default(),
+            3,
+        );
         assert_eq!(out, vec![(0, 3, 3)], "end row spans [0, end_byte)");
     }
 
@@ -4699,7 +4766,10 @@ mod tests {
         // byte 2; range 1..3 → cols 1..5 in combined space
         // (1 + 2 inlay chars before the closing byte).
         let line_text = "abcd";
-        let inlay_offsets = [(2u32, 2u32)];
+        let inlay_offsets = RowCoords {
+            inlays: vec![(2u32, 2u32)],
+            conceals: Vec::new(),
+        };
         let mut out = Vec::new();
         push_range_quads(
             &mut out,
@@ -4716,7 +4786,14 @@ mod tests {
     fn push_range_quads_empty_range_skipped() {
         let line_text = "abc";
         let mut out = Vec::new();
-        push_range_quads(&mut out, &[range(0, 2, 0, 2)], 0, line_text, &[], 9);
+        push_range_quads(
+            &mut out,
+            &[range(0, 2, 0, 2)],
+            0,
+            line_text,
+            &RowCoords::default(),
+            9,
+        );
         assert!(out.is_empty(), "end_byte == start_byte emits nothing");
     }
 
@@ -4728,8 +4805,22 @@ mod tests {
         // preserves this contract by appending without sorting.
         let line_text = "hello";
         let mut out = Vec::new();
-        push_range_quads(&mut out, &[range(0, 0, 0, 5)], 0, line_text, &[], 0xa);
-        push_range_quads(&mut out, &[range(0, 1, 0, 4)], 0, line_text, &[], 0xb);
+        push_range_quads(
+            &mut out,
+            &[range(0, 0, 0, 5)],
+            0,
+            line_text,
+            &RowCoords::default(),
+            0xa,
+        );
+        push_range_quads(
+            &mut out,
+            &[range(0, 1, 0, 4)],
+            0,
+            line_text,
+            &RowCoords::default(),
+            0xb,
+        );
         assert_eq!(out, vec![(0, 5, 0xa), (1, 4, 0xb)]);
     }
 }

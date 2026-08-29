@@ -6897,17 +6897,17 @@ noise.
 
 ---
 
-## Org TODO keywords (TK, 2026-08-29 — design landed, not built)
+## Org TODO keywords (TK, 2026-08-29 — ✅ complete)
 
 | Slice | What | Status |
 |---|---|---|
 | TK.1 | a capture name may name a theme element | ✅ |
-| TK.2 | the `org-todo-keywords` grammar | 📝 |
-| TK.3 | elements, and defaults that reference the palette | 📝 |
-| TK.4 | the query is generated from the keywords | 📝 |
-| TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling | 📝 |
-| TK.6 | fast select | 📝 |
-| TK.7 | docs | 📝 |
+| TK.2 | the `org-todo-keywords` grammar |✅ |
+| TK.3 | elements, and defaults that reference the palette |✅ |
+| TK.4 | the query is generated from the keywords |✅ |
+| TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling |✅ |
+| TK.6 | fast select |✅ |
+| TK.7 | docs |✅ |
 
 Design: [`../architecture/org-todo-keywords.md`](../architecture/org-todo-keywords.md).
 Slice plan: [`slice-plans/org-todo-keywords.md`](slice-plans/org-todo-keywords.md).
@@ -6945,10 +6945,30 @@ overlap and paint nothing with every part correct in isolation. Element
 captures therefore take `keyword`'s priority, which also makes the change
 behaviour-preserving in every dimension except colour.
 
-`org-todo-keyword-faces` needs **no new mechanism**: an element override in the
-theme scope is that feature, with `org.todo.<KEYWORD>` inheriting
-`org.todo.active` / `.done` so a keyword added later is styled sensibly rather
-than unstyled.
+`org-todo-keyword-faces` maps onto an element override in the theme scope, with
+`org.todo.<KEYWORD>` inheriting `org.todo.active` / `.done` so a keyword added
+later is styled sensibly rather than unstyled. **That turned out to need one new
+mechanism after all**: the `theme` seam had only `register-element`, which
+supplies a *default* — and a default sits BELOW the theme, so a plugin could not
+express "the user configured this and it must win". `set-element-override` is
+that missing step, auto-namespaced so a plugin can only restyle elements it
+owns.
+
+A generic `ui.element.*` config surface was recommended instead — it would serve
+every plugin and is the missing implementation of a mechanism `theme-system.md`
+§5 already describes — and Dhruva chose the org-shaped option. The cost is
+recorded rather than rediscovered: `:colorscheme` replaces the override map
+atomically, so per-keyword styles are dropped until the next reload, and that is
+documented on the option itself.
+
+**Two silent-failure bugs were found by tests rather than by reading.** `config`
+and `theme` both drain at rank 0 with a *stable* sort, so `provides` order
+decides — `theme` was listed first, which meant `register_theme_elements` could
+not read `org.todo-keywords` and registered elements for the default set only.
+And `apply_renderer_effects` in the plugin's test harness had no arm for
+`Effect::ApplyEdit`, which is deferred to the renderer rather than applied where
+it is produced; the edit was correct, present in the outcome, and dropped by the
+harness, which read as a product bug through three rounds of diagnosis.
 
 ---
 

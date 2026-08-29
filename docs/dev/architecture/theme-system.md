@@ -354,6 +354,53 @@ Because a markdown buffer's richness comes from *its* resolved table
 [[feedback_buffers_no_special_case]] holds: the renderer never
 branches on kind; it reads the element the row carries.
 
+### 5.1 A tree-sitter capture may name an element (TK.1)
+
+A capture name in a language's `highlights.scm` that is **not** a builtin
+category but **is** a registered element resolves to
+`Style::Element(id)` — so a query can paint with the whole theme
+vocabulary, not just the closed `Style` enum.
+
+This closes a gap `Style::Element` was created for and could not reach.
+Its own doc says a plugin "can register a theme element by name but can
+**never** add a variant to a Rust enum"; it was reachable from
+decorations and listing icons and not from a query. Org's per-keyword
+TODO states are the first consumer (`org.todo.WAITING`), and nothing in
+the host knows that.
+
+Two rules make it safe:
+
+- **Builtin names win.** A capture called `keyword` stays
+  `Style::Keyword` even if a plugin registers an element under that
+  name. The closed categories are the editor's own vocabulary, and a
+  plugin must not be able to redefine what `keyword` means for every
+  language at once.
+- **Element captures take `keyword`'s overlap priority.** The default
+  for an unrecognised name was `u32::MAX` — the *lowest* — and a markup
+  query typically captures a whole line as `@text.title.N`. An element
+  capture over part of it would lose the overlap and paint nothing,
+  with every piece correct in isolation. `keyword`'s priority is chosen
+  rather than invented: the captures being replaced were `@keyword`, so
+  overlap behaviour is unchanged and only the colour moves.
+
+Resolution happens once per language at query-compile time, not per
+span, and the registry is **threaded** (`Option<&dyn ThemeRegistry>`)
+rather than reached through a global — `None` reproduces the pre-TK.1
+mapping exactly, which is what the native path passes.
+
+### 5.2 A plugin may override an element it owns (TK.5)
+
+`theme.set-element-override` is the override-scope counterpart to
+`register-element`'s default. Auto-namespaced identically, so a plugin
+can only name elements inside its own namespace; the host re-checks
+ownership regardless.
+
+**It does not survive `:colorscheme`**, because `set_theme` replaces the
+palette and the whole override map atomically. The host re-applies its
+own `ui.*_color` overrides through the option cascade; a plugin's are
+dropped until its next load. A generic config→element override surface
+would fix this for everyone and is the obvious follow-up.
+
 ---
 
 ## 6. Renderer-peer asymmetry + rich rendering (markdown/org)

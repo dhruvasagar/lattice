@@ -10,7 +10,11 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 📝 planned (2026-08-29).
+**Status:** ✅ complete (2026-08-29). TK.1–TK.7 all landed. Two decisions
+changed during the build and are recorded in place: TK.5's override surface was
+chosen against the recommendation, and TK.6 found that `Effect::ApplyEdit` is
+deferred to the renderer rather than applied where it is produced — which had
+been reading as a product bug in the test harness.
 
 ---
 
@@ -81,12 +85,12 @@ with reasons, the last three for the same structural one.
 | Slice | Description | Status |
 |---|---|---|
 | TK.1 | a capture name may name a theme element | ✅ |
-| TK.2 | the `org-todo-keywords` grammar | 📝 |
-| TK.3 | elements, and defaults that reference the palette | 📝 |
-| TK.4 | the query is generated from the keywords | 📝 |
-| TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling | 📝 |
-| TK.6 | fast select | 📝 |
-| TK.7 | docs | 📝 |
+| TK.2 | the `org-todo-keywords` grammar |✅ |
+| TK.3 | elements, and defaults that reference the palette |✅ |
+| TK.4 | the query is generated from the keywords |✅ |
+| TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling |✅ |
+| TK.6 | fast select |✅ |
+| TK.7 | docs |✅ |
 
 ### TK.1 — a capture name may name a theme element ✅ (2026-08-29)
 
@@ -130,7 +134,7 @@ cannot redefine `keyword` for every language at once; and
 against the old one name for name, so the `None` path is proven identical rather
 than assumed.
 
-### TK.2 — the `org-todo-keywords` grammar 📝
+### TK.2 — the `org-todo-keywords` grammar✅ (2026-08-29)
 
 **Deps:** none (plugin-side, parallel with TK.1).
 
@@ -149,7 +153,7 @@ the name. Plus the failure modes — a malformed line skipped with the rest
 surviving, a duplicate keyword keeping the first, a duplicate fast-select key
 keeping the first, a keyword with a space refused.
 
-### TK.3 — elements, and defaults that reference the palette 📝
+### TK.3 — elements, and defaults that reference the palette✅ (2026-08-29)
 
 **Deps:** TK.2.
 
@@ -167,7 +171,7 @@ resolving a keyword with no explicit default through `active` / `done`; a
 palette missing a key falling through rather than failing; registration failure
 for one keyword costing only that keyword.
 
-### TK.4 — the query is generated from the keywords 📝
+### TK.4 — the query is generated from the keywords✅ (2026-08-29)
 
 **Deps:** TK.1, TK.2, TK.3.
 
@@ -188,26 +192,48 @@ prose; a keyword inside a `#+BEGIN_SRC` block not highlighted — the case the
 regex alternative could not get right, asserted here so the choice is on the
 record.
 
-### TK.5 — `org.todo-keyword-styles` 📝
+### TK.5 — `org.todo-keyword-styles`✅ (2026-08-29)
 
 **Deps:** TK.3.
 
 The org-shaped spelling of a theme override, landing in the override scope so
 it beats the theme.
 
-**Verify the scope before building the option.** `theme-system.md` §5 puts a
-theme, `:set ui.*`, user TOML and `init.rs` in one scope; which wins between
-them is what decides whether this option can be implemented as written or
-whether the honest answer is to document the native `ui.elements` path instead.
-If the native path is the only correct one, this slice ships documentation and
-`:describe-*` discoverability rather than a second option — that is a smaller
-deliverable, not a failed one.
+**The verification found something neither imagined option accounted for.**
+`set_theme(palette, overrides)` replaces the override set **atomically**, so
+there is one override map shared by the theme and by `:set ui.*`, and anything
+written into it is wiped by `:colorscheme` unless something re-applies it. The
+host does re-apply its own `ui.*_color` overrides; nothing would re-apply a
+plugin's. Separately, the `theme` WIT seam had only `register-element` — a
+plugin could not set an override at all.
 
-**Tests:** an override beating the element default; an override beating an
-active theme's styling of the same element; an override for an unknown keyword
-being inert rather than an error.
+**A third option was surfaced and declined.** A generic `ui.element.*` config
+surface would have served every plugin, needed no new WIT, and is the missing
+implementation of a mechanism `theme-system.md` §5 already describes. It was
+recommended on heuristic #1 and Dhruva chose the org-shaped option instead;
+that is the decision, and the cost is recorded rather than rediscovered: org
+now carries a styling mechanism beside the theme's own, and the colourscheme
+fragility is documented on the option itself rather than fixed.
 
-### TK.6 — fast select 📝
+So the slice grew a host half: `theme.set-element-override`, auto-namespaced
+exactly like `register-element` so a plugin can only name elements in its own
+namespace. Ownership is re-checked host-side anyway — namespacing is the
+mechanism, the check is the guarantee, and "should be unreachable" is the
+reasoning that makes a boundary depend on every call site staying correct.
+
+**Landed:** 7 parser tests in the plugin, 3 host tests. The first version of
+`tk5_an_override_beats_the_registered_default` asserted `None != None` —
+`Palette::default()` is *empty*, so every palette reference resolved to `None`
+and an override was indistinguishable from a default. It uses the populated
+`default_palette()` now.
+
+**Also fixed here, found while wiring it:** `config` and `theme` both drain at
+rank 0 and the sort is **stable**, so `provides` order decides. `theme` was
+listed first, which meant `register_theme_elements` could not read
+`org.todo-keywords` and silently registered elements for the *default* keyword
+set. A user's own states would have had no elements at all.
+
+### TK.6 — fast select✅ (2026-08-29)
 
 **Deps:** TK.2, TK.3.
 
@@ -222,13 +248,23 @@ in its shortcuts.
 The direct cycle chords keep working — fast-select is an addition, as it is in
 emacs under `org-use-fast-todo-selection`.
 
-**Tests:** the menu listing every configured keyword; a key selecting its
-state; a keyless keyword present and selectable; a duplicate key resolving to
-the first with the second still reachable; the menu reflecting a `:set` of the
-option (it reads at `build`, unlike colour); dismissal leaving the headline
-untouched.
+**Landed:** 5 unit tests on `set_keyword`, 3 through a real editor. Two bugs
+surfaced, and neither was where the first three rounds of diagnosis looked.
 
-### TK.7 — docs 📝
+The TODO branch in `build` sat **after** the capture-templates parse, so a user
+with no `org.capture-templates` got *"no capture templates"* when they pressed
+the TODO chord. The test reported it in those words.
+
+And `apply_renderer_effects` — the *test harness* — had no arm for
+`Effect::ApplyEdit`, which is pushed onto `out.effects` for the renderer to
+re-dispatch rather than applied where it is produced (the deferral
+`apply_write_to_file` documents). The edit was correct and present in the
+outcome and dropped by the harness, which read as a product bug through three
+rounds. `press()` never hit it because `dispatch_chord` applies on the way
+through. The arm is added, so every future test driving an edit through a
+returning path is honest.
+
+### TK.7 — docs✅ (2026-08-29)
 
 **Deps:** TK.1–TK.6.
 

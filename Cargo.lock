@@ -5751,6 +5751,7 @@ dependencies = [
  "criterion",
  "dirs 5.0.1",
  "futures",
+ "getrandom 0.2.17",
  "lattice-cells",
  "lattice-compilation",
  "lattice-completion",

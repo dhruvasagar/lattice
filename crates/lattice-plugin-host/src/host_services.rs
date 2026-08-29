@@ -62,6 +62,60 @@ pub(crate) fn local_utc_offset_seconds() -> i32 {
     chrono::Local::now().offset().local_minus_utc()
 }
 
+/// The `new-uuid` host-service body (OR.3) — a random (v4) UUID, uppercase,
+/// canonical `8-4-4-4-12` form.
+///
+/// **Host-side for [`read_within_grant`]'s exact reason.** `:org-roam-id-create`
+/// is a grammar action: it runs on the grammar seam's *synchronous* linker,
+/// where `wasmtime-wasi`'s sync shim blocks on a runtime internally and panics
+/// on a thread already inside one. A guest minting its own id through
+/// `wasi:random` would work on the async picker path and take the plugin down on
+/// the grammar path — correct in every test that builds its own context, broken
+/// in the editor.
+///
+/// **Hand-rolled rather than the `uuid` crate**, following the precedent the
+/// workspace already set for `getrandom` (`lattice-ai`'s MCP session token: "a
+/// minimal, vetted CSPRNG primitive, no heavier `rand`/`uuid` dep pulled for one
+/// token"). v4 is sixteen random bytes with six bits pinned; the formatting is
+/// one `write!`. A dependency would buy parsing, versions 1/3/5/7 and a `Uuid`
+/// type, none of which crosses a WIT `string`.
+///
+/// **`Err`, not a degraded value**, and this is the one place on this seam where
+/// that is the right shape. Its neighbours answer `0` when unwired
+/// (`wake-every`, `local-utc-offset-seconds`) on the argument that a legible
+/// wrong answer beats a fabricated one — but those values are *read*. An id is
+/// **written**, into the user's own file, as an `:ID:` that outlives the session
+/// and every other tool's view of that note. A guest handed an empty string on
+/// entropy failure would write an empty drawer and nothing would ever say so.
+/// One `match` at the two call sites buys that being impossible.
+///
+/// Not a panic either: a host function that unwinds through wasm frames aborts
+/// the process, which is a worse answer than a plugin reporting that it could
+/// not mint an id.
+pub(crate) fn new_uuid() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    if let Err(error) = getrandom::getrandom(&mut bytes) {
+        // error!: genuinely user-actionable and genuinely one-shot — the OS
+        // entropy source being unavailable is not a per-keystroke condition.
+        tracing::error!(%error, "new-uuid: the OS entropy source is unavailable");
+        return Err(format!("cannot mint an id without entropy: {error}"));
+    }
+    // RFC 4122 §4.4: version 4 in the high nibble of byte 6, variant 10xx in
+    // the two high bits of byte 8. Everything else stays random.
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+
+    let hex = |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02X}")).collect() };
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        hex(&bytes[0..4]),
+        hex(&bytes[4..6]),
+        hex(&bytes[6..8]),
+        hex(&bytes[8..10]),
+        hex(&bytes[10..16]),
+    ))
+}
+
 /// True if `root` lies within one of the grant's fs prefixes (read *or* write —
 /// a walk only reads). Both sides are canonicalized first so a `..` segment
 /// cannot escape a granted prefix. If canonicalization fails (e.g. the path does

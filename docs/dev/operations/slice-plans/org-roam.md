@@ -105,7 +105,7 @@ unlinked references additionally wants a term map the index does not carry.
 |---|---|---|
 | OR.1 | `host-services` `store-*` — durable, plugin-scoped, opaque bytes | ✅ |
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
-| OR.3 | `host-services.new-uuid` | 📝 |
+| OR.3 | `host-services.new-uuid` | ✅ |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |
 | OR.5 | the picker offers to create what it could not find | 📝 |
 | OR.6 | `:org-roam-find-node` | 📝 |
@@ -210,11 +210,20 @@ still refused (a gate that armed once and stopped checking passes every other
 test here); the refused plugin still delivering ordinary events; a deleted file
 reported as a change (OR.4 needs deletions).
 
-### OR.3 — the host mints ids 📝
+### OR.3 — the host mints ids ✅
 
 **Deps:** none.
 
-`new-uuid() -> string`, uppercase v4.
+`new-uuid() -> result<string, string>`, uppercase v4.
+
+**A `result` rather than the bare `string` the design sketched.** Every other
+call on this seam degrades to a value (`0` from `wake-every`, `0` from
+`local-utc-offset-seconds`) because a legible wrong answer beats a fabricated
+one — but those are READ. An id is WRITTEN, into the user's file, as an `:ID:`
+that outlives the session; a guest handed an empty string on entropy failure
+would write an empty drawer and nothing would ever say so. One `match` at the
+call site buys that being impossible. Not a panic either: a host function
+unwinding through wasm frames aborts the process. Design fragment §5.2 amended.
 
 One function, and the reasoning is `read-file`'s verbatim: `:org-roam-id-create`
 runs on the grammar seam's synchronous linker, which cannot serve WASI. A
@@ -224,9 +233,13 @@ the grammar path. Uppercase because the reference corpus is uppercase throughout
 **case-insensitively** regardless, because a link that fails to resolve over
 letter case looks exactly like a missing note.
 
-**Tests:** well-formed v4; uppercase; a large batch with no collisions; callable
-from the grammar (sync) linker specifically — the whole reason it exists, and
-the one a test that calls it from the async path would not catch.
+**Tests:** well-formed v4 (group widths, version nibble, RFC 4122 variant
+nibble); uppercase; two mints in ONE call differing (a constant satisfies every
+shape assertion a single id could carry); a 500-id batch with no duplicates AND
+with the LEADING group varying (a per-call reseed would pin it while leaving the
+tail random); ungated — no capability requested; callable from the grammar
+(sync) linker specifically — the whole reason it exists, and the one a test that
+calls it from the async path would not catch.
 
 ### OR.4 — the index 📝
 

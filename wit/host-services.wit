@@ -146,6 +146,39 @@ interface host-services {
     /// Keys carrying `prefix`, sorted. `""` lists everything.
     store-keys: func(prefix: string) -> list<string>;
 
+    /// A fresh random (v4) UUID, uppercase, in the canonical
+    /// `8-4-4-4-12` hyphenated form (OR.3).
+    ///
+    /// **This is host-side for `read-file`'s exact reason.** `:org-roam-id-create`
+    /// mints an `:ID:` for the headline at point, and that is a *grammar action*:
+    /// it runs on the grammar seam's SYNCHRONOUS linker, where — as `read-file`'s
+    /// doc comment records — `wasmtime-wasi`'s sync shim blocks on a runtime
+    /// internally and panics on a thread already inside one. A guest minting its
+    /// own id through `wasi:random` would therefore work perfectly on the async
+    /// picker path and take the plugin down on the grammar path: correct in every
+    /// test that builds its own context, broken in the editor.
+    ///
+    /// **Uppercase** because the reference corpus is uppercase throughout (macOS
+    /// `uuidgen`, which `org-id` shells out to). A consumer must still compare ids
+    /// case-INSENSITIVELY regardless — org is not consistent about case across
+    /// platforms, and a link that fails to resolve over letter case looks exactly
+    /// like a missing note, which is the worst way for this to fail.
+    ///
+    /// Not capability-gated. It names no path, reaches no resource and reveals
+    /// nothing about the host; gating it would mean a plugin with no filesystem
+    /// grant cannot give its own records identities.
+    ///
+    /// **`result`, not a degraded value**, and this is the one call here that
+    /// earns it. Its neighbours answer `0` when unwired (`wake-every`,
+    /// `local-utc-offset-seconds`) on the argument that a legible wrong answer
+    /// beats a fabricated one — but those values are READ. An id is WRITTEN,
+    /// into the user's own file, as an `:ID:` that outlives the session and
+    /// every other tool's view of that note. A guest handed an empty string on
+    /// entropy failure would write an empty drawer and nothing would ever say
+    /// so. One `match` at the call site buys that being impossible. `err` only
+    /// when the OS entropy source is unavailable, which is to say almost never.
+    new-uuid: func() -> result<string, string>;
+
     // ---------------------------------------------------------------------
     // OR.2 — a plugin can be told a file changed.
     //

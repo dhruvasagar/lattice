@@ -92,6 +92,12 @@ lattice-runtime = { path = "../lattice-runtime" }
 # rather than an async task — this crate deliberately owns no runtime, and a
 # thread blocked on `recv_timeout` needs none.
 notify = { workspace = true }
+# OR.3: `new-uuid`. Sixteen random bytes with six bits pinned — the same
+# minimal, vetted CSPRNG primitive `lattice-ai` uses for its MCP session token,
+# and for the same reason ("no heavier `rand`/`uuid` dep pulled for one token").
+# A `uuid` dependency would buy parsing, a `Uuid` type and versions 1/3/5/7,
+# none of which crosses a WIT `string`.
+getrandom = { workspace = true }
 # TS.1: the tree-sitter seam. The host publishes each buffer's immutable
 # `SyntaxSnapshot` to a plugin (read-only) as a `tree-snapshot` resource; the
 # trampoline downcasts the type-erased snapshot the grammar `ActionContext`

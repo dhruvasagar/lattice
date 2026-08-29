@@ -166,6 +166,17 @@ impl Guest for Component {
             &spec(),
             13,
         );
+        // OR.3: mint an id from the SYNC grammar seam. `:org-roam-id-create` is
+        // a grammar action, and that is the entire reason `new-uuid` is
+        // host-side — a guest minting through `wasi:random` would work on the
+        // async picker path and take the plugin down here. A test that called
+        // it from an async seam would not catch that.
+        grammar::register_action(
+            "multiseam-uuid",
+            "mint an id from the sync grammar seam (OR.3)",
+            &spec(),
+            14,
+        );
         // OC.10: an EX-COMMAND that edits the buffer at the cursor. Before that
         // slice this was not merely awkward, it was impossible: the guest got no
         // cursor to locate the edit and no buffer id to name as the target, so
@@ -417,6 +428,18 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{put}:{}", host_services::store_keys("multiseam/").join(",")),
+                })])
+            }
+            // OR.3: two ids from the sync grammar seam, echoed as `<a>|<b>`.
+            // Two rather than one so a test can prove they differ — a stub
+            // returning a constant would satisfy every shape assertion a single
+            // id could carry.
+            14 => {
+                let a = host_services::new_uuid()?;
+                let b = host_services::new_uuid()?;
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{a}|{b}"),
                 })])
             }
             // OT.2: parse an off-buffer file and report what came back, so the

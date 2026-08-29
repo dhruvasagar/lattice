@@ -475,6 +475,36 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   the grant, no event bus on this seam, a missing path, or a watcher the platform refused — and
   never fatal: the plugin falls back to indexing on boot plus an explicit resync, which is degraded
   and honest rather than appearing to work and going stale.
+- **Host-minted ids (✅ OR.3)**: `host-services.new-uuid() -> result<string, string>`, a random
+  (v4) UUID, uppercase, canonical `8-4-4-4-12`.
+
+  Host-side for `read-file`'s **exact** reason. `:org-roam-id-create` mints an `:ID:` for the
+  headline at point, which is a *grammar action*: it runs on the grammar seam's synchronous linker,
+  where `wasmtime-wasi`'s sync shim blocks on a runtime internally and panics on a thread already
+  inside one. A guest minting through `wasi:random` would work perfectly on the async picker path
+  and take the plugin down on the grammar path — correct in every test that builds its own context,
+  broken in the editor. The test therefore mints *through the sync trampoline*; one that minted
+  from an async seam would pass against the implementation this replaces.
+
+  Uppercase because the reference corpus is (macOS `uuidgen`, which `org-id` shells out to).
+  Consumers must still compare ids case-**insensitively**: org is not consistent about case across
+  platforms, and a link that fails to resolve over letter case looks exactly like a missing note.
+
+  **Ungated**, like `local-utc-offset-seconds`: it names no path and reaches no resource, and
+  gating it would mean a plugin with no filesystem grant cannot give its own records identities.
+
+  **`result`, not a degraded value — the one call on this seam that earns it.** Its neighbours
+  answer `0` when unwired on the argument that a legible wrong answer beats a fabricated one, but
+  those values are *read*. An id is *written*, into the user's own file, as an `:ID:` that outlives
+  the session and every other tool's view of that note; a guest handed an empty string on entropy
+  failure would write an empty drawer and nothing would ever say so. Not a panic either — a host
+  function unwinding through wasm frames aborts the process, which is worse than a plugin reporting
+  that it could not mint an id.
+
+  Sixteen bytes from `getrandom` with six bits pinned, rather than the `uuid` crate — the precedent
+  `lattice-ai`'s MCP session token already set ("no heavier `rand`/`uuid` dep pulled for one
+  token"). A `uuid` dependency would buy parsing, a `Uuid` type and versions 1/3/5/7, none of which
+  crosses a WIT `string`.
   Rejected: an `org.utc-offset` option, which makes the user maintain what the OS knows and
   breaks twice a year.
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an

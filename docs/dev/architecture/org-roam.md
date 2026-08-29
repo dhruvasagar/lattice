@@ -292,7 +292,8 @@ That is not a gap; it is org-roam-capture's own model, where a capture is a
 draft you finalize. The watcher indexes it when it lands on disk, which means an
 abandoned draft never enters the index, which is the correct outcome.
 
-**Ids are minted by the host.** `host-services.new-uuid() -> string`, uppercase.
+**Ids are minted by the host.** `host-services.new-uuid() -> result<string,
+string>`, uppercase.
 This is one function and it exists for exactly the reason `read-file` does:
 `:org-roam-id-create` on the headline at point is a *grammar action*, and
 `read-file`'s own doc comment records that the grammar seam's synchronous linker
@@ -300,6 +301,14 @@ cannot serve WASI — "async seams (pickers, completion) are unaffected and may
 keep using WASI directly", but this path is not one of them. Minting an id in
 the guest would work on the picker path and panic on the grammar path, which is
 the worst kind of seam: correct in the test that built its own context.
+
+It returns a `result` rather than the bare `string` first sketched here, and that
+is the one place on this seam where the difference is load-bearing. Its
+neighbours degrade to `0` when they cannot answer, on the argument that a legible
+wrong answer beats a fabricated one — but those values are *read*. An id is
+*written*, into the user's own file, as an `:ID:` that outlives the session and
+every other tool's view of that note. A guest handed an empty string on entropy
+failure would write an empty drawer and nothing would ever say so.
 
 ## 6. The surfaces
 

@@ -1074,6 +1074,13 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         host_services::local_utc_offset_seconds()
     }
 
+    /// OR.3 `new-uuid`: a fresh uppercase v4 id, mintable from every seam —
+    /// including the synchronous grammar linker, which is the only reason it is
+    /// host-side. See [`host_services::new_uuid`].
+    fn new_uuid(&mut self) -> Result<String, String> {
+        host_services::new_uuid()
+    }
+
     /// OR.2 `watch`. Gated on the same `fs:read` grant `walk` and `read-file`
     /// check — a watch reveals filesystem activity, so it is the same
     /// authorization question, answered by the same function.

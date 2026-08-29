@@ -1,13 +1,13 @@
 # Org parses with tree-sitter, then org clocks — slice plan (OT / OC)
 
-> Design: [`../../architecture/org-mode.md`](../../architecture/org-mode.md) (§9 scope,
+> Design: [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) (§9 scope,
 > where clocking is currently listed as deferred),
-> [`../../architecture/org-capture.md`](../../architecture/org-capture.md) §3 (the
+> [`../../../architecture/org-capture.md`](../../../architecture/org-capture.md) §3 (the
 > `:clock-in` / `:clock-resume` template keys cut for want of clocking),
-> [`../../architecture/plugin-treesitter-seam.md`](../../architecture/plugin-treesitter-seam.md)
+> [`../../../architecture/plugin-treesitter-seam.md`](../../../architecture/plugin-treesitter-seam.md)
 > (the TS.1–TS.3 snapshot + query seam this leans on),
-> [`../../architecture/modeline.md`](../../architecture/modeline.md) §6 (the plugin row —
-> **OC.3 below IS ML.6** — landed, and [`archive/modeline.md`](archive/modeline.md)
+> [`../../../architecture/modeline.md`](../../../architecture/modeline.md) §6 (the plugin row —
+> **OC.3 below IS ML.6** — landed, and [`modeline.md`](modeline.md)
 > is archived because of it).
 >
 > Plugin repo: [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).
@@ -305,7 +305,7 @@ crosses the boundary.
 **Test:** a guest parsing a file it has no preopen for; capability refusal
 yields `none` rather than a trap; an unregistered extension yields `none`.
 
-### OT.3 — the agenda scans the tree 📝
+### OT.3 — the agenda scans the tree ✅ (2026-08-28)
 
 **Deps:** OT.2.
 

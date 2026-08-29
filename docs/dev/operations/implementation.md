@@ -6630,7 +6630,7 @@ from before the previous keystroke's edit, which is worse than handing over none
 against all three, because they build the `GrammarEnv` they are testing. See
 [`../architecture/plugin-treesitter-seam.md`](../architecture/plugin-treesitter-seam.md)
 §5.1. Slice plan:
-[`slice-plans/org-treesitter-and-clocking.md`](slice-plans/org-treesitter-and-clocking.md).
+[`slice-plans/archive/org-treesitter-and-clocking.md`](slice-plans/archive/org-treesitter-and-clocking.md).
 
 
 ---
@@ -6679,7 +6679,7 @@ export whose whole purpose is to answer from configuration while giving a pure
 agenda-source plugin no way to read any.
 
 Slice plan:
-[`slice-plans/org-agenda-files.md`](slice-plans/org-agenda-files.md).
+[`slice-plans/archive/org-agenda-files.md`](slice-plans/archive/org-agenda-files.md).
 
 ---
 

@@ -1,6 +1,6 @@
 # The agenda scans what you configure, not what you happen to be in — slice plan (AF)
 
-> Design: [`../../architecture/org-mode.md`](../../architecture/org-mode.md) §6
+> Design: [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) §6
 > (the agenda seam and its world), which AF.1 extends.
 >
 > Plugin repo: [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin).

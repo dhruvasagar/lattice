@@ -29,7 +29,7 @@ use lattice::plugin_host::types::{
     Range, TextObjectContext, TextObjectSpec,
 };
 use lattice::plugin_host::types::UiZone;
-use lattice::plugin_host::{config, grammar, host_services, modes, tree_sitter, ui};
+use lattice::plugin_host::{config, events, grammar, host_services, modes, tree_sitter, ui};
 
 struct Component;
 
@@ -140,6 +140,13 @@ impl Guest for Component {
             "try to reach the modeline from the sync grammar seam (OC.3)",
             &spec(),
             10,
+        );
+        // OC.6: arming a wake from the keystroke path must resolve and refuse.
+        grammar::register_action(
+            "multiseam-wake",
+            "try to arm a wake from the sync grammar seam (OC.6)",
+            &spec(),
+            11,
         );
     }
 
@@ -320,6 +327,18 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("registered:{registered}"),
+                })])
+            }
+            // OC.6: the `events` import must RESOLVE here — org declares it for
+            // its clock and provides grammar too, so an absent import would fail
+            // the whole component. And `wake-every` must refuse: the wake stays
+            // off the keystroke path even though the import is reachable from
+            // it. Echoing the id distinguishes the two.
+            11 => {
+                let id = events::wake_every(60_000);
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("wake:{id}"),
                 })])
             }
             // OC.4: echo the host's offset AND what the guest's own clock says,

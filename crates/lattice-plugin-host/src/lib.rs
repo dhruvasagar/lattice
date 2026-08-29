@@ -2704,6 +2704,24 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OC.6, and the fifth instance of the same TC.6 reason. Org bridges a
+        // chord to its own async side — the clock's session, wake and modeline
+        // all live on its event actor (design D6) — so its component imports
+        // `events`, and a component's import set is fixed for the whole
+        // artefact. Without this the grammar seam of that same `.wasm` fails to
+        // instantiate and org loses its entire keymap, not just its clock.
+        //
+        // All three functions are safe here. `subscribe` only records into
+        // `PluginState`. `wake-every` finds `wake: None` on a grammar store —
+        // that field is filled in by `spawn_event_plugin` alone — so it answers
+        // `0` and warns, which is what keeps the periodic wake off the keystroke
+        // path now that the import has to be reachable from it. `cancel-wake` on
+        // a store with no wake context is a no-op by contract.
+        crate::events_host::bindings::lattice::plugin_host::events::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL)?;
 
         Ok(Self {

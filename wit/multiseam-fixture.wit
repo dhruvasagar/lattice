@@ -31,6 +31,11 @@ world multiseam-fixture {
     // against BOTH linkers, so the fixture proves the async seam registers a
     // segment AND that the same component's grammar seam cannot.
     import ui;
+    // OC.6: the events seam, imported (not the whole `events-plugin` world) so
+    // the fixture proves the SYNC grammar linker satisfies it — org declares it
+    // for its clock's wake, and an import absent from that linker fails the
+    // whole component rather than one seam.
+    import events;
 
     export register-grammar: func();
     export grammar-callbacks;

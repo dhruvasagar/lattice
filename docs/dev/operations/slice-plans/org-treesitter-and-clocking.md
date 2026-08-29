@@ -726,8 +726,8 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.2 | `wake-every` / `cancel-wake` + `on-wake` on the event actor | ✅ |
 | OC.3 | `ui.emit-segment` / `ui.clear-segment` — **this is ML.6** | ✅ |
 | OC.4 | `host-services.local-utc-offset-seconds` | ✅ |
-| OC.5 | `clock.rs` — the drawer primitive, tree-native | 📝 |
-| OC.6 | The four actions, the session owner, the modeline segment | 📝 |
+| OC.5 | `clock.rs` — the drawer primitive, tree-native | ✅ |
+| OC.6 | The four actions, the session owner, the modeline segment | ✅ |
 | OC.7 | `:clock-in` / `:clock-resume` capture keys | 📝 |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
@@ -984,7 +984,16 @@ breaks twice a year.
 Also corrects `%U` / `%T` / `%t` in capture and the agenda's "today" anchor,
 which are UTC-derived today and wrong near midnight.
 
-### OC.5 — `clock.rs`, the drawer primitive 📝
+### OC.5 — `clock.rs`, the drawer primitive ✅ (2026-08-29, with OC.6)
+
+**Landed in OC.6's commit, and the plan should record why rather than leave the
+numbering looking violated.** OC.5 is a pure module with no consumer until OC.6
+wires the actions, so on its own it compiles and emits ten `dead_code` warnings —
+and warning-clean is a gate. That is the standing rule's stated exception ("a
+slice that cannot be green without its neighbour"), taken deliberately rather
+than papered over with an `#[allow]` that OC.6 would have had to remove again.
+
+**Original plan text follows.**
 
 **Deps:** OT.4 (entry location), OC.4 (local time).
 
@@ -1010,7 +1019,60 @@ plan line; skip a `:PROPERTIES:` drawer; refuse above the first headline;
 find the open `CLOCK:` line after a simulated restart with no session state
 (**D4**).
 
-### OC.6 — the four actions and the session 📝
+### OC.6 — the four actions and the session ✅ (2026-08-29)
+
+**The fact that shapes everything, and which the plan never states: the grammar
+seam and the events seam are two separate `wasmtime::Store`s of the same
+component.** Two linear memories. A `thread_local` in one is invisible to the
+other, so "the grammar action does the edit and org's event actor holds the
+session" (D6) is not a tidy separation of concerns — it is a hard boundary, and
+the event bus is the only thing that crosses it. That is why OC.1 had to be the
+first slice of this phase: without it the chord could edit the buffer and the
+modeline would never learn a clock had started, with nothing anywhere reporting
+a failure.
+
+**One host change the plan did not list:** `events` on the sync grammar linker,
+the fifth instance of the TC.6 / CR.3 / LG.3c / OM.11 / OC.3 lesson. Org's
+component imports `events` for its wake, and a component's import set is fixed
+for the whole artefact — so without this entry org's *grammar* seam fails to
+instantiate and it loses its entire keymap, not just its clock. Pinned by
+`a_grammar_action_resolves_events_but_cannot_arm_a_wake`, whose two halves pull
+opposite ways on purpose: the import must resolve from the keystroke path, and
+`wake-every` must still answer `0` there.
+
+**`clock-goto` was re-decided, and the plan's version could not have worked.**
+It reads "clock-goto is how you get there" — but goto is a grammar action, the
+session is in the events store, and the events store cannot return effects
+(`on-event` returns nothing). So goto had no way to reach a target at all. The
+grammar store now keeps the jump target itself: two fields, written at clock-in
+by the action that just wrote the line and therefore already knows the path and
+line, and read by goto into an `Effect::OpenBufferAt` — so it crosses buffers
+and reopens a closed file. **This does not contradict D6**, whose stated concern
+is that the wake and the modeline stay off the keystroke path; a jump target is
+neither. It does not survive a restart, exactly as the modeline does not, which
+D4 already accepts and says so.
+
+**Deviations from the plan's own text, each small and each deliberate:**
+`clock-in` on an entry that already has a running clock is refused with an echo
+rather than stacking a second one — a stacked clock would break "the drawer's
+first line is the running clock", which is what makes finding it a single-line
+look. `clock-cancel` takes the drawer with it when the clock was its only line,
+because an action meaning "pretend this never happened" should not leave an
+empty `:LOGBOOK:` / `:END:` pair. The payload between the two stores is a
+tab-separated string, not MessagePack: both ends are org, the host contract says
+the bytes are opaque and never interpreted, and a dependency for two fields is
+not worth it.
+
+**Test (the way it fails), as required.**
+`the_modeline_segment_appears_without_another_keystroke` asserts the segment
+arrives with **no second key pressed** — a test that pressed one first would
+pass on a version where the bus bridge does not exist at all. Mutation-verified:
+removing the immediate publish (leaving the first wake to do it) fails it, which
+is the up-to-60-seconds-blank bug the plan called out.
+`clocking_out_works_on_a_clock_this_session_never_started` is D4 stated as a
+test: no session exists, and the buffer alone still says a clock is running.
+
+**Original plan text follows.**
 
 **Deps:** OC.1, OC.2, OC.3, OC.5.
 

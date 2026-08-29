@@ -248,6 +248,72 @@ async fn a_trapping_wake_quarantines_the_plugin_without_wedging_the_actor() {
     );
 }
 
+/// OC.6 — the `events` import RESOLVES on the sync grammar linker, and
+/// `wake-every` refuses there anyway.
+///
+/// Both halves matter and they pull in opposite directions. Org bridges a chord
+/// to its own async side, so its component imports `events` — and because a
+/// component's import set is fixed for the whole artefact, an import absent from
+/// the grammar linker fails the WHOLE plugin, not one seam. So the import has to
+/// be reachable from the keystroke path. What must NOT be reachable is an armed
+/// wake, and that is kept true one layer in: only `spawn_event_plugin` fills in
+/// the store's wake context, so a grammar action answers `0`.
+///
+/// The `instantiate_grammar_plugin` call succeeding at all is the first
+/// assertion — without the linker entry it returns an instantiation error.
+#[test]
+fn a_grammar_action_resolves_events_but_cannot_arm_a_wake() {
+    use lattice_grammar::{CommandInvocation, CommandRegistry, GrammarEnv};
+    use lattice_protocol::CancellationToken;
+    use lattice_protocol::position::Position;
+
+    let multiseam = env!("MULTISEAM_GUEST_WASM");
+    if multiseam.is_empty() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let dirs = tempfile::TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    // A Sleeper IS installed, so a `0` below cannot be blamed on an unwired
+    // timer — it is the grammar store having no wake context, which is the point.
+    host.set_sleeper(Arc::new(TokioSleeper));
+    let component = host.compile(&std::fs::read(multiseam).unwrap()).unwrap();
+    let manifest = PluginManifest::new("multiseam", Vec::new(), CapabilitySet::empty());
+    let bus = Arc::new(EventBus::new());
+
+    let grammar_set = host
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None, None)
+        .expect(
+            "a component importing `events` must instantiate on the SYNC grammar \
+             linker — org provides grammar too, so a missing import here would \
+             take its whole keymap down, not just its clock",
+        );
+    let mut commands = CommandRegistry::new();
+    grammar_set.register_all(&mut commands);
+    let id = commands.id_by_name("multiseam-wake").unwrap();
+
+    let mut document = lattice_core::Document::from_text("x\n");
+    let cancel = CancellationToken::never();
+    let effect = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        lattice_core::BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(id),
+        &cancel,
+        GrammarEnv::default(),
+    )
+    .expect("the action runs — refusal is an answer, not a trap");
+
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => assert_eq!(
+            text, "wake:0",
+            "the keystroke path must not be able to arm a periodic guest call"
+        ),
+        other => panic!("expected an Echo reporting the refusal, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_every_answers_zero_when_no_timer_is_wired() {
     // No `set_sleeper`: the honest degradation. The guest's `wake_every` returns

@@ -419,6 +419,30 @@ pub struct ExCommandContext {
     /// boot (`SubsystemBoot::buffer_store`), which keeps this context
     /// free of services and keeps `lattice-grammar` unaware of them.
     pub buffer_id: BufferId,
+    /// OC.10: where the caret sits when the `:` line is submitted — the four
+    /// fields below are exactly the ones [`ActionContext`] already carries, and
+    /// they are here for the reason `buffer_id` above is.
+    ///
+    /// MR.2 made that argument for the id: "a command reached that way was
+    /// seeing strictly less than the same command reached by a chord". It is the
+    /// same argument, and stopping at the id left it half-made. A *plugin*
+    /// ex-command felt it hardest: `apply-ex-command` returns `list<effect>`,
+    /// and `Effect::ApplyEdit` names a target buffer the guest had no way to
+    /// obtain — so the seam offered an effect vocabulary a guest structurally
+    /// could not use. `:org-clock-in` is what found it.
+    ///
+    /// Native ex-commands ignore all four; they cost an `Arc` bump each.
+    pub cursor: Position,
+    /// A point-in-time view of the buffer the `:` line was submitted from.
+    /// O(1) rope clone (Arc-shared nodes), as on [`ActionContext::buffer`].
+    pub buffer: Buffer,
+    /// The file behind that buffer, so a plugin's `document` handle can answer
+    /// `path()`. An `Arc` bump per dispatch, `None` for a buffer with no file.
+    pub path: Option<std::sync::Arc<std::path::PathBuf>>,
+    /// The per-dispatch tree snapshot, type-erased for the same layering reason
+    /// [`ActionContext::syntax`] is. Cloned at the same instant as `buffer`, so
+    /// tree and text agree on version (§7).
+    pub syntax: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub cancel: crate::CancellationToken,
 }
 
@@ -1221,6 +1245,12 @@ mod tests {
             register: Register::default(),
             count: Count::default(),
             buffer_id: BufferId::default(),
+            // OC.10: this spec ignores the buffer entirely (it toggles a mode),
+            // so the four carry their empty forms.
+            cursor: Position::default(),
+            buffer: Buffer::default(),
+            path: None,
+            syntax: None,
             cancel: crate::CancellationToken::new(),
         };
         match (spec.apply)(&ctx) {

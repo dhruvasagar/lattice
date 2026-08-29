@@ -245,7 +245,12 @@ impl Callbacks for Component {
         Err("fixture: no ex-commands".to_string())
     }
 
-    fn apply_ex_command(_callback: u32, _ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+    fn apply_ex_command(
+        _callback: u32,
+        _ctx: ExCommandContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
         Err("fixture: no ex-commands".to_string())
     }
 }

@@ -730,7 +730,7 @@ OT.1–OT.8 all ✅. What the phase actually cost and bought, since the plan's o
 | OC.6 | The four actions, the session owner, the modeline segment | ✅ |
 | OC.7 | `:org-clock-*` ex-commands + the `:clock-in` capture key | 📝 |
 | OC.9 | `:org-clock-resume`, on the last-clocked target | 📝 |
-| OC.10 | a plugin ex-command can reach the buffer — **blocks OC.7** | 📝 |
+| OC.10 | a plugin ex-command can reach the buffer — **unblocks OC.7** | ✅ |
 | OC.8 | Docs — design fragment, `doc/org.md`, ledger, site nav | 📝 |
 
 ### OC.1 — a grammar action can reach the bus ✅ (2026-08-28)
@@ -1129,7 +1129,36 @@ entry the capture just created, which needs nothing beyond OC.6.
 
 `:clock-resume` does NOT land here; it is OC.9.
 
-### OC.10 — a plugin ex-command can reach the buffer 📝
+### OC.10 — a plugin ex-command can reach the buffer ✅ (2026-08-29)
+
+**Landed exactly as sized, which is worth recording because the sizing was done
+against the source rather than estimated.** `document`, `cursor` and `env` were
+already in scope at `dispatcher.rs:105`, so the native half was four fields and
+one call-site change — no threading. `execute_ex_command` now takes what
+`execute_action` on the next line already took.
+
+**The blast radius behaved exactly as the OT.1 lesson predicted**, and it is the
+reason this had to be one commit: FIVE guests broke, and every one of them
+reported as a `cargo:warning`, not an error — `grammar-guest`, `multiseam-guest`,
+`plugins/auto-pair`, `plugins/treesitter-context` and the CLI scaffold, plus org
+in its own repo. A build that "finished" with four broken guests is precisely the
+state where the dependent tests silently skip and the suite still reads green.
+Check the warning count, not the exit code.
+
+**Tests, and each field verified separately.** A fixture ex-command that edits
+the line the cursor is on — unconstructible before this slice, since the guest
+had neither a line to target nor a buffer id to name. The cursor is deliberately
+on line 1, not line 0, so a host that lost it and defaulted to the top of the
+buffer still produces a plausible edit and is still caught. Mutation-verified in
+both directions: zeroing the cursor fails the line assertion, and dropping
+`syntax` fails the tree assertion, independently. A second test pins the
+capability gate — an ungranted plugin gets `none` for the tree and a working
+document handle, matching `apply-action` rather than failing the call.
+
+**One `#[allow(clippy::too_many_arguments)]` was written and then removed.**
+`execute_action` sits beside it with the same seven parameters and no allow —
+the threshold is above seven — so the attribute was silencing nothing and was
+itself the smell the rules warn about.
 
 **Blocks OC.7.** Found while starting it: `:org-clock-in` cannot be written at
 all today, and the reason is a defect in the ex-command seam rather than

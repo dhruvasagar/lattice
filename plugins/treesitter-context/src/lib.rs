@@ -46,6 +46,7 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::config::{OptionType, get_option, register_option, set_option};
 use lattice::plugin_host::help;
+use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, ContextRequest, ContextScope, Effect, ExCommandContext,
@@ -482,6 +483,8 @@ impl CallbacksGuest for Component {
     fn apply_ex_command(
         callback: u32,
         ctx: ExCommandContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
             // Flip the loader-registered enablement switch. This one needs no

@@ -287,7 +287,12 @@ impl GrammarCallbacks for Plugin {
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
         Err("__NAME__: no ex-commands".into())
     }
-    fn apply_ex_command(_c: u32, _ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+    fn apply_ex_command(
+        _c: u32,
+        _ctx: ExCommandContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
         Err("__NAME__: no ex-commands".into())
     }
 }

@@ -102,7 +102,9 @@ pub fn execute_with_env(
             cancel,
             env,
         ),
-        CommandKind::ExCommand => execute_ex_command(&invocation, buffer_id, entry, cancel),
+        CommandKind::ExCommand => {
+            execute_ex_command(document, buffer_id, cursor, &invocation, entry, cancel, env)
+        }
         CommandKind::Action => {
             execute_action(document, buffer_id, cursor, &invocation, entry, cancel, env)
         }
@@ -197,10 +199,13 @@ pub fn execute_motion_only(
 }
 
 fn execute_ex_command(
-    invocation: &CommandInvocation,
+    document: &Document,
     buffer_id: BufferId,
+    cursor: Position,
+    invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
     let spec = require_ex_command(entry)?;
     let ctx = ExCommandContext {
@@ -215,6 +220,13 @@ fn execute_ex_command(
         // you" (`:magit-status` and the magit views after it) has no
         // other way to ask.
         buffer_id,
+        // OC.10: the same four the `execute_action` arm below fills, from the
+        // same values — they were already in scope here, which is why this
+        // closed a seam gap without any threading.
+        cursor,
+        buffer: document.buffer().clone(),
+        path: document.path_shared(),
+        syntax: env.syntax.map(std::sync::Arc::clone),
         cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)

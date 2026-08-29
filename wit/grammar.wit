@@ -129,7 +129,12 @@ interface grammar-callbacks {
         tree: option<borrow<tree-snapshot>>,
     ) -> result<list<effect>, string>;
     parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>;
-    apply-ex-command: func(callback: u32, ctx: ex-command-context) -> result<list<effect>, string>;
+    /// OC.10 gave this `doc` and `tree`, so a plugin ex-command can read the
+    /// buffer it was invoked from — the same pair `apply-action` receives, minted
+    /// at the same instant so their versions agree (§7). `tree` is `none` for a
+    /// plain-text buffer, a parse still in flight, or a plugin without the
+    /// `tree-sitter` grant.
+    apply-ex-command: func(callback: u32, ctx: ex-command-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<list<effect>, string>;
 }
 
 /// The world a grammar-extension plugin implements. **Fully synchronous** (the

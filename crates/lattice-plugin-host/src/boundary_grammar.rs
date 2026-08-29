@@ -150,6 +150,12 @@ pub fn project_ex_command_context(
         args: ctx.args.to_wit()?,
         register: ctx.register.to_wit()?,
         count: ctx.count.get(),
+        // OC.10: the same two `project_action_context` crosses, for the same
+        // reason — `buffer` is NOT projected here either; it rides the
+        // `borrow<document>` handle the trampoline mints, so bulk rope text
+        // stays off the boundary and only the scalars cross.
+        cursor: ctx.cursor.to_wit()?,
+        buffer_id: ctx.buffer_id.0,
     })
 }
 
@@ -300,13 +306,22 @@ mod tests {
             range: None,
             register: Register::Unnamed,
             count: Count(1),
-            buffer_id: lattice_core::BufferId::default(),
+            buffer_id: lattice_core::BufferId(7),
+            // OC.10: the cursor and buffer id now cross too — `buffer` and
+            // `syntax` deliberately do NOT, they ride the resource handles the
+            // trampoline mints, which is what keeps rope text off the boundary.
+            cursor: lattice_protocol::position::Position { line: 3, byte: 5 },
+            buffer: Default::default(),
+            path: None,
+            syntax: None,
             cancel: CancellationToken::never(),
         };
         let wit = project_ex_command_context(&ctx).unwrap();
         assert!(wit.bang);
         assert!(matches!(wit.register, WitRegister::Unnamed));
         assert!(matches!(wit.args, WitArgs::List(ref v) if v.len() == 2));
+        assert_eq!(wit.cursor.line, 3);
+        assert_eq!(wit.buffer_id, 7);
     }
 
     #[test]

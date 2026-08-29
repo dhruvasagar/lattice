@@ -25,6 +25,7 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
+    ExCommandSpec, LatencyClass, SurfaceForm,
     Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext, Position,
     Range, TextObjectContext, TextObjectSpec,
 };
@@ -147,6 +148,23 @@ impl Guest for Component {
             "try to arm a wake from the sync grammar seam (OC.6)",
             &spec(),
             11,
+        );
+        // OC.10: an EX-COMMAND that edits the buffer at the cursor. Before that
+        // slice this was not merely awkward, it was impossible: the guest got no
+        // cursor to locate the edit and no buffer id to name as the target, so
+        // there was no `apply-edit` it could construct at all.
+        grammar::register_ex_command(
+            "multiseam-ex-edit",
+            "replace the cursor's line with EX (OC.10)",
+            &ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                args_schema: Vec::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+            30,
+            31,
         );
     }
 
@@ -417,7 +435,38 @@ impl GrammarCallbacks for Component {
     fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
         Err("multiseam: no ex-commands".into())
     }
-    fn apply_ex_command(_c: u32, _ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+    fn apply_ex_command(
+        c: u32,
+        ctx: ExCommandContext,
+        doc: &Document,
+        tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
+        if c == 31 {
+            // Everything here was unreachable before OC.10: `ctx.cursor` says
+            // which line, `ctx.buffer_id` names the target, `doc` proves the
+            // buffer is readable, and `tree` proves the parse crossed too. The
+            // echo reports the last two so a regression to the old context fails
+            // loudly rather than editing the right line for the wrong reason.
+            let had_line = doc.line(ctx.cursor.line).is_some();
+            let kind = tree.map(|t| t.root().kind()).unwrap_or_else(|| "none".into());
+            let old = doc.line(ctx.cursor.line).unwrap_or_default();
+            return Ok(vec![
+                Effect::ApplyEdit(ApplyEditPayload {
+                    target: ctx.buffer_id,
+                    edit: Edit {
+                        range: Range {
+                            start: Position { line: ctx.cursor.line, byte: 0 },
+                            end: Position {
+                                line: ctx.cursor.line,
+                                byte: old.len() as u32,
+                            },
+                        },
+                        kind: EditKind::Replace(format!("EX:{had_line}:{kind}")),
+                    },
+                    cursor: None,
+                }),
+            ]);
+        }
         Err("multiseam: no ex-commands".into())
     }
 }

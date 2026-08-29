@@ -1301,6 +1301,19 @@ interface types {
         args: args,
         register: register,
         count: count,
+        /// OC.10: where the caret sits when the `:` line is submitted, and the
+        /// buffer it was submitted from — the two `action-context` below already
+        /// carries.
+        ///
+        /// They are here because `apply-ex-command` returns `list<effect>` and
+        /// `effect.apply-edit` names a `target` buffer id. Without these a guest
+        /// could be handed that vocabulary and had no way to build a value for
+        /// it, which is a seam that looks usable and is not. The native
+        /// `ExCommandContext` gained `buffer-id` at MR.2 on the same reasoning —
+        /// "a command reached that way was seeing strictly less than the same
+        /// command reached by a chord" — and the mirror simply never followed.
+        cursor: position,
+        buffer-id: u32,
     }
 
     /// Mirrors `lattice_grammar::registry::ActionContext` (owned projection) —

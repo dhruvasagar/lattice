@@ -524,6 +524,9 @@ fn build_ex_command_spec(
     spec: WitExCommandSpec,
     parse_callback: u32,
     apply_callback: u32,
+    // OC.10: whether this plugin holds the `tree-sitter` grant, threaded in
+    // exactly as the action / motion / text-object builders take it.
+    tree_sitter_granted: bool,
 ) -> Result<ExCommandSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
     let latency_class =
@@ -555,9 +558,50 @@ fn build_ex_command_spec(
         apply: Arc::new(
             move |ctx: &ExCommandContext| -> GrammarResult<NativeEffect> {
                 let wit_ctx = project_ex_command_context(ctx).map_err(CommandError::Plugin)?;
+                // OC.10: mint the same `document` + `tree-snapshot` pair
+                // `build_action_spec` mints, from the same fields, at the same
+                // instant — so a plugin ex-command reads the buffer it was
+                // invoked from, and its tree and text agree on version (§7).
+                //
+                // Before this the guest got neither, while `apply-ex-command`
+                // still returned `list<effect>` including `apply-edit` — an
+                // effect naming a `target` buffer id the guest had no way to
+                // obtain. The seam offered a vocabulary it could not use.
+                let snapshot = Arc::new(DocumentSnapshot {
+                    buffer: ctx.buffer.clone(),
+                    path: ctx.path.clone(),
+                    ..Default::default()
+                });
+                let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax.as_ref());
                 let wit = run_callback(&apply_guest, "apply-ex-command", |b, s| {
-                    b.lattice_plugin_host_grammar_callbacks()
-                        .call_apply_ex_command(s, apply_callback, &wit_ctx)
+                    let owned_doc = s
+                        .data_mut()
+                        .table
+                        .push(DocumentResource::new(snapshot.clone()))?;
+                    let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                    let owned_tree = match &tree_snapshot {
+                        Some(snap) => Some(
+                            s.data_mut()
+                                .table
+                                .push(TreeSnapshotResource::new(snap.clone()))?,
+                        ),
+                        None => None,
+                    };
+                    let tree_borrow = owned_tree.as_ref().map(|o| Resource::new_borrow(o.rep()));
+                    let result = b
+                        .lattice_plugin_host_grammar_callbacks()
+                        .call_apply_ex_command(
+                            &mut *s,
+                            apply_callback,
+                            &wit_ctx,
+                            doc_borrow,
+                            tree_borrow,
+                        );
+                    let _ = s.data_mut().table.delete(owned_doc);
+                    if let Some(owned_tree) = owned_tree {
+                        let _ = s.data_mut().table.delete(owned_tree);
+                    }
+                    result
                 })?;
                 effect_from_guest(&authorizer, wit)
             },
@@ -809,7 +853,13 @@ impl PluginHost {
                 } => set.ex_commands.push((
                     name,
                     doc,
-                    build_ex_command_spec(&guest, spec, parse_callback, apply_callback)?,
+                    build_ex_command_spec(
+                        &guest,
+                        spec,
+                        parse_callback,
+                        apply_callback,
+                        tree_sitter_granted,
+                    )?,
                 )),
             }
         }

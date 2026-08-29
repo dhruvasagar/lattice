@@ -264,6 +264,14 @@ The generic half. `picker-source-spec` grows:
 create-label: option<string>,
 ```
 
+**The picker synthesises the row; the source only declares it.** `create_label`
+is read at seat time and `Picker::push_create_row` appends the row after
+`match_and_rank`, so every source gets the behaviour from one declaration and
+none of them re-implements it. The payload is held in its own slot rather than
+in the seat-time `routing_meta` sidecar, because it carries the *live* query
+while the sidecar is written once per seat — which is also why the create row
+gets its own candidate kind rather than an index into it.
+
 and `routing-payload` grows `create(string)` carrying the query verbatim. The
 source's `accept` receives it and does whatever creation means for that source.
 

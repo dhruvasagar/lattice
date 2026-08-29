@@ -35,6 +35,9 @@ impl Guest for Component {
             args_schema: Vec::new(),
             args_hint: "[fail]".to_string(),
             live: false,
+            // OR.5: the source declares that it can create what the query
+            // names. `%s` is replaced by the query when the row renders.
+            create_label: Some("Create fixture: %s".to_string()),
         }
     }
 
@@ -63,6 +66,13 @@ impl Guest for Component {
         match routing {
             RoutingPayload::OpenFile(p) => Ok(PickerAcceptOutcome::OpenFile(p)),
             RoutingPayload::Buffer(id) => Ok(PickerAcceptOutcome::SwitchBuffer(id)),
+            // OR.5: the create row. The query crosses VERBATIM — the host must
+            // not have trimmed, lowercased or otherwise had an opinion about a
+            // namespace it does not own — so the fixture echoes it back inside
+            // a path the test can compare exactly.
+            RoutingPayload::Create(query) => {
+                Ok(PickerAcceptOutcome::OpenFile(format!("/created/{query}")))
+            }
             _ => Err("fixture: unexpected routing token".to_string()),
         }
     }

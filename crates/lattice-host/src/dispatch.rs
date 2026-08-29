@@ -12890,6 +12890,17 @@ impl Editor {
         }
         picker.set_raw_candidates_with_routing_and_bonuses(pairs, bonuses);
         picker.source_id = Some(source.clone());
+        // OR.5: carry the seating source's create label onto the picker, so the
+        // synthetic create row is a property of the SOURCE's declaration rather
+        // than of anything the host knows. A source that declares none leaves
+        // this `None` and nothing about its picker changes — which is the
+        // regression guard for every picker that existed before this slice.
+        picker.set_create_label(
+            self.picker_registry
+                .load()
+                .get(&source)
+                .and_then(|spec| spec.create_label.as_ref().map(|l| l.to_string())),
+        );
         // PI.5: no origin to carry across re-seats — preview is a projection
         // over the committed buffer, so the pane's committed identity is
         // always the "origin" and never needs remembering.
@@ -32405,6 +32416,19 @@ impl Editor {
                 self.set_message(
                     EchoLevel::Error,
                     "picker: supplied-value routing requires a generator-based source".to_string(),
+                );
+            }
+            // OR.5: the create row. Reaching HERE means the picker offered to
+            // create something and no generator was registered to do it —
+            // which can only happen if a source declared `create_label`
+            // without a generator, since the create row exists solely to be
+            // handed back to its source. Saying so beats a silent `<CR>` that
+            // does nothing, which is how the same shape failed for
+            // `supplied-value` above.
+            lattice_picker::RoutingPayload::Create { .. } => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: create routing requires a generator-based source".to_string(),
                 );
             }
             lattice_picker::RoutingPayload::AcceptShowMessageAction {

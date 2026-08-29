@@ -107,7 +107,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | ✅ |
 | OR.4 | `org.roam-directory` and the indexer | 📝 |
-| OR.5 | the picker offers to create what it could not find | 📝 |
+| OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.6 | `:org-roam-find-node` | 📝 |
 | OR.7 | `:org-roam-insert-node` | 📝 |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
@@ -285,7 +285,7 @@ from `n/<id>` and from every `b/<id>` that named it; case-insensitive `#+TITLE:`
 / `#+title:` / `#+Filetags:`; boot rescan catching a change made while the
 editor was closed.
 
-### OR.5 — the picker offers to create what it could not find 📝
+### OR.5 — the picker offers to create what it could not find ✅
 
 **Deps:** none (a host-side picker change, parallel with OR.1–OR.4).
 
@@ -303,10 +303,23 @@ destructive outcome from a scoring accident.
 This is generic picker surface, not roam surface. Nothing here names a node.
 
 **Tests:** the row absent on an empty query; present with matches; present with
-no matches; always last regardless of query and candidate set; the query
-crossing verbatim including spaces and non-ASCII; a source that sets no label
-behaving exactly as today (the regression guard for every existing picker);
-`accept` receiving `create` and routing to the source.
+no matches; always last regardless of query and candidate set — including the
+hardest case, an EXACT match on the top candidate, where both rows are maximally
+relevant by any scoring story and only the pin decides; retracting when the
+query is backspaced empty; the query crossing verbatim including spaces and
+non-ASCII, asserted both natively and across the WASM boundary; a source that
+sets no label behaving exactly as today (the regression guard for every existing
+picker); a plugin source's label crossing as declared; `accept` receiving
+`create` and routing to the source.
+
+**Landed shape.** The row is synthesised by the picker, not by the source: a
+source declares `create_label` on its spec and `Picker::push_create_row` appends
+it after `match_and_rank`, so every source gets the behaviour from one
+declaration and none re-implements it. `RoutingPayload::Create { query }` is
+held in its own slot rather than in the seat-time `routing_meta` sidecar,
+because the payload is the LIVE query and the sidecar is written once per seat —
+which is also why the create row carries its own `CandidateData::Extension`
+kind (`PICKER_CREATE_KIND_ID`) rather than an index into it.
 
 ### OR.6 — `:org-roam-find-node` 📝
 

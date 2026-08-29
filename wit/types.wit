@@ -962,6 +962,24 @@ interface types {
         args-schema: list<arg-spec>,
         args-hint: string,
         live: bool,
+        /// OR.5: when set, the picker offers one synthetic **create** row
+        /// whenever the query is non-empty — the offer to make the thing the
+        /// user was looking for and did not find. `%s` in the label is replaced
+        /// by the query.
+        ///
+        /// Two things about the row are load-bearing and neither is obvious.
+        /// It appears whenever the query is non-empty, NOT only when nothing
+        /// matches: offering it only on zero matches makes it impossible to
+        /// create *Rust* while *Rust Async* exists, which is precisely when you
+        /// most want to. And it is pinned last and never ranked, because a
+        /// create row that could sort above a real match would let `<CR>`
+        /// produce a duplicate through ranking noise — destructive rather than
+        /// merely wrong.
+        ///
+        /// Accepting it hands `routing-payload::create(query)` to this source's
+        /// `accept`, which decides what creation means. `none` — every source
+        /// but roam's — behaves exactly as before.
+        create-label: option<string>,
     }
 
     /// Mirrors the crossable core of `lattice_completion::traits::GenerateContext`
@@ -1023,6 +1041,11 @@ interface types {
         colorscheme(string),
         ai-session(ai-session-payload),
         pane-history-entry(u32),
+        /// OR.5: the query the user typed, carried by the picker's synthetic
+        /// create row. Verbatim — spaces and non-ASCII included — because the
+        /// source is creating something the USER named, and trimming here would
+        /// be the picker having an opinion about a namespace it does not own.
+        create(string),
     }
 
     /// Mirrors `lattice_picker::RoutingPayload::AiSession` — the

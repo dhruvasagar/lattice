@@ -76,7 +76,7 @@ pub use transient::{
 use std::path::PathBuf;
 
 use lattice_completion::{
-    CandidateData, CompletionPipeline, FuzzyDisplayMatcher, MatchScore, MruRanker,
+    CandidateData, CandidateKind, CompletionPipeline, FuzzyDisplayMatcher, MatchScore, MruRanker,
     OrderlessDisplayMatcher, RawCandidate, RenderedCandidate,
 };
 
@@ -93,6 +93,16 @@ use lattice_completion::{
 /// surfaces ever share a list (they don't today, but the type
 /// system stays honest).
 pub const PICKER_ROUTING_KIND_ID: u32 = 200;
+
+/// OR.5: `CandidateData::Extension { kind_id }` the picker stamps on its
+/// synthetic **create** row.
+///
+/// A distinct id rather than an index into `routing_meta`, because the create
+/// row's payload is the *live query* — it changes on every keystroke, while
+/// `routing_meta` is written once per seat. Giving it its own kind keeps
+/// [`Picker::routing_for`] a lookup rather than a special case threaded through
+/// the sidecar.
+pub const PICKER_CREATE_KIND_ID: u32 = 201;
 
 /// Typed payload the picker accept dispatch reads to figure out
 /// which side effect to run. Replaces the tab-encoded string
@@ -257,6 +267,21 @@ pub enum RoutingPayload {
     /// point: one registered file listing serves every argument that
     /// names a file.
     SuppliedValue { value: String },
+    /// OR.5: the query the user typed, carried by the picker's synthetic
+    /// **create** row — the offer to make the thing they were looking for and
+    /// did not find.
+    ///
+    /// Emitted by the picker itself rather than by a source: a source declares
+    /// `create_label` on its spec and the picker appends the row, so every
+    /// source gets the behaviour from one declaration and none of them
+    /// re-implements it. `accept` routes back to the source, which decides what
+    /// creation means — org-roam mints a node, another source might make a file
+    /// or a branch. The picker never knows.
+    ///
+    /// `query` is verbatim, spaces and non-ASCII included. The source is
+    /// creating something the *user named*, so trimming or normalising here
+    /// would be the picker having an opinion about a namespace it does not own.
+    Create { query: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -505,6 +530,20 @@ pub struct Picker {
     /// host-side clear sites have to remember. Dismiss drops the picker
     /// and the deadline goes with it.
     preview_settle_until: Option<std::time::Instant>,
+    /// OR.5: the label of this picker's synthetic **create** row, copied from
+    /// the seating source's `PickerSourceSpec::create_label`. `None` for every
+    /// source that declares none, which is every source but roam's — and that
+    /// `None` is the regression guard: no label, no row, nothing about the
+    /// existing pickers changes.
+    ///
+    /// `%s` in the label is replaced by the query when the row is rendered.
+    create_label: Option<String>,
+    /// OR.5: the routing payload for the create row, rebuilt on every
+    /// [`Self::refilter`] because it carries the live query.
+    ///
+    /// Held rather than derived in [`Self::routing_for`] because that returns a
+    /// borrow, and a payload built on the fly has nothing to borrow from.
+    create_routing: Option<RoutingPayload>,
 }
 
 impl Picker {
@@ -530,7 +569,24 @@ impl Picker {
             transient_selected: 0,
             transient_prefix: String::new(),
             preview_settle_until: None,
+            create_label: None,
+            create_routing: None,
         }
+    }
+
+    /// OR.5: declare that this picker offers to create what the query names.
+    ///
+    /// Called by the host at seat time from the seating source's
+    /// `PickerSourceSpec::create_label`. `%s` in `label` is replaced by the
+    /// query on every render.
+    pub fn set_create_label(&mut self, label: Option<String>) {
+        self.create_label = label;
+        self.refilter();
+    }
+
+    /// OR.5: this picker's create label, if it has one.
+    pub fn create_label(&self) -> Option<&str> {
+        self.create_label.as_deref()
     }
 
     /// MG.54: (re)start this picker's preview settle window.
@@ -812,6 +868,11 @@ impl Picker {
         let CandidateData::Extension { kind_id, payload } = &candidate.raw.data else {
             return None;
         };
+        // OR.5: the create row carries the LIVE query rather than an index into
+        // the seat-time sidecar, so it resolves from its own slot.
+        if *kind_id == PICKER_CREATE_KIND_ID {
+            return self.create_routing.as_ref();
+        }
         if *kind_id != PICKER_ROUTING_KIND_ID {
             return None;
         }
@@ -941,6 +1002,7 @@ impl Picker {
                     annotations: Vec::new(),
                 })
                 .collect();
+            self.push_create_row();
             if self.selected >= self.candidates.len() {
                 self.selected = self.candidates.len().saturating_sub(1);
             }
@@ -986,9 +1048,60 @@ impl Picker {
             annotators: Vec::new(),
         };
         self.candidates = pipeline.match_and_rank(&self.query, &self.raw);
+        self.push_create_row();
         if self.selected >= self.candidates.len() {
             self.selected = self.candidates.len().saturating_sub(1);
         }
+    }
+
+    /// OR.5: append the synthetic **create** row, if this picker has one and the
+    /// query is non-empty.
+    ///
+    /// Two decisions here, both load-bearing and neither obvious.
+    ///
+    /// **Present whenever the query is non-empty, not only when nothing
+    /// matches.** Offering it only on zero matches makes it impossible to create
+    /// a note called *Rust* while a note called *Rust Async* exists — which is
+    /// precisely when you most want to, because the general note is the one you
+    /// write after the specific one.
+    ///
+    /// **Pinned last, never ranked.** It is pushed AFTER `match_and_rank` and
+    /// never enters the pipeline, so no scoring accident can float it above a
+    /// real match. If it could sort above one, `<CR>` on a query that has a
+    /// match would sometimes create a duplicate — a destructive outcome caused
+    /// by ranking noise. Pinned last means creating is always a deliberate
+    /// `<C-n>` past the real answers.
+    fn push_create_row(&mut self) {
+        let Some(label) = self.create_label.clone() else {
+            self.create_routing = None;
+            return;
+        };
+        if self.query.is_empty() {
+            self.create_routing = None;
+            return;
+        }
+        let display = label.replace("%s", &self.query);
+        let mut raw = RawCandidate::plain(self.query.clone(), CandidateKind::Plain);
+        raw.display = display;
+        raw.data = CandidateData::Extension {
+            kind_id: PICKER_CREATE_KIND_ID,
+            // No index: the payload is the live query, held in `create_routing`
+            // rather than in the seat-time sidecar.
+            payload: Vec::new(),
+        };
+        self.candidates.push(RenderedCandidate {
+            raw,
+            // Zero rather than a high score, because the row's position comes
+            // from being pushed last and not from outranking anything. A score
+            // that competed would be a second, contradictory answer to "where
+            // does this go".
+            score: MatchScore(0),
+            match_ranges: Vec::new(),
+            annotations: Vec::new(),
+        });
+        self.create_routing = Some(RoutingPayload::Create {
+            query: self.query.clone(),
+        });
     }
 
     pub fn append_query(&mut self, c: char) {
@@ -1677,6 +1790,167 @@ mod tests {
             Some(RoutingPayload::Buffer { id }) => assert_eq!(*id, 1),
             other => panic!("expected Buffer routing, got {other:?}"),
         }
+    }
+
+    // ---- OR.5: the create row ----
+
+    /// A picker seeded with two candidates and a create label.
+    fn create_picker() -> Picker {
+        let pairs: Vec<(RawCandidate, RoutingPayload)> = vec![
+            (
+                RawCandidate::plain("Rust Async", CandidateKind::Plain),
+                RoutingPayload::Buffer { id: 1 },
+            ),
+            (
+                RawCandidate::plain("Rust Macros", CandidateKind::Plain),
+                RoutingPayload::Buffer { id: 2 },
+            ),
+        ];
+        let mut p = Picker::new("nodes", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        p.set_raw_candidates_with_routing(pairs);
+        p.set_create_label(Some("Create note: %s".to_string()));
+        p
+    }
+
+    fn create_rows(p: &Picker) -> Vec<String> {
+        p.candidates.iter().map(|c| c.raw.display.clone()).collect()
+    }
+
+    /// An empty query has nothing to create, so there is no row to offer.
+    #[test]
+    fn no_create_row_on_an_empty_query() {
+        let p = create_picker();
+        assert_eq!(create_rows(&p), vec!["Rust Async", "Rust Macros"]);
+    }
+
+    /// **Present WITH matches, not only on zero matches.** Offering it only when
+    /// nothing matched makes it impossible to create a note called *Rust* while
+    /// *Rust Async* exists — which is precisely when you most want to, because
+    /// the general note is the one you write after the specific one.
+    #[test]
+    fn the_create_row_is_present_even_when_the_query_matches() {
+        let mut p = create_picker();
+        for c in "Rust".chars() {
+            p.append_query(c);
+        }
+        let rows = create_rows(&p);
+        assert!(
+            rows.len() > 1,
+            "real matches survived alongside the offer: {rows:?}"
+        );
+        assert!(
+            rows.contains(&"Create note: Rust".to_string()),
+            "the offer is there anyway: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_create_row_is_present_when_nothing_matches() {
+        let mut p = create_picker();
+        for c in "Zettelkasten".chars() {
+            p.append_query(c);
+        }
+        assert_eq!(create_rows(&p), vec!["Create note: Zettelkasten"]);
+    }
+
+    /// **Pinned last, whatever the query and whatever matched.** If it could
+    /// sort above a real match, `<CR>` on a query that HAS a match would
+    /// sometimes create a duplicate — a destructive outcome caused by ranking
+    /// noise rather than by anything the user did.
+    #[test]
+    fn the_create_row_is_always_last() {
+        for query in ["R", "Rust", "Rust A", "Rust Async", "zzz", "  "] {
+            let mut p = create_picker();
+            for c in query.chars() {
+                p.append_query(c);
+            }
+            let rows = create_rows(&p);
+            assert_eq!(
+                rows.last().map(|s| s.as_str()),
+                Some(format!("Create note: {query}").as_str()),
+                "create is last for query {query:?}: {rows:?}"
+            );
+        }
+    }
+
+    /// An exact match on the top candidate is the hardest case for "pinned
+    /// last": the create row and a perfect match are both maximally relevant by
+    /// any scoring story, and only the pin decides.
+    #[test]
+    fn an_exact_match_still_outranks_the_create_row() {
+        let mut p = create_picker();
+        for c in "Rust Async".chars() {
+            p.append_query(c);
+        }
+        let rows = create_rows(&p);
+        assert_eq!(rows.first().map(|s| s.as_str()), Some("Rust Async"));
+        assert_eq!(
+            rows.last().map(|s| s.as_str()),
+            Some("Create note: Rust Async")
+        );
+    }
+
+    /// The query crosses verbatim — spaces and non-ASCII included. The source
+    /// is creating something the USER named, so the picker must not have an
+    /// opinion about a namespace it does not own.
+    #[test]
+    fn the_query_reaches_the_routing_payload_verbatim() {
+        let mut p = create_picker();
+        for c in "  Ünïcode  note  ".chars() {
+            p.append_query(c);
+        }
+        let row = p.candidates.last().expect("the create row");
+        match p.routing_for(row) {
+            Some(RoutingPayload::Create { query }) => {
+                assert_eq!(query, "  Ünïcode  note  ");
+            }
+            other => panic!("expected Create routing, got {other:?}"),
+        }
+    }
+
+    /// **The regression guard for every picker that existed before this slice.**
+    /// A source that declares no label behaves exactly as it did.
+    #[test]
+    fn a_source_with_no_label_is_unchanged() {
+        let pairs: Vec<(RawCandidate, RoutingPayload)> = vec![(
+            RawCandidate::plain("Rust Async", CandidateKind::Plain),
+            RoutingPayload::Buffer { id: 1 },
+        )];
+        let mut p = Picker::new("nodes", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        p.set_raw_candidates_with_routing(pairs);
+        for c in "Rust".chars() {
+            p.append_query(c);
+        }
+        assert_eq!(create_rows(&p), vec!["Rust Async"]);
+        for c in "zzz".chars() {
+            p.append_query(c);
+        }
+        assert!(
+            create_rows(&p).is_empty(),
+            "and no rows when nothing matches"
+        );
+    }
+
+    /// Backspacing back to an empty query retracts the offer, rather than
+    /// leaving a stale row offering to create the empty string.
+    #[test]
+    fn the_create_row_retracts_when_the_query_is_cleared() {
+        let mut p = create_picker();
+        for c in "Ru".chars() {
+            p.append_query(c);
+        }
+        assert!(
+            create_rows(&p)
+                .iter()
+                .any(|r| r.starts_with("Create note:"))
+        );
+        p.backspace_query();
+        p.backspace_query();
+        assert_eq!(create_rows(&p), vec!["Rust Async", "Rust Macros"]);
+        assert!(
+            p.routing_for(p.candidates.last().unwrap()).is_some(),
+            "and the remaining rows still resolve their own routing"
+        );
     }
 
     #[test]

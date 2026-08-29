@@ -434,6 +434,7 @@ impl FilesSource {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
+                create_label: None,
                 id: "files".into(),
                 doc: "File picker rooted at the active buffer's PROJECT (recursive). Pass an explicit path to override.".into(),
                 args_hint: "[root]".into(),
@@ -574,6 +575,7 @@ impl FilePickSource {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
+                create_label: None,
                 id: FILE_PICK_SOURCE.into(),
                 doc: "Pick a file and supply its path as a value (for a transient argument or \
                       other caller awaiting one). Lists the same files as `files`; differs only \
@@ -1803,6 +1805,7 @@ impl GrepSource {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
+                create_label: None,
                 id: "grep".into(),
                 doc: "Live recursive text search via the configured backend (`rg`/`ag`/`grep`). Re-runs as you type; `<CR>` jumps to the chosen hit.".into(),
                 args_hint: "[pattern]".into(),

@@ -135,6 +135,60 @@ async fn picker_calls_emit_boundary_trace_records() {
     );
 }
 
+/// OR.5: a plugin source declares `create_label`, and it crosses the boundary
+/// intact — the half of the slice a native-only test cannot reach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_source_declares_its_create_label() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: picker_actor create-label — fixture guest not built");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let client = spawn(&host_in(&tmp)).await;
+
+    let spec = client.spec().await.expect("spec reaches the guest");
+    assert_eq!(
+        spec.create_label.as_deref(),
+        Some("Create fixture: %s"),
+        "the guest's declaration crossed as declared"
+    );
+}
+
+/// OR.5: accepting the create row hands the source the query, **verbatim**.
+///
+/// The picker synthesises the row and the source decides what creation means,
+/// so this is the join between the two — and the assertion that matters is the
+/// exactness. Spaces, case and non-ASCII all survive, because the source is
+/// creating something the USER named and the host owns no opinion about that
+/// namespace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepting_the_create_row_hands_the_source_the_query_verbatim() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: picker_actor create-accept — fixture guest not built");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let client = spawn(&host_in(&tmp)).await;
+
+    for query in ["Rust", "  Ünïcode  note  ", "a/b\\c:d"] {
+        let outcome = client
+            .accept(ctx("/ws"), RoutingPayload::Create(query.to_string()))
+            .await
+            .expect("the create routing reaches the guest")
+            .expect("the guest handled the create token");
+        match outcome {
+            PickerAcceptOutcome::OpenFile(path) => {
+                assert_eq!(
+                    path,
+                    format!("/created/{query}"),
+                    "the query crossed verbatim"
+                )
+            }
+            other => panic!("expected the fixture's create outcome, got {other:?}"),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spec_init_accept_round_trip_through_the_channel() {
     let Some(_) = guest_wasm() else {

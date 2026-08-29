@@ -77,6 +77,17 @@ pub struct PickerSourceSpec {
     /// refilter for them. Sources opting in must also
     /// implement [`PickerSourceGenerator::on_query_changed`].
     pub live: bool,
+    /// OR.5: when set, the picker offers one synthetic **create** row whenever
+    /// the query is non-empty — the offer to make the thing the user was
+    /// looking for and did not find. `%s` in the label is replaced by the
+    /// query.
+    ///
+    /// The row is pinned last and never ranked (see `Picker::push_create_row`),
+    /// and accepting it routes `RoutingPayload::Create { query }` back to this
+    /// source's `accept`, which decides what creation means. The picker never
+    /// knows: org-roam mints a node, another source might make a file. `None` —
+    /// every source but roam's — behaves exactly as before.
+    pub create_label: Option<Cow<'static, str>>,
 }
 
 impl PickerSourceSpec {
@@ -89,7 +100,15 @@ impl PickerSourceSpec {
             args_schema: Vec::new(),
             args_hint: Cow::Borrowed(""),
             live: false,
+            create_label: None,
         }
+    }
+
+    /// Builder-style: offer a create row whenever the query is non-empty.
+    /// `%s` in `label` is replaced by the query.
+    pub fn with_create_label(mut self, label: impl Into<Cow<'static, str>>) -> Self {
+        self.create_label = Some(label.into());
+        self
     }
 
     /// Builder-style: mark this source as live (`:picker grep`

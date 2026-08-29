@@ -537,6 +537,7 @@ pub struct CommitPickSource {
 /// declarations.
 fn takes_ex_command(id: &'static str, doc: &'static str, noun: &'static str) -> PickerSourceSpec {
     PickerSourceSpec {
+        create_label: None,
         id: std::borrow::Cow::Borrowed(id),
         doc: std::borrow::Cow::Borrowed(doc),
         args_schema: vec![lattice_grammar::ArgSpec::required(

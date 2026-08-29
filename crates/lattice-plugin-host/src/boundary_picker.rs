@@ -324,6 +324,7 @@ impl WitBoundary for NativePickerSourceSpec {
                 .collect::<Result<Vec<_>, String>>()?,
             args_hint: self.args_hint.to_string(),
             live: self.live,
+            create_label: self.create_label.as_ref().map(|l| l.to_string()),
         })
     }
 
@@ -340,6 +341,9 @@ impl WitBoundary for NativePickerSourceSpec {
                 .collect::<Result<Vec<_>, String>>()?,
             args_hint: wit.args_hint.into(),
             live: wit.live,
+            // OR.5: `Cow::Owned`, like the id/doc/args_hint above — a plugin's
+            // label frees on `PickerRegistry::unregister`.
+            create_label: wit.create_label.map(Into::into),
         })
     }
 }
@@ -481,12 +485,21 @@ impl WitBoundary for NativeRoutingPayload {
                         .into(),
                 );
             }
+            // OR.5: the create row's query, crossing VERBATIM. This one DOES
+            // reach a plugin — it is the whole point of the slice, since the
+            // source that declared `create_label` is the one that has to decide
+            // what creation means.
+            NativeRoutingPayload::Create { query } => WitRoutingPayload::Create(query.clone()),
         })
     }
 
     fn from_wit(wit: WitRoutingPayload) -> Result<Self, String> {
         Ok(match wit {
             WitRoutingPayload::Buffer(id) => NativeRoutingPayload::Buffer { id },
+            // OR.5. A guest never *emits* one of these — the picker synthesises
+            // the row — but the mirror is symmetric so a guest that echoes a
+            // routing token back round-trips rather than erroring.
+            WitRoutingPayload::Create(query) => NativeRoutingPayload::Create { query },
             WitRoutingPayload::PaneHistoryEntry(index) => {
                 NativeRoutingPayload::PaneHistoryEntry { index }
             }
@@ -752,12 +765,16 @@ mod tests {
             }],
             args_hint: "[root]".into(),
             live: false,
+            // OR.5: a real label, so the round trip proves the field crosses
+            // rather than proving `None == None`.
+            create_label: Some("Create note: %s".into()),
         };
         let back = NativePickerSourceSpec::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.id, "files");
         assert_eq!(back.doc, "file picker");
         assert_eq!(back.args_hint, "[root]");
         assert!(!back.live);
+        assert_eq!(back.create_label.as_deref(), Some("Create note: %s"));
         assert_eq!(back.args_schema.len(), 1);
         assert_eq!(back.args_schema[0].name, "root");
     }

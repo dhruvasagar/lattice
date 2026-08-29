@@ -2,8 +2,8 @@
 
 > Design: [`../../architecture/conceal.md`](../../architecture/conceal.md) (the
 > host primitive, phase H),
-> [`../../architecture/org-mode.md`](../../architecture/org-mode.md) §OM.10 (link
-> opening, which phase OL extends),
+> [`../../architecture/org-mode.md`](../../architecture/org-mode.md) §7 (links —
+> rendering and following, which phase OL implements),
 > [`../../architecture/display-line.md`](../../architecture/display-line.md) (the
 > `DisplayLine` substrate H.1 changes).
 >
@@ -228,6 +228,91 @@ being raw rather than corrupt.
 
 ## Phase OL slices
 
-📝 To be written when phase H lands. Shape: `Target::Id` on `links.rs`, org's two
-conceal rules declared through H.2's seam, and `<CR>` bound to `org-open-link`
-with `Effect::Declined` fall-through.
+| Slice | Description | Status |
+|---|---|---|
+| OL.1 | `Target::Id` — a recognised kind that fails honestly | 📝 |
+| OL.2 | org declares its two conceal rules | 📝 |
+| OL.3 | `<CR>` follows, and declines when there is nothing to follow | 📝 |
+| OL.4 | docs — design §7, the org help page, the ledger, the site | 📝 |
+
+### OL.1 — `id:` becomes a link kind before anything can resolve it 📝
+
+**Deps:** none. Lands independently of phase H.
+
+`links.rs`'s `Target` gains `Id(String)`; `classify` grows an `id:` arm ahead of
+the `has_scheme` check. `org-open-link` on an `Id` reports that there is no
+index and stops.
+
+**The slice exists because the alternative is a misleading error, not a missing
+feature.** `classify` today has no `id:` arm, so `[[id:6F398E54-…]]` falls to
+the final `Some(Target::File(p))` branch and opening it produces *"no such
+file: id:6F398E54-…"*. That blames the filesystem for a missing index and sends
+the user looking for a file that was never meant to exist. Recognising the kind
+and failing on it is strictly better than resolving it wrongly, and it is worth
+its own commit because it is the boundary between phases OL and OR: after this,
+OR's index is the only thing missing.
+
+**Tests:** `id:` classifying as `Id` and not as `File`; the message naming the
+absent index rather than an absent file; `file:id-something.org` still
+classifying as a file (the arm must key on the scheme, not on the substring);
+an empty `id:` rejected like every other empty target.
+
+### OL.2 — org declares what to hide 📝
+
+**Deps:** H.2, H.3, H.4.
+
+Two `conceal-rule`s on org's `language` contribution, and nothing else — the
+mechanism, the coordinate maths and the mode scoping are all H's.
+
+```
+(\[\[[^]]+\]\[)[^]]+(\]\])     hide [1, 2]   described link
+(\[\[)([^]]+)(\]\])            hide [1, 3]   bare link
+```
+
+The described-link rule must be tried first: a described link also matches the
+bare-link pattern, and matching it as bare would hide `[[` and `]]` while
+leaving `id:6F398E54-…][Project Kickoff Checklist` on screen — worse than not
+concealing at all. Ordering is the rule list's order, so this is a property of
+how org declares them and is asserted rather than assumed.
+
+**Tests, and the corpus is the fixture.** A described link collapsing to its
+description; a bare link keeping its target; a link inside a `#+BEGIN_SRC`
+block — which conceals, because conceal is textual and does not know about
+blocks, and that is the correct and documented behaviour rather than a bug to be
+surprised by later; two links on one line; a malformed `[[` with no closing
+`]]` left entirely alone.
+
+### OL.3 — `<CR>` follows 📝
+
+**Deps:** OL.1.
+
+`<CR>` binds to `org-open-link` on the `org-mode` major layer, returning
+`Effect::Declined` when the cursor is not inside a link's span. `<leader>oo`
+stays — it is the explicit form, it works when the cursor is outside the span,
+and removing a working chord to make room costs muscle memory for nothing.
+
+**`Effect::Declined` is correct here and the general rule says otherwise, so the
+slice records why.** The standing hazard is that `Declined` re-runs a multi-key
+chord's *trailing key alone*, which is why a plugin-owned prefix must return
+`Effect::None`. `<CR>` is a single key. There is no trailing key, so the hazard
+cannot arise — and the test pins that by asserting the builtin motion runs
+exactly once, not twice.
+
+**Tests:** `<CR>` on a link opening it; `<CR>` on ordinary prose performing the
+builtin first-non-blank-of-next-line motion **once**; `<CR>` on the last line
+behaving as the builtin does there; `<CR>` in the agenda multibuffer still doing
+what the agenda binds it to (org-mode's major is not active in that buffer, and
+the test is what makes that a fact rather than an expectation); the round-trip
+in a real editor rather than against a synthesised context — the failure mode
+OC.10 and OT.4 both hit was a seam that answered nothing when reached for real.
+
+### OL.4 — docs 📝
+
+**Deps:** OL.1–OL.3.
+
+`org-mode.md` §7 lands with the phase rather than ahead of it if any of the
+above changes shape. The plugin's own `doc/org.md` gains the `<CR>` chord in its
+key table and a line on rendering. `implementation.md` gains the OL rows.
+`site/data/dev-nav.toml` needs no change for §7 (it is a section of a page
+already listed), but the sync must run — a docs change is not finished until the
+site carries it.

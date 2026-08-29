@@ -5,7 +5,7 @@ Status: design fragment (2026-08-29). Slice plan:
 
 Anchors: `display-line.md` (the `DisplayLine` substrate this extends),
 `cell-grid-renderer.md` (the two renderer peers), `design.md` §5.6 (rich text —
-this closes the carve-out named there), `org-mode.md` §OM.10 (the first
+this closes the carve-out named there), `org-mode.md` §7 (the first
 consumer), paramount goal #1.
 
 Markup that exists to be *parsed* does not have to be shown. An org link reads

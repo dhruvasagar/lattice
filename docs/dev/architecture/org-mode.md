@@ -46,7 +46,7 @@ What was missing was **editing**: promotion, subtree motion, TODO workflow,
 tables, agenda. That is org-mode the *mode*, and this fragment is its design.
 
 **All of it now ships** except the two slices that need to write to a file
-other than the buffer's own (§9). The plugin rides seven seams; the host
+other than the buffer's own (§10). The plugin rides seven seams; the host
 gained four generic changes and learned nothing about headlines.
 
 ## 2. The thesis
@@ -256,7 +256,7 @@ increment.
 
 The cost is honest and benched: every `<Tab>` in an org buffer costs a
 guest round-trip even when it does nothing. It is budgeted under the
-existing grammar gate (§7).
+existing grammar gate (§8).
 
 ## 5. The keymap
 
@@ -440,7 +440,7 @@ run; the rest get an empty `ExcerptHeader.title`, which renders no header
 row. §6.1's grouping mechanism is unchanged — only who decides.
 
 **The host does not know what an org file is.** The sketch above once said
-the walk was "`.org` only", which contradicts §10's own claim that every
+the walk was "`.org` only", which contradicts §11's own claim that every
 host change here is generic. `extensions` is what fixes it: the source
 declares what it wants offered, resolved once at load and cached beside
 the producer, so the walk's per-file test is a string compare. A markdown
@@ -448,7 +448,7 @@ TODO scanner then appears in the same view with no host change at all.
 
 Two alternatives were rejected. **Offer every project file to every
 source** — one boundary crossing carrying the full text of every file in
-the tree, which is precisely the producer-critical-path cost §7 warns
+the tree, which is precisely the producer-critical-path cost §8 warns
 about. **Resolve the extensions from the plugin's `language` seam** (the
 `PluginLangRegistry` already indexes `by_extension`) — it would make an
 agenda source *require* a language seam when the two are independent
@@ -479,7 +479,85 @@ The rejected options are not wrong so much as differently scoped; if the
 `view` seam or mode lifecycle lands for another reason, nothing here
 blocks it.
 
-## 7. Performance
+## 7. Links
+
+A link is org's only construct that is simultaneously *markup to be
+hidden* and *a thing to be activated*. Both halves are org's, and
+neither is roam's — an org file with no roam index in sight still wants
+`[[file:diagram.png][the wiring]]` to read as three words and to open
+on `<CR>`.
+
+### 7.1 Rendering, which is a host primitive org merely configures
+
+Links render through [`conceal.md`](conceal.md). Org contributes two
+rules to the `language` seam and contributes nothing else; the
+mechanism, the coordinate maths and the mode scoping are the host's.
+
+```
+(\[\[[^]]+\]\[)[^]]+(\]\])     hide [1, 2]   described link
+(\[\[)([^]]+)(\]\])            hide [1, 3]   bare link
+```
+
+**A bare link keeps its target visible.** `[[https://example.com]]`
+renders as `https://example.com`, not as nothing. Emacs draws the same
+line, and the reason is not deference: a link whose only text *is* its
+target has nothing left to show once the target is hidden, and an
+invisible activatable region is worse than visible markup.
+
+**Why patterns and not the parse tree**, which is the question a reader
+arriving from §6 will ask, because everything else in this plugin was
+migrated *onto* the tree. Two independent answers. `tree-sitter-org`
+has no `link` rule — `[[id:X][Title]]` is undifferentiated `expr`
+tokens inside `item` or `paragraph`, so there is nothing to capture.
+And the tree is absent during a reparse, so tree-driven conceal would
+flicker between concealed and raw while the user types: a pixel change
+to content they did not edit, which is a standing veto. `links.rs`
+already recorded that second reason for its own text scanning, and it
+is the same reason here for the same construct.
+
+This is not a retreat from "structure from the tree, characters from
+the text". It is that rule applied honestly: a link has no structure in
+this grammar, so there is none to read.
+
+### 7.2 Following, and why `<CR>` is safe here
+
+`<CR>` opens the link under the cursor and declines otherwise, through
+the same chain §4.3 describes and tests:
+
+```
+<CR>  →  org-mode  : on a link?  open it
+                     else        [declined]
+      →  Builtin   : first non-blank of the next line
+```
+
+`<leader>oo` stays. It is the explicit form, it works when the cursor
+is not inside the link's span, and removing a working chord to make
+room for a new one costs a user's muscle memory for nothing.
+
+**The decline is safe on `<CR>` specifically, and this is worth saying
+because the general case is not.** `Effect::Declined` re-runs a
+multi-key chord's *trailing key alone*, which is why a plugin-owned
+prefix must return `Effect::None` instead. `<CR>` is a single key.
+There is no trailing key to re-run, so the hazard does not arise.
+
+The cost is one guest round-trip per `<CR>` in an org buffer even when
+the cursor is nowhere near a link — the same honest cost §4.3 already
+accepts for `<Tab>`, budgeted under the same grammar gate (§8).
+
+### 7.3 `id:` is recognised before it is resolvable
+
+`Target` gains an `Id` arm. Nothing in org can resolve it: an `:ID:` is
+a key into a corpus, and finding the file holding it means an index,
+which is [`org-roam.md`](org-roam.md)'s subject.
+
+So org ships `id:` as a **recognised kind that fails honestly** —
+`<CR>` on `[[id:6F398E54-…]]` says there is no index rather than
+silently doing nothing. That is deliberately not the same as leaving
+`id:` unclassified, which would make it fall through to the file
+branch and produce "no such file: id:6F398E54-…", an error that blames
+the wrong thing and sends the user looking for a file.
+
+## 8. Performance
 
 Paramount goal #1. Org adds guest calls to the keystroke path, and the
 budget is the existing grammar gate — **typed call < 500 ns p99,
@@ -505,7 +583,7 @@ Nothing org does runs per frame. The renderer reads folds and highlights
 from caches that already exist; `no_per_frame_wasm_guard` continues to
 hold.
 
-## 8. Failure behaviour
+## 9. Failure behaviour
 
 Every path degrades the way the seam it rides already does — which is the
 point of riding them.
@@ -530,7 +608,7 @@ point of riding them.
 - Diagnostics are `debug!`, never `info!`. A per-`<Tab>` decline at
   held-key rates would flood `*messages*`.
 
-## 9. Scope
+## 10. Scope
 
 **In:** structure editing, text objects, TODO workflow, priority, tags,
 checkboxes with statistics cookies, timestamps, links, refile, capture,
@@ -580,7 +658,7 @@ own context.
 to the block body (`AppEffect::NarrowLines`); a true indirect buffer in
 the block's own major mode is post-v1.
 
-## 10. Paramount-goal alignment
+## 11. Paramount-goal alignment
 
 **#1 Performance.** Every org path is either off the keystroke path
 (agenda) or inside the measured grammar budget (actions). The decline

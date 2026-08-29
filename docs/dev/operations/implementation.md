@@ -6594,7 +6594,7 @@ Slice plan: [`slice-plans/archive/org-mode.md`](slice-plans/archive/org-mode.md)
 plugin registered the org grammar and then parsed org with hand-rolled string
 scanning everywhere — `TreeSnapshot` reached `apply-action` and was dropped
 unused. So org migrates to the tree **first** (OT.x), and clocking — deferred by
-`org-mode.md` §9 and the reason `org-capture.md` §3 cut `:clock-in` /
+`org-mode.md` §10 and the reason `org-capture.md` §3 cut `:clock-in` /
 `:clock-resume` — lands on the migrated base (OC.x), including **ML.6** (the
 plugin modeline API, which is why
 [`slice-plans/archive/modeline.md`](slice-plans/archive/modeline.md) could
@@ -6775,6 +6775,47 @@ carrying a concealed range. It is a caused change at a mode boundary that is
 already a visual event, `:set list` already does the same class of thing through
 the same kind of axis, and the bump is gated on the buffer's language having
 rules so a Rust buffer never enters the path.
+
+---
+
+## Org links render and follow (OL, 2026-08-29 — design landed, not built)
+
+| Slice | What | Status |
+|---|---|---|
+| OL.1 | `Target::Id` — a recognised kind that fails honestly | 📝 |
+| OL.2 | org declares its two conceal rules | 📝 |
+| OL.3 | `<CR>` follows, and declines when there is nothing to follow | 📝 |
+| OL.4 | docs — design §7, the org help page, the ledger, the site | 📝 |
+
+Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §7.
+Slice plan:
+[`slice-plans/conceal-and-org-links.md`](slice-plans/conceal-and-org-links.md).
+
+Org's links already work — `links.rs` classifies `file:`, `http(s):`, `mailto:`
+and `*Headline`, and `<leader>oo` opens them. What is wrong is the surface. A
+link renders as its full source text, so a roam-style link spends 70 columns
+saying four words; and following one takes a three-keystroke leader chord where
+every other editor, and lattice's own help buffers, use `<CR>`.
+
+Rendering is phase H's; org contributes two `conceal-rule`s and nothing else.
+The described-link rule must be ordered before the bare-link one — a described
+link matches both patterns, and matching it as bare would hide the outer
+brackets while leaving `id:…][Project Kickoff Checklist` on screen, which is
+worse than not concealing.
+
+`<CR>` declines to the builtin motion when the cursor is not inside a link.
+**`Effect::Declined` is safe here even though the standing rule warns against
+it**: the hazard is that Declined re-runs a multi-key chord's *trailing key
+alone*, and `<CR>` is a single key with no trailing key to re-run. OL.3's test
+pins it by asserting the builtin motion runs exactly once.
+
+`Target` gains an `Id` arm that org cannot resolve — that is
+[`../architecture/org-roam.md`](../architecture/org-roam.md)'s index. It is a
+slice rather than a line of OR because the status quo is *actively misleading*:
+with no `id:` arm, `classify` falls through to the file branch and
+`[[id:6F398E54-…]]` reports "no such file: id:6F398E54-…", blaming the
+filesystem for a missing index and sending the user after a file that was never
+meant to exist.
 
 ---
 

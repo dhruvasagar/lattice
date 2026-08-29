@@ -468,7 +468,7 @@ planning them.
 ## What this does NOT do
 
 - **Clocking.** `:clock-in` / `:clock-resume` need persistent "currently
-  clocked" state and a modeline contribution; deferred in `org-mode.md` §9 and
+  clocked" state and a modeline contribution; deferred in `org-mode.md` §10 and
   still deferred here.
 - **Capture contexts.** `%:from` / `%:subject` read a mail or org-protocol
   context lattice does not have. The placeholder would always be empty, which

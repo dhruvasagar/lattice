@@ -1,6 +1,6 @@
 # Org parses with tree-sitter, then org clocks — slice plan (OT / OC)
 
-> Design: [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) (§9 scope,
+> Design: [`../../../architecture/org-mode.md`](../../../architecture/org-mode.md) (§10 scope,
 > where clocking is currently listed as deferred),
 > [`../../../architecture/org-capture.md`](../../../architecture/org-capture.md) §3 (the
 > `:clock-in` / `:clock-resume` template keys cut for want of clocking),
@@ -75,7 +75,7 @@ grammar — `section`, `headline`, `stars`, `item`, `list`, `listitem`,
 
 ### Phase 2 — clocking
 
-`org-mode.md` §9 defers clocking with a reason: it "needs persistent
+`org-mode.md` §10 defers clocking with a reason: it "needs persistent
 'currently clocked' state and a modeline contribution, so it wants its own
 slice after the rest lands." The rest has landed. `org-capture.md` §3 cut
 `:clock-in` / `:clock-resume` for the same want.
@@ -1323,7 +1323,7 @@ The reason expires here.
 
 ### OC.8 — docs ✅ (2026-08-29)
 
-`org-mode.md` §9's deferral is replaced, and the replacement records that **half
+`org-mode.md` §10's deferral is replaced, and the replacement records that **half
 its stated reason was wrong in a useful way**: clocking needs no persistent
 state at all. The buffer is the record, so losing guest state costs a modeline
 segment and never a fact. The modeline half was real and closed a gap rather
@@ -1336,7 +1336,7 @@ ML.6 is closed, with its inbound references repointed.
 
 **Original plan text follows.**
 
-`org-mode.md` §9 moves clocking out of "Deferred with a reason" into "In", and
+`org-mode.md` §10 moves clocking out of "Deferred with a reason" into "In", and
 gains the tree-sitter statement as a design position rather than an
 implementation detail. `org-capture.md` §3 drops the two cut rows. The plugin's
 `doc/org.md` and `README.md` seam table gain clocking. `implementation.md`

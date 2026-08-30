@@ -322,7 +322,7 @@ failure would write an empty drawer and nothing would ever say so.
 
 | Command | What |
 |---|---|
-| `:org-roam-find-node` | picker over all nodes; create-on-no-match; opens the node |
+| `:org-roam-find-node` (`<leader>onf`) | picker over all nodes; create-on-no-match; opens the node |
 | completion inside `[[…` | org-roam nodes as an insert-mode completion source — match a title, insert `[[id:…][Title]]` |
 | `:org-roam-id-create` | mint an `:ID:` for the headline at point, making it a node |
 | `:org-roam-backlinks` | the multibuffer view of what points here |

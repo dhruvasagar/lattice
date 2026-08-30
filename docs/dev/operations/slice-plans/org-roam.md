@@ -397,7 +397,7 @@ bodies. Without that last one, "two specs came back" would be satisfied by a
 guest that registered twice and answered identically, which is the version of
 this feature that looks right and is useless.
 
-### OR.6 — `:org-roam-find-node` 🚧
+### OR.6 — `:org-roam-find-node` ✅
 
 **Deps:** OR.4, OR.5.
 
@@ -438,16 +438,14 @@ drops the line. Headline nodes are 19% of the corpus and every one of them would
 have landed at the top of its file. Distinct from `lsp-location`, which is the
 same shape under a name that says where it came from.
 
-**Integration tests landed — ten of eleven.** Finding by title; by alias (the
-query is an alias that appears nowhere in the title's leading words, because an
-alias that is *displayed* but not *matched* leaves 12% of the corpus
+**Integration tests landed — eleven of eleven.** Finding by title; by alias
+(the query is an alias that appears nowhere in the title's leading words,
+because an alias that is *displayed* but not *matched* leaves 12% of the corpus
 unreachable); a note whose filename says one thing and whose title says another,
 asserting BOTH that it is offered under its title and that its filename does not
 match; the create row present alongside a real match and pinned last; roam inert
-naming the option to set. The eleventh — create opening a draft — is written,
-`#[ignore]`d, and documented in place: the accept resolves to nothing observable
-in that harness and the cause is not yet found. Ignored rather than deleted so
-the gap stays visible, and the suite's green stays honest about what it covers.
+naming the option to set; the create row opening a draft; and the chord opening
+find-node from a buffer that is not an org file.
 
 **Three bugs these tests found.** `spawn_picker_source` never stamped the config
 registry, so EVERY picker source got `none` from `get-option` and find-node
@@ -458,28 +456,46 @@ test that settles on `n/<id>` opens the picker against a half-written index:
 that key lands DURING the batch, while the `nodes` blob the picker reads is
 rebuilt once at the END of it.
 
-**Still open (why this is 🚧, not ✅):**
+**The two that closed last were both the harness, and both looked like the
+product.** Worth recording because each survived several wrong fixes.
 
-1. The create-draft test above.
-2. **No key binding.** `:org-roam-find-node` is reachable only as an
-   ex-command. `<leader>onf` was tried and **reverted**: the binding registered
-   but the chord did not dispatch in an integration test, through three
-   explanations that each turned out not to be it (a missing `default_modes` in
-   the test manifest, an un-ticked mode-enablement drain, and the manifest key's
-   spelling). A binding that silently does nothing is worse than none, so it is
-   out until the dispatch is understood. The prefix, when it lands, is
-   `<leader>on…` — NOT `<C-x>n…`, because org's major keymap binds a terminal
-   `<C-x>` in Normal and it fires before any second key.
-3. **Create is a placeholder.** OR.6 writes a minimal built-in body through
-   `WriteToFile` with no template choice, no `${field}` interpolation and no
-   finalize/abort. OR.11 replaces it with the capture-buffer flow.
+*The chord.* `<leader>onf` was written, appeared dead, and was reverted on the
+principle that a silently-dead binding is worse than none. It had dispatched
+correctly the whole time: the first instrumented run resolved it to
+`Invoke(CommandId(org-roam-find-node))`. What was missing sat in
+`index_corpus_with_editor` — the spawned grammar-row expansion and the
+enablement drain that `org_structure.rs`'s harness has carried since OM.4b/OM.7,
+without which a plugin minor registers, stays disabled, and reaches nothing.
+Then a second layer behind it: the test helper dropped `Effect::OpenPicker`,
+which is the renderer's to apply.
 
-**Tests:** finding by title; by alias; a headline node landing on its line
-rather than the file's first; the generation check rebuilding the cache when the
-index moved and **not** rebuilding when it did not; create producing a node the
-next find-node can find; roam inert with the directory unset saying so rather
-than showing an empty picker. These need a real editor driving a real picker,
-which is the shape `org_roam_index.rs` already established for OR.4.
+*The create draft.* Also never a product bug. The test looked the draft up
+through `BufferStore::name_of` — the SYNTHETIC-name slot — and a path-backed
+Document has none, so the predicate dropped every real file buffer including
+the editor's own scratch. It would have failed against a working product, which
+is exactly what it did for two slices.
+
+The general lesson, and the reason both took so long: **an assertion that cannot
+observe success is indistinguishable from a product that cannot produce it**,
+and it makes every candidate fix look plausible. A patch to
+`drain_pending_picker_accept`'s dropped `.effects` made the create test pass —
+and reverting the patch left it passing, because `handle_effect` already applies
+`Effect::WriteToFile` inline. Two host "fixes" were written and reverted across
+OR.6/OR.7 on exactly that pattern; both were caught by removing the change and
+re-running, never by re-reading it.
+
+**Create remains a placeholder here by design** — a minimal built-in body with
+no template choice, no `${field}` interpolation and no finalize/abort. That is
+OR.11's, and the split is deliberate so a template bug cannot masquerade as a
+picker bug.
+
+**Binding:** `<leader>onf`, on the UNIVERSAL `org-global-mode` beside capture
+and the agenda, for their reason — the note you want is rarely the file you are
+in. `<leader>on…` mirrors emacs org-roam's `C-c n …`, so the `f` keeps its
+meaning for anyone arriving from there. NOT `<C-x>n…`: org's major binds a
+terminal `<C-x>` (timestamp decrement, OM.9), and a prefix in one layer against
+a terminal binding in another is the ambiguity vim settles with `timeoutlen`,
+which this editor does not have.
 
 ### OR.7 — inserting a link ✅
 

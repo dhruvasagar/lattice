@@ -51,6 +51,7 @@ async fn connect(host: &PluginHost) -> WasmPickerSource {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .unwrap();

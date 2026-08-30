@@ -438,7 +438,27 @@ drops the line. Headline nodes are 19% of the corpus and every one of them would
 have landed at the top of its file. Distinct from `lsp-location`, which is the
 same shape under a name that says where it came from.
 
-**Still open (why this is 🚧, not ✅):** the integration tests. Finding by title;
+**Integration tests landed — ten of eleven.** Finding by title; by alias (the
+query is an alias that appears nowhere in the title's leading words, because an
+alias that is *displayed* but not *matched* leaves 12% of the corpus
+unreachable); a note whose filename says one thing and whose title says another,
+asserting BOTH that it is offered under its title and that its filename does not
+match; the create row present alongside a real match and pinned last; roam inert
+naming the option to set. The eleventh — create opening a draft — is written,
+`#[ignore]`d, and documented in place: the accept resolves to nothing observable
+in that harness and the cause is not yet found. Ignored rather than deleted so
+the gap stays visible, and the suite's green stays honest about what it covers.
+
+**Three bugs these tests found.** `spawn_picker_source` never stamped the config
+registry, so EVERY picker source got `none` from `get-option` and find-node
+reported itself unconfigured for a corpus it had just indexed — the fifth seam
+to need that line. An `Effect::Echo` after `Effect::WriteToFile` overwrites the
+write's own failure message, so a refused write read as a successful one. And a
+test that settles on `n/<id>` opens the picker against a half-written index:
+that key lands DURING the batch, while the `nodes` blob the picker reads is
+rebuilt once at the END of it.
+
+**Still open (why this is 🚧, not ✅):** the create-draft test above. Finding by title;
 by alias; a headline node landing on its line rather than the file's first; the
 generation check rebuilding the cache when the index moved and **not** rebuilding
 when it did not; create producing a node the next find-node can find; roam inert

@@ -378,6 +378,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(PickerClient, PickerActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -394,6 +395,19 @@ impl PluginHost {
         let id = self.alloc_id();
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2).
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // OR.6: the config registry, so a source can read the options that
+        // decide what it offers.
+        //
+        // Its absence was not a gap in the abstract — org-roam's find-node reads
+        // `org.roam-directory` to decide whether it is configured at all, and
+        // without a registry on THIS store `get-option` answered `none` and the
+        // picker reported "roam is not configured" for a corpus it had just
+        // indexed. The seam was wired end to end and answered nothing, which is
+        // the failure `spawn_event_plugin` / `spawn_context_plugin` /
+        // `spawn_transient_plugin` each already carry this line to prevent.
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
         let (tx, rx) = mpsc::unbounded();
         let client = PickerClient { tx, id };
         let actor = PickerActor {

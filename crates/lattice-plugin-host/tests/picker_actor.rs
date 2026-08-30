@@ -73,6 +73,7 @@ async fn spawn(host: &PluginHost) -> lattice_plugin_host::PickerClient {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .expect("picker source instantiates + bridges");
@@ -106,6 +107,7 @@ async fn picker_calls_emit_boundary_trace_records() {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .expect("picker source instantiates");
@@ -352,6 +354,7 @@ async fn calls_after_the_actor_ends_are_a_typed_plugin_gone_error() {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .unwrap();

@@ -1686,7 +1686,17 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_picker_source(component, manifest, tier, PluginBudget::default(), bus)
+            .spawn_picker_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                // OR.6: a source reads options to decide what it offers. Absent,
+                // `get-option` answers `none` on this store and a
+                // configuration-driven source reports itself unconfigured.
+                self.env.config_registry.as_ref(),
+            )
             .await?;
 
         // Drive the actor's request loop on the multi-thread runtime FIRST —

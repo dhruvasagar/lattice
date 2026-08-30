@@ -115,7 +115,6 @@ description = "Everything-is-a-buffer in practice: multibuffers, panes, pickers,
 [[section.group]]
 docs = [
   "architecture/multibuffer-views",
-  "architecture/plugin-multibuffer-views",
   "architecture/multibuffer-is-a-regular-buffer",
   "architecture/multibuffer-stale-sources",
   "architecture/multibuffer-syntax",
@@ -185,16 +184,41 @@ docs = [
   "architecture/plugin-observability",
   "architecture/plugin-treesitter-seam",
   "architecture/plugin-auto-pair",
-  "architecture/org-mode",
-  "architecture/org-capture",
-  "architecture/org-roam",
-  "architecture/org-todo-keywords",
+  "architecture/plugin-multibuffer-views",
   "architecture/plugin-transients",
   "architecture/plugin-mode-options",
   "architecture/wit-ownership",
   "architecture/cross-file-writes",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
+]
+
+# ---------------------------------------------------------------------------
+# Org mode gets a section rather than a group inside "Plugins".
+#
+# Two reasons. It is the largest feature family in the tree — four design
+# fragments and six slice plans — and burying it in an eighteen-page plugin
+# list put `org-roam` between `plugin-auto-pair` and `plugin-transients`, where
+# nothing said the four belong together.
+#
+# And a group would not have helped: `docs-nav.html` nests by group only for
+# `sec.slug == "reference"`, and `sync_dev_pages` discards the group title
+# (`slug, _group = page_section[key]`) where the user-doc path writes it as
+# `nav_group`. A titled group here would be inert. Recorded so the next person
+# reaches for a section knowingly rather than adding a title and wondering why
+# nothing changed.
+# ---------------------------------------------------------------------------
+
+[[section]]
+slug = "org"
+title = "Org mode"
+description = "The outliner, TODO workflow, capture, agenda and org-roam. Lattice's deepest plugin and the hardest test of the WASM seams — developed in its own repository, dhruvasagar/lattice-org-plugin, with no org-specific code in the editor."
+[[section.group]]
+docs = [
+  "architecture/org-mode",
+  "architecture/org-todo-keywords",
+  "architecture/org-capture",
+  "architecture/org-roam",
 ]
 
 [[section]]

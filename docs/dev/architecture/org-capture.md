@@ -1,5 +1,12 @@
 # Org capture: many templates, prompted input
 
+> **Where the code is.** Everything this page describes is implemented in
+> [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
+> is a WASM Component plugin: nothing here is compiled into the editor, and
+> lattice has no `BufferKind::Org`, no `Lang::Org` arm and no `Editor::`
+> method for any of it. What lives in *this* tree is the seams the plugin
+> contributes through — see [`plugin-host.md`](plugin-host.md).
+
 **Status:** built (OC.1–OC.6). Supersedes the single-template capture that
 shipped with [`org-mode.md`](org-mode.md)'s OM.11. Depends on
 [`plugin-transients.md`](plugin-transients.md) for the menu. Slice plan:

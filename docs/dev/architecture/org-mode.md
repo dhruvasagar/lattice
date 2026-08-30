@@ -1,5 +1,12 @@
 # Org-mode as a plugin
 
+> **Where the code is.** Everything this page describes is implemented in
+> [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
+> is a WASM Component plugin: nothing here is compiled into the editor, and
+> lattice has no `BufferKind::Org`, no `Lang::Org` arm and no `Editor::`
+> method for any of it. What lives in *this* tree is the seams the plugin
+> contributes through — see [`plugin-host.md`](plugin-host.md).
+
 **Status: built** (2026-08-26). Archive, refile and capture — the three
 verbs blocked longest — closed last, on three primitives the epic turned
 out to need rather than one: `Effect::WriteToFile`

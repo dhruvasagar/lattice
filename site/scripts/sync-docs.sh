@@ -185,12 +185,19 @@ def resolve_help_links(body, topic_section):
     return re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
 
 
-def make_relative_resolver(topic_section, dev_pages):
+def make_relative_resolver(topic_section, dev_pages, page_section):
     """Resolve `../dev/...`, `../../user/...` and friends.
 
     Anything that lands inside the Zola content tree becomes an `@/` internal
     link; anything outside it (slice plans, wit/, source files) becomes an
     absolute GitHub URL so it still goes somewhere useful.
+
+    `page_section` is load-bearing for the dev branch and its absence was a
+    build-breaking bug: a dev page is PUBLISHED at `@/dev/<section-slug>/`,
+    not at `@/dev/<source-subdir>/`, so emitting the source path produced a
+    broken relative link for every user->dev reference. Zola reports one such
+    link and stops, which is why it read as "one bad page" rather than
+    fourteen.
     """
     def _resolve(m):
         raw = m.group(1)
@@ -208,8 +215,12 @@ def make_relative_resolver(topic_section, dev_pages):
 
         if stripped.startswith('dev/'):
             rel = stripped[4:]
-            if rel.endswith('.md') and rel[:-3] in dev_pages:
-                return f'](@/dev/{rel}{anchor})'
+            key = rel[:-3] if rel.endswith('.md') else rel
+            if key in dev_pages:
+                # The SECTION the manifest put it in — its real URL.
+                slug = page_section[key][0]
+                stem = key.rsplit('/', 1)[-1]
+                return f'](@/dev/{slug}/{stem}.md{anchor})'
 
         # Out of the content tree -> GitHub.
         base = GH_TREE if (path.endswith('/') or not re.search(r'\.\w{1,10}$', path)) else GH_BLOB
@@ -221,10 +232,12 @@ def make_relative_resolver(topic_section, dev_pages):
 RE_RELATIVE = re.compile(r'\]\(((?:\.\./)+[^)]+)\)')
 
 
-def rewrite_links(body, topic_section, dev_pages, is_user_doc):
+def rewrite_links(body, topic_section, dev_pages, page_section, is_user_doc):
     if is_user_doc:
         body = resolve_help_links(body, topic_section)
-    return RE_RELATIVE.sub(make_relative_resolver(topic_section, dev_pages), body)
+    return RE_RELATIVE.sub(
+        make_relative_resolver(topic_section, dev_pages, page_section), body
+    )
 
 
 # --------------------------------------------------------------------------
@@ -256,7 +269,7 @@ def reset_generated_dirs(sections, dev_sections):
 # Sync
 # --------------------------------------------------------------------------
 
-def sync_user_docs(topic_section, labels, dev_pages):
+def sync_user_docs(topic_section, labels, dev_pages, page_section):
     meta = {}      # topic -> (title, summary)
     headings = {}  # topic -> [h2/h3 text], fed to the search index
     # Sidebar/landing order is manifest order; Zola sorts on `weight`.
@@ -272,7 +285,7 @@ def sync_user_docs(topic_section, labels, dev_pages):
         body = strip_frontmatter(raw)
         # The template renders <h1>{{ page.title }}</h1>; drop the duplicate.
         body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
-        body = rewrite_links(body, topic_section, dev_pages, is_user_doc=True)
+        body = rewrite_links(body, topic_section, dev_pages, page_section, is_user_doc=True)
 
         meta[topic] = (title, summary)
         headings[topic] = [
@@ -493,7 +506,9 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
             title = make_title(raw, name[:-3])
             body = strip_frontmatter(raw)
             body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
-            body = rewrite_links(body, topic_section, dev_pages, is_user_doc=False)
+            body = rewrite_links(
+                body, topic_section, dev_pages, page_section, is_user_doc=False
+            )
             # The sidebar label overrides the H1 only where the manifest says
             # so; the page's own <h1> keeps the doc's real title.
             nav_title = dev_labels.get(key, title)
@@ -531,7 +546,7 @@ def main():
     reset_generated_dirs(sections, dev_sections)
 
     print('Syncing user docs...')
-    meta, headings = sync_user_docs(topic_section, labels, dev_pages)
+    meta, headings = sync_user_docs(topic_section, labels, dev_pages, page_section)
     write_section_landings(sections, meta, labels)
     write_search_index(sections, meta, labels, headings)
 

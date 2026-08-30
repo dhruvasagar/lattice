@@ -1,5 +1,12 @@
 # Org TODO keywords, and what colour they are
 
+> **Where the code is.** Everything this page describes is implemented in
+> [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
+> is a WASM Component plugin: nothing here is compiled into the editor, and
+> lattice has no `BufferKind::Org`, no `Lang::Org` arm and no `Editor::`
+> method for any of it. What lives in *this* tree is the seams the plugin
+> contributes through — see [`plugin-host.md`](plugin-host.md).
+
 Status: design fragment (2026-08-29). Slice plan:
 `../operations/slice-plans/archive/org-todo-keywords.md`.
 

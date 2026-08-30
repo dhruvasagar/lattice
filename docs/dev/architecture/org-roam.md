@@ -325,7 +325,7 @@ failure would write an empty drawer and nothing would ever say so.
 | `:org-roam-find-node` (`<leader>onf`) | picker over all nodes; create-on-no-match; opens the node |
 | completion inside `[[…` | org-roam nodes as an insert-mode completion source — match a title, insert `[[id:…][Title]]` |
 | `:org-roam-id-create` | mint an `:ID:` for the headline at point, making it a node |
-| `:org-roam-backlinks` | the multibuffer view of what points here |
+| `:org-roam-backlinks` | a picker over what points here — navigation, so a jump list rather than a view |
 | `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` | the journal |
 | `:org-roam-sync` | force a full rescan — the escape hatch when the watcher missed something |
 | `<CR>` on an `[[id:…]]` link | resolves through `n/<id>` and jumps — file **and** line |
@@ -351,17 +351,28 @@ source needs the next flag.
 
 ### 6.1 The backlinks view
 
-A multibuffer provider, like the agenda (§`org-mode.md` 6.1). One excerpt per
-linking node, showing the line the link sits on with its headline as context.
-Progress and completion surface in the **headerline**, per the standing rule for
-async buffers — not the status line, not a notification.
+**A picker, decided against the multibuffer this section first specified.**
 
-It refreshes on the index generation moving, and the refresh reaches the screen
-through the event the agenda already uses — `MultibufferExcerptsReady`, which
-has a wake wired (`boot.wake_on_event`). This is called out because the failure
-it avoids has been re-introduced repeatedly: an async result that lands without a
-wake sits until the user happens to press a key, and the symptom reads as a
-rendering bug rather than a missing wake.
+The rule that decides it: *do you act on the rows in place, or do you go
+somewhere?* Backlinks is navigation — you look at what points here and go read
+it. The multibuffer's affordances (read in place, edit-propagates-to-source,
+`gr` refresh) are what the agenda needs, and the agenda needs them because it is
+where you change TODO states and reschedule. A jump list is what navigation
+wants.
+
+This is not a limitation being accepted. When the question was first asked a
+guest could not own a multibuffer at all, and that gap is now closed — see
+[`plugin-multibuffer-views.md`](plugin-multibuffer-views.md). A read-in-place
+backlinks peer is buildable whenever someone wants one; it is not wanted for
+navigating.
+
+**The one thing the index does not yet hold** is which LINE a link sits on.
+`b/<id>` answers "which nodes link here" in one `get`; it does not say where in
+them. So a row jumps to the linking node's anchor rather than to the link.
+Emacs shows the line because its database stores a point per link. Storing it
+belongs with the read-in-place view — the consumer that actually needs it, since
+an excerpt must show the linking *line* whereas a jump to the linking *note* is
+useful on its own.
 
 ### 6.2 Templates, and the one thing capture cannot do
 

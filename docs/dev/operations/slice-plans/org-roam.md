@@ -661,24 +661,56 @@ because the cursor sat at column 0 rather than on the link, so `<CR>` correctly
 declined. Both read as "id resolution is broken". `apply_renderer_effects` is
 now shared in `org_roam_index.rs` for exactly this reason.
 
-### OR.9 — the backlinks view 📝
+### OR.9 — backlinks: a picker, and why not a multibuffer ✅
 
 **Deps:** OR.4.
 
-`:org-roam-backlinks` opens a multibuffer provider over `b/<id>` — one excerpt
-per linking node, showing the line the link sits on with its headline as
-context. Progress and completion go in the **headerline**, per the standing rule
-for async buffers.
+`:org-roam-backlinks` lists the notes that link to the node at point, as a
+**picker**. §6.1 specified a multibuffer; this is a deliberate change of shape,
+decided with Dhruva.
 
-Refresh rides `MultibufferExcerptsReady`, which has a wake already wired
-(`boot.wake_on_event`). Named explicitly because the alternative — a bare
-`TickCallback` — is the bug class that has been re-introduced repeatedly and
-whose symptom reads as a rendering fault.
+**Backlinks is navigation.** You look at what points here and go read it; you do
+not sit in the list editing. The multibuffer's affordances — read in place,
+edit-propagates-to-source, `gr` — are what the agenda needs and what a jump list
+does not. That is the rule this slice wrote down: *do you act on the rows in
+place, or do you go somewhere?*
 
-**Tests:** backlinks for a node with several; with none (an honest empty view,
-not an error); a backlink from a headline node attributed to the headline rather
-than the file; the view refreshing when the index moves **without a keypress**;
-excerpt line numbers correct after an edit above the link.
+**And it is a choice, not a limitation any more.** When the question was first
+asked, a guest could not own a multibuffer at all — `ProviderViewOpener` is a
+native Rust closure with no WIT path. MV.1 has since built the
+`multibuffer-view-source` seam, so a read-in-place peer is buildable whenever
+someone wants one. It is not wanted for navigation.
+
+**The node at point is resolved on the GRAMMAR seam**, not in the picker: the
+picker seam has neither a cursor nor the document (`init` receives args and a
+`picker-context`), so the ex-command reads the buffer, finds the node, and
+passes its id across as the picker's argument.
+
+**Ancestry, not proximity** — the one genuinely subtle piece. A headline without
+an `:ID:` belongs to its nearest *ancestor* node, so the upward walk tracks the
+deepest level it may still accept: passing an unidentified headline of level L
+means only level < L can answer. Walking line-by-line and taking the first
+identified headline finds the previous SIBLING, whose subtree the cursor is not
+in at all. A unit test failed against exactly that before the level logic
+existed.
+
+**What a row points at, and the honest gap.** `b/<id>` holds the ids that link
+to `<id>` — the whole query, one `get` — but not WHICH LINE the link sits on. So
+a row jumps to the linking node's own anchor rather than to the link itself.
+Emacs shows the link's line because its DB stores a point per link. Storing the
+line belongs with the read-in-place view, which is the consumer that actually
+needs it: an excerpt must show the linking *line*, whereas a jump to the linking
+*note* is a useful answer on its own. Adding the column now would change the
+`b/<id>` schema for a consumer that cannot use it yet.
+
+**Tests:** 10 unit (the node-at-point walk, including the sibling and
+sub-headline halves of the ancestry rule, `**bold**` at column 0 not being a
+headline, case-insensitive drawers, an empty `:ID:` not counting) + 3
+integration through a real editor and component: a node's backlinks listed; a
+node with none giving an honest EMPTY view rather than an error; and outside a
+node the command SAYING so rather than opening an empty picker — because
+"nothing links here" and "you are not in a note" look identical in an empty list
+and have entirely different fixes.
 
 ### OR.10 — dailies 📝
 

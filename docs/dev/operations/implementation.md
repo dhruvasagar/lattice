@@ -6847,7 +6847,7 @@ meant to exist.
 | OR.7 | inserting a link — a completion source, not a picker | ✅ |
 | OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
-| OR.9 | backlinks — a picker, and why not a multibuffer | 🚧 |
+| OR.9 | backlinks — a picker, and why not a multibuffer | ✅ |
 | OR.10 | dailies | 📝 |
 | OR.11 | roam capture templates and `${field}` | 📝 |
 | OR.12 | docs | 📝 |

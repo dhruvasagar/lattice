@@ -998,8 +998,13 @@ interface types {
         /// set. The host calls `build` and renders what comes back.
         pull,
         /// The host walks, reads and parses; the guest classifies each file
-        /// through `scanned-excerpt-source`. Carries the extensions the walk
-        /// should offer.
+        /// through `scanned-excerpt-source`.
+        ///
+        /// **No payload, deliberately.** An earlier draft carried the file
+        /// extensions here and that was a second source of truth: a scan source
+        /// already declares its own `extensions()`, and the walk reads them
+        /// from the live sources. Two places to say it is one place to get it
+        /// wrong.
         ///
         /// Kept as a separate input rather than folded into `pull` because the
         /// two are different COST MODELS, not two spellings of one. The host
@@ -1009,7 +1014,7 @@ interface types {
         /// no filesystem capability at all. A pull-only world makes the guest
         /// discover and read files itself, and reading node text back through
         /// the tree seam costs ~50 us per file — 200x the copy it avoided.
-        scan(list<string>),
+        scan,
     }
 
     /// A view a plugin owns.

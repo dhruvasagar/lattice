@@ -1863,22 +1863,14 @@ impl PluginLoader {
                 view_mode: spec.view_mode.clone(),
                 reuse: spec.reuse,
             };
-            // Only `pull` views are driven here. A `scan` view's rows come from
-            // the host's walk through `scanned-excerpt-source`, which is MV.3's
-            // composition — declaring one today registers the view and its
-            // identity, and it opens empty until then. Said out loud rather
-            // than silently no-op'd.
+            // MV.3: a `scan` view is driven by the host's walk over the
+            // registered `scanned-excerpt-source`s — the agenda's machinery,
+            // now parameterised by identity rather than by module constants. A
+            // `pull` view calls the guest's `build`.
             let is_pull = matches!(
                 spec.input,
                 lattice_plugin_host::lattice::plugin_host::types::MultibufferViewInput::Pull
             );
-            if !is_pull {
-                tracing::info!(
-                    plugin = %manifest.id,
-                    view = %spec.id,
-                    "multibuffer view declares a `scan` input; rows arrive with MV.3"
-                );
-            }
 
             let client = client.clone();
             let grant = grant.clone();
@@ -1894,6 +1886,22 @@ impl PluginLoader {
             let opener: lattice_mode::ProviderViewOpener = Arc::new(
                 move |activator: &mut dyn lattice_mode::ModeActivator,
                       args: &lattice_grammar::Args| {
+                    // A scan view IS the agenda's shape, so it takes the
+                    // agenda's opener with this view's identity. Nothing about
+                    // the walk, the sort or the grouping differs — only who
+                    // named the view.
+                    if !is_pull {
+                        return lattice_multibuffer::providers::agenda::open_scan_view(
+                            activator,
+                            &lattice_multibuffer::providers::agenda::ScanViewIdentity {
+                                provider: native.id.clone(),
+                                buffer_name: native.buffer_name.clone(),
+                                view_mode: native.view_mode.clone(),
+                                no_rows_message: "no plugin provides rows for it".to_string(),
+                            },
+                            args,
+                        );
+                    }
                     let previous = last_view.lock().ok().and_then(|g| *g);
                     let outcome = lattice_multibuffer::providers::plugin_view::open_plugin_view(
                         activator, &native, previous,
@@ -1903,9 +1911,6 @@ impl PluginLoader {
                     };
                     if let Ok(mut slot) = last_view.lock() {
                         *slot = Some(view);
-                    }
-                    if !is_pull {
-                        return outcome;
                     }
                     let args: Vec<String> = match args {
                         lattice_grammar::Args::String(s) if !s.trim().is_empty() => {

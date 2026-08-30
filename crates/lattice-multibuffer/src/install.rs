@@ -125,15 +125,23 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // M.6: the project-search service so `project_search` triggers find it.
     #[cfg(feature = "search")]
     crate::providers::search::register_project_search_service(boot.services_mut());
-    // OM.A1: the agenda's per-view state, plus its opener on the generic
-    // provider-view seam. `:agenda` reaches the view through
-    // `AppEffect::OpenProviderView` and the registered opener — no host
-    // `Action` variant, no dispatch arm, no `Editor::` method (§10's acid
-    // test, and the reason PV.1 exists).
+    // OM.A1: the agenda's per-view state.
+    //
+    // MV.3: its OPENER is no longer registered here. The agenda is org's
+    // feature, and org now declares it through `multibuffer-view-source` like
+    // any other plugin-owned view — the host supplies the machinery (walk,
+    // read-and-parse-once, sort, group runs, headerline) and org supplies the
+    // identity. Registering it natively too would refuse org's declaration,
+    // since `ProviderViewRegistry::register` refuses rather than replaces.
+    //
+    // Nothing is lost when org is absent: the agenda's ROWS come from org's
+    // scan source, so a host without it had an agenda that could only say "no
+    // plugin provides rows for it". The trigger (`:org-agenda`) is org's too,
+    // so the provider and its command now arrive together instead of the
+    // provider existing alone and empty.
     #[cfg(feature = "agenda")]
     {
         crate::providers::agenda::register_agenda_service(boot.services_mut());
-        crate::providers::agenda::register_agenda_provider(boot.services_mut());
     }
 
     // ── Off-keystroke wake ──────────────────────────────────────────────────

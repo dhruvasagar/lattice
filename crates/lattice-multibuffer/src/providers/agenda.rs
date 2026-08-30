@@ -174,6 +174,50 @@ impl AgendaService for InMemoryAgendaService {
 
 /// Open (or re-drive) the agenda view.
 ///
+/// MV.3 — the identity of a scan-driven view: which provider name, which
+/// buffer, which minor to activate.
+///
+/// The agenda used to hold these as module constants, which is precisely what
+/// made the view un-ownable by the plugin whose feature it is. They are a
+/// parameter now, so the same machinery serves the agenda and any
+/// plugin-declared `scan` view; only the names differ.
+///
+/// The machinery itself does NOT move to the guest and is not meant to: the
+/// bounded walk, the batched reads, the read-and-parse-once handoff, the stable
+/// sort and the group-run computation are measured host work that no plugin
+/// should reimplement. What moves is who says what the view is called.
+#[derive(Debug, Clone)]
+pub struct ScanViewIdentity {
+    /// The provider name, used in messages and in the headerline prefix.
+    pub provider: String,
+    /// The view's buffer name.
+    pub buffer_name: String,
+    /// A minor the owner wants on the view, beyond the host's own refresh mode.
+    pub view_mode: Option<String>,
+    /// What to say when no source produces rows for this view.
+    ///
+    /// A field rather than a generic sentence because the message is
+    /// USER-VISIBLE behaviour, and MV.3 is a migration of ownership, not of
+    /// behaviour. Parameterising the wording along with the prefix silently
+    /// reworded the agenda's decline; `agenda_declines_when_no_plugin_provides_rows`
+    /// caught it, which is exactly the job the "existing tests pass unedited"
+    /// rule was given.
+    pub no_rows_message: String,
+}
+
+impl ScanViewIdentity {
+    /// The agenda's own identity — the constants this type replaced, kept in
+    /// one place so `:agenda` and org's declaration cannot drift apart.
+    pub fn agenda() -> Self {
+        Self {
+            provider: PROVIDER_NAME.to_string(),
+            buffer_name: VIEW_NAME.to_string(),
+            view_mode: None,
+            no_rows_message: "no plugin provides agenda rows".to_string(),
+        }
+    }
+}
+
 /// The closure registered on the generic provider-view seam, and therefore
 /// the whole of what the host does for this feature: the host arm looks the
 /// name up, calls this with itself as the activator, and applies the returned
@@ -185,12 +229,30 @@ impl AgendaService for InMemoryAgendaService {
 /// clear is visible before the first rows land instead of the two scans
 /// briefly showing together.
 pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderViewOutcome {
+    open_scan_view(activator, &ScanViewIdentity::agenda(), args)
+}
+
+/// MV.3: the agenda's opener, with its identity as a parameter.
+///
+/// Byte-for-byte the previous `open_agenda` body except that the four names it
+/// used to hard-code now come from `identity`. Kept that way on purpose: the
+/// agenda is the first thing ever to run through the plugin-view seam (MV.2 was
+/// dropped), so the migration must be a rename of who-decides, not a rewrite of
+/// what-happens. Every existing agenda test passes unedited, which is the only
+/// signal separating "ownership moved" from "behaviour moved".
+pub fn open_scan_view(
+    activator: &mut dyn ModeActivator,
+    identity: &ScanViewIdentity,
+    args: &Args,
+) -> ProviderViewOutcome {
+    let name = identity.provider.as_str();
     let services = activator.services();
 
     let Some(sources) = services.get::<ScannedExcerptSourceRegistryHandle>() else {
         return ProviderViewOutcome::Declined {
-            message: "agenda: no scanned-excerpt-source registry; the plugin host is not wired"
-                .to_string(),
+            message: format!(
+                "{name}: no scanned-excerpt-source registry; the plugin host is not wired"
+            ),
         };
     };
     let snapshot = sources.load();
@@ -199,13 +261,13 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
         // plugin installed. Opening an empty view and leaving the user to
         // guess why is the worse UX (the `Declined` contract).
         return ProviderViewOutcome::Declined {
-            message: "agenda: no plugin provides agenda rows".to_string(),
+            message: format!("{name}: {}", identity.no_rows_message),
         };
     }
 
     let Some(registry) = services.get::<CommandRegistryHandle>() else {
         return ProviderViewOutcome::Declined {
-            message: "agenda: command registry unavailable; cannot open the view".to_string(),
+            message: format!("{name}: command registry unavailable; cannot open the view"),
         };
     };
     let lang_registry = services
@@ -217,7 +279,7 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
     // activator mutably.
     let view_modes = snapshot.view_modes();
 
-    let existing = existing_view(&services);
+    let existing = existing_view(&services, &identity.buffer_name);
 
     // The root, in precedence order: an explicit argument, else the root the
     // OPEN view already shows, else the active buffer's project.
@@ -251,7 +313,7 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
             activator,
             HashMap::new(),
             Vec::new(),
-            Some(VIEW_NAME.to_string()),
+            Some(identity.buffer_name.clone()),
             BufferFlags::default(),
             (*registry).clone(),
             lang_registry,
@@ -260,12 +322,12 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
 
     let Some(mb_registry) = services.get::<MultibufferRegistryHandle>() else {
         return ProviderViewOutcome::Declined {
-            message: "agenda: multibuffer registry unavailable; cannot open the view".to_string(),
+            message: format!("{name}: multibuffer registry unavailable; cannot open the view"),
         };
     };
     let Some(handle) = mb_registry.handle(view) else {
         return ProviderViewOutcome::Declined {
-            message: "agenda: the view failed to open".to_string(),
+            message: format!("{name}: the view failed to open"),
         };
     };
 
@@ -297,6 +359,15 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
     // wiring — the same shape `project_search` uses for `ProjectSearchMode`.
     activator.activate_minor_by_id(view, AgendaViewMode::mode_id());
 
+    // MV.3: the view OWNER's minor, when it declared one. Distinct from the
+    // per-source minors below: this one belongs to whoever owns the view, those
+    // belong to whoever produced its rows. The agenda declares none — its
+    // interactions come through its sources' `view-mode`, which is how
+    // `org-agenda-mode` reaches it today and continues to.
+    if let Some(mode) = identity.view_mode.as_deref() {
+        activator.activate_minor_by_id(view, lattice_mode::ModeId::new(mode));
+    }
+
     // …and each SOURCE's own minor, so a producer can act on its own rows.
     // The host stays generic: it activates a mode by the name the source
     // declared and never learns what the chords do. A name that is not
@@ -319,14 +390,14 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
 
     ProviderViewOutcome::Opened {
         view,
-        message: Some("agenda: scanning…".to_string()),
+        message: Some(format!("{name}: scanning…")),
     }
 }
 
 /// The already-open agenda view, if there is one.
-fn existing_view(services: &ServiceRegistry) -> Option<BufferId> {
+fn existing_view(services: &ServiceRegistry, view_name: &str) -> Option<BufferId> {
     let buffers = services.get::<lattice_mode::BufferStoreHandle>()?;
-    let id = buffers.find_by_name(VIEW_NAME)?;
+    let id = buffers.find_by_name(view_name)?;
     let registry = services.get::<MultibufferRegistryHandle>()?;
     registry.handle(id).map(|_| id)
 }

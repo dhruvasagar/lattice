@@ -114,12 +114,14 @@ async fn a_views_identity_crosses() {
 
     let scan = specs.iter().find(|s| s.id == "fixture-scan").unwrap();
     assert!(!scan.reuse, "a view may ask for a fresh buffer each time");
-    match &scan.input {
-        lattice_plugin_host::lattice::plugin_host::types::MultibufferViewInput::Scan(exts) => {
-            assert_eq!(exts, &["txt".to_string()]);
-        }
-        other => panic!("expected a scan input, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            scan.input,
+            lattice_plugin_host::lattice::plugin_host::types::MultibufferViewInput::Scan
+        ),
+        "a view declares WHICH input model it uses; the extensions come from the \
+         scan sources themselves rather than being restated here"
+    );
 }
 
 /// `build` is told WHICH view and WITH what — the inputs a view that serves

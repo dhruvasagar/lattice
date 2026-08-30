@@ -49,7 +49,7 @@ impl Guest for Component {
             buffer_name: "*fixture-scan*".to_string(),
             view_mode: None,
             reuse: false,
-            input: MultibufferViewInput::Scan(vec!["txt".to_string()]),
+            input: MultibufferViewInput::Scan,
         });
         // An unnamed view: the host must refuse this one and keep the two
         // above, rather than dropping the plugin's whole contribution.

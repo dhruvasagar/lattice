@@ -168,24 +168,51 @@ than it did:** every existing agenda test must pass **unedited**. A test that
 had to be adapted is the signal that behaviour moved rather than ownership, and
 with no prior consumer it is the only signal there is.
 
-### MV.3 — the agenda migrates 📝
+### MV.3 — the agenda migrates ✅
 
 **Deps:** MV.1b. (MV.2 dropped — see above.)
 
-`providers/agenda.rs` becomes the **scan input strategy** the generic provider
-uses rather than a provider of its own. `*agenda*`, the reuse policy, the
-provider name and `org-agenda-mode` move into org's `view-spec`; the walk, the
-batched reads, the read-and-parse-once handoff, the stable sort, the group-run
-computation and the walk's progress headerline all stay host-side.
+Org declares the agenda through `multibuffer-view-source`; the native
+`register_agenda_provider` call is gone from `install.rs`. `*agenda*`, the
+provider name and the reuse policy now come from org's `view-spec`.
 
-**The regression surface is the whole agenda**, so this slice is the one that
-needs the existing agenda tests to pass unchanged rather than adapted. A test
-that had to be edited to keep passing is the signal that behaviour moved.
+**A rename of who-decides, not a rewrite of what-happens.** `open_agenda`
+became a thin call into `open_scan_view(activator, identity, args)` — the same
+body, with the four names it hard-coded lifted into a `ScanViewIdentity`
+parameter. The walk, the batched reads, the read-and-parse-once handoff, the
+stable sort across files, the group-run computation and the progress headerline
+all stayed exactly where they were, because none of it is org-specific and all
+of it is measured.
 
-**Tests:** every existing agenda test, unedited; plus rows still interleaving by
-`sort_key` across files, the group header still landing on the first row of each
-run after the sort, and the headerline still reporting files scanned during the
-walk.
+**The "existing tests pass unedited" rule earned its place.** Parameterising the
+messages reworded the agenda's decline from *"no plugin provides agenda rows"*
+to *"no plugin provides rows for it"*, and
+`agenda_declines_when_no_plugin_provides_rows` failed on it. A user-visible
+message IS behaviour, so the fix was to restore the wording — the message became
+a field on the identity, with the agenda's exact sentence — rather than to edit
+the assertion. **No agenda assertion was changed.**
+
+**What the migration did cost, stated plainly rather than buried:**
+
+- **Test SETUP changed in six org harnesses.** Declaring a seam the host has not
+  wired is fatal (`NotWired` propagates and the whole load fails — the
+  `picker-source` rule), so every harness that loads org now wires
+  `provider_view_registry` and `multibuffer_registry` from the editor's own
+  service registry. The org-agenda manifest also declares the new seam. These
+  are setup, not assertions, and the distinction is the point: setup changing
+  means ownership moved, an assertion changing would have meant behaviour did.
+- **`view_input::scan` lost its payload.** It carried the file extensions, which
+  a scan source already declares through `extensions()` — two places to say one
+  thing. Removed before anything bound to it.
+- **No agenda without org.** The provider is org's now, so a host without the
+  plugin has no `agenda` provider at all. Nothing is lost: the agenda's ROWS
+  always came from org's scan source, so such a host had a view that could only
+  say "no plugin provides agenda rows", and the trigger (`:org-agenda`) was
+  org's too. The provider and its command now arrive together.
+
+**`view_mode: None` in org's spec, deliberately.** `org-agenda-mode` reaches the
+view through the SOURCE's `view-mode` export, which is where it has always come
+from. Naming it on the view as well would activate it twice.
 
 ### MV.4 — docs 📝
 

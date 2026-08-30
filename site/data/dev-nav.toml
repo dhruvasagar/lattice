@@ -115,6 +115,7 @@ description = "Everything-is-a-buffer in practice: multibuffers, panes, pickers,
 [[section.group]]
 docs = [
   "architecture/multibuffer-views",
+  "architecture/plugin-multibuffer-views",
   "architecture/multibuffer-is-a-regular-buffer",
   "architecture/multibuffer-stale-sources",
   "architecture/multibuffer-syntax",

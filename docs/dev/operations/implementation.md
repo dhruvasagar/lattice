@@ -6847,13 +6847,32 @@ meant to exist.
 | OR.7 | inserting a link — a completion source, not a picker | ✅ |
 | OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
-| OR.9 | the backlinks view | 📝 |
+| OR.9 | backlinks — a picker, and why not a multibuffer | 🚧 |
 | OR.10 | dailies | 📝 |
 | OR.11 | roam capture templates and `${field}` | 📝 |
 | OR.12 | docs | 📝 |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
 Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
+
+### Plugin-owned multibuffer views (MV)
+
+| Slice | What | Status |
+|---|---|---|
+| MV.0 | the seam stops claiming to be the agenda (`scanned-excerpt-source`) | ✅ |
+| MV.1 | the seam and the generic provider | 📝 |
+| MV.2 | org registers a view | 📝 |
+| MV.3 | the agenda migrates onto it | 📝 |
+| MV.4 | docs | 📝 |
+
+Design: [`../architecture/plugin-multibuffer-views.md`](../architecture/plugin-multibuffer-views.md).
+Slice plan: [`slice-plans/plugin-multibuffer-views.md`](slice-plans/plugin-multibuffer-views.md).
+
+Came out of OR.9. A plugin can feed rows to the one multibuffer the host built
+for it, and can own that view's chords through the `view-mode` export — but it
+cannot create a view, name it, order it, or refresh it, because
+`ProviderViewOpener` is a native Rust closure with no WIT path. Org's second
+view had nowhere to go, and neither would any third-party plugin's first.
 
 `org-mode.md` §10 lists org-roam as a cut, and OT.3b's note on why the agenda's
 cache could not serve it — *"org-roam, when it comes, does not want a snapshot

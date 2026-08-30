@@ -150,10 +150,19 @@ async fn unload_reverses_picker_and_grammar_contributions() {
         .loader
         .unload("picker-fixture")
         .expect("picker was loaded");
-    assert_eq!(report.pickers, 1, "one picker source reversed");
+    // OR.5b: the fixture registers TWO sources from one component, so unload
+    // reverses two. That count is the assertion that matters here — a teardown
+    // that recorded one token per PLUGIN rather than one per SOURCE would leave
+    // the second source registered against a dead actor, and every later open
+    // of it would be a `PluginGone`.
+    assert_eq!(report.pickers, 2, "both picker sources reversed");
     assert!(
         r.pickers.load().get("fixture").is_none(),
         "picker source gone"
+    );
+    assert!(
+        r.pickers.load().get("fixture-second").is_none(),
+        "and so is the second one — this is the half a per-plugin token misses"
     );
     assert!(!r.loader.is_loaded("picker-fixture"), "record removed");
     assert!(

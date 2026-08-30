@@ -1690,34 +1690,47 @@ impl PluginLoader {
             .await?;
 
         // Drive the actor's request loop on the multi-thread runtime FIRST —
-        // `connect` below issues a `spec()` guest call over the client channel,
-        // which the actor must be running to answer (else the await deadlocks).
-        // PO.2: attach the boundary tracer so the actor emits a trace record per
-        // guest call (a no-op when unwired).
+        // `connect_all` below issues a `register-picker-sources()` guest call
+        // over the client channel, which the actor must be running to answer
+        // (else the await deadlocks). PO.2: attach the boundary tracer so the
+        // actor emits a trace record per guest call (a no-op when unwired).
         let actor = actor.with_tracer(self.env.tracer.clone());
+        // The host-issued id, captured before `client` moves into the
+        // registration call — a plugin that declares NO sources still loaded,
+        // and still has an identity to report.
+        let plugin_id = client.id();
         let task = runtime.spawn(actor.run());
 
-        // The spec fetch is a guest call; a malformed spec fails registration
-        // loudly rather than registering a broken source.
-        let source = WasmPickerSource::connect(client).await?;
-        let id = source.plugin_id();
-        // PL8.F: `spec().id` is `Cow` now — own it for the teardown token
-        // before `source` moves into the generator below.
-        let source_id = source.spec().id.to_string();
+        // OR.5b: registration is a guest call that may declare SEVERAL sources.
+        // A trapping registration fails loudly rather than registering broken
+        // sources; an empty list registers nothing, which is what a plugin that
+        // declared nothing asked for.
+        let sources = WasmPickerSource::connect_all(client).await?;
+        let id = plugin_id;
+        // Own the ids for the teardown tokens before the sources move into the
+        // generators below.
+        let source_ids: Vec<String> = sources.iter().map(|s| s.spec().id.to_string()).collect();
 
         // Copy-on-write RCU into the wait-free registry: clone the current
-        // snapshot, add the source, publish. Concurrent picker-open readers keep
-        // seeing the old snapshot until the store lands — no lock on their path.
-        let generator: Arc<dyn PickerSourceGenerator> = Arc::new(source);
+        // snapshot, add every source, publish. Concurrent picker-open readers
+        // keep seeing the old snapshot until the store lands — no lock on their
+        // path. ONE rcu for the whole batch, so a plugin's sources appear
+        // together rather than one snapshot at a time.
+        let generators: Vec<Arc<dyn PickerSourceGenerator>> = sources
+            .into_iter()
+            .map(|s| Arc::new(s) as Arc<dyn PickerSourceGenerator>)
+            .collect();
         registry.rcu(|current| {
             let mut next = (**current).clone();
-            next.register_generator(generator.clone());
+            for generator in &generators {
+                next.register_generator(generator.clone());
+            }
             Arc::new(next)
         });
 
         record.tasks.push(task);
-        // Teardown token: the picker registry unregisters this source by id.
-        record.teardown.picker_sources.push(source_id);
+        // Teardown tokens: the picker registry unregisters each source by id.
+        record.teardown.picker_sources.extend(source_ids);
         Ok(id)
     }
 

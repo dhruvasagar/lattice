@@ -965,6 +965,10 @@ struct PluginState {
     /// the failure this seam exists to prevent — a picker seam holding a store
     /// the grammar seam cannot see is the drift, not a degradation of it.
     store: Option<plugin_store::PluginStoreHandle>,
+    /// OR.5b: the picker sources this guest declared during
+    /// `register-picker-sources`. Drained by `spawn_picker_source` after the
+    /// export returns — the `grammar_contributions` shape.
+    picker_contributions: picker_host::PickerContributions,
     /// OR.2: the directory watches this guest armed, keyed by the path it named.
     ///
     /// **On the `Store`, not in a host-side registry**, and that is the whole
@@ -1217,6 +1221,28 @@ impl PluginState {
 /// reaches the registry, so one plugin cannot address another's element or a
 /// built-in. Logic + the namespacing live in [`ui_host`] so they are testable
 /// without a `Store`; this impl is the wiring and the absent-context arm.
+/// OR.5b: the `picker-registry` guest→host seam — where a plugin declares its
+/// picker sources.
+///
+/// The `grammar::register_*` shape: a sync host func that only records into
+/// `PluginState`, drained by the spawn path after the registration export
+/// returns. A spec that will not cross the boundary is dropped with a `warn`
+/// rather than failing the whole registration — one malformed source must not
+/// cost a plugin its other ones.
+impl crate::picker_host::bindings::lattice::plugin_host::picker_registry::Host for PluginState {
+    fn register_picker_source(
+        &mut self,
+        spec: crate::lattice::plugin_host::types::PickerSourceSpec,
+    ) {
+        match <lattice_picker::source::PickerSourceSpec as WitBoundary>::from_wit(spec) {
+            Ok(spec) => self.picker_contributions.push(spec),
+            Err(error) => {
+                tracing::warn!(%error, "register-picker-source refused: spec did not cross");
+            }
+        }
+    }
+}
+
 impl crate::lattice::plugin_host::ui::Host for PluginState {
     fn register_segment(
         &mut self,
@@ -2628,6 +2654,14 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OR.5b: the `picker-registry` seam a picker plugin declares its sources
+        // through. A sync host func that only records into `PluginState`; inert
+        // for every world that does not import it.
+        crate::picker_host::bindings::lattice::plugin_host::picker_registry::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // PM.7: the `plugin-manager` (`require`) seam. A sync host func — it
         // only records into `PluginState` — and inert for every world that
         // does not import `plugin-manager`, which is all of them but the
@@ -2790,6 +2824,16 @@ impl PluginHost {
         // parse — the tree is already there), correct for the dispatch-thread
         // trampoline.
         crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut grammar_linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // OR.5b: `picker-registry` on the SYNC grammar linker too. Org provides
+        // both `grammar` and `picker-source`, and a component's import set must
+        // resolve on EVERY linker it is instantiated against — an import absent
+        // here fails the WHOLE component, not one seam. That is the OC.2 scar,
+        // and this is the fifth seam to be wired on both for it.
+        crate::picker_host::bindings::lattice::plugin_host::picker_registry::add_to_linker::<
             _,
             HasSelf<_>,
         >(&mut grammar_linker, |state: &mut PluginState| state)
@@ -3259,6 +3303,7 @@ impl PluginHost {
             // a store its sibling seams cannot see IS the drift this exists to
             // prevent, so the wiring must not be per-path.
             store: name.and_then(|id| self.store_for(id)),
+            picker_contributions: picker_host::PickerContributions::default(),
             // OR.2: empty until the guest arms one; dropped with this `Store`.
             watches: std::collections::HashMap::new(),
             require_contributions: Default::default(),

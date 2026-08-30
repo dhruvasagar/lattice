@@ -111,18 +111,20 @@ async fn picker_calls_emit_boundary_trace_records() {
         .expect("picker source instantiates");
     tokio::spawn(actor.with_tracer(Some(tracer.clone())).run());
 
-    let _ = client.spec().await.expect("spec reaches the guest");
     let _ = client
-        .init(ctx("/ws"), vec!["hello".into()])
+        .register_sources()
+        .await
+        .expect("registration reaches the guest");
+    let _ = client
+        .init("fixture".into(), ctx("/ws"), vec!["hello".into()])
         .await
         .expect("init reaches the guest");
 
     let recs = tracer.snapshot_global();
     assert!(
-        recs.iter()
-            .any(|r| r.call == "spec"
-                && matches!(r.seam, lattice_plugin_host::PluginSeam::PickerSource)),
-        "the `spec` guest call emitted a PickerSource boundary trace"
+        recs.iter().any(|r| r.call == "register-picker-sources"
+            && matches!(r.seam, lattice_plugin_host::PluginSeam::PickerSource)),
+        "the registration guest call emitted a PickerSource boundary trace"
     );
     assert!(
         recs.iter().any(|r| r.call == "init"),
@@ -146,11 +148,18 @@ async fn a_plugin_source_declares_its_create_label() {
     let tmp = tempfile::tempdir().unwrap();
     let client = spawn(&host_in(&tmp)).await;
 
-    let spec = client.spec().await.expect("spec reaches the guest");
+    let specs = client
+        .register_sources()
+        .await
+        .expect("registration reaches the guest");
     assert_eq!(
-        spec.create_label.as_deref(),
+        specs[0].create_label.as_deref(),
         Some("Create fixture: %s"),
         "the guest's declaration crossed as declared"
+    );
+    assert_eq!(
+        specs[1].create_label, None,
+        "and a source that declares none still gets none"
     );
 }
 
@@ -172,7 +181,11 @@ async fn accepting_the_create_row_hands_the_source_the_query_verbatim() {
 
     for query in ["Rust", "  Ünïcode  note  ", "a/b\\c:d"] {
         let outcome = client
-            .accept(ctx("/ws"), RoutingPayload::Create(query.to_string()))
+            .accept(
+                "fixture".into(),
+                ctx("/ws"),
+                RoutingPayload::Create(query.to_string()),
+            )
             .await
             .expect("the create routing reaches the guest")
             .expect("the guest handled the create token");
@@ -189,6 +202,53 @@ async fn accepting_the_create_row_hands_the_source_the_query_verbatim() {
     }
 }
 
+/// **The test the slice exists for.** One component, two sources, and the id
+/// ROUTES — `init` and `accept` reach different guest bodies.
+///
+/// Without this, "two specs came back" would be satisfied by a guest that
+/// registered twice and answered identically, which is the version of this
+/// feature that looks right and is useless.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_source_id_routes_to_the_right_body() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: picker_actor routing — fixture guest not built");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let client = spawn(&host_in(&tmp)).await;
+
+    let first = client
+        .init("fixture".into(), ctx("/ws"), vec!["a".into()])
+        .await
+        .expect("init reaches the guest")
+        .expect("the first source produced candidates");
+    let second = client
+        .init("fixture-second".into(), ctx("/ws"), vec!["a".into()])
+        .await
+        .expect("init reaches the guest")
+        .expect("the second source produced candidates");
+    assert_ne!(
+        first[0].candidate.text, second[0].candidate.text,
+        "the two sources answered differently, so the id routed"
+    );
+    assert_eq!(second[0].candidate.text, "from-second");
+
+    // …and `accept` routes too, not just `init`.
+    let outcome = client
+        .accept(
+            "fixture-second".into(),
+            ctx("/ws"),
+            RoutingPayload::OpenFile("/ignored".into()),
+        )
+        .await
+        .expect("accept reaches the guest")
+        .expect("the second source resolved it");
+    assert!(
+        matches!(&outcome, PickerAcceptOutcome::OpenFile(p) if p == "/second/accepted"),
+        "the second source's own accept body ran: {outcome:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spec_init_accept_round_trip_through_the_channel() {
     let Some(_) = guest_wasm() else {
@@ -199,15 +259,26 @@ async fn spec_init_accept_round_trip_through_the_channel() {
     let host = host_in(&tmp);
     let client = spawn(&host).await;
 
-    // `spec()` — the no-`result` reply path.
-    let spec = client.spec().await.expect("spec call reaches the guest");
-    assert_eq!(spec.id, "fixture");
-    assert!(!spec.live);
+    // OR.5b: registration — the guest declares its sources by CALLING, so the
+    // reply is however many it declared. Two, from one component, which is the
+    // whole slice.
+    let specs = client
+        .register_sources()
+        .await
+        .expect("registration reaches the guest");
+    assert_eq!(specs.len(), 2, "one component, two sources: {specs:?}");
+    assert_eq!(specs[0].id, "fixture");
+    assert!(!specs[0].live);
+    assert_eq!(specs[1].id, "fixture-second");
 
     // `init()` happy path — the fixture echoes `args` and `workspace_root`, so a
     // match here proves both inputs crossed the channel into the guest.
     let pairs = client
-        .init(ctx("/ws/root"), vec!["hello".into(), "world".into()])
+        .init(
+            "fixture".into(),
+            ctx("/ws/root"),
+            vec!["hello".into(), "world".into()],
+        )
         .await
         .expect("init call reaches the guest")
         .expect("guest produced candidates");
@@ -222,6 +293,7 @@ async fn spec_init_accept_round_trip_through_the_channel() {
     // `accept()` maps a routing token to an outcome (happy path).
     let outcome = client
         .accept(
+            "fixture".into(),
             ctx("/ws/root"),
             RoutingPayload::OpenFile("/some/file".into()),
         )
@@ -243,7 +315,7 @@ async fn guest_typed_errors_surface_as_inner_err_not_a_host_trap() {
     // `init(["fail"])` returns the guest's WIT `err` — the OUTER result is `Ok`
     // (no host trap), the INNER is `Err(message)`.
     let init = client
-        .init(ctx("/ws"), vec!["fail".into()])
+        .init("fixture".into(), ctx("/ws"), vec!["fail".into()])
         .await
         .expect("call reached the guest (no host-side trap)");
     // Compare only the err arm (the generated `CandidatePair` need not derive
@@ -252,7 +324,11 @@ async fn guest_typed_errors_surface_as_inner_err_not_a_host_trap() {
 
     // `accept` of a token the fixture doesn't recognise is likewise an inner err.
     let accept = client
-        .accept(ctx("/ws"), RoutingPayload::LspCompletion(7))
+        .accept(
+            "fixture".into(),
+            ctx("/ws"),
+            RoutingPayload::LspCompletion(7),
+        )
         .await
         .expect("call reached the guest");
     assert!(accept.is_err());
@@ -284,8 +360,10 @@ async fn calls_after_the_actor_ends_are_a_typed_plugin_gone_error() {
     handle.abort();
     let _ = handle.await;
 
-    match client.spec().await {
-        Err(PluginHostError::PluginGone { func }) => assert_eq!(func, "spec"),
+    match client.register_sources().await {
+        Err(PluginHostError::PluginGone { func }) => {
+            assert_eq!(func, "register-picker-sources")
+        }
         other => panic!("expected PluginGone, got {other:?}"),
     }
 }

@@ -19,18 +19,29 @@ wit_bindgen::generate!({
     path: "../../../../../wit",
 });
 
-use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest};
+use exports::lattice::plugin_host::picker_source::{CandidatePair, Guest as PickerSourceGuest};
+use lattice::plugin_host::picker_registry::register_picker_source;
 use lattice::plugin_host::types::{
     CandidateData, CandidateKind, PickerAcceptOutcome, PickerContext, PickerSourceSpec,
     RawCandidate, RoutingPayload,
 };
 
+/// OR.5b: this fixture registers TWO sources, because one is exactly the case
+/// the old seam already handled and the second is the whole slice.
+const FIXTURE: &str = "fixture";
+const SECOND: &str = "fixture-second";
+
 struct Component;
 
+/// OR.5b: the WORLD-level registration export. The host calls it once; the
+/// guest declares each source through the imported `register-picker-source`.
+///
+/// Two sources, because one is exactly the case the old seam already handled
+/// and the second is the whole point of the slice.
 impl Guest for Component {
-    fn spec() -> PickerSourceSpec {
-        PickerSourceSpec {
-            id: "fixture".to_string(),
+    fn register_picker_sources() {
+        register_picker_source(&PickerSourceSpec {
+            id: FIXTURE.to_string(),
             doc: "PH7.4c.1b fixture picker source".to_string(),
             args_schema: Vec::new(),
             args_hint: "[fail]".to_string(),
@@ -38,10 +49,28 @@ impl Guest for Component {
             // OR.5: the source declares that it can create what the query
             // names. `%s` is replaced by the query when the row renders.
             create_label: Some("Create fixture: %s".to_string()),
-        }
+        });
+        register_picker_source(&PickerSourceSpec {
+            id: SECOND.to_string(),
+            doc: "OR.5b: a SECOND source from the same component".to_string(),
+            args_schema: Vec::new(),
+            args_hint: String::new(),
+            live: false,
+            create_label: None,
+        });
     }
+}
 
-    fn init(ctx: PickerContext, args: Vec<String>) -> Result<Vec<CandidatePair>, String> {
+impl PickerSourceGuest for Component {
+    fn init(source: String, ctx: PickerContext, args: Vec<String>) -> Result<Vec<CandidatePair>, String> {
+        // OR.5b: the second source answers differently, so a test can prove the
+        // id ROUTED rather than that two registrations both reached one body.
+        if source == SECOND {
+            return Ok(vec![CandidatePair {
+                candidate: candidate("from-second"),
+                routing: RoutingPayload::OpenFile("/second".to_string()),
+            }]);
+        }
         // The guest's typed WIT `result` err path — distinct from a host trap.
         if args.iter().any(|a| a == "fail") {
             return Err("fixture asked to fail".to_string());
@@ -62,7 +91,17 @@ impl Guest for Component {
         ])
     }
 
-    fn accept(_ctx: PickerContext, routing: RoutingPayload) -> Result<PickerAcceptOutcome, String> {
+    fn accept(
+        source: String,
+        _ctx: PickerContext,
+        routing: RoutingPayload,
+    ) -> Result<PickerAcceptOutcome, String> {
+        // OR.5b: the second source's accept is distinguishable too — otherwise a
+        // test could not tell "routed to the right source" from "there is only
+        // one body".
+        if source == SECOND {
+            return Ok(PickerAcceptOutcome::OpenFile("/second/accepted".to_string()));
+        }
         match routing {
             RoutingPayload::OpenFile(p) => Ok(PickerAcceptOutcome::OpenFile(p)),
             RoutingPayload::Buffer(id) => Ok(PickerAcceptOutcome::SwitchBuffer(id)),

@@ -50,6 +50,11 @@ use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
     TrustTier, arm_store,
 };
+/// OR.5b: the NATIVE spec. `register-picker-source` converts each spec at the
+/// host-import call, so the actor hands back specs that have already crossed —
+/// converting again here would be doing the same work twice and giving the
+/// second attempt a chance to disagree.
+use lattice_picker::source::PickerSourceSpec as NativePickerSourceSpec;
 
 // The picker WIT records the bridge's public API traffics in. They are the
 // `with:`-mapped `types` mirrors (`picker_host.rs`) plus the picker-interface
@@ -77,21 +82,29 @@ type CallResult<T> = Result<T, PluginHostError>;
 /// carries the guest inputs plus the `oneshot` the actor replies on. The large
 /// [`PickerContext`] projection is boxed so the enum stays small.
 enum PickerCall {
-    /// `picker-source.spec()` — the source's declared metadata. No WIT
-    /// `result`; the reply is the spec or a host-side trap.
-    Spec {
-        reply: oneshot::Sender<CallResult<PickerSourceSpec>>,
+    /// OR.5b: `register-picker-sources()` — drive the guest's registration
+    /// export, then hand back every spec it declared through the imported
+    /// `register-picker-source`.
+    ///
+    /// Replaces `spec()`. The difference is the slice: a component used to BE
+    /// one source and now DECLARES N, so registration is a call the guest makes
+    /// rather than a value the host reads.
+    RegisterSources {
+        reply: oneshot::Sender<CallResult<Vec<NativePickerSourceSpec>>>,
     },
-    /// `picker-source.init(ctx, args)` — build the candidate set. Replies the
-    /// guest's `result<list<candidate-pair>, string>` (or a host trap).
+    /// `picker-source.init(source, ctx, args)` — build the candidate set for
+    /// ONE of this plugin's sources. Replies the guest's
+    /// `result<list<candidate-pair>, string>` (or a host trap).
     Init {
+        source: String,
         ctx: Box<PickerContext>,
         args: Vec<String>,
         reply: oneshot::Sender<CallResult<Result<Vec<CandidatePair>, String>>>,
     },
-    /// `picker-source.accept(ctx, routing)` — resolve a chosen routing token.
-    /// Replies the guest's `result<picker-accept-outcome, string>`.
+    /// `picker-source.accept(source, ctx, routing)` — resolve a chosen routing
+    /// token. Replies the guest's `result<picker-accept-outcome, string>`.
     Accept {
+        source: String,
         ctx: Box<PickerContext>,
         routing: RoutingPayload,
         reply: oneshot::Sender<CallResult<Result<PickerAcceptOutcome, String>>>,
@@ -115,25 +128,36 @@ impl PickerClient {
         self.id
     }
 
-    /// Call the guest's `spec()`. Returns the source's declared metadata, or a
-    /// typed host error ([`PluginGone`](PluginHostError::PluginGone) if the
-    /// actor has ended, [`Trap`](PluginHostError::Trap) on fuel/epoch/wasm).
-    pub async fn spec(&self) -> CallResult<PickerSourceSpec> {
+    /// OR.5b: drive the guest's `register-picker-sources()` and collect every
+    /// source it declared. Returns a typed host error
+    /// ([`PluginGone`](PluginHostError::PluginGone) if the actor has ended,
+    /// [`Trap`](PluginHostError::Trap) on fuel/epoch/wasm).
+    ///
+    /// An empty list is not an error: a plugin that provides the seam and
+    /// declares nothing registers nothing, which is what it asked for.
+    pub async fn register_sources(&self) -> CallResult<Vec<NativePickerSourceSpec>> {
         let (reply, rx) = oneshot::channel();
-        self.dispatch(PickerCall::Spec { reply }, rx, "spec").await
+        self.dispatch(
+            PickerCall::RegisterSources { reply },
+            rx,
+            "register-picker-sources",
+        )
+        .await
     }
 
-    /// Call the guest's `init(ctx, args)`. The outer result is the host surface;
-    /// the inner `Result<_, String>` is the guest's own WIT `result` (an `Err`
-    /// string is a source that declined to produce candidates).
+    /// Call the guest's `init(source, ctx, args)`. The outer result is the host
+    /// surface; the inner `Result<_, String>` is the guest's own WIT `result`
+    /// (an `Err` string is a source that declined to produce candidates).
     pub async fn init(
         &self,
+        source: String,
         ctx: PickerContext,
         args: Vec<String>,
     ) -> CallResult<Result<Vec<CandidatePair>, String>> {
         let (reply, rx) = oneshot::channel();
         self.dispatch(
             PickerCall::Init {
+                source,
                 ctx: Box::new(ctx),
                 args,
                 reply,
@@ -144,16 +168,18 @@ impl PickerClient {
         .await
     }
 
-    /// Call the guest's `accept(ctx, routing)` — translate the user's chosen
-    /// routing token into a typed outcome the host applies.
+    /// Call the guest's `accept(source, ctx, routing)` — translate the user's
+    /// chosen routing token into a typed outcome the host applies.
     pub async fn accept(
         &self,
+        source: String,
         ctx: PickerContext,
         routing: RoutingPayload,
     ) -> CallResult<Result<PickerAcceptOutcome, String>> {
         let (reply, rx) = oneshot::channel();
         self.dispatch(
             PickerCall::Accept {
+                source,
                 ctx: Box::new(ctx),
                 routing,
                 reply,
@@ -222,47 +248,62 @@ impl PickerActor {
     pub async fn run(mut self) {
         while let Some(call) = self.rx.next().await {
             match call {
-                PickerCall::Spec { reply } => {
-                    let _ = reply.send(self.call_spec().await);
+                PickerCall::RegisterSources { reply } => {
+                    let _ = reply.send(self.call_register_sources().await);
                 }
-                PickerCall::Init { ctx, args, reply } => {
-                    let _ = reply.send(self.call_init(&ctx, &args).await);
+                PickerCall::Init {
+                    source,
+                    ctx,
+                    args,
+                    reply,
+                } => {
+                    let _ = reply.send(self.call_init(&source, &ctx, &args).await);
                 }
                 PickerCall::Accept {
+                    source,
                     ctx,
                     routing,
                     reply,
                 } => {
-                    let _ = reply.send(self.call_accept(&ctx, &routing).await);
+                    let _ = reply.send(self.call_accept(&source, &ctx, &routing).await);
                 }
             }
         }
     }
 
-    async fn call_spec(&mut self) -> CallResult<PickerSourceSpec> {
+    /// OR.5b: drive `register-picker-sources`, then drain what the guest
+    /// declared through the imported `register-picker-source`.
+    ///
+    /// The drain reads `PluginState` AFTER the export returns, which is the
+    /// `register-grammar` shape — a guest registers by calling, so the specs do
+    /// not exist until its body has run.
+    async fn call_register_sources(&mut self) -> CallResult<Vec<NativePickerSourceSpec>> {
         if self.quarantine.is_tripped() {
-            return Err(PluginHostError::Quarantined { func: "spec" });
+            return Err(PluginHostError::Quarantined {
+                func: "register-picker-sources",
+            });
         }
         arm_store(&mut self.store, self.budget)?;
         let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
-            .lattice_plugin_host_picker_source()
-            .call_spec(&mut self.store)
+            .call_register_picker_sources(&mut self.store)
             .await;
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
             crate::PluginSeam::PickerSource,
             &mut self.quarantine,
-            "spec",
+            "register-picker-sources",
             __trace_start,
             result,
-        )
+        )?;
+        Ok(self.store.data_mut().picker_contributions.take())
     }
 
     async fn call_init(
         &mut self,
+        source: &str,
         ctx: &PickerContext,
         args: &[String],
     ) -> CallResult<Result<Vec<CandidatePair>, String>> {
@@ -274,7 +315,7 @@ impl PickerActor {
         let result = self
             .bindings
             .lattice_plugin_host_picker_source()
-            .call_init(&mut self.store, ctx, args)
+            .call_init(&mut self.store, source, ctx, args)
             .await;
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
@@ -289,6 +330,7 @@ impl PickerActor {
 
     async fn call_accept(
         &mut self,
+        source: &str,
         ctx: &PickerContext,
         routing: &RoutingPayload,
     ) -> CallResult<Result<PickerAcceptOutcome, String>> {
@@ -300,7 +342,7 @@ impl PickerActor {
         let result = self
             .bindings
             .lattice_plugin_host_picker_source()
-            .call_accept(&mut self.store, ctx, routing)
+            .call_accept(&mut self.store, source, ctx, routing)
             .await;
         crate::trip_and_map_traced(
             self.tracer.as_ref(),

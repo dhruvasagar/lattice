@@ -44,26 +44,50 @@ use crate::boundary_picker::project_picker_context;
 use crate::picker_task::{CandidatePair, PickerContext as WitPickerContext};
 use crate::{PickerClient, PluginHostError};
 
-/// An `Arc<dyn PickerSourceGenerator>`-ready adapter over a picker plugin's
-/// [`PickerClient`]. Cheap to clone (the client is an mpsc `Sender` clone + a
-/// cached spec); every clone talks to the same actor.
+/// An `Arc<dyn PickerSourceGenerator>`-ready adapter over ONE of a picker
+/// plugin's registered sources.
+///
+/// Cheap to clone (the client is an mpsc `Sender` clone + a cached spec); every
+/// clone talks to the same actor. **N adapters share one actor and one guest
+/// instance** since OR.5b — each carries the source id it was registered under
+/// and passes it on every `init` / `accept`, which is how one component serves
+/// several pickers.
 pub struct WasmPickerSource {
     client: PickerClient,
-    /// The native spec, converted once at [`connect`](Self::connect). Held so
-    /// the trait's `spec(&self) -> &PickerSourceSpec` is a borrow.
+    /// The native spec, converted once at registration. Held so the trait's
+    /// `spec(&self) -> &PickerSourceSpec` is a borrow.
     spec: PickerSourceSpec,
+    /// Which of the plugin's sources this adapter is. Sent on every guest call
+    /// so the one instance can tell them apart.
+    source: String,
 }
 
 impl WasmPickerSource {
-    /// Fetch the plugin's `spec` through the bridge, convert it to the native
-    /// [`PickerSourceSpec`], and build the adapter. Async because the one-time
-    /// spec fetch is a guest call; a malformed spec (or a dead actor) is a
-    /// typed error, so a bad plugin fails registration loudly rather than
-    /// registering a broken source.
-    pub async fn connect(client: PickerClient) -> Result<Self, PluginHostError> {
-        let wit_spec = client.spec().await?;
-        let spec = PickerSourceSpec::from_wit(wit_spec).map_err(PluginHostError::Boundary)?;
-        Ok(Self { client, spec })
+    /// Build an adapter for one already-declared source.
+    fn new(client: PickerClient, spec: PickerSourceSpec) -> Self {
+        let source = spec.id.to_string();
+        Self {
+            client,
+            spec,
+            source,
+        }
+    }
+
+    /// Drive the plugin's `register-picker-sources` export and wrap each source
+    /// it declared.
+    ///
+    /// Async because registration is a guest call. A dead actor or a trapping
+    /// registration is a typed error, so a bad plugin fails loudly rather than
+    /// registering a broken source. An empty list is NOT an error — a plugin
+    /// that declares nothing registers nothing, which is what it asked for.
+    pub async fn connect_all(client: PickerClient) -> Result<Vec<Self>, PluginHostError> {
+        // Already NATIVE — `register-picker-source` converted each spec at the
+        // host-import call, so there is nothing left to cross here.
+        let specs = client.register_sources().await?;
+        Ok(specs
+            .into_iter()
+            .map(|spec| Self::new(client.clone(), spec))
+            .collect())
     }
 
     /// The host-issued id of the plugin behind this source.
@@ -100,8 +124,9 @@ impl PickerSourceGenerator for WasmPickerSource {
         let wit_ctx = Self::project(ctx)?;
         let args = args.to_vec();
         let client = self.client.clone();
+        let source = self.source.clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
-            let pairs = flatten(client.init(wit_ctx, args).await)?;
+            let pairs = flatten(client.init(source, wit_ctx, args).await)?;
             wit_pairs_to_batch(pairs)
         })))
     }
@@ -129,9 +154,10 @@ impl PickerSourceGenerator for WasmPickerSource {
         // swallowed by the host's `None => sync accept` fallback.
         let prep = Self::project(ctx).and_then(|wit_ctx| Ok((wit_ctx, routing.to_wit()?)));
         let client = self.client.clone();
+        let source = self.source.clone();
         Some(Box::pin(async move {
             let (wit_ctx, wit_routing) = prep?;
-            let wit_outcome = flatten(client.accept(wit_ctx, wit_routing).await)?;
+            let wit_outcome = flatten(client.accept(source, wit_ctx, wit_routing).await)?;
             PickerAcceptOutcome::from_wit(wit_outcome)
         }))
     }
@@ -150,13 +176,20 @@ fn wit_pairs_to_batch(pairs: Vec<CandidatePair>) -> SourceResult<CandidateBatch>
     Ok(batch)
 }
 
-/// Convenience: connect + wrap as the `Arc<dyn PickerSourceGenerator>` the
-/// `PickerRegistry` stores. Registration itself is one call —
-/// `registry.register_generator(source)` — with the source keyed by its
-/// `spec().id`; provenance (`SourceLayer::Plugin`) is a grammar-contribution
-/// concern (PH7.7), not a picker-registry one.
-pub async fn connect_picker_source(
+/// Convenience: drive registration and wrap each declared source as the
+/// `Arc<dyn PickerSourceGenerator>` the `PickerRegistry` stores.
+///
+/// Registration itself is one call per source —
+/// `registry.register_generator(source)` — keyed by its `spec().id`; provenance
+/// (`SourceLayer::Plugin`) is a grammar-contribution concern (PH7.7), not a
+/// picker-registry one. Returns a `Vec` since OR.5b: one component may declare
+/// several, which is the whole point of that slice.
+pub async fn connect_picker_sources(
     client: PickerClient,
-) -> Result<Arc<dyn PickerSourceGenerator>, PluginHostError> {
-    Ok(Arc::new(WasmPickerSource::connect(client).await?))
+) -> Result<Vec<Arc<dyn PickerSourceGenerator>>, PluginHostError> {
+    Ok(WasmPickerSource::connect_all(client)
+        .await?
+        .into_iter()
+        .map(|s| Arc::new(s) as Arc<dyn PickerSourceGenerator>)
+        .collect())
 }

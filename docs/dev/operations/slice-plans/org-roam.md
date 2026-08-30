@@ -108,6 +108,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.3 | `host-services.new-uuid` | ✅ |
 | OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
+| OR.5b | one component may register N picker sources | ✅ |
 | OR.6 | `:org-roam-find-node` | 📝 |
 | OR.7 | `:org-roam-insert-node` | 📝 |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
@@ -360,6 +361,41 @@ held in its own slot rather than in the seat-time `routing_meta` sidecar,
 because the payload is the LIVE query and the sidecar is written once per seat —
 which is also why the create row carries its own `CandidateData::Extension`
 kind (`PICKER_CREATE_KIND_ID`) rather than an index into it.
+
+### OR.5b — one component may register N picker sources ✅
+
+**Deps:** none. **Carved mid-build**, at OR.6, when the constraint surfaced.
+
+`picker-source` was the only contribution seam in the system shaped "the
+component **IS** one thing": it exported `spec()`, and the host registered
+exactly one source per component. `language`, `grammar`, `config`, `modes`,
+`theme`, `help` and `keymap` are all "the guest calls a host import to register
+N things". That exception was not free — org needs three pickers (refile, roam
+find-node, roam insert-node) and could register one.
+
+So the seam now matches the rest. A new `picker-registry` import carries
+`register-picker-source(spec)`; a world-level `register-picker-sources()` export
+is the registration entry the host drives once; and `init` / `accept` take a
+`source: string` so one actor and one guest instance serve them all.
+
+**Chosen on merit over the two cheaper options.** Multiplexing on `args` needed
+no WIT change but collapses three unrelated specs into one doc and one
+create-label, and leaves the next plugin with two pickers hitting the same wall.
+A `specs() -> list<spec>` variant is smaller but keeps picker-source shaped
+unlike every other seam. Neither fixes the asymmetry that caused this.
+
+`picker-registry` is wired on **both** linkers. Org provides `grammar` and
+`picker-source` from one artefact, and a component's import set must resolve on
+every linker it is instantiated against — an import absent from one fails the
+WHOLE component, not one seam. That is the OC.2 scar, and this is the fifth seam
+wired on both for it.
+
+**Tests:** the fixture registers TWO sources from one component; both specs come
+back with their own `create_label`; and — the assertion the slice exists for —
+the source id **routes**, with `init` and `accept` reaching different guest
+bodies. Without that last one, "two specs came back" would be satisfied by a
+guest that registered twice and answered identically, which is the version of
+this feature that looks right and is useless.
 
 ### OR.6 — `:org-roam-find-node` 📝
 

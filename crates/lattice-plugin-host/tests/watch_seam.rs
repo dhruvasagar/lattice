@@ -188,12 +188,38 @@ async fn a_burst_reaches_the_guest_as_few_batches_carrying_many_paths() {
         std::fs::write(h.watched.join(format!("n{i}.org")), "x").unwrap();
     }
 
-    // Wait until the batches stop arriving, then count them.
+    // Settle on the BATCH count, not on the log length.
+    //
+    // The log already holds two lines before the writes — `watch:ok` and the
+    // ungranted-watch refusal, both written at registration — so a settle loop
+    // watching the total length can see it "stop changing" at 2 and conclude it
+    // is done before a single batch has arrived. That is a stop condition
+    // satisfied by the thing it was not waiting for, and it makes the test pass
+    // or fail on whether the first batch beat the second poll.
+    let count = |base: &Path| -> usize {
+        recorded(base)
+            .iter()
+            .filter(|l| l.starts_with("6:files-changed:"))
+            .count()
+    };
+    // First, wait for at least one batch — however long the machine takes.
+    assert!(
+        wait_for(
+            &h.data_base,
+            |l| l.starts_with("6:files-changed:"),
+            Duration::from_secs(30),
+        )
+        .await
+        .is_some(),
+        "at least one batch reached the guest: {:?}",
+        recorded(&h.data_base)
+    );
+    // Then wait for the batches to stop arriving.
     let mut previous = 0usize;
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        let now = recorded(&h.data_base).len();
-        if now == previous && now > 0 {
+        let now = count(&h.data_base);
+        if now == previous {
             break;
         }
         previous = now;
@@ -203,7 +229,6 @@ async fn a_burst_reaches_the_guest_as_few_batches_carrying_many_paths() {
         .into_iter()
         .filter(|l| l.starts_with("6:files-changed:"))
         .collect();
-    assert!(!batches.is_empty(), "at least one batch reached the guest");
     assert!(
         batches.len() < 20,
         "200 writes became {} guest calls, not 200: {batches:?}",

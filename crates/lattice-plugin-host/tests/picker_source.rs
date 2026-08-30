@@ -55,9 +55,14 @@ async fn connect(host: &PluginHost) -> WasmPickerSource {
         .await
         .unwrap();
     tokio::spawn(actor.run());
-    WasmPickerSource::connect(client)
+    // OR.5b: the guest declares N sources; this harness exercises the FIRST,
+    // which is the one every assertion below was written against.
+    WasmPickerSource::connect_all(client)
         .await
-        .expect("connect fetches + converts the spec")
+        .expect("registration reaches the guest")
+        .into_iter()
+        .next()
+        .expect("the fixture declares at least one source")
 }
 
 /// A minimal native `PickerContext` with a known `workspace_root` the fixture

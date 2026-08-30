@@ -888,6 +888,47 @@ multibuffer view, not of searching; gating it meant a
 `lattice-multibuffer` — appended excerpts that only became visible
 on the next keypress.
 
+### 3.7b The plugin path — a WASM guest owning a view (MV.1, 2026-08-30)
+
+§3.7a gave every *native* provider one way to reach the activator. A **plugin**
+could not use it at all: `ProviderViewOpener` is
+`Arc<dyn Fn(&mut dyn ModeActivator, &Args)>`, a Rust closure, so a view existed
+only where the host had hand-built a provider for it. The agenda was the only
+one built — and org, whose feature the agenda is, owned the rows and none of the
+view.
+
+That failed this document's own acid test ("a new provider crate landing should
+require ZERO host additions") in the strongest way available: a plugin cannot
+add host code at all.
+
+`multibuffer-view-source` closes it. A guest declares N views — `id`,
+`buffer-name`, `view-mode`, reuse policy, input model — and the loader registers
+one opener per declaration on the same `ProviderViewRegistry` the agenda and
+magit's project-diff live in. From the registry's side a plugin view is
+indistinguishable from a native one.
+
+Three things worth knowing if you touch this:
+
+- **The opener is sync; producing rows is not.** `open_plugin_view` seats an
+  empty view with an in-progress headerline and returns; the guest's `build` runs
+  on its actor and `fill_plugin_view` applies the result, publishing
+  `MultibufferExcerptsReady` so the rows reach the screen without a keypress.
+  Same split as `open_agenda` + `spawn_agenda_scan`, for the same reason: a
+  plugin's file reads must never land on the dispatch path.
+- **`reuse` re-enters the view the opener made**, never a view found by name.
+  Buffer names are a flat space shared with every native provider, so honouring
+  a guest-chosen one would let a plugin declare `*agenda*` and take over a view
+  it does not own.
+- **Excerpt paths are capability-gated at the boundary.** The guest names a path
+  and the *host* reads it, so without a gate a plugin with no fs grant could have
+  the host read `/etc/passwd` on its behalf. `EffectAuthorizer`'s rule applies:
+  authorise where provenance is still known, with the file canonicalised first so
+  a symlink out of a granted tree is refused rather than followed.
+
+Scan-driven views (the agenda) keep the host's walk; see
+[`plugin-multibuffer-views.md`](plugin-multibuffer-views.md) §3 for why the two
+input models are not collapsed into one.
+
 ### Provider model
 
 A multibuffer **provider** is a unit of code (a submodule of

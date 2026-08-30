@@ -214,17 +214,27 @@ the assertion. **No agenda assertion was changed.**
 view through the SOURCE's `view-mode` export, which is where it has always come
 from. Naming it on the view as well would activate it twice.
 
-### MV.4 — docs 📝
+### MV.4 — docs ✅
 
 **Deps:** MV.1a–MV.3.
 
-The design fragment lands amended where the build disagreed with it.
-`plugin-host.md` gains the seam beside `picker-source` and
-`scanned-excerpt-source` — a plugin author looking for "can I make a view" will
-not think to open this fragment. `multibuffer-views.md` gains the plugin path
-and the scan-vs-pull rule. `org-mode.md` §6.2 is amended where the agenda's
-ownership changed. `site/data/dev-nav.toml` gains both new pages, and the sync
-runs.
+`plugin-host.md` gains the seam in its interface table and a section on who owns
+a view plus the two input models — a plugin author asking "can I make a view"
+looks there, not in this fragment. `multibuffer-views.md` gains §3.7b, the
+plugin path, sitting directly after §3.7a's native provider-view seam and
+naming the three things that bite: the sync-opener/async-build split, why
+`reuse` cannot honour a guest-chosen buffer name, and why excerpt paths are
+capability-gated at the boundary. `org-mode.md` §6 gains a note that the agenda
+is org's view now, since that document described it as host machinery.
+
+The design fragment needed no amendment on the substance — the build agreed with
+it — but two things it specified changed during the work and are recorded where
+they happened rather than silently: `view-input::scan` lost its extensions
+payload (MV.1a introduced a second source of truth; the scan sources already
+declare them), and MV.2 was dropped so the agenda migrated directly.
+
+`site/data/dev-nav.toml` carries `architecture/plugin-multibuffer-views`, and
+the sync has run — a docs change is not finished until the site has it.
 
 ## The two rules this phase writes down
 

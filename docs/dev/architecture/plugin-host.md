@@ -274,6 +274,8 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `host-services` | tree-sitter / ripgrep / regex / fs / net / proc | guest→host calls, capability-gated | ⭐ |
 | `picker-source` | `PickerSourceGenerator` (`source.rs:294`) | guest exports spec/init/accept; host wraps as `Arc<dyn>` | ⭐ |
 | `plugin` (lifecycle) | activate / deactivate / on-event | host→guest exports | ⭐ |
+| `multibuffer-view-source` | `ProviderViewRegistry` + `Excerpt` (✅ MV.1) | guest declares N views (identity + input model); host registers an opener per view, seats it, fills it off-thread | ➕ |
+| `scanned-excerpt-source` | `ScannedExcerptSource` + `Excerpt` (✅ OM.A1) | host walks + reads + parses; guest classifies one file at a time and returns rows with a sort key | ➕ |
 | `completion-source` | `CandidateGenerator` (✅ PH7.6); `Matcher`/`Ranker`/`Annotator` type-mirrored only | guest exports **async `generate`**; host produces candidates off-keystroke (LSP pattern) → native `match_and_rank` | ➕ |
 | `grammar` | `register_{motion,text_object,operator,ex_command}` | guest exports apply/parse; host shim closures | ➕ |
 | `command` | `CommandRegistry` + `CommandInvocation` + `Effect` | guest→host `invoke`; host→guest apply | ➕ |
@@ -570,6 +572,53 @@ The WIT package above *is* the plugin API. Rather than re-document it by hand, a
   human-readable `Plugin(id)→name` provenance *label* shown in `:list-commands` — is PI.3+;
   the listing itself already includes plugin commands live (only the friendly plugin-name
   column is deferred, not the entries).
+
+### Multibuffer views: who owns one, and the two ways rows arrive
+
+**A plugin can own a view outright** (MV.1). It declares N views through
+`multibuffer-view-registry` — each with its own `id`, `buffer-name`,
+`view-mode` and input model — and the host registers a `ProviderViewOpener` per
+declaration, so `app-effect::open-provider-view` and the view's `gr` reach it by
+the guest's own name. Before MV.1 this was impossible: `ProviderViewOpener` is a
+Rust closure, so a view existed only where the host had hand-built a provider,
+and the agenda was the only one that got built.
+
+**Two input models, because they are different cost models rather than two
+spellings of one.** Pick by asking whether answering requires reading many
+files' contents.
+
+| | discovery | who reads the file | guest capability | ordering |
+|---|---|---|---|---|
+| `pull` | the guest already knows (an index, a computed set) | nobody, or the guest under its own grant | `fs:read` only if it wants text | the guest returns FINAL order |
+| `scan` | the host walks by the extensions the scan sources declare | the host, once, handing over text **+ tree** | **none at all** | the host stable-sorts on the guest's `sort-key` |
+
+The asymmetry in ordering is deliberate and turns on *who can see the whole set
+at ordering time*: a scan guest holds one file and cannot know where its rows
+land once the others interleave, while a pull guest computes the entire set in
+one call. Forcing a key on it would make the host re-sort what is already
+ordered and would lose orderings that are not numeric.
+
+The `scan` model's advantages are measured, not stylistic: the host must read
+each file anyway to build the source document, so reading and parsing once buys
+the guest a 1–2 ms parse for a 217 ns copy (`benches/agenda_scan_input.rs`) and
+means it needs no filesystem capability. Choosing `pull` for a scan-shaped
+question costs a capability and ~50 µs/file of boundary traffic; choosing `scan`
+for a pull-shaped one walks the project to re-derive what an index already holds.
+
+**What the host still owns, and will keep owning.** The buffer, the excerpt
+machinery, the walk, the batched reads, the sort, the group runs, and the
+capability gate on every path an excerpt names. A guest-supplied path is
+authorised at the boundary against the plugin's `fs:read` grant, symlinks
+resolved first — a plugin cannot borrow the host's filesystem authority by
+naming a file it could not open itself.
+
+**Whether a view is the right shape at all** is a separate question, and the
+rule is: *do you act on the rows in place, or do you go somewhere?* The agenda
+is where you change TODO states and reschedule, so edit-propagates-to-source is
+the feature and it is a multibuffer. "What links here, take me there" is
+navigation, and that is a picker.
+
+Design: [`plugin-multibuffer-views.md`](plugin-multibuffer-views.md).
 
 ### The completion seam, and the round that drives it
 

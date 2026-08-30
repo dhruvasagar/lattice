@@ -353,6 +353,20 @@ vocabulary rather than bolting a parallel command set beside it.
 
 ## 6. The agenda
 
+> **MV.3 (2026-08-30): the agenda is a plugin-owned view now.** `*agenda*`, the
+> provider name and the reuse policy come from org's own `view-spec`, declared
+> through `multibuffer-view-source`; the host supplies the machinery. What §6.2
+> describes below — the seam, the walk, the sort, the grouping — is unchanged and
+> still exactly how the rows arrive. What changed is that the *view* is org's
+> rather than a host constant, so org is one consumer of a seam any plugin can
+> use instead of the one feature the host built a provider for. See
+> [`plugin-multibuffer-views.md`](plugin-multibuffer-views.md).
+>
+> The seam that feeds it was renamed `agenda-source` → `scanned-excerpt-source`
+> in the same phase: its record is an excerpt plus an ordering plus a group
+> header, with nothing org-specific in it, and a project-TODO or tags view should
+> not have to register as an "agenda source".
+
 ### 6.1 It is a multibuffer, literally
 
 `Excerpt { source: BufferId, start_line, end_line, header }` is what an

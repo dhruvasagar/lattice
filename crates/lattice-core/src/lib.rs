@@ -17,6 +17,8 @@ pub mod clipboard;
 pub mod document;
 pub mod error;
 pub mod folding;
+/// `~` expansion, shared so every consumer resolves a home the same way.
+pub mod home;
 // IN.0: `IndentUnit` / `IndentMethod` — the resolved indent value the
 // `>` / `<` operators consume. Here rather than in `lattice-indent`
 // because `lattice-syntax` → `lattice-grammar` makes an engine-side

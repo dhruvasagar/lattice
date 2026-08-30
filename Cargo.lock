@@ -5414,6 +5414,7 @@ name = "lattice-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "dirs 5.0.1",
  "fancy-regex",
  "insta",
  "lattice-protocol",

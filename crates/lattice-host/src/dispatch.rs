@@ -39163,20 +39163,11 @@ pub fn normalize_user_path_with_cwd(
     }
 }
 
+/// `~` expansion. Delegates to [`lattice_core::home::expand_tilde`], which
+/// resolves a home directory on Windows too — this used to read `HOME`
+/// directly and silently no-op there.
 fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
-    let Some(s) = path.to_str() else {
-        return path.to_path_buf();
-    };
-    let Some(home) = std::env::var_os("HOME") else {
-        return path.to_path_buf();
-    };
-    if s == "~" {
-        return std::path::PathBuf::from(home);
-    }
-    if let Some(rest) = s.strip_prefix("~/") {
-        return std::path::PathBuf::from(home).join(rest);
-    }
-    path.to_path_buf()
+    lattice_core::home::expand_tilde_path(path)
 }
 
 /// Translate an LSP `FoldingRange` into the renderer-neutral

@@ -677,6 +677,24 @@ is enough to check — and decline otherwise.
   > authority the host-services check exists to contain. So the original "`wasi:filesystem`/
   > `wasi:http` view" is, in v1, a `wasi:filesystem` view; `net`/`proc` enforcement lives at the
   > host-services seam, not the WASI view. See the PH7.2 slice + `capability.rs`.
+  > **`~` in an `fs:` prefix expands at the parse (2026-08-31).** A grant is matched by
+  > prefix against a *canonicalized* target, and `~/org` canonicalizes to nothing — so an
+  > unexpanded tilde did not narrow a grant, it **voided** it, and every write was refused
+  > with "outside the plugin's granted paths". That message is true and useless: it reads
+  > exactly like a capability the user never declared, when in fact they declared it and it
+  > could not be understood. Expansion goes through `lattice_core::home::expand_tilde`, so a
+  > Windows host resolves `%USERPROFILE%`. `~user` is left verbatim rather than expanded
+  > against the running user's home, which would silently grant a path the manifest never
+  > asked for.
+- **`HOME` is the one environment variable a guest gets.** Otherwise the WASI context is
+  import-free by design — no stdio, no `PATH`, no `USER`, no shell. `HOME` is supplied
+  because a guest reads *path options the user wrote* (`org.roam-directory = "~/notes"`),
+  and with no environment it cannot expand the tilde: the path reaches the host verbatim,
+  resolves to nothing, and the feature reports an empty corpus rather than a bad path. The
+  user's config is then simply not portable across machines. This concedes no authority —
+  `HOME` is a **string**, knowing a path does not mount it, and every filesystem access
+  still goes through the preopens. A plugin that learns the home directory and asks to read
+  it is refused exactly as before.
 - **Per-plugin data dir.** `${XDG_DATA_HOME}/lattice/plugins/<plugin-id>/data/` is mounted;
   writes outside it require an explicit broader grant (§5.5.6 prerequisite 2).
 - **Trust tiers.** *Bundled* plugins inherit the editor's trust (capabilities pre-granted at

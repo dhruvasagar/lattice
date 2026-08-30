@@ -29,6 +29,7 @@
 //!   stays the mode-activation path (PH7.11) — this slice only sizes the
 //!   manifest honestly per fragment §6.
 
+use lattice_core::home::expand_tilde;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -81,11 +82,17 @@ impl FromStr for Capability {
         // a path or `host:port` prefix survives whole.
         let mut parts = s.splitn(3, ':');
         match (parts.next(), parts.next(), parts.next()) {
+            // `~` expands HERE, at the parse, so every later comparison is
+            // against a real path. A grant is matched by prefix against a
+            // canonicalized target, and `~/org` canonicalizes to nothing — so
+            // an unexpanded tilde does not narrow the grant, it VOIDS it, and
+            // every write is refused with a message that says the path is
+            // outside the granted paths. Which is true, and useless.
             (Some("fs"), Some("read"), Some(p)) if !p.is_empty() => {
-                Ok(Capability::FsRead(PathBuf::from(p)))
+                Ok(Capability::FsRead(PathBuf::from(expand_tilde(p))))
             }
             (Some("fs"), Some("write"), Some(p)) if !p.is_empty() => {
-                Ok(Capability::FsWrite(PathBuf::from(p)))
+                Ok(Capability::FsWrite(PathBuf::from(expand_tilde(p))))
             }
             (Some("net"), Some("http"), Some(h)) if !h.is_empty() => {
                 Ok(Capability::NetHttp(h.to_string()))
@@ -924,5 +931,54 @@ mod tests {
         // intent survives wherever it cannot break anything.
         let same_rank = ranked(vec![PluginSeam::Help, PluginSeam::Events]);
         assert_eq!(same_rank, vec![PluginSeam::Help, PluginSeam::Events]);
+    }
+}
+
+#[cfg(test)]
+mod tilde_grant_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// A `~` in an `fs:` grant expands at the parse.
+    ///
+    /// It does not merely *narrow* the grant when left alone — it VOIDS it. The
+    /// authorizer compares a canonicalized target against the prefix, and
+    /// `~/org` canonicalizes to nothing, so every write is refused with "outside
+    /// the plugin's granted paths". That message is true and useless: it reads
+    /// exactly like a capability the user never wrote, when in fact they wrote
+    /// it and it could not be understood.
+    #[test]
+    fn a_tilde_in_an_fs_grant_expands_to_the_home_directory() {
+        let Some(home) = dirs::home_dir() else {
+            eprintln!("SKIP: no home directory on this machine");
+            return;
+        };
+        assert_eq!(
+            "fs:write:~/org".parse::<Capability>().unwrap(),
+            Capability::FsWrite(home.join("org"))
+        );
+        assert_eq!(
+            "fs:read:~/notes".parse::<Capability>().unwrap(),
+            Capability::FsRead(home.join("notes"))
+        );
+    }
+
+    /// An absolute grant is untouched — the common case must not move.
+    #[test]
+    fn an_absolute_grant_is_unchanged() {
+        assert_eq!(
+            "fs:write:/srv/org".parse::<Capability>().unwrap(),
+            Capability::FsWrite(PathBuf::from("/srv/org"))
+        );
+    }
+
+    /// `~user` stays verbatim rather than being expanded against OUR home,
+    /// which would silently grant a path the manifest did not ask for.
+    #[test]
+    fn another_users_home_is_not_expanded_into_our_own() {
+        assert_eq!(
+            "fs:read:~alice/org".parse::<Capability>().unwrap(),
+            Capability::FsRead(PathBuf::from("~alice/org"))
+        );
     }
 }

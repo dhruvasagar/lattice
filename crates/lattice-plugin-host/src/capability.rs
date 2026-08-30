@@ -185,8 +185,32 @@ impl CapabilityGrant {
 /// caller must have created `data_dir` before this runs (the host does).
 pub fn build_wasi_ctx(grant: &CapabilityGrant, data_dir: &Path) -> WasiCtx {
     let mut builder = WasiCtxBuilder::new();
-    // Deliberately import-free otherwise: no stdio, no env, no ambient
-    // clocks/random beyond WASI defaults, no sockets, no subprocess.
+    // Deliberately import-free otherwise: no stdio, no ambient clocks/random
+    // beyond WASI defaults, no sockets, no subprocess.
+    //
+    // **`HOME` is the one exception, and it is deliberate rather than a
+    // loosening that crept in.** A guest reads path options the user wrote —
+    // `org.roam-directory = "~/notes"` — and with no environment it cannot
+    // expand the tilde, so the path reaches the host verbatim, resolves to
+    // nothing, and the feature reports an empty corpus rather than a bad path.
+    // The user's config is then simply not portable: it must name
+    // `/Users/dhruva/...` or `/home/dhruva/...` and stops working on their
+    // other machine.
+    //
+    // What this does NOT concede: the guest still has no `PATH`, no `USER`, no
+    // shell, no ambient credentials, and no ability to reach anything it was
+    // not granted. `HOME` is a *string* here — knowing the path does not mount
+    // it, and every filesystem access still goes through the preopens below.
+    // A plugin that learns the home directory and asks to read it is refused
+    // exactly as before.
+    //
+    // Resolved through `dirs::home_dir` rather than `std::env::var_os("HOME")`
+    // so a Windows host supplies `%USERPROFILE%` — otherwise this would hand
+    // POSIX guests a working tilde and Windows guests nothing, which is the
+    // asymmetry the shared helper exists to end.
+    if let Some(home) = dirs::home_dir() {
+        builder.env("HOME", home.display().to_string());
+    }
     for spec in grant.preopens(data_dir) {
         let (dir_perms, file_perms) = if spec.writable {
             (

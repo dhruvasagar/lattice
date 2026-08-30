@@ -15,6 +15,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+# `~` expansion needs a home directory that answers on Windows too
+# (`%USERPROFILE%`), which `std::env::var_os("HOME")` does not — see `home.rs`.
+dirs = { workspace = true }
 lattice-protocol = { path = "../lattice-protocol" }
 ropey = { workspace = true }
 memchr = { workspace = true }

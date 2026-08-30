@@ -402,22 +402,15 @@ fn existing_view(services: &ServiceRegistry, view_name: &str) -> Option<BufferId
     registry.handle(id).map(|_| id)
 }
 
-/// `~` expansion for a hand-typed root. Not a full shell expansion — the
-/// argument is a path, and the one thing a user types by hand that a
-/// `PathBuf` will not resolve is a leading tilde.
+/// `~` expansion for a hand-typed root.
+///
+/// Delegates to [`lattice_core::home::expand_tilde`]. It used to resolve the
+/// home directory as `std::env::var_os("HOME")`, which is POSIX-only — so on
+/// Windows `~/notes` stayed verbatim, found nothing, and the agenda reported an
+/// empty corpus while this option's own documentation promised "`~` is
+/// expanded".
 fn shellexpand_tilde(raw: &str) -> String {
-    let Some(rest) = raw.strip_prefix('~') else {
-        return raw.to_string();
-    };
-    let Some(home) = std::env::var_os("HOME") else {
-        return raw.to_string();
-    };
-    let mut out = PathBuf::from(home);
-    let rest = rest.trim_start_matches('/');
-    if !rest.is_empty() {
-        out.push(rest);
-    }
-    out.display().to_string()
+    lattice_core::home::expand_tilde(raw)
 }
 
 // ─────────────────────────────────────────────────────────────────

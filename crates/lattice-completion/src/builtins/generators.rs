@@ -234,16 +234,17 @@ fn fs_entries(ctx: &GenerateContext<'_>, include_files: bool) -> Vec<RawCandidat
     out
 }
 
+/// `~` expansion, plus this consumer's own empty-means-here rule.
+///
+/// The tilde half delegates to [`lattice_core::home::expand_tilde`] so a
+/// Windows host resolves `%USERPROFILE%`; the empty case stays local because it
+/// is a *completion* rule (an empty prefix completes the current directory),
+/// not something a path helper should decide for everyone.
 fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
-    }
     if p.is_empty() {
         return PathBuf::from(".");
     }
-    PathBuf::from(p)
+    PathBuf::from(lattice_core::home::expand_tilde(p))
 }
 
 #[cfg(test)]

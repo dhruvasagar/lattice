@@ -471,14 +471,15 @@ rebuilt once at the END of it.
    `<leader>on…` — NOT `<C-x>n…`, because org's major keymap binds a terminal
    `<C-x>` in Normal and it fires before any second key.
 3. **Create is a placeholder.** OR.6 writes a minimal built-in body through
-   `WriteToFile` with no template choice and no finalize/abort. OR.7b replaces
-   it with the capture-buffer flow. Finding by title;
-by alias; a headline node landing on its line rather than the file's first; the
-generation check rebuilding the cache when the index moved and **not** rebuilding
-when it did not; create producing a node the next find-node can find; roam inert
-with the directory unset saying so rather than showing an empty picker. These
-need a real editor driving a real picker, which is the shape `org_roam_index.rs`
-already established for OR.4.
+   `WriteToFile` with no template choice, no `${field}` interpolation and no
+   finalize/abort. OR.11 replaces it with the capture-buffer flow.
+
+**Tests:** finding by title; by alias; a headline node landing on its line
+rather than the file's first; the generation check rebuilding the cache when the
+index moved and **not** rebuilding when it did not; create producing a node the
+next find-node can find; roam inert with the directory unset saying so rather
+than showing an empty picker. These need a real editor driving a real picker,
+which is the shape `org_roam_index.rs` already established for OR.4.
 
 ### OR.7 — inserting a link ✅
 

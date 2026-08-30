@@ -29,12 +29,26 @@ and no shaping.
 > selection by design; and a multi-mode keybinding API.
 > **Phase 7 (the WASM Component Model plugin host) is complete** — the
 > `lattice-plugin-host` runtime, the `wit/` API package, the capability /
-> fuel / crash-isolation model, and every extension seam (picker, grammar,
-> completion, events, decorations, config, modes, host-services), each
-> exercised end-to-end by a guest fixture, plus the `fuzzy-finder` validation
-> plugin and CI overhead gates. **Editor-side loading** of plugins (the plugin
-> manager, on-disk discovery, `init.rs`-as-WASM config) is **Phase 8** — the
-> runtime is done; wiring it into the editor is next. See
+> fuel / crash-isolation model, and the extension seams: `language`,
+> `grammar`, `modes`, `keymap`, `config`, `theme`, `help`, `events`,
+> `decorations`, `picker-source`, `completion-source`, `transient-source`,
+> `media`, `context`, `error-parser`, `dashboard`, `plugin-manager`,
+> `scanned-excerpt-source` and `multibuffer-view-source` — each exercised
+> end-to-end by a guest fixture, plus CI overhead gates.
+> **Phase 8's editor-side loading has landed:** on-disk discovery, the
+> manifest, capability grants, `init.rs`-as-WASM config, the `require` seam,
+> and core plugins that load out of the box. Three plugins ship today —
+> `auto-pair`, `treesitter-context`, and **org**.
+>
+> **[`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin)
+> is the reference plugin and the deepest test of the seam surface**: a
+> tree-sitter language, four modes, a whole editing grammar (outliner, TODO
+> workflow, checkboxes, timestamps, links, tables), capture, the agenda, and
+> org-roam — thirteen seams from one component, in a **separate repository**,
+> with no org-specific code anywhere in this tree. No `BufferKind::Org`, no
+> `Lang` arm, no `Editor::` method. That is the extensibility claim, tested.
+>
+> See
 > [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
 > for the per-feature ledger and [`docs/user/plugins.md`](docs/user/plugins.md)
 > for the plugin model.

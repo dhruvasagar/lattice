@@ -69,7 +69,7 @@ guest DECLINE is a typed `err` that leaves the actor usable — distinct from a
 trap, which is the difference between "nothing to show, here is why" and "this
 plugin is broken".
 
-### MV.1b — the generic provider ✅
+### MV.1b — the generic provider, its drain, and two security fixes ✅
 
 **Deps:** MV.1a.
 
@@ -110,14 +110,43 @@ composition that feeds them from the host's walk is MV.3. Said out loud rather
 than silently no-op'd, because a view that opens empty for a structural reason
 is indistinguishable from a broken one otherwise.
 
-**Still owed, and not done here:** the integration tests that open a
-guest-declared view end-to-end (`open-provider-view` → excerpts against the
-right source buffers → decline → unreadable-path drop → id collision), and the
-bench for a 500-excerpt `build` round-trip. The seam has 5 boundary tests
-through a real guest; the provider has only its unit test. **This is the gap
-that matters most in this phase** — the whole lesson of OR.6 and OR.9 is that a
-seam can look wired and answer nothing, and the provider is the half not yet
-proven that way.
+**The drain's own tests landed after**, and they paid for themselves
+immediately: `unloading_frees_the_view_names_for_a_reload` failed on the first
+run. `TeardownRegistries` is built behind an all-or-nothing guard — a missing
+command registry skips the ENTIRE unload — and a command registry is not a
+precondition for reversing a VIEW registration. Reversal moved above the guard,
+beside `help` and `transient`, which are there for the same reason.
+
+**Two security findings, both real, both fixed here.**
+
+1. **A capability bypass.** An excerpt names a PATH the guest chose and the host
+   reads it to build the source document. A plugin holding *no* fs capability
+   could name `/etc/passwd` and have the host read it into a buffer on its
+   behalf — the guest never touches the file, so WASI's sandbox never sees the
+   read. `EffectAuthorizer` already states the rule: a guest-named path is
+   checked at the **boundary**, where provenance is still known, because by the
+   time an effect reaches the editor the host no longer knows which plugin asked.
+   The conversion now filters through `grant_permits_read`, which canonicalises
+   the file FIRST so a symlink inside a granted tree pointing out of it is
+   refused rather than followed. Denied rows are counted into the headerline
+   summary rather than silently dropped: a view quietly missing rows because of
+   a manifest is indistinguishable from one whose data is wrong.
+2. **Cross-view tampering.** `reuse` resolved the view by its guest-chosen
+   buffer name, so a plugin could declare `buffer-name: "*agenda*"` and take
+   over the agenda's buffer — `replace_excerpts` on a view it does not own.
+   Buffer names are a flat, unnamespaced space shared with every native
+   provider, so a guest-chosen one cannot be an authority to reuse. The opener
+   now remembers the id it created and re-enters only that.
+
+**Tests:** 5 at the seam (through a real guest) + 5 at the drain — a declared
+view openable by name, one component's several views, a malformed spec costing
+only itself, an id a native provider owns refused per-view, the unload/reload
+cycle, and the grant gate including the symlink escape.
+
+**Still owed:** the bench for a 500-excerpt `build` round-trip, and a test that
+drives a view's excerpts all the way into a buffer (the drain tests stop at
+registration + the gate). Carried to MV.2, where org's real view makes that
+assertion natural rather than synthetic.
 
 ### MV.2 — org registers a view 📝
 

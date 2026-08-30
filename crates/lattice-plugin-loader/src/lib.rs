@@ -1571,6 +1571,19 @@ impl PluginLoader {
                 }
             }
         }
+        // MV.1: same placement and reasoning as `help` and `transient` above,
+        // and it is a correctness point rather than tidiness. The guard below
+        // is all-or-nothing — a missing command registry skips the ENTIRE
+        // unload — and a command registry is not a precondition for reversing a
+        // VIEW registration. Leaving one registered is worse than stale docs:
+        // `ProviderViewRegistry::register` refuses rather than replaces, so a
+        // reload would hit `false` against the plugin's own dead opener and its
+        // views would come back permanently broken.
+        if let Some(pv_h) = self.env.provider_view_registry.as_ref() {
+            for name in &teardown.provider_views {
+                pv_h.unregister(name);
+            }
+        }
         let (
             Some(cmd_h),
             Some(pick_h),
@@ -1627,6 +1640,7 @@ impl PluginLoader {
                 .map(|r| (**r.load()).clone())
                 .unwrap_or_default();
             let mut reg = TeardownRegistries {
+                // Reversed ABOVE the guard, not here — see the comment there.
                 provider_views: None,
                 media: &mut media_reg,
                 agenda: &mut agenda_reg,
@@ -1828,6 +1842,19 @@ impl PluginLoader {
 
         let specs = client.register_views().await?;
 
+        // SECURITY: the plugin's effective fs grant, resolved once for the
+        // whole drain.
+        //
+        // An excerpt names a PATH the guest chose, and the host reads it to
+        // build the source document. Without this, a plugin holding no fs
+        // capability at all could name `/etc/passwd` — or a symlink pointing
+        // there — and have the host read it into a buffer on its behalf. The
+        // authorizer's own rule is that guest-named paths are checked at the
+        // BOUNDARY, where provenance is still known; by the time an excerpt
+        // reaches `lattice-multibuffer` the host no longer knows which plugin
+        // asked, exactly as `EffectAuthorizer` documents for `WriteToFile`.
+        let grant = lattice_plugin_host::capability::grant(manifest, tier).grant;
+
         for spec in specs {
             let native = lattice_multibuffer::providers::plugin_view::PluginViewSpec {
                 id: spec.id.clone(),
@@ -1854,19 +1881,29 @@ impl PluginLoader {
             }
 
             let client = client.clone();
+            let grant = grant.clone();
             let mb = (*mb_registry).clone();
             let bus = (*bus).clone();
             let runtime = runtime.clone();
             let view_id = spec.id.clone();
+            // The view this opener made last time, so `reuse` re-enters its OWN
+            // buffer rather than resolving a guest-chosen name — which would
+            // let a plugin declare `*agenda*` and take over someone else's view.
+            let last_view: Arc<std::sync::Mutex<Option<lattice_core::BufferId>>> =
+                Arc::new(std::sync::Mutex::new(None));
             let opener: lattice_mode::ProviderViewOpener = Arc::new(
                 move |activator: &mut dyn lattice_mode::ModeActivator,
                       args: &lattice_grammar::Args| {
+                    let previous = last_view.lock().ok().and_then(|g| *g);
                     let outcome = lattice_multibuffer::providers::plugin_view::open_plugin_view(
-                        activator, &native,
+                        activator, &native, previous,
                     );
                     let lattice_mode::ProviderViewOutcome::Opened { view, .. } = outcome else {
                         return outcome;
                     };
+                    if let Ok(mut slot) = last_view.lock() {
+                        *slot = Some(view);
+                    }
                     if !is_pull {
                         return outcome;
                     }
@@ -1885,6 +1922,7 @@ impl PluginLoader {
                         _ => Vec::new(),
                     };
                     let client = client.clone();
+                    let grant = grant.clone();
                     let mb = mb.clone();
                     let bus = bus.clone();
                     let view_id = view_id.clone();
@@ -1904,7 +1942,7 @@ impl PluginLoader {
                                     Some(&bus),
                                     view,
                                     &spec_for_fill,
-                                    convert_view_result(result),
+                                    convert_view_result(result, &grant),
                                 );
                             }
                             // The guest's own words — the host has no vocabulary
@@ -3123,21 +3161,46 @@ impl PluginLoader {
 /// conversion belongs to whoever depends on both, which is the loader.
 fn convert_view_result(
     wit: lattice_plugin_host::multibuffer_view_task::MultibufferViewResult,
+    grant: &lattice_plugin_host::CapabilityGrant,
 ) -> lattice_multibuffer::providers::plugin_view::PluginViewResult {
-    lattice_multibuffer::providers::plugin_view::PluginViewResult {
-        excerpts: wit
-            .excerpts
-            .into_iter()
-            .map(
-                |e| lattice_multibuffer::providers::plugin_view::PluginExcerpt {
-                    path: std::path::PathBuf::from(e.path),
-                    start_line: e.start_line,
-                    end_line: e.end_line,
-                    header: e.header,
-                    match_count: e.match_count,
-                },
-            )
-            .collect(),
-        summary: wit.summary,
-    }
+    let mut denied = 0usize;
+    let excerpts: Vec<_> = wit
+        .excerpts
+        .into_iter()
+        .filter_map(|e| {
+            let path = std::path::PathBuf::from(e.path);
+            // SECURITY: the capability gate for a guest-named read path.
+            //
+            // `grant_permits_read` canonicalises the FILE first, so a symlink
+            // inside a granted tree that points out of it is refused — the
+            // ordering `a_symlink_out_of_the_grant_is_denied` pins, and the
+            // reason gating on the parent alone is not enough.
+            if !lattice_plugin_host::host_services::grant_permits_read(grant, &path) {
+                denied += 1;
+                // info!, not debug!: a plugin denied fs access is
+                // user-actionable and sends the author to their manifest.
+                tracing::info!(
+                    path = %path.display(),
+                    "multibuffer view excerpt denied: outside the plugin's fs grant"
+                );
+                return None;
+            }
+            Some(lattice_multibuffer::providers::plugin_view::PluginExcerpt {
+                path,
+                start_line: e.start_line,
+                end_line: e.end_line,
+                header: e.header,
+                match_count: e.match_count,
+            })
+        })
+        .collect();
+    let summary = if denied == 0 {
+        wit.summary
+    } else {
+        // Surfaced rather than silently shortened: a view that is quietly
+        // missing rows because of a manifest is indistinguishable from a view
+        // whose data is wrong.
+        format!("{} ({denied} outside the plugin's fs grant)", wit.summary)
+    };
+    lattice_multibuffer::providers::plugin_view::PluginViewResult { excerpts, summary }
 }

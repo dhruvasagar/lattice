@@ -87,6 +87,7 @@ pub struct PluginViewSpec {
 pub fn open_plugin_view(
     activator: &mut dyn ModeActivator,
     spec: &PluginViewSpec,
+    last_view: Option<BufferId>,
 ) -> ProviderViewOutcome {
     let services = activator.services();
 
@@ -99,9 +100,17 @@ pub fn open_plugin_view(
         .get::<Arc<lattice_syntax::LangRegistry>>()
         .map(|h| (*h).clone());
 
+    // SECURITY: reuse only a view THIS provider made.
+    //
+    // Looking a view up by its buffer name would let a guest declare
+    // `buffer-name: "*agenda*"` and take over the agenda's buffer —
+    // `replace_excerpts` on someone else's view, from a plugin that owns
+    // nothing. Buffer names are a flat, unnamespaced space shared with every
+    // native provider, so a guest-chosen one cannot be an authority to reuse.
+    // The id the provider recorded last time is.
     let existing = spec
         .reuse
-        .then(|| find_view_by_name(&services, &spec.buffer_name))
+        .then(|| last_view.filter(|id| still_a_multibuffer(&services, *id)))
         .flatten();
 
     let view = match existing {
@@ -261,16 +270,16 @@ pub fn decline_plugin_view(
     }
 }
 
-/// The open buffer with this name, if any — how `reuse` finds its view.
+/// Whether `id` is still a live multibuffer.
 ///
-/// Confirms it is still a MULTIBUFFER before reusing it, `existing_view`'s
-/// rule: a name whose buffer was closed and something else opened under is not
-/// this view, and appending excerpts to it would be worse than making a new one.
-fn find_view_by_name(services: &ServiceRegistry, name: &str) -> Option<BufferId> {
-    let buffers = services.get::<lattice_mode::BufferStoreHandle>()?;
-    let id = buffers.find_by_name(name)?;
-    let registry = services.get::<MultibufferRegistryHandle>()?;
-    registry.handle(id).map(|_| id)
+/// `existing_view`'s rule: a view the user closed is not reusable, and its
+/// `BufferId` may since have been handed to something else — appending excerpts
+/// to that would be worse than making a fresh view.
+fn still_a_multibuffer(services: &ServiceRegistry, id: BufferId) -> bool {
+    services
+        .get::<MultibufferRegistryHandle>()
+        .and_then(|registry| registry.handle(id))
+        .is_some()
 }
 
 /// Turn a guest decline into the generic outcome.

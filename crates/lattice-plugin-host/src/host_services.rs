@@ -154,7 +154,7 @@ pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
 /// applies when nothing is there to read, so the subsequent `read` fails
 /// regardless. `<granted>/../../etc/passwd` resolves as a file and is denied on
 /// the first branch.
-pub(crate) fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
+pub fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
     if file.exists() {
         return grant_permits_walk(grant, file);
     }

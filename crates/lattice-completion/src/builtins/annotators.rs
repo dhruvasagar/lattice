@@ -193,6 +193,7 @@ mod tests {
     fn rendered(text: &str, kind: CandidateKind, data: CandidateData) -> RenderedCandidate {
         RenderedCandidate {
             raw: RawCandidate {
+                insert_text: None,
                 text: text.into(),
                 display: text.into(),
                 kind,

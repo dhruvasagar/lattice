@@ -103,6 +103,7 @@ mod tests {
 
     fn sample(text: &str) -> RawCandidate {
         RawCandidate {
+            insert_text: None,
             text: text.into(),
             display: text.into(),
             kind: CandidateKind::Plain,

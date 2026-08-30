@@ -50,13 +50,13 @@ use lattice_grammar::ModalState;
 // silences the unused-import warning in the non-test build.
 #[allow(unused_imports)]
 use super::{
-    App, CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
-    CompletionResolveOutcome, EchoLevel, FormatOutcome, InsertCompletionLspOutcome,
-    LSP_COMPLETION_KIND_ID, LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome,
-    SignatureHelpOutcome, SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position,
-    call_hierarchy_to_row, code_action_kind_glyph, dedup_rendered_by_text, flatten_workspace_edit,
-    last_addressable_line, line_byte_len, lsp_position_to_app_byte, prepare_rename_placeholder,
-    range_covers, type_hierarchy_to_row, word_under_cursor,
+    App, AsyncCompletionOutcome, CodeActionOutcome, CodeActionRow, CompletionItemRow,
+    CompletionOutcome, CompletionResolveOutcome, EchoLevel, FormatOutcome, LSP_COMPLETION_KIND_ID,
+    LspCompletionMeta, LspNavKind, ReferencesOutcome, RenameOutcome, SignatureHelpOutcome,
+    SymbolRow, SymbolsOutcome, TagStackEntry, app_to_lsp_position, call_hierarchy_to_row,
+    code_action_kind_glyph, dedup_rendered_by_text, flatten_workspace_edit, last_addressable_line,
+    line_byte_len, lsp_position_to_app_byte, prepare_rename_placeholder, range_covers,
+    type_hierarchy_to_row, word_under_cursor,
 };
 // 5.5.LSP.1 / LSP.2 / LSP.4 / LSP.5: test-only utility imports
 // after the corresponding request-side migrations. Tests reach
@@ -75,7 +75,7 @@ use lattice_protocol::edit::Edit;
 // impl that buffers each `produce_async` push into a single
 // batch. The aggregator spawns the source's future, awaits
 // it, then drains the sink onto the existing
-// `InsertCompletionLspOutcome::Items` channel -- the drain
+// `AsyncCompletionOutcome::Items` channel -- the drain
 // path keeps its "replace prior LSP slice" semantics
 // untouched. `is_incomplete` rides on
 // [`lattice_completion::CandidateSink::mark_incomplete`].
@@ -181,7 +181,7 @@ impl App {
 
     /// M.6.0: is `lsp-completion-mode` active on `buffer_id`? Read
     /// by `do_lsp_completion_request` /
-    /// `do_lsp_insert_completion_request` and the LSP completion
+    /// `do_async_insert_completion_requests` and the LSP completion
     /// source filter once M.6.2 / M.6.3 wire the gates.
     pub fn lsp_completion_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspCompletionMode::mode_id())
@@ -443,9 +443,9 @@ impl App {
     /// Multi-server fan-out + dedup (label + kind) is the
     /// architecture-doc strategy. Items beyond `MAX_LSP_ITEMS`
     /// are dropped.
-    pub(super) fn do_lsp_insert_completion_request(&mut self) {
+    pub(super) fn do_async_insert_completion_requests(&mut self) {
         // Phase 5.8.AD.4: body migrated.
-        self.mutate_editor(|e| e.do_lsp_insert_completion_request());
+        self.mutate_editor(|e| e.do_async_insert_completion_requests());
     }
 
     /// Drain queued `completionItem/resolve` responses --
@@ -3737,12 +3737,11 @@ mod tests {
         // is open from the sync sources alone. Manually push
         // a NoServers outcome to verify the drain handles it
         // without exploding.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.editor.pending_insert_completion_lsp_rx = Some(rx);
-        a.editor.pending_insert_completion_lsp_token =
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::AsyncCompletionOutcome>();
+        a.editor.pending_insert_completion_async_rx = Some(rx);
+        a.editor.pending_insert_completion_async_token =
             Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::InsertCompletionLspOutcome::NoServers)
-            .unwrap();
+        tx.send(super::AsyncCompletionOutcome::Nothing).unwrap();
         a.drain_pending_insert_completion_lsp();
         // Popup still open from sync sources.
         assert!(a.editor.insert_completion.is_some());
@@ -3763,11 +3762,14 @@ mod tests {
             Position::new(1, 2),
             "fo".to_string(),
         ));
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.editor.pending_insert_completion_lsp_rx = Some(rx);
-        a.editor.pending_insert_completion_lsp_token =
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::AsyncCompletionOutcome>();
+        a.editor.pending_insert_completion_async_rx = Some(rx);
+        a.editor.pending_insert_completion_async_token =
             Some(lattice_protocol::CancellationToken::new());
-        tx.send(super::InsertCompletionLspOutcome::Items {
+        tx.send(super::AsyncCompletionOutcome::Items {
+            sources: vec![lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )],
             candidates: vec![
                 lsp_meta_candidate(super::LspCompletionMeta {
                     label: "foo".into(),
@@ -3874,12 +3876,14 @@ mod tests {
             resolved: false,
         };
         // First batch.
-        let (tx1, rx1) =
-            tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.editor.pending_insert_completion_lsp_rx = Some(rx1);
-        a.editor.pending_insert_completion_lsp_token =
+        let (tx1, rx1) = tokio::sync::mpsc::unbounded_channel::<super::AsyncCompletionOutcome>();
+        a.editor.pending_insert_completion_async_rx = Some(rx1);
+        a.editor.pending_insert_completion_async_token =
             Some(lattice_protocol::CancellationToken::new());
-        tx1.send(super::InsertCompletionLspOutcome::Items {
+        tx1.send(super::AsyncCompletionOutcome::Items {
+            sources: vec![lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )],
             candidates: vec![
                 lsp_meta_candidate(mk_item("alpha")),
                 lsp_meta_candidate(mk_item("alphabet")),
@@ -3897,12 +3901,14 @@ mod tests {
         assert_eq!(pre, 2);
         // Second batch -- only one item, "beta". Prior LSP
         // rows should be pruned.
-        let (tx2, rx2) =
-            tokio::sync::mpsc::unbounded_channel::<super::InsertCompletionLspOutcome>();
-        a.editor.pending_insert_completion_lsp_rx = Some(rx2);
-        a.editor.pending_insert_completion_lsp_token =
+        let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<super::AsyncCompletionOutcome>();
+        a.editor.pending_insert_completion_async_rx = Some(rx2);
+        a.editor.pending_insert_completion_async_token =
             Some(lattice_protocol::CancellationToken::new());
-        tx2.send(super::InsertCompletionLspOutcome::Items {
+        tx2.send(super::AsyncCompletionOutcome::Items {
+            sources: vec![lattice_completion::SourceId::new(
+                lattice_completion::LSP_COMPLETION_SOURCE_ID,
+            )],
             candidates: vec![lsp_meta_candidate(mk_item("beta"))],
             is_incomplete: false,
         })
@@ -5557,5 +5563,290 @@ mod tests {
         assert!(app.editor.picker.is_none());
         let msg = app.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no diagnostics"));
+    }
+
+    // ---------------------------------------------------------------
+    // OR.7: the async completion fan-out drives EVERY async source.
+    //
+    // Before OR.7 it looked up exactly one — the source whose id was
+    // `gen:lsp-completion` — so a plugin's completion source could
+    // register a carrier mode, spawn an actor and connect an adapter
+    // and still never have `generate` called. These tests fail on that
+    // version: the first because no rows arrive, the second because the
+    // absence of an LSP server used to abandon the whole round.
+    // ---------------------------------------------------------------
+
+    /// A stand-in for a plugin's `WasmCompletionSource`: an async source
+    /// that is emphatically not LSP. It records the context it was handed
+    /// so the tests can assert the guest sees the line it is completing.
+    #[derive(Debug)]
+    struct FakeAsyncSource {
+        id: &'static str,
+        candidates: Vec<String>,
+        seen: std::sync::Arc<std::sync::Mutex<Option<lattice_completion::InsertContextSnapshot>>>,
+    }
+
+    impl lattice_completion::AsyncCompletionSource for FakeAsyncSource {
+        fn produce_async(
+            &self,
+            ctx: lattice_completion::InsertContextSnapshot,
+            sink: std::sync::Arc<dyn lattice_completion::CandidateSink>,
+            _token: lattice_protocol::CancellationToken,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            *self.seen.lock().unwrap() = Some(ctx);
+            let id = lattice_completion::SourceId::new(self.id);
+            let candidates = self.candidates.clone();
+            Box::pin(async move {
+                for text in candidates {
+                    sink.push(
+                        lattice_completion::RawCandidate::plain(
+                            text,
+                            lattice_completion::CandidateKind::Plain,
+                        )
+                        .with_source(id.clone()),
+                    );
+                }
+            })
+        }
+    }
+
+    fn seed_async_source(
+        a: &mut App,
+        id: &'static str,
+        candidates: &[&str],
+    ) -> std::sync::Arc<std::sync::Mutex<Option<lattice_completion::InsertContextSnapshot>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let source = std::sync::Arc::new(FakeAsyncSource {
+            id,
+            candidates: candidates.iter().map(|s| s.to_string()).collect(),
+            seen: seen.clone(),
+        });
+        let contribution = lattice_completion::CompletionSourceContribution {
+            accepts_non_word_query: false,
+            id: lattice_completion::SourceId::new(id),
+            default_priority: 100,
+            auto_trigger: true,
+            trigger_chars: Vec::new(),
+            popup_filter_chord: None,
+            kind: lattice_completion::CompletionSourceKind::Async(source),
+        };
+        let buffer = a.editor.document_buffer_id;
+        a.editor
+            .buffer_locals
+            .entry(buffer)
+            .or_default()
+            .insert(lattice_mode::ActiveCompletionSources(vec![contribution]));
+        seen
+    }
+
+    /// Poll the drain until the source's rows land. The fan-out runs on
+    /// the shared runtime, so the result arrives on another thread —
+    /// spinning here is the test's stand-in for the editor's
+    /// `async_landed` wake.
+    fn settle_async_completion(a: &mut App, want: usize) {
+        for _ in 0..200 {
+            a.drain_pending_insert_completion_lsp();
+            let n = a
+                .editor
+                .insert_completion
+                .as_ref()
+                .map(|s| s.raw.len())
+                .unwrap_or(0);
+            if n >= want {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn async_fan_out_drives_a_non_lsp_source() {
+        let mut a = app_with("\nal", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(1, 2);
+        seed_async_source(&mut a, "gen:test-plugin", &["alpha", "alphabet"]);
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 0),
+            Position::new(1, 2),
+            "al".to_string(),
+        ));
+
+        a.mutate_editor(|e| e.do_async_insert_completion_requests());
+        settle_async_completion(&mut a, 2);
+
+        let state = a.editor.insert_completion.as_ref().expect("popup open");
+        let texts: Vec<&str> = state.raw.iter().map(|c| c.text.as_str()).collect();
+        assert!(
+            texts.contains(&"alpha") && texts.contains(&"alphabet"),
+            "a non-LSP async source contributed nothing: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_source_runs_with_no_lsp_server_attached() {
+        // The buffer has no URI and no server, which used to return
+        // before the fan-out began. A plugin source does not care.
+        let mut a = app_with("\nal", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(1, 2);
+        assert!(
+            a.editor
+                .buffer_uris
+                .get(&a.editor.document_buffer_id)
+                .is_none(),
+            "precondition: no URI, so LSP sits the round out"
+        );
+        seed_async_source(&mut a, "gen:test-plugin", &["alpha"]);
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 0),
+            Position::new(1, 2),
+            "al".to_string(),
+        ));
+
+        a.mutate_editor(|e| e.do_async_insert_completion_requests());
+        settle_async_completion(&mut a, 1);
+
+        let state = a.editor.insert_completion.as_ref().expect("popup open");
+        assert_eq!(
+            state
+                .raw
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+    }
+
+    #[test]
+    fn a_source_sees_the_line_before_the_cursor() {
+        // The field org-roam's node source reads to tell "[[Ti" (offer
+        // link targets) from a bare "Ti" (do not).
+        let mut a = app_with("\nsee [[Ti", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(1, 9);
+        let seen = seed_async_source(&mut a, "gen:test-plugin", &["Title"]);
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 7),
+            Position::new(1, 9),
+            "Ti".to_string(),
+        ));
+
+        a.mutate_editor(|e| e.do_async_insert_completion_requests());
+        settle_async_completion(&mut a, 1);
+
+        let ctx = seen.lock().unwrap().clone().expect("the source was called");
+        assert_eq!(ctx.line_before_cursor, "see [[Ti");
+        assert_eq!(ctx.query, "Ti");
+    }
+
+    #[test]
+    fn each_source_replaces_only_its_own_rows() {
+        // Two senders now, so "keep the latest outcome" would drop one
+        // of them, and replacing by LSP's extension kind_id would let
+        // plugin rows pile up a copy per round.
+        let mut a = app_with("\nal", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(1, 2);
+        a.editor.insert_completion = Some(lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 0),
+            Position::new(1, 2),
+            "al".to_string(),
+        ));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::AsyncCompletionOutcome>();
+        a.editor.pending_insert_completion_async_rx = Some(rx);
+        let one = lattice_completion::SourceId::new("gen:one");
+        let two = lattice_completion::SourceId::new("gen:two");
+        let row = |text: &str, src: &lattice_completion::SourceId| {
+            lattice_completion::RawCandidate::plain(
+                text.to_string(),
+                lattice_completion::CandidateKind::Plain,
+            )
+            .with_source(src.clone())
+        };
+        tx.send(super::AsyncCompletionOutcome::Items {
+            candidates: vec![row("alpha", &one)],
+            sources: vec![one.clone()],
+            is_incomplete: false,
+        })
+        .unwrap();
+        tx.send(super::AsyncCompletionOutcome::Items {
+            candidates: vec![row("also", &two)],
+            sources: vec![two.clone()],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+
+        let mut texts: Vec<String> = a
+            .editor
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .raw
+            .iter()
+            .map(|c| c.text.clone())
+            .collect();
+        texts.sort();
+        assert_eq!(texts, vec!["alpha", "also"], "both senders' rows survived");
+
+        // `one` re-fires with a different row; `two`'s row must stay put
+        // and `one`'s previous row must not.
+        tx.send(super::AsyncCompletionOutcome::Items {
+            candidates: vec![row("altered", &one)],
+            sources: vec![one],
+            is_incomplete: false,
+        })
+        .unwrap();
+        a.drain_pending_insert_completion_lsp();
+        let mut texts: Vec<String> = a
+            .editor
+            .insert_completion
+            .as_ref()
+            .expect("popup")
+            .raw
+            .iter()
+            .map(|c| c.text.clone())
+            .collect();
+        texts.sort();
+        assert_eq!(texts, vec!["also", "altered"]);
+    }
+
+    #[test]
+    fn a_candidate_may_insert_something_other_than_what_it_matched() {
+        // The generic form of LSP's and snippets' own escape hatches: a
+        // source offers a readable label and inserts machine syntax.
+        // Org-roam's node source matches a title and inserts an
+        // `[[id:…][…]]` link; matching on the link instead would score
+        // every candidate on its uuid.
+        let mut a = app_with("\nTi", 10);
+        a.editor.modal = ModalState::Insert;
+        a.editor.cursor = Position::new(1, 2);
+        let mut state = lattice_completion::InsertCompletionState::open(
+            lattice_completion::CompletionTrigger::Manual,
+            Position::new(1, 0),
+            Position::new(1, 2),
+            "Ti".to_string(),
+        );
+        let mut raw = lattice_completion::RawCandidate::plain(
+            "Title".to_string(),
+            lattice_completion::CandidateKind::Plain,
+        );
+        raw.insert_text = Some("[[id:abc][Title]]".to_string());
+        state.raw = vec![raw];
+        a.editor.insert_completion = Some(state);
+        a.mutate_editor(|e| {
+            let mut s = e.insert_completion.take().expect("popup");
+            e.refilter_insert_completion(&mut s);
+            e.insert_completion = Some(s);
+        });
+
+        a.mutate_editor(|e| e.do_completion_accept());
+
+        let text = a.editor.document.snapshot().buffer.line(1).unwrap();
+        assert_eq!(text, "[[id:abc][Title]]");
     }
 }

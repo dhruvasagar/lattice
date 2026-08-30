@@ -32,6 +32,7 @@ pub struct WasmCompletionSource {
     /// `(name, doc)` `insert_generator` stamps when a host wires this in.
     id: String,
     doc: String,
+    accepts_non_word_query: bool,
 }
 
 impl WasmCompletionSource {
@@ -44,6 +45,7 @@ impl WasmCompletionSource {
             client,
             id: spec.id,
             doc: spec.doc,
+            accepts_non_word_query: spec.accepts_non_word_query,
         })
     }
 
@@ -57,6 +59,12 @@ impl WasmCompletionSource {
         &self.doc
     }
 
+    /// OR.7: whether this source keeps matching once the query picks up a
+    /// non-word character (a phrase source — org-roam's node titles).
+    pub fn accepts_non_word_query(&self) -> bool {
+        self.accepts_non_word_query
+    }
+
     /// The host-issued id of the plugin behind this source.
     pub fn plugin_id(&self) -> crate::PluginId {
         self.client.id()
@@ -68,14 +76,15 @@ impl WasmCompletionSource {
     /// plugin-gone) and the inner guest WIT `err` both collapse to the `String`
     /// the completion machinery logs; a candidate that fails to cross (malformed
     /// record) fails the whole batch as a typed error, never a silent drop.
-    pub async fn generate(
-        &self,
-        prefix: &str,
-        case_sensitive: bool,
-    ) -> Result<Vec<RawCandidate>, String> {
+    pub async fn generate(&self, ctx: &InsertContextSnapshot) -> Result<Vec<RawCandidate>, String> {
         let ctx = WitGenerateContext {
-            prefix: prefix.to_string(),
-            case_sensitive,
+            prefix: ctx.query.clone(),
+            case_sensitive: ctx.case_sensitive,
+            // OR.7: the two fields that let a source decide whether it
+            // applies at all. Without them every plugin source fires in
+            // every buffer on every prefix.
+            line_before_cursor: ctx.line_before_cursor.clone(),
+            language: ctx.language.clone(),
         };
         let wit = match self.client.generate(ctx).await {
             Ok(inner) => inner?,
@@ -117,7 +126,7 @@ impl AsyncCompletionSource for WasmCompletionSource {
             // A host trap / plugin-gone (outer) or a guest WIT `err` (inner) both
             // collapse to a logged zero-candidate result — never a panic, never a
             // poisoned popup (§8 graceful degradation).
-            match source.generate(&ctx.query, ctx.case_sensitive).await {
+            match source.generate(&ctx).await {
                 Ok(candidates) => {
                     for candidate in candidates {
                         if token.is_cancelled() {

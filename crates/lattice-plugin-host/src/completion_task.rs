@@ -212,6 +212,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         bus: &Arc<EventBus>,
+        config: Option<&Arc<lattice_config::ConfigRegistry>>,
     ) -> Result<(CompletionClient, CompletionActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -229,6 +230,15 @@ impl PluginHost {
         let id = self.alloc_id();
         // PO.5: route this plugin's `logging` calls into the tracer (Layer 2).
         store.data_mut().log_ctx = self.log_ctx_for(id);
+        // OR.7: the config registry — the sixth seam to need this line, and
+        // the sixth to have shipped without it. A completion source reads
+        // options to decide what it offers (org-roam's node source needs
+        // `org.roam-directory`); without a registry on THIS store
+        // `get-option` answers `none` and the source silently offers
+        // nothing, which is indistinguishable from "no matches".
+        if let Some(registry) = config {
+            store.data_mut().config_registry = Some(Arc::clone(registry));
+        }
         let (tx, rx) = mpsc::unbounded();
         let client = CompletionClient { tx, id };
         let actor = CompletionActor {

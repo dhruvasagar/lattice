@@ -804,6 +804,7 @@ mod tests {
             }
             fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
                 vec![CompletionSourceContribution {
+                    accepts_non_word_query: false,
                     id: lattice_completion::SourceId::new("gen:stub"),
                     default_priority: 100,
                     auto_trigger: true,

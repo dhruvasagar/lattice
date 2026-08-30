@@ -66,8 +66,8 @@ pub use crate::registry::{
 };
 pub use crate::slot::{CommandLineSlot, current_slot};
 pub use crate::source::{
-    AsyncCompletionSource, CandidateSink, CompletionSourceContribution, CompletionSourceKind,
-    InsertContextSnapshot, SyncCompletionSource,
+    AsyncCompletionOutcome, AsyncCompletionSource, CandidateSink, CompletionSourceContribution,
+    CompletionSourceKind, InsertContextSnapshot, SyncCompletionSource, line_before_cursor,
 };
 pub use crate::source_registration::{
     AcceptAction, AcceptHandler, AcceptToken, ArgsSchema, CandidateSourceKind, CustomAcceptPayload,

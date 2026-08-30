@@ -121,6 +121,7 @@ impl PickerSourceGuest for Component {
 /// `"fixture"`. Minimal but a valid `RawCandidate` the host round-trips.
 fn candidate(text: &str) -> RawCandidate {
     RawCandidate {
+        insert_text: None,
         text: text.to_string(),
         display: text.to_string(),
         source: Some("fixture".to_string()),

@@ -323,7 +323,7 @@ failure would write an empty drawer and nothing would ever say so.
 | Command | What |
 |---|---|
 | `:org-roam-find-node` | picker over all nodes; create-on-no-match; opens the node |
-| `:org-roam-insert-node` | same picker; inserts `[[id:…][Title]]` at the cursor; create-on-no-match creates *and* links |
+| completion inside `[[…` | org-roam nodes as an insert-mode completion source — match a title, insert `[[id:…][Title]]` |
 | `:org-roam-id-create` | mint an `:ID:` for the headline at point, making it a node |
 | `:org-roam-backlinks` | the multibuffer view of what points here |
 | `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` | the journal |
@@ -332,6 +332,21 @@ failure would write an empty drawer and nothing would ever say so.
 
 Naming follows the standing rule: dashed, namespaced, no collapsed forms and no
 generic-name aliases. `:org-roam-find-node` does not also register `:find-node`.
+
+**Inserting a link is completion, not a command.** You insert a link
+mid-sentence, so a normal-mode chord that opens a picker means leaving Insert,
+picking, and coming back — and emacs does not ask that either: you type `[[` and
+completion offers nodes. Org contributes a `completion-source` (PH7.6) rather
+than a second picker, gated on the cursor being inside an unclosed `[[`, which
+is also what keeps a 500-node corpus out of ordinary word completion. The
+picker form (`:org-roam-insert-node`) is deferred, not dropped — see the slice
+plan.
+
+The gate is the **guest's** to decide, and deliberately so. The host hands over
+`line-before-cursor` and `language`; it does not know what `[[` means and must
+not learn. The alternative — a host-side `link-context` flag beside
+`path-context` — puts one plugin's syntax in the editor and guarantees the next
+source needs the next flag.
 
 ### 6.1 The backlinks view
 

@@ -571,6 +571,42 @@ The WIT package above *is* the plugin API. Rather than re-document it by hand, a
   the listing itself already includes plugin commands live (only the friendly plugin-name
   column is deferred, not the entries).
 
+### The completion seam, and the round that drives it
+
+PH7.6 landed the export, the actor, the `AsyncCompletionSource` adapter and the
+loader's carrier mode. **Nothing called `generate`** until OR.7: the host's only
+async-completion driver looked up `gen:lsp-completion` by id and returned early
+unless an LSP server was attached, so a plugin source registered correctly and
+contributed nothing — in a way no test caught, because every test asserted on
+registration. Four things a source author should know as a result.
+
+**The round is a fan-out.** `Editor::do_async_insert_completion_requests` spawns
+one task per enabled async source. Each reports independently and each round
+*replaces* only its own sender's rows, so a fast source's candidates appear
+without waiting on a slow one and arrival order does not matter. LSP is one
+participant among N; its preconditions (mode enabled, buffer URI, attached
+server) drop **LSP** from a round rather than dropping the round.
+
+**The guest decides whether it applies.** `generate-context` carries
+`line-before-cursor` and `language` alongside `prefix`. A source that fires only
+in certain syntax reads the line and answers for itself; the host does not grow
+a per-source context flag the way `path-context` is one. Declining is `ok([])`,
+never `err` — an `err` is logged as a broken source, and "not applicable here"
+is the normal case.
+
+**Matching and inserting are not the same string.**
+`raw-candidate.insert-text` is what lands on accept when it differs from the
+matched `text`, and `completion-source-spec.accepts-non-word-query` keeps the
+popup alive past a space for a source completing phrases rather than
+identifiers. Both default to the previous behaviour; both were previously
+reachable only through host-owned `kind_id` hatches a plugin cannot use.
+
+**What still does not cross.** The replacement region is `[anchor, cursor]`,
+computed by the host at popup-open from a word/path scan, and a source cannot
+widen it. A source whose insert would cover more than the prefix must verify
+that the anchor already covers what it means to replace — `line-before-cursor`
+is enough to check — and decline otherwise.
+
 ---
 
 ## 6. Capability & security model

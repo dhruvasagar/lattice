@@ -57,6 +57,7 @@ impl CandidateGenerator for OptionsGenerator {
                 for v in values {
                     let text = format!("{}={}", spec.name(), v.form);
                     out.push(RawCandidate {
+                        insert_text: None,
                         text: text.clone(),
                         display: text,
                         kind: CandidateKind::Option,
@@ -91,6 +92,7 @@ impl CandidateGenerator for OptionsGenerator {
             // same spec regardless of which form the user typed.
             let mk = |text: String| RawCandidate {
                 text: text.clone(),
+                insert_text: None,
                 display: text,
                 kind: CandidateKind::Option,
                 data: CandidateData::Option {

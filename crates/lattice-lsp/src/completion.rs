@@ -316,6 +316,7 @@ impl Mode for LspCompletionMode {
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new(lattice_completion::LSP_COMPLETION_SOURCE_ID),
             // 200 per insert-completion.md §3.4 -- LSP outranks
             // every sync source.

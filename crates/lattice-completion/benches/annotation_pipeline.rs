@@ -78,6 +78,7 @@ fn make_candidates(n: usize) -> Vec<RenderedCandidate> {
     (0..n)
         .map(|i| RenderedCandidate {
             raw: RawCandidate {
+                insert_text: None,
                 text: format!("ex:cmd-{i:04}"),
                 display: format!("ex:cmd-{i:04}"),
                 kind: CandidateKind::Command,

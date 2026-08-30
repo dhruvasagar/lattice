@@ -297,6 +297,7 @@ impl WitBoundary for NativeRawCandidate {
     fn to_wit(&self) -> Result<WitRawCandidate, String> {
         Ok(WitRawCandidate {
             text: self.text.clone(),
+            insert_text: self.insert_text.clone(),
             display: self.display.clone(),
             source: self.source.as_ref().map(|s| s.0.clone()),
             kind: self.kind.to_wit()?,
@@ -314,6 +315,7 @@ impl WitBoundary for NativeRawCandidate {
     fn from_wit(wit: WitRawCandidate) -> Result<Self, String> {
         Ok(NativeRawCandidate {
             text: wit.text,
+            insert_text: wit.insert_text,
             display: wit.display,
             source: wit.source.map(SourceId),
             kind: NativeCandidateKind::from_wit(wit.kind)?,
@@ -536,6 +538,7 @@ mod tests {
 
     fn raw(kind: NativeCandidateKind, data: NativeCandidateData) -> NativeRawCandidate {
         NativeRawCandidate {
+            insert_text: None,
             text: "text".into(),
             display: "display".into(),
             source: Some(SourceId("gen:files".into())),

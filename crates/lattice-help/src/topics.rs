@@ -280,6 +280,7 @@ impl CandidateGenerator for HelpTopicsGenerator {
             .load()
             .iter()
             .map(|t| RawCandidate {
+                insert_text: None,
                 text: t.name.clone(),
                 display: t.name.clone(),
                 kind: CandidateKind::Plain,

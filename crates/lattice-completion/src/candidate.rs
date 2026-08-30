@@ -132,8 +132,27 @@ pub enum CandidateData {
 /// matcher next.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RawCandidate {
-    /// Text inserted when the user accepts this candidate.
+    /// Text the matcher scores the query against, and — unless
+    /// [`insert_text`](Self::insert_text) overrides it — the text
+    /// inserted when the user accepts.
     pub text: String,
+    /// OR.7: what to insert on accept, when that differs from what
+    /// the user matched against. `None` ⇒ insert `text`.
+    ///
+    /// Two sources already needed this and each grew its own escape
+    /// hatch: LSP carries `insert_text` inside its extension payload
+    /// and `do_completion_accept` special-cases it, snippets do the
+    /// same with a body. A third case — org-roam completing a node
+    /// *title* but inserting an `[[id:…][…]]` link — made the pattern
+    /// worth having generically, because a plugin source cannot reach
+    /// either existing hatch: both are keyed to a host-owned
+    /// `kind_id`.
+    ///
+    /// Folding text and insertion together is what forced those hatches
+    /// in the first place. A candidate matched on `text` and inserted
+    /// verbatim is the common case, not the only one.
+    #[serde(default)]
+    pub insert_text: Option<String>,
     /// What appears in the popup before annotators run. May be
     /// `text` verbatim or a richer form (e.g. `"~/Documents"` for a
     /// `File` whose `text` is the absolute path).
@@ -236,6 +255,7 @@ impl RawCandidate {
         Self {
             display: text.clone(),
             text,
+            insert_text: None,
             kind,
             data: CandidateData::Plain,
             source: None,

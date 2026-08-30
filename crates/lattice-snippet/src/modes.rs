@@ -130,6 +130,7 @@ impl Mode for SnippetCompletionMode {
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new(SNIPPET_COMPLETION_SOURCE_ID),
             // SN.3g: single source with the option default so the two
             // can't drift (was a bare `150` literal duplicating

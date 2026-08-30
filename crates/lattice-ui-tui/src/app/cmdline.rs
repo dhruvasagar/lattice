@@ -737,6 +737,7 @@ mod tests {
         use lattice_grammar::source::SourceLocation;
         let mut candidates = vec![RenderedCandidate {
             raw: RawCandidate {
+                insert_text: None,
                 text: "ex:describe-command".into(),
                 display: "ex:describe-command".into(),
                 kind: CandidateKind::Command,
@@ -770,6 +771,7 @@ mod tests {
         };
         let mut candidates = vec![RenderedCandidate {
             raw: RawCandidate {
+                insert_text: None,
                 text: "/tmp/foo.rs".into(),
                 display: "foo.rs".into(),
                 kind: CandidateKind::File,
@@ -803,6 +805,7 @@ mod tests {
         // The canonical name must be preserved.
         let mut candidates = vec![RenderedCandidate {
             raw: RawCandidate {
+                insert_text: None,
                 text: "next-error".into(),
                 display: "next-error".into(),
                 kind: CandidateKind::Command,

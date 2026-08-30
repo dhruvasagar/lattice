@@ -4,7 +4,7 @@
 //! more completion sources via `Mode::completion_sources()`. The
 //! v1 architecture (§3 -- §11) hardcodes the source set inside
 //! `lattice-ui-tui::app::completion::populate_insert_completion_sync`
-//! and the bespoke `do_lsp_insert_completion_request` host code;
+//! and the bespoke `do_async_insert_completion_requests` host code;
 //! §12 of the design doc lays out the migration to a uniform
 //! mode-contribution shape that:
 //!
@@ -96,6 +96,23 @@ pub struct CompletionSourceContribution {
     /// source so CSM.K2 can ship one slice's worth of behavior
     /// at a time.
     pub popup_filter_chord: Option<char>,
+    /// OR.7: this source can still match after a non-word character
+    /// is typed, so the popup must not dismiss on one.
+    ///
+    /// The host closes the popup as soon as the query contains a byte
+    /// that is not a word character — the right default, because a
+    /// query is normally an identifier and vim closes there too. It is
+    /// wrong for a source whose candidates are *phrases*: org-roam
+    /// completes node titles like "Honey Garlic Chicken Breast", and
+    /// the popup used to die at the first space, which made every
+    /// multi-word title unreachable.
+    ///
+    /// Per-source rather than global because the dismissal is right
+    /// for buffer-words and identifiers; the host ORs the flag across
+    /// the round, so one phrase source keeps the popup alive and every
+    /// other source simply stops matching, which is the correct
+    /// outcome for them.
+    pub accepts_non_word_query: bool,
     /// The actual producer -- sync or async.
     pub kind: CompletionSourceKind,
 }
@@ -108,6 +125,7 @@ impl fmt::Debug for CompletionSourceContribution {
             .field("auto_trigger", &self.auto_trigger)
             .field("trigger_chars", &self.trigger_chars)
             .field("popup_filter_chord", &self.popup_filter_chord)
+            .field("accepts_non_word_query", &self.accepts_non_word_query)
             .field("kind", &self.kind.kind_label())
             .finish()
     }
@@ -259,6 +277,28 @@ pub struct InsertContextSnapshot {
     /// buffers. The LSP source parses it back via
     /// `lsp_types::Uri::from_str`.
     pub uri: Option<String>,
+    /// OR.7: the text from the start of the cursor's line up to
+    /// the cursor, verbatim. The one field that lets an
+    /// out-of-process source decide *whether it applies at all*
+    /// without the host growing a per-source context flag.
+    ///
+    /// `path_context` above is the shape this replaces: a bool
+    /// the host computes on one source's behalf, so teaching the
+    /// host a new context means teaching it that source's syntax.
+    /// A source that only fires inside `[[…]]` (org-roam links),
+    /// after `#+` (org keywords), or inside a fenced block reads
+    /// this string and answers for itself; the host stays ignorant
+    /// of every one of those. Native sources have `buffer` and
+    /// never need it — this exists for the WASM seam, which has
+    /// only what crosses.
+    ///
+    /// Note what it does NOT change: the popup's replacement
+    /// region is still `[anchor, cursor]`, computed once at
+    /// open. A source whose candidates would replace more than
+    /// that must decline unless the anchor already covers what it
+    /// means to replace — which it can now check, because it can
+    /// see the text between the two.
+    pub line_before_cursor: String,
     /// CSM.8b: pre-computed LSP position
     /// (line, character) in UTF-16 encoding. Populated by
     /// the host when an LSP server is attached and the
@@ -284,9 +324,64 @@ impl InsertContextSnapshot {
             path_context: ctx.path_context,
             buffer_dir: ctx.buffer_dir.map(|p| p.to_path_buf()),
             uri: ctx.uri.map(|s| s.to_string()),
+            line_before_cursor: line_before_cursor(ctx.buffer, ctx.cursor),
             lsp_position: ctx.lsp_position,
         }
     }
+}
+
+/// OR.7: drain payload for the **async completion fan-out** — every
+/// [`AsyncCompletionSource`] the active modes contribute, not only
+/// LSP's.
+///
+/// This was `lattice_lsp::cache::InsertCompletionLspOutcome`, and the
+/// name was load-bearing in the wrong direction: it described the one
+/// source the host actually drove, and so nothing made it obvious that
+/// a WASM completion source could register a carrier mode, spawn an
+/// actor, connect an adapter, and still never have `generate` called.
+/// The type is named for the fan-out now because the fan-out is what
+/// it carries.
+#[derive(Debug, Clone)]
+pub enum AsyncCompletionOutcome {
+    Items {
+        candidates: Vec<crate::RawCandidate>,
+        /// Every source that took part in this round, whether or not
+        /// it produced anything. The drain drops these sources'
+        /// previous candidates before adding `candidates`, which is
+        /// what makes a re-fire *replace* rather than duplicate.
+        ///
+        /// A source that answered with nothing must still appear here
+        /// — otherwise its stale rows from the previous round survive
+        /// a round in which it deliberately declined.
+        sources: Vec<SourceId>,
+        /// LSP's `isIncomplete`. Plugin sources leave it false; the
+        /// host re-fires on each keystroke while any source sets it.
+        is_incomplete: bool,
+    },
+    /// The fan-out had nothing to run (no async sources enabled for
+    /// this buffer). Distinct from `Items` with an empty list, which
+    /// means sources ran and declined — that one still has to clear
+    /// their previous rows.
+    Nothing,
+}
+
+/// The text from the start of `cursor`'s line up to `cursor`.
+///
+/// Public because the host builds an [`InsertContextSnapshot`]
+/// directly in one place (the async fan-out) rather than through
+/// [`InsertContextSnapshot::from_context`], and the two must agree
+/// — a second hand-rolled slice is how they would drift.
+///
+/// Byte-clamped rather than trusting `cursor.byte`: an out-of-range
+/// cursor yields the whole line (or `""` for a missing line), never
+/// a panic on a completion path.
+pub fn line_before_cursor(buffer: &lattice_core::Buffer, cursor: Position) -> String {
+    let line = buffer.line(cursor.line).unwrap_or_default();
+    let upto = (cursor.byte as usize).min(line.len());
+    // `get` rather than slicing: `upto` can land inside a multi-byte
+    // char when the cursor is mid-grapheme, and a panic here would
+    // take out the popup.
+    line.get(..upto).unwrap_or(&line).to_string()
 }
 
 #[cfg(test)]
@@ -365,6 +460,7 @@ mod tests {
     #[test]
     fn contribution_is_constructible_and_debug_readable() {
         let contribution = CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new("gen:echo"),
             default_priority: 100,
             auto_trigger: true,

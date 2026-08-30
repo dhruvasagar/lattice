@@ -458,7 +458,21 @@ test that settles on `n/<id>` opens the picker against a half-written index:
 that key lands DURING the batch, while the `nodes` blob the picker reads is
 rebuilt once at the END of it.
 
-**Still open (why this is 🚧, not ✅):** the create-draft test above. Finding by title;
+**Still open (why this is 🚧, not ✅):**
+
+1. The create-draft test above.
+2. **No key binding.** `:org-roam-find-node` is reachable only as an
+   ex-command. `<leader>onf` was tried and **reverted**: the binding registered
+   but the chord did not dispatch in an integration test, through three
+   explanations that each turned out not to be it (a missing `default_modes` in
+   the test manifest, an un-ticked mode-enablement drain, and the manifest key's
+   spelling). A binding that silently does nothing is worse than none, so it is
+   out until the dispatch is understood. The prefix, when it lands, is
+   `<leader>on…` — NOT `<C-x>n…`, because org's major keymap binds a terminal
+   `<C-x>` in Normal and it fires before any second key.
+3. **Create is a placeholder.** OR.6 writes a minimal built-in body through
+   `WriteToFile` with no template choice and no finalize/abort. OR.7b replaces
+   it with the capture-buffer flow. Finding by title;
 by alias; a headline node landing on its line rather than the file's first; the
 generation check rebuilding the cache when the index moved and **not** rebuilding
 when it did not; create producing a node the next find-node can find; roam inert
@@ -466,12 +480,98 @@ with the directory unset saying so rather than showing an empty picker. These
 need a real editor driving a real picker, which is the shape `org_roam_index.rs`
 already established for OR.4.
 
-### OR.7 — `:org-roam-insert-node` 📝
+### OR.7 — inserting a link ✅
 
 **Deps:** OR.6.
 
-The same picker; on accept, insert `[[id:<ID>][<Title>]]` at the cursor.
-Create-on-no-match creates the node *and* inserts the link to it.
+**Reshaped 2026-08-30, before implementation.** The original line was "the same
+picker; on accept, insert `[[id:<ID>][<Title>]]` at the cursor" — a normal-mode
+chord opening a picker. That is the wrong surface, and the reason is the moment
+it happens: you insert a link **mid-sentence**, so a normal-mode chord makes you
+leave insert, pick, and come back. Emacs does not do that either — you type
+`[[` and completion offers nodes.
+
+So insert-node is a **completion source**, not a picker:
+
+- **The seam already exists.** `completion-source` (PH7.6) is generator-only by
+  design: the guest produces candidates asynchronously and the host's native
+  matcher / ranker / annotator handle the rest, because `matches` and `annotate`
+  run per-candidate on the synchronous keystroke pipeline and crossing them
+  would fire hundreds of boundary calls per keystroke. Org does not currently
+  `provide` it; adding it is a manifest entry, not a new mechanism.
+- **Prefix-gated, not always-on.** The source returns nothing unless the text
+  before the cursor is inside a `[[…` link. That is emacs org-roam's own
+  behaviour, and it is also what keeps a 585-node corpus out of every ordinary
+  word completion.
+- **The manual trigger is `<C-x><C-o>` (omni), not `<C-x><C-n>`.** Insert-mode
+  `<C-x>` is vim's canonical completion-source prefix (`<C-x><C-f>` files,
+  `<C-x><C-l>` lines, `<C-x><C-o>` omni) and — unlike normal mode — it is FREE
+  here: org's terminal `<C-x>` (timestamp decrement) is bound in Normal only.
+  `<C-x><C-n>` is taken by vim's own keyword completion, so it is not available.
+  Omni is the right slot on meaning as well as availability: omni-completion is
+  by definition the filetype's own, which is exactly what a roam link is in an
+  org buffer. nvim-orgmode wires `omnifunc` for the same reason.
+- **Create-on-no-match does not belong here.** Completion offers what exists;
+  creating is OR.6's picker (and, after the capture rework below, a capture
+  buffer). Trying to make a completion row create a note would put a file write
+  behind a keystroke that is supposed to be cheap.
+
+
+**What it actually took — three host gaps, all generic.** None of these are
+org-specific and none are in `lattice-org-plugin`; the plugin owns the source
+and nothing else. Each was found by a test that failed, not by reading:
+
+(A fourth was suspected — that the loader-minted `<plugin>-completion-mode`
+carrier is a `ModeKind::Minor` and so inert until enabled — and a publish was
+written for it. Removing the publish left the tests green, so it was reverted:
+the real cause of that symptom was a test that read `ActiveCompletionSources`
+before the enablement and activation drains had run. Recorded because "a plugin
+minor is inert until enabled" is a true rule that made a wrong diagnosis look
+right.)
+
+1. **The host never drove a WASM completion source at all.** PH7.6 shipped the
+   WIT export, the actor, the carrier mode and the `AsyncCompletionSource`
+   adapter, and the loader registered every one — but the only `produce_async`
+   call site looked up `gen:lsp-completion` by id and returned early unless an
+   LSP server was attached. `generate` had never been called in production.
+   `do_lsp_insert_completion_request` is now
+   `do_async_insert_completion_requests`: one task per source, each reporting
+   independently, LSP's preconditions dropping **LSP** from a round rather than
+   the round. The drain applies every pending outcome instead of the latest —
+   with more than one sender, "latest wins" silently discarded whichever
+   answered first.
+2. **The guest could not tell whether it applied.** `generate-context` carried
+   only `prefix` + `case-sensitive`, and the anchor scan stops at `[`, so `[[Ti`
+   and a bare `Ti` reach the guest identically. It now carries
+   `line-before-cursor` and `language`. The rejected alternative was a
+   host-side `link-context` flag beside `path-context` — that is the host
+   learning one plugin's syntax, and the next source would need the next flag.
+3. **The popup closed on the first space.** `maybe_refresh_insert_completion_after_edit`
+   dismissed as soon as the query held a non-word byte, so a node titled *Honey
+   Garlic Chicken Breast* could never be narrowed to. A source declares
+   `accepts-non-word-query` and the host ORs it across the round; identifier
+   sources keep the old behaviour and simply stop matching.
+
+Plus `raw-candidate.insert-text`, so a candidate can match on one string and
+insert another. LSP and snippets each already needed this and each grew a
+private hatch keyed to a host-owned `kind_id`, which a plugin cannot reach —
+roam matches a title and inserts `[[id:…][…]]`.
+
+**The one behaviour worth knowing.** The replacement region is `[anchor,
+cursor]`, fixed at popup-open. A multi-word title therefore needs the popup
+opened at the opener (`<C-Space>` right after `[[`), after which the query grows
+across spaces from the fixed anchor. Single-word queries work from auto-trigger
+anywhere in the link. When the anchor sits mid-title the source **declines** —
+accepting there would splice the link over the last word and strand the rest.
+Source-declared replacement bounds (emacs's capf model, where each function
+returns its own START/END) would remove the caveat and is the honest fix if it
+ever bites; it reshapes a popup-global field and was not worth it here.
+
+### OR.7c — `:org-roam-insert-node` as a picker ⛔
+
+**Deferred, deliberately.** Superseded by OR.7's completion source for the
+common case. Revisit only if completion proves insufficient for inserting a
+link — not on the assumption that it will.
 
 **The insert is one edit, not two.** Creating-then-inserting as separate effects
 would mean a failed insert leaves an orphan node with nothing pointing at it,
@@ -549,9 +649,48 @@ prevent, in a different costume.
 tomorrow crossing a month boundary and a year boundary; `-goto-date` with an
 explicit date; the local-vs-UTC case pinned with an offset that changes the day.
 
-### OR.11 — templates, and the one thing capture cannot do 📝
+### OR.11 — templates, the capture buffer, and the one thing capture cannot do 📝
 
 **Deps:** OR.6.
+
+**Scope widened 2026-08-30, after comparing against emacs.** Roam capture is not
+just `${field}` interpolation bolted onto the existing prompt — the *surface*
+differs, and that is the larger half of this slice. Recorded here rather than
+carved into its own slice because roam capture and org capture are one flow;
+splitting them would mean designing the capture buffer twice. **Still to be
+discussed before implementation.**
+
+**Lattice's capture is a prompt; emacs's is a buffer.** `<leader>oc` opens the
+template transient (which does match emacs's selection step) and then
+`Effect::OpenPrompt` — a one-line minibuffer. Emacs opens `*CAPTURE-<file>*`,
+pre-fills it by expanding the template, puts point at `%?`, and lets you edit
+freely until `C-c C-c` files it or `C-c C-k` discards it.
+
+| | emacs | lattice today |
+|---|---|---|
+| template menu | temp window, one key each | ✅ the `<leader>oc` transient |
+| capture surface | a **buffer** | a one-line prompt |
+| editing | free, multi-line, `%?` point | single line, no point placement |
+| finalize / abort | `C-c C-c` / `C-c C-k` | submit-on-enter, no abort |
+
+**The chords belong to a minor mode, not to capture or to roam.** `C-c C-c` and
+`C-c C-k` are wanted by org-capture AND org-roam-capture, so per the standing
+rule they go on an `org-capture-mode` minor activated on the capture buffer,
+owning the chords *and* their handler bodies. Copying them into two places is
+the failure that rule exists to prevent — `magit-diff-mode` was hand-given two
+of three chords and the third's absence announced itself to nobody.
+
+Scoping is also what makes `<C-c>` safe: it is vim's interrupt, so a GLOBAL
+`<C-c><C-c>` would shadow it. Buffer-local via the minor it does not, which is
+how nvim-orgmode binds the same chord.
+
+**`C-c C-k` must leave no file.** In emacs an aborted roam capture creates
+nothing at all. That falls out of the buffer model — the file is written on
+finalize, not on open — and it is the behaviour OR.6's `WriteToFile`-on-create
+does NOT have.
+
+The `${field}` half, which was the slice's original whole:
+
 
 Roam templates are capture templates plus `${field}` interpolation over the node
 being created — `${title}`, `${slug}`, `${id}`. This is a requirement rather than

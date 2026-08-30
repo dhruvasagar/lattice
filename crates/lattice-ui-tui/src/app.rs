@@ -282,16 +282,18 @@ pub use lattice_host::state::{
 // `lattice_lsp::cache`. Re-exported here so existing
 // `crate::app::HoverOutcome` etc. references continue to
 // resolve unchanged across this crate + downstream consumers.
+// OR.7: the async-completion drain payload is `lattice-completion`'s now
+// (it carries every async source's candidates, not only LSP's).
+pub use lattice_completion::AsyncCompletionOutcome;
 pub use lattice_lsp::cache::{
     CodeActionOutcome, CodeActionRow, CodeLensOutcome, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, DecodedSemanticToken, DocumentColorOutcome, DocumentHighlightCache,
     DocumentHighlightOutcome, DocumentLinksOutcome, FoldingRangeOutcome, FormatOutcome,
-    HoverOutcome, InlayHintOutcome, InsertCompletionLspOutcome, LspCodeLensCache,
-    LspDocumentColorCache, LspDocumentLinksCache, LspFoldsCache, LspInlayHintCache, LspNavKind,
-    LspPullDiagnosticsCache, LspSelectionChain, LspSemanticTokensCache, PullDiagnosticsOutcome,
-    ReferencesOutcome, RenameOutcome, SelectionRangeOutcome, SelectionRangeStep,
-    SemanticTokensOutcome, SignatureHelpOutcome, SymbolRow, SymbolsOutcome,
-    apply_semantic_token_edits, decode_semantic_tokens,
+    HoverOutcome, InlayHintOutcome, LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache,
+    LspFoldsCache, LspInlayHintCache, LspNavKind, LspPullDiagnosticsCache, LspSelectionChain,
+    LspSemanticTokensCache, PullDiagnosticsOutcome, ReferencesOutcome, RenameOutcome,
+    SelectionRangeOutcome, SelectionRangeStep, SemanticTokensOutcome, SignatureHelpOutcome,
+    SymbolRow, SymbolsOutcome, apply_semantic_token_edits, decode_semantic_tokens,
 };
 
 // Phase 5.B.3: composition pivot (see
@@ -735,7 +737,7 @@ pub struct App {
     // `editor.prev_pane_for_popup`.
     // Phase 5.B.10: `popup_placement` moved to
     // `editor.popup_placement`.
-    // Phase 5.B.19: `pending_insert_completion_lsp_rx/token`,
+    // Phase 5.B.19: `pending_insert_completion_async_rx/token`,
     // `pending_completion_resolve_rx/token` moved to `editor.*`.
     // Phase 5.B.20: completion cluster tail moved to `editor.*`:
     // `insert_completion`, `snippet_registry`,

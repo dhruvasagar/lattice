@@ -25,6 +25,9 @@ impl Guest for Component {
         CompletionSourceSpec {
             id: "keywords".to_string(),
             doc: "Fixture keyword completion source (PH7.6 substrate validation).".to_string(),
+            // Identifier completion — the default. The phrase-source path is
+            // covered by org-roam's own tests.
+            accepts_non_word_query: false,
         }
     }
 
@@ -36,6 +39,7 @@ impl Guest for Component {
         Ok(["alpha", "alphabet", "beta", "gamma"]
             .iter()
             .map(|w| RawCandidate {
+                insert_text: None,
                 text: w.to_string(),
                 display: w.to_string(),
                 source: Some("keywords".to_string()),

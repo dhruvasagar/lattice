@@ -50,6 +50,7 @@ impl CandidateGenerator for ModesGenerator {
         let mut out: Vec<RawCandidate> = registry
             .iter_meta()
             .map(|(id, _kind)| RawCandidate {
+                insert_text: None,
                 text: id.as_str().to_string(),
                 display: id.as_str().to_string(),
                 kind: CandidateKind::Plain,
@@ -76,6 +77,7 @@ impl CandidateGenerator for EventsGenerator {
         let mut out: Vec<RawCandidate> = lattice_protocol::event_registry::all_events()
             .into_iter()
             .map(|d| RawCandidate {
+                insert_text: None,
                 text: d.name.clone(),
                 display: d.name.clone(),
                 kind: CandidateKind::Plain,
@@ -112,6 +114,7 @@ impl CandidateGenerator for ElementsGenerator {
             .element_names()
             .into_iter()
             .map(|name| RawCandidate {
+                insert_text: None,
                 text: name.clone(),
                 display: name,
                 kind: CandidateKind::Plain,
@@ -135,6 +138,7 @@ impl CandidateGenerator for LogLevelsGenerator {
         ["error", "warn", "info", "debug", "trace"]
             .iter()
             .map(|name| RawCandidate {
+                insert_text: None,
                 text: (*name).to_string(),
                 display: (*name).to_string(),
                 kind: CandidateKind::Plain,
@@ -174,6 +178,7 @@ impl CandidateGenerator for PickerSourcesGenerator {
         registry
             .iter()
             .map(|(id, _spec)| RawCandidate {
+                insert_text: None,
                 text: id.to_string(),
                 display: id.to_string(),
                 kind: CandidateKind::Plain,
@@ -208,6 +213,7 @@ impl CandidateGenerator for LspServersGenerator {
         ids.dedup();
         ids.into_iter()
             .map(|id| RawCandidate {
+                insert_text: None,
                 text: id.clone(),
                 display: id,
                 kind: CandidateKind::Plain,
@@ -254,6 +260,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
         let mut out: Vec<RawCandidate> = Vec::new();
         for meta in lattice_config::group::GROUP_DECLS.iter() {
             out.push(RawCandidate {
+                insert_text: None,
                 text: meta.name.to_string(),
                 display: meta.name.to_string(),
                 kind: CandidateKind::Plain,
@@ -266,6 +273,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
         }
         for ns in lattice_config::plugin_option_groups(&self.config).keys() {
             out.push(RawCandidate {
+                insert_text: None,
                 text: ns.clone(),
                 display: ns.clone(),
                 kind: CandidateKind::Plain,
@@ -280,6 +288,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
             let registry = registry.load();
             for (id, _kind) in registry.iter_meta() {
                 out.push(RawCandidate {
+                    insert_text: None,
                     text: id.as_str().to_string(),
                     display: id.as_str().to_string(),
                     kind: CandidateKind::Plain,
@@ -378,6 +387,7 @@ impl CandidateGenerator for HistoryKindsGenerator {
         vec!["commands", "searches", "pane-buffers"]
             .into_iter()
             .map(|s| RawCandidate {
+                insert_text: None,
                 text: s.to_string(),
                 display: s.to_string(),
                 kind: CandidateKind::Plain,

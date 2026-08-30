@@ -504,18 +504,11 @@ pub struct CompletionResolveOutcome {
     pub resolved: lsp_types::CompletionItem,
 }
 
-/// Drain payload for the async LSP insert-completion source.
-/// Replaces (rather than appends to) the current LSP slice of
-/// `state.raw` -- previous items get pruned by the drain so the
-/// popup reflects the freshest server response.
-#[derive(Debug, Clone)]
-pub enum InsertCompletionLspOutcome {
-    Items {
-        candidates: Vec<lattice_completion::RawCandidate>,
-        is_incomplete: bool,
-    },
-    NoServers,
-}
+// OR.7: `AsyncCompletionOutcome` moved to
+// `lattice_completion::AsyncCompletionOutcome`. It never was LSP's — it
+// is the drain payload for the whole async fan-out, and living here
+// under an LSP name is part of why the WASM completion seam sat
+// undriven. See `lattice-completion/src/source.rs`.
 
 /// One row of an LSP completion picker. Carries the item
 /// label, kind glyph, optional detail blurb, and the insert

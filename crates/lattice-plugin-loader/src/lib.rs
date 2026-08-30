@@ -2154,7 +2154,14 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_completion_source(component, manifest, tier, PluginBudget::default(), bus)
+            .spawn_completion_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
             .await?;
         // Drive the actor FIRST — `connect` issues a `spec()` guest call over the
         // client channel, which the actor must be running to answer.
@@ -2167,6 +2174,10 @@ impl PluginLoader {
         let source_id = source.id().to_string();
 
         let contribution = CompletionSourceContribution {
+            // OR.7: carried from the guest's own spec. Hardcoding `false`
+            // here would make the flag unreachable from WASM, which is the
+            // only place it is needed.
+            accepts_non_word_query: source.accepts_non_word_query(),
             id: SourceId::new(&source_id),
             default_priority: PLUGIN_COMPLETION_DEFAULT_PRIORITY,
             auto_trigger: true,

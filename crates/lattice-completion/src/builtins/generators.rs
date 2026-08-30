@@ -76,6 +76,7 @@ impl CandidateGenerator for CommandsGenerator {
                     .unwrap_or(&spec.name)
                     .to_string();
                 Some(RawCandidate {
+                    insert_text: None,
                     text: display_name.clone(),
                     display: display_name.clone(),
                     kind: CandidateKind::Command,
@@ -210,6 +211,7 @@ fn fs_entries(ctx: &GenerateContext<'_>, include_files: bool) -> Vec<RawCandidat
             name.to_string()
         };
         out.push(RawCandidate {
+            insert_text: None,
             text,
             display,
             kind: if is_dir {

@@ -402,6 +402,7 @@ impl Mode for TreeSitterCompletionMode {
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new(TREE_SITTER_COMPLETION_SOURCE_ID),
             // 80 per insert-completion.md §3.4 -- buffer-words
             // (100) wins on ties because it's a superset of

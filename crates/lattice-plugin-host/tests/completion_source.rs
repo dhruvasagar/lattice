@@ -32,6 +32,27 @@ fn host_in(dir: &TempDir) -> PluginHost {
 }
 
 /// Connect a `WasmCompletionSource` over a freshly-spawned fixture actor.
+/// A minimal snapshot for the generator: the query, the line before the
+/// cursor, and enough of the rest to be a valid context. OR.7 moved
+/// `generate` from `(prefix, case_sensitive)` to the whole snapshot so a
+/// source can see the line it is completing on.
+fn snapshot(query: &str, line_before_cursor: &str) -> lattice_completion::InsertContextSnapshot {
+    lattice_completion::InsertContextSnapshot {
+        cursor: lattice_protocol::Position::new(0, line_before_cursor.len() as u32),
+        anchor: lattice_protocol::Position::new(0, (line_before_cursor.len() - query.len()) as u32),
+        query: query.to_string(),
+        trigger: lattice_completion::CompletionTrigger::Manual,
+        case_sensitive: false,
+        language: "rust".to_string(),
+        tree_sitter_symbols: Vec::new(),
+        path_context: false,
+        buffer_dir: None,
+        uri: None,
+        line_before_cursor: line_before_cursor.to_string(),
+        lsp_position: None,
+    }
+}
+
 async fn connect(host: &PluginHost) -> WasmCompletionSource {
     let component = host
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
@@ -45,6 +66,7 @@ async fn connect(host: &PluginHost) -> WasmCompletionSource {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .unwrap();
@@ -70,7 +92,7 @@ async fn wasm_completion_source_produces_candidates_and_native_match_ranks_them(
     // Async produce (the generator export). The fixture returns the full set;
     // matching is native.
     let raw = source
-        .generate("al", false)
+        .generate(&snapshot("al", "al"))
         .await
         .expect("generate reaches the guest + produces candidates");
     let mut texts: Vec<&str> = raw.iter().map(|c| c.text.as_str()).collect();
@@ -120,6 +142,7 @@ async fn completion_source_calls_after_the_actor_ends_are_typed_plugin_gone() {
             TrustTier::Bundled,
             PluginBudget::default(),
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .await
         .unwrap();

@@ -48,6 +48,7 @@ fn boundary_round_trip(c: &mut Criterion) {
     });
 
     let candidate = RawCandidate {
+        insert_text: None,
         text: "/home/alice/project/src/main.rs".into(),
         display: "main.rs".into(),
         source: None,

@@ -113,6 +113,7 @@ impl Mode for BufferWordsMode {
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new(BufferWordsSource::ID),
             default_priority: 100,
             auto_trigger: true,
@@ -166,6 +167,7 @@ impl Mode for PathCompletionMode {
     }
     fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
         vec![CompletionSourceContribution {
+            accepts_non_word_query: false,
             id: SourceId::new(lattice_completion::PATH_SOURCE_ID),
             // 90 per insert-completion.md §3.4. The source self-
             // suppresses outside string scopes; when active,

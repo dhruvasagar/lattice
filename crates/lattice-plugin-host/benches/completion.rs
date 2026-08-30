@@ -18,6 +18,8 @@ fn ctx() -> GenerateContext {
     GenerateContext {
         prefix: "al".to_string(),
         case_sensitive: false,
+        line_before_cursor: "al".to_string(),
+        language: "rust".to_string(),
     }
 }
 
@@ -48,6 +50,7 @@ fn generate_warm(c: &mut Criterion) {
                 TrustTier::Bundled,
                 PluginBudget::default(),
                 &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+                None,
             )
             .await
             .unwrap();

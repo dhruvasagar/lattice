@@ -169,6 +169,13 @@ interface types {
     /// optional source id.
     record raw-candidate {
         text: string,
+        /// OR.7: what to insert on accept when that differs from the text
+        /// the query matched. `none` ⇒ insert `text`. A completion source
+        /// that offers a human-readable label but inserts machine syntax
+        /// (org-roam offering a node title and inserting an `[[id:…][…]]`
+        /// link) needs both, and matching against the machine syntax
+        /// instead would score every candidate on its id.
+        insert-text: option<string>,
         display: string,
         source: option<string>,
         kind: candidate-kind,
@@ -989,9 +996,26 @@ interface types {
     /// case-sensitivity flag, which is all a produce-then-`match_and_rank`
     /// generator needs (matching stays native — the sync-pipeline + paramount-#1
     /// reason a plugin completion source is a GENERATOR, not four trait objects).
+    /// OR.7 widened this. `prefix` alone cannot answer *whether a source
+    /// applies* — org-roam's node source offers link targets only inside
+    /// `[[…]]`, and the anchor scan stops at `[`, so the prefix it receives
+    /// is indistinguishable from an ordinary word. The alternative was a
+    /// host-side `link-context` flag beside `path-context`, i.e. teaching
+    /// the host one plugin's syntax; `line-before-cursor` lets every source
+    /// answer for itself and the host stay ignorant.
     record generate-context {
         prefix: string,
         case-sensitive: bool,
+        /// The cursor's line from its start up to the cursor, verbatim.
+        /// The replacement region is still `[anchor, cursor]` — a source
+        /// whose insert would cover more than the prefix must check that
+        /// this string ends with its own opener plus `prefix`, and decline
+        /// otherwise, or it will splice over the wrong span.
+        line-before-cursor: string,
+        /// The buffer's language id (`"org"`, `"rust"`, …); empty when no
+        /// language is detected. A source registered by a plugin is offered
+        /// to every buffer, so this is how it scopes itself to its own.
+        language: string,
     }
     /// A completion source's identity — the `(name, doc)` pair `insert_generator`
     /// stamps (`registry.rs`). Mirrors nothing structural; the host interns the
@@ -999,6 +1023,12 @@ interface types {
     record completion-source-spec {
         id: string,
         doc: string,
+        /// OR.7: keep the popup open when the query picks up a non-word
+        /// character. Default behaviour dismisses there — right for
+        /// identifier completion, wrong for a source completing phrases
+        /// (org-roam node titles contain spaces, and the popup used to
+        /// close at the first one).
+        accepts-non-word-query: bool,
     }
 
     /// Mirrors `lattice_picker::outcome::OpenTarget` (`<CR>`/`<C-s>`/`<C-v>`/`<C-t>`).

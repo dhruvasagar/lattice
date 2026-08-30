@@ -1451,6 +1451,7 @@ mod tests {
             }
             fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
                 vec![CompletionSourceContribution {
+                    accepts_non_word_query: false,
                     id: lattice_completion::SourceId::new("gen:stub-csm3"),
                     default_priority: 50,
                     auto_trigger: true,

@@ -1253,6 +1253,18 @@ run — see Coverage gaps.
 | `keybinding_annotator_1000` | 36.7 µs | 59 µs |
 | `styled_marginalia_columns_1000` | 140 µs | 142 µs |
 | `styled_picker_columns_1000` | 179 µs | 183 µs |
+
+**OR.7 — the async completion fan-out.** A plugin completion source's cost is
+the guest crossing, already covered by `plugin-host/benches/completion.rs`
+(`generate_warm`); the fan-out adds one `spawn_on_lsp_runtime` per enabled
+async source per round. Both sit **off** the keystroke path by construction —
+`generate` is awaited on the shared runtime and only the drain touches the
+popup — so the keystroke budget is unchanged and no new bench guards it. What
+*is* on the keystroke path is unchanged native work: `match_and_rank` over the
+accumulated `raw` set, which the `annotate_pipeline_*` rows above already
+characterise. A source returning a large candidate set (org-roam hands over
+every node once per popup-open) therefore shows up in those rows, not in a new
+one.
 | `picker::open_inline/{100,500,5000}` | 33.0 / 190 / 2738 µs | ~1.94 ms (5000, post-8) |
 | `picker::refilter/n=5000,query={"","f","file_"}` | 1.57 / 2.33 / 2.73 ms | 801 µs / 1.43 / 1.61 ms (post-8) |
 | `picker::mru_snapshot/{100,500,5000}` | 14.4 / 74.9 / 830 µs | ~520 µs (5000, post-8) |

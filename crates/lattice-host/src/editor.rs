@@ -41,8 +41,8 @@ use lattice_help::topics::HelpTopicRegistryHandle;
 use lattice_lsp::cache::{
     CodeActionOutcome, CodeActionRow, CompletionItemRow, CompletionOutcome,
     CompletionResolveOutcome, DocumentHighlightCache, FormatOutcome, HoverOutcome,
-    InsertCompletionLspOutcome, LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache,
-    LspFoldsCache, LspInlayHintCache, LspNavKind, LspPullDiagnosticsCache, LspSelectionChain,
+    LspCodeLensCache, LspDocumentColorCache, LspDocumentLinksCache, LspFoldsCache,
+    LspInlayHintCache, LspNavKind, LspPullDiagnosticsCache, LspSelectionChain,
     LspSemanticTokensCache, ReferencesOutcome, RenameOutcome, SelectionRangeOutcome,
     SignatureHelpOutcome, SymbolsOutcome,
 };
@@ -2071,9 +2071,9 @@ pub struct Editor {
     /// re-activates open buffers.
     pub pending_mode_enablement_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
-    pub pending_insert_completion_lsp_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
-    pub pending_insert_completion_lsp_token: Option<CancellationToken>,
+    pub pending_insert_completion_async_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_completion::AsyncCompletionOutcome>>,
+    pub pending_insert_completion_async_token: Option<CancellationToken>,
     pub pending_completion_resolve_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<CompletionResolveOutcome>>,
     pub pending_completion_resolve_token: Option<CancellationToken>,

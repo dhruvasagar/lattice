@@ -109,11 +109,12 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.5b | one component may register N picker sources | ✅ |
-| OR.6 | `:org-roam-find-node` | 🚧 |
-| OR.7 | `:org-roam-insert-node` | 📝 |
-| OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
-| OR.9 | the backlinks view | 📝 |
-| OR.10 | dailies | 📝 |
+| OR.6 | `:org-roam-find-node` | ✅ |
+| OR.7 | `:org-roam-insert-node` — completion inside `[[…` | ✅ |
+| OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
+| OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
+| OR.9 | the backlinks view | ✅ |
+| OR.10 | dailies | ✅ |
 | OR.11 | roam capture templates and `${field}` | 📝 |
 | OR.12 | docs | 📝 |
 
@@ -712,13 +713,14 @@ node the command SAYING so rather than opening an empty picker — because
 "nothing links here" and "you are not in a note" look identical in an empty list
 and have entirely different fixes.
 
-### OR.10 — dailies 📝
+### OR.10 — dailies ✅
 
-**Deps:** OR.4.
+**Deps:** OR.4. Design: `org-roam.md` §6.2.
 
 `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` over
 `org.roam-dailies-directory` (default `daily`, relative to the roam directory),
-`YYYY-MM-DD.org` — the corpus's existing convention, which is org-roam's.
+`YYYY-MM-DD.org` — the corpus's existing convention, which is org-roam's. Bound
+at `<leader>ondd` / `ondy` / `ondt` / `ondD`, mirroring emacs's `C-c n d`.
 
 Dates come from the guest's existing clock path (OC.4's
 `local-utc-offset-seconds` plus WASI, as `clock.rs` already does). **Local, not
@@ -726,9 +728,46 @@ UTC** — a journal entry filed under yesterday because the user is east of
 Greenwich is exactly the midnight-anchor bug OT.3b's `generation` exists to
 prevent, in a different costume.
 
-**Tests:** today creating when absent and opening when present; yesterday and
-tomorrow crossing a month boundary and a year boundary; `-goto-date` with an
-explicit date; the local-vs-UTC case pinned with an offset that changes the day.
+**What the build added to the plan.**
+
+`-goto-date` takes its date OPTIONALLY: with one it goes, without one it opens
+a prompt pre-filled with today. That is what lets one command serve both the
+`:` line and `<leader>ondD` rather than needing a second action for the chord.
+The date is validated at PARSE time, so a typo is refused by the `:` line while
+the text is still on screen and editable, rather than by an echo after it has
+scrolled away.
+
+Existence is answered by `host-services.read-file`, never by the roam index —
+the index lags the watcher's debounce, so a journal written seconds ago reads as
+absent, and absent means *append the header again* to a file that already has
+one.
+
+**Two host defects surfaced, and each landed as its own commit before this one.**
+
+1. `EffectAuthorizer::resolve_for_compare` canonicalized only the immediate
+   parent of a not-yet-existing target, so a write into a directory that was
+   *also* new fell back to the raw path and was compared against a canonicalized
+   prefix. On macOS that never matches (`/tmp` and `/var/folders` are symlinks
+   into `/private`), so the first journal entry was denied with a message that
+   reads exactly like a missing capability.
+2. `Effect::WriteToFile` refused a missing parent directory outright. Correct as
+   a default and wrong for a directory the producer owns — `daily/` is named by
+   an option with a default and never typed by a user. `create_parents` is the
+   producer opting out; see `cross-file-writes.md` §8.1 for the rejected
+   alternatives.
+
+**Tests:** 10 unit in `roam_dailies.rs` (title and filename padding, the
+month/year/leap-day boundaries in both directions, strict `YYYY-MM-DD` parsing,
+a well-formed-but-impossible date refused with a *different* message from a
+malformed one, and the local-vs-UTC case pinned with an offset that changes the
+day) + 7 integration through a real editor and component: today creating with an
+`:ID:` and a `#+title:`; today OPENING what is already there without a second
+header; yesterday and tomorrow naming the days either side; `-goto-date` with an
+explicit leap day; a malformed date refused with nothing created on disk; the
+bare form prompting and its submit opening the day typed; and dailies refusing
+when `org.roam-directory` is unset rather than inventing a journal wherever the
+editor started. Plus 3 host tests for `create_parents` and 2 for the authorizer
+walk-up.
 
 ### OR.11 — templates, the capture buffer, and the one thing capture cannot do 📝
 

@@ -334,7 +334,7 @@ failure would write an empty drawer and nothing would ever say so.
 | completion inside `[[…` | org-roam nodes as an insert-mode completion source — match a title, insert `[[id:…][Title]]` |
 | `:org-roam-id-create` | mint an `:ID:` for the headline at point, making it a node |
 | `:org-roam-backlinks` | a picker over what points here — navigation, so a jump list rather than a view |
-| `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` | the journal |
+| `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` (`<leader>ondd` / `ondy` / `ondt` / `ondD`) | the journal — §6.2 |
 | `:org-roam-sync` | force a full rescan — the escape hatch when the watcher missed something |
 | `<CR>` on an `[[id:…]]` link | resolves through `n/<id>` and jumps — file **and** line |
 | `:org-roam-id-create` | give the headline at point an `:ID:`, making it a node |
@@ -382,7 +382,54 @@ belongs with the read-in-place view — the consumer that actually needs it, sin
 an excerpt must show the linking *line* whereas a jump to the linking *note* is
 useful on its own.
 
-### 6.2 Templates, and the one thing capture cannot do
+### 6.2 Dailies
+
+`daily/YYYY-MM-DD.org` under the roam directory, which is the corpus's own
+convention and org-roam's. The whole feature is a filename: a date names exactly
+one path, so there is no index, no registry and no state — "today's journal" is
+a pure function of the clock and two options.
+
+`<leader>ond…` mirrors emacs's `C-c n d` prefix and keeps its letters: `d`
+today, `y` yesterday, `t` tomorrow, `D` a date you are asked for. Universal
+rather than org-major for find-node's reason, and more so — the point of "open
+today's journal" is that you are somewhere else when you want it.
+
+**Local time, not UTC.** Dates come from the guest's clock path, which applies
+the host's `local-utc-offset-seconds` (OC.4) before the day is read off. A
+journal entry filed under yesterday because the user lives east of Greenwich is
+the midnight-anchor bug in a different costume, and it is invisible until the
+one night it eats an entry.
+
+**Yesterday and tomorrow are epoch-day arithmetic**, not a decrement with a
+carry. Month lengths, leap years and the century rule are already correct inside
+the timestamp module's civil-date conversion; re-deriving them would be a second
+implementation of the calendar that can disagree with the first.
+
+**Existence is answered by `read-file`, never by the index.** The index would be
+the tempting source — it has walked the corpus and knows every file it saw — and
+it is the wrong one, because it lags the watcher's debounce. A journal written
+seconds ago would read as absent, and "absent" here means *append the header
+again* to a file that already has one. `host-services.read-file` is the fresh
+answer and is reachable from the grammar seam precisely because a guest's WASI
+view is not.
+
+A read that fails for a reason other than absence lands on the create path,
+deliberately: creating appends, so the worst case is a duplicated header the
+user can see and delete rather than anything lost.
+
+**A new daily is a node.** All eight dailies in the reference corpus carry a
+file-level `:ID:`, which emacs's *default* dailies template does not write — the
+user's own does. It matters beyond matching the corpus: without an id a journal
+entry cannot be linked to, and linking a day to what happened on it is most of
+what a journal is for. So dailies write the same body `:org-roam-create-node`
+does.
+
+**`daily/` is created when it is missing**, through `Effect::WriteToFile`'s
+`create_parents` — the one org site that asks for it. See
+[`cross-file-writes.md`](cross-file-writes.md) §8.1 for why that is opt-in and
+why capture's target is not.
+
+### 6.3 Templates, and the one thing capture cannot do
 
 Roam templates are capture templates (`org-capture.md`) with one addition the
 existing placeholder set cannot express: **`${field}` interpolation over the node

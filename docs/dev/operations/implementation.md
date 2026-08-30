@@ -6848,12 +6848,23 @@ meant to exist.
 | OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | backlinks — a picker, and why not a multibuffer | ✅ |
-| OR.10 | dailies | 📝 |
+| OR.10 | dailies — the journal, and two host defects it surfaced | ✅ |
 | OR.11 | roam capture templates and `${field}` | 📝 |
 | OR.12 | docs | 📝 |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
 Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
+
+OR.10 landed two fixes in the editor before the plugin slice, each its own
+commit. `EffectAuthorizer::resolve_for_compare` canonicalized only the
+immediate parent of a not-yet-existing write target, so a write into a
+directory that was also new fell back to the raw path and was compared against
+a canonicalized prefix — which on macOS never matches, because `/tmp` and
+`/var/folders` are symlinks into `/private`. And `Effect::WriteToFile` gained
+`create_parents`, the producer opting out of the missing-parent refusal for a
+directory that is part of the layout it owns; see
+[`../architecture/cross-file-writes.md`](../architecture/cross-file-writes.md)
+§8.1 for why that is opt-in and why capture's target is not.
 
 ### Plugin-owned multibuffer views (MV)
 

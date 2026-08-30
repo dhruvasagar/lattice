@@ -567,6 +567,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             anchor,
             text,
             cut,
+            create_parents,
         } => WitEffect::WriteToFile(WitWriteToFilePayload {
             // Lossy only for a non-UTF-8 path, which cannot cross a WIT
             // `string` at all — refused rather than mangled, so a guest never
@@ -580,6 +581,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             anchor: anchor_to_wit(*anchor),
             text: text.clone(),
             cut: cut.as_ref().map(|r| r.to_wit()).transpose()?,
+            create_parents: *create_parents,
         }),
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
@@ -965,6 +967,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             anchor: anchor_from_wit(p.anchor),
             text: p.text,
             cut: p.cut.map(NativeRange::from_wit).transpose()?,
+            create_parents: p.create_parents,
         },
         WitEffect::ApplyEdit(p) => NativeEffect::ApplyEdit {
             target: BufferId(p.target),
@@ -1289,6 +1292,7 @@ mod tests {
             anchor: lattice_grammar::FileAnchor::End,
             text: "* Archived\n".to_string(),
             cut,
+            create_parents: false,
         }
     }
 
@@ -1301,6 +1305,7 @@ mod tests {
                 anchor,
                 text,
                 cut,
+                ..
             } => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/archive.org"));
                 assert_eq!(anchor, lattice_grammar::FileAnchor::End);
@@ -1342,6 +1347,7 @@ mod tests {
                 anchor,
                 text: "x".to_string(),
                 cut: None,
+                create_parents: false,
             };
             let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
             match back {
@@ -1365,6 +1371,7 @@ mod tests {
                 anchor: lattice_grammar::FileAnchor::End,
                 text: "x".to_string(),
                 cut: None,
+                create_parents: false,
             };
             let err = effect_to_wit(&native).expect_err("must refuse");
             assert!(err.contains("not UTF-8"), "got {err}");

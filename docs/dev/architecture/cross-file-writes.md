@@ -92,14 +92,17 @@ record write-to-file-payload {
     /// When present, this range is removed from the buffer the action ran
     /// in — and ONLY after the insert has landed (§5).
     cut: option<range>,
+    /// Create missing parent directories rather than refusing. False is the
+    /// rule; a producer that owns the layout opts out of it — see §8.1.
+    create-parents: bool,
 }
 
 /// Move text into another file. One effect, not two — see §5.
 write-to-file(write-to-file-payload),
 ```
 
-Native peer: `Effect::WriteToFile { path, anchor, text, cut }` in
-`lattice-grammar`, so a native mode can use it too. Nothing about this is
+Native peer: `Effect::WriteToFile { path, anchor, text, cut, create_parents }`
+in `lattice-grammar`, so a native mode can use it too. Nothing about this is
 org-specific and nothing about it is WASM-specific.
 
 ## 4. An anchor, not a range, and the asymmetry is load-bearing
@@ -196,13 +199,13 @@ re-attach the unresolved tail.
 this fragment described its way into. Stopping at the immediate parent covers
 "the file is new in a directory that exists" and silently fails "the file is
 new in a directory that is new too", which is every first write into a
-subdirectory a plugin owns. There the parent does not resolve either, the raw
-path is used, and it is compared against a *canonicalized* prefix — so wherever
-the grant sits behind a symlink the match fails. On macOS that is the common
-case rather than the exotic one: `/tmp` and `/var/folders` are both symlinks
-into `/private`, so a grant over a temporary directory never matched a path the
-check had given up on. The denial then reads exactly like a capability the user
-never granted, which is the worst way for it to fail.
+subdirectory a plugin owns (§8.1). There the parent does not resolve either,
+the raw path is used, and it is compared against a *canonicalized* prefix — so
+wherever the grant sits behind a symlink the match fails. On macOS that is the
+common case rather than the exotic one: `/tmp` and `/var/folders` are both
+symlinks into `/private`, so a grant over a temporary directory never matched a
+path the check had given up on. The denial then reads exactly like a capability
+the user never granted, which is the worst way for it to fail.
 
 Re-attaching a tail is still fail-safe: it can only produce a path at or below
 a directory that really exists, and `..` inside the tail is normalised away
@@ -261,12 +264,45 @@ Every path degrades to "the user's text is still where it was".
 - **Insert fails** → `cut` does not run. The source buffer is untouched.
 - **Target file does not exist** → created, if its parent directory exists and
   is within the grant. Capture's first run is exactly this. A missing *parent*
-  is an echo rather than a `mkdir -p`: creating directories is a larger
-  authority than creating a file, and a typo'd path should not silently build
-  a tree.
+  is an echo rather than a `mkdir -p` unless the producer asked — see §8.1.
 - **`cut` range out of bounds** → the insert has already landed and the cut is
   skipped with a `warn!`. Duplicated text is recoverable by hand; lost text is
   not, so this asymmetry is deliberate.
+
+### 8.1 `create_parents`, and why it is opt-in rather than the default
+
+Creating directories is a larger authority than creating a file, and a typo'd
+path must not silently build a tree. That is the rule, and it stays the default.
+
+It is the wrong answer for one case, though, and the case is not marginal: a
+producer writing into a directory that is **part of the layout it owns**.
+org-roam's `daily/YYYY-MM-DD.org` is the example that forced the field. The
+folder is named by `org.roam-dailies-directory`, an option with a default; no
+user ever types it; and refusing means the very first `:org-roam-dailies-today`
+on a fresh corpus fails — the one use where the feature has to work. Told to
+`mkdir daily` first, a user is being asked to do the plugin's filing for it.
+
+So the producer declares intent and the default is unchanged for everyone else.
+Archive writes beside its source, refile targets a headline the picker already
+walked, and capture targets a path the *user typed into a template* — that last
+one is precisely the typo case, and it stays `false`.
+
+**The grant still bounds it.** A plugin's path is checked against its
+`fs:write` prefixes at the boundary (§6) *before* this field is read, so asking
+widens what is created inside the grant and never what is reachable outside it.
+
+**Rejected: the authorizer does the `mkdir` for any permitted path.** It needs
+no ABI change, and the boundary is the one place that still knows whose effect
+this is — a real argument. But it makes the authority implicit: every plugin
+with an `fs:write` grant would silently gain directory-creation over its whole
+subtree, including for a path the user typed. It also gives `authorize` a side
+effect, so a draft the user abandons still leaves a directory behind. The
+producer asking is the narrower and more legible rule.
+
+**Rejected: refuse, and tell the user to create the directory.** Zero cost, and
+it loses on the higher court — emacs simply creates the journal folder, and a
+feature whose first use is an error message is a feature people conclude is
+broken.
 
 ## 9. Performance
 

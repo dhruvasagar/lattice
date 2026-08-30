@@ -68,6 +68,7 @@ fn text_lands_at_the_end_of_an_unopened_file() {
         anchor: FileAnchor::End,
         text: "* Archived\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* Old\n* Archived\n");
@@ -86,6 +87,7 @@ fn start_puts_the_text_first() {
         anchor: FileAnchor::Start,
         text: "* First\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* First\n* Old\n");
@@ -104,6 +106,7 @@ fn a_nonexistent_target_is_created_and_written() {
         anchor: FileAnchor::End,
         text: "* Captured\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(target_text(&editor, &capture), "* Captured\n");
@@ -128,6 +131,7 @@ fn appending_to_a_file_without_a_trailing_newline_starts_a_new_line() {
         anchor: FileAnchor::End,
         text: "* Archived\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(
@@ -152,6 +156,7 @@ fn appending_to_a_file_with_a_trailing_newline_adds_no_blank_line() {
             anchor: FileAnchor::End,
             text: "* Archived\n".to_string(),
             cut: None,
+            create_parents: false,
         });
     }
 
@@ -176,6 +181,7 @@ fn a_line_anchor_past_the_end_appends() {
         anchor: FileAnchor::Line(99),
         text: "three\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "one\ntwo\nthree\n");
@@ -194,6 +200,7 @@ fn a_cut_moves_the_text_rather_than_copying_it() {
         anchor: FileAnchor::End,
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
+        create_parents: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* Move me\n");
@@ -222,6 +229,7 @@ fn a_failed_insert_leaves_the_source_untouched() {
         anchor: FileAnchor::End,
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
+        create_parents: false,
     });
 
     assert_eq!(
@@ -247,6 +255,7 @@ fn a_directory_target_also_leaves_the_source_untouched() {
         anchor: FileAnchor::End,
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
+        create_parents: false,
     });
 
     assert_eq!(source_text(&editor), before);
@@ -279,6 +288,7 @@ fn an_already_open_target_is_written_in_place() {
         anchor: FileAnchor::End,
         text: "appended\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     let after = editor
@@ -310,6 +320,7 @@ fn the_target_is_left_unsaved_so_the_disk_is_untouched() {
         anchor: FileAnchor::End,
         text: "* Archived\n".to_string(),
         cut: None,
+        create_parents: false,
     });
 
     assert_eq!(
@@ -335,6 +346,7 @@ fn each_buffer_undoes_its_own_half_of_the_move() {
         anchor: FileAnchor::End,
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
+        create_parents: false,
     });
     assert_eq!(source_text(&editor), "* Keep\n");
 
@@ -346,4 +358,83 @@ fn each_buffer_undoes_its_own_half_of_the_move() {
         "* Move me\n",
         "the target keeps its insert — the two edits are separately undoable"
     );
+}
+
+/// OR.10 — a missing parent directory is refused by default.
+///
+/// The refusal exists because creating directories is a larger authority than
+/// creating a file, and a typo'd path must not silently build a tree. This is
+/// the default half of that rule.
+#[test]
+fn a_missing_parent_directory_is_refused_by_default() {
+    let dir = tmp("no-parent");
+    let target = dir.join("nested").join("notes.org");
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: target.clone(),
+        anchor: FileAnchor::End,
+        text: "* Filed\n".to_string(),
+        cut: None,
+        create_parents: false,
+    });
+
+    assert!(
+        !target.parent().unwrap().exists(),
+        "no tree was built from a path nobody vouched for"
+    );
+    let msg = editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("no such directory"),
+        "and the user is told which directory is missing: {msg:?}"
+    );
+}
+
+/// …and `create_parents` is the producer opting out of it.
+///
+/// org-roam's `daily/YYYY-MM-DD.org` is the case: the folder is named by an
+/// option with a default, no user ever types it, and without this the feature's
+/// FIRST use is the one that fails.
+#[test]
+fn create_parents_makes_the_directory_the_producer_owns() {
+    let dir = tmp("create-parent");
+    let target = dir.join("daily").join("2026-08-30.org");
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: target.clone(),
+        anchor: FileAnchor::End,
+        text: "#+title: 2026-08-30\n".to_string(),
+        cut: None,
+        create_parents: true,
+    });
+
+    assert!(
+        target.parent().unwrap().is_dir(),
+        "the directory was created, so the draft can be saved to it later"
+    );
+    assert_eq!(target_text(&editor, &target), "#+title: 2026-08-30\n");
+}
+
+/// More than one missing level, which is what `mkdir -p` means and what a
+/// single `create_dir` would not do.
+#[test]
+fn create_parents_builds_every_missing_level() {
+    let dir = tmp("create-deep");
+    let target = dir.join("a").join("b").join("c").join("notes.org");
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: target.clone(),
+        anchor: FileAnchor::End,
+        text: "* Filed\n".to_string(),
+        cut: None,
+        create_parents: true,
+    });
+
+    assert_eq!(target_text(&editor, &target), "* Filed\n");
 }

@@ -479,6 +479,24 @@ interface types {
         /// loss from a keystroke, and an effect cannot report failure, so two
         /// ordered effects could not be made to depend on each other.
         cut: option<range>,
+        /// OR.10: create missing parent directories rather than refusing.
+        ///
+        /// **False is the rule, not caution.** The host refuses a missing
+        /// parent because creating directories is a larger authority than
+        /// creating a file, and a typo'd path must not silently build a tree.
+        /// That stays true for every guest that does not ask.
+        ///
+        /// A guest asks when the directory is part of the LAYOUT IT OWNS rather
+        /// than something the user typed. org-roam's `daily/YYYY-MM-DD.org` is
+        /// the case that forced this: the folder is named by an option with a
+        /// default, no user ever types it, and without this the very first
+        /// `:org-roam-dailies-today` on a fresh corpus fails — the one use
+        /// where the feature has to work.
+        ///
+        /// Still bounded by `path`'s `fs:write` check above, which runs BEFORE
+        /// this is read. Asking widens what is created inside the grant, never
+        /// what is reachable outside it.
+        create-parents: bool,
     }
 
     record apply-edit-payload {

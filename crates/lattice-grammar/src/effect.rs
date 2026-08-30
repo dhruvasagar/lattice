@@ -307,6 +307,26 @@ pub enum Effect {
         /// could not be made to depend on each other without changing every
         /// effect's signature.
         cut: Option<lattice_protocol::position::Range>,
+        /// OR.10: create missing parent directories rather than refusing.
+        ///
+        /// **Off by default, and that default is the rule rather than caution.**
+        /// The host refuses a missing parent because creating directories is a
+        /// larger authority than creating a file, and a typo'd path must not
+        /// silently build a tree ([`crate::Effect::WriteToFile`]'s applier says
+        /// so in as many words). That stays true for every producer that does
+        /// not ask.
+        ///
+        /// A producer asks when the directory is part of the *layout it owns*
+        /// rather than something the user typed. org-roam's
+        /// `daily/YYYY-MM-DD.org` is the case that forced this: the folder is
+        /// named by an option with a default, no user ever types it, and
+        /// without this the very first `:org-roam-dailies-today` on a fresh
+        /// corpus fails — the one use where the feature has to work.
+        ///
+        /// Still bounded: a plugin's path is checked against its `fs:write`
+        /// grant at the boundary before this is read, so asking widens what is
+        /// created inside the grant and never what is reachable.
+        create_parents: bool,
     },
     SelectionChange(SelectionSet),
     /// Move the cursor to `target` without affecting the selection.
@@ -1420,6 +1440,7 @@ mod tests {
             anchor: FileAnchor::End,
             text: "* Done\n".to_string(),
             cut: None,
+            create_parents: false,
         };
         assert!(matches!(base, Effect::WriteToFile { cut: None, .. }));
 
@@ -1431,6 +1452,7 @@ mod tests {
                 lattice_protocol::position::Position::new(2, 0),
                 lattice_protocol::position::Position::new(5, 0),
             )),
+            create_parents: false,
         };
         assert!(matches!(moving, Effect::WriteToFile { cut: Some(_), .. }));
     }

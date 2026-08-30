@@ -4187,8 +4187,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             anchor,
             text,
             cut,
+            create_parents,
         } => {
-            editor.apply_write_to_file(path, anchor, text, cut);
+            editor.apply_write_to_file(path, anchor, text, cut, create_parents);
         }
         Effect::EnterMode(mode) => {
             // 5.5.G.23.macros: operators that flip mode (`c` ->
@@ -21716,7 +21717,32 @@ impl Editor {
     /// run is exactly that. A missing parent directory is an error rather than
     /// a `mkdir -p` — creating directories is a larger authority than creating
     /// a file, and a typo'd path should not silently build a tree.
+    ///
+    /// A producer that owns the layout can opt out of that refusal — see
+    /// [`Self::resolve_path_to_buffer_creating`].
     pub fn resolve_path_to_buffer(&mut self, path: &std::path::Path) -> Result<BufferId, String> {
+        self.resolve_path_to_buffer_creating(path, false)
+    }
+
+    /// [`Self::resolve_path_to_buffer`], with the missing-parent refusal made
+    /// the caller's choice.
+    ///
+    /// `create_parents` is the `Effect::WriteToFile` field of the same name and
+    /// carries its reasoning: the refusal exists so a *typo'd* path cannot
+    /// build a tree, which says nothing about a producer writing into a
+    /// directory that is part of the layout it owns. org-roam's
+    /// `daily/YYYY-MM-DD.org` is that case — the folder is named by an option
+    /// with a default, no user ever types it, and refusing means the feature's
+    /// first use is the one that fails.
+    ///
+    /// For a plugin the path has already been checked against its `fs:write`
+    /// grant at the boundary, so the tree this can build is bounded by the
+    /// grant rather than by this flag.
+    pub fn resolve_path_to_buffer_creating(
+        &mut self,
+        path: &std::path::Path,
+        create_parents: bool,
+    ) -> Result<BufferId, String> {
         let target = normalize_user_path_with_cwd(path, self.current_dir.as_deref());
 
         if let Some(existing) = self.find_document_by_real_path(&target) {
@@ -21731,10 +21757,19 @@ impl Editor {
             lattice_core::Document::open(&target)
                 .map_err(|e| format!("could not read {}: {e}", target.display()))?
         } else {
-            // Capture's first run. The parent must exist — see the doc above
-            // on why this is not a `mkdir -p`.
+            // Capture's first run. The parent must exist unless the producer
+            // said otherwise — see the doc above on why that is not the
+            // default.
             match target.parent() {
                 Some(dir) if dir.as_os_str().is_empty() || dir.is_dir() => {}
+                Some(dir) if create_parents => {
+                    // Reported rather than swallowed: a `create_parents` write
+                    // whose directory could not be made would otherwise open a
+                    // buffer the user cannot save, and discover that at `:w`.
+                    std::fs::create_dir_all(dir).map_err(|e| {
+                        format!("could not create directory {}: {e}", dir.display())
+                    })?;
+                }
                 Some(dir) => {
                     return Err(format!("no such directory: {}", dir.display()));
                 }
@@ -21798,13 +21833,14 @@ impl Editor {
         anchor: lattice_grammar::FileAnchor,
         text: String,
         cut: Option<lattice_protocol::position::Range>,
+        create_parents: bool,
     ) {
         // Captured BEFORE resolving: opening the target must not move focus
         // (XF.2), but reading the source id first means this is correct even
         // if that ever changes.
         let source = self.active_pane_buffer_id();
 
-        let target = match self.resolve_path_to_buffer(&path) {
+        let target = match self.resolve_path_to_buffer_creating(&path, create_parents) {
             Ok(id) => id,
             Err(reason) => {
                 self.set_message(EchoLevel::Warn, format!("write-to-file: {reason}"));

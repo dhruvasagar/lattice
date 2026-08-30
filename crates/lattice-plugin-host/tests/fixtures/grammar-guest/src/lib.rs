@@ -223,6 +223,7 @@ impl Callbacks for Component {
                     anchor: FileAnchor::End,
                     text: "* Archived by the fixture\n".to_string(),
                     cut: None,
+                    create_parents: false,
                 })])
             }
             // OM.6b: `<this file>_archive`, named from the document handle.
@@ -235,6 +236,7 @@ impl Callbacks for Component {
                     anchor: FileAnchor::End,
                     text: "* Archived beside me\n".to_string(),
                     cut: None,
+                    create_parents: false,
                 })])
             }
             other => Err(format!("fixture: unknown action callback {other}")),

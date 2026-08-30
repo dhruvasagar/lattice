@@ -113,6 +113,43 @@ use tokio::task::JoinHandle;
 mod status;
 pub use status::{BuildState, FailedLoad, PluginHealth, PluginStatus};
 
+/// An error and every cause behind it, as `outer: inner: innermost`.
+///
+/// **`err.to_string()` is the wrong thing to report and this exists to replace
+/// it.** Every error type here is a `thiserror` enum whose variants carry a
+/// `#[source]`, and `Display` prints only the outermost line. So a plugin that
+/// failed to instantiate reported exactly `failed to instantiate the plugin
+/// component` — the *category*, never the reason — while the wasmtime error
+/// saying which import was missing or which type did not match sat one link
+/// down, discarded.
+///
+/// That is a bad outcome anywhere and a specially bad one here, because the
+/// message is the whole product: `record_failure` exists (its comment says so)
+/// because a missing diagnostic once cost a debugging session, and it was
+/// itself throwing away the half that identifies the fault. The generic line
+/// then sends every reader to the same wrong fix, since the view's footer
+/// suggests `--wit-sync` whether or not the ABI has anything to do with it.
+///
+/// Bounded at eight links: a chain longer than that is a wrapper bug, and an
+/// unbounded walk over a cyclic `source()` would hang the loader rather than
+/// report anything.
+pub fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    let mut depth = 0;
+    while let Some(cause) = source {
+        if depth == 8 {
+            out.push_str(": …");
+            break;
+        }
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+        depth += 1;
+    }
+    out
+}
+
 /// The service handle other layers reach the loader through — the ex-command
 /// surface (PL8.C), the plugin-manager view (PL8.H). Per the `ServiceRegistry`
 /// Arc/TypeId rule, register **and** look up with this exact alias
@@ -649,13 +686,16 @@ impl PluginLoader {
                     // `:plugins`. Both, because they answer different questions:
                     // the log says a thing went wrong just now, the record
                     // answers "why is org not here?" asked ten minutes later.
+                    // `error_chain`, not `%err`: Display on these enums is
+                    // the category alone, and the cause is what a reader needs.
+                    let detail = error_chain(&err);
                     tracing::warn!(
                         plugin = %plugin.manifest.id,
                         dir = %plugin.dir.display(),
-                        error = %err,
+                        error = %detail,
                         "plugin failed to load; skipped"
                     );
-                    self.record_failure(&plugin.manifest.id, &plugin.dir, &err.to_string());
+                    self.record_failure(&plugin.manifest.id, &plugin.dir, &detail);
                 }
             }
         }
@@ -1055,6 +1095,8 @@ impl PluginLoader {
     /// Replaces rather than appends: a `:plugin-reload` that fails again should
     /// leave one row saying what is wrong now, not a growing pile of attempts.
     /// The view is a description of the current state, not a history.
+    ///
+    /// Pass [`error_chain`]'s output, not `err.to_string()` — see its doc.
     fn record_failure(&self, name: &str, dir: &std::path::Path, error: &str) {
         let Ok(mut failed) = self.failed.lock() else {
             // A poisoned mutex here would mean losing a diagnostic, and losing a
@@ -1258,7 +1300,7 @@ impl PluginLoader {
         let outcome = self.load_discovered(&plugin, tier).await;
         match &outcome {
             Ok(_) => self.clear_failure(&plugin.manifest.id),
-            Err(err) => self.record_failure(&plugin.manifest.id, dir, &err.to_string()),
+            Err(err) => self.record_failure(&plugin.manifest.id, dir, &error_chain(err)),
         }
         outcome
     }
@@ -3208,4 +3250,79 @@ fn convert_view_result(
         format!("{} ({denied} outside the plugin's fs grant)", wit.summary)
     };
     lattice_multibuffer::providers::plugin_view::PluginViewResult { excerpts, summary }
+}
+
+#[cfg(test)]
+mod error_chain_tests {
+    use super::error_chain;
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|l| l as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    /// The whole point: the CAUSE survives. `to_string()` on the outer error
+    /// yields only "failed to instantiate the plugin component", which names
+    /// the category and not the fault — the real
+    /// `no export \`on-wake\` found` sits one link down and used to be dropped
+    /// on the floor by both the log and the `:plugins` row.
+    #[test]
+    fn the_cause_survives_rather_than_only_the_category() {
+        let err = Layer(
+            "failed to instantiate the plugin component",
+            Some(Box::new(Layer("no export `on-wake` found", None))),
+        );
+        assert_eq!(
+            err.to_string(),
+            "failed to instantiate the plugin component",
+            "Display alone is the category — this is what was being reported"
+        );
+        assert_eq!(
+            error_chain(&err),
+            "failed to instantiate the plugin component: no export `on-wake` found"
+        );
+    }
+
+    #[test]
+    fn an_error_with_no_cause_is_unchanged() {
+        assert_eq!(error_chain(&Layer("just this", None)), "just this");
+    }
+
+    /// A runaway or cyclic `source()` must not hang the loader — this runs on
+    /// the boot path, where a hang is indistinguishable from a dead editor.
+    #[test]
+    fn a_very_long_chain_is_bounded_rather_than_walked_forever() {
+        let mut err = Layer("innermost", None);
+        for i in 0..40 {
+            err = Layer(
+                match i % 2 {
+                    0 => "wrap-a",
+                    _ => "wrap-b",
+                },
+                Some(Box::new(err)),
+            );
+        }
+        let out = error_chain(&err);
+        assert!(
+            out.ends_with(": …"),
+            "truncation is marked, not silent: {out}"
+        );
+        assert_eq!(
+            out.matches(": ").count(),
+            9,
+            "eight causes plus the ellipsis: {out}"
+        );
+    }
 }

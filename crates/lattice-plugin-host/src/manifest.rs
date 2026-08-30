@@ -137,6 +137,11 @@ fn parse_editor_capability(name: &str) -> Option<CapabilitySet> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginSeam {
     PickerSource,
+    /// MV.1 — a plugin-contributed multibuffer VIEW: the guest owns the view's
+    /// identity, contents, order and status, and the host owns the buffer and
+    /// the excerpt machinery. Distinct from `ScannedExcerptSource`, which
+    /// supplies *rows* to a view someone else owns.
+    MultibufferViewSource,
     CompletionSource,
     Grammar,
     Events,
@@ -245,6 +250,7 @@ impl PluginSeam {
             PluginSeam::Modes => 3,
             PluginSeam::Keymap => 4,
             PluginSeam::PickerSource
+            | PluginSeam::MultibufferViewSource
             | PluginSeam::CompletionSource
             | PluginSeam::Events
             | PluginSeam::Decorations
@@ -267,6 +273,7 @@ impl PluginSeam {
     pub fn as_str(self) -> &'static str {
         match self {
             PluginSeam::PickerSource => "picker-source",
+            PluginSeam::MultibufferViewSource => "multibuffer-view-source",
             PluginSeam::CompletionSource => "completion-source",
             PluginSeam::Grammar => "grammar",
             PluginSeam::Events => "events",
@@ -301,6 +308,7 @@ impl FromStr for PluginSeam {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "picker-source" => PluginSeam::PickerSource,
+            "multibuffer-view-source" => PluginSeam::MultibufferViewSource,
             "completion-source" => PluginSeam::CompletionSource,
             "grammar" => PluginSeam::Grammar,
             "events" => PluginSeam::Events,

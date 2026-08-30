@@ -39,6 +39,11 @@ fn main() {
         "PICKER_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("view-guest"),
+        "view-guest",
+        "VIEW_GUEST_WASM",
+    );
+    build_guest(
         &fixtures.join("completion-guest"),
         "completion-guest",
         "COMPLETION_GUEST_WASM",

@@ -279,6 +279,18 @@ pub struct LoaderServices {
     /// seam `NotWired` — the load fails loudly rather than reporting success
     /// and contributing nothing to every `:agenda` forever.
     pub agenda_registry: Option<lattice_mode::ScannedExcerptSourceRegistryHandle>,
+    /// MV.1: the provider-view registry a plugin's declared multibuffer views
+    /// register openers into — the SAME one the agenda and magit's project-diff
+    /// use, so a plugin view opens through `open-provider-view` and refreshes
+    /// through `gr` exactly as a native one does. Absent leaves the seam
+    /// `NotWired`, failing the load loudly rather than reporting success and
+    /// contributing a view that can never be opened.
+    pub provider_view_registry: Option<lattice_mode::ProviderViewRegistryHandle>,
+    /// The multibuffer registry the view's excerpts land in once `build`
+    /// answers. Separate from the provider registry because they are different
+    /// services: one resolves a NAME to an opener, the other a view's BufferId
+    /// to its excerpt handle.
+    pub multibuffer_registry: Option<lattice_multibuffer::registry::MultibufferRegistryHandle>,
     /// TC.2: the runtime-mutable context-producer registry (RCU-register a
     /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
     /// refresh reads the same handle wait-free.
@@ -861,6 +873,13 @@ impl PluginLoader {
                     // `DashboardCtx`, so it is called per compose.
                     PluginSeam::Dashboard => {
                         let id = self.drain_dashboard(&component, manifest, tier)?;
+                        seam_ids.push(id);
+                    }
+                    // MV.1: a plugin-owned multibuffer view.
+                    PluginSeam::MultibufferViewSource => {
+                        let id = self
+                            .drain_multibuffer_views(&component, manifest, tier, &mut record)
+                            .await?;
                         seam_ids.push(id);
                     }
                     PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
@@ -1608,6 +1627,7 @@ impl PluginLoader {
                 .map(|r| (**r.load()).clone())
                 .unwrap_or_default();
             let mut reg = TeardownRegistries {
+                provider_views: None,
                 media: &mut media_reg,
                 agenda: &mut agenda_reg,
                 commands: &mut commands,
@@ -1742,6 +1762,191 @@ impl PluginLoader {
         // Teardown tokens: the picker registry unregisters each source by id.
         record.teardown.picker_sources.extend(source_ids);
         Ok(id)
+    }
+
+    /// MV.1 — drain the multibuffer-view seam: spawn the view actor, ask the
+    /// guest which views it owns, and register a provider-view opener for each.
+    ///
+    /// ## Why the opener is sync and the build is not
+    ///
+    /// `ProviderViewOpener` is a synchronous closure called on the dispatch
+    /// path; `build` is an async guest call that may read files. So the opener
+    /// seats an empty view with an in-progress headerline and returns, and a
+    /// spawned task awaits the guest and fills it — `providers/agenda.rs`'s
+    /// shape, for its reason: a plugin's file reads must never land on the
+    /// dispatch path.
+    ///
+    /// The fill publishes `MultibufferExcerptsReady`, which has a wake wired.
+    /// Without it the rows would sit until the user happened to press a key,
+    /// and the symptom would read as a rendering bug rather than a missing
+    /// wake — the bug class this codebase has re-introduced repeatedly.
+    async fn drain_multibuffer_views(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("multibuffer-view-source"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("multibuffer-view-source"))?;
+        let providers = self
+            .env
+            .provider_view_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("multibuffer-view-source"))?;
+        let mb_registry = self
+            .env
+            .multibuffer_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("multibuffer-view-source"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_multibuffer_view_source(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
+            .await?;
+
+        // Drive the actor FIRST — `register_views` is a guest call over the
+        // client channel, which the actor must be running to answer.
+        let actor = actor.with_tracer(self.env.tracer.clone());
+        let plugin_id = client.id();
+        let task = runtime.spawn(actor.run());
+
+        let specs = client.register_views().await?;
+
+        for spec in specs {
+            let native = lattice_multibuffer::providers::plugin_view::PluginViewSpec {
+                id: spec.id.clone(),
+                doc: spec.doc.clone(),
+                buffer_name: spec.buffer_name.clone(),
+                view_mode: spec.view_mode.clone(),
+                reuse: spec.reuse,
+            };
+            // Only `pull` views are driven here. A `scan` view's rows come from
+            // the host's walk through `scanned-excerpt-source`, which is MV.3's
+            // composition — declaring one today registers the view and its
+            // identity, and it opens empty until then. Said out loud rather
+            // than silently no-op'd.
+            let is_pull = matches!(
+                spec.input,
+                lattice_plugin_host::lattice::plugin_host::types::MultibufferViewInput::Pull
+            );
+            if !is_pull {
+                tracing::info!(
+                    plugin = %manifest.id,
+                    view = %spec.id,
+                    "multibuffer view declares a `scan` input; rows arrive with MV.3"
+                );
+            }
+
+            let client = client.clone();
+            let mb = (*mb_registry).clone();
+            let bus = (*bus).clone();
+            let runtime = runtime.clone();
+            let view_id = spec.id.clone();
+            let opener: lattice_mode::ProviderViewOpener = Arc::new(
+                move |activator: &mut dyn lattice_mode::ModeActivator,
+                      args: &lattice_grammar::Args| {
+                    let outcome = lattice_multibuffer::providers::plugin_view::open_plugin_view(
+                        activator, &native,
+                    );
+                    let lattice_mode::ProviderViewOutcome::Opened { view, .. } = outcome else {
+                        return outcome;
+                    };
+                    if !is_pull {
+                        return outcome;
+                    }
+                    let args: Vec<String> = match args {
+                        lattice_grammar::Args::String(s) if !s.trim().is_empty() => {
+                            vec![s.trim().to_string()]
+                        }
+                        // Only the string-shaped values carry through: a view's
+                        // args are names and paths, and a bool or an int in the
+                        // list is a caller error rather than something to
+                        // stringify into a filter the guest will not recognise.
+                        lattice_grammar::Args::List(items) => items
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    let client = client.clone();
+                    let mb = mb.clone();
+                    let bus = bus.clone();
+                    let view_id = view_id.clone();
+                    runtime.spawn(async move {
+                        match client.build(view_id.clone(), args).await {
+                            Ok(Ok(result)) => {
+                                let spec_for_fill =
+                                    lattice_multibuffer::providers::plugin_view::PluginViewSpec {
+                                        id: view_id,
+                                        doc: String::new(),
+                                        buffer_name: String::new(),
+                                        view_mode: None,
+                                        reuse: true,
+                                    };
+                                lattice_multibuffer::providers::plugin_view::fill_plugin_view(
+                                    &mb,
+                                    Some(&bus),
+                                    view,
+                                    &spec_for_fill,
+                                    convert_view_result(result),
+                                );
+                            }
+                            // The guest's own words — the host has no vocabulary
+                            // for "nothing links here yet".
+                            Ok(Err(message)) => {
+                                lattice_multibuffer::providers::plugin_view::decline_plugin_view(
+                                    &mb,
+                                    Some(&bus),
+                                    view,
+                                    &format!("{view_id}: {message}"),
+                                );
+                            }
+                            Err(error) => {
+                                lattice_multibuffer::providers::plugin_view::decline_plugin_view(
+                                    &mb,
+                                    Some(&bus),
+                                    view,
+                                    &format!("{view_id}: {error}"),
+                                );
+                            }
+                        }
+                    });
+                    outcome
+                },
+            );
+
+            if !providers.register(&spec.id, opener) {
+                // An id a NATIVE provider already owns. Refused with both names
+                // — and the guest's OTHER views still register, because one bad
+                // name must not cost a plugin its whole contribution.
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    view = %spec.id,
+                    "multibuffer view id is already registered; this view is unreachable"
+                );
+                continue;
+            }
+            record.teardown.provider_views.push(spec.id.clone());
+        }
+
+        record.tasks.push(task);
+        Ok(plugin_id)
     }
 
     /// TR.2b — drain the transient seam: spawn the menu actor, ask the guest for
@@ -2908,5 +3113,31 @@ impl PluginLoader {
             "decoration plugin registered its gutter-decoration producer"
         );
         Ok(id)
+    }
+}
+
+/// MV.1: the WIT view result, converted to what `lattice-multibuffer` consumes.
+///
+/// A free function rather than a `WitBoundary` impl because the native type
+/// lives in `lattice-multibuffer`, which knows nothing about WIT — the
+/// conversion belongs to whoever depends on both, which is the loader.
+fn convert_view_result(
+    wit: lattice_plugin_host::multibuffer_view_task::MultibufferViewResult,
+) -> lattice_multibuffer::providers::plugin_view::PluginViewResult {
+    lattice_multibuffer::providers::plugin_view::PluginViewResult {
+        excerpts: wit
+            .excerpts
+            .into_iter()
+            .map(
+                |e| lattice_multibuffer::providers::plugin_view::PluginExcerpt {
+                    path: std::path::PathBuf::from(e.path),
+                    start_line: e.start_line,
+                    end_line: e.end_line,
+                    header: e.header,
+                    match_count: e.match_count,
+                },
+            )
+            .collect(),
+        summary: wit.summary,
     }
 }

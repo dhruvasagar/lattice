@@ -1,0 +1,27 @@
+# MV.1 multibuffer-view fixture guest — a minimal `wasm32-wasip2` component that
+# implements the `multibuffer-view-plugin` world (exports `register-multibuffer-views` + `build`,
+# imports `host-services`). Built to a component by the host crate's build.rs
+# and loaded by `tests/multibuffer_view_source.rs` to drive the per-plugin actor bridge
+# (PickerActor + PickerClient) through a real guest. Standalone workspace
+# (`[workspace]` below) so it is NOT part of the parent workspace: it targets
+# wasm32-wasip2, must not inherit the host toolchain's lints/target, and must
+# not be built by a plain `cargo build --workspace`. Mirrors the sibling
+# `trampoline-guest` fixture's setup exactly.
+[package]
+name = "view-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+# Small, fast-to-build component; strip for a lean artifact.
+opt-level = "s"
+strip = true
+
+[workspace]

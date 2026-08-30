@@ -71,6 +71,11 @@ pub struct PluginTeardown {
     pub seam_ids: Vec<PluginId>,
     /// Picker source ids the plugin registered (`PickerRegistry::unregister`).
     pub picker_sources: Vec<String>,
+    /// MV.1: multibuffer view ids the plugin registered openers under
+    /// (`ProviderViewRegistry::unregister`). Without reversing these, a
+    /// reloaded plugin's `register` returns `false` against its OWN stale
+    /// opener and its views come back dead.
+    pub provider_views: Vec<String>,
     /// Modes the plugin registered — each reversed via `ModeRegistry::unregister`
     /// *and* `KeymapHandle::remove_layer(MinorMode(id))` (both halves of the mode
     /// surface, PH7.11).
@@ -137,6 +142,7 @@ impl PluginTeardown {
             plugin_id,
             seam_ids: Vec::new(),
             picker_sources: Vec::new(),
+            provider_views: Vec::new(),
             modes: Vec::new(),
             config_options: Vec::new(),
             events_defined: Vec::new(),
@@ -189,6 +195,13 @@ impl PluginTeardown {
         for id in &self.picker_sources {
             if reg.pickers.unregister(id) {
                 report.pickers += 1;
+            }
+        }
+        // MV.1: reversed only when the registry is wired. A boot without it
+        // registered nothing, so there is nothing to leak.
+        if let Some(providers) = reg.provider_views.as_ref() {
+            for id in &self.provider_views {
+                providers.unregister(id);
             }
         }
         for mode in &self.modes {
@@ -320,6 +333,10 @@ impl PluginTeardown {
 pub struct TeardownRegistries<'a> {
     pub commands: &'a mut CommandRegistry,
     pub pickers: &'a mut PickerRegistry,
+    /// MV.1: where a plugin's declared multibuffer views registered their
+    /// openers. `Option` because a headless boot may not publish the seam,
+    /// and a teardown must not require a service the load never used.
+    pub provider_views: Option<&'a lattice_mode::ProviderViewRegistry>,
     pub modes: &'a mut ModeRegistry,
     pub keymap: &'a KeymapHandle,
     pub config: &'a ConfigRegistry,
@@ -504,6 +521,7 @@ mod tests {
         let parsers = lattice_compilation::CompilationParserFactories::new_handle();
         let report = {
             let mut reg = TeardownRegistries {
+                provider_views: None,
                 media: &mut Default::default(),
                 agenda: &mut Default::default(),
                 commands: &mut commands,
@@ -569,6 +587,7 @@ mod tests {
 
         // Idempotent: a second unload removes nothing (all zeros).
         let mut reg = TeardownRegistries {
+            provider_views: None,
             media: &mut Default::default(),
             agenda: &mut Default::default(),
             commands: &mut commands,

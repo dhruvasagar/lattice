@@ -102,6 +102,8 @@ pub mod keymap_host;
 pub mod language_host;
 pub mod manifest;
 pub mod mode_host;
+pub mod multibuffer_view_host;
+pub mod multibuffer_view_task;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
@@ -969,6 +971,8 @@ struct PluginState {
     /// `register-picker-sources`. Drained by `spawn_picker_source` after the
     /// export returns — the `grammar_contributions` shape.
     picker_contributions: picker_host::PickerContributions,
+    /// MV.1: the views a guest declared through `register-multibuffer-view`.
+    multibuffer_view_contributions: multibuffer_view_host::MultibufferViewContributions,
     /// OR.2: the directory watches this guest armed, keyed by the path it named.
     ///
     /// **On the `Store`, not in a host-side registry**, and that is the whole
@@ -1240,6 +1244,37 @@ impl crate::picker_host::bindings::lattice::plugin_host::picker_registry::Host f
                 tracing::warn!(%error, "register-picker-source refused: spec did not cross");
             }
         }
+    }
+}
+
+/// MV.1 — the registry a view plugin declares its views through.
+///
+/// The `register_picker_source` shape exactly: a sync host func that only
+/// records into `PluginState`, drained by the spawn after the registration
+/// export returns. Unlike the picker's, the spec does NOT convert here — a
+/// `MultibufferViewSpec` is host-side data the provider consumes directly, so
+/// there is nothing to fail at this point. Refusals that need the other
+/// claimant's name (an id a native provider already owns) happen where both are
+/// visible, in `providers::plugin_view`.
+impl crate::multibuffer_view_host::bindings::lattice::plugin_host::multibuffer_view_registry::Host
+    for PluginState
+{
+    fn register_multibuffer_view(
+        &mut self,
+        spec: crate::lattice::plugin_host::types::MultibufferViewSpec,
+    ) {
+        if spec.id.trim().is_empty() || spec.buffer_name.trim().is_empty() {
+            // Both are names the host will look a view up by; an empty one is
+            // unreachable rather than merely odd. Dropped with a warning so one
+            // malformed view does not cost the plugin its others.
+            tracing::warn!(
+                id = %spec.id,
+                buffer = %spec.buffer_name,
+                "register-multibuffer-view refused: id and buffer-name must be non-empty"
+            );
+            return;
+        }
+        self.multibuffer_view_contributions.declare(spec);
     }
 }
 
@@ -2662,6 +2697,13 @@ impl PluginHost {
             HasSelf<_>,
         >(&mut linker, |state: &mut PluginState| state)
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // MV.1: the `multibuffer-view-registry` seam a view plugin declares
+        // its views through. Same shape and same inertness.
+        crate::multibuffer_view_host::bindings::lattice::plugin_host::multibuffer_view_registry::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // PM.7: the `plugin-manager` (`require`) seam. A sync host func — it
         // only records into `PluginState` — and inert for every world that
         // does not import `plugin-manager`, which is all of them but the
@@ -2834,6 +2876,18 @@ impl PluginHost {
         // here fails the WHOLE component, not one seam. That is the OC.2 scar,
         // and this is the fifth seam to be wired on both for it.
         crate::picker_host::bindings::lattice::plugin_host::picker_registry::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut grammar_linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // MV.1: `multibuffer-view-registry` on the SYNC grammar linker too, for
+        // the reason directly above and with the same consequence for getting
+        // it wrong. Org will provide `grammar` AND `multibuffer-view-source`,
+        // and a component's import set must resolve on EVERY linker it is
+        // instantiated against — an import absent here fails the WHOLE
+        // component, silently, not just the one seam. That is the OC.2 scar:
+        // one `logging::log` call once took org down entirely.
+        crate::multibuffer_view_host::bindings::lattice::plugin_host::multibuffer_view_registry::add_to_linker::<
             _,
             HasSelf<_>,
         >(&mut grammar_linker, |state: &mut PluginState| state)
@@ -3304,6 +3358,10 @@ impl PluginHost {
             // prevent, so the wiring must not be per-path.
             store: name.and_then(|id| self.store_for(id)),
             picker_contributions: picker_host::PickerContributions::default(),
+            // MV.1: stamped for every store like `picker_contributions`, so the
+            // one seam that drains it cannot be the only one that has it.
+            multibuffer_view_contributions:
+                multibuffer_view_host::MultibufferViewContributions::default(),
             // OR.2: empty until the guest arms one; dropped with this `Store`.
             watches: std::collections::HashMap::new(),
             require_contributions: Default::default(),

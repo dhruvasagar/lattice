@@ -963,6 +963,88 @@ interface types {
     }
     /// Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source
     /// out of the picker's fuzzy refilter (the source owns filtering).
+    // ─── MV.1: plugin-owned multibuffer views ────────────────────────
+    // Design: `docs/dev/architecture/plugin-multibuffer-views.md`.
+
+    /// One row of a plugin-owned multibuffer view.
+    ///
+    /// `path` names a FILE, not a buffer id. `Excerpt` carries a `BufferId`
+    /// and only the host can mint one — so the host opens (or reuses) the
+    /// document and adds it as this excerpt's source. A path is the stable
+    /// name both sides already share; `effect::write-to-file` resolves paths
+    /// to buffers for the same reason.
+    record multibuffer-view-excerpt {
+        path: string,
+        /// 0-based, inclusive of `end-line`, matching `scanned-excerpt`.
+        start-line: u32,
+        end-line: u32,
+        /// Rendered above this excerpt. **Empty renders no header row**, which
+        /// is the entire grouping mechanism: a group is "title on the first
+        /// excerpt of a run, empty on the rest". A pull guest computes the runs
+        /// itself, because unlike a scan guest it can see the whole ordered set.
+        header: string,
+        /// The `· N matches` badge beside the header. `none` ⇒ no badge.
+        match-count: option<u32>,
+    }
+
+    /// Where a view's rows come from. Declared on the spec rather than per
+    /// `build` call: the host must know BEFORE it calls anything, because a
+    /// scan view needs the walk driven and a pull view needs `build` invoked.
+    /// Per-call, the host would have to call `build` to learn it should not
+    /// have. It also matches the seam next door, where `extensions` and
+    /// `view-mode` are load-time facts and only `roots` is per-scan.
+    variant multibuffer-view-input {
+        /// The guest already knows the answer — an index lookup, a computed
+        /// set. The host calls `build` and renders what comes back.
+        pull,
+        /// The host walks, reads and parses; the guest classifies each file
+        /// through `scanned-excerpt-source`. Carries the extensions the walk
+        /// should offer.
+        ///
+        /// Kept as a separate input rather than folded into `pull` because the
+        /// two are different COST MODELS, not two spellings of one. The host
+        /// must read each file anyway to build the source document, so it reads
+        /// once, parses once, and hands over text *and* tree: a 1-2 ms parse for
+        /// a 217 ns copy (`benches/agenda_scan_input.rs`), and the guest needs
+        /// no filesystem capability at all. A pull-only world makes the guest
+        /// discover and read files itself, and reading node text back through
+        /// the tree seam costs ~50 us per file — 200x the copy it avoided.
+        scan(list<string>),
+    }
+
+    /// A view a plugin owns.
+    record multibuffer-view-spec {
+        /// The provider name. `app-effect::open-provider-view` and the view's
+        /// own `gr` both reach it by this.
+        id: string,
+        /// Shown in `:describe-command` and the provider listing.
+        doc: string,
+        /// The view's buffer name — the GUEST's to choose (`*agenda*`,
+        /// `*org-roam-backlinks*`). Host constants are what made the agenda's
+        /// identity un-ownable.
+        buffer-name: string,
+        /// A minor mode to activate on the view, by name. This is where the
+        /// view's chords and their handler bodies live, and it is a property of
+        /// the VIEW rather than of how its rows were found. A name that is not
+        /// registered warns through the ordinary activation path rather than
+        /// failing the open — the rows are still worth showing.
+        view-mode: option<string>,
+        /// Reuse one buffer across triggers (a second `:agenda` re-scans into
+        /// the same buffer) or open a fresh view each time.
+        reuse: bool,
+        input: multibuffer-view-input,
+    }
+
+    /// What `build` returns.
+    record multibuffer-view-result {
+        /// In FINAL order — see `multibuffer-view-source.build`.
+        excerpts: list<multibuffer-view-excerpt>,
+        /// The headerline's terminal summary ("42 backlinks"). Returned with
+        /// the rows rather than fetched by a second call: one crossing, and the
+        /// count is a fact the guest already has.
+        summary: string,
+    }
+
     record picker-source-spec {
         id: string,
         doc: string,

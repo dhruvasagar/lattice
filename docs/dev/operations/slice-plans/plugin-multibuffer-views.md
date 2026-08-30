@@ -31,39 +31,97 @@ consuming a generic seam.
 in-tree consumer, and a silently-accepted old name is how two spellings end up
 in the wild.
 
-### MV.1 — the seam and the generic provider 📝
+### MV.1a — the seam and its bridge ✅
 
 **Deps:** MV.0.
 
-`wit/multibuffer-view-source.wit` per design §2: `view-spec`, `view-excerpt`,
-`view-input`, `spec()`, `build(view, args)`. The host side is
+**Carved from MV.1 mid-build.** The seam and the provider are separately
+reviewable and separately committable, and the boundary can be proven through a
+real guest before any of the view machinery exists — which is what keeps a
+provider bug and a boundary bug from arriving together.
+
+`wit/multibuffer-view-source.wit`: the `multibuffer-view-registry` import (the
+guest declares N views, the `picker-registry` shape) plus the
+`multibuffer-view-source` export (`build`). `types.wit` gains
+`multibuffer-view-{spec,excerpt,input,result}`. Host side:
+`multibuffer_view_host.rs` (the second `bindgen!` + the contributions
+collector), `multibuffer_view_task.rs` (the actor bridge, the `picker_task`
+shape), `PluginSeam::MultibufferViewSource`, and the registry wired on **both**
+linkers.
+
+**Both linkers, and that is not optional.** Org will provide `grammar` AND
+`multibuffer-view-source`; a component's import set must resolve on every linker
+it is instantiated against, and an import absent from one fails the WHOLE
+component rather than the one seam. The OC.2 scar: a single `logging::log` call
+once took org down entirely.
+
+**The config registry is stamped here.** Seventh seam to need that line, and six
+of the previous six shipped without it — each answering `none` to `get-option`
+while looking perfectly wired. A view's contents very often depend on an option
+(which directory, which filter), so it went in before the bug report rather than
+after.
+
+**Tests (5, through a real fixture guest):** one component declares several
+views; the identity fields that make a view *ownable* (buffer name, view mode,
+reuse, input) cross intact; `build` receives which view and which args; a
+malformed spec costs only itself and the plugin keeps its other views; and a
+guest DECLINE is a typed `err` that leaves the actor usable — distinct from a
+trap, which is the difference between "nothing to show, here is why" and "this
+plugin is broken".
+
+### MV.1b — the generic provider ✅
+
+**Deps:** MV.1a.
+
 `crates/lattice-multibuffer/src/providers/plugin_view.rs`: one
 `ProviderViewOpener` registered per declared view, resolving each excerpt's
 `path` to a source buffer, creating (or reusing) the named view, activating the
 guest's `view-mode`, and setting the headerline from `view-result.summary`.
+Plus the loader drain arm and teardown that unregisters the provider names.
 
-Plus the actor bridge (`view_task.rs`, the `picker_task` shape), the loader
-drain arm, and teardown that unregisters the provider names.
+**Landed with the drain, not after it**, and that was forced rather than
+chosen. The loader's seam match carries the comment *"a new seam variant must
+add its drain here — the compiler enforces it rather than a silent skip"*, so
+MV.1a could not compile the workspace without one. An arm that registered
+nothing would have been exactly the "wired end-to-end and answers nothing" scar
+this codebase keeps re-finding, so the provider and the drain shipped together.
 
-**The config registry must be stamped on this store.** Sixth-seam rule: five
-seams shipped without it and each silently answered `none` to `get-option`.
-Assume this one needs it and prove it with a test that reads an option from
-`build`.
+**The opener is sync; `build` is not.** `ProviderViewOpener` runs on the
+dispatch path, and `build` may read files — so `open_plugin_view` seats an empty
+view with an in-progress headerline and returns, and `fill_plugin_view` applies
+the guest's result from a spawned task. `providers/agenda.rs`'s shape
+(`open_agenda` + `spawn_agenda_scan`) for its reason. The fill publishes
+`MultibufferExcerptsReady`, without which the rows would sit until the next
+keypress and read as a rendering bug.
 
-**Tests:** a guest-declared view opens by name through
-`open-provider-view`; excerpts land against the right source buffers; an `err`
-from `build` declines with the guest's message rather than opening an empty
-view; an excerpt naming a missing path is dropped and the rest of the view
-survives; two views from ONE component both register (the `picker-registry`
-property); an id colliding with a native provider is refused with both names and
-does not take the guest's other views down with it.
+**Two host assumptions this broke, both fixed here:**
 
-**Bench:** `build` round-trip for a 500-excerpt view — the crossing plus the
-per-excerpt source resolution, which is the part that scales.
+- `ProviderViewRegistry`'s doc said openers *"live for the process, so there is
+  no RAII unregistration token"*. True of native providers; false of plugins,
+  which unload and reload. Without `unregister`, a reload's `register` returns
+  `false` against the plugin's OWN stale opener and its views come back dead.
+  Added, with the lifetime note amended rather than left to mislead.
+- `TeardownRegistries` had nowhere to reverse a view registration. It gains
+  `provider_views`, `Option` because a headless boot may never publish the seam
+  and a teardown must not require a service the load never used.
+
+**`scan` views register their identity and open empty**, logged at info. The
+composition that feeds them from the host's walk is MV.3. Said out loud rather
+than silently no-op'd, because a view that opens empty for a structural reason
+is indistinguishable from a broken one otherwise.
+
+**Still owed, and not done here:** the integration tests that open a
+guest-declared view end-to-end (`open-provider-view` → excerpts against the
+right source buffers → decline → unreadable-path drop → id collision), and the
+bench for a 500-excerpt `build` round-trip. The seam has 5 boundary tests
+through a real guest; the provider has only its unit test. **This is the gap
+that matters most in this phase** — the whole lesson of OR.6 and OR.9 is that a
+seam can look wired and answer nothing, and the provider is the half not yet
+proven that way.
 
 ### MV.2 — org registers a view 📝
 
-**Deps:** MV.1.
+**Deps:** MV.1b.
 
 Org declares its first `pull` view. Which one it is depends on what OR.9 left:
 backlinks shipped as a picker on navigation grounds, so the natural first
@@ -99,7 +157,7 @@ walk.
 
 ### MV.4 — docs 📝
 
-**Deps:** MV.1–MV.3.
+**Deps:** MV.1a–MV.3.
 
 The design fragment lands amended where the build disagreed with it.
 `plugin-host.md` gains the seam beside `picker-source` and

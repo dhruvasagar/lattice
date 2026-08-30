@@ -38,4 +38,5 @@ pub mod narrow;
 /// list grouped as editable source excerpts by file. Like `narrow`,
 /// a first-class built-in (no cargo feature gate): the entry list is
 /// static, so no async scan / service / per-view state.
+pub mod plugin_view;
 pub mod problems;

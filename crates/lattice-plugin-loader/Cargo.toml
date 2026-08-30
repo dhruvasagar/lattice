@@ -105,6 +105,10 @@ lattice-core = { path = "../lattice-core" }
 # `WasmErrorParserFactory` RCU-registers into. Each compilation pipe reader
 # mints its own parser from it at the start of a run.
 lattice-compilation = { path = "../lattice-compilation" }
+# MV.1: the loader registers a provider-view opener per plugin-declared view and
+# fills it through the multibuffer registry. No cycle — `lattice-multibuffer`
+# depends on neither the loader nor the plugin host.
+lattice-multibuffer = { path = "../lattice-multibuffer" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 # OC.2 adds "time": the wake seam's `Sleeper` is implemented here (see

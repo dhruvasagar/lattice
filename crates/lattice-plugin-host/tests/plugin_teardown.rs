@@ -123,6 +123,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
     let parsers = lattice_compilation::CompilationParserFactories::new_handle();
     let report = {
         let mut reg = TeardownRegistries {
+            provider_views: None,
             media: &mut Default::default(),
             agenda: &mut Default::default(),
             commands: &mut commands,

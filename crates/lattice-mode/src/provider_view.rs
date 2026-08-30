@@ -99,9 +99,14 @@ pub type ProviderViewRegistryHandle = Arc<ProviderViewRegistry>;
 /// [`ActionHandlerRegistry`](crate::ActionHandlerRegistry) — copy-on-
 /// write registration, `Arc` load on lookup — because it is the same
 /// kind of thing: a table of provider-contributed closures the host
-/// consults without knowing what is in them. It differs in lifetime:
-/// openers are registered once during subsystem `install(&mut boot)` and
-/// live for the process, so there is no RAII unregistration token.
+/// consults without knowing what is in them.
+///
+/// **Lifetime, amended by MV.1.** Native providers register once during
+/// subsystem `install(&mut boot)` and live for the process, which is why
+/// there is no RAII token. A PLUGIN's views do not: a plugin unloads and
+/// reloads, so [`unregister`](Self::unregister) exists for the teardown
+/// path. Without it a reload's `register` would return `false` against
+/// the plugin's own stale opener and its views would come back dead.
 #[derive(Default)]
 pub struct ProviderViewRegistry {
     openers: ArcSwap<HashMap<String, ProviderViewOpener>>,
@@ -133,6 +138,21 @@ impl ProviderViewRegistry {
             next
         });
         inserted
+    }
+
+    /// Remove `name`'s opener, returning whether one was there.
+    ///
+    /// MV.1: the plugin teardown path. Native providers never call it —
+    /// they outlive every unload — so an unknown name is `false` rather
+    /// than a warning.
+    pub fn unregister(&self, name: &str) -> bool {
+        let mut removed = false;
+        self.openers.rcu(|map| {
+            let mut next = (**map).clone();
+            removed = next.remove(name).is_some();
+            next
+        });
+        removed
     }
 
     /// Look up an opener by name. `None` for an unregistered provider —

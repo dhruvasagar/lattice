@@ -170,6 +170,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .map(|h| (*h).clone()),
         runtime: Some(boot.runtime_handle().clone()),
         bus: Some(boot.event_bus().clone()),
+        // MV.1: where a plugin's declared views register their openers, and
+        // where their excerpts land once `build` answers.
+        provider_view_registry: boot
+            .service::<lattice_mode::ProviderViewRegistryHandle>()
+            .map(|h| (*h).clone()),
+        multibuffer_registry: boot
+            .service::<lattice_multibuffer::registry::MultibufferRegistryHandle>()
+            .map(|h| (*h).clone()),
         picker_registry: boot.service::<PickerRegistryHandle>().map(|h| (*h).clone()),
         config_registry: boot.service::<Arc<ConfigRegistry>>().map(|h| (*h).clone()),
         command_registry: boot

@@ -266,6 +266,7 @@ fn unload(
     let theme_reg = lattice_theme::InMemoryThemeRegistry::new(lattice_theme::default_palette());
     let parsers = lattice_compilation::CompilationParserFactories::new_handle();
     let mut reg = lattice_plugin_host::TeardownRegistries {
+        provider_views: None,
         media: &mut Default::default(),
         agenda: &mut Default::default(),
         commands: &mut commands,

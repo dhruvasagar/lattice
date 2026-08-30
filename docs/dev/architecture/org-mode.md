@@ -246,6 +246,14 @@ need.
 above major layers, and `org-table-mode` is active in every org buffer,
 so its binding is reached first:
 
+"Active in every org buffer" has a precondition that is easy to read past
+and was in fact missed: `majors = ["org-mode"]` says *where* the minor may
+activate, and enablement says *whether* it may at all —
+`auto_activatable_minors` filters on enablement **before** policy. So the
+mode must also be in the plugin manifest's `default_modes`, or this chain
+never has a first hop and `<Tab>` in a table does nothing. It was absent
+there until 2026-08-30.
+
 ```
 <Tab>  →  org-table-mode : in a table?    align + next cell
                             else          [declined]

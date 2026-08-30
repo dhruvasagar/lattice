@@ -2,7 +2,7 @@
 //!
 //! Instantiates the `agenda-guest` fixture via
 //! [`PluginHost::spawn_agenda_source`], drives its `extensions` / `begin` /
-//! `scan` exports through the [`WasmAgendaSource`] adapter + `AgendaActor`
+//! `scan` exports through the [`WasmScannedExcerptSource`] adapter + `AgendaActor`
 //! bridge, and asserts the native result — the whole seam end to end:
 //!
 //!   - the declared extensions cross back and are normalised (the fixture
@@ -19,9 +19,10 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use lattice_mode::{AsyncAgendaSource, CapabilitySet};
+use lattice_mode::{CapabilitySet, ScannedExcerptSource};
 use lattice_plugin_host::{
-    PluginBudget, PluginHost, PluginManifest, TrustTier, WasmAgendaSource, normalise_extensions,
+    PluginBudget, PluginHost, PluginManifest, TrustTier, WasmScannedExcerptSource,
+    normalise_extensions,
 };
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -33,7 +34,7 @@ fn guest_wasm() -> Option<&'static str> {
 
 /// Spawn the fixture and build the adapter the way the loader does — ask for
 /// the extensions once, normalise, then construct.
-async fn source(host: &PluginHost) -> WasmAgendaSource {
+async fn source(host: &PluginHost) -> WasmScannedExcerptSource {
     let component = host
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
         .expect("compile agenda fixture");
@@ -52,7 +53,7 @@ async fn source(host: &PluginHost) -> WasmAgendaSource {
     tokio::spawn(actor.run());
     let declared = client.extensions().await.expect("extensions cross back");
     let view_mode = client.view_mode().await.expect("view-mode crosses back");
-    WasmAgendaSource::new(client, normalise_extensions(declared), view_mode)
+    WasmScannedExcerptSource::new(client, normalise_extensions(declared), view_mode)
 }
 
 fn org(rows: &[i64]) -> String {
@@ -241,7 +242,7 @@ async fn scan_lends_a_tree_when_the_extension_has_a_language() {
 }
 
 /// The text arm is not a leftover — it is what keeps an agenda source
-/// independent of the `language` seam, which `agenda-source.wit` calls out
+/// independent of the `language` seam, which `scanned-excerpt-source.wit` calls out
 /// explicitly ("would make an agenda source *require* a language when the two
 /// are independent contributions").
 ///
@@ -279,7 +280,7 @@ async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
 /// `scan`, none of which reads an option, so the config path had never been
 /// called once — and `get-option` answered `none` for anything a guest asked.
 ///
-/// The world had the matching hole: `agenda-source-plugin` did not import
+/// The world had the matching hole: `scanned-excerpt-source-plugin` did not import
 /// `config`, so it declared an export it gave no way to implement. Either half
 /// alone still leaves `roots` answerable only with a compiled-in constant,
 /// which is why both moved together and why this test asserts through the
@@ -310,7 +311,8 @@ async fn a_source_answers_roots_from_its_own_option() {
         .await
         .expect("spawn agenda source");
     tokio::spawn(actor.run());
-    let src = WasmAgendaSource::new(client, normalise_extensions(vec!["org".to_string()]), None);
+    let src =
+        WasmScannedExcerptSource::new(client, normalise_extensions(vec!["org".to_string()]), None);
 
     // Unset: the fixture's own fallback, which is also the pre-AF.3 answer.
     assert_eq!(
@@ -346,7 +348,7 @@ async fn a_source_answers_roots_from_its_own_option() {
 /// The regression this guards is the one OT.4 spent a slice on: a seam wired
 /// through the WIT, the trampoline and the guest that delivers nothing, because
 /// nothing in production actually calls it. So this asserts on the ADAPTER —
-/// `AsyncAgendaSource::roots`, the method the scan calls — rather than on the
+/// `ScannedExcerptSource::roots`, the method the scan calls — rather than on the
 /// `AgendaClient` beneath it, and it asserts the exact strings rather than
 /// merely "not empty".
 ///

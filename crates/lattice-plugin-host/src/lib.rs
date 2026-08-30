@@ -78,11 +78,11 @@ pub use crate::media_source::WasmMediaSource;
 pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
-// OM.A1: the `agenda-source` guest→host producer seam.
+// OM.A1: the `scanned-excerpt-source` guest→host producer seam.
 pub mod agenda_host;
-pub mod agenda_source;
 pub mod agenda_task;
-pub use crate::agenda_source::{WasmAgendaSource, normalise_extensions};
+pub mod scanned_excerpt_source;
+pub use crate::scanned_excerpt_source::{WasmScannedExcerptSource, normalise_extensions};
 // XF.4: the fs:write gate for guest-returned effects, applied at the
 // boundary where the plugin's provenance is still known.
 pub mod effect_authorizer;

@@ -278,7 +278,7 @@ pub struct LoaderServices {
     /// OM.A1: where a plugin's agenda-row producer lands. Absent leaves the
     /// seam `NotWired` — the load fails loudly rather than reporting success
     /// and contributing nothing to every `:agenda` forever.
-    pub agenda_registry: Option<lattice_mode::AgendaSourceRegistryHandle>,
+    pub agenda_registry: Option<lattice_mode::ScannedExcerptSourceRegistryHandle>,
     /// TC.2: the runtime-mutable context-producer registry (RCU-register a
     /// loaded context plugin's `WasmContextSource`). The host's reparse-driven
     /// refresh reads the same handle wait-free.
@@ -826,7 +826,7 @@ impl PluginLoader {
                     // guest stays instantiated and is called once per file of
                     // every scan, so its per-scan state (`begin`) has
                     // somewhere to live.
-                    PluginSeam::AgendaSource => {
+                    PluginSeam::ScannedExcerptSource => {
                         let id = self
                             .drain_agenda(&component, manifest, tier, &mut record)
                             .await?;
@@ -2735,11 +2735,11 @@ impl PluginLoader {
         Ok(id)
     }
 
-    /// OM.A1: instantiate the plugin's agenda-source, resolve the extensions
+    /// OM.A1: instantiate the plugin's scanned-excerpt-source, resolve the extensions
     /// it claims ONCE, and register it as a producer.
     ///
     /// The `extensions()` round-trip happens here rather than per file for
-    /// the reason `WasmAgendaSource::extensions` records: the answer cannot
+    /// the reason `WasmScannedExcerptSource::extensions` records: the answer cannot
     /// change, and a scan already pays one boundary crossing per file.
     ///
     /// A source claiming NOTHING is registered anyway and logged at `warn`.
@@ -2758,17 +2758,17 @@ impl PluginLoader {
             .env
             .bus
             .as_ref()
-            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+            .ok_or(PluginLoaderError::NotWired("scanned-excerpt-source"))?;
         let runtime = self
             .env
             .runtime
             .as_ref()
-            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+            .ok_or(PluginLoaderError::NotWired("scanned-excerpt-source"))?;
         let registry = self
             .env
             .agenda_registry
             .as_ref()
-            .ok_or(PluginLoaderError::NotWired("agenda-source"))?;
+            .ok_or(PluginLoaderError::NotWired("scanned-excerpt-source"))?;
 
         let (client, actor) = self
             .host
@@ -2822,7 +2822,8 @@ impl PluginLoader {
         // OT.3b: persist this source's rows beside the plugin's own data, so a
         // restart does not reparse the whole project. A plugin whose id is not
         // a safe directory name gets no cache and simply scans as before.
-        let source = lattice_plugin_host::WasmAgendaSource::new(client, extensions, view_mode);
+        let source =
+            lattice_plugin_host::WasmScannedExcerptSource::new(client, extensions, view_mode);
         let source = match self.host.plugin_data_dir(&manifest.id) {
             Some(dir) => source.with_cache(dir.as_path()),
             None => source,
@@ -2833,7 +2834,7 @@ impl PluginLoader {
         // producer seam: a scan already running keeps reading the prior
         // snapshot until the store lands, so there is no lock on the read
         // path.
-        let producer: Arc<dyn lattice_mode::AsyncAgendaSource> = Arc::new(source);
+        let producer: Arc<dyn lattice_mode::ScannedExcerptSource> = Arc::new(source);
         registry.rcu(|current| {
             let mut next = (**current).clone();
             next.register(producer.clone());

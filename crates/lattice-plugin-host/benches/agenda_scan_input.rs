@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 //! OT.3 criterion bench for the agenda `scan-input` trade.
 //!
-//! `agenda-source.wit` used to justify handing the guest a whole file's text:
+//! `scanned-excerpt-source.wit` used to justify handing the guest a whole file's text:
 //! "a scan reads EVERY line, so a handle would cost one boundary crossing per
 //! line where one copy costs one." OT.3 retired that as circular — the guest
 //! reads every line only *because it hand-parses* — and switched `scan` to lend

@@ -1,7 +1,7 @@
 //! OM.A1 agenda fixture guest.
 //!
 //! A minimal `wasm32-wasip2` component implementing the
-//! `agenda-source-plugin` world, driving the agenda producer actor
+//! `scanned-excerpt-source-plugin` world, driving the agenda producer actor
 //! (`agenda_task.rs`) through real host→guest calls:
 //!
 //!   - `extensions` declares `["ORG"]` — deliberately upper-cased and
@@ -16,7 +16,7 @@
 //!     skip-this-file-and-continue path (§8) with a real guest error.
 
 wit_bindgen::generate!({
-    world: "agenda-source-plugin",
+    world: "scanned-excerpt-source-plugin",
     path: "../../../../../wit",
 });
 

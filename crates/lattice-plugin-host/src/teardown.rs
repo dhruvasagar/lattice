@@ -329,7 +329,7 @@ pub struct TeardownRegistries<'a> {
     /// IM.6b: the media-producer registry, for the same reversal.
     pub media: &'a mut lattice_mode::MediaSourceRegistry,
     /// OM.A1: the agenda-producer registry, for the same reversal.
-    pub agenda: &'a mut lattice_mode::AgendaSourceRegistry,
+    pub agenda: &'a mut lattice_mode::ScannedExcerptSourceRegistry,
     /// TC.2: the context-producer registry (`unregister` by producer id).
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).

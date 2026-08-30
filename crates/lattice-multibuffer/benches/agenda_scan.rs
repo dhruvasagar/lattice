@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use lattice_core::BufferId;
-use lattice_mode::{AgendaBeginFuture, AgendaEntry, AgendaFuture, AsyncAgendaSource};
+use lattice_mode::{AgendaBeginFuture, AgendaFuture, ScannedExcerpt, ScannedExcerptSource};
 use lattice_multibuffer::providers::agenda::{AgendaOptions, spawn_agenda_scan};
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferDocumentHandle,
@@ -39,7 +39,7 @@ struct BenchSource {
     exts: Vec<String>,
 }
 
-impl AsyncAgendaSource for BenchSource {
+impl ScannedExcerptSource for BenchSource {
     fn source_id(&self) -> u64 {
         1
     }
@@ -57,7 +57,7 @@ impl AsyncAgendaSource for BenchSource {
                 .filter_map(|(i, line)| {
                     let rest = line.strip_prefix("* TODO ")?;
                     let key: i64 = rest.trim().parse().ok()?;
-                    Some(AgendaEntry {
+                    Some(ScannedExcerpt {
                         line: i as u32,
                         end_line: i as u32,
                         group: format!("day-{key}"),

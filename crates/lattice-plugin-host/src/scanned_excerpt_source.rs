@@ -1,4 +1,4 @@
-//! OM.A1 — the `WasmAgendaSource` adapter.
+//! OM.A1 — the `WasmScannedExcerptSource` adapter.
 //!
 //! Wraps an agenda plugin's [`AgendaClient`] bridge and exposes a **native**-
 //! typed producer the host's scan calls, exactly like `WasmMediaSource`. The
@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use lattice_mode::agenda_source::{
-    AgendaBeginFuture, AgendaEntry, AgendaFuture, AgendaRootsFuture, AsyncAgendaSource,
+use lattice_mode::scanned_excerpt_source::{
+    AgendaBeginFuture, AgendaFuture, AgendaRootsFuture, ScannedExcerpt, ScannedExcerptSource,
 };
 
 use crate::PluginId;
@@ -18,7 +18,7 @@ use crate::agenda_task::{AgendaClient, Entry};
 
 /// An async agenda-row producer over a plugin's [`AgendaClient`].
 #[derive(Clone, Debug)]
-pub struct WasmAgendaSource {
+pub struct WasmScannedExcerptSource {
     client: AgendaClient,
     /// Resolved ONCE at load, so the walk's per-file test is a string compare
     /// rather than a guest call. A `scan`-per-file boundary crossing is
@@ -32,7 +32,7 @@ pub struct WasmAgendaSource {
     ///
     /// It lives HERE, above `client`, because that is the layer where a hit can
     /// skip the guest call as well as the parse — a cache below the boundary
-    /// could only ever have saved the parse. `Mutex` because `AsyncAgendaSource`
+    /// could only ever have saved the parse. `Mutex` because `ScannedExcerptSource`
     /// hands out `&self` and the source is cloned into the scan task; `Arc` so
     /// every clone shares one cache rather than one each, which would make the
     /// hit rate depend on how many times the source was cloned.
@@ -42,7 +42,7 @@ pub struct WasmAgendaSource {
     cache: Option<Arc<Mutex<AgendaCache>>>,
 }
 
-impl AsyncAgendaSource for WasmAgendaSource {
+impl ScannedExcerptSource for WasmScannedExcerptSource {
     fn source_id(&self) -> u64 {
         self.plugin_id().0 as u64
     }
@@ -130,7 +130,7 @@ impl AsyncAgendaSource for WasmAgendaSource {
     }
 }
 
-impl WasmAgendaSource {
+impl WasmScannedExcerptSource {
     pub fn new(client: AgendaClient, extensions: Vec<String>, view_mode: Option<String>) -> Self {
         Self {
             client,
@@ -186,7 +186,7 @@ pub fn normalise_extensions(raw: Vec<String>) -> Vec<String> {
 /// renders nothing and jumps nowhere.
 ///
 /// `debug!`, never `info!` — this fires per row of a project-wide scan.
-fn validate(path: &str, e: Entry) -> Option<AgendaEntry> {
+fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
     if e.line == u32::MAX || e.end_line == u32::MAX {
         tracing::debug!(
             path,
@@ -205,7 +205,7 @@ fn validate(path: &str, e: Entry) -> Option<AgendaEntry> {
         );
         return None;
     }
-    Some(AgendaEntry {
+    Some(ScannedExcerpt {
         line: e.line,
         end_line: e.end_line,
         group: e.group,

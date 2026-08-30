@@ -166,7 +166,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .service::<lattice_mode::MediaSourceRegistryHandle>()
             .map(|h| (*h).clone()),
         agenda_registry: boot
-            .service::<lattice_mode::AgendaSourceRegistryHandle>()
+            .service::<lattice_mode::ScannedExcerptSourceRegistryHandle>()
             .map(|h| (*h).clone()),
         runtime: Some(boot.runtime_handle().clone()),
         bus: Some(boot.event_bus().clone()),

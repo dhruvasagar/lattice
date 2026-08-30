@@ -7,7 +7,7 @@
 //! once per file of a project walk.
 //!
 //! Nothing here names org. A source declares the extensions it wants offered
-//! ([`AsyncAgendaSource::extensions`]) and the host offers it only those
+//! ([`ScannedExcerptSource::extensions`]) and the host offers it only those
 //! files, which is what keeps `.org` out of the host walk.
 
 use std::future::Future;
@@ -19,12 +19,12 @@ use arc_swap::ArcSwap;
 
 /// One agenda row a producer found in a file.
 ///
-/// The native mirror of the WIT `entry` (`wit/agenda-source.wit`). It is a
+/// The native mirror of the WIT `entry` (`wit/scanned-excerpt-source.wit`). It is a
 /// *span in a file*, not a rendered string, because the agenda is literally a
 /// multibuffer of excerpts — which is what buys jump-to-source and
 /// edit-propagates-to-source for free (`org-mode.md` §6.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgendaEntry {
+pub struct ScannedExcerpt {
     /// 0-based first line of the row's excerpt.
     pub line: u32,
     /// 0-based last line of the excerpt, inclusive. Equal to `line` for the
@@ -42,27 +42,27 @@ pub struct AgendaEntry {
     pub sort_key: i64,
 }
 
-/// The boxed future an [`AsyncAgendaSource::scan`] returns.
+/// The boxed future an [`ScannedExcerptSource::scan`] returns.
 ///
 /// `Err(reason)` skips THIS FILE and the scan continues — one malformed file
 /// must not fail the agenda. That is `error-parser`'s rule, because it is the
 /// same failure class.
 pub type AgendaFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<AgendaEntry>, String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Vec<ScannedExcerpt>, String>> + Send + 'a>>;
 
-/// The boxed future an [`AsyncAgendaSource::begin`] returns.
+/// The boxed future an [`ScannedExcerptSource::begin`] returns.
 ///
 /// Separate from [`AgendaFuture`] rather than reusing it with an ignored
 /// `Vec`: `begin` produces nothing, and a signature that says otherwise
 /// invites a producer to return rows from it that the scan would drop.
 pub type AgendaBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
-/// The boxed future an [`AsyncAgendaSource::roots`] returns (AF.1).
+/// The boxed future an [`ScannedExcerptSource::roots`] returns (AF.1).
 pub type AgendaRootsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 
 /// An async, off-keystroke-path producer of agenda rows.
-pub trait AsyncAgendaSource: Send + Sync + std::fmt::Debug {
+pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     /// Stable id of the producing plugin — the teardown key. Two producers
     /// with the same id are the same plugin, so a reload replaces rather than
     /// duplicates.
@@ -125,21 +125,21 @@ pub trait AsyncAgendaSource: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Runtime-mutable registry of [`AsyncAgendaSource`]s.
+/// Runtime-mutable registry of [`ScannedExcerptSource`]s.
 #[derive(Default, Clone)]
-pub struct AgendaSourceRegistry {
-    sources: Vec<Arc<dyn AsyncAgendaSource>>,
+pub struct ScannedExcerptSourceRegistry {
+    sources: Vec<Arc<dyn ScannedExcerptSource>>,
 }
 
-impl std::fmt::Debug for AgendaSourceRegistry {
+impl std::fmt::Debug for ScannedExcerptSourceRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgendaSourceRegistry")
+        f.debug_struct("ScannedExcerptSourceRegistry")
             .field("sources", &self.sources.len())
             .finish()
     }
 }
 
-impl AgendaSourceRegistry {
+impl ScannedExcerptSourceRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -147,7 +147,7 @@ impl AgendaSourceRegistry {
     /// Register a producer. Idempotent per `source_id`: a re-register
     /// (reload) replaces rather than accumulating a duplicate — otherwise
     /// every `:plugin-reload` would double every row in the agenda.
-    pub fn register(&mut self, source: Arc<dyn AsyncAgendaSource>) {
+    pub fn register(&mut self, source: Arc<dyn ScannedExcerptSource>) {
         let id = source.source_id();
         self.sources.retain(|s| s.source_id() != id);
         self.sources.push(source);
@@ -162,7 +162,7 @@ impl AgendaSourceRegistry {
     }
 
     /// A snapshot of the registered producers.
-    pub fn sources(&self) -> Vec<Arc<dyn AsyncAgendaSource>> {
+    pub fn sources(&self) -> Vec<Arc<dyn ScannedExcerptSource>> {
         self.sources.clone()
     }
 
@@ -191,7 +191,7 @@ impl AgendaSourceRegistry {
     /// than a bool means a file claimed by two producers is offered to both,
     /// which is the honest answer when a markdown TODO scanner and a
     /// checklist scanner both want `.md`.
-    pub fn claiming(&self, path: &std::path::Path) -> Vec<Arc<dyn AsyncAgendaSource>> {
+    pub fn claiming(&self, path: &std::path::Path) -> Vec<Arc<dyn ScannedExcerptSource>> {
         self.sources
             .iter()
             .filter(|s| s.claims(path))
@@ -210,7 +210,7 @@ impl AgendaSourceRegistry {
 
 /// Boot-service handle. Register **and** look up with this exact alias (the
 /// `ServiceRegistry` TypeId rule).
-pub type AgendaSourceRegistryHandle = Arc<ArcSwap<AgendaSourceRegistry>>;
+pub type ScannedExcerptSourceRegistryHandle = Arc<ArcSwap<ScannedExcerptSourceRegistry>>;
 
 #[cfg(test)]
 mod tests {
@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    impl AsyncAgendaSource for Fake {
+    impl ScannedExcerptSource for Fake {
         fn source_id(&self) -> u64 {
             self.id
         }
@@ -261,7 +261,7 @@ mod tests {
     /// every `:plugin-reload` doubles every row in the agenda.
     #[test]
     fn re_registering_the_same_source_id_replaces_rather_than_duplicates() {
-        let mut r = AgendaSourceRegistry::new();
+        let mut r = ScannedExcerptSourceRegistry::new();
         r.register(Arc::new(Fake::new(7, &["org"])));
         r.register(Arc::new(Fake::new(7, &["org"])));
         assert_eq!(r.len(), 1);
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn unregister_reports_what_it_removed_and_is_idempotent() {
-        let mut r = AgendaSourceRegistry::new();
+        let mut r = ScannedExcerptSourceRegistry::new();
         r.register(Arc::new(Fake::new(7, &["org"])));
         assert_eq!(r.unregister(7), 1);
         assert_eq!(r.unregister(7), 0, "idempotent, per the teardown contract");
@@ -282,7 +282,7 @@ mod tests {
     /// offered is the SOURCE's answer, not the host's.
     #[test]
     fn only_sources_claiming_the_extension_are_offered_a_file() {
-        let mut r = AgendaSourceRegistry::new();
+        let mut r = ScannedExcerptSourceRegistry::new();
         r.register(Arc::new(Fake::new(1, &["org"])));
         r.register(Arc::new(Fake::new(2, &["md", "markdown"])));
 
@@ -298,7 +298,7 @@ mod tests {
     /// answer when a TODO scanner and a checklist scanner both want `.md`.
     #[test]
     fn a_file_claimed_by_two_sources_is_offered_to_both() {
-        let mut r = AgendaSourceRegistry::new();
+        let mut r = ScannedExcerptSourceRegistry::new();
         r.register(Arc::new(Fake::new(1, &["md"])));
         r.register(Arc::new(Fake::new(2, &["md"])));
         assert_eq!(r.claiming(Path::new("/p/x.md")).len(), 2);
@@ -309,7 +309,7 @@ mod tests {
     /// must not contribute an entry.
     #[test]
     fn view_modes_are_collected_and_deduplicated() {
-        let mut r = AgendaSourceRegistry::new();
+        let mut r = ScannedExcerptSourceRegistry::new();
         r.register(Arc::new(
             Fake::new(1, &["org"]).with_view_mode("org-agenda-mode"),
         ));

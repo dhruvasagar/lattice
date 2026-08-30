@@ -22,7 +22,7 @@
 pub mod search;
 
 /// OM.A1 (2026-08-25): the `*agenda*` view — every dated row that plugin
-/// `agenda-source` producers find under the project root, globally ordered
+/// `scanned-excerpt-source` producers find under the project root, globally ordered
 /// and date-grouped, as editable source excerpts. Feature-gated like
 /// `search` because it pulls the `ignore` walker.
 #[cfg(feature = "agenda")]

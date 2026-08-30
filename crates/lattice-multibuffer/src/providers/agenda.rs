@@ -1,5 +1,5 @@
 //! OM.A1 (2026-08-25): the **agenda provider** — a date-grouped multibuffer
-//! of rows contributed by plugin `agenda-source` producers.
+//! of rows contributed by plugin `scanned-excerpt-source` producers.
 //!
 //! Design: [`org-mode.md`](../../../../docs/dev/architecture/org-mode.md) §6.
 //! Slice plan: `slice-plans/org-mode.md` OM.A1–A3.
@@ -7,7 +7,7 @@
 //! ## Nothing here knows what an org file is
 //!
 //! That is the point. The provider walks the project, asks the
-//! [`AgendaSourceRegistry`](lattice_mode::AgendaSourceRegistry) which sources
+//! [`ScannedExcerptSourceRegistry`](lattice_mode::ScannedExcerptSourceRegistry) which sources
 //! claim each file's extension, and hands the matching ones its text. Which
 //! extensions those are, what a headline is, what `SCHEDULED:` means, how a
 //! date sorts — all of it lives in the guest. The host contributes the walk,
@@ -39,8 +39,8 @@ use std::sync::{Arc, RwLock};
 use lattice_core::{BufferFlags, BufferId, DocumentBuilder};
 use lattice_grammar::{Args, CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
-    AgendaEntry, AgendaSourceRegistryHandle, AsyncAgendaSource, ModeActivator, ProviderViewOutcome,
-    ServiceRegistry,
+    ModeActivator, ProviderViewOutcome, ScannedExcerpt, ScannedExcerptSource,
+    ScannedExcerptSourceRegistryHandle, ServiceRegistry,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 
@@ -187,9 +187,10 @@ impl AgendaService for InMemoryAgendaService {
 pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderViewOutcome {
     let services = activator.services();
 
-    let Some(sources) = services.get::<AgendaSourceRegistryHandle>() else {
+    let Some(sources) = services.get::<ScannedExcerptSourceRegistryHandle>() else {
         return ProviderViewOutcome::Declined {
-            message: "agenda: no agenda-source registry; the plugin host is not wired".to_string(),
+            message: "agenda: no scanned-excerpt-source registry; the plugin host is not wired"
+                .to_string(),
         };
     };
     let snapshot = sources.load();
@@ -357,13 +358,13 @@ fn shellexpand_tilde(raw: &str) -> String {
 struct FileRows {
     path: PathBuf,
     text: String,
-    entries: Vec<AgendaEntry>,
+    entries: Vec<ScannedExcerpt>,
 }
 
 /// A row after the cross-file sort, carrying the index of its file.
 struct SortedRow {
     file: usize,
-    entry: AgendaEntry,
+    entry: ScannedExcerpt,
 }
 
 /// Run the scan off-thread and populate `view`.
@@ -390,7 +391,7 @@ struct SortedRow {
 pub fn spawn_agenda_scan(
     view: BufferId,
     options: AgendaOptions,
-    sources: Vec<Arc<dyn AsyncAgendaSource>>,
+    sources: Vec<Arc<dyn ScannedExcerptSource>>,
     mb_registry: MultibufferRegistryHandle,
     events: Option<Arc<EventBus>>,
 ) {
@@ -398,7 +399,7 @@ pub fn spawn_agenda_scan(
         // `begin` first, and a source that refuses is dropped from THIS scan
         // rather than failing it: its per-scan state is now unknown, so its
         // rows would be untrustworthy, but the other sources' are fine.
-        let mut live: Vec<Arc<dyn AsyncAgendaSource>> = Vec::with_capacity(sources.len());
+        let mut live: Vec<Arc<dyn ScannedExcerptSource>> = Vec::with_capacity(sources.len());
         for source in sources {
             match source.begin().await {
                 Ok(()) => live.push(source),
@@ -860,7 +861,7 @@ fn finish_empty(
 /// `gr` could bind the chord and not do the work.
 ///
 /// It is also the better split on merit. Refreshing a host-built view is
-/// host machinery: the second agenda-source plugin — the markdown TODO
+/// host machinery: the second scanned-excerpt-source plugin — the markdown TODO
 /// scanner the whole `extensions()` design exists for — inherits `gr` here,
 /// where under the fragment's version every agenda plugin would re-derive it.
 /// That is the copied-keymap failure the minor-mode rule forbids, one layer
@@ -1025,8 +1026,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    fn entry(line: u32, group: &str, label: &str, sort_key: i64) -> AgendaEntry {
-        AgendaEntry {
+    fn entry(line: u32, group: &str, label: &str, sort_key: i64) -> ScannedExcerpt {
+        ScannedExcerpt {
             line,
             end_line: line,
             group: group.to_string(),
@@ -1035,7 +1036,7 @@ mod tests {
         }
     }
 
-    fn file(path: &str, entries: Vec<AgendaEntry>) -> FileRows {
+    fn file(path: &str, entries: Vec<ScannedExcerpt>) -> FileRows {
         FileRows {
             path: PathBuf::from(path),
             text: "x\n".repeat(20),
@@ -1182,7 +1183,7 @@ mod tests {
         }
     }
 
-    impl lattice_mode::AsyncAgendaSource for FakeSource {
+    impl lattice_mode::ScannedExcerptSource for FakeSource {
         fn source_id(&self) -> u64 {
             self.id
         }
@@ -1210,7 +1211,7 @@ mod tests {
                     .filter_map(|(i, line)| {
                         let rest = line.strip_prefix("* TODO ")?;
                         let key: i64 = rest.trim().parse().ok()?;
-                        Some(AgendaEntry {
+                        Some(ScannedExcerpt {
                             line: i as u32,
                             end_line: i as u32,
                             group: format!("day-{key}"),
@@ -1434,7 +1435,7 @@ mod tests {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl lattice_mode::AsyncAgendaSource for DeadSource {
+    impl lattice_mode::ScannedExcerptSource for DeadSource {
         fn source_id(&self) -> u64 {
             99
         }

@@ -57,7 +57,7 @@ package lattice:plugin-host@0.1.0;
 ///
 /// Validates and drops, never traps. A malformed file must not fail the
 /// agenda — `error-parser`'s rule, because it is the same failure class.
-interface agenda-source {
+interface scanned-excerpt-source {
     /// One agenda row the guest recognised in a file.
     record entry {
         /// **0-based** line of the row's anchor, `error-parser`'s
@@ -91,18 +91,18 @@ interface agenda-source {
     }
 }
 
-/// The world an agenda-source plugin implements.
+/// The world an scanned-excerpt-source plugin implements.
 ///
 /// `extensions` is called ONCE at load and cached; `begin` then `scan` are
 /// called per scan, `scan` once per matching file in walk order.
-world agenda-source-plugin {
-    import agenda-source;
+world scanned-excerpt-source-plugin {
+    import scanned-excerpt-source;
     import logging;
     import project;
     /// AF.3: a source answers `roots` from ITS OWN configuration, so it has to
     /// be able to read an option. Without this import the world declares an
     /// export it gives no way to implement — the only honest answer a pure
-    /// agenda-source plugin could give would be a compiled-in constant.
+    /// scanned-excerpt-source plugin could give would be a compiled-in constant.
     ///
     /// The host's store had the matching gap: `config.get-option` returned
     /// `none` in every agenda call because the agenda store, alone among
@@ -111,7 +111,7 @@ world agenda-source-plugin {
     /// leaves the export unimplementable.
     import config;
 
-    use agenda-source.{entry};
+    use scanned-excerpt-source.{entry};
     use tree-sitter.{tree-snapshot};
     /// OT.3: the host lends a parse tree per file, so `scan`'s `tree` param
     /// resolves. The guest never parses and never reads — it is handed the

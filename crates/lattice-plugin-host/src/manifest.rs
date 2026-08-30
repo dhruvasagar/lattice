@@ -177,12 +177,20 @@ pub enum PluginSeam {
     /// world). Sync, and unlike `help` the guest stays instantiated: a
     /// section is a function of a live `DashboardCtx`, not data.
     Dashboard,
-    /// OM.A1 — a plugin-contributed agenda-row producer
-    /// (`agenda-source-plugin` world). Async, driven once per file of a
-    /// project walk by the host's agenda provider. The guest declares the
-    /// file extensions it wants offered, which is what keeps a filetype out
-    /// of the host's walk.
-    AgendaSource,
+    /// OM.A1 — a plugin-contributed producer of **scanned excerpts**: rows
+    /// found by reading many files, globally ordered and grouped
+    /// (`scanned-excerpt-source-plugin` world). Async, driven once per file of
+    /// a project walk. The guest declares the file extensions it wants
+    /// offered, which is what keeps a filetype out of the host's walk.
+    ///
+    /// OR.9 renamed this from `AgendaSource`. Its record — line, end-line,
+    /// group, label, sort-key — is an excerpt plus an ordering plus a group
+    /// header, and contains nothing about org, dates or TODOs. The agenda is
+    /// its first consumer, not its definition; a project-TODO view or a tags
+    /// view is the same shape and should not have to register as an "agenda
+    /// source". Renamed while org was still the only consumer, because a seam
+    /// name is API and third-party plugins would have bound to it.
+    ScannedExcerptSource,
     /// TR.2b — a plugin-contributed transient menu (`transient-source-plugin`
     /// world). Async and live: `id()` is called once at load to key the
     /// registry entry, `build(ctx)` per menu open, because a builder's rows
@@ -244,7 +252,7 @@ impl PluginSeam {
             | PluginSeam::Context
             | PluginSeam::PluginManager
             | PluginSeam::ErrorParser
-            | PluginSeam::AgendaSource
+            | PluginSeam::ScannedExcerptSource
             | PluginSeam::Help
             | PluginSeam::Dashboard
             // TR.2b: a menu's rows name commands, and the resolution happens
@@ -272,7 +280,7 @@ impl PluginSeam {
             PluginSeam::Logging => "logging",
             PluginSeam::PluginManager => "plugin-manager",
             PluginSeam::ErrorParser => "error-parser",
-            PluginSeam::AgendaSource => "agenda-source",
+            PluginSeam::ScannedExcerptSource => "scanned-excerpt-source",
             PluginSeam::TransientSource => "transient-source",
             PluginSeam::Help => "help",
             PluginSeam::Dashboard => "dashboard",
@@ -306,7 +314,7 @@ impl FromStr for PluginSeam {
             "logging" => PluginSeam::Logging,
             "plugin-manager" => PluginSeam::PluginManager,
             "error-parser" => PluginSeam::ErrorParser,
-            "agenda-source" => PluginSeam::AgendaSource,
+            "scanned-excerpt-source" => PluginSeam::ScannedExcerptSource,
             "transient-source" => PluginSeam::TransientSource,
             "help" => PluginSeam::Help,
             "dashboard" => PluginSeam::Dashboard,
@@ -748,7 +756,7 @@ mod tests {
             PluginSeam::ErrorParser,
             PluginSeam::Help,
             PluginSeam::Dashboard,
-            PluginSeam::AgendaSource,
+            PluginSeam::ScannedExcerptSource,
             PluginSeam::Language,
             PluginSeam::TransientSource,
         ] {

@@ -1,6 +1,6 @@
-//! OM.A1 — the agenda-source guest world.
+//! OM.A1 — the scanned-excerpt-source guest world.
 //!
-//! A WASM agenda provider implements the `agenda-source-plugin` world: it
+//! A WASM agenda provider implements the `scanned-excerpt-source-plugin` world: it
 //! exports `extensions` / `begin` / `scan` and imports the capability-gated
 //! host seams. This module holds the `bindgen!` for that world, using the same
 //! shared-types trick as every seam before it — `with:` points `types` +
@@ -20,7 +20,7 @@
 
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
-        world: "agenda-source-plugin",
+        world: "scanned-excerpt-source-plugin",
         path: "../../wit",
         // A scan call suspends the guest rather than pinning the caller's
         // thread — and it is never on the keystroke path.

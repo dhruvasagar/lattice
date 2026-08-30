@@ -1,5 +1,5 @@
 # OM.A1 agenda fixture guest — a minimal `wasm32-wasip2` component
-# implementing the `agenda-source-plugin` world. It declares one extension,
+# implementing the `scanned-excerpt-source-plugin` world. It declares one extension,
 # keeps per-scan state across `scan` calls (so the host test can prove `begin`
 # actually clears it), and errs on a file it considers malformed (so the
 # skip-and-continue path is exercised against a real guest rather than a mock).

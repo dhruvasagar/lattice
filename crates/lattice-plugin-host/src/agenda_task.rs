@@ -1,4 +1,4 @@
-//! OM.A1 — the per-plugin actor bridge for agenda-source providers.
+//! OM.A1 — the per-plugin actor bridge for scanned-excerpt-source providers.
 //!
 //! The agenda analogue of `media_task.rs`, and deliberately its near-twin: a
 //! dedicated async task owns the plugin's `Store<PluginState>` for life (the
@@ -25,20 +25,20 @@ use futures::channel::{mpsc, oneshot};
 use lattice_runtime::EventBus;
 use wasmtime::Store;
 
-use crate::agenda_host::bindings::AgendaSourcePlugin;
+use crate::agenda_host::bindings::ScannedExcerptSourcePlugin;
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
     TrustTier, arm_store,
 };
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
-pub use crate::agenda_host::bindings::lattice::plugin_host::agenda_source::Entry;
+pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
 
 /// OT.3: parse one scanned file, from text the host has already read.
 ///
 /// `None` means "hand the guest the text instead" — an extension that resolves
 /// to no registered language, a grammar that will not load, or a parse that
-/// yields no tree. None of those is an error: `agenda-source.wit` keeps a
+/// yields no tree. None of those is an error: `scanned-excerpt-source.wit` keeps a
 /// source independent of the `language` seam, so a filetype with no grammar
 /// must still be scannable.
 ///
@@ -172,7 +172,7 @@ impl AgendaClient {
 /// life and serves calls off the channel until every [`AgendaClient`] drops.
 pub struct AgendaActor {
     store: Store<PluginState>,
-    bindings: AgendaSourcePlugin,
+    bindings: ScannedExcerptSourcePlugin,
     budget: PluginBudget,
     rx: mpsc::UnboundedReceiver<AgendaCall>,
     id: PluginId,
@@ -226,7 +226,7 @@ impl AgendaActor {
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
-            crate::PluginSeam::AgendaSource,
+            crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "extensions",
             start,
@@ -244,7 +244,7 @@ impl AgendaActor {
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
-            crate::PluginSeam::AgendaSource,
+            crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "view-mode",
             start,
@@ -262,7 +262,7 @@ impl AgendaActor {
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
-            crate::PluginSeam::AgendaSource,
+            crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "roots",
             start,
@@ -280,7 +280,7 @@ impl AgendaActor {
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
-            crate::PluginSeam::AgendaSource,
+            crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "begin",
             start,
@@ -312,7 +312,7 @@ impl AgendaActor {
         // Structure from the tree, characters from the text.
         //
         // NOT `tree-sitter.parse-file`: that is `fs:read` gated, and this is the
-        // one seam whose guest holds no capability at all (`agenda-source.wit`
+        // one seam whose guest holds no capability at all (`scanned-excerpt-source.wit`
         // — "no preopens, no `walk`"). The host reads; the guest is handed the
         // result.
         //
@@ -349,7 +349,7 @@ impl AgendaActor {
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,
-            crate::PluginSeam::AgendaSource,
+            crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "scan",
             start,
@@ -359,7 +359,7 @@ impl AgendaActor {
 }
 
 impl PluginHost {
-    /// Instantiate an `agenda-source-plugin` component under its capability
+    /// Instantiate an `scanned-excerpt-source-plugin` component under its capability
     /// grant and return the bridge. Grant / data-dir / WASI are identical to
     /// every other seam (shared `build_plugin_wasi` + `new_store`), and the
     /// actor is NOT spawned here — the lib owns no runtime.
@@ -383,9 +383,10 @@ impl PluginHost {
             );
         }
         let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
-        let bindings = AgendaSourcePlugin::instantiate_async(&mut store, component, &self.linker)
-            .await
-            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+        let bindings =
+            ScannedExcerptSourcePlugin::instantiate_async(&mut store, component, &self.linker)
+                .await
+                .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
         store.data_mut().log_ctx = self.log_ctx_for(id);
         // AF.3: without this, `config.get-option` answers `none` in every

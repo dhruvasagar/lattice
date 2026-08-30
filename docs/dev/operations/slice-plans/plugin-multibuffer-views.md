@@ -148,26 +148,29 @@ drives a view's excerpts all the way into a buffer (the drain tests stop at
 registration + the gate). Carried to MV.2, where org's real view makes that
 assertion natural rather than synthetic.
 
-### MV.2 — org registers a view 📝
+### MV.2 — org registers a view ⛔ dropped
 
-**Deps:** MV.1b.
+**Dropped 2026-08-30, by Dhruva's decision.** The slice existed to prove the
+seam with a lower-risk consumer before the agenda migrated. By the time it came
+up there was no such consumer without inventing one: backlinks had shipped as a
+picker (OR.9, on the navigation rule), and the alternatives were a read-in-place
+backlinks peer or a tags view — the latter being a feature nobody asked for.
 
-Org declares its first `pull` view. Which one it is depends on what OR.9 left:
-backlinks shipped as a picker on navigation grounds, so the natural first
-consumer is whichever view wants read-in-place — a tags view, or backlinks
-gaining a multibuffer peer alongside the picker rather than replacing it.
+Dhruva chose to fold it into MV.3 and migrate the agenda directly.
 
-**Do not migrate the agenda in this slice.** A first consumer that is also the
-riskiest migration would confuse "the seam is wrong" with "the migration is
-wrong".
+**The risk that buys, stated plainly** so it is not rediscovered later: the
+agenda becomes the first thing ever to run through the new seam, and it is org's
+most-used surface. A failure will present as "the agenda is broken" and the
+cause could be in the seam, the provider, or the migration.
 
-**Tests:** the view opens from an ex-command and from a chord; its excerpts jump
-to source; an edit in the view propagates to the source file; `gr` re-invokes
-`build`; the view's own minor is active on it and its chords fire.
+**The mitigation is MV.3's existing test rule, and it now carries more weight
+than it did:** every existing agenda test must pass **unedited**. A test that
+had to be adapted is the signal that behaviour moved rather than ownership, and
+with no prior consumer it is the only signal there is.
 
 ### MV.3 — the agenda migrates 📝
 
-**Deps:** MV.2.
+**Deps:** MV.1b. (MV.2 dropped — see above.)
 
 `providers/agenda.rs` becomes the **scan input strategy** the generic provider
 uses rather than a provider of its own. `*agenda*`, the reuse policy, the

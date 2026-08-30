@@ -6862,7 +6862,7 @@ Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
 | MV.0 | the seam stops claiming to be the agenda (`scanned-excerpt-source`) | ✅ |
 | MV.1a | the seam and its bridge | ✅ |
 | MV.1b | the generic provider, its drain, and two security fixes | ✅ |
-| MV.2 | org registers a view | 📝 |
+| MV.2 | org registers a view | ⛔ dropped — folded into MV.3 |
 | MV.3 | the agenda migrates onto it | 📝 |
 | MV.4 | docs | 📝 |
 

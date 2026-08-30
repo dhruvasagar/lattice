@@ -32418,6 +32418,14 @@ impl Editor {
                     "picker: supplied-value routing requires a generator-based source".to_string(),
                 );
             }
+            // OR.6: a place in a file. Unlike the arms around it this one is
+            // directly actionable without a generator — the payload IS the
+            // jump — so it is applied rather than refused.
+            lattice_picker::RoutingPayload::FileLocation { path, line, col } => {
+                out.merge(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::JumpToLocation { path, line, col },
+                ));
+            }
             // OR.5: the create row. Reaching HERE means the picker offered to
             // create something and no generator was registered to do it —
             // which can only happen if a source declared `create_label`

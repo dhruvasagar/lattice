@@ -267,6 +267,22 @@ pub enum RoutingPayload {
     /// point: one registered file listing serves every argument that
     /// names a file.
     SuppliedValue { value: String },
+    /// OR.6: a place in a file on disk — `(path, line, col)`.
+    ///
+    /// The peer `PickerAcceptOutcome::JumpToLocation` already had and the
+    /// routing side lacked. Without it a source whose rows stand for positions
+    /// in files can only carry [`Self::OpenFile`], which drops the line — so a
+    /// row for a heading halfway down a file lands at the top of it. Org-roam's
+    /// headline nodes are 19% of its corpus and every one of them lands wrong
+    /// without this.
+    ///
+    /// Distinct from [`Self::LspLocation`], which is the same shape under a
+    /// name that says where it came from. Reusing it would have worked and read
+    /// as a lie in every source that is not an LSP result.
+    ///
+    /// No MRU identity: a location is not an identity — the same line means
+    /// something different after an edit above it.
+    FileLocation { path: PathBuf, line: u32, col: u32 },
     /// OR.5: the query the user typed, carried by the picker's synthetic
     /// **create** row — the offer to make the thing they were looking for and
     /// did not find.

@@ -165,6 +165,11 @@ criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Hermetic per-test dir for the module-cache hit/miss test.
 tempfile = { workspace = true }
+# OR.6: the find-node bench decodes a `nodes` blob in the format the org guest
+# writes it. Dev-only — the HOST never interprets a plugin's store bytes, which
+# is the property `plugin_store.rs` exists to keep; the bench is standing in for
+# the guest that does.
+rmp-serde = { workspace = true }
 # CR.3: `tests/help_source.rs` asserts the fixture's colliding topic name is a
 # REAL builtin, so the namespacing test cannot pass by colliding with nothing.
 # Dev-only — the crate itself never depends on lattice-help (see help_host.rs).
@@ -250,6 +255,13 @@ harness = false
 # they are measured before either is written.
 [[bench]]
 name = "plugin_store"
+harness = false
+
+# OR.6: what a `:org-roam-find-node` open costs against the reference corpus's
+# 585 nodes — the `get`, the deserialize, and the per-keystroke rank. The third
+# is the one with a budget; the first two happen once per open.
+[[bench]]
+name = "roam_find_open"
 harness = false
 
 [lints]

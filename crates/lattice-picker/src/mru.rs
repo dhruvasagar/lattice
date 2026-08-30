@@ -428,6 +428,9 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         // picker choosing something else. Per-consumer MRU needs the
         // consumer's identity in the key, which is its own slice.
         | RoutingPayload::SuppliedValue { .. }
+        // OR.6: a location is not an identity — the same line means something
+        // different after an edit above it.
+        | RoutingPayload::FileLocation { .. }
         // OR.5: the create row's identity IS the query, which is a thing that
         // has never been picked before by definition — recency over it would
         // rank the user's typing rather than their history.

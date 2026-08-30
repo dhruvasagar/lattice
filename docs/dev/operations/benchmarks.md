@@ -113,6 +113,40 @@ be compared against.
 
 ---
 
+## OR.6 — a find-node picker open (2026-08-30)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-plugin-host --bench roam_find_open`.
+
+What `:org-roam-find-node` costs against the reference corpus's 585 nodes.
+Design: [`../architecture/org-roam.md`](../architecture/org-roam.md) §5.
+
+| Workload | Time |
+|---|---|
+| `store_get_nodes` — the one `get` of the whole blob | 1.58 µs |
+| `deserialize_nodes` — 585 records out of 77.5 KB | 130 µs |
+| `rank_first_frame_585` — fuzzy match + rank, **per keystroke** | **295 µs** |
+
+The blob is **77,525 bytes** for 585 nodes, against the ~90 KB §4.2 predicted.
+
+**295 µs is the only one with a budget**, and it is the measurement that
+settles the design question. Matching stays native precisely so it does not
+cost a WASM crossing per keystroke; had it been done in the guest, this number
+would be 295 µs *plus* a boundary round trip on every character typed. It is
+~3.5% of a 120 Hz frame, so the picker keeps up with a fast typist on a corpus
+this size — and it scales with node count, which is the thing to watch if
+someone points roam at ten thousand notes.
+
+The other two happen **once per open**, where 132 µs is invisible. They are
+measured separately from the rank for exactly that reason: a regression in
+ranking must not be able to hide behind an open-time cost nobody feels.
+
+**One `get`, not 585.** 1.58 µs to read the whole blob is what justifies §4.2
+keeping `nodes` beside the per-id records at all — the alternative is one host
+call per node, on the open path.
+
+---
+
 ## OR.1 — the plugin byte store (2026-08-30)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p

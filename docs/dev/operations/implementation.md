@@ -6843,7 +6843,7 @@ meant to exist.
 | OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.5b | one component may register N picker sources | ✅ |
-| OR.6 | `:org-roam-find-node` | 📝 |
+| OR.6 | `:org-roam-find-node` | 🚧 |
 | OR.7 | `:org-roam-insert-node` | 📝 |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
 | OR.9 | the backlinks view | 📝 |

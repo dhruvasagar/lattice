@@ -485,6 +485,14 @@ impl WitBoundary for NativeRoutingPayload {
                         .into(),
                 );
             }
+            // OR.6: a place in a file. Crosses like `lsp-location` does.
+            NativeRoutingPayload::FileLocation { path, line, col } => {
+                WitRoutingPayload::FileLocation(crate::lattice::plugin_host::types::Location {
+                    path: crate::boundary::path_to_wit(path)?,
+                    line: *line,
+                    col: *col,
+                })
+            }
             // OR.5: the create row's query, crossing VERBATIM. This one DOES
             // reach a plugin — it is the whole point of the slice, since the
             // source that declared `create_label` is the one that has to decide
@@ -496,6 +504,12 @@ impl WitBoundary for NativeRoutingPayload {
     fn from_wit(wit: WitRoutingPayload) -> Result<Self, String> {
         Ok(match wit {
             WitRoutingPayload::Buffer(id) => NativeRoutingPayload::Buffer { id },
+            // OR.6: a place in a file, back from the guest.
+            WitRoutingPayload::FileLocation(loc) => NativeRoutingPayload::FileLocation {
+                path: std::path::PathBuf::from(loc.path),
+                line: loc.line,
+                col: loc.col,
+            },
             // OR.5. A guest never *emits* one of these — the picker synthesises
             // the row — but the mirror is symmetric so a guest that echoes a
             // routing token back round-trips rather than erroring.

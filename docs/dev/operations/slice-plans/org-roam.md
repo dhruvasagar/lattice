@@ -109,7 +109,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.4 | `org.roam-directory` and the indexer | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.5b | one component may register N picker sources | ✅ |
-| OR.6 | `:org-roam-find-node` | 📝 |
+| OR.6 | `:org-roam-find-node` | 🚧 |
 | OR.7 | `:org-roam-insert-node` | 📝 |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
 | OR.9 | the backlinks view | 📝 |
@@ -397,7 +397,7 @@ bodies. Without that last one, "two specs came back" would be satisfied by a
 guest that registered twice and answered identically, which is the version of
 this feature that looks right and is useless.
 
-### OR.6 — `:org-roam-find-node` 📝
+### OR.6 — `:org-roam-find-node` 🚧
 
 **Deps:** OR.4, OR.5.
 
@@ -416,11 +416,35 @@ the two land separately and a template bug cannot masquerade as a picker bug.
 **Bench (required):** picker open with 585 nodes — the `get`, the deserialize
 and the first ranked frame.
 
-**Tests:** finding by title; by alias; a headline node reachable and landing on
-its line rather than the file's first; the generation check rebuilding the cache
-when the index moved and **not** rebuilding when it did not; create producing a
-node the next find-node can find; roam inert with the directory unset saying so
-rather than showing an empty picker.
+**Landed:** the source (`roam_find.rs`), its registration as org's SECOND
+picker source, `:org-roam-find-node`, `:org-roam-create-node`, the slug and the
+new-note body — with unit tests for the slug's shape (punctuation collapsing,
+non-ASCII surviving) and, importantly, a **round-trip test**: what
+`new_node_text` writes, `roam::extract` reads back as a node. A change to either
+that breaks the other would make a created note unfindable by the picker that
+created it, and nothing else in the suite would notice.
+
+**Create routes through `invoke-command` into an ex-command**, not through the
+picker outcome: creating a note mints an id and writes a file, and
+`picker-accept-outcome` can express neither. That path runs on the grammar seam,
+which is exactly why OR.3's `new-uuid` is host-side. `Effect::WriteToFile`
+resolves the path to a buffer, so a new note is a live unsaved buffer — §5.2's
+model, and why an abandoned draft never enters the index.
+
+**`routing-payload::file-location` was added** for this. `picker-accept-outcome`
+already had `jump-to-location(path, line, col)`; the routing side had no peer,
+so a row standing for a position in a file could only carry `open-file`, which
+drops the line. Headline nodes are 19% of the corpus and every one of them would
+have landed at the top of its file. Distinct from `lsp-location`, which is the
+same shape under a name that says where it came from.
+
+**Still open (why this is 🚧, not ✅):** the integration tests. Finding by title;
+by alias; a headline node landing on its line rather than the file's first; the
+generation check rebuilding the cache when the index moved and **not** rebuilding
+when it did not; create producing a node the next find-node can find; roam inert
+with the directory unset saying so rather than showing an empty picker. These
+need a real editor driving a real picker, which is the shape `org_roam_index.rs`
+already established for OR.4.
 
 ### OR.7 — `:org-roam-insert-node` 📝
 

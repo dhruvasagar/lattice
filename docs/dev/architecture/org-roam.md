@@ -328,7 +328,8 @@ failure would write an empty drawer and nothing would ever say so.
 | `:org-roam-backlinks` | the multibuffer view of what points here |
 | `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` | the journal |
 | `:org-roam-sync` | force a full rescan — the escape hatch when the watcher missed something |
-| `<CR>` on an `[[id:…]]` link | resolves through `n/<id>` and jumps |
+| `<CR>` on an `[[id:…]]` link | resolves through `n/<id>` and jumps — file **and** line |
+| `:org-roam-id-create` | give the headline at point an `:ID:`, making it a node |
 
 Naming follows the standing rule: dashed, namespaced, no collapsed forms and no
 generic-name aliases. `:org-roam-find-node` does not also register `:find-node`.

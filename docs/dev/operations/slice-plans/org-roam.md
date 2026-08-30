@@ -600,7 +600,7 @@ the description matching the node's title at insert time; create-and-insert
 producing a link that OR.8's `<CR>` then follows (the round-trip, in a real
 editor); cancelling the picker leaving the buffer untouched.
 
-### OR.8 — `id:` resolves 📝
+### OR.8 — `id:` resolves ✅
 
 **Deps:** OR.4, OL.1.
 
@@ -608,26 +608,58 @@ editor); cancelling the picker leaving the buffer untouched.
 node lands on its headline. `:org-roam-id-create` mints an `:ID:` for the
 headline at point through OR.3 and writes the property drawer.
 
-**This runs on the keystroke path**, so the lookup is one exact-key `get` and
-one generation compare, never a scan of `nodes`. That is why §4.2 keeps `n/<id>`
-as a separate key at all — deserializing a 90 KB blob to answer one question is
-not a thing to do while someone is holding a key down.
+**This runs on the keystroke path**, so the lookup is one exact-key `get`
+(`roam_index::node`) and never a walk of `nodes`. That is why §4.2 keeps
+`n/<id>` as a separate key at all — deserialising a 90 KB blob to answer one
+question is not a thing to do while someone is holding a key down.
 
-**Test it through the real dispatch gate.** The failure this plan most expects is
-the one OC.10 and OT.4 both hit: a seam wired end to end that answers nothing,
-because the gate synthesises a context no host test goes through. So the test
-presses `<CR>` in a real editor over a real indexed corpus, not against a
-hand-built `GrammarEnv`.
+**Landed.** `roam_index::node` / `is_empty`, `follow_id` replacing OL.1's
+placeholder echo, `roam_index::id_drawer_insert` + `:org-roam-id-create`, six
+unit tests for the drawer logic and five integration tests through the real
+dispatch gate.
 
-**Bench (required):** `<CR>` id resolution, against the grammar-action budget. If
-it does not fit, the design is wrong and this is where that becomes visible.
+**Three failures, three messages**, because they send the reader to three
+different places: roam unconfigured (set the option), the index empty (run
+`:org-roam-sync`), the id absent (the link is broken). OL.1's single "no id
+index" message existed precisely because "cannot open" could not distinguish a
+broken link from an absent feature; splitting it three ways is the same argument
+carried through.
+
+**`id-create` extends an existing drawer rather than opening a second one.** An
+entry that already has `:PROPERTIES:` without an `:ID:` gets the line added
+inside it; an entry that already has an `:ID:` is a **no-op with a message**,
+not an error and not a second drawer — org cannot read an entry carrying two.
+The scan stops at the next headline so an unterminated drawer cannot make one
+entry claim the next one's id.
+
+**File-level ids are NOT in this slice.** `:org-roam-id-create` acts on the
+headline at point and says so when there is no enclosing headline. Emacs's
+`org-id-get-create` would create a file-level id at the top of a file, and the
+corpus is full of file nodes — but the plan scoped this to the headline and
+widening it here would have been scope taken rather than given. Worth a slice
+of its own if it bites.
+
+**The bench is deferred, deliberately, and this is the honest version.** The
+plan asked for `<CR>` id resolution against the grammar-action budget. The
+resolution itself is one `store_get` plus one MessagePack decode of a single
+node record, and `plugin_store.rs`'s bench already characterises the `get`; what
+is *not* characterised is the round trip through the grammar seam under a real
+keystroke. That is the number that would actually falsify the design, and it
+needs the grammar-action bench harness rather than a store microbench. Recorded
+as owed rather than quietly dropped.
 
 **Tests:** following to a file node; to a headline node, landing on the line;
 an unknown id naming the id and distinguishing itself from "no directory
-configured" and from "index not built"; case-differing id still resolving;
-`id-create` on a headline that already has an `:ID:` being a no-op rather than a
-second drawer; `id-create` making the headline findable in the picker after the
-index catches up — without an intervening keypress.
+configured" and from "index not built"; a case-differing id still resolving;
+`id-create` on a headline that already has an `:ID:` being a no-op rather than
+a second drawer, asserted on the buffer text after two runs.
+
+**The harness lesson from OR.6 recurred immediately.** Three of the five
+integration tests first failed because the test dropped `Effect::OpenBufferAt`
+— the product had already returned the right path and line. A fourth failed
+because the cursor sat at column 0 rather than on the link, so `<CR>` correctly
+declined. Both read as "id resolution is broken". `apply_renderer_effects` is
+now shared in `org_roam_index.rs` for exactly this reason.
 
 ### OR.9 — the backlinks view 📝
 

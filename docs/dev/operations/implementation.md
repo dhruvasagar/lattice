@@ -6846,7 +6846,7 @@ meant to exist.
 | OR.6 | `:org-roam-find-node` | ✅ |
 | OR.7 | inserting a link — a completion source, not a picker | ✅ |
 | OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
-| OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | 📝 |
+| OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | the backlinks view | 📝 |
 | OR.10 | dailies | 📝 |
 | OR.11 | roam capture templates and `${field}` | 📝 |

@@ -189,7 +189,25 @@ share its shape: canonicalize both sides so a `..` cannot escape, and fall
 back to the raw path when canonicalization fails — which still requires a
 literal prefix match, so it can only ever deny more, never widen. A target
 that does not exist yet (capture's first run) will not canonicalize, and that
-must not be a denial; canonicalize its **parent**.
+must not be a denial; canonicalize the **nearest ancestor that does exist** and
+re-attach the unresolved tail.
+
+*Nearest ancestor*, not simply the parent — the difference is a real defect
+this fragment described its way into. Stopping at the immediate parent covers
+"the file is new in a directory that exists" and silently fails "the file is
+new in a directory that is new too", which is every first write into a
+subdirectory a plugin owns. There the parent does not resolve either, the raw
+path is used, and it is compared against a *canonicalized* prefix — so wherever
+the grant sits behind a symlink the match fails. On macOS that is the common
+case rather than the exotic one: `/tmp` and `/var/folders` are both symlinks
+into `/private`, so a grant over a temporary directory never matched a path the
+check had given up on. The denial then reads exactly like a capability the user
+never granted, which is the worst way for it to fail.
+
+Re-attaching a tail is still fail-safe: it can only produce a path at or below
+a directory that really exists, and `..` inside the tail is normalised away
+rather than followed, so a tail cannot climb back out of the ancestor it was
+just resolved against.
 
 `info!`, not `debug!`, on a denial: it is one-shot and user-actionable ("org
 tried to write outside its granted paths"), which is the level rule's own

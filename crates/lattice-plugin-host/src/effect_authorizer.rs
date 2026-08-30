@@ -67,10 +67,13 @@ impl EffectAuthorizer {
     /// prefix — the same rule `host_services::grant_permits_walk` applies, and
     /// for the same reason.
     ///
-    /// **A target that does not exist yet canonicalizes its PARENT.** Capture's
-    /// first run creates its file, and a non-existent path canonicalizes to
-    /// nothing; without this, "create the capture file" would be a permanent
-    /// denial and the feature would be unreachable by design.
+    /// **A target that does not exist yet canonicalizes its nearest real
+    /// ANCESTOR.** Capture's first run creates its file, and a non-existent
+    /// path canonicalizes to nothing; without this, "create the capture file"
+    /// would be a permanent denial and the feature would be unreachable by
+    /// design. Walking up rather than stopping at the immediate parent is what
+    /// makes the same true when the directory is new too — see
+    /// [`resolve_for_compare`].
     ///
     /// A path that still will not resolve falls back to its raw form, which
     /// requires a literal prefix match — so it can only ever deny more, never
@@ -122,19 +125,55 @@ impl EffectAuthorizer {
 
 /// The path to compare against a granted prefix.
 ///
-/// Canonicalize the target; if it does not exist, canonicalize its parent and
-/// re-attach the file name. Falls back to the raw path when neither resolves.
+/// Canonicalize the target; if it does not exist, canonicalize the nearest
+/// ancestor that DOES and re-attach the unresolved tail. Falls back to the raw
+/// path when no ancestor resolves.
+///
+/// **Walking up all the way, not just one level.** Canonicalizing only the
+/// immediate parent covers "the file is new in a directory that exists" and
+/// silently fails "the file is new in a directory that is new too" — which is
+/// every first write into a subdirectory a plugin owns: org-roam's
+/// `daily/YYYY-MM-DD.org` on the day the journal starts, and capture's target
+/// under a fresh folder. There the parent does not resolve either, the raw path
+/// is used, and it is compared against a CANONICALIZED prefix — so on any
+/// system where the grant sits behind a symlink the match fails and the write
+/// is denied. macOS makes that the common case rather than the exotic one:
+/// `/tmp` and `/var/folders` are both symlinks into `/private`, so a grant over
+/// a temporary directory never matched a path this function had given up on.
+///
+/// The denial was indistinguishable from a capability the user had not granted
+/// — the message names the path and says it is outside the granted paths, which
+/// is exactly what it says when the grant really is missing.
+///
+/// Still fails safe: re-attaching an unresolved tail can only ever produce a
+/// path at or below a real directory, and `..` inside the tail is normalised
+/// away rather than followed, so a tail cannot climb back out of the prefix
+/// that was just resolved.
 fn resolve_for_compare(path: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return real;
     }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
-            Ok(real_parent) => real_parent.join(name),
-            Err(_) => path.to_path_buf(),
-        },
-        _ => path.to_path_buf(),
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cursor = path;
+    while let (Some(parent), Some(name)) = (cursor.parent(), cursor.file_name()) {
+        tail.push(name);
+        if let Ok(real_parent) = std::fs::canonicalize(parent) {
+            let mut resolved = real_parent;
+            for segment in tail.iter().rev() {
+                // `.` contributes nothing and `..` pops — normalising here
+                // rather than joining blindly is what keeps an unresolved tail
+                // from escaping the ancestor it was resolved against.
+                if *segment == std::ffi::OsStr::new("..") {
+                    resolved.pop();
+                } else if *segment != std::ffi::OsStr::new(".") {
+                    resolved.push(segment);
+                }
+            }
+            return resolved;
+        }
+        cursor = parent;
     }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -172,6 +211,7 @@ mod tests {
             anchor: lattice_grammar::FileAnchor::End,
             text: "x\n".to_string(),
             cut: None,
+            create_parents: false,
         }
     }
 
@@ -253,6 +293,41 @@ mod tests {
             auth.permits_write(&missing),
             "a file this write would create must be permitted, or capture is \
              unreachable by construction"
+        );
+    }
+
+    /// OR.10's first journal entry: the file is new AND so is the directory
+    /// holding it, so neither the target nor its parent canonicalizes.
+    ///
+    /// Judging by the immediate parent alone fell back to the RAW path here and
+    /// compared it against a canonicalized prefix — which on macOS never
+    /// matches, because `std::env::temp_dir()` is a symlink into `/private`. So
+    /// the very first `:org-roam-dailies-today` was denied with a message that
+    /// reads exactly like a missing capability, and the second one (after the
+    /// directory existed) worked.
+    #[test]
+    fn a_new_file_under_a_new_directory_is_judged_by_the_nearest_real_ancestor() {
+        let dir = tmp("create-deep");
+        let missing = dir.join("daily").join("2026-08-30.org");
+        assert!(!missing.parent().unwrap().exists());
+
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        assert!(
+            auth.permits_write(&missing),
+            "a plugin writing the first file into a subdirectory it owns must \
+             be permitted, or the feature is unreachable on its first use"
+        );
+    }
+
+    /// …and walking up does not become a hole either. The tail is normalised,
+    /// so `..` cannot climb back out of the ancestor it resolved against.
+    #[test]
+    fn an_unresolved_tail_cannot_escape_the_prefix_with_dotdot() {
+        let granted = tmp("escape-granted");
+        let auth = EffectAuthorizer::new(&grant(&granted, true), "org");
+        assert!(
+            !auth.permits_write(&granted.join("new").join("..").join("..").join("stolen.org")),
+            "a `..` in the unresolved tail must not widen the grant"
         );
     }
 

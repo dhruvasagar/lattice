@@ -447,6 +447,44 @@ had `sort-key` been specified as "the date" or `group` as "the day", a
 multi-section agenda would have needed a WIT change and every other
 `scanned-excerpt-source` consumer would have paid for org's feature.
 
+#### Folding (AF.1)
+
+The agenda folds by **section and date group** — the header runs a user sees —
+not by source file.
+
+Folding by file is the multibuffer default and is wrong here for the reason
+§6.1 exists: agenda rows *interleave* across files by date. A file-boundary
+fold spans that file's first excerpt to its last, so collapsing a file whose
+entries bracket the view swallows every other file's rows in between, and the
+fold's header claims rows that are not its.
+
+`MultibufferDocumentHandle` therefore carries a declared `FoldGrouping`, set by
+the provider at view creation. It is a declaration rather than a heuristic
+because the shipped providers genuinely disagree about what a group is:
+
+| Provider | Header title | Grouping |
+|---|---|---|
+| search | the file path, on **every** excerpt | `SourceFile` |
+| project-diff | the hunk's **line number** | `SourceFile` (titles are neither unique nor a key) |
+| agenda | the run's label on the **first** row, empty after | `HeaderRuns` |
+
+`HeaderGroupFoldProvider` reads all three with one rule: a non-empty title
+differing from the current group starts a group, an equal one continues it, and
+an **empty** one continues it. That last clause is what makes the rule shared
+rather than agenda-shaped — an empty title already means "renders no header
+row", i.e. "I belong to the group above", so folding reuses the encoding the
+renderer already relies on. On a file-grouped layout it produces exactly the
+bounds `FileBoundaryFoldProvider` does, which is asserted rather than assumed.
+
+A group's fold identity is its **title**, so `gr` keeps collapsed groups
+collapsed across a refresh that mints new `BufferId`s — PD.5a's reasoning
+applied to the thing the user was actually collapsing. The hit-count badge
+lives in its own field rather than in `title`, so a changing count does not
+change identity.
+
+With AS.1's sections this gives the granularity the view is built around: `zM`
+collapses to the section and date headers, `zR` opens them.
+
 #### Configuration
 
 `org.agenda-span` bounds the dated block. `org.agenda-sections` (AS.2) replaces

@@ -274,6 +274,38 @@ They share the one walk deliberately — when the parse window reached
 further than the matrix covered, the screen below the first closed
 fold painted uncoloured (FW.1).
 
+### 5.1a Multibuffer grouping is declared, not inferred (AF.1)
+
+A multibuffer registers two fold sources: one fold per excerpt, and one per
+*group*. What a group IS varies by provider, so the second is chosen from a
+`FoldGrouping` the provider declares at `create_multibuffer_view`:
+
+- **`SourceFile`** (the default) — one fold per source file, spanning its first
+  excerpt to its last. Correct wherever excerpts arrive grouped by file.
+- **`HeaderRuns`** — one fold per header run, i.e. per group the user sees.
+
+The distinction is load-bearing rather than cosmetic. A file-boundary fold
+spans from a file's first row to its last, so on a view whose rows *interleave*
+across files — the org agenda, which groups by date across the whole corpus —
+one file's fold swallows every other file's rows lying between its own. That is
+not a tuning difference; it is a fold whose header claims rows that belong to a
+different group.
+
+No heuristic over excerpt shape gets all three shipped providers right: search
+headers every excerpt with its path, project-diff headers each hunk with its
+line NUMBER, and the agenda headers only the first row of each run. A guess is
+right for two and silently wrong for the third. So the provider — the only
+thing that knows what its rows mean — says.
+
+`HeaderGroupFoldProvider` reads both header conventions with one rule: a
+non-empty title differing from the current group starts one, an equal title
+continues it, and an **empty** title continues it. The last clause reuses an
+encoding the renderer already depends on ("empty title ⇒ no header row ⇒ I
+belong to the group above"), which is what keeps this a shared mechanism.
+Identity is the group's title, for the reason §PD.5a gives for paths.
+
+See [org-mode.md](org-mode.md) §6.1a.
+
 ### 5.2 Gutter marker rendering
 
 Both renderers draw a fold marker on **every foldable head row**

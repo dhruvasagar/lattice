@@ -224,6 +224,45 @@ The host learns "hide these capture groups of this pattern". It does not learn
 what an org link is — paramount #2 holds by construction, and markdown's `**`,
 `__` and `[text](url)` are the same shape with no further host work.
 
+## Reveal is one line, not the buffer (CL.1)
+
+Reveal is scoped to the **cursor's line**. Vim's `concealcursor` does the same,
+for the same reason: you reveal in order to edit what is under the cursor, and
+the other links on screen have no reason to turn back into `[[id:…][…]]`.
+
+H.4 originally expressed reveal as an empty rule set for the whole buffer. That
+made the version axis and the built rows agree by construction — a real
+property, on the wrong unit.
+
+**Why this is not simply a flag.** Concealed bytes are omitted at *build* time —
+`build_display_row` emits them "nowhere and in no display column" — so
+`DisplayLine.text` does not contain them and revealing a line means rebuilding
+that line. The cursor moves on every keystroke, so folding the reveal line into
+`MatrixVersion` would cost:
+
+| | |
+|---|---|
+| cursor move, today | **47 ns** (`cells_worker_cache_hit`) |
+| cursor move, if versioned | **~1.5 ms** (window rebuild) — ≈45 ms/s under a held key |
+
+So the reveal line rides **beside** the version, not in it:
+
+- `DisplayMatrix::reveal_line` records what the matrix was built with;
+- the cache-hit gate compares it, so a moved reveal is not a false hit;
+- `try_incremental_reveal_build` rebuilds only the two rows whose conceal state
+  changed — the line left and the line arrived at — `Arc`-reusing every other
+  row and every untouched chunk.
+
+This **inverts H.4's rule that revealing moves the `conceal` axis**, and the
+inversion is the point: the axis is the cache-hit key, and a key that moves with
+the cursor is not a key. A buffer whose language declares no rules
+short-circuits — the rows would rebuild byte-identical — but still records the
+move, because otherwise the gate re-fires every tick.
+
+The trigger remains Insert/Replace on the active pane. Vim's default
+`concealcursor=` also reveals the cursor line in Normal mode; that is a separate
+choice and has not been made.
+
 ## Scoping and invalidation
 
 The concealed set is a function of `(the language's rules, the modal state)`.

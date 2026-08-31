@@ -49,6 +49,7 @@ impl Guest for Component {
                     payload: Vec::new(),
                 }),
                 annotations: Vec::new(),
+                display_spans: Vec::new(),
             })
             .collect())
     }

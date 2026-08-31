@@ -309,10 +309,19 @@ impl WitBoundary for NativeRawCandidate {
                 .iter()
                 .map(WitBoundary::to_wit)
                 .collect::<Result<Vec<_>, String>>()?,
+            // PS.1: host→guest carries the RANGES but cannot carry the styles —
+            // a `Style` is a closed enum plus an interned element id, and the
+            // NAME it was resolved from is not recoverable from it. This
+            // direction is only exercised by the round-trip test and by a host
+            // handing a candidate back for re-ranking, so an empty slot is the
+            // honest answer rather than a fabricated name.
+            display_spans: Vec::new(),
         })
     }
 
     fn from_wit(wit: WitRawCandidate) -> Result<Self, String> {
+        // PS.1: resolved before `display` is moved into the record below.
+        let spans = display_spans_from_wit(&wit.display, wit.display_spans);
         Ok(NativeRawCandidate {
             text: wit.text,
             insert_text: wit.insert_text,
@@ -325,12 +334,86 @@ impl WitBoundary for NativeRawCandidate {
                 .into_iter()
                 .map(lattice_completion::candidate::Annotation::from_wit)
                 .collect::<Result<Vec<_>, String>>()?,
-            // The remaining render-time / host-only fields do not cross (§4.4);
-            // reconstructed empty and re-derived host-side when needed.
+            // `accept_action` stays host-only (§4.4) — reconstructed empty and
+            // re-derived host-side.
             accept_action: None,
-            display_spans: Vec::new(),
+            // PS.1: styled runs, resolved HERE because this is where the theme
+            // is in hand and where a malformed span can be dropped once rather
+            // than defended against at every paint site.
+            display_spans: spans,
         })
     }
+}
+
+/// PS.1: resolve a guest's styled runs against its `display` text.
+///
+/// Every span is validated and an invalid one is **dropped** — not clamped,
+/// not fatal. Dropping is the right severity for each failure mode:
+///
+/// - **Inverted or out of bounds** — the guest computed offsets against text it
+///   did not send. Clamping would paint a run it never asked for, which is a
+///   worse answer than painting none.
+/// - **Not on a UTF-8 boundary** — this is the one that makes validation
+///   non-optional rather than tidy. Slicing there panics, and a guest computing
+///   offsets in `chars` instead of bytes is an ordinary bug that must not be
+///   able to take the picker down.
+/// - **An unresolvable `slot`** — kept, and rendered unstyled. The run is where
+///   the guest said it was; only its colour is unknown, and a theme element
+///   that is not registered yet is a normal transient state, not an error.
+///
+/// The row survives all of them: a picker that shows nothing because one span
+/// was malformed is a worse failure than one that shows a plain row.
+fn display_spans_from_wit(
+    // Named `text` rather than `display`: inside `tracing::warn!` the bare name
+    // `display` resolves to `tracing::field::display`, so the parameter would
+    // shadow into a function item at every use site in the macro body.
+    text: &str,
+    spans: Vec<crate::lattice::plugin_host::types::DisplaySpan>,
+) -> Vec<lattice_completion::candidate::DisplaySpan> {
+    spans
+        .into_iter()
+        .filter_map(|s| {
+            let (start, end) = (s.start as usize, s.end as usize);
+            if start >= end || end > text.len() {
+                tracing::warn!(
+                    start,
+                    end,
+                    len = text.len(),
+                    slot = %s.slot,
+                    "picker candidate: display span out of range; dropped"
+                );
+                return None;
+            }
+            if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+                tracing::warn!(
+                    start,
+                    end,
+                    slot = %s.slot,
+                    "picker candidate: display span is not on a UTF-8 boundary \
+                     (offsets are BYTES, not chars); dropped"
+                );
+                return None;
+            }
+            Some(lattice_completion::candidate::DisplaySpan {
+                range: start..end,
+                style: resolve_slot_style(&s.slot),
+            })
+        })
+        .collect()
+}
+
+/// PS.1: a `slot` name → `Style`, through exactly the path a `highlights.scm`
+/// capture takes.
+///
+/// The sameness IS the feature. A builtin category (`keyword`,
+/// `text.title.1`) resolves first, so a plugin cannot redefine what `keyword`
+/// means for the whole editor; any other name resolves against the live theme
+/// registry as a `Style::Element`, which is how a plugin's own registered
+/// element reaches a picker row. So a row's colour tracks the active
+/// colourscheme and matches the same construct rendered in a buffer, rather
+/// than being a second palette that drifts out of step with it.
+fn resolve_slot_style(slot: &str) -> lattice_cells::style::Style {
+    lattice_syntax::style::name_to_style_with_theme(slot, None)
 }
 
 impl WitBoundary for NativePickerAcceptOutcome {
@@ -670,5 +753,113 @@ mod tests {
         let outcome = NativePickerAcceptOutcome::OpenFile { path: bad };
         let err = outcome.to_wit().expect_err("non-UTF-8 path must not cross");
         assert!(err.contains("UTF-8"), "error explains why: {err}");
+    }
+
+    // ---- PS.1: guest-supplied display spans ----
+
+    use crate::lattice::plugin_host::types::DisplaySpan as WitDisplaySpan;
+
+    fn wit_span(start: u32, end: u32, slot: &str) -> WitDisplaySpan {
+        WitDisplaySpan {
+            start,
+            end,
+            slot: slot.to_string(),
+        }
+    }
+
+    fn candidate_with_spans(display: &str, spans: Vec<WitDisplaySpan>) -> NativeRawCandidate {
+        let wit = WitRawCandidate {
+            text: display.to_string(),
+            insert_text: None,
+            display: display.to_string(),
+            source: None,
+            kind: WitCandidateKind::Plain,
+            data: WitCandidateData::Plain,
+            annotations: Vec::new(),
+            display_spans: spans,
+        };
+        NativeRawCandidate::from_wit(wit).expect("from_wit")
+    }
+
+    /// PS.1: a guest's spans cross, and a `slot` resolves through the SAME
+    /// path a `highlights.scm` capture takes — so an org-roam row is coloured
+    /// by the theme's headline style rather than by a second palette.
+    #[test]
+    fn guest_display_spans_cross_and_resolve_their_slot() {
+        let c = candidate_with_spans(
+            "Reading list  (books)",
+            vec![wit_span(0, 12, "text.title.1"), wit_span(12, 21, "comment")],
+        );
+        assert_eq!(c.display_spans.len(), 2, "got {:?}", c.display_spans);
+        assert_eq!(c.display_spans[0].range, 0..12);
+        assert_eq!(
+            c.display_spans[0].style,
+            lattice_syntax::style::name_to_style_pub("text.title.1"),
+            "the slot must resolve exactly as the capture name does"
+        );
+        assert_eq!(
+            c.display_spans[1].style,
+            lattice_syntax::style::name_to_style_pub("comment")
+        );
+    }
+
+    /// **A span that is not on a UTF-8 boundary is dropped, not clamped.**
+    ///
+    /// This is the assertion that makes the validation non-optional rather
+    /// than tidy: slicing mid-codepoint panics, and a guest computing offsets
+    /// in `chars` instead of bytes is an ordinary bug that must not be able to
+    /// take the picker down. `Café` is 5 bytes; a char-counting guest sends 4,
+    /// which lands inside the `é`.
+    #[test]
+    fn a_span_off_a_utf8_boundary_is_dropped() {
+        let c = candidate_with_spans("Café notes", vec![wit_span(0, 4, "text.title.1")]);
+        assert!(
+            c.display_spans.is_empty(),
+            "a mid-codepoint span must be dropped, got {:?}",
+            c.display_spans
+        );
+        // The correct byte offset for the same text survives, so the rule is
+        // "bad spans go" and not "non-ASCII goes".
+        let ok = candidate_with_spans("Café notes", vec![wit_span(0, 5, "text.title.1")]);
+        assert_eq!(ok.display_spans.len(), 1);
+    }
+
+    /// Out of range and inverted spans are dropped, and the row keeps its
+    /// other runs — one malformed span must not cost a row its styling, and
+    /// must never be clamped into a run the guest did not ask for.
+    #[test]
+    fn malformed_spans_are_dropped_without_taking_the_row_with_them() {
+        let c = candidate_with_spans(
+            "abcdef",
+            vec![
+                wit_span(0, 3, "keyword"),  // fine
+                wit_span(4, 99, "comment"), // past the end
+                wit_span(5, 2, "comment"),  // inverted
+                wit_span(3, 3, "comment"),  // empty
+            ],
+        );
+        assert_eq!(c.display_spans.len(), 1, "got {:?}", c.display_spans);
+        assert_eq!(c.display_spans[0].range, 0..3);
+    }
+
+    /// An unresolvable slot KEEPS the run and renders it unstyled. The run is
+    /// where the guest said it was; only its colour is unknown, and a theme
+    /// element that is not registered yet is a normal transient state.
+    #[test]
+    fn an_unknown_slot_keeps_the_run_unstyled() {
+        let c = candidate_with_spans("abcdef", vec![wit_span(0, 3, "not.a.real.capture")]);
+        assert_eq!(c.display_spans.len(), 1);
+        assert_eq!(
+            c.display_spans[0].style,
+            lattice_cells::style::Style::Default
+        );
+    }
+
+    /// A source that styles nothing is byte-identical to the pre-PS.1
+    /// behaviour — the overwhelmingly common case must not have changed.
+    #[test]
+    fn a_candidate_with_no_spans_is_unchanged() {
+        let c = candidate_with_spans("plain row", Vec::new());
+        assert!(c.display_spans.is_empty());
     }
 }

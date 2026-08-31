@@ -128,6 +128,7 @@ fn candidate(text: &str) -> RawCandidate {
         kind: CandidateKind::Plain,
         data: CandidateData::Plain,
         annotations: Vec::new(),
+        display_spans: Vec::new(),
     }
 }
 

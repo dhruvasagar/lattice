@@ -162,11 +162,47 @@ interface types {
         styled(annotation-styled),
     }
 
+    /// PS.1: a styled run of a candidate's `display` text.
+    ///
+    /// `start` / `end` are BYTE offsets into `display`, half-open. A range that
+    /// is out of bounds, inverted, or not on a UTF-8 boundary is dropped with a
+    /// warning naming the source — one bad span must not cost a row its other
+    /// runs, and must never panic the picker.
+    ///
+    /// `slot` is a **capture or theme-element name**, resolved host-side
+    /// through exactly the path a `highlights.scm` capture takes
+    /// (`name_to_style_with_theme`): a builtin category (`keyword`,
+    /// `text.title.1`, `comment`) wins first, and any other name resolves
+    /// against the theme registry as a `Style::Element` — which is how a
+    /// plugin's own registered element (`org.todo.WAITING`) reaches a picker
+    /// row. An unresolvable name renders unstyled rather than failing the row.
+    ///
+    /// Naming a style rather than carrying one is deliberate, and follows
+    /// `annotation-custom.slot`: a `Style` is a closed Rust enum plus an
+    /// interned element id, and neither crosses an ABI meaningfully. A name
+    /// does, and it means a guest's picker row is coloured by the SAME
+    /// vocabulary — and the same active colourscheme — as the buffer it came
+    /// from.
+    record display-span {
+        start: u32,
+        end: u32,
+        slot: string,
+    }
+
     /// Mirrors the crossable core of `lattice_completion::candidate::RawCandidate`
-    /// **plus marginalia** (PH7.4a). `accept_action` and `display_spans` remain
-    /// host-only (`#[serde(skip)]`, reconstructed host-side, §4.4); `annotations`
-    /// now crosses so plugin sources contribute themed columns. `source` is the
-    /// optional source id.
+    /// **plus marginalia** (PH7.4a). `accept_action` remains host-only
+    /// (`#[serde(skip)]`, reconstructed host-side, §4.4); `annotations` crosses
+    /// so plugin sources contribute themed columns. `source` is the optional
+    /// source id.
+    ///
+    /// PS.1: `display-spans` now crosses too. It was host-only on the reasoning
+    /// that render-time fields are "re-derived host-side when needed" — which
+    /// holds for a grep hit (the host has the path and the line, and re-derives
+    /// through the preview highlighter) and does not hold for a row that is not
+    /// a line of a file. An org-roam node title is a *headline's text* with no
+    /// stars and no file line to parse, so there was nothing to re-derive from
+    /// and every plugin picker row rendered plain, with no way for the plugin
+    /// that owns the domain to say otherwise.
     record raw-candidate {
         text: string,
         /// OR.7: what to insert on accept when that differs from the text
@@ -181,6 +217,9 @@ interface types {
         kind: candidate-kind,
         data: candidate-data,
         annotations: list<annotation>,
+        /// PS.1: styled runs over `display`. Empty for every source that does
+        /// not style itself, which is the pre-PS.1 behaviour exactly.
+        display-spans: list<display-span>,
     }
 
     /// Mirrors `lattice_picker::outcome::PickerAcceptOutcome`. All flat pure

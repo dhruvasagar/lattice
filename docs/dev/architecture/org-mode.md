@@ -402,6 +402,61 @@ the order, `ExcerptHeader.title` is a free string, and an empty title
 renders no header row. A date group is therefore "title on the first
 excerpt, `""` on the rest".
 
+### 6.1a Sections (AS.1)
+
+Emacs's agenda is not one list. `org-agenda-custom-commands` composes *blocks* —
+a day's agenda, then `NEXT` items, then a tags match — into one buffer, and that
+composite is what people actually build dashboards out of. Lattice's agenda was
+the single date-grouped list, which meant two things were unreachable: any view
+that is not a calendar, and any TODO without a date.
+
+The second was the sharper bug. `* TODO Write the thing` with no `SCHEDULED:`
+was not a row under **any** configuration — the scan returned `None` the moment
+it found no stamp — so the most ordinary line in an org file could not appear in
+the view whose job is to show you your tasks.
+
+**A row is now a candidate; each section decides whether it wants it.** One
+headline can produce several rows: an overdue `[#A]` TODO appears under Overdue,
+under its date, and under the priority block. That is what a dashboard is for,
+and it is legal because `append_excerpts` does not dedup — two excerpts over one
+source range are two rows of one view.
+
+The shipped set, in order: **Overdue** (past-dated, not done), **Agenda** (today
+through `org.agenda-span`, default 7 — emacs's own default), **Unscheduled**
+(the previously-invisible class), **Priority A**.
+
+#### No ABI change, and why that is the design rather than a happy accident
+
+§6.2's `entry` already carries everything sections need, because all three of
+its view-shaping fields were specified as *opaque and guest-owned*:
+
+- `sort-key` — "the guest owns what it means". Section rank packed into the high
+  digits makes a section's rows a contiguous run under the host's stable sort.
+  A `DAY_BIAS` keeps the day term non-negative so a pre-epoch date cannot borrow
+  into the rank digits and file a 1969 row under the wrong section.
+- `group` — a key, not a label. Prefixed with the rank, so two sections
+  containing the same date do not merge into one run.
+- `label` — a free string, so a block section titles itself and a date section
+  keeps its `2026-08-25 Tue (today)` header.
+
+So the host gained nothing, learned nothing, and needs no arm for what a section
+is. The one shape change is at the guest's `scan`: `map` became `flat_map`.
+
+This is the seam's design working as intended rather than being worked around —
+had `sort-key` been specified as "the date" or `group` as "the day", a
+multi-section agenda would have needed a WIT change and every other
+`scanned-excerpt-source` consumer would have paid for org's feature.
+
+#### Configuration
+
+`org.agenda-span` is a registered option today. AS.2 adds `org.agenda-sections`,
+a **string whose value is TOML** — `capture-templates`' shape, for
+`capture-templates`' reason: an option is `boolean | integer | string`, and a
+list of records cannot reach one otherwise. One option serves both requested
+config paths with no new seam: `lattice.toml` sets it declaratively, and
+`init.rs` sets the same option through `config::set_option`, which is already
+how a user reaches any plugin option.
+
 ### 6.2 The seam follows `error-parser`
 
 The host must read each file anyway to build the source `Document`

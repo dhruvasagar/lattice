@@ -449,13 +449,58 @@ multi-section agenda would have needed a WIT change and every other
 
 #### Configuration
 
-`org.agenda-span` is a registered option today. AS.2 adds `org.agenda-sections`,
-a **string whose value is TOML** — `capture-templates`' shape, for
-`capture-templates`' reason: an option is `boolean | integer | string`, and a
-list of records cannot reach one otherwise. One option serves both requested
-config paths with no new seam: `lattice.toml` sets it declaratively, and
-`init.rs` sets the same option through `config::set_option`, which is already
-how a user reaches any plugin option.
+`org.agenda-span` bounds the dated block. `org.agenda-sections` (AS.2) replaces
+the built-in set wholesale — a **string whose value is TOML**, which is
+`capture-templates`' shape for `capture-templates`' reason: an option is
+`boolean | integer | string`, and a list of records cannot reach one otherwise.
+
+One option serves both config homes with no new seam. `lattice.toml` sets it
+declaratively; `init.rs` sets the identical string through
+`config::set_option`, which is already how a user reaches any plugin option
+(`auto-pair.style` is the shipped example). Precedence between the two is the
+config resolver's existing layering, so there is no second ordering rule and no
+third place to look.
+
+```toml
+[[section]]
+title = "Inbox"
+when = "undated"      # overdue | days | undated | any
+todo-only = true
+
+[[section]]
+title = "This week"
+when = "days"
+days = 7              # absent ⇒ org.agenda-span
+min-priority = "B"    # a ceiling: "B" admits [#A] and [#B]
+```
+
+`overdue` and `days` group by day (a date header each); `undated` and `any`
+render one header, their own title.
+
+#### The guest cannot report a broken set, and what that forces
+
+**Calling `logging::log` from the guest breaks the component.** It makes the
+component IMPORT `logging`, org's multi-seam linker does not wire that import,
+and the whole component then fails to instantiate — tried and reverted at OC.2,
+recorded there as the fifth repeat of the TC.6 multi-seam-linker rule. It is a
+host fix, still outstanding.
+
+So a malformed set reports itself through the only channel the guest owns: the
+**section titles**, which are the view's own headers. It falls back to the
+built-in blocks with the parse error prefixed onto the first one. Two properties
+this deliberately keeps:
+
+- **Fall back, never show nothing.** An empty agenda and a correct-but-empty
+  agenda are indistinguishable, and "you have no tasks" is the single worst
+  thing this view can say incorrectly. A broken config costs you your layout,
+  never your rows.
+- **The complaint rides the first *section*, not a synthetic one.** A section
+  with no rows renders no header at all — the host attaches a group title to a
+  ROW — so a notice-only block would be invisible in exactly the case where the
+  user most needs to read it.
+
+When the host wires `logging` for multi-seam guests, the notice moves to a log
+line and the fallback stays.
 
 ### 6.2 The seam follows `error-parser`
 

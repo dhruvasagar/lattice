@@ -1592,9 +1592,17 @@ fn annotation_color(
         Annotation::DocSnippet(_) => (ids.completion_annotation_doc, 0x89dceb, 0xbfeaf5),
         Annotation::Keybinding(_) => (ids.completion_annotation_keybinding, 0xf9e2af, 0xfff0b8),
         Annotation::Source(_) => (ids.completion_annotation_source, 0xcba6f7, 0xe2cfff),
-        // Plugin / extension fallback. Unknown `slot` strings all
-        // resolve to this element pre-Phase-4.
-        Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+        // A plugin's own slot, RESOLVED rather than discarded. This arm was
+        // `{ .. }`, so every `Custom` annotation painted one fixed blue however
+        // the producer had labelled it — org-roam marks aliases and tags with
+        // different slots and both came out identical, which reads as "the
+        // picker has no highlighting at all". `Styled` segments already resolve
+        // per-segment through this same call; `Custom` carrying a slot and
+        // ignoring it was the inconsistency.
+        //
+        // Unknown slots still fall back to `completion.annotation.custom`
+        // inside `annotation_slot`, so nothing that worked before moves.
+        Annotation::Custom { slot, .. } => (ids.annotation_slot(slot), 0x89b4fa, 0xb6d3ff),
         // `Styled` cells are painted per-segment by the caller (each
         // segment resolves its own slot via `ids.annotation_slot`), so
         // this whole-cell color path is never taken for them; map to the

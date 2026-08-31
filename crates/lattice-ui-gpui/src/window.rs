@@ -863,7 +863,10 @@ fn annotation_color_rgb(
         // all resolve to this colour pre-Phase-4; the typed
         // theme registry that resolves slot keys to colours
         // lands with the WASM plugin host.
-        Annotation::Custom { .. } => (ids.completion_annotation_custom, 0x89b4fa, 0xb6d3ff),
+        // A plugin's own slot, resolved rather than discarded — see the TUI
+        // peer for why. Kept in lockstep: a slot that colours in one renderer
+        // and not the other is worse than one that colours in neither.
+        Annotation::Custom { slot, .. } => (ids.annotation_slot(slot), 0x89b4fa, 0xb6d3ff),
         // `Styled` cells are painted per-segment by the caller (each
         // segment resolves its own slot via `ids.annotation_slot`), so
         // this whole-cell path is never taken for them; map to the custom

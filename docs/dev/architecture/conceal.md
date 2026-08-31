@@ -128,6 +128,55 @@ change display *text* gate painting, so a version mismatch drops the viewport to
 raw text for one frame. That is the correct degradation here and it is the same
 frame the mode transition was going to repaint anyway.
 
+## Styling what survives (OL.1)
+
+A rule may carry a **`slot`** — a capture or theme-element name — and what it
+paints is *the visible remainder of each match*.
+
+That unit is the whole design. Picking it rather than a named capture group is
+what lets one declaration serve both org link forms:
+
+```text
+[[target][description]]   hides `[[target][` and `]]`  → styles `description`
+[[target]]                hides `[[` and `]]`          → styles `target`
+```
+
+Semantically: what is left on screen after concealing **is** the link. So the
+mechanism that decides where a link is also decides what to paint. Two
+mechanisms could disagree about that; one cannot — and the disagreement is not
+hypothetical, since a style landing on hidden bytes looks correct in a span
+dump and paints nothing at all. `conceal_style_spans` and `conceal_spans`
+partition the match, and a test asserts exactly that.
+
+**Per rule, never per language.** Conceal is general and most rules hide
+punctuation that means nothing alone; only a rule whose remainder is a *thing*
+declares a style. Adding a conceal rule for something else therefore cannot
+accidentally paint it.
+
+**Resolved at registration**, through `name_to_style_with_theme` — the same
+path a `highlights.scm` capture name takes. So a concealed link is coloured by
+the same vocabulary as everything else and follows a `:colorscheme` swap
+exactly as a heading does. A name that resolves to nothing conceals without
+painting: an unregistered theme element is a normal transient state, not a
+reason to lose the elision.
+
+**A conceal style beats the grammar's** at paint time. It is the more specific
+claim — the rule matched a whole concrete construct, where a grammar capture
+may span the line. A headline's `@text.title.N` covers the entire item, so
+without the override a link inside a headline would paint as heading text and
+stay invisible as a link. Emacs shows `org-link` in headlines too.
+
+### Why org links are not a grammar rule
+
+Because they cannot be. The pinned `tree-sitter-org` (`219c0b2`) has **no link
+node** — links are undifferentiated `expr` tokens, the same situation
+`agenda.rs` records for inline timestamps. A `highlights.scm` rule naming an
+absent node does not merely fail to match: it fails to *compile*, and a failed
+query compile fails the whole language registration, so `.org` stops resolving
+entirely. That was tried and reverted. A newer upstream grammar does model
+`link` / `link_desc`; bumping to it is the alternative if the styling ever
+needs to be finer-grained than "the visible remainder".
+
 ## Cursor and coordinates
 
 **Motion semantics are deliberately unchanged.** `l` across a concealed link

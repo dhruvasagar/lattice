@@ -485,6 +485,24 @@ change identity.
 With AS.1's sections this gives the granularity the view is built around: `zM`
 collapses to the section and date headers, `zR` opens them.
 
+**The agenda opens collapsed** (AF.2). Its major is `multibuffer-mode`, not
+`org-mode`, so it never saw the `foldlevel=0` the org major declares and fell
+back to the global `99` — a view whose entire structure is blocks, opening with
+every block expanded.
+
+The override is declared on **`org-agenda-mode`**, the plugin's minor, and the
+scoping is the point: `multibuffer-mode` is also project search, project diff
+and the references view, none of which should open collapsed. `org-agenda-mode`
+activates on agenda views and nothing else, so it is the narrowest mode that
+owns the question. It is a layer, so `:setlocal foldlevel=99` in the agenda
+still wins and the user's global setting is untouched.
+
+What a closed group shows is its header row, its **first** row, and a
+`⋯ N lines` summary — not the header alone. A fold's head is a content row and
+an agenda header is a virtual row sitting outside the fold, so "collapse to the
+header alone" is not expressible in the fold model. One row of preview per
+block is arguably the better read regardless.
+
 #### Configuration
 
 `org.agenda-span` bounds the dated block. `org.agenda-sections` (AS.2) replaces

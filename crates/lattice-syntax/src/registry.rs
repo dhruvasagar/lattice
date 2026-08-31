@@ -1000,7 +1000,7 @@ pub struct GrammarSpec {
     /// refused rule is dropped and logged rather than failing the
     /// language — see `conceal.rs` for why that is asymmetric with
     /// query compilation.
-    pub conceal_rules: Vec<(String, Vec<u32>)>,
+    pub conceal_rules: Vec<(String, Vec<u32>, Option<String>)>,
     pub highlights: Option<String>,
     pub folds: Option<String>,
     pub injections: Option<String>,
@@ -1063,7 +1063,7 @@ pub(crate) fn compile_plugin_config(
     // language and which rule. Deferring the check to match time would
     // log at rebuild rate, which is the `debug!`-not-`info!` mistake in
     // a different costume.
-    let (conceal_rules, conceal_errs) = crate::conceal::compile_rules(&spec.conceal_rules);
+    let (conceal_rules, conceal_errs) = crate::conceal::compile_rules(&spec.conceal_rules, theme);
     for (i, e) in &conceal_errs {
         tracing::warn!(
             language = name,

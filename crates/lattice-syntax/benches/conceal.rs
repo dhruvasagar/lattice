@@ -26,12 +26,28 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lattice_syntax::conceal::{ConcealRule, compile_rules, conceal_spans};
 
-/// Org's two rules, exactly as the plugin declares them.
+/// Org's two rules, exactly as the plugin declares them — slots included.
+///
+/// OL.1: the slots matter to what this measures. `conceal_style_spans` runs
+/// beside `conceal_spans` on every rebuilt line, so a fixture that omitted
+/// them would benchmark a shape org no longer ships and quietly stop covering
+/// the styling walk.
 fn org_rules() -> Vec<ConcealRule> {
-    let (ok, errs) = compile_rules(&[
-        (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2]),
-        (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3]),
-    ]);
+    let (ok, errs) = compile_rules(
+        &[
+            (
+                r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(),
+                vec![1, 2],
+                Some("text.reference".to_string()),
+            ),
+            (
+                r"(\[\[)([^]]+)(\]\])".to_string(),
+                vec![1, 3],
+                Some("text.uri".to_string()),
+            ),
+        ],
+        None,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     ok
 }

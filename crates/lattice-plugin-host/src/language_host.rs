@@ -70,7 +70,7 @@ pub struct LanguageSpec {
     /// runs with the guest's store alive, and compilation belongs in the
     /// loader's drain beside the grammar. The shape checks that DO run
     /// here are the ones that need no engine — see [`validate_language`].
-    pub conceal_rules: Vec<(String, Vec<u32>)>,
+    pub conceal_rules: Vec<(String, Vec<u32>, Option<String>)>,
 }
 
 /// The wire record, as bindgen generates it. Taken whole by
@@ -202,7 +202,7 @@ pub fn validate_language(raw: WitLanguageSpec) -> Result<LanguageSpec, String> {
                     );
                     return None;
                 }
-                Some((r.pattern, r.hide))
+                Some((r.pattern, r.hide, r.slot))
             })
             .collect(),
     })
@@ -292,20 +292,24 @@ mod tests {
             ConcealRule {
                 pattern: r"(\[\[)([^]]+)(\]\])".to_string(),
                 hide: vec![1, 3],
+                slot: None,
             },
             ConcealRule {
                 pattern: "   ".to_string(),
                 hide: vec![1],
+                slot: None,
             },
             ConcealRule {
                 pattern: "(x)".to_string(),
                 hide: vec![],
+                slot: None,
             },
             // Refused later, in lattice-syntax — the boundary has no
             // engine and must not pretend to.
             ConcealRule {
                 pattern: "(unclosed".to_string(),
                 hide: vec![1],
+                slot: None,
             },
         ];
         let s = validate_language(w).expect("a bad rule must not fail the language");

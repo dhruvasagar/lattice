@@ -61,6 +61,28 @@ interface language {
         /// registration, because checking it per line would log at
         /// rebuild rate.
         hide: list<u32>,
+        /// OL.1: a capture or theme-element NAME for what stays VISIBLE in
+        /// each match. `none` — every rule before this — conceals only.
+        ///
+        /// Per-RULE, because conceal is a general mechanism and most rules
+        /// hide punctuation that means nothing on its own. Only a rule whose
+        /// REMAINDER is a thing — an org link's description — declares a
+        /// style, so adding a conceal rule for something else cannot
+        /// accidentally paint it.
+        ///
+        /// "What survives concealment" is the styling unit rather than a named
+        /// group, and that is what lets one declaration serve both org link
+        /// forms: `[[t][d]]` hides the brackets and target and styles `d`;
+        /// `[[t]]` hides the brackets and styles `t`. The mechanism that
+        /// decides where a link IS also decides what to paint — two mechanisms
+        /// could disagree about that, and a link that renders as prose is a
+        /// link nobody can see is under the cursor.
+        ///
+        /// Resolved at REGISTRATION, through the same path a `highlights.scm`
+        /// capture name takes, so a concealed link follows a colourscheme swap
+        /// exactly as a heading does. A name that resolves to nothing conceals
+        /// without painting rather than failing the rule.
+        slot: option<string>,
     }
 
     /// Everything the host needs to make a language real.

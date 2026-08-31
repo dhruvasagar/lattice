@@ -729,12 +729,12 @@ mod tests {
         let (name, ext, plugin) = unique("conceal");
         let mut spec = json_grammar("(string) @string");
         spec.conceal_rules = vec![
-            (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2]),
+            (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2], None),
             // Refused: does not compile.
-            ("(unclosed".to_string(), vec![1]),
+            ("(unclosed".to_string(), vec![1], None),
             // Refused: group 4 does not exist.
-            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![4]),
-            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3]),
+            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![4], None),
+            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3], None),
         ];
         let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
         let reg = crate::registry::live().expect("registry");
@@ -753,7 +753,7 @@ mod tests {
     fn h2_unloading_the_plugin_takes_its_conceal_rules() {
         let (name, ext, plugin) = unique("conceal-teardown");
         let mut spec = json_grammar("(string) @string");
-        spec.conceal_rules = vec![(r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3])];
+        spec.conceal_rules = vec![(r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3], None)];
         let interned = register_with_grammar(&name, &[&ext], &spec, plugin).expect("registers");
         assert_eq!(
             crate::registry::live()

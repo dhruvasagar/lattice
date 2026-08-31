@@ -1993,6 +1993,12 @@ fn build_display_row(
     // returns immediately on an empty rule list, so a Rust buffer never
     // reaches the matcher.
     let conceal_bytes = lattice_syntax::conceal::conceal_spans(conceal_rules, text);
+    // OL.1: the styled remainder of each concealed match — an org link's
+    // description, once its brackets and target are hidden. Returns
+    // immediately unless some rule declared a style, so a language whose
+    // rules only elide (and every language but org, which declares none)
+    // pays one `any()` over a short list.
+    let conceal_styles = lattice_syntax::conceal::conceal_style_spans(conceal_rules, text);
     // The stored `conceals` list is in COLUMN space, not byte space,
     // because that is the space `byte_to_combined_col` works in — its
     // baseline is `col = byte`, i.e. callers hand it an already
@@ -2042,7 +2048,16 @@ fn build_display_row(
             col += t.chars().count() as u32;
             inlay_idx += 1;
         }
-        let style = style_at_byte(line_spans, byte);
+        // OL.1: a conceal rule's style WINS over the grammar's.
+        //
+        // It is the more specific claim — the rule matched a whole concrete
+        // construct, where a grammar capture may be covering the line. That
+        // matters most inside a headline, whose `@text.title.N` spans the
+        // entire item: without the override a link there would be painted as
+        // heading text and stay invisible as a link, which is exactly the
+        // report. Emacs shows `org-link` in headlines too.
+        let style = conceal_style_at_byte(&conceal_styles, byte)
+            .unwrap_or_else(|| style_at_byte(line_spans, byte));
         let mut emitted = false;
         if ch == '\t' {
             let tabstop = ws.tabstop.max(1);
@@ -2960,6 +2975,26 @@ fn modifiers_to_flags(m: &crate::ui::theme::Modifiers) -> u16 {
 /// `line_spans`. Mirrors the historical `style_at_byte` contract
 /// (originally in the deleted `highlights_worker`) — bytes outside
 /// every span fall through to `Style::Default`.
+/// OL.1: the conceal-declared style covering `byte`, if any.
+///
+/// Linear over a list that holds one entry per link on the line — a handful
+/// at most, and empty for every line without one. Not a binary search
+/// deliberately: the caller walks bytes in order and the list is short enough
+/// that a cursor would cost more in complexity than it saves in comparisons.
+fn conceal_style_at_byte(
+    spans: &[(u32, u32, lattice_syntax::Style)],
+    byte: usize,
+) -> Option<lattice_syntax::Style> {
+    if spans.is_empty() {
+        return None;
+    }
+    let b = byte as u32;
+    spans
+        .iter()
+        .find(|(s, e, _)| b >= *s && b < *e)
+        .map(|(_, _, st)| *st)
+}
+
 fn style_at_byte(line_spans: &[lattice_syntax::StyledSpan], byte: usize) -> lattice_syntax::Style {
     for s in line_spans {
         if byte >= s.start && byte < s.end {
@@ -4449,10 +4484,23 @@ mod tests {
 
     /// Org's real two rules, compiled.
     fn org_conceal_rules() -> Vec<lattice_syntax::conceal::ConcealRule> {
-        let (ok, errs) = lattice_syntax::conceal::compile_rules(&[
-            (r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(), vec![1, 2]),
-            (r"(\[\[)([^]]+)(\]\])".to_string(), vec![1, 3]),
-        ]);
+        // OL.1: slots carried, so these fixtures exercise the styled path the
+        // shipped rules take rather than a conceal-only shape org no longer has.
+        let (ok, errs) = lattice_syntax::conceal::compile_rules(
+            &[
+                (
+                    r"(\[\[[^]]+\]\[)[^]]+(\]\])".to_string(),
+                    vec![1, 2],
+                    Some("text.reference".to_string()),
+                ),
+                (
+                    r"(\[\[)([^]]+)(\]\])".to_string(),
+                    vec![1, 3],
+                    Some("text.uri".to_string()),
+                ),
+            ],
+            None,
+        );
         assert!(errs.is_empty(), "{errs:?}");
         ok
     }

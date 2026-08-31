@@ -31,6 +31,7 @@
 //! usable. Losing org over a typo in a cosmetic regex would be the
 //! disproportionate answer.
 
+use crate::Style;
 use regex::Regex;
 
 /// The most rules one language may declare.
@@ -52,6 +53,15 @@ pub const MAX_CONCEAL_PATTERN_LEN: usize = 512;
 pub struct ConcealRule {
     pattern: Regex,
     hide: Vec<u32>,
+    /// OL.1: the style for what stays VISIBLE in a match, or `None` for a
+    /// rule that only elides.
+    ///
+    /// Per-RULE, not per language, and that is the whole point: conceal is a
+    /// general mechanism and most rules simply hide punctuation. Only the
+    /// ones whose remainder means something — an org link's description —
+    /// carry a style, so adding a conceal rule for something else cannot
+    /// accidentally paint it.
+    style: Option<Style>,
 }
 
 impl ConcealRule {
@@ -68,6 +78,11 @@ impl ConcealRule {
     /// The pattern source, for diagnostics and equality.
     pub fn source(&self) -> &str {
         self.pattern.as_str()
+    }
+
+    /// OL.1: the style for this rule's visible remainder, if it declared one.
+    pub fn style(&self) -> Option<Style> {
+        self.style
     }
 }
 
@@ -145,6 +160,25 @@ impl std::error::Error for ConcealRuleError {}
 
 /// Compile one rule, or say precisely why not.
 pub fn compile_rule(pattern: &str, hide: &[u32]) -> Result<ConcealRule, ConcealRuleError> {
+    compile_rule_styled(pattern, hide, None, None)
+}
+
+/// OL.1: [`compile_rule`], plus the style its visible remainder takes.
+///
+/// `slot` is a capture or theme-element NAME, resolved here — at compile
+/// time, once, the way query sources are — rather than per line. It goes
+/// through `name_to_style_with_theme`, which is the same path a
+/// `highlights.scm` capture takes, so a concealed link is coloured by the
+/// same vocabulary and the same active colourscheme as everything else. An
+/// unresolvable name is `Style::Default`: the rule still conceals, it just
+/// does not paint, which is the right severity for a theme that has not
+/// registered an element yet.
+pub fn compile_rule_styled(
+    pattern: &str,
+    hide: &[u32],
+    slot: Option<&str>,
+    theme: Option<&dyn lattice_theme::ThemeRegistry>,
+) -> Result<ConcealRule, ConcealRuleError> {
     if pattern.trim().is_empty() {
         return Err(ConcealRuleError::EmptyPattern);
     }
@@ -176,6 +210,9 @@ pub fn compile_rule(pattern: &str, hide: &[u32]) -> Result<ConcealRule, ConcealR
     Ok(ConcealRule {
         pattern: compiled,
         hide,
+        style: slot
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| crate::style::name_to_style_with_theme(s, theme)),
     })
 }
 
@@ -188,11 +225,15 @@ pub fn compile_rule(pattern: &str, hide: &[u32]) -> Result<ConcealRule, ConcealR
 /// would emit at rebuild rate, which is the `debug!`-not-`info!`
 /// mistake wearing a different hat.
 pub fn compile_rules(
-    declared: &[(String, Vec<u32>)],
+    // OL.1: `(pattern, hide, slot)`. The slot is a capture/theme name for the
+    // match's visible remainder, resolved HERE — once, at registration, the
+    // way query sources are — rather than per line.
+    declared: &[(String, Vec<u32>, Option<String>)],
+    theme: Option<&dyn lattice_theme::ThemeRegistry>,
 ) -> (Vec<ConcealRule>, Vec<(usize, ConcealRuleError)>) {
     let mut ok = Vec::new();
     let mut errs = Vec::new();
-    for (i, (pattern, hide)) in declared.iter().enumerate() {
+    for (i, (pattern, hide, slot)) in declared.iter().enumerate() {
         if ok.len() >= MAX_CONCEAL_RULES {
             errs.push((
                 i,
@@ -202,7 +243,7 @@ pub fn compile_rules(
             ));
             continue;
         }
-        match compile_rule(pattern, hide) {
+        match compile_rule_styled(pattern, hide, slot.as_deref(), theme) {
             Ok(r) => ok.push(r),
             Err(e) => errs.push((i, e)),
         }
@@ -275,6 +316,65 @@ pub fn rules_version(rules: &[ConcealRule]) -> u64 {
 ///
 /// Returns empty immediately when there are no rules, which is the
 /// path every buffer in the editor but one takes.
+/// OL.1: the styled runs `rules` paint in `line` — each match's VISIBLE
+/// remainder, for rules that declared a style.
+///
+/// "What survives concealment" is the styling unit, and picking it rather
+/// than a named capture group is what makes one declaration serve both of
+/// org's link forms without a second knob:
+///
+/// ```text
+/// [[target][description]]   hides `[[target][` and `]]`  → styles `description`
+/// [[target]]               hides `[[` and `]]`           → styles `target`
+/// ```
+///
+/// Semantically: what is left on screen after concealing IS the link, so the
+/// mechanism that decides where a link is also decides what to paint. Two
+/// mechanisms could disagree about that; one cannot.
+///
+/// Returns empty immediately when no rule carries a style — which is every
+/// language today but org, and every org rule but the two link ones.
+pub fn conceal_style_spans(rules: &[ConcealRule], line: &str) -> Vec<(u32, u32, Style)> {
+    if line.is_empty() || !rules.iter().any(|r| r.style.is_some()) {
+        return Vec::new();
+    }
+    let mut out: Vec<(u32, u32, Style)> = Vec::new();
+    for rule in rules {
+        let Some(style) = rule.style else {
+            continue;
+        };
+        for caps in rule.pattern.captures_iter(line) {
+            let Some(whole) = caps.get(0) else {
+                continue;
+            };
+            // The hidden ranges WITHIN this match, so the remainder is what is
+            // left of it. Computed per match rather than from `conceal_spans`,
+            // which unions across every rule — a different rule's elision
+            // elsewhere on the line must not carve up this one's styling.
+            let mut hidden: Vec<(usize, usize)> = rule
+                .hide()
+                .iter()
+                .filter_map(|g| caps.get(*g as usize))
+                .filter(|m| m.start() < m.end())
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            hidden.sort_unstable();
+            let mut cursor = whole.start();
+            for (hs, he) in hidden {
+                if hs > cursor {
+                    out.push((cursor as u32, hs as u32, style));
+                }
+                cursor = cursor.max(he);
+            }
+            if cursor < whole.end() {
+                out.push((cursor as u32, whole.end() as u32, style));
+            }
+        }
+    }
+    out.sort_unstable_by_key(|(s, e, _)| (*s, *e));
+    out
+}
+
 pub fn conceal_spans(rules: &[ConcealRule], line: &str) -> Vec<(u32, u32)> {
     if rules.is_empty() || line.is_empty() {
         return Vec::new();
@@ -316,6 +416,15 @@ pub fn conceal_spans(rules: &[ConcealRule], line: &str) -> Vec<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
+    /// OL.1: these tests predate the `slot` parameter and none of them is
+    /// about styling, so they go through a shim rather than repeating
+    /// `, None` at every call.
+    fn compile_rules_t(
+        declared: &[(String, Vec<u32>, Option<String>)],
+    ) -> (Vec<ConcealRule>, Vec<(usize, ConcealRuleError)>) {
+        compile_rules(declared, None)
+    }
+
     use super::*;
 
     /// Org's own two rules — the acceptance case this exists for.
@@ -324,9 +433,9 @@ mod tests {
 
     #[test]
     fn orgs_two_rules_compile() {
-        let (ok, errs) = compile_rules(&[
-            (DESCRIBED.to_string(), vec![1, 2]),
-            (BARE.to_string(), vec![1, 3]),
+        let (ok, errs) = compile_rules_t(&[
+            (DESCRIBED.to_string(), vec![1, 2], None),
+            (BARE.to_string(), vec![1, 3], None),
         ]);
         assert_eq!(ok.len(), 2);
         assert!(errs.is_empty(), "{errs:?}");
@@ -338,10 +447,10 @@ mod tests {
     fn an_uncompilable_pattern_drops_exactly_one_rule() {
         // The property the whole module exists for: a plugin does
         // not lose its language over a typo in a cosmetic regex.
-        let (ok, errs) = compile_rules(&[
-            (DESCRIBED.to_string(), vec![1, 2]),
-            ("(unclosed".to_string(), vec![1]),
-            (BARE.to_string(), vec![1, 3]),
+        let (ok, errs) = compile_rules_t(&[
+            (DESCRIBED.to_string(), vec![1, 2], None),
+            ("(unclosed".to_string(), vec![1], None),
+            (BARE.to_string(), vec![1, 3], None),
         ]);
         assert_eq!(ok.len(), 2, "the two good rules survive");
         assert_eq!(errs.len(), 1);
@@ -397,10 +506,10 @@ mod tests {
 
     #[test]
     fn the_cap_refuses_the_overflow_and_keeps_the_rest() {
-        let declared: Vec<(String, Vec<u32>)> = (0..MAX_CONCEAL_RULES + 3)
-            .map(|_| (BARE.to_string(), vec![1, 3]))
+        let declared: Vec<(String, Vec<u32>, Option<String>)> = (0..MAX_CONCEAL_RULES + 3)
+            .map(|_| (BARE.to_string(), vec![1, 3], None))
             .collect();
-        let (ok, errs) = compile_rules(&declared);
+        let (ok, errs) = compile_rules_t(&declared);
         assert_eq!(ok.len(), MAX_CONCEAL_RULES);
         assert_eq!(errs.len(), 3);
         assert!(
@@ -431,9 +540,9 @@ mod tests {
     fn org_rules() -> Vec<ConcealRule> {
         // Described BEFORE bare — the order org declares them in, and
         // the reason is asserted below.
-        let (ok, errs) = compile_rules(&[
-            (DESCRIBED.to_string(), vec![1, 2]),
-            (BARE.to_string(), vec![1, 3]),
+        let (ok, errs) = compile_rules_t(&[
+            (DESCRIBED.to_string(), vec![1, 2], None),
+            (BARE.to_string(), vec![1, 3], None),
         ]);
         assert!(errs.is_empty());
         ok
@@ -485,9 +594,9 @@ mod tests {
     #[test]
     fn declaration_order_cannot_change_what_is_hidden() {
         let described_first = org_rules();
-        let (bare_first, errs) = compile_rules(&[
-            (BARE.to_string(), vec![1, 3]),
-            (DESCRIBED.to_string(), vec![1, 2]),
+        let (bare_first, errs) = compile_rules_t(&[
+            (BARE.to_string(), vec![1, 3], None),
+            (DESCRIBED.to_string(), vec![1, 2], None),
         ]);
         assert!(errs.is_empty());
 
@@ -553,16 +662,16 @@ mod tests {
         // The invariant the consumer depends on: an un-merged overlap
         // would have its shared width subtracted twice and every
         // column past it would be wrong.
-        let (rules, _) = compile_rules(&[
-            (r"(abcd)ef".to_string(), vec![1]),
-            (r"ab(cdef)".to_string(), vec![1]),
+        let (rules, _) = compile_rules_t(&[
+            (r"(abcd)ef".to_string(), vec![1], None),
+            (r"ab(cdef)".to_string(), vec![1], None),
         ]);
         assert_eq!(conceal_spans(&rules, "abcdef"), vec![(0, 6)]);
     }
 
     #[test]
     fn touching_spans_merge_rather_than_staying_adjacent() {
-        let (rules, _) = compile_rules(&[(r"(ab)(cd)".to_string(), vec![1, 2])]);
+        let (rules, _) = compile_rules_t(&[(r"(ab)(cd)".to_string(), vec![1, 2], None)]);
         assert_eq!(conceal_spans(&rules, "abcd"), vec![(0, 4)]);
     }
 
@@ -580,7 +689,7 @@ mod tests {
     fn a_group_that_did_not_participate_is_not_an_error() {
         // An alternation leaves one branch's group unmatched. That hid
         // nothing here; it is not a refusal.
-        let (rules, errs) = compile_rules(&[(r"(?:(aa)|(bb))cc".to_string(), vec![1, 2])]);
+        let (rules, errs) = compile_rules_t(&[(r"(?:(aa)|(bb))cc".to_string(), vec![1, 2], None)]);
         assert!(errs.is_empty());
         assert_eq!(conceal_spans(&rules, "aacc"), vec![(0, 2)]);
         assert_eq!(conceal_spans(&rules, "bbcc"), vec![(0, 2)]);
@@ -602,5 +711,108 @@ mod tests {
         // that spans five rows is a log line nobody reads.
         let e = compile_rule("(unclosed", &[1]).unwrap_err();
         assert!(!e.to_string().contains('\n'), "{e}");
+    }
+
+    // ---- OL.1: styling the visible remainder ----
+
+    fn link_rules() -> Vec<ConcealRule> {
+        vec![
+            compile_rule_styled(
+                r"(\[\[[^]]+\]\[)[^]]+(\]\])",
+                &[1, 2],
+                Some("text.reference"),
+                None,
+            )
+            .expect("described-link rule"),
+            compile_rule_styled(r"(\[\[)([^]]+)(\]\])", &[1, 3], Some("text.uri"), None)
+                .expect("bare-link rule"),
+        ]
+    }
+
+    /// The two org link shapes, one declaration each, and the styled run is
+    /// what SURVIVES conceal in both — the description in one, the target in
+    /// the other.
+    #[test]
+    fn the_visible_remainder_is_what_gets_styled() {
+        let rules = link_rules();
+
+        let line = "see [[id:ABC][Rust async]] ok";
+        let spans = conceal_style_spans(&rules, line);
+        assert_eq!(spans.len(), 1, "one run, got {spans:?}");
+        let (s, e, style) = spans[0];
+        assert_eq!(&line[s as usize..e as usize], "Rust async");
+        assert_eq!(style, Style::Link);
+
+        let line = "see [[https://example.com]] ok";
+        let spans = conceal_style_spans(&rules, line);
+        assert_eq!(spans.len(), 1, "got {spans:?}");
+        let (s, e, style) = spans[0];
+        assert_eq!(&line[s as usize..e as usize], "https://example.com");
+        assert_eq!(style, Style::Url);
+    }
+
+    /// **The styled run and the concealed run partition the match.** If they
+    /// disagreed, styling would paint bytes that are about to disappear and
+    /// leave the visible ones bare — which is the bug this feature fixes, in
+    /// a subtler form.
+    #[test]
+    fn styled_and_hidden_ranges_partition_the_match() {
+        let rules = link_rules();
+        let line = "[[id:ABC][Rust async]]";
+        let hidden = conceal_spans(&rules, line);
+        let styled = conceal_style_spans(&rules, line);
+        let covered: usize = hidden.iter().map(|(s, e)| (e - s) as usize).sum::<usize>()
+            + styled
+                .iter()
+                .map(|(s, e, _)| (e - s) as usize)
+                .sum::<usize>();
+        assert_eq!(covered, line.len(), "hidden={hidden:?} styled={styled:?}");
+    }
+
+    /// A rule with NO slot conceals and paints nothing. Conceal is a general
+    /// mechanism; only rules whose remainder MEANS something carry a style,
+    /// so adding a rule for something else cannot accidentally paint it.
+    #[test]
+    fn a_rule_without_a_slot_styles_nothing() {
+        let plain = vec![compile_rule(r"(\*)[^*]+(\*)", &[1, 2]).expect("emphasis rule")];
+        let line = "some *bold* text";
+        assert!(!conceal_spans(&plain, line).is_empty(), "it still conceals");
+        assert!(
+            conceal_style_spans(&plain, line).is_empty(),
+            "…and paints nothing"
+        );
+    }
+
+    /// A styled rule beside an unstyled one paints only its own matches —
+    /// the per-rule scoping, asserted rather than assumed.
+    #[test]
+    fn styling_is_scoped_to_the_rule_that_declared_it() {
+        let mut rules = link_rules();
+        rules.push(compile_rule(r"(\*)[^*]+(\*)", &[1, 2]).expect("emphasis rule"));
+        let line = "*bold* and [[id:A][Link]]";
+        let styled = conceal_style_spans(&rules, line);
+        assert_eq!(styled.len(), 1, "only the link is styled: {styled:?}");
+        let (s, e, _) = styled[0];
+        assert_eq!(&line[s as usize..e as usize], "Link");
+    }
+
+    /// An unresolvable slot still conceals — it just does not paint. A theme
+    /// element that is not registered yet is a normal transient state, not a
+    /// reason to lose the elision.
+    #[test]
+    fn an_unknown_slot_conceals_without_painting() {
+        let rules = vec![
+            compile_rule_styled(r"(\[\[)([^]]+)(\]\])", &[1, 3], Some("not.a.capture"), None)
+                .expect("compiles"),
+        ];
+        let line = "[[target]]";
+        assert!(!conceal_spans(&rules, line).is_empty());
+        let styled = conceal_style_spans(&rules, line);
+        assert_eq!(styled.len(), 1);
+        assert_eq!(
+            styled[0].2,
+            Style::Default,
+            "resolved to nothing, painted as nothing"
+        );
     }
 }

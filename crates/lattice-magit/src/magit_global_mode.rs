@@ -177,6 +177,9 @@ pub(crate) fn open_repo_view_from_action_with(
                 lattice_core::BufferId(ctx.buffer_id.raw() as u32),
             ),
             mode_id: mode_id.to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         },
         // Neither service registered (a harness that wired neither):
         // the unlabelled name, which is what magit opened before MR.2 —
@@ -187,6 +190,9 @@ pub(crate) fn open_repo_view_from_action_with(
                 None => crate::workdir::magit_buffer_name(view, ""),
             },
             mode_id: mode_id.to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         },
     }
 }
@@ -1619,6 +1625,9 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 ),
                 mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id()
                     .to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         }),
     });

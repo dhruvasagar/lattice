@@ -1607,6 +1607,9 @@ fn register_ex_commands(
                                 ctx.buffer_id,
                             ),
                             mode_id: "magit-stash-show-mode".to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
                         })
                     })
                 },
@@ -2253,6 +2256,9 @@ fn register_ex_commands(
                                         ctx.buffer_id,
                                     ),
                                     mode_id: "magit-file-revision-mode".to_string(),
+                                    content: None,
+                                    cursor: None,
+                                    activate_minor: None,
                                 })
                             }
                             _ => Ok(find_file_usage()),
@@ -2442,6 +2448,9 @@ fn register_ex_commands(
                                 ctx.buffer_id,
                             ),
                             mode_id: "magit-cherry-mode".to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
                         })
                     })
                 },
@@ -2487,6 +2496,9 @@ fn register_ex_commands(
                                 ctx.buffer_id,
                             ),
                             mode_id: "magit-notes-mode".to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
                         })
                     })
                 },
@@ -2659,6 +2671,9 @@ fn register_ex_commands(
                                 ctx.buffer_id,
                             ),
                             mode_id: "magit-revision-mode".to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
                         })
                     })
                 },
@@ -2724,6 +2739,9 @@ fn register_ex_commands(
                                     Effect::OpenSyntheticBuffer {
                                         name,
                                         mode_id: "magit-file-revision-mode".to_string(),
+                                        content: None,
+                                        cursor: None,
+                                        activate_minor: None,
                                     },
                                     Effect::ToggleMode {
                                         mode_name: "magit-blame-mode".to_string(),
@@ -2785,6 +2803,9 @@ fn register_ex_commands(
                                 ctx.buffer_id,
                             ),
                             mode_id: "magit-rebase-mode".to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
                         })
                     })
                 },

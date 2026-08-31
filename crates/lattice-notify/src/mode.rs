@@ -161,6 +161,9 @@ impl Mode for NotificationsMode {
                     Some(Effect::OpenSyntheticBuffer {
                         name: BUFFER_NAME.to_string(),
                         mode_id: NotificationsMode::mode_id().as_str().to_string(),
+                        content: None,
+                        cursor: None,
+                        activate_minor: None,
                     })
                 }),
             },
@@ -170,6 +173,9 @@ impl Mode for NotificationsMode {
                     Some(Effect::OpenSyntheticBuffer {
                         name: BUFFER_NAME.to_string(),
                         mode_id: NotificationsMode::mode_id().as_str().to_string(),
+                        content: None,
+                        cursor: None,
+                        activate_minor: None,
                     })
                 }),
             },

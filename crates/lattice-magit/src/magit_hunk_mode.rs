@@ -186,7 +186,7 @@ fn at_position(
             position,
             force,
         },
-        Effect::OpenSyntheticBuffer { name, mode_id } => Effect::OpenSyntheticBufferAt {
+        Effect::OpenSyntheticBuffer { name, mode_id, .. } => Effect::OpenSyntheticBufferAt {
             name,
             mode_id,
             position,
@@ -314,6 +314,9 @@ pub(crate) fn side_by_side_effects(
         Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(repo, git_ref, path),
             mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id().to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         },
         Effect::Diffsplit {
             path: absolute,
@@ -558,7 +561,7 @@ mod tests {
         };
         assert_eq!(effects.len(), 2);
         match &effects[0] {
-            Effect::OpenSyntheticBuffer { name, mode_id } => {
+            Effect::OpenSyntheticBuffer { name, mode_id, .. } => {
                 assert_eq!(name, "*magit:file:lattice:staged:src/main.rs*");
                 assert_eq!(mode_id, "magit-file-revision-mode");
             }
@@ -756,6 +759,9 @@ mod at_position_tests {
             Effect::OpenSyntheticBuffer {
                 name: "*magit:file:staged:src/main.rs*".into(),
                 mode_id: "magit-file-revision-mode".into(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             },
             POS,
         ) {

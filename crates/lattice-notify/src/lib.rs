@@ -698,6 +698,9 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
                 Ok(lattice_grammar::Effect::OpenSyntheticBuffer {
                     name: mode::BUFFER_NAME.to_string(),
                     mode_id: mode::NotificationsMode::mode_id().as_str().to_string(),
+                    content: None,
+                    cursor: None,
+                    activate_minor: None,
                 })
             }),
             args_schema: Vec::new(),

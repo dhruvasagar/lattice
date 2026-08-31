@@ -218,6 +218,9 @@ impl crate::buffer_state::MagitView for CommitView {
         Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", path),
             mode_id: "magit-file-revision-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         })
     }
 

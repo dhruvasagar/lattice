@@ -125,6 +125,9 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
                     &path,
                 ),
                 mode_id: MagitFileRevisionMode::mode_id().to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             }),
             // Saying which end you are at beats a key that appears
             // broken — and `staged` lands here too, since the index is

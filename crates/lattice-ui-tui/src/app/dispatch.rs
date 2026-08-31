@@ -1136,8 +1136,22 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::OpenAiLog { session } => self.do_open_ai_log(session.as_deref()),
-            Effect::OpenSyntheticBuffer { name, mode_id } => {
-                self.open_synthetic_buffer(&name, &mode_id)
+            Effect::OpenSyntheticBuffer {
+                name,
+                mode_id,
+                content,
+                cursor,
+                activate_minor,
+            } => {
+                // OC.7a: the seeded form. `None` throughout is the
+                // pre-OC.7a call, so native emitters are unaffected.
+                self.open_synthetic_buffer_seeded(
+                    &name,
+                    &mode_id,
+                    content.as_deref(),
+                    cursor,
+                    activate_minor.as_deref(),
+                )
             }
             // MG.50: the synthetic peer of `OpenBufferAt`, and the same
             // two writes in the same order — open, THEN position against

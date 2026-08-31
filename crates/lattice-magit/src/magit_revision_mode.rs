@@ -103,6 +103,9 @@ impl crate::buffer_state::MagitView for RevisionView {
         (!sha.is_empty()).then(|| Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(&label, &sha, path),
             mode_id: "magit-file-revision-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         })
     }
 

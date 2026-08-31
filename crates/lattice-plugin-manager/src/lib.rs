@@ -74,6 +74,9 @@ fn plugins_spec() -> ExCommandSpec {
             Ok(Effect::OpenSyntheticBuffer {
                 name: PLUGINS_BUFFER_NAME.to_string(),
                 mode_id: PLUGINS_MODE_ID.to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         }),
         args_schema: Vec::new(),

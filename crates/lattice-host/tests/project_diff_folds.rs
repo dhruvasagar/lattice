@@ -62,6 +62,7 @@ fn boot_diff_view(files: u32, hunks: u32) -> (Editor, BufferId) {
         BufferFlags::default(),
         registry_for_view,
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     editor.recompute_folds();

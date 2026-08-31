@@ -30524,7 +30524,34 @@ impl Editor {
     /// The emitting mode's command supplies the name + mode id; the host only
     /// runs the generic open, so no provider-specific host method is needed. The
     /// mode must be registered at boot.
+    /// Pre-OC.7a shape, kept so the dozen native emitters that want nothing
+    /// seeded read as they did.
     pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        self.open_synthetic_buffer_seeded(name, mode_id, None, None, None);
+    }
+
+    /// OC.7a: [`Self::open_synthetic_buffer`] plus the three things a PLUGIN
+    /// mode cannot do for itself.
+    ///
+    /// A native mode fills its buffer from `on_activate`. The `modes` WIT seam
+    /// is declaration-only, so a plugin mode has no such hook — and
+    /// `Effect::ApplyEdit` is not a way round it, because that names a
+    /// `buffer-id` the open does not hand back. Without these a guest could
+    /// create a buffer it was then unable to put a single character into.
+    ///
+    /// Order matters and is the same order [`Effect::OpenSyntheticBufferAt`]
+    /// already argues for: seed and activate the minor BEFORE showing the
+    /// buffer, so the first painted frame is the finished one rather than an
+    /// empty buffer that fills a tick later — the content-jump the UX contract
+    /// vetoes.
+    pub fn open_synthetic_buffer_seeded(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        content: Option<&str>,
+        cursor: Option<lattice_protocol::position::Position>,
+        activate_minor: Option<&str>,
+    ) {
         // Was this buffer already around? `ensure_named_synthetic_document`
         // returns an existing buffer by name WITHOUT re-activating its major,
         // so the mode's `on_activate` — which is what fills the buffer — runs
@@ -30565,7 +30592,34 @@ impl Editor {
                 modal: self.modal,
             });
         }
+        // OC.7a: seed BEFORE activating, so the first frame the user sees is
+        // the finished buffer.
+        //
+        // Only on a fresh buffer. A re-open must not overwrite what is already
+        // there: the same `*org-capture*` name is reused every capture, and
+        // clobbering it would silently discard a note the user was part-way
+        // through writing. `reused` is asked above for the neighbouring
+        // reason, and this is the sharper case of it.
+        if let Some(text) = content
+            && !reused
+        {
+            self.replace_owned_buffer(id, text);
+        }
+        // The minor rides the major, and is activated before the buffer shows
+        // so its keymap is live on the first keystroke rather than the second.
+        if let Some(minor) = activate_minor {
+            let signals = self.activate_mode_by_id(id, lattice_mode::ModeId::new(minor));
+            self.enqueue_renderer_signals(signals);
+        }
         self.activate_buffer(id);
+        // AFTER `activate_buffer`, which is what makes this buffer the one
+        // `set_cursor_clamped` addresses — the same ordering
+        // `Effect::OpenSyntheticBufferAt` documents, and for the same reason.
+        // Clamped rather than refused: a template whose `%?` sits past its own
+        // text is a template bug that must not cost the user the capture.
+        if let Some(pos) = cursor {
+            self.set_cursor_clamped(pos);
+        }
         if reused {
             self.refresh_reopened_view(id);
         }

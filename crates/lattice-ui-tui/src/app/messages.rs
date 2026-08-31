@@ -79,6 +79,31 @@ impl App {
         self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
     }
 
+    /// OC.7a: the seeded peer forwarder. Same thin shape as its neighbour —
+    /// the body lives on `Editor` so both renderers reach one implementation.
+    pub fn open_synthetic_buffer_seeded(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        content: Option<&str>,
+        cursor: Option<lattice_protocol::position::Position>,
+        activate_minor: Option<&str>,
+    ) {
+        let name = name.to_string();
+        let mode_id = mode_id.to_string();
+        let content = content.map(str::to_string);
+        let activate_minor = activate_minor.map(str::to_string);
+        self.mutate_editor(move |e| {
+            e.open_synthetic_buffer_seeded(
+                &name,
+                &mode_id,
+                content.as_deref(),
+                cursor,
+                activate_minor.as_deref(),
+            )
+        });
+    }
+
     /// Thin wrapper around
     /// [`lattice_host::editor::Editor::ensure_messages_buffer`]
     /// (Phase 5.7.B.9 migration). The find-or-create body +

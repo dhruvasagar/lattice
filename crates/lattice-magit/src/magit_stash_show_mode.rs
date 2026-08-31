@@ -122,6 +122,9 @@ impl crate::buffer_state::MagitView for StashShowView {
                 path,
             ),
             mode_id: "magit-file-revision-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         })
     }
 

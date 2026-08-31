@@ -901,10 +901,17 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             );
         }
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
-        NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
+        NativeEffect::OpenSyntheticBuffer { name, mode_id, .. } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
                 name: name.clone(),
                 mode_id: mode_id.clone(),
+                // OC.7a: host→guest carries only what a guest could act on.
+                // These three are what a GUEST sends; a native emitter's
+                // values have no guest-side meaning, so they cross as `none`
+                // rather than as a shape the guest cannot use.
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         }
         // MG.50: no WIT mirror yet. Native-only, like `Global` /
@@ -1179,9 +1186,17 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::AppAction(app) => NativeEffect::AppAction(NativeAppEffect::from_wit(app)?),
         WitEffect::RecordJump => NativeEffect::RecordJump,
         WitEffect::OpenAiLog(session) => NativeEffect::OpenAiLog { session },
+        // OC.7a: the direction that matters. Guest→host carries the seed
+        // text, the caret and the minor, because a plugin mode has no
+        // `on_activate` to do any of it — the `modes` seam is
+        // declaration-only, so without this a guest opens a buffer it can
+        // never write into.
         WitEffect::OpenSyntheticBuffer(p) => NativeEffect::OpenSyntheticBuffer {
             name: p.name,
             mode_id: p.mode_id,
+            content: p.content,
+            cursor: p.cursor.map(NativePosition::from_wit).transpose()?,
+            activate_minor: p.activate_minor,
         },
     })
 }
@@ -1971,5 +1986,73 @@ mod tests {
             err.contains("NarrowTrigger"),
             "error names the culprit: {err}"
         );
+    }
+
+    /// **OC.7a: the guest's seed text, caret and minor reach the native
+    /// effect.**
+    ///
+    /// The direction that matters, and the one the feature is impossible
+    /// without: a plugin mode has no `on_activate` (the `modes` seam exports
+    /// `register-modes` and nothing else), so if these three do not cross, a
+    /// guest opens a buffer it can never put a character into.
+    ///
+    /// Asserted per field rather than as a round-trip, because the reverse
+    /// direction deliberately drops them — a native emitter's values have no
+    /// guest-side meaning — so an equality test would be asserting the wrong
+    /// thing.
+    #[test]
+    fn oc7a_guest_seed_reaches_the_native_open() {
+        let wit = WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
+            name: "*org-capture*".to_string(),
+            mode_id: "org-mode".to_string(),
+            content: Some("* TODO \n  body".to_string()),
+            cursor: Some(WitPosition { line: 0, byte: 7 }),
+            activate_minor: Some("org-capture-mode".to_string()),
+        });
+        match effect_from_wit(wit).expect("from_wit") {
+            NativeEffect::OpenSyntheticBuffer {
+                name,
+                mode_id,
+                content,
+                cursor,
+                activate_minor,
+            } => {
+                assert_eq!(name, "*org-capture*");
+                assert_eq!(mode_id, "org-mode", "the capture buffer IS an org buffer");
+                assert_eq!(content.as_deref(), Some("* TODO \n  body"));
+                assert_eq!(cursor, Some(pos(0, 7)), "the `%?` point");
+                assert_eq!(
+                    activate_minor.as_deref(),
+                    Some("org-capture-mode"),
+                    "the minor carries C-c C-c / C-c C-k without putting them \
+                     on every org buffer"
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A guest that seeds nothing gets the pre-OC.7a effect exactly — the
+    /// overwhelmingly common case must not have moved.
+    #[test]
+    fn oc7a_an_unseeded_open_is_unchanged() {
+        let wit = WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
+            name: "*plugins*".to_string(),
+            mode_id: "plugin-manager-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        });
+        match effect_from_wit(wit).expect("from_wit") {
+            NativeEffect::OpenSyntheticBuffer {
+                content,
+                cursor,
+                activate_minor,
+                ..
+            } => {
+                assert!(content.is_none() && cursor.is_none() && activate_minor.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }

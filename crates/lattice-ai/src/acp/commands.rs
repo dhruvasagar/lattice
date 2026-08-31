@@ -52,6 +52,9 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
                     mode_id: crate::acp::conversation_mode::AiConversationMode::mode_id()
                         .as_str()
                         .to_string(),
+                    content: None,
+                    cursor: None,
+                    activate_minor: None,
                 })
             }),
             args_schema: vec![],
@@ -185,7 +188,7 @@ mod tests {
         // `:opencode` both starts the agent AND opens the `*ai:opencode*`
         // conversation buffer under the `ai-conversation` mode.
         match effect {
-            Effect::OpenSyntheticBuffer { name, mode_id } => {
+            Effect::OpenSyntheticBuffer { name, mode_id, .. } => {
                 assert_eq!(name, "*ai:opencode*");
                 assert_eq!(mode_id, "ai-conversation-mode");
             }

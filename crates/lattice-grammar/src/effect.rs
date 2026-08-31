@@ -787,9 +787,29 @@ pub enum Effect {
     /// only the generic `ensure_named_synthetic_document` open, so no
     /// provider-specific host method is added. `mode_id` is the mode's string
     /// id (`ModeId::new(&mode_id)`); the mode must be registered at boot.
+    ///
+    /// OC.7a adds `content` / `cursor` / `activate_minor`. A native mode fills
+    /// its own buffer from `on_activate`; the `modes` WIT seam is
+    /// declaration-only, so a PLUGIN mode has no such hook and a guest emitting
+    /// this got a buffer it could never put text in. `Effect::ApplyEdit` is not
+    /// the way out either — it names a `target` buffer id this effect does not
+    /// hand back. All three are `None` for every pre-OC.7a emitter.
     OpenSyntheticBuffer {
         name: String,
         mode_id: String,
+        /// Seed text, applied BEFORE the buffer is shown so the first frame is
+        /// the finished one. Ignored when the buffer already existed — a
+        /// re-open must not overwrite what the user has typed, which is the
+        /// difference between reopening a capture and losing one.
+        content: Option<String>,
+        /// Where to leave the caret in `content` (org capture's `%?`).
+        /// Out-of-range is clamped, not refused: a template whose `%?` sits
+        /// past its own text is a template bug that must not cost the capture.
+        cursor: Option<lattice_protocol::position::Position>,
+        /// A minor to activate alongside the major. Mirrors
+        /// `Effect::SpawnTerminal`'s `activate_minor` and exists for the same
+        /// reason — the interesting behaviour rides a general-purpose major.
+        activate_minor: Option<String>,
     },
     /// MG.50: [`Effect::OpenSyntheticBuffer`] + cursor placement, in one
     /// step.

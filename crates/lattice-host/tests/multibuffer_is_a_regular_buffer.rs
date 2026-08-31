@@ -105,6 +105,7 @@ fn boot_with_multibuffer() -> (Editor, BufferId) {
         BufferFlags::default(),
         registry_for_view,
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     (editor, view_id)
@@ -618,6 +619,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         BufferFlags::default(),
         registry_for_view,
         Some(lr),
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     // 1. The typed handle must report at least one excerpt syntax entry

@@ -226,6 +226,9 @@ pub fn open_repo_view(
     lattice_grammar::Effect::OpenSyntheticBuffer {
         name: repo_view_name(view, store, scopes, active),
         mode_id: mode_id.to_string(),
+        content: None,
+        cursor: None,
+        activate_minor: None,
     }
 }
 
@@ -395,6 +398,9 @@ pub fn open_repo_view_with(
     lattice_grammar::Effect::OpenSyntheticBuffer {
         name: repo_view_name_with(view, Some(rest), store, scopes, active),
         mode_id: mode_id.to_string(),
+        content: None,
+        cursor: None,
+        activate_minor: None,
     }
 }
 

@@ -75,6 +75,9 @@ fn plugin_trace_spec() -> ExCommandSpec {
             Ok(Effect::OpenSyntheticBuffer {
                 name: SHARED_BUFFER_NAME.to_string(),
                 mode_id: TRACE_MODE_ID.to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         }),
         args_schema: Vec::new(),

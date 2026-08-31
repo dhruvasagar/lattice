@@ -72,6 +72,7 @@ fn boot_view(
         BufferFlags::default(),
         registry_for_view,
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     (view, ids[0], ids[1], first.expect("file A was spawned"))

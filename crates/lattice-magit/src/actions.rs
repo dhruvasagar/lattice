@@ -859,6 +859,9 @@ fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Eff
         } => Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", &path),
             mode_id: "magit-file-revision-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         }),
         StatusLine::File {
             path,
@@ -891,6 +894,9 @@ fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Eff
                 &sha,
             ),
             mode_id: "magit-revision-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         }),
     }
 }
@@ -915,6 +921,9 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
             Some(Effect::OpenSyntheticBuffer {
                 name: "*magit:commit*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         });
     }
@@ -928,6 +937,9 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
             Some(Effect::OpenSyntheticBuffer {
                 name: "*magit:amend*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             })
         });
     }
@@ -1460,6 +1472,9 @@ impl crate::buffer_state::MagitView for StatusView {
             DiffSource::Staged => Some(Effect::OpenSyntheticBuffer {
                 name: crate::magit_file_revision_mode::blob_buffer_name(&label, "staged", path),
                 mode_id: "magit-file-revision-mode".to_string(),
+                content: None,
+                cursor: None,
+                activate_minor: None,
             }),
             // Unstaged (and untracked): the diff IS against the working
             // tree, so that file is the thing being described.
@@ -1493,6 +1508,9 @@ impl crate::buffer_state::MagitView for StatusView {
                 Some(Effect::OpenSyntheticBuffer {
                     name: crate::magit_file_revision_mode::blob_buffer_name(&label, &sha, path),
                     mode_id: "magit-file-revision-mode".to_string(),
+                    content: None,
+                    cursor: None,
+                    activate_minor: None,
                 })
             }
         }

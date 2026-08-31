@@ -75,6 +75,7 @@ fn boot_with_view() -> (Editor, BufferId) {
         BufferFlags::default(),
         registry_for_view,
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     (editor, view)

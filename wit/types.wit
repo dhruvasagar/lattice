@@ -574,9 +574,47 @@ interface types {
         column: option<utf16-pos>,
         force: bool,
     }
+    /// OC.7a: `content` / `cursor` / `activate-minor` close a hole a guest
+    /// could not work around.
+    ///
+    /// A native mode fills its own synthetic buffer from `on_activate`. The
+    /// `modes` seam is DECLARATION-ONLY — a guest exports `register-modes` and
+    /// nothing else — so a plugin mode has no such hook, and a guest that
+    /// emitted this effect got a buffer it could never put text in. The other
+    /// route, `effect.apply-edit`, needs the target's `buffer-id`, which this
+    /// effect does not hand back and which the guest cannot look up.
+    ///
+    /// So the payload carries what the guest would otherwise have to write:
+    /// the text, where to leave the caret in it, and a minor to ride the
+    /// major. Every field is optional and omitting all three is the pre-OC.7a
+    /// behaviour exactly.
     record open-synthetic-buffer-payload {
         name: string,
+        /// The buffer's MAJOR mode.
         mode-id: string,
+        /// Seed text, applied before the buffer is shown so the first frame is
+        /// the finished one — a buffer that appears empty and fills a tick
+        /// later is the content-jump the UX contract vetoes.
+        ///
+        /// `none` leaves the buffer empty (the mode fills it, or nothing does).
+        /// Ignored when the buffer already existed: a re-open must not
+        /// overwrite what the user has typed into it, which is the difference
+        /// between reopening a capture and losing one.
+        content: option<string>,
+        /// Where to park the caret in `content` — org capture's `%?` point.
+        /// Out of range is clamped rather than refused; a template whose `%?`
+        /// sits past its own text is a template bug that must not cost the
+        /// user the capture.
+        cursor: option<position>,
+        /// A minor to activate on the buffer alongside its major. Mirrors
+        /// `spawn-terminal-payload.activate-minor`, and exists for the same
+        /// reason: the interesting behaviour belongs to a minor that rides a
+        /// general-purpose major. An org capture buffer IS an org buffer — it
+        /// wants org's grammar, motions and folding — so its major is
+        /// `org-mode` and only the `C-c C-c` / `C-c C-k` finalize/abort pair
+        /// is capture-specific. Naming the minor here is what keeps those
+        /// chords off every other org buffer.
+        activate-minor: option<string>,
     }
     record spawn-terminal-payload {
         cmd-line: option<string>,

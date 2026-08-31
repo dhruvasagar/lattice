@@ -236,6 +236,9 @@ pub fn trace_handler() -> ActionHandler {
         Some(Effect::OpenSyntheticBuffer {
             name: lattice_plugin_trace::per_plugin_buffer_name(&name),
             mode_id: lattice_plugin_trace::TRACE_MODE_ID.to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
         })
     })
 }

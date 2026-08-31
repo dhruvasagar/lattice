@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use lattice_completion::DisplaySpan;
 use lattice_picker::picker_sources::GrepPreviewHighlighter;
-use lattice_syntax::{Lang, LangRegistry, Syntax};
+use lattice_syntax::{Lang, Syntax};
 
 /// Per-language grammar cache backing the grep preview highlighter.
 /// `None` in the map means "this language has no registered grammar" —
@@ -31,18 +31,32 @@ use lattice_syntax::{Lang, LangRegistry, Syntax};
 /// registry. Wrapped in a `Mutex` because the trait is `Sync` and grep
 /// runs are serial within a task but may overlap across runs.
 pub struct SyntaxGrepHighlighter {
-    lang_registry: Arc<LangRegistry>,
     cache: Mutex<HashMap<Lang, Option<Syntax>>>,
 }
 
 impl SyntaxGrepHighlighter {
-    /// Build from the editor's shared `LangRegistry` so grep previews
-    /// highlight with exactly the grammars the buffers use.
-    pub fn new(lang_registry: Arc<LangRegistry>) -> Arc<Self> {
-        Arc::new(Self {
-            lang_registry,
+    /// AH.1: takes no registry. It used to take the editor's shared
+    /// `Arc<LangRegistry>` "so grep previews highlight with exactly the
+    /// grammars the buffers use" — which is what it stopped doing the moment
+    /// plugin languages existed.
+    ///
+    /// `LangRegistry::standard()` *is* `registry::live()`: it returns a
+    /// SNAPSHOT of the process-global ArcSwap. A plugin's grammar arrives
+    /// later via `install_plugin_config`, which RCUs a new registry in and
+    /// leaves every held `Arc` on the pre-plugin value. This highlighter was
+    /// built at boot, so its registry was bundled-only forever — every
+    /// preview of a `.org` hit (the org-roam node picker's whole surface)
+    /// painted plain.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+}
+
+impl Default for SyntaxGrepHighlighter {
+    fn default() -> Self {
+        Self {
             cache: Mutex::new(HashMap::new()),
-        })
+        }
     }
 }
 
@@ -54,11 +68,26 @@ impl GrepPreviewHighlighter for SyntaxGrepHighlighter {
         if lang == Lang::Plain || line.is_empty() {
             return Vec::new();
         }
+        // AH.1: the LIVE registry, re-read per call. Wait-free (one ArcSwap
+        // load), and the only way a grammar registered after boot is ever
+        // seen.
+        let Ok(live) = lattice_syntax::registry::live() else {
+            return Vec::new();
+        };
         // Recover a poisoned lock rather than propagate a panic onto the
         // grep task — a highlight failure must degrade to plain preview.
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        // The cache stores NEGATIVES ("no grammar for this language") so
+        // repeated hits in an unsupported file do not re-probe. That is safe
+        // across a plugin registration, which is worth stating because it
+        // looks like it should not be: the key is `Lang`, and a
+        // `Lang::Plugin(name)` only *exists* while that name is registered.
+        // Before registration the extension resolves to `Lang::Plain` and
+        // returns above without touching the cache; after withdrawal it does
+        // so again. So a registration never has to invalidate an entry — it
+        // introduces a key that could not have been cached under.
         let entry = cache.entry(lang).or_insert_with(|| {
-            Syntax::for_language_with_registry(lang, self.lang_registry.clone())
+            Syntax::for_language_with_registry(lang, live)
                 .ok()
                 .flatten()
         });
@@ -93,7 +122,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn highlighter() -> Arc<SyntaxGrepHighlighter> {
-        SyntaxGrepHighlighter::new(LangRegistry::standard().unwrap())
+        SyntaxGrepHighlighter::new()
     }
 
     /// PH.3: a Rust grep hit's preview is highlighted display-relative,
@@ -151,5 +180,89 @@ mod tests {
         let b = h.highlight_line(&PathBuf::from("b.rs"), "fn main() {}");
         assert_eq!(a, b, "same grammar + same line → identical spans");
         assert!(!a.is_empty());
+    }
+
+    /// **AH.1: a grammar registered AFTER the highlighter was built must
+    /// reach previews.**
+    ///
+    /// This is the org-roam node picker painting every `.org` preview plain.
+    /// The highlighter held an `Arc<LangRegistry>` captured at boot, and
+    /// `LangRegistry::standard()` returns a SNAPSHOT — a plugin's
+    /// `install_plugin_config` RCUs a NEW registry into the process-global
+    /// ArcSwap, so every previously-held `Arc` keeps pointing at the
+    /// bundled-only value from before the plugin loaded.
+    ///
+    /// The first assertion is the mechanism itself, stated so it cannot rot
+    /// into a coincidence: registration REPLACES the registry rather than
+    /// mutating it, which is exactly why holding one is wrong. The second is
+    /// the behaviour that depends on it.
+    #[test]
+    fn a_grammar_registered_after_boot_reaches_previews() {
+        const PROV: u64 = 0xA11_7E57;
+        let h = highlighter();
+        let path = PathBuf::from("notes.testlang-ah1");
+
+        // Held at "boot", exactly as the pre-AH.1 highlighter did.
+        let held_at_boot = lattice_syntax::LangRegistry::standard().unwrap();
+        assert!(
+            h.highlight_line(&path, "fn main() {}").is_empty(),
+            "sanity: the extension is unclaimed before registration"
+        );
+
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(
+            "testlang-ah1",
+            &["testlang-ah1"],
+            &spec,
+            PROV,
+        )
+        .expect("the test language registers");
+
+        // THE MECHANISM: registration swapped in a different registry, so the
+        // `Arc` captured above can never see it. Any code holding one is
+        // reading the pre-plugin world forever.
+        let now_live = lattice_syntax::LangRegistry::standard().unwrap();
+        assert!(
+            !Arc::ptr_eq(&held_at_boot, &now_live),
+            "registration must REPLACE the live registry — if it mutated in \
+             place, holding an Arc would have been safe and AH.1 would be \
+             solving a non-problem"
+        );
+        assert!(
+            lattice_syntax::Syntax::for_language_with_registry(
+                Lang::detect_from_path(Some(&path)),
+                held_at_boot,
+            )
+            .is_ok_and(|o| o.is_none()),
+            "…and the held snapshot still does not know the language"
+        );
+
+        // THE BEHAVIOUR: the preview highlights anyway, because the
+        // highlighter reads live.
+        assert!(
+            !h.highlight_line(&path, "fn main() {}").is_empty(),
+            "a grammar registered after boot must reach previews"
+        );
+
+        // Withdrawal is visible too. Note WHY, since it is not the cache
+        // being invalidated: `unregister_plugin` withdraws the extension
+        // mapping as well, so the path resolves to `Lang::Plain` again and
+        // returns before the cache is consulted. The cached entry is keyed by
+        // a `Lang::Plugin` that no longer exists and is unreachable rather
+        // than stale — which is what makes a cache-invalidation pass
+        // unnecessary here.
+        lattice_syntax::plugin_lang::unregister_plugin(PROV);
+        assert!(
+            h.highlight_line(&path, "fn main() {}").is_empty(),
+            "a withdrawn grammar must stop highlighting"
+        );
     }
 }

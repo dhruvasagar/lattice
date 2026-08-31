@@ -209,6 +209,11 @@ criterion = { workspace = true }
 # the loader (`spawn_mode_plugin` awaits wasmtime `instantiate_async`), so it
 # needs the multi-thread runtime (`rt-multi-thread`), mirroring `mode_drain.rs`.
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+# AH.1 (2026-08-31): `grep_highlight`'s post-boot-registration test needs a real
+# tree-sitter `Language` to register under a test name, so it can assert that a
+# grammar arriving AFTER the highlighter was built reaches previews. Any grammar
+# would do; rust is already a workspace dep.
+tree-sitter-rust = { workspace = true }
 # PL8.G (2026-07-16): the modes-as-components validation drives the loader against
 # a real booted `Editor`'s live registries. It builds a tempdir-backed
 # `PluginHost` (dev-only wasmtime runtime handle) + loads the `emacs-keys-guest`

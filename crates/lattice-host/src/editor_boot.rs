@@ -1068,9 +1068,7 @@ impl Editor {
         boot.register_service::<Arc<LangRegistry>>(lang_registry.clone());
         let grep_highlighter: Option<
             Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>,
-        > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new(
-            lang_registry.clone(),
-        ));
+        > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new());
         // PL8.B: held behind `ArcSwap` so the plugin loader can RCU-register a
         // loaded picker plugin's source at runtime while the picker-open path
         // reads it wait-free. Registered as a `PickerRegistryHandle` service

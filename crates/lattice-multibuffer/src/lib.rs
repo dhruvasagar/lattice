@@ -1062,11 +1062,40 @@ impl MultibufferDocumentHandle {
             has_lang_registry = self.inner.lang_registry.get().is_some(),
             "add_source: checking for syntax handle creation"
         );
-        if let Some(lr) = self.inner.lang_registry.get() {
+        if self.inner.lang_registry.get().is_some() {
             let lang = Lang::detect_from_path(path.as_deref());
             tracing::debug!(buffer = ?id, ?lang, "add_source: detected language");
             if lang != Lang::Plain {
-                match Syntax::for_language_with_registry(lang, lr.clone()) {
+                // AH.1: resolve against the LIVE registry, not the stored
+                // handle.
+                //
+                // `LangRegistry::standard()` *is* `registry::live()` — it
+                // returns a SNAPSHOT of the process-global ArcSwap. Plugin
+                // grammars arrive later: `install_plugin_config` RCUs a new
+                // `LangRegistry` in, which leaves every previously-held `Arc`
+                // pointing at the value from before the plugin loaded. The
+                // stored registry is captured at boot, so it is bundled-only
+                // and can NEVER contain a plugin language.
+                //
+                // The symptom was total and silent: every excerpt over a
+                // plugin-language file — the whole org agenda — got no
+                // `SyntaxHandle`, so every row painted uncoloured while the
+                // same file syntax-highlighted perfectly when opened directly.
+                // `detect_from_path` resolved `.org` correctly, the registry
+                // was present, and the grammar existed; only the registry
+                // being asked was the wrong one.
+                //
+                // The stored field survives as the host's "is highlighting
+                // wired" gate (`set_lang_registry` is what turns this on) —
+                // its VALUE is what could not be trusted, not its presence.
+                let live = match lattice_syntax::registry::live() {
+                    Ok(lr) => lr,
+                    Err(e) => {
+                        tracing::debug!(buffer = ?id, error = ?e, "add_source: no live registry");
+                        return;
+                    }
+                };
+                match Syntax::for_language_with_registry(lang, live) {
                     Ok(Some(mut syntax)) => {
                         let snap = source.snapshot();
                         let text = snap.buffer.as_string();

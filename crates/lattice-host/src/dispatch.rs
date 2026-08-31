@@ -11917,8 +11917,9 @@ impl Editor {
     /// shifts the (preview-relative) spans past the `path:line:col` prefix.
     fn highlight_lsp_location_rows(&self, rows: &mut [lattice_picker::LspLocationRow]) {
         use lattice_picker::picker_sources::GrepPreviewHighlighter;
-        let highlighter =
-            crate::grep_highlight::SyntaxGrepHighlighter::new(self.lang_registry.clone());
+        // AH.1: no registry argument — the highlighter reads the LIVE one per
+        // call, so a plugin language registered after boot highlights here too.
+        let highlighter = crate::grep_highlight::SyntaxGrepHighlighter::new();
         for row in rows.iter_mut() {
             let trimmed = row.preview.trim_start();
             if !trimmed.is_empty() {

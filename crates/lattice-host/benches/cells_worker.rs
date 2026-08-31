@@ -143,7 +143,7 @@ fn rs_for_with_strip(
         })
         .collect();
     let pane_entry = PaneCellsInputs {
-        conceal_reveal: false,
+        conceal_reveal_line: None,
         indent_guides: Default::default(),
         indent_unit: lattice_core::IndentUnit::default(),
         indent_guides_enabled: true,

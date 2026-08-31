@@ -238,6 +238,15 @@ pub struct DisplayMatrix {
     /// Soft-wrap column width, or `0` when wrapping is off (one display
     /// row per source line). Stamped by the worker from the pane width.
     pub wrap_width: u32,
+    /// CL.1: the line this matrix was built with its conceals suppressed on.
+    ///
+    /// Carried on the matrix rather than folded into `MatrixVersion` on
+    /// purpose. The version is the cache-hit key, and the reveal line moves
+    /// with the CURSOR — folding it in would invalidate the whole matrix on
+    /// every `j`, turning a 47 ns cache hit into a ~1.5 ms window rebuild.
+    /// Kept beside the version instead, so the worker can see the reveal moved
+    /// and rebuild exactly the two rows that changed.
+    pub reveal_line: Option<u32>,
 }
 
 impl Default for DisplayMatrix {
@@ -255,6 +264,7 @@ impl DisplayMatrix {
             visible_line_count: 0,
             version: MatrixVersion::ZERO,
             wrap_width: 0,
+            reveal_line: None,
         }
     }
 
@@ -274,6 +284,7 @@ impl DisplayMatrix {
             visible_line_count,
             version,
             wrap_width: 0,
+            reveal_line: None,
         }
     }
 
@@ -287,6 +298,7 @@ impl DisplayMatrix {
             visible_line_count,
             version,
             wrap_width: 0,
+            reveal_line: None,
         }
     }
 

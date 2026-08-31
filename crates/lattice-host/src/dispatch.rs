@@ -1537,10 +1537,7 @@ impl Editor {
                     // H.3: the buffer language's rule set. Constant 0
                     // when it declares none, which is every language
                     // but org — so this axis cannot move for them.
-                    conceal: crate::cells_worker::conceal_version_for(
-                        self.syntax.as_ref(),
-                        self.conceal_reveal(),
-                    ),
+                    conceal: crate::cells_worker::conceal_version_for(self.syntax.as_ref()),
                 },
                 snapshot: Some(self.document.snapshot()),
                 syntax_handle: self.syntax.clone().map(std::sync::Arc::new),
@@ -15677,7 +15674,12 @@ impl Editor {
         // `ModalState` is editor-global, so gating on the mode alone
         // would repaint every visible org buffer in every split the
         // moment `i` was pressed in one of them.
-        let conceal_reveal = is_active_buffer && self.conceal_reveal();
+        // CL.1: and only the cursor's LINE, not the whole buffer. Revealing
+        // every link at once was never anyone's behaviour — vim's
+        // `concealcursor` scopes it to the cursor line, because the reason to
+        // reveal is to edit the thing under the cursor.
+        let conceal_reveal_line =
+            (is_active_buffer && self.conceal_reveal()).then_some(self.cursor.line);
 
         // IG.2: guides are buffer-local, so they resolve per pane rather
         // than from the publish-wide option cache.
@@ -15722,10 +15724,7 @@ impl Editor {
             theme: theme_hash,
             whitespace: whitespace_hash,
             indent: guides.version,
-            conceal: crate::cells_worker::conceal_version_for(
-                syntax_handle.as_deref(),
-                conceal_reveal,
-            ),
+            conceal: crate::cells_worker::conceal_version_for(syntax_handle.as_deref()),
         };
 
         // G-clip: gutter columns to hold out of the soft-wrap width so
@@ -15753,7 +15752,7 @@ impl Editor {
         };
 
         PaneCellsInputs {
-            conceal_reveal,
+            conceal_reveal_line,
             pane_id,
             buffer_id,
             matrix: self.cells_matrix_for(buffer_id),

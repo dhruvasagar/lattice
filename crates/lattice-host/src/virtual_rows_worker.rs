@@ -512,7 +512,7 @@ mod tests {
     ) -> crate::render_state::PaneCellsInputs {
         use lattice_core::ui::pane::PaneId;
         crate::render_state::PaneCellsInputs {
-            conceal_reveal: false,
+            conceal_reveal_line: None,
             // IG.2: default guide inputs — enabled with the default indent
             // unit, which is the shape a test pane has unless it is
             // exercising guides specifically.

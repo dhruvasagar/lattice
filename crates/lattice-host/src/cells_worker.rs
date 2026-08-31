@@ -503,7 +503,7 @@ fn publish_sticky_context(
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
     let syntax = pane.syntax_handle.as_deref().map(|h| h.snapshot());
-    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref(), pane.conceal_reveal);
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
     let mut rows: Vec<StickyContextRow> = Vec::with_capacity(pane.sticky_context_lines.len());
 
     for &line in pane.sticky_context_lines.iter() {
@@ -719,8 +719,14 @@ pub fn recompute_pane(
     // lines and the version both match what is already published, so the
     // common case is a slice comparison of at most `max-lines` u32s.
     publish_sticky_context(pane, snapshot.as_ref(), ct, whitespace, existing.version);
+    // CL.1: the reveal line joins the cache-hit key, but NOT `MatrixVersion`.
+    // It moves with the cursor, so folding it into the version would rebuild
+    // the window on every `j` — a 47 ns hit becoming ~1.5 ms. Compared here
+    // instead, and a difference takes the two-row incremental path below
+    // rather than a full rebuild.
     if !pane.version.differs_from(&existing.version)
         && existing.wrap_width == effective_wrap
+        && existing.reveal_line == pane.conceal_reveal_line
         && existing.covers(visible_lo, visible_hi)
     {
         // B2.3 (2026-06-04): the canonical `DisplayMatrix` is already
@@ -764,6 +770,19 @@ pub fn recompute_pane(
     // `extra_spans` does — the incremental build reuses rows verbatim
     // and would keep stale refinement after a diff refresh shifted the
     // text under it.
+    // CL.1: the reveal moved and nothing else did — rebuild the two rows whose
+    // conceal state changed and `Arc`-reuse every other one. This is the whole
+    // reason the reveal line is a line rather than a buffer-wide flag: it makes
+    // the per-cursor-move cost two rows instead of a window.
+    if let Some(dm) = try_incremental_reveal_build(&existing, snapshot.as_ref(), pane, whitespace) {
+        let cells = display_matrix_to_cell_matrix(&dm, ct);
+        pane.matrix.store(Arc::new(cells));
+        publish_indent_guides(pane, snapshot.as_ref(), &dm);
+        publish_sticky_context(pane, snapshot.as_ref(), ct, whitespace, dm.version);
+        pane.display_matrix.store(Arc::new(dm));
+        return WorkerDecision::RecomputedIncremental;
+    }
+
     let rebuilt = if pane.extra_spans.is_empty() && pane.extra_refine.is_empty() {
         try_incremental_display_build(&existing, snapshot.as_ref(), pane, ct, whitespace, true)
             .and_then(|mut dm| {
@@ -797,7 +816,7 @@ pub fn recompute_pane(
                 pane.scroll,
                 pane.version,
                 whitespace,
-                pane.conceal_reveal,
+                pane.conceal_reveal_line,
             );
             dm.wrap_width = effective_wrap;
             (dm, WorkerDecision::Recomputed)
@@ -1046,6 +1065,7 @@ fn try_incremental_build(
             let spans = highlight_range(0, new_line_count);
             let inputs = ChunkInputs {
                 snapshot,
+                conceal_reveal_line: pane.conceal_reveal_line,
                 per_line_spans: spans.as_ref(),
                 spans_base: 0,
                 inlays_by_line: &inlays_by_line,
@@ -1099,6 +1119,7 @@ fn try_incremental_build(
             whitespace,
             refine_by_line: &[],
             conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+            conceal_reveal_line: None,
         };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
         // Suffix: lines past the edit — reuse with shifted source line.
@@ -1195,6 +1216,7 @@ fn try_incremental_build(
         whitespace,
         refine_by_line: &[],
         conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+        conceal_reveal_line: None,
     };
     let mut cur = rebuild_lo;
     while cur < rebuild_hi {
@@ -1315,6 +1337,7 @@ fn build_matrix(
                 whitespace,
                 refine_by_line: &[],
                 conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+                conceal_reveal_line: None,
             };
             let rows = build_chunk_rows(&inputs, 0, line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, version));
@@ -1350,6 +1373,7 @@ fn build_matrix(
                 whitespace,
                 refine_by_line: &[],
                 conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+                conceal_reveal_line: None,
             };
             let mut chunks: Vec<Arc<CellChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -1632,6 +1656,8 @@ struct ChunkInputs<'a> {
     /// that declares none, and the emptiness is what makes the conceal
     /// path cost a Rust buffer nothing.
     conceal_rules: &'a [lattice_syntax::conceal::ConcealRule],
+    /// CL.1: the one line whose conceals are suppressed, or `None`.
+    conceal_reveal_line: Option<u32>,
 }
 
 /// Build the row vector for one chunk covering source lines
@@ -2187,7 +2213,15 @@ fn build_display_rows(
                 .get(line_idx as usize)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
-            inputs.conceal_rules,
+            // CL.1: this line's rules — empty for the revealed line, so it
+            // shows its raw `[[id:…][…]]` while every other line stays
+            // concealed. Scoped to a line rather than the buffer because the
+            // reason to reveal is to edit what is under the cursor.
+            if inputs.conceal_reveal_line == Some(line_idx) {
+                &[]
+            } else {
+                inputs.conceal_rules
+            },
         );
         rows.push(DisplayLine {
             source_line: line_idx,
@@ -2275,17 +2309,13 @@ pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> 
 /// reaches the matcher at all.
 fn conceal_rules_for(
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
-    reveal: bool,
 ) -> std::sync::Arc<[lattice_syntax::conceal::ConcealRule]> {
     let empty = || std::sync::Arc::from([] as [lattice_syntax::conceal::ConcealRule; 0]);
-    // H.4: revealing IS having no rules. Expressing the mode gate as an
-    // empty rule set rather than as a second flag threaded beside them
-    // is what makes the `conceal` version axis and the built rows unable
-    // to disagree — both derive from this one call, so there is no state
-    // in which the axis says "concealed" and the row says otherwise.
-    if reveal {
-        return empty();
-    }
+    // CL.1: no reveal parameter. H.4 expressed "reveal" as an empty rule set
+    // for the whole buffer, which made the version axis and the rows agree by
+    // construction — but the unit was wrong: reveal belongs to ONE LINE, and a
+    // buffer-wide empty set cannot say that. Suppression now happens per row
+    // in `build_display_rows`, and the axis below no longer moves with it.
     let Some(h) = syntax_handle else {
         return empty();
     };
@@ -2299,11 +2329,14 @@ fn conceal_rules_for(
 ///
 /// Zero when there are no rules, so the axis is a constant for every
 /// language but org and cannot cost those buffers a rebuild.
-pub(crate) fn conceal_version_for(
-    syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
-    reveal: bool,
-) -> u64 {
-    lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle, reveal))
+/// CL.1: the RULES' version, and deliberately not the reveal line's.
+///
+/// The reveal line moves with the cursor. Folding it in here would invalidate
+/// the matrix on every `j` — a 47 ns cache hit becoming a ~1.5 ms window
+/// rebuild. The worker compares `DisplayMatrix::reveal_line` separately and
+/// rebuilds the two rows that changed.
+pub(crate) fn conceal_version_for(syntax_handle: Option<&lattice_syntax::SyntaxHandle>) -> u64 {
+    lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle))
 }
 
 fn build_display_matrix(
@@ -2323,7 +2356,8 @@ fn build_display_matrix(
     version: MatrixVersion,
     whitespace: &WhitespaceConfig,
     // H.4: Insert/Replace on THIS pane's buffer renders raw.
-    conceal_reveal: bool,
+    // CL.1: the one line whose conceals are suppressed.
+    reveal_line: Option<u32>,
 ) -> crate::display_matrix::DisplayMatrix {
     use crate::display_matrix::{DisplayChunk, DisplayMatrix};
     // CV.2: the row range, in **content** space. This is where the
@@ -2346,7 +2380,7 @@ fn build_display_matrix(
     // H.3: resolved ONCE per matrix build, not per line. Empty for a
     // buffer with no syntax handle, an unavailable registry, or — the
     // overwhelmingly common case — a language that declares no rules.
-    let conceal_rules = conceal_rules_for(syntax_handle, conceal_reveal);
+    let conceal_rules = conceal_rules_for(syntax_handle);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // K.4.7: multibuffer panes use per-excerpt handles.
@@ -2402,6 +2436,7 @@ fn build_display_matrix(
                 whitespace,
                 refine_by_line: extra_refine,
                 conceal_rules: &conceal_rules,
+                conceal_reveal_line: reveal_line,
             };
             let rows = build_display_rows(&inputs, 0, line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, version));
@@ -2429,6 +2464,7 @@ fn build_display_matrix(
                 whitespace,
                 refine_by_line: extra_refine,
                 conceal_rules: &conceal_rules,
+                conceal_reveal_line: reveal_line,
             };
             let mut chunks: Vec<Arc<DisplayChunk>> =
                 Vec::with_capacity(((win_hi - win_lo) / chunk_size + 1) as usize);
@@ -2442,6 +2478,121 @@ fn build_display_matrix(
             DisplayMatrix::chunked(chunks, chunk_size, line_count, version)
         }
     }
+}
+
+/// CL.1: rebuild only the rows whose CONCEAL REVEAL state changed.
+///
+/// The cursor moved off one line and onto another; at most those two rows
+/// differ, and every other row in the matrix is byte-identical. So they are
+/// `Arc`-reused and two rows are rebuilt — which is what makes revealing the
+/// cursor line affordable at cursor rate. Folding the reveal line into
+/// `MatrixVersion` instead would rebuild the whole window on every `j`
+/// (~1.5 ms against a 47 ns cache hit), and revealing the whole BUFFER — the
+/// pre-CL.1 behaviour — avoided the cost only by doing the wrong thing.
+///
+/// `None` (fall through to a full build) whenever anything else moved: a
+/// version difference means the rows would have had to be rebuilt anyway, and
+/// this path's whole claim is that they did not.
+fn try_incremental_reveal_build(
+    published: &crate::display_matrix::DisplayMatrix,
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    pane: &crate::render_state::PaneCellsInputs,
+    whitespace: &WhitespaceConfig,
+) -> Option<crate::display_matrix::DisplayMatrix> {
+    use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix};
+    if published.chunks.is_empty() {
+        return None;
+    }
+    // Only the reveal moved. Anything else and the caller's ordinary paths
+    // are already correct — and cheaper than doing both.
+    if pane.version.differs_from(&published.version) {
+        return None;
+    }
+    if published.reveal_line == pane.conceal_reveal_line {
+        return None;
+    }
+    // Nothing to rebuild if this buffer conceals nothing: the two rows would
+    // come out byte-identical, and every org-less buffer takes this exit.
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
+    if conceal_rules.is_empty() {
+        // Still record the move, or the gate above re-fires every tick.
+        let mut dm = published.clone();
+        dm.reveal_line = pane.conceal_reveal_line;
+        return Some(dm);
+    }
+
+    let touched: Vec<u32> = [published.reveal_line, pane.conceal_reveal_line]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut chunks: Vec<Arc<DisplayChunk>> = Vec::with_capacity(published.chunks.len());
+    for chunk in published.chunks.iter() {
+        // Chunks holding none of the touched lines are shared, not copied —
+        // the `Arc` clone IS the reuse.
+        if !chunk.rows.iter().any(|r| touched.contains(&r.source_line)) {
+            chunks.push(Arc::clone(chunk));
+            continue;
+        }
+        let mut rows: Vec<DisplayLine> = chunk.rows.to_vec();
+        for row in rows.iter_mut() {
+            if !touched.contains(&row.source_line) {
+                continue;
+            }
+            let line = row.source_line;
+            let text = snapshot.buffer.line(line).unwrap_or_default();
+            let spans = pane
+                .syntax_handle
+                .as_deref()
+                .and_then(|h| {
+                    let snap = h.snapshot();
+                    (snap.text_version() >= snapshot.text_version)
+                        .then(|| snap.highlight_lines(line, line + 1).ok())
+                        .flatten()
+                })
+                .and_then(|v| v.into_iter().next())
+                .unwrap_or_default();
+            let (text, runs, col_map, conceals, col_count) = build_display_row(
+                &text,
+                &spans,
+                &[],
+                whitespace,
+                &[],
+                if pane.conceal_reveal_line == Some(line) {
+                    &[]
+                } else {
+                    &conceal_rules
+                },
+            );
+            *row = DisplayLine {
+                source_line: line,
+                text: text.into(),
+                runs: Arc::from(runs.into_boxed_slice()),
+                col_map: Arc::from(col_map.into_boxed_slice()),
+                conceals: Arc::from(conceals.into_boxed_slice()),
+                col_count,
+                fold: row.fold,
+            };
+        }
+        chunks.push(Arc::new(DisplayChunk::new(
+            chunk.start_source_line,
+            rows,
+            chunk.version,
+        )));
+    }
+
+    let mut dm = if published.is_whole_doc() {
+        DisplayMatrix::whole_doc(chunks.remove(0), published.source_line_count)
+    } else {
+        DisplayMatrix::chunked(
+            chunks,
+            published.chunk_size,
+            published.source_line_count,
+            published.version,
+        )
+    };
+    dm.wrap_width = published.wrap_width;
+    dm.reveal_line = pane.conceal_reveal_line;
+    Some(dm)
 }
 
 /// B2.2 (2026-06-04): incremental `DisplayMatrix` rebuild — the
@@ -2475,7 +2626,7 @@ fn try_incremental_display_build(
     // rows it rebuilds must conceal exactly as a full build would — a
     // link that renders raw only on the line you just touched would be
     // the most visible possible version of this bug.
-    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref(), pane.conceal_reveal);
+    let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
     let edit = pane.last_edit?;
     if published.chunks.is_empty() {
         return None;
@@ -2591,6 +2742,7 @@ fn try_incremental_display_build(
                 whitespace,
                 refine_by_line: &[],
                 conceal_rules: &conceal_rules,
+                conceal_reveal_line: pane.conceal_reveal_line,
             };
             let rows = build_display_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(DisplayChunk::new(0, rows, new_version));
@@ -2624,6 +2776,8 @@ fn try_incremental_display_build(
             whitespace,
             refine_by_line: &[],
             conceal_rules: &conceal_rules,
+            // CL.1: a sticky-context header is never the cursor line.
+            conceal_reveal_line: None,
         };
         rows.extend(build_display_rows(&inputs, edit_lo, affected_hi));
         rows.extend(
@@ -2722,6 +2876,7 @@ fn try_incremental_display_build(
     let spans = highlight_range(edit_lo, affected_hi);
     let inputs = ChunkInputs {
         snapshot,
+        conceal_reveal_line: pane.conceal_reveal_line,
         per_line_spans: spans.as_ref(),
         spans_base: edit_lo,
         inlays_by_line: &inlays_by_line,
@@ -3264,7 +3419,7 @@ mod tests {
         // `matrix_cell` (see `display_cell_for`).
         let display_cell = display_cell_for(&matrix_cell);
         let pane_entry = crate::render_state::PaneCellsInputs {
-            conceal_reveal: false,
+            conceal_reveal_line: None,
             pane_id: lattice_core::ui::pane::PaneId::default(),
             buffer_id: lattice_core::BufferId::default(),
             matrix: matrix_cell.clone(),
@@ -4429,26 +4584,117 @@ mod tests {
         assert!(revealed.is_empty());
     }
 
+    /// **CL.1: only the cursor's line reveals; every other link stays
+    /// concealed.**
+    ///
+    /// Pressing `i` used to reveal every link in the buffer at once, because
+    /// reveal was a buffer-wide flag expressed as an empty rule set. No editor
+    /// does that — vim scopes it to the cursor line (`concealcursor`), because
+    /// the reason to reveal is to edit the thing under the cursor; the other
+    /// links on screen have no reason to turn back into `[[id:…][…]]`.
     #[test]
-    fn h4_the_conceal_axis_moves_between_reveal_and_conceal() {
-        let r = org_conceal_rules();
-        let concealed = lattice_syntax::conceal::rules_version(&r);
-        let revealed = lattice_syntax::conceal::rules_version(&[]);
-        assert_ne!(
-            concealed, revealed,
-            "crossing the insert boundary must invalidate the matrix"
-        );
-        assert_eq!(revealed, 0, "revealing is indistinguishable from no rules");
+    fn cl1_only_the_cursor_line_reveals() {
+        let text = "[[id:A][one]]\n[[id:B][two]]\n[[id:C][three]]\n";
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let rules = org_conceal_rules();
+        let row = |line: &str, reveal: bool| {
+            let (out, ..) = build_display_row(
+                line,
+                &[],
+                &[],
+                &WhitespaceConfig::default(),
+                &[],
+                if reveal { &[] } else { &rules },
+            );
+            let _ = ct;
+            out.to_string()
+        };
+
+        // Line 1 is the cursor's: raw. Its neighbours: concealed.
+        assert_eq!(row("[[id:B][two]]", true), "[[id:B][two]]");
+        assert_eq!(row("[[id:A][one]]", false), "one");
+        assert_eq!(row("[[id:C][three]]", false), "three");
+        let _ = text;
     }
 
-    /// **The gate, asserted as an absence.**
+    /// **CL.1: moving the reveal line is INCREMENTAL, not a rebuild.**
     ///
-    /// A buffer whose language declares no conceal rules must produce
-    /// the SAME axis value in every modal state — otherwise every `i` in
-    /// every Rust file in the editor costs a viewport rebuild that
-    /// changes not one pixel. That is a regression no behaviour test
-    /// would catch, because nothing would look wrong; it would only be
-    /// slower.
+    /// This is what makes per-line reveal affordable at cursor rate. The
+    /// cursor moves on every keystroke; a full window rebuild there would be
+    /// ~1.5 ms against a 47 ns cache hit, and revealing the whole buffer — the
+    /// behaviour this replaced — avoided that cost only by doing the wrong
+    /// thing.
+    ///
+    /// Asserted as the worker's own decision rather than by timing, so it
+    /// cannot pass on a slow machine or flake on a fast one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cl1_moving_the_reveal_line_is_incremental() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+        let mut pane = pane_inputs(
+            matrix_cell.clone(),
+            Some(snap_of("alpha\nbeta\ngamma\n")),
+            v(1),
+            10,
+        );
+
+        // Cold build, no reveal.
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
+        // Same inputs: a cache hit, which is what a cursor move costs today.
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::CacheHit);
+
+        // The cursor moves onto a line: the reveal moved, nothing else did.
+        pane.conceal_reveal_line = Some(1);
+        assert_eq!(
+            recompute_pane(&pane, ct, &ws),
+            WorkerDecision::RecomputedIncremental,
+            "a reveal move must not rebuild the window"
+        );
+        // …and it settles, or the gate would re-fire every tick forever.
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::CacheHit);
+
+        // Moving it again is incremental too, not just the first transition.
+        pane.conceal_reveal_line = Some(2);
+        assert_eq!(
+            recompute_pane(&pane, ct, &ws),
+            WorkerDecision::RecomputedIncremental
+        );
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::CacheHit);
+    }
+
+    /// **CL.1 inverted H.4's axis rule, and that inversion is the feature.**
+    ///
+    /// H.4 made revealing move the `conceal` axis, because revealing was
+    /// buffer-wide and a buffer-wide change genuinely needs a rebuild. Scoped
+    /// to the cursor LINE, the axis must NOT move: it is the cache-hit key,
+    /// the cursor moves on every keystroke, and a moving key would turn a
+    /// 47 ns hit into a ~1.5 ms window rebuild on every `j`.
+    ///
+    /// The reveal line is compared beside the version instead, and a
+    /// difference takes the two-row incremental path.
+    #[test]
+    fn cl1_the_conceal_axis_does_not_move_with_the_cursor() {
+        let r = org_conceal_rules();
+        assert_ne!(
+            lattice_syntax::conceal::rules_version(&r),
+            0,
+            "a language WITH rules still has a non-zero axis"
+        );
+        // The axis is a property of the RULES, and the rules do not change
+        // when the cursor does. Asserted through the accessor the worker
+        // actually calls, so a reveal parameter cannot creep back into it.
+        assert_eq!(conceal_version_for(None), 0);
+    }
+
     #[test]
     fn h4_a_language_with_no_rules_never_moves_the_axis() {
         for reveal in [false, true] {
@@ -4461,8 +4707,8 @@ mod tests {
         // And the same through the resolver the render path actually
         // calls, with no syntax handle — the plain-text / synthetic
         // buffer case.
-        assert_eq!(conceal_version_for(None, false), 0);
-        assert_eq!(conceal_version_for(None, true), 0);
+        assert_eq!(conceal_version_for(None), 0);
+        assert_eq!(conceal_version_for(None), 0);
     }
 
     #[test]
@@ -4752,7 +4998,7 @@ mod tests {
             0,
             v(1),
             &ws,
-            false,
+            None,
         );
         let row0 = dm.row_at_source_line(0).expect("line 0 row");
         let first = row0.runs.first().expect("at least one run on line 0");
@@ -4835,7 +5081,7 @@ mod tests {
             0,
             v(1),
             &ws,
-            false,
+            None,
         );
         let projected = display_matrix_to_cell_matrix(&dm, ct);
 
@@ -6385,7 +6631,7 @@ mod tests {
                     ..MatrixVersion::ZERO
                 };
                 let inputs = crate::render_state::PaneCellsInputs {
-                    conceal_reveal: false,
+                    conceal_reveal_line: None,
                     // IG.2: default guide inputs — enabled with the default indent
                     // unit, which is the shape a test pane has unless it is
                     // exercising guides specifically.
@@ -6550,7 +6796,7 @@ mod tests {
                 ..MatrixVersion::ZERO
             };
             let inputs = crate::render_state::PaneCellsInputs {
-                conceal_reveal: false,
+                conceal_reveal_line: None,
                 // IG.2: default guide inputs — enabled with the default indent
                 // unit, which is the shape a test pane has unless it is
                 // exercising guides specifically.
@@ -6655,7 +6901,7 @@ mod tests {
         viewport_height: u32,
     ) -> crate::render_state::PaneCellsInputs {
         crate::render_state::PaneCellsInputs {
-            conceal_reveal: false,
+            conceal_reveal_line: None,
             // IG.2: default guide inputs — enabled with the default indent
             // unit, which is the shape a test pane has unless it is
             // exercising guides specifically.

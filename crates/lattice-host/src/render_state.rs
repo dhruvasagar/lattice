@@ -1473,7 +1473,19 @@ pub struct PaneCellsInputs {
     /// one of them — a pixel change to content the user did not touch,
     /// which is the standing veto. A pane that is not being edited has
     /// no reason to show editing affordances.
-    pub conceal_reveal: bool,
+    /// CL.1: the ONE line whose conceals are suppressed, or `None`.
+    ///
+    /// Was a buffer-wide `bool`: pressing `i` revealed every link in the
+    /// buffer at once, which is not what any editor does. Vim scopes reveal to
+    /// the cursor LINE (`concealcursor`), because the reason to reveal is to
+    /// edit the thing under the cursor — the other forty links on screen have
+    /// no reason to turn back into `[[id:…][…]]`.
+    ///
+    /// A line rather than a bool is also what keeps this affordable: the two
+    /// lines whose reveal state changed are rebuilt incrementally and every
+    /// other row is `Arc`-reused, so a cursor move costs two rows instead of a
+    /// window.
+    pub conceal_reveal_line: Option<u32>,
     /// IG.2: this buffer's resolved indent level. Guides are spaced by
     /// `shiftwidth` (one level of indent), not by `tabstop` (the width
     /// of a tab byte); `tabstop` is here too because measuring a

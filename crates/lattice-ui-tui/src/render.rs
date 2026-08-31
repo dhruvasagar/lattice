@@ -11131,6 +11131,94 @@ mod tests {
         assert_eq!(f.end_line, 2, "expected `}}` swallowed: {f:?}");
     }
 
+    /// **Closing a fold must not change the heading row's syntax colours.**
+    ///
+    /// Reported against a real org file: with `#+STARTUP: overview` most
+    /// sections open collapsed, and every `▶` heading rendered its TITLE
+    /// unstyled while its keyword and tags still coloured. The `▼` headings
+    /// right beside them — same level, same query — were coloured. So it is
+    /// the fold state, not the language or the level.
+    ///
+    /// The suspicion this pins: a capture whose node SPANS the folded subtree
+    /// (org's `(section)` is "a headline plus everything beneath it") produces
+    /// a span reaching past the one visible row a closed fold renders, and the
+    /// composer drops or mis-clips it — keeping the short spans that sit
+    /// entirely within the line (keyword, tags) and losing the long one.
+    ///
+    /// Asserted as an INVARIANT rather than against fixed colours: whatever
+    /// the heading looked like open, it must look the same closed, minus the
+    /// summary suffix and the fold marker. That holds for any grammar and
+    /// cannot rot into asserting a theme.
+    ///
+    /// **This fixture does NOT reproduce the org report, and that is the
+    /// finding.** It passes: the composer looks its spans up by buffer line
+    /// and a closed fold's heading keeps them. Which means the org failure is
+    /// not here — `visible_highlights` is already per-LINE (the syntax layer
+    /// decomposes a multi-line capture before the renderer sees it), so there
+    /// is no long span for a fold to clip. The remaining suspect is the
+    /// highlight RANGE: with everything collapsed, ~60 visible rows span ~2500
+    /// buffer lines, and whatever band actually gets computed is what colours.
+    /// Kept as a guard for the composer, which is now known-good.
+    #[test]
+    fn closing_a_fold_preserves_the_heading_rows_syntax_spans() {
+        let src = "pub struct Buffer {\n    rope: Rope,\n}\nlet trailing = 1;\n";
+        let mut app = app_with(src, 10);
+        app.set_foldmethod_for_test(crate::app::FoldMethod::Indent);
+        app.recompute_folds();
+        let idx = app
+            .editor
+            .folds
+            .iter()
+            .position(|f| f.start_line == 0)
+            .expect("struct fold");
+
+        // Open: the heading row as the user sees it uncollapsed.
+        app.editor.folds[idx].closed = false;
+        app.editor.publish_render_state();
+        let open = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
+        let open_styles: Vec<_> = open[0]
+            .spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect();
+
+        // Closed: same row, plus a summary suffix.
+        app.editor.folds[idx].closed = true;
+        app.editor.publish_render_state();
+        let closed = compose_visible_lines(&app, &app.ad().snapshot.clone(), 4, 80);
+        let closed_styles: Vec<_> = closed[0]
+            .spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.fg))
+            // The `⋯ N lines` suffix is decoration the open row has no peer
+            // for; everything before it must match.
+            .filter(|(text, _)| !text.contains('\u{22ef}'))
+            .collect();
+        // The fold MARKER legitimately differs (`▾` open, `▸` closed) — that
+        // is the feature, not the regression.
+        fn drop_marker<C>(v: Vec<(String, Option<C>)>) -> Vec<(String, Option<C>)> {
+            v.into_iter()
+                .filter(|(t, _)| !t.contains('\u{25be}') && !t.contains('\u{25b8}'))
+                .collect()
+        }
+        let open_styles = drop_marker(open_styles);
+        let closed_styles = drop_marker(closed_styles);
+
+        // Compare the STYLED runs only — trailing padding differs by the
+        // suffix's width and carries no colour either way.
+        fn styled<C: Clone>(v: &[(String, Option<C>)]) -> Vec<(String, Option<C>)> {
+            v.iter()
+                .filter(|(t, c)| c.is_some() && !t.trim().is_empty())
+                .cloned()
+                .collect()
+        }
+        assert_eq!(
+            styled(&closed_styles),
+            styled(&open_styles),
+            "a closed fold's heading lost syntax spans the open one had"
+        );
+    }
+
     #[test]
     fn linewise_visual_highlights_closed_fold_heading() {
         // Regression: previously the closed-fold heading branch in

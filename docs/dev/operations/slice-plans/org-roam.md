@@ -117,7 +117,8 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | the backlinks view | ✅ |
 | OR.10 | dailies | ✅ |
-| OR.11 | roam capture templates and `${field}` | 📝 |
+| OR.11a | `${field}` — written, **not wired** (see below) | 🚧 |
+| OR.11b | the capture buffer — **built by OC.7**, roam reuses it | 🚧 |
 | OR.12 | docs | 📝 |
 
 ### OR.1 — a plugin can persist something ✅
@@ -808,7 +809,32 @@ when `org.roam-directory` is unset rather than inventing a journal wherever the
 editor started. Plus 3 host tests for `create_parents` and 2 for the authorizer
 walk-up.
 
-### OR.11 — templates, the capture buffer, and the one thing capture cannot do 📝
+### OR.11 — templates, the capture buffer, and the one thing capture cannot do 🚧
+
+**Audited 2026-08-31. Both halves moved, in opposite directions.**
+
+**OR.11a (`${field}`) is written and does not run.** `src/roam_capture.rs`
+exists, is committed, has `expand_fields` and a unit-test module — and
+**`mod roam_capture;` is missing from `lib.rs`**, so the file is not compiled,
+`expand_fields` has no caller, and its tests never execute (`cargo test --lib`
+matches none of them). The consequence is the one this slice was written to
+prevent: ten of the eleven corpus templates open with `#+Title: ${title}`, so a
+created note still gets a literal `${title}`. Fixing it is one `mod` line plus
+wiring the call into the node-create path — but the wiring is the part that was
+never done, and the tests passing in isolation is exactly why it looked done.
+
+**OR.11b (the capture buffer) was built by OC.7**, for org-capture, and roam
+reuses it unchanged: same `org-capture-mode` minor on an `org-mode` major, same
+`C-c C-c` / `C-c C-k`, same handlers. See
+[`../../architecture/org-capture.md`](../../architecture/org-capture.md) §8.
+What remains for roam is only the ORDER — roam asks for the node title first,
+then the template, where org-capture asks for the template first. The scope
+widening recorded below is therefore already paid for.
+
+The rest of this section is the original plan, kept because its reasoning about
+the surface still holds:
+
+
 
 **Deps:** OR.6.
 

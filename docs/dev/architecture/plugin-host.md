@@ -400,6 +400,58 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   `local-offset` deliberately refuses in a multi-threaded process (it would answer UTC here,
   always) unless `unsound_local_offset` is on; chrono resolves the zone through
   `iana-time-zone` — already in the graph via `wasmtime-wasi` — rather than `localtime_r`.
+- **A plugin can SEED the buffer it opens (✅ OC.7a)**:
+  `open-synthetic-buffer-payload` carries `content`, `cursor` and
+  `activate-minor` beside `name` / `mode-id`.
+
+  This closes a hole a guest could not work around. A NATIVE mode fills its own
+  synthetic buffer from `on_activate`; the `modes` seam is **declaration-only**
+  — a guest exports `register-modes` and nothing else — so a plugin mode has no
+  such hook, and a guest emitting `Effect::OpenSyntheticBuffer` got a buffer it
+  could never put one character into. The other routes are closed too:
+  `effect.apply-edit` names a `buffer-id` this effect does not hand back, and
+  event handlers act through APIs rather than returning effects.
+
+  `content` is applied before the buffer is shown, so the first painted frame
+  is the finished one, and is **ignored when the buffer already existed** — a
+  re-open must not overwrite what the user has typed into it. `activate-minor`
+  mirrors `spawn-terminal-payload`'s field of the same name: the interesting
+  behaviour rides a minor on a general-purpose major, which is how org's
+  capture buffer is an `org-mode` buffer that also answers `C-c C-c`. All three
+  are optional, and omitting them is the pre-OC.7a effect exactly.
+
+- **A plugin picker source can style its rows (✅ PS.1)**:
+  `raw-candidate.display-spans`, a list of `{start, end, slot}` over `display`.
+
+  `display_spans` was host-only on the reasoning that render-time fields are
+  re-derived host-side — true for a grep hit, where the host has the path and
+  the line, and false for a row that is not a line of a file. An org-roam node
+  title is a headline's TEXT with no stars and no source line, so there was
+  nothing to re-derive from and every plugin picker row rendered plain.
+
+  `slot` is a **name**, not a style: a `Style` is a closed enum plus an
+  interned element id and neither crosses an ABI, but a name resolves through
+  the same path a `highlights.scm` capture takes — builtin categories first (so
+  a plugin cannot redefine `keyword` editor-wide), then the theme registry.
+  A guest's row is therefore coloured by the same vocabulary and the same
+  active colourscheme as the buffer it came from. Follows
+  `annotation-custom.slot`, already the string→theme channel.
+
+  Spans are validated at the boundary and an invalid one is **dropped, not
+  clamped** — clamping paints a run the guest never asked for. The UTF-8
+  boundary check is the one that makes this non-optional: slicing mid-codepoint
+  panics, and a guest computing offsets in `chars` instead of bytes is an
+  ordinary bug that must not take the picker down.
+
+- **A conceal rule can style what it leaves visible (✅ OL.1)**:
+  `conceal-rule.slot`, per RULE.
+
+  Conceal is general and most rules hide punctuation; only a rule whose
+  *remainder* means something declares a style, so adding a rule for something
+  else cannot accidentally paint it. What it paints is the visible remainder of
+  each match — see [`conceal.md`](conceal.md), which explains why that unit
+  rather than a named capture group.
+
 - **Durable plugin storage (✅ OR.1)**: `host-services.store-put` / `store-get` / `store-delete` /
   `store-keys(prefix)` / `store-generation`. Opaque bytes under guest-chosen strings; **the host
   never interprets either**. Scoped to the plugin's private data dir **by manifest id**.

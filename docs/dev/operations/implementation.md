@@ -7008,6 +7008,60 @@ harness, which read as a product bug through three rounds of diagnosis.
 
 ---
 
+## The agenda as a dashboard, and the capture buffer (2026-08-31)
+
+| Slice | What | Status |
+|---|---|---|
+| FW.1 | the cell matrix's chunk window is sized in buffer LINES, not screen rows | ✅ |
+| FW.2 | highlight the visible RUNS, not the whole fold-stretched window | ✅ |
+| AS.1 | agenda sections; undated TODOs become visible at all | ✅ |
+| AS.2 | `org.agenda-sections` — your blocks, from TOML or `init.rs` | ✅ |
+| AH.1 | grammars resolve from the LIVE registry, not a boot snapshot | ✅ |
+| PS.1 | a plugin picker source can style its rows | ✅ |
+| AF.1 | multibuffer fold grouping is declared by the provider | ✅ |
+| AF.2 | the agenda opens collapsed to its blocks | ✅ |
+| OC.7a | a plugin can seed the synthetic buffer it opens | ✅ |
+| OC.7b | org-capture opens a buffer; `C-c C-c` / `C-c C-k` | ✅ |
+| OC.7c | a plugin major gives its pathless buffer a language | ✅ |
+| OC.7d | finalize returns the pane to the origin buffer | ⛔ |
+| OL.1 | a conceal rule can style what it leaves visible | ✅ |
+| CL.1 | reveal the cursor's LINE, not the whole buffer | ✅ |
+
+**Four bugs here were invisible because every part looked right.** Worth
+recording as a class, because reading the code did not find any of them:
+
+- **FW.1** — `viewport_height` counts screen ROWS and was spent as buffer
+  LINES. Identical until something is folded, and every test and bench in that
+  area ran `foldenable: false`. A collapsed org file painted its first
+  screenful of lines and left the rest uncoloured.
+- **AH.1** — `LangRegistry::standard()` *is* `registry::live()`, and returns a
+  SNAPSHOT. Two places captured one at boot, which is before any plugin
+  registers a grammar, so a plugin language could never highlight through
+  them. `detect_from_path` resolved `.org` correctly, the registry was wired,
+  the grammar existed — only the registry being *asked* was wrong.
+- **OC.7a** — the `modes` seam is declaration-only, so a plugin mode has no
+  `on_activate` and a guest could open a buffer it was then unable to write
+  into. Capture fell back to a one-line prompt and the template was never
+  shown.
+- **OL.1** — org's `highlights.scm` had no link rule, and conceal made that
+  worse rather than milder: it hides the brackets, so what survives is prose.
+
+**A tried-and-reverted result worth keeping.** The obvious fix for OL.1 was a
+`highlights.scm` link capture. The pinned tree-sitter-org has **no link node**
+(verified against its `node-types.json`); a query naming an absent node fails to
+COMPILE, and a failed query compile fails the whole language registration — so
+`.org` stopped resolving entirely. A newer upstream grammar does model links,
+and bumping to it is the alternative if conceal-based styling is ever too
+coarse.
+
+**Two perf results.** FW.2 took the collapsed-file build from 52.3 ms to
+2.33 ms (22×) while leaving the fold-free path byte-identical; CL.1 kept
+per-line reveal off the cache-hit key so a cursor move stays 47 ns instead of
+becoming a ~1.5 ms window rebuild. Both are in
+[`benchmarks.md`](benchmarks.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

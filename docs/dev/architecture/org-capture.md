@@ -1,4 +1,4 @@
-# Org capture: many templates, prompted input
+# Org capture: many templates, a capture buffer
 
 > **Where the code is.** Everything this page describes is implemented in
 > [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
@@ -7,7 +7,11 @@
 > method for any of it. What lives in *this* tree is the seams the plugin
 > contributes through — see [`plugin-host.md`](plugin-host.md).
 
-**Status:** built (OC.1–OC.6). Supersedes the single-template capture that
+**Status:** built (OC.1–OC.7). **OC.7 replaced the capture SURFACE** — where
+this page says "prompt", read §8: a capture now opens a real editable buffer
+holding the expanded template, and `C-c C-c` / `C-c C-k` file or discard it.
+Sections 1–7 describe how a template is chosen, expanded and targeted, and all
+of that is unchanged. Supersedes the single-template capture that
 shipped with [`org-mode.md`](org-mode.md)'s OM.11. Depends on
 [`plugin-transients.md`](plugin-transients.md) for the menu. Slice plan:
 [`../operations/slice-plans/archive/org-capture.md`](../operations/slice-plans/archive/org-capture.md).
@@ -182,9 +186,17 @@ moved on by the time you notice the typo. It diverges from emacs org-capture,
 which asks sequentially — a real muscle-memory cost, accepted because the
 mechanism is one the editor already has and the form is the better surface.
 
-**A template with no questions keeps the direct prompt.** One hop, exactly as
-before. The common template is a single `%?`, and routing it through a menu
-would cost three keystrokes to collect the one value a prompt already asks for.
+**A template with no questions skips the fields menu.** Nothing to ask, so the
+capture buffer (§8) opens straight away. Before OC.7 this said "keeps the
+direct prompt", which was the same decision about a surface that no longer
+exists.
+
+**The fields menu survived OC.7 unchanged**, and the order it produces is
+emacs's: answers first, then the buffer. What changed is only what happens
+after the last answer — the menu used to write the file, and now it opens the
+capture buffer with the answers already substituted. Its body row seeds the
+`%?` point rather than being the final word, so an answer typed into the menu
+is a draft you keep editing.
 
 ### Two submit actions, not one that guesses
 
@@ -193,6 +205,10 @@ action `[key, answer…]`. A single action would have to sniff which shape it
 got, so they are named separately (`org-capture-submit`,
 `org-capture-fields-submit`) and each one's arguments are a fact rather than an
 inference.
+
+OC.7 adds a third, `org-capture-finalize`, which takes no arguments at all —
+its input is the buffer. The same reasoning applies: the surfaces differ, so
+the actions do.
 
 ### Field names are positional
 
@@ -270,3 +286,92 @@ typing path.
 **#3 Vim modal editing.** The prefix is a chord in a mode's keymap layer, and
 the templates' actions are ordinary grammar actions — capture extends the
 grammar rather than escaping it.
+
+---
+
+## 8. The capture buffer (OC.7)
+
+**Emacs opens a buffer; lattice opened a one-line prompt.** `Effect::OpenPrompt`
+carried `initial: String::new()`, so the template was never shown — it was
+expanded only at submit. You typed into an empty minibuffer and found out what
+the template did afterwards. Reported as "I don't see a capture buffer at all",
+which was literally true.
+
+Now: pick a template → prompts for any `%^{…}` → a real editable buffer holding
+the expanded template, caret where `%?` was. `C-c C-c` files it, `C-c C-k`
+discards it.
+
+| | emacs | lattice |
+|---|---|---|
+| template menu | temp window, one key each | the `<leader>oc` transient |
+| capture surface | a buffer | **a buffer** |
+| editing | free, multi-line, point at `%?` | **the same** |
+| finalize / abort | `C-c C-c` / `C-c C-k` | **the same** |
+
+### It was not possible before OC.7a
+
+A native mode fills its own synthetic buffer from `on_activate`. The `modes`
+WIT seam is **declaration-only** — a guest exports `register-modes` and nothing
+else — so a plugin mode has no such hook, and a guest emitting
+`Effect::OpenSyntheticBuffer` got a buffer it could never put a character into.
+The other routes are closed too: `effect.apply-edit` names a `buffer-id` the
+open does not hand back, and event handlers act through APIs rather than
+returning effects.
+
+So `open-synthetic-buffer-payload` gained `content`, `cursor` and
+`activate-minor` (OC.7a). All optional; omitting them is the pre-OC.7a effect
+exactly, which a dozen native emitters rely on. See
+[`plugin-host.md`](plugin-host.md).
+
+### `%?` inverts
+
+The prompt substituted `%?` with text that arrived *before* the expansion. A
+buffer expands first and you type into it, so `%?` stops being a value and
+becomes a **position**.
+
+`expand_for_buffer` finds it by expanding with a NUL sentinel and removing it,
+rather than walking the template a second time — every other placeholder
+(`%U`, `%T`, `%^{…}`, `%a`) still has to expand around it, and a second copy of
+those rules would drift. (`%t` was added to one such copy and not another
+once already.)
+
+A template with **no** `%?` puts the caret at the end, which is emacs's
+behaviour and which falls out rather than being coded: `expand_with` already
+appends non-empty text on its own line so the prompt flow could not silently
+discard what you typed. One rule, two jobs. Finalize trims trailing newlines so
+that placement does not write a blank line into your file on every capture.
+
+### The chords ride a minor, on an `org-mode` major
+
+A capture buffer **is** an org buffer — you want org's grammar, motions,
+folding and TODO cycling while writing the entry — so its major is `org-mode`
+and only the finalize/abort pair is capture-specific. Those live on
+`org-capture-mode`, a minor with `Manual` activation named by the effect that
+opens the buffer.
+
+On the major, `C-c C-c` would file-and-close every org file you touched.
+Scoping to a minor activated on exactly one buffer is also what makes `<C-c>`
+safe to bind at all, since it is vim's interrupt.
+
+**Org-roam capture reuses this unchanged** (OR.11): same buffer, same chords,
+same handlers. Only the order of what is asked before the buffer opens differs
+— roam picks the title first, then the template.
+
+### Aborting creates nothing
+
+`C-c C-k` writes no file, and that **falls out of the buffer model** rather
+than being cleaned up: the file is written on finalize, so an abort has nothing
+to undo. It is the property OR.6's `WriteToFile`-on-create does not have, and a
+large part of what the ABI addition bought.
+
+### Known gaps
+
+- **The pane does not return to where the capture was fired from.** Finalize
+  closes the buffer and lands on whatever the host falls back to. A guest
+  cannot fix it: `switch-buffer` is a picker-accept outcome, not an `effect`.
+  Tracked as OC.7d; pinned by an assertion so the day it changes, a test says
+  so.
+- **One capture in flight.** The finalize handler recovers its target from
+  guest-side state, because the action context carries a `buffer-id` but no
+  buffer *name*, and a synthetic buffer's `document.path()` is `none`. Emacs's
+  default is likewise one.

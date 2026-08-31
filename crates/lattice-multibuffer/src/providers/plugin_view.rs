@@ -123,6 +123,7 @@ pub fn open_plugin_view(
             BufferFlags::default(),
             (*registry).clone(),
             lang_registry,
+            crate::FoldGrouping::SourceFile,
         ),
     };
 

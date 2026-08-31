@@ -1157,6 +1157,9 @@ pub fn open_project_diff(
             BufferFlags::default(),
             (*registry).clone(),
             lang_registry,
+            // AF.1: hunks are titled with their LINE NUMBER, so titles are
+            // neither unique nor a grouping key; the source path is. Default.
+            lattice_multibuffer::FoldGrouping::SourceFile,
         ),
     };
 

@@ -125,6 +125,7 @@ fn empty_view_creates_inserts_and_activates_major() {
         BufferFlags::default(),
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     // Step 4: buffer-registry insert recorded the right kind.
@@ -160,6 +161,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         BufferFlags::default(),
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     let b = create_multibuffer_view(
         &mut activator,
@@ -169,6 +171,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         BufferFlags::default(),
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     assert_ne!(a, b);
     assert_eq!(activator.mb_registry.len(), 2);
@@ -190,6 +193,7 @@ async fn append_excerpts_after_create_extends_view() {
         BufferFlags::default(),
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     let handle = activator.mb_registry.handle(view_id).unwrap();
     assert_eq!(handle.excerpt_count(), 0);

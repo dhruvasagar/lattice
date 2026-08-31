@@ -317,6 +317,12 @@ pub fn open_scan_view(
             BufferFlags::default(),
             (*registry).clone(),
             lang_registry,
+            // AF.1: the agenda groups by DATE and SECTION, and its rows
+            // interleave across files on purpose (OM.A2) — so a file is the
+            // one thing that is not a contiguous run here. Folding by source
+            // file would make `home.org`'s fold swallow every `work.org` row
+            // sitting between its earliest and latest entry.
+            crate::FoldGrouping::HeaderRuns,
         ),
     };
 

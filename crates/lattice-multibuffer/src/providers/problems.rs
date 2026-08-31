@@ -175,6 +175,7 @@ pub fn create_problems_view(
         BufferFlags::default(),
         registry,
         lang_registry,
+        crate::FoldGrouping::SourceFile,
     );
 
     set_problems_headerline(activator, view_id, n_entries, n_files);

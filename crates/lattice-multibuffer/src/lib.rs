@@ -314,6 +314,9 @@ struct MultibufferInner {
     // SyntaxHandle creation. Set once after construction via
     // `set_lang_registry`; `None` until the host wires it.
     lang_registry: std::sync::OnceLock<Arc<LangRegistry>>,
+    /// AF.1: how this view's rows GROUP for folding, declared by the provider
+    /// that built it. See [`FoldGrouping`].
+    fold_grouping: std::sync::atomic::AtomicU8,
     // K.4.7 (2026-06-08): monotonic generation counter. Incremented
     // every time `source_syntax` gains a new handle (`add_source` /
     // `set_lang_registry`). Folded into `MatrixVersion::syntax` in
@@ -664,6 +667,7 @@ impl MultibufferDocumentHandle {
                 registry,
                 lang_registry: std::sync::OnceLock::new(),
                 excerpt_syntax_gen: std::sync::atomic::AtomicU64::new(0),
+                fold_grouping: std::sync::atomic::AtomicU8::new(FoldGrouping::SourceFile as u8),
                 publish_seq: std::sync::atomic::AtomicU64::new(0),
             }),
         })
@@ -1123,6 +1127,28 @@ impl MultibufferDocumentHandle {
     /// Subsequent `add_source` calls use the registry to detect the
     /// source language and create a `SyntaxHandle` per source.
     ///
+    /// AF.1: how this view's rows group for folding. Declared by the provider
+    /// that builds the view, because the provider is the only thing that knows
+    /// what its rows MEAN — see [`FoldGrouping`].
+    pub fn set_fold_grouping(&self, grouping: FoldGrouping) {
+        self.inner
+            .fold_grouping
+            .store(grouping as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This view's fold grouping. [`FoldGrouping::SourceFile`] unless a
+    /// provider said otherwise, which is the pre-AF.1 behaviour.
+    pub fn fold_grouping(&self) -> FoldGrouping {
+        match self
+            .inner
+            .fold_grouping
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            x if x == FoldGrouping::HeaderRuns as u8 => FoldGrouping::HeaderRuns,
+            _ => FoldGrouping::SourceFile,
+        }
+    }
+
     /// Also retroactively creates handles for sources that were already
     /// added before this call (the common case: `new(sources, ...)` is
     /// called first, then `set_lang_registry` wires highlighting).
@@ -5323,6 +5349,109 @@ mod tests {
     }
 }
 
+/// AF.1: how a multibuffer view's rows group for folding.
+///
+/// A per-VIEW property because the answer is not a property of multibuffers —
+/// it is a property of what a given provider's rows mean, and the three
+/// shipped providers disagree:
+///
+/// - **search** headers every excerpt with its file path, and its excerpts
+///   arrive grouped by file, so a file IS a contiguous run;
+/// - **project-diff** headers each hunk with its LINE NUMBER, so titles are
+///   neither unique nor a grouping key at all — only the source path is;
+/// - **the agenda** headers the first row of each date/section run and blanks
+///   the rest, and its rows deliberately INTERLEAVE across files (OM.A2), so
+///   the source path is the one thing that is not a grouping.
+///
+/// Hence a declaration rather than a heuristic. A provider says how its rows
+/// group; the mode registers the matching fold source. Guessing from the
+/// excerpt shape would be right for two of the three and silently wrong for
+/// the third, which is how `home.org`'s fold came to swallow `work.org`'s rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FoldGrouping {
+    /// One fold per source file, spanning that file's first excerpt to its
+    /// last. The default, and correct wherever excerpts arrive grouped by file.
+    SourceFile = 0,
+    /// One fold per HEADER RUN — what the user actually sees as a group.
+    HeaderRuns = 1,
+}
+
+/// Namespace for header-group fold provider IDs.
+const HEADER_GROUP_FOLD_NAMESPACE: u64 = 0xBBBB_0005_0000_0000;
+
+/// AF.1: one open [`lattice_core::Fold`] per **header run** — the rows a user
+/// sees under one header.
+///
+/// The grouping rule handles both header conventions in the tree with one
+/// pass, which is what lets this be a shared mechanism rather than an
+/// agenda-shaped special case:
+///
+/// - a **non-empty** title that differs from the current group's starts a new
+///   group (search's per-excerpt file headers; the agenda's run labels);
+/// - a **non-empty** title equal to the current group's continues it (search's
+///   second and later excerpts from one file);
+/// - an **empty** title continues the current group (the agenda's rows after
+///   the first of a run — an empty title renders no header row, which is
+///   exactly what "I belong to the group above" means).
+///
+/// `identity` is the group's TITLE, so the closed/open state survives a `gr`
+/// refresh — `recompute_folds` carries state by matching identity, and the
+/// title is what the user was collapsing. That is the same reasoning PD.5a
+/// applied to paths for [`FileBoundaryFoldProvider`], and it holds here for the
+/// same reason: the hit-count badge lives in its own field rather than in
+/// `title`, so a refresh that changes the count does not change the identity.
+pub struct HeaderGroupFoldProvider {
+    id: lattice_core::ProviderId,
+    handle: MultibufferDocumentHandle,
+}
+
+impl HeaderGroupFoldProvider {
+    pub fn new(handle: MultibufferDocumentHandle, buffer_id: BufferId) -> Self {
+        let id = lattice_core::ProviderId(HEADER_GROUP_FOLD_NAMESPACE | buffer_id.0 as u64);
+        Self { id, handle }
+    }
+}
+
+impl lattice_core::FoldSource for HeaderGroupFoldProvider {
+    fn id(&self) -> lattice_core::ProviderId {
+        self.id
+    }
+
+    fn compute_folds(&self) -> Vec<lattice_core::Fold> {
+        let excerpts = self.handle.excerpts();
+        let starts = crate::motions::excerpt_start_rows(&excerpts);
+        let mut folds: Vec<lattice_core::Fold> = Vec::new();
+        let mut current: Option<String> = None;
+        for (excerpt, &start) in excerpts.iter().zip(starts.iter()) {
+            let end = start.saturating_add(excerpt.line_count().saturating_sub(1));
+            let title = excerpt.header.title.as_str();
+            let starts_group = !title.is_empty() && current.as_deref() != Some(title);
+            if starts_group {
+                current = Some(title.to_string());
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(title, &mut hasher);
+                folds.push(lattice_core::Fold {
+                    start_line: start,
+                    end_line: end,
+                    closed: false,
+                    identity: Some(std::hash::Hasher::finish(&hasher)),
+                });
+            } else if let Some(last) = folds.last_mut() {
+                // Extend the open group. `max` rather than assignment because
+                // an excerpt's rows are contiguous but a provider is not
+                // required to emit them in row order.
+                last.end_line = last.end_line.max(end);
+            }
+            // No `else`: rows before the first header belong to no group and
+            // get no fold, rather than being swept into a group that has not
+            // started. A view whose first excerpt has an empty title is
+            // malformed rather than something to guess about.
+        }
+        folds
+    }
+}
+
 // ── M.7: ExcerptFoldProvider ────────────────────────────────────────────────
 
 /// Namespace for excerpt fold provider IDs: `0xBBBB_0003_0000_0000 | buffer_id`.
@@ -5577,6 +5706,153 @@ mod excerpt_fold_tests {
         );
     }
 
+    // ── AF.1: HeaderGroupFoldProvider ───────────────────────────────────
+
+    /// **The agenda's convention**: a label on the first row of a run, an
+    /// empty title on the rest. An empty title renders no header row, which is
+    /// exactly what "I belong to the group above" means — so it continues the
+    /// group rather than starting one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn header_groups_fold_a_run_that_interleaves_files() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\nz\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        // Two groups, each drawing rows from BOTH files — the agenda's shape.
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 0).with_header(ExcerptHeader::new("Overdue".to_string())),
+            Excerpt::new(buf_b, 0, 0).with_header(ExcerptHeader::new(String::new())),
+            Excerpt::new(buf_a, 1, 1).with_header(ExcerptHeader::new("Today".to_string())),
+            Excerpt::new(buf_b, 1, 1).with_header(ExcerptHeader::new(String::new())),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let folds = HeaderGroupFoldProvider::new(mb, buf_id).compute_folds();
+
+        assert_eq!(folds.len(), 2, "one fold per header run, got {folds:?}");
+        assert_eq!((folds[0].start_line, folds[0].end_line), (0, 1), "Overdue");
+        assert_eq!((folds[1].start_line, folds[1].end_line), (2, 3), "Today");
+        // The property `FileBoundaryFoldProvider` cannot give the agenda: no
+        // fold spans a row belonging to a different group.
+        assert!(
+            folds[0].end_line < folds[1].start_line,
+            "groups must not overlap: {folds:?}"
+        );
+    }
+
+    /// **Search's convention**: EVERY excerpt carries its file's path as the
+    /// title. A repeated title continues the run, so this still yields one
+    /// fold per file — the same answer `FileBoundaryFoldProvider` gives on the
+    /// layout it was built for. That equivalence is what makes this a shared
+    /// mechanism rather than an agenda-shaped special case.
+    #[tokio::test(flavor = "current_thread")]
+    async fn header_groups_match_file_folds_on_the_search_layout() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        let hdr = |p: &str| ExcerptHeader::new(p.to_string());
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 0).with_header(hdr("/a.rs")),
+            Excerpt::new(buf_a, 1, 1).with_header(hdr("/a.rs")),
+            Excerpt::new(buf_b, 0, 0).with_header(hdr("/b.rs")),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts.clone(), r.clone()).unwrap();
+        let buf_id = mb.buffer_id();
+        let header_folds = HeaderGroupFoldProvider::new(mb.clone(), buf_id).compute_folds();
+        let file_folds = FileBoundaryFoldProvider::new(mb, buf_id).compute_folds();
+
+        let bounds = |fs: &[lattice_core::Fold]| -> Vec<(u32, u32)> {
+            let mut v: Vec<_> = fs.iter().map(|f| (f.start_line, f.end_line)).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            bounds(&header_folds),
+            bounds(&file_folds),
+            "on a file-grouped layout the two providers must agree"
+        );
+        assert_eq!(bounds(&header_folds), vec![(0, 1), (2, 2)]);
+    }
+
+    /// Identity is the group's TITLE, so a `gr` refresh that mints new
+    /// `BufferId`s keeps the user's collapsed groups collapsed. Same reasoning
+    /// as PD.5a's path identity, and the reason a row-position fallback is not
+    /// enough: the rows themselves move.
+    #[tokio::test(flavor = "current_thread")]
+    async fn header_group_identity_is_the_title_not_the_rows() {
+        let build = |extra: &str| {
+            let r = reg();
+            let id = BufferId::next();
+            let doc = spawn_document(id, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+            let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+            sources.insert(id, Arc::new(doc) as Arc<dyn Document>);
+            // `extra` shifts the group DOWN a row between the two builds.
+            let mut excerpts = Vec::new();
+            if !extra.is_empty() {
+                excerpts.push(
+                    Excerpt::new(id, 0, 0).with_header(ExcerptHeader::new(extra.to_string())),
+                );
+            }
+            excerpts
+                .push(Excerpt::new(id, 1, 1).with_header(ExcerptHeader::new("Today".to_string())));
+            let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+            let buf_id = mb.buffer_id();
+            (id, HeaderGroupFoldProvider::new(mb, buf_id).compute_folds())
+        };
+        let (first, before) = build("");
+        let (second, after) = build("Overdue");
+        assert_ne!(first, second, "the fixture must mint a new BufferId");
+
+        let today_before = before.iter().find(|_| true).expect("a fold");
+        let today_after = after.last().expect("the Today fold");
+        assert_ne!(
+            today_before.start_line, today_after.start_line,
+            "the fixture must MOVE the group, or identity is not what is tested"
+        );
+        assert_eq!(
+            today_before.identity, today_after.identity,
+            "same title across a rebuild must keep its fold identity"
+        );
+    }
+
+    /// Rows before the first header belong to no group and get no fold, rather
+    /// than being swept into a group that has not started.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rows_before_the_first_header_are_not_folded() {
+        let r = reg();
+        let id = BufferId::next();
+        let doc = spawn_document(id, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, Arc::new(doc));
+        let excerpts = vec![
+            Excerpt::new(id, 0, 0).with_header(ExcerptHeader::new(String::new())),
+            Excerpt::new(id, 1, 1).with_header(ExcerptHeader::new("Group".to_string())),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let folds = HeaderGroupFoldProvider::new(mb, buf_id).compute_folds();
+        assert_eq!(folds.len(), 1, "got {folds:?}");
+        assert_eq!(folds[0].start_line, 1, "the fold starts at the header row");
+    }
+
+    /// A view that declares nothing keeps the pre-AF.1 grouping.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fold_grouping_defaults_to_source_file() {
+        let mb = MultibufferDocumentHandle::empty(reg());
+        assert_eq!(mb.fold_grouping(), FoldGrouping::SourceFile);
+        mb.set_fold_grouping(FoldGrouping::HeaderRuns);
+        assert_eq!(mb.fold_grouping(), FoldGrouping::HeaderRuns);
+    }
+
     // ── FileBoundaryFoldProvider ────────────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
@@ -5638,6 +5914,50 @@ mod excerpt_fold_tests {
         assert_ne!(fold_id.0, status_raw);
         assert_eq!(fold_id.0 >> 32, 0xBBBB_0004);
         assert_eq!(fold_id.0 & 0xFFFF_FFFF, 42);
+    }
+
+    /// **A file-boundary fold spans every row between a file's first and last
+    /// excerpt — including OTHER files' rows when they interleave.**
+    ///
+    /// Harmless for the search provider, whose excerpts arrive grouped by
+    /// file. Wrong for the agenda, whose whole point is that rows interleave
+    /// across files by date (OM.A2): collapsing `home.org` there would
+    /// swallow the `work.org` rows sitting between its earliest and latest
+    /// entry, and the fold's header would claim rows that are not its.
+    ///
+    /// Pinned as the CURRENT behaviour rather than as a bug to fix in place —
+    /// it is correct for the provider it was built for. The agenda's answer
+    /// is to group folds by what the user actually sees (the header runs),
+    /// which is `HeaderGroupFoldProvider`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn file_boundary_folds_swallow_interleaved_rows() {
+        let r = reg();
+        let buf_a = BufferId::next();
+        let buf_b = BufferId::next();
+        let doc_a = spawn_document(buf_a, CoreDocument::from_text("a\nb\nc\n"), r.clone());
+        let doc_b = spawn_document(buf_b, CoreDocument::from_text("x\ny\n"), r.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(buf_a, Arc::new(doc_a));
+        sources.insert(buf_b, Arc::new(doc_b));
+        // INTERLEAVED, the agenda's shape: a(row 0), b(row 1), a(row 2).
+        let excerpts = vec![
+            Excerpt::new(buf_a, 0, 0),
+            Excerpt::new(buf_b, 0, 0),
+            Excerpt::new(buf_a, 1, 1),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, r).unwrap();
+        let buf_id = mb.buffer_id();
+        let folds = FileBoundaryFoldProvider::new(mb, buf_id).compute_folds();
+
+        let a_fold = folds
+            .iter()
+            .find(|f| f.start_line == 0)
+            .expect("buf_a fold");
+        assert_eq!(
+            (a_fold.start_line, a_fold.end_line),
+            (0, 2),
+            "buf_a's fold spans row 1, which belongs to buf_b"
+        );
     }
 
     #[test]

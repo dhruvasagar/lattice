@@ -155,6 +155,7 @@ pub fn create_narrow_view(
         BufferFlags::default(),
         registry,
         lang_registry,
+        crate::FoldGrouping::SourceFile,
     );
 
     // Set the sticky headerline. Narrow is instantaneous — no

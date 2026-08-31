@@ -220,13 +220,31 @@ impl Mode for MultibufferMode {
                             let excerpt_id = svc.add_source(excerpt_provider, core_buffer_id);
                             fold_registrations.push((svc.clone(), excerpt_id));
 
-                            // M.8: one fold per source file (union of that file's excerpts).
-                            let file_provider = Arc::new(crate::FileBoundaryFoldProvider::new(
-                                (*mb_handle).clone(),
-                                core_buffer_id,
-                            ));
-                            let file_id = svc.add_source(file_provider, core_buffer_id);
-                            fold_registrations.push((svc, file_id));
+                            // M.8 / AF.1: the second fold source is whichever
+                            // grouping the PROVIDER that built this view
+                            // declared. Not a heuristic over the excerpt shape:
+                            // search groups by file, project-diff titles its
+                            // hunks with line numbers, and the agenda
+                            // interleaves files inside date groups on purpose —
+                            // so the same guess is right for two and silently
+                            // wrong for the third.
+                            let group_id = match mb_handle.fold_grouping() {
+                                crate::FoldGrouping::SourceFile => {
+                                    let p = Arc::new(crate::FileBoundaryFoldProvider::new(
+                                        (*mb_handle).clone(),
+                                        core_buffer_id,
+                                    ));
+                                    svc.add_source(p, core_buffer_id)
+                                }
+                                crate::FoldGrouping::HeaderRuns => {
+                                    let p = Arc::new(crate::HeaderGroupFoldProvider::new(
+                                        (*mb_handle).clone(),
+                                        core_buffer_id,
+                                    ));
+                                    svc.add_source(p, core_buffer_id)
+                                }
+                            };
+                            fold_registrations.push((svc, group_id));
                         }
                         None => {
                             tracing::debug!(

@@ -378,6 +378,9 @@ pub fn create_references_view(
         BufferFlags::default(),
         registry,
         lang_registry,
+        // AF.1: references arrive grouped by file and each carries its path as
+        // a header, so a file is a contiguous run — the default.
+        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     if let Some(svc) = activator.services().get::<LspReferencesServiceHandle>() {

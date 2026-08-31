@@ -885,6 +885,9 @@ pub fn project_search(
         BufferFlags::default(),
         registry,
         lang_registry,
+        // AF.1: search excerpts arrive grouped by file and every one carries
+        // its path as a header, so a file IS a contiguous run — the default.
+        crate::FoldGrouping::SourceFile,
     );
 
     // CG.2: arm through the shared foreground slot so `<C-g>` reaches

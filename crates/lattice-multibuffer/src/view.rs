@@ -75,6 +75,11 @@ pub fn create_multibuffer_view(
     // K.4.7 (2026-06-07): when `Some`, wired into the handle so
     // `add_source` creates a `SyntaxHandle` per source file.
     lang_registry: Option<Arc<LangRegistry>>,
+    // AF.1: how this view's rows group for folding. A PARAMETER rather than a
+    // setter on the returned handle because `MultibufferMode::on_activate`
+    // reads it while activating the mode below — by the time the caller has a
+    // BufferId back, the fold source has already been chosen.
+    fold_grouping: crate::FoldGrouping,
 ) -> BufferId {
     let services = activator.services();
 
@@ -116,6 +121,7 @@ pub fn create_multibuffer_view(
     if let Some(lr) = lang_registry {
         handle.set_lang_registry(lr);
     }
+    handle.set_fold_grouping(fold_grouping);
     let buffer_id = handle.buffer_id();
 
     // Step 2.5 (M.4 2026-06-01): auto-subscribe to source events

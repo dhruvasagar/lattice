@@ -107,6 +107,8 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.2 | `host-services.watch` / `unwatch` — a debounced directory watch | ✅ |
 | OR.3 | `host-services.new-uuid` | ✅ |
 | OR.4 | `org.roam-directory` and the indexer | ✅ |
+| OR.4a | setting the directory builds the index (no manual sync) | ✅ |
+| OR.4b | the cold scan is carried across calls, with progress | ✅ |
 | OR.5 | the picker offers to create what it could not find | ✅ |
 | OR.5b | one component may register N picker sources | ✅ |
 | OR.6 | `:org-roam-find-node` | ✅ |
@@ -326,6 +328,43 @@ first, but the `warn` naming both paths is missing — the guest cannot log
 (`logging` is absent from the grammar linker and importing it fails the whole
 component, the OC.2 scar), so surfacing it needs a host-side channel. Carried
 into OR.12.
+
+### OR.4a — setting the directory builds the index ✅
+
+**Found in use, 2026-08-31.** `register_events` runs the boot walk at
+plugin-load time; an `init.rs` sets `org.roam-directory` from a
+`plugin-loaded` handler, which fires after. The walk read an unset option,
+indexed nothing, and with nothing subscribed to `OptionChanged` never ran
+again — so roam was silently inert for exactly the users who configured it the
+documented way.
+
+Every roam test called `:org-roam-sync` by hand (the harness documents that it
+must, for the same ordering reason), so the suite passed against a product with
+no automatic path at all. The test added with the fix syncs NOTHING.
+
+### OR.4b — the cold scan does not trap ✅
+
+**Found in use, 2026-08-31, on the reference corpus.** `sync_all` did the whole
+cold walk in ONE guest call: 706 files × (read + hash + parse + store write) ≈
+27 s, against an async-seam budget of ~1 s. The guest trapped on the epoch
+deadline and the host quarantined the plugin for the session — which is why
+`:org-roam-sync` said "re-scanning" and never finished, and why nothing org did
+worked afterwards.
+
+Not caught because **every** roam fixture is a four-file corpus. The bug is a
+function of corpus SIZE, the one axis no fixture varied.
+
+The scan now queues once and indexes for a bounded **time** per call (250 ms,
+4× headroom), re-arming through `org/roam-scan-step` until drained. A time
+budget rather than a file count because wall-clock is what runs out, and a count
+mis-approximates it exactly where notes are large. A generation stamp on each
+step stops a chain left over from a previous root. Progress shows in the
+modeline.
+
+**Tests:** a corpus of 120 files — several batches, so the CHAIN is what is
+under test; a single-batch corpus would pass against the broken version too.
+Verified separately against the real 706-file corpus: indexes in ~70 s under a
+debug host, no trap.
 
 ### OR.5 — the picker offers to create what it could not find ✅
 

@@ -242,6 +242,40 @@ what it did not observe. The walk reads 706 files (~10–50 µs each, warm) and
 parses only those whose content hash moved — the same shape OT.3b established,
 where the read is the cheap end and the parse is what the hash protects.
 
+**The walk is carried across many guest calls, not done in one (OR.4b).** The
+per-file arithmetic above is right and its *sum* was never checked: a COLD pass
+parses every file, and on the reference corpus that measured ~27 s in one call
+against an async seam whose budget is `epoch_deadline: 1_000` — about one
+second. The guest ran past the deadline, trapped, and the host quarantined the
+plugin for the session.
+
+Every symptom pointed somewhere else. The picker showed `0/0`, because the
+`nodes` blob is only written at the END of a scan. `:org-roam-sync` echoed
+"re-scanning" and never finished. And after the first trap nothing org did
+worked at all, because a quarantined plugin stays quarantined — so the failure
+looked like configuration, not like a budget.
+
+So a scan queues its file list once, then indexes for a bounded **time** per
+call and rings its own doorbell (`org/roam-scan-step`) until the queue drains.
+
+*Time*, not a file count. What runs out is wall-clock against the epoch
+deadline; a count only approximates that, and approximates it worst where it
+matters most — a corpus of large notes costs several times a corpus of small
+ones per file, so the count that is safe on one traps on the other. The budget
+is 250 ms, leaving 4× headroom, checked *between* files so none is abandoned
+half-indexed, with a one-file floor so a machine slow enough to exceed the
+budget on a single file still makes progress instead of re-arming forever.
+
+Two things keep a scan from being cancelled. A bounded batch **cannot trap** —
+that is the whole guarantee, and it is why the budget is set by the worst case
+rather than the average. And each step carries the **generation** it began with,
+so pointing `org.roam-directory` at a new corpus mid-scan stops the old chain on
+its next hop instead of interleaving writes from two roots.
+
+Progress rides the **modeline** (`⟳ roam 340/706`), not an echo: a scan outlives
+the message line, and the complaint that produced this change was a user who
+could not tell a long scan from a dead one.
+
 ### 4.5 Why the index is not host-side
 
 The alternative — a host service that knows about nodes, aliases and backlinks —

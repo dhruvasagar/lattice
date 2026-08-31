@@ -14220,6 +14220,37 @@ impl Editor {
         (handle, parsed_sync)
     }
 
+    /// OC.7c: the language a major mode implies, native or plugin-contributed.
+    ///
+    /// [`lattice_syntax::lang_for_mode_id`] is a hand-written match over the
+    /// bundled modes, and it is the mirror of `major_mode_id_for_lang`'s
+    /// documented `Lang::Plugin(_) => None` arm: the host cannot have an arm
+    /// for a language it has never heard of. That arm has a compensating
+    /// mechanism — the mode registry's language index — and this direction
+    /// never got one, so a plugin major activated on a buffer got no grammar.
+    ///
+    /// Invisible for a FILE, because `Lang::detect_from_path` resolves plugin
+    /// extensions through the live registry and the buffer is already correct
+    /// before any mode activates. It bites on a buffer with no path: an org
+    /// capture buffer's major is `org-mode`, nothing about it is org to
+    /// `detect_from_path`, and it rendered unstyled.
+    ///
+    /// The registry is asked SECOND so a plugin cannot shadow a bundled
+    /// language by claiming its mode id — the same precedence
+    /// `name_to_style_with_theme` uses for capture names, and for the same
+    /// reason.
+    fn lang_for_major(&self, mode_id: lattice_mode::ModeId) -> Option<lattice_syntax::Lang> {
+        if let Some(lang) = lattice_syntax::lang_for_mode_id(mode_id) {
+            return Some(lang);
+        }
+        let registry = self.mode_registry.load();
+        let mode = registry.get(mode_id)?;
+        let name = mode.target_language()?;
+        Some(lattice_syntax::Lang::Plugin(
+            lattice_syntax::plugin_lang::LanguageName::intern(name),
+        ))
+    }
+
     /// N.1.11: when a major mode with a language binding is
     /// activated, rebuild the syntax handle so tree-sitter
     /// highlighting reflects the new language. Skips when the
@@ -14230,7 +14261,7 @@ impl Editor {
         buffer_id: lattice_core::BufferId,
         mode_id: lattice_mode::ModeId,
     ) -> Vec<RendererSignal> {
-        let Some(new_lang) = lattice_syntax::lang_for_mode_id(mode_id) else {
+        let Some(new_lang) = self.lang_for_major(mode_id) else {
             return Vec::new();
         };
         // Short-circuit: if the syntax handle already uses this
@@ -30620,6 +30651,20 @@ impl Editor {
         if let Some(pos) = cursor {
             self.set_cursor_clamped(pos);
         }
+        // OC.7c: give the buffer its major's language, now that it is the
+        // active document.
+        //
+        // The major was activated inside `ensure_named_synthetic_document`,
+        // ABOVE — before `activate_buffer` — so N.1.11's rebuild saw a
+        // `buffer_id` that was not yet `document_buffer_id` and returned
+        // early. Re-run it here, where the gate is true.
+        //
+        // Only matters for a pathless buffer. A file's language is resolved
+        // from its path before any mode activates, and the rebuild
+        // short-circuits when the handle already uses the right language —
+        // so this is one comparison for every other synthetic buffer.
+        let signals = self.rebuild_syntax_for_mode(id, lattice_mode::ModeId::new(mode_id));
+        self.enqueue_renderer_signals(signals);
         if reused {
             self.refresh_reopened_view(id);
         }

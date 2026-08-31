@@ -3183,13 +3183,45 @@ hide. Measured directly on a 5 000-line Rust fixture:
 |                                   | 52.2 ms           | 1.82 ms                     | 828 µs                                     |
 
 That the 60 scattered single-line calls beat even the *contiguous*
-fold-free window is the number that decides the follow-up: querying per
-visible run rather than per window is 63× cheaper here and removes the
-folded case's penalty entirely. Tracked as FW.2; FW.1 deliberately ships
-the correctness fix alone so the two bisect apart. Until it lands, a
-collapsed large file pays ~52 ms of *worker* time per rebuild — off the
-UI thread, so the keystroke contract holds (text synchronous, recolour
-eventual) — where before it paid ~1.6 ms and painted the wrong thing.
+fold-free window is the number that decided the follow-up: querying per
+visible run rather than per window. Tracked as FW.2 and landed
+immediately after; FW.1 shipped the correctness fix alone so the two
+bisect apart.
+
+### FW.2 — querying only the visible runs (2026-08-31)
+
+`highlight_lines` costs what its RANGE costs, whether or not the lines in
+it are ever drawn. FW.1's fold-aware window spans every line the folds
+hide, and `build_display_rows` skips those — so the query was paying for
+spans nothing would read. FW.2 queries each **visible run** (the maximal
+non-hidden ranges) instead, stitching them into the same dense
+`spans_base`-indexed vector, so nothing downstream changed.
+
+| `cells_worker_folded_build` | `fold_size_1` | `fold_size_40` | `fold_size_80` |
+| --------------------------- | ------------- | -------------- | -------------- |
+| FW.1                        | 1.58 ms       | 52.3 ms        | 52.1 ms        |
+| FW.2                        | **1.54 ms**   | **2.33 ms**    | **1.93 ms**    |
+| —                           | unchanged     | **22× faster** | **27× faster** |
+
+**The fold-free column is unchanged because it takes the identical code
+path.** With nothing collapsed there is exactly one run covering the whole
+window, and that case short-circuits to the single pre-FW.2 call — no
+stitching, no dense allocation. An ordinary buffer cannot pay for a
+feature it does not use, and the bench is what says so rather than the
+comment claiming it.
+
+**Why the per-run cost stays bounded:** every boundary between two runs
+is a closed fold, and every closed fold in the window spends one of the
+viewport's rows on its head. So there are at most `viewport_height + 1`
+runs no matter how many lines the folds hide — the reason this is not
+trading one large cost for an unbounded number of small ones. The
+remaining ~0.4–0.8 ms over the fold-free case is per-call query setup
+across those ≤61 runs, which matches the 828 µs measured for 60
+single-line calls above.
+
+Net against the pre-FW.1 baseline: a collapsed org file now paints with
+correct syntax colour for **~0.4 ms more** worker time than the broken
+version spent painting it wrong.
 
 Numbers captured: 2026-08-31 (`--warm-up-time 1 --measurement-time 3`).
 

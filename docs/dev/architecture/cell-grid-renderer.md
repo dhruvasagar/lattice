@@ -161,7 +161,22 @@ Two consequences worth stating rather than discovering:
 - **The coverage gate and the window must derive the bound identically.** The worker cache-hits on `matrix.covers(scroll, visible_end)`. A gate asking for more than the build produces never hits, so the worker rebuilds on every tick forever. Both call `folds::fold_aware_visible_end`, and so does the syntax layer's parse window (`Editor::fold_aware_highlight_end_line`) — one walk, three consumers, no drift.
 - **Overscan scales with the span, not the row count.** One row of scroll can advance `scroll` past a whole fold body, so a row-sized overscan would be crossed immediately and rebuild every scroll tick.
 
-The cost admitted: the highlight query runs over the lines the folds hide. Rows are *not* built for them (folded interiors are skipped), so row count and memory stay O(viewport) — only the query scales, and it scales with the folds intersecting the viewport rather than with file size, so it stays bounded on large files. That is the honest price of painting a collapsed screen correctly; the previous number was cheaper only because it was wrong.
+The cost this initially admitted: the highlight query ran over the lines the folds hide. Rows are *not* built for them (folded interiors are skipped), so row count and memory stayed O(viewport) — only the query scaled. Measured at 52 ms on a collapsed 5000-line file against 1.6 ms fold-free.
+
+**FW.2 removed that**, by querying per *visible run* rather than per window:
+
+```text
+runs   = maximal ranges of [win_lo, win_hi) not hidden inside a closed fold
+spans  = concat(highlight_lines(run) for run in runs)   // stitched dense, indexed from win_lo
+```
+
+`highlight_lines` costs what its range costs whether or not those lines are ever drawn, so the window query was paying for spans nothing would read. Three properties make this the right shape rather than a micro-optimisation:
+
+- **The run count is bounded by the viewport, not the span.** Every boundary between two runs is a closed fold, and every closed fold in the window spends one of the viewport's rows on its head — so there are at most `viewport_height + 1` runs however many lines the folds hide. Without that bound this would be trading one large cost for an unbounded number of small ones.
+- **The fold-free path is untouched.** Nothing collapsed ⇒ exactly one run covering the window ⇒ short-circuit to the single pre-FW.2 call. No stitching, no dense allocation, and the bench measures it (1.54 ms, unchanged) rather than the comment asserting it.
+- **The result stays a dense vector indexed from `win_lo`**, so `spans_base` lookups, `ChunkInputs` and `build_display_rows` did not move. A hidden line keeps an empty span list — what it would have got anyway, and what nothing reads.
+
+52.3 ms → 2.33 ms at a ~2400-line collapsed span; see `benchmarks.md` for the table. A collapsed file now paints with correct colour for ~0.4 ms more worker time than the broken version spent painting it wrong.
 
 ### Paint loop (UI thread)
 

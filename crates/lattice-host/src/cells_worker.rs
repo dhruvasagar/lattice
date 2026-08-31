@@ -1426,6 +1426,105 @@ fn next_power_of_two(n: u32) -> u32 {
 /// the full-coverage behaviour they assert.
 const WINDOW_CAP_LINES: u32 = 2048;
 
+/// FW.2 (2026-08-31): the maximal ranges of `[lo, hi)` NOT hidden inside a
+/// closed fold — the lines a build will actually materialise a row for.
+///
+/// **Bounded by the viewport, not by the span.** Every boundary between two
+/// runs is a closed fold, and every closed fold in the window spends one of
+/// the viewport's rows on its head, so there are at most
+/// `viewport_height + 1` runs however many lines the folds hide. That bound
+/// is what makes querying per-run affordable rather than trading one large
+/// cost for an unbounded number of small ones.
+///
+/// No closed folds ⇒ exactly one run, `[lo, hi)`.
+fn visible_runs(fold_index: &crate::folds::FoldIndex, lo: u32, hi: u32) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    let mut line = lo;
+    let mut start: Option<u32> = None;
+    while line < hi {
+        if fold_index.line_inside_closed_fold(line) {
+            if let Some(s) = start.take() {
+                runs.push((s, line));
+            }
+            // Hop the whole hidden body rather than testing each of its
+            // lines: a closed fold's interior is contiguous by definition,
+            // and a 40 000-line fold must not cost 40 000 binary searches.
+            match fold_index.enclosing_closed_fold(line) {
+                Some((_, end)) => line = end.saturating_add(1),
+                None => line += 1,
+            }
+            continue;
+        }
+        if start.is_none() {
+            start = Some(line);
+        }
+        line += 1;
+    }
+    if let Some(s) = start {
+        runs.push((s, hi));
+    }
+    runs
+}
+
+/// FW.2: highlight spans for `[lo, hi)`, querying only the VISIBLE runs.
+///
+/// The measurement this exists for, on a 5 000-line Rust fixture:
+///
+/// | one contiguous 5 000-line query | 60 single-line queries |
+/// |---|---|
+/// | 52.2 ms | 828 µs |
+///
+/// FW.1 made the window fold-aware so a collapsed screen paints correctly.
+/// That made the window span every line the folds hide, and `highlight_lines`
+/// costs what its RANGE costs whether or not those lines are ever drawn — a
+/// 63× tax for spans that are then thrown away, since `build_display_rows`
+/// skips folded interiors and never asks for them.
+///
+/// The result stays a DENSE `Vec` indexed from `lo`, so `spans_base` lookups,
+/// `ChunkInputs` and `build_display_rows` are untouched: a hidden line keeps
+/// an empty span list, which is what it would have got anyway and what
+/// nothing reads. That density is bounded by the fold-aware span, and costs
+/// one empty `Vec` per hidden line against a tree-sitter query over it.
+///
+/// `None` when the syntax snapshot is stale or absent, matching the
+/// single-range primitive — staleness is a property of the snapshot, so every
+/// run agrees and the first `None` settles it for all of them.
+fn highlight_visible_runs<F>(
+    highlight_range: &F,
+    fold_index: &crate::folds::FoldIndex,
+    lo: u32,
+    hi: u32,
+) -> Option<Vec<Vec<lattice_syntax::StyledSpan>>>
+where
+    F: Fn(u32, u32) -> Option<Vec<Vec<lattice_syntax::StyledSpan>>>,
+{
+    let runs = visible_runs(fold_index, lo, hi);
+    // Nothing folded — the overwhelmingly common case. One run covering the
+    // whole window, so this is the pre-FW.2 call with no stitching at all and
+    // an ordinary buffer cannot pay for a feature it does not use.
+    if matches!(runs[..], [(a, b)] if a == lo && b == hi) {
+        return highlight_range(lo, hi);
+    }
+    let len = hi.saturating_sub(lo) as usize;
+    // Every line hidden: legal, no row will be built, and an empty dense
+    // window is the honest answer at the cost of no query at all.
+    if runs.is_empty() {
+        return Some(vec![Vec::new(); len]);
+    }
+    let mut out: Vec<Vec<lattice_syntax::StyledSpan>> = vec![Vec::new(); len];
+    for (run_lo, run_hi) in runs {
+        let run = highlight_range(run_lo, run_hi)?;
+        for (i, spans) in run.into_iter().enumerate() {
+            let abs = run_lo as usize + i;
+            let Some(slot) = abs.checked_sub(lo as usize).and_then(|r| out.get_mut(r)) else {
+                continue;
+            };
+            *slot = spans;
+        }
+    }
+    Some(out)
+}
+
 /// FW.1 (2026-08-31): how many BUFFER LINES a `viewport_height`-row
 /// viewport starting at `scroll` reaches — the unit [`window_bounds`]
 /// has to be sized in.
@@ -2301,7 +2400,8 @@ fn build_display_matrix(
                 line_count,
                 chunk_size,
             );
-            let spans = highlight_range(win_lo, win_hi);
+            // FW.2: query per VISIBLE RUN, not once across the window.
+            let spans = highlight_visible_runs(&highlight_range, &fold_index, win_lo, win_hi);
             let inputs = ChunkInputs {
                 snapshot,
                 per_line_spans: spans.as_ref(),
@@ -4091,6 +4191,132 @@ mod tests {
             cm.row_at_source_line(last_visible).is_some(),
             "cell projection stops short of the fold-stretched viewport"
         );
+    }
+
+    /// FW.2: `visible_runs` splits a window at closed folds, and nowhere else.
+    #[test]
+    fn visible_runs_splits_only_at_closed_folds() {
+        use lattice_core::Fold;
+        let fold = |start_line, end_line, closed| Fold {
+            start_line,
+            end_line,
+            closed,
+            identity: None,
+        };
+
+        // No folds ⇒ ONE run covering the window verbatim. This is the case
+        // `highlight_visible_runs` short-circuits on, so an ordinary buffer
+        // cannot pay for a feature it does not use.
+        let none = crate::folds::FoldIndex::from_folds(&[], true);
+        assert_eq!(visible_runs(&none, 10, 20), [(10, 20)]);
+
+        // A closed fold's HEAD stays visible (vim renders it); only its body
+        // is hidden. `[5, 9]` closed ⇒ 5 visible, 6..=9 hidden.
+        let one = crate::folds::FoldIndex::from_folds(&[fold(5, 9, true)], true);
+        assert_eq!(visible_runs(&one, 0, 15), [(0, 6), (10, 15)]);
+
+        // An OPEN fold hides nothing.
+        let open = crate::folds::FoldIndex::from_folds(&[fold(5, 9, false)], true);
+        assert_eq!(visible_runs(&open, 0, 15), [(0, 15)]);
+
+        // `foldenable` off makes every fold inert, so back to one run.
+        let off = crate::folds::FoldIndex::from_folds(&[fold(5, 9, true)], false);
+        assert_eq!(visible_runs(&off, 0, 15), [(0, 15)]);
+
+        // Back-to-back folds do not produce empty runs between them.
+        let two = crate::folds::FoldIndex::from_folds(&[fold(2, 4, true), fold(5, 7, true)], true);
+        assert_eq!(visible_runs(&two, 0, 10), [(0, 3), (5, 6), (8, 10)]);
+
+        // A window entirely inside a fold body has no visible run at all.
+        let big = crate::folds::FoldIndex::from_folds(&[fold(0, 100, true)], true);
+        assert!(visible_runs(&big, 10, 20).is_empty());
+    }
+
+    /// **The spans a visible line gets must not depend on how the window was
+    /// queried.** FW.2 replaced one contiguous `highlight_lines` call with one
+    /// per visible run; if the stitching were off by a line, every row below
+    /// the first fold would paint with its neighbour's colours — which reads
+    /// as a highlighting bug, not a windowing one.
+    ///
+    /// Asserted against the contiguous answer rather than against fixed
+    /// styles, so it cannot rot into asserting a theme or a grammar.
+    #[test]
+    fn per_run_highlighting_agrees_with_the_contiguous_query_line_for_line() {
+        use lattice_core::Fold;
+        // A stand-in for the real highlighter with the one property that
+        // matters: what a line gets depends only on the LINE, never on the
+        // range it was asked for. A stitching bug shows up as a shifted index.
+        let per_line = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
+            Some(
+                (lo..hi)
+                    .map(|line| {
+                        vec![lattice_syntax::StyledSpan {
+                            start: line as usize,
+                            end: line as usize + 1,
+                            style: lattice_syntax::Style::Default,
+                        }]
+                    })
+                    .collect(),
+            )
+        };
+
+        let folds = [
+            Fold {
+                start_line: 3,
+                end_line: 8,
+                closed: true,
+                identity: None,
+            },
+            Fold {
+                start_line: 12,
+                end_line: 40,
+                closed: true,
+                identity: None,
+            },
+        ];
+        let idx = crate::folds::FoldIndex::from_folds(&folds, true);
+        let (lo, hi) = (0u32, 50u32);
+
+        let contiguous = per_line(lo, hi).expect("some");
+        let stitched = highlight_visible_runs(&per_line, &idx, lo, hi).expect("some");
+        assert_eq!(stitched.len(), contiguous.len(), "same dense window length");
+
+        for line in lo..hi {
+            let i = (line - lo) as usize;
+            if idx.line_inside_closed_fold(line) {
+                // Hidden: no row is built for it, so an empty slot is right —
+                // and is what makes the per-run query cheaper at all.
+                assert!(
+                    stitched[i].is_empty(),
+                    "line {line} is hidden and must not have been queried"
+                );
+            } else {
+                assert_eq!(
+                    stitched[i], contiguous[i],
+                    "visible line {line} must get the spans the contiguous \
+                     query would have given it"
+                );
+            }
+        }
+    }
+
+    /// A `None` from any run propagates, matching the single-range primitive:
+    /// a stale syntax snapshot must paint default fg everywhere rather than
+    /// colouring the first run and leaving the rest bare.
+    #[test]
+    fn a_stale_snapshot_makes_the_whole_window_none() {
+        use lattice_core::Fold;
+        let idx = crate::folds::FoldIndex::from_folds(
+            &[Fold {
+                start_line: 3,
+                end_line: 8,
+                closed: true,
+                identity: None,
+            }],
+            true,
+        );
+        let stale = |_: u32, _: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> { None };
+        assert!(highlight_visible_runs(&stale, &idx, 0, 20).is_none());
     }
 
     /// The fold-stretched window must also satisfy the worker's own

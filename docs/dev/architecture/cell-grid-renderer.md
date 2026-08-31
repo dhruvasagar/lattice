@@ -147,6 +147,22 @@ Self-tuning to viewport:
 - A typical 70-line viewport produces 128-line chunks. A 100 K-line buffer = ~780 chunks at ~2 KB metadata each = ~1.5 MB chunk-table overhead.
 - LRU cap at `8 × viewport_height / chunk_size` chunks resident if memory pressure shows up (deferred; mostly N/A at expected scale).
 
+Above `WINDOW_CAP_LINES` a chunked build is additionally *windowed* around the viewport rather than covering the file, and that window is sized in **buffer lines the viewport reaches**, not in rows:
+
+```text
+span   = fold_aware_visible_end(scroll, viewport_height) − scroll   // ≥ viewport_height
+window = [scroll − span, scroll + span + span)                      // chunk-aligned, clamped
+```
+
+The two quantities coincide for every buffer with nothing collapsed, which is why the distinction is easy to lose — and losing it is a visible bug, not a perf one. A closed fold makes one row stand for a whole subtree, so a viewport of 60 rows over a collapsed org file reaches ~2500 lines in. Sizing the window in rows covered the first 128 lines, left every row below the first fold with no chunk, and the renderers took their plain-text fallback: the top few headings coloured and the rest of the screen did not.
+
+Two consequences worth stating rather than discovering:
+
+- **The coverage gate and the window must derive the bound identically.** The worker cache-hits on `matrix.covers(scroll, visible_end)`. A gate asking for more than the build produces never hits, so the worker rebuilds on every tick forever. Both call `folds::fold_aware_visible_end`, and so does the syntax layer's parse window (`Editor::fold_aware_highlight_end_line`) — one walk, three consumers, no drift.
+- **Overscan scales with the span, not the row count.** One row of scroll can advance `scroll` past a whole fold body, so a row-sized overscan would be crossed immediately and rebuild every scroll tick.
+
+The cost admitted: the highlight query runs over the lines the folds hide. Rows are *not* built for them (folded interiors are skipped), so row count and memory stay O(viewport) — only the query scales, and it scales with the folds intersecting the viewport rather than with file size, so it stays bounded on large files. That is the honest price of painting a collapsed screen correctly; the previous number was cheaper only because it was wrong.
+
 ### Paint loop (UI thread)
 
 ```text

@@ -704,6 +704,78 @@ pub fn visible_source_lines(
     out
 }
 
+/// The exclusive buffer-line bound a `height`-row viewport starting at
+/// `scroll` actually reaches.
+///
+/// `height` counts **display rows**; the answer counts **buffer lines**,
+/// and a closed fold is exactly where those two stop being the same
+/// number. Collapse an org file and 60 rows can reach 2500 lines in.
+/// Anything sized to the band a viewport covers — the syntax parse
+/// window, the cell matrix's chunk window — must ask for this rather
+/// than `scroll + height`, or it stops one screenful of *lines* down
+/// while the screen keeps painting past it.
+///
+/// A viewport ending on a closed fold head returns the bound past that
+/// fold's whole body. The body has no rows, so this only ever makes a
+/// caller's range a superset of what it strictly needs; it also means
+/// consecutive callers agree with the head row's own extent.
+///
+/// `total_lines` is CONTENT space, for the reason spelled out on
+/// [`visible_source_lines`].
+pub fn fold_aware_visible_end(
+    fold_idx: &FoldIndex,
+    scroll: u32,
+    height: u32,
+    total_lines: u32,
+) -> u32 {
+    let plain = scroll.saturating_add(height).min(total_lines);
+    if !fold_idx.foldenable || height == 0 || total_lines == 0 {
+        return plain;
+    }
+    let mut buf_line = scroll;
+    let mut row = 0u32;
+    let mut last = scroll;
+    while row < height && buf_line < total_lines {
+        if fold_idx.line_inside_closed_fold(buf_line) {
+            // Defensive: `scroll` should always sit on a visible line.
+            last = buf_line;
+            buf_line += 1;
+            continue;
+        }
+        last = buf_line;
+        match fold_idx.closed_fold_at(buf_line) {
+            Some((_, end)) => {
+                last = end;
+                buf_line = end.saturating_add(1);
+            }
+            None => buf_line += 1,
+        }
+        row += 1;
+    }
+    // `last` is the highest buffer line inside the visible band; the
+    // bound is exclusive. Never SHRINK below the fold-free answer: a
+    // viewport that runs past EOF still asks for the same range it
+    // always did, so a fold-free buffer is bit-identical to before.
+    last.saturating_add(1).min(total_lines).max(plain)
+}
+
+/// [`fold_aware_visible_end`] from a raw fold slice, skipping the
+/// `FoldIndex` build when there is no closed fold to walk over — the
+/// overwhelmingly common case, and one that runs per worker tick.
+pub fn fold_aware_visible_end_of(
+    folds: &[Fold],
+    foldenable: bool,
+    scroll: u32,
+    height: u32,
+    total_lines: u32,
+) -> u32 {
+    if !foldenable || height == 0 || total_lines == 0 || !folds.iter().any(|f| f.closed) {
+        return scroll.saturating_add(height).min(total_lines);
+    }
+    let idx = FoldIndex::from_folds(folds, foldenable);
+    fold_aware_visible_end(&idx, scroll, height, total_lines)
+}
+
 /// The ` ⋯ N lines` summary text trailing a collapsed head row, where
 /// `n` is [`folded_line_span`]'s count. One function so the TUI and
 /// GPUI peers cannot drift on spacing, glyph, or pluralisation — the
@@ -975,6 +1047,46 @@ mod tests {
              collapsed ones: {vis:?}"
         );
         assert_eq!(vis, vec![0, 1, 80, 81, 82, 83, 84, 85, 86, 87]);
+    }
+
+    /// `fold_aware_visible_end` must agree with the walk that decides
+    /// which lines are painted: the bound is the line the LAST visible
+    /// row sits on, not `scroll + height`. Anything sizing a range off
+    /// the row count — the syntax parse window, the cell matrix's chunk
+    /// window — stops short of the screen the moment a fold closes.
+    #[test]
+    fn fold_aware_end_reaches_the_last_visible_row() {
+        let folds = vec![Fold {
+            start_line: 1,
+            end_line: 79,
+            closed: true,
+            identity: None,
+        }];
+        let idx = FoldIndex::from_folds(&folds, true);
+        // Same fixture as the visible walk above: rows end on line 87,
+        // so the exclusive bound is 88 — not the naive 0 + 10.
+        assert_eq!(visible_source_lines(&idx, 0, 10, 100).last(), Some(&87));
+        assert_eq!(fold_aware_visible_end(&idx, 0, 10, 100), 88);
+
+        // A viewport ENDING on a closed fold head reaches past the whole
+        // body: 3 rows are line 0, the head at 1, and 80.
+        assert_eq!(fold_aware_visible_end(&idx, 0, 2, 100), 80);
+
+        // `foldenable` off, and no closed fold at all, are both exactly
+        // `scroll + height` — the fold-free path callers had before.
+        let off = FoldIndex::from_folds(&folds, false);
+        assert_eq!(fold_aware_visible_end(&off, 0, 10, 100), 10);
+        let none = FoldIndex::from_folds(&[], true);
+        assert_eq!(fold_aware_visible_end(&none, 5, 10, 100), 15);
+        // Never past EOF, never below the fold-free answer.
+        assert_eq!(fold_aware_visible_end(&none, 95, 10, 100), 100);
+        assert_eq!(fold_aware_visible_end(&idx, 0, 0, 100), 0);
+
+        // The slice front-end agrees with the indexed one on every case
+        // above, including its no-closed-fold short circuit.
+        assert_eq!(fold_aware_visible_end_of(&folds, true, 0, 10, 100), 88);
+        assert_eq!(fold_aware_visible_end_of(&folds, false, 0, 10, 100), 10);
+        assert_eq!(fold_aware_visible_end_of(&[], true, 5, 10, 100), 15);
     }
 
     #[test]

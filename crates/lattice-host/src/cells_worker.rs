@@ -675,12 +675,25 @@ pub fn recompute_pane(
     // or the coverage range those rows are checked against — so the
     // phantom logical line becomes a phantom display row, the
     // numbered empty line 220 of a 219-line file.
+    //
+    // FW.1 (2026-08-31): the upper bound is **fold-aware**.
+    // `viewport_height` counts screen ROWS; this range is buffer LINES,
+    // and a closed fold is where the two diverge — 60 rows of a
+    // collapsed org file reach ~2500 lines in. Asking for
+    // `scroll + viewport_height` asked the build to cover the first
+    // screenful of lines and left every row past the first fold with no
+    // chunk, hence no spans, hence the renderer's plain-text fallback.
+    // This gate and `window_bounds` must derive the bound the same way
+    // or `covers` fails forever and the worker never cache-hits.
     let coverage_line_count = snapshot.buffer.content_line_count();
     let visible_lo = pane.scroll.min(coverage_line_count);
-    let visible_hi = pane
-        .scroll
-        .saturating_add(pane.viewport_height)
-        .min(coverage_line_count);
+    let visible_hi = crate::folds::fold_aware_visible_end_of(
+        &pane.folds,
+        pane.foldenable,
+        pane.scroll,
+        pane.viewport_height,
+        coverage_line_count,
+    );
 
     // B2.2 (2026-06-04): the `DisplayMatrix` is now the canonical
     // build; the `CellMatrix` is a projection of it
@@ -853,12 +866,16 @@ pub fn sync_rebuild_pane_on_edit(
     } else {
         0
     };
+    // FW.1: fold-aware, for the reason spelled out in `recompute_pane`.
     let coverage_line_count = snapshot.buffer.content_line_count();
     let visible_lo = pane.scroll.min(coverage_line_count);
-    let visible_hi = pane
-        .scroll
-        .saturating_add(pane.viewport_height)
-        .min(coverage_line_count);
+    let visible_hi = crate::folds::fold_aware_visible_end_of(
+        &pane.folds,
+        pane.foldenable,
+        pane.scroll,
+        pane.viewport_height,
+        coverage_line_count,
+    );
 
     let existing = pane.display_matrix.load_full();
     let result =
@@ -1312,7 +1329,14 @@ fn build_matrix(
             // geometry are unchanged; off-window lines simply have no chunk
             // → `None` → the renderers' existing plain-text/legacy-span
             // fallback.
-            let (win_lo, win_hi) = window_bounds(scroll, viewport_height, line_count, chunk_size);
+            //
+            // FW.1: sized by the fold-aware SPAN, not the row count.
+            let (win_lo, win_hi) = window_bounds(
+                scroll,
+                fold_aware_span(&fold_index, scroll, viewport_height, line_count),
+                line_count,
+                chunk_size,
+            );
             let spans = highlight_range(win_lo, win_hi);
             let inputs = ChunkInputs {
                 snapshot,
@@ -1402,32 +1426,65 @@ fn next_power_of_two(n: u32) -> u32 {
 /// the full-coverage behaviour they assert.
 const WINDOW_CAP_LINES: u32 = 2048;
 
-/// H.3: the source-line range a chunked build covers for a given
-/// `scroll` / `viewport_height`. Returns the whole document
-/// `(0, line_count)` at or below [`WINDOW_CAP_LINES`] (full
-/// residency); above it, a `chunk_size`-aligned window
-/// `[scroll − overscan, scroll + viewport_height + overscan)` clamped
-/// to `[0, line_count)`.
+/// FW.1 (2026-08-31): how many BUFFER LINES a `viewport_height`-row
+/// viewport starting at `scroll` reaches — the unit [`window_bounds`]
+/// has to be sized in.
 ///
-/// Overscan is one `viewport_height` on each side: combined with the
-/// chunk-aligned bounds, line-by-line scrolling stays inside the
-/// covered range (worker returns `CacheHit`); only a jump that
-/// crosses the window edge triggers a rebuild, and that rebuild is
-/// O(window). `chunk_size` is `> 0` here (chunked mode only;
-/// whole-doc mode never calls this).
-fn window_bounds(
+/// Equal to `viewport_height` for every buffer with nothing collapsed,
+/// which is why the conflation survived so long: `viewport_height` was
+/// the right answer until a fold made a row stand for fifty lines.
+/// Floored at `viewport_height` so a viewport running past EOF asks for
+/// the range it always did, keeping fold-free builds bit-identical.
+fn fold_aware_span(
+    fold_index: &crate::folds::FoldIndex,
     scroll: u32,
     viewport_height: u32,
     line_count: u32,
-    chunk_size: u32,
-) -> (u32, u32) {
+) -> u32 {
+    crate::folds::fold_aware_visible_end(fold_index, scroll, viewport_height, line_count)
+        .saturating_sub(scroll)
+        .max(viewport_height)
+}
+
+/// H.3: the source-line range a chunked build covers for a given
+/// `scroll` / visible `span`. Returns the whole document
+/// `(0, line_count)` at or below [`WINDOW_CAP_LINES`] (full
+/// residency); above it, a `chunk_size`-aligned window
+/// `[scroll − overscan, scroll + span + overscan)` clamped to
+/// `[0, line_count)`.
+///
+/// `span` is the count of BUFFER LINES the viewport reaches
+/// ([`fold_aware_span`]), NOT its height in rows. The two agree
+/// whenever nothing is folded; when something is, only the former
+/// describes the range the renderer will ask for rows over — sizing
+/// this window in rows left everything past the first closed fold
+/// outside coverage, so it painted uncoloured (FW.1).
+///
+/// Overscan is one `span` on each side: combined with the chunk-aligned
+/// bounds, line-by-line scrolling stays inside the covered range (worker
+/// returns `CacheHit`); only a jump that crosses the window edge
+/// triggers a rebuild, and that rebuild is O(window). Scaling the
+/// overscan with the span rather than pinning it to the row count is
+/// what keeps that property under folds: one row of scroll can advance
+/// `scroll` by a whole fold body, so a row-sized overscan would be
+/// crossed immediately and rebuild on every scroll tick.
+///
+/// The cost this admits is real and worth naming: a heavily-collapsed
+/// region makes the window cover the lines the folds hide, so the
+/// highlight query runs over them. Rows are not built for them
+/// (`build_display_rows` skips folded interiors), so the row count stays
+/// O(viewport) — it is the query that scales with the collapsed span.
+/// That span tracks the folds *intersecting the viewport*, not the file
+/// size, so it stays bounded on large files. `chunk_size` is `> 0` here
+/// (chunked mode only; whole-doc mode never calls this).
+fn window_bounds(scroll: u32, span: u32, line_count: u32, chunk_size: u32) -> (u32, u32) {
     if line_count <= WINDOW_CAP_LINES {
         return (0, line_count);
     }
-    let overscan = viewport_height;
+    let overscan = span;
     let raw_lo = scroll.saturating_sub(overscan);
     let raw_hi = scroll
-        .saturating_add(viewport_height)
+        .saturating_add(span)
         .saturating_add(overscan)
         .min(line_count);
     // Align lo down and hi up to chunk boundaries so chunks stay
@@ -2237,7 +2294,13 @@ fn build_display_matrix(
             DisplayMatrix::whole_doc(chunk, line_count)
         }
         ChunkMode::Chunked(chunk_size) => {
-            let (win_lo, win_hi) = window_bounds(scroll, viewport_height, line_count, chunk_size);
+            // FW.1: sized by the fold-aware SPAN, not the row count.
+            let (win_lo, win_hi) = window_bounds(
+                scroll,
+                fold_aware_span(&fold_index, scroll, viewport_height, line_count),
+                line_count,
+                chunk_size,
+            );
             let spans = highlight_range(win_lo, win_hi);
             let inputs = ChunkInputs {
                 snapshot,
@@ -3952,6 +4015,110 @@ mod tests {
         assert!(
             m.row_at_source_line(0).is_none(),
             "window moved off the original top"
+        );
+    }
+
+    /// A closed fold at every 50th line: 50 rows of viewport span 2500
+    /// buffer lines.
+    fn every_50th_line_folded(total: u32) -> Arc<[lattice_core::Fold]> {
+        let folds: Vec<lattice_core::Fold> = (0..total / 50)
+            .map(|i| lattice_core::Fold {
+                start_line: i * 50,
+                end_line: i * 50 + 49,
+                closed: true,
+                identity: None,
+            })
+            .collect();
+        Arc::from(folds.into_boxed_slice())
+    }
+
+    /// **Closed folds stretch the buffer-line span a viewport covers,
+    /// and the matrix window must stretch with it.**
+    ///
+    /// `viewport_height` counts SCREEN ROWS; the window it sized was
+    /// measured in BUFFER LINES. Those are the same quantity only when
+    /// nothing is folded. Collapse an org file with `#+STARTUP: overview`
+    /// and ~60 rows reach ~2500 lines in — so the window covered the
+    /// first screenful of *lines*, every row below it found no chunk, and
+    /// the renderer fell back to uncoloured plain text for most of the
+    /// screen. Reported as "only the first few headings are coloured".
+    ///
+    /// Asserted at the row the viewport actually ends on, not at a fixed
+    /// window size, so it pins the coupling (chunk window ↔ fold state)
+    /// rather than any particular chunking policy.
+    #[test]
+    fn fold_stretched_viewport_is_covered_by_the_window() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+
+        let total = 5_000u32;
+        let vh = 50u32;
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(total)), v(1), vh);
+        pane.folds = every_50th_line_folded(total);
+        pane.foldenable = true;
+        pane.scroll = 0;
+        let dm_cell = pane.display_matrix.clone();
+
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
+
+        // The rows the renderer will paint: one per fold head, 50 of
+        // them, the last at buffer line 2450.
+        let fold_idx = crate::folds::FoldIndex::from_folds(&pane.folds, true);
+        let visible = crate::folds::visible_source_lines(&fold_idx, pane.scroll, vh, total);
+        assert_eq!(visible.len(), vh as usize, "fixture fills the viewport");
+        let last_visible = *visible.last().expect("viewport is non-empty");
+        assert_eq!(last_visible, 2_450, "fixture spans 2500 buffer lines");
+
+        let dm = dm_cell.load();
+        for line in visible {
+            assert!(
+                dm.row_at_source_line(line).is_some(),
+                "visible row at buffer line {line} has no display row \
+                 (matrix covers {}..{})",
+                dm.covered_start_line(),
+                dm.covered_end_line(),
+            );
+        }
+
+        // And the cell projection the GPUI peer still reads agrees.
+        let cm = matrix_cell.load();
+        assert!(
+            cm.row_at_source_line(last_visible).is_some(),
+            "cell projection stops short of the fold-stretched viewport"
+        );
+    }
+
+    /// The fold-stretched window must also satisfy the worker's own
+    /// coverage gate: if the gate asks for more than the build produced,
+    /// `covers` fails every tick and the worker rebuilds forever instead
+    /// of ever reporting `CacheHit`.
+    #[test]
+    fn fold_stretched_window_settles_to_a_cache_hit() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+        let (resolved, ids) = test_cell_theme();
+        let ct = CellTheme {
+            resolved: &resolved,
+            ids: &ids,
+        };
+        let ws = WhitespaceConfig::default();
+
+        let total = 20_000u32;
+        let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(total)), v(1), 50);
+        pane.folds = every_50th_line_folded(total);
+        pane.foldenable = true;
+        pane.scroll = 5_000;
+
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
+        assert_eq!(
+            recompute_pane(&pane, ct, &ws),
+            WorkerDecision::CacheHit,
+            "unchanged inputs must settle; a gate the build cannot \
+             satisfy rebuilds on every tick"
         );
     }
 

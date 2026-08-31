@@ -3152,6 +3152,47 @@ the cap → full residency, unchanged).
 
 Numbers captured: 2026-06-04 (`--measurement-time 4`).
 
+### FW.1 — the collapsed screen (2026-08-31)
+
+Every bench above runs `foldenable: false`, which is exactly why this
+cost stayed invisible. The matrix window is sized in **buffer lines the
+viewport reaches**; with nothing folded that equals `viewport_height`,
+so no bench ever separated the two. FW.1 makes the window fold-aware
+(it previously stopped a screenful of *lines* down and left everything
+below the first fold uncoloured), and new bench
+`cells_worker_folded_build` puts the resulting cost on the ratchet — a
+cold build over a 5 000-line doc at a 60-row viewport, varying how many
+lines each closed fold swallows:
+
+| `cells_worker_folded_build` | `fold_size_1` (none folded) | `fold_size_40` (~2 400-line span) | `fold_size_80` (span saturates the doc) |
+| --------------------------- | --------------------------- | --------------------------------- | --------------------------------------- |
+| FW.1                        | 1.58 ms                     | 52.3 ms                           | 52.1 ms                                 |
+
+**The fold-free column is the unchanged path** — the fold-aware span
+short-circuits to `scroll + viewport_height` when nothing is closed, so
+it matches `cells_worker_windowed_build/5 000` as it should.
+
+**The 33× is the highlight query, not the rows.** Folded interiors never
+materialise a row (`build_display_rows` skips them), so row count and
+memory stay O(viewport); it is `highlight_lines(win_lo, win_hi)` that
+runs over every line the window spans, including the ones the folds
+hide. Measured directly on a 5 000-line Rust fixture:
+
+| `SyntaxSnapshot::highlight_lines` | whole 5 000 lines | 180-line window (fold-free) | 60 single-line calls (one per visible row) |
+| --------------------------------- | ----------------- | --------------------------- | ------------------------------------------ |
+|                                   | 52.2 ms           | 1.82 ms                     | 828 µs                                     |
+
+That the 60 scattered single-line calls beat even the *contiguous*
+fold-free window is the number that decides the follow-up: querying per
+visible run rather than per window is 63× cheaper here and removes the
+folded case's penalty entirely. Tracked as FW.2; FW.1 deliberately ships
+the correctness fix alone so the two bisect apart. Until it lands, a
+collapsed large file pays ~52 ms of *worker* time per rebuild — off the
+UI thread, so the keystroke contract holds (text synchronous, recolour
+eventual) — where before it paid ~1.6 ms and painted the wrong thing.
+
+Numbers captured: 2026-08-31 (`--warm-up-time 1 --measurement-time 3`).
+
 ---
 
 ## "Performance has regressed" warnings

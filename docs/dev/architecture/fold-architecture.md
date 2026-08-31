@@ -262,6 +262,18 @@ document jumping the viewport for no reason. The walk stays
 `nofoldenable` / no closed folds degrade it to the historical
 per-line walk byte-for-byte.
 
+The dual of that walk is `folds::fold_aware_visible_end` — how far
+*down the buffer* a viewport of N rows reaches. Anything sizing a
+range off the viewport must ask it rather than compute
+`scroll + viewport_height`, because the two agree only while nothing
+is collapsed. Three consumers today: the syntax parse window
+(`Editor::fold_aware_highlight_end_line`), and the cell matrix's
+chunk window plus the worker's coverage gate (see
+[cell-grid-renderer.md](cell-grid-renderer.md) § Chunking policy).
+They share the one walk deliberately — when the parse window reached
+further than the matrix covered, the screen below the first closed
+fold painted uncoloured (FW.1).
+
 ### 5.2 Gutter marker rendering
 
 Both renderers draw a fold marker on **every foldable head row**

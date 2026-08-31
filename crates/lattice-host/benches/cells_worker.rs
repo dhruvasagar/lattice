@@ -105,6 +105,8 @@ fn rs_for(
         syntax,
         display_cell,
         &[],
+        &[],
+        0,
     )
 }
 
@@ -121,12 +123,25 @@ fn rs_for_with_strip(
     syntax: Option<Arc<lattice_syntax::SyntaxHandle>>,
     display_cell: Arc<ArcSwap<DisplayMatrix>>,
     sticky_lines: &[u32],
+    // FW.1: closed folds stretch the buffer-line span the viewport
+    // covers, which is what the matrix window is sized in. Empty for
+    // every other bench here, so their numbers are unaffected.
+    fold_spec: &[(u32, u32)],
+    scroll: u32,
 ) -> ArcSwap<RenderState> {
     use lattice_core::BufferId;
     use lattice_core::ui::pane::PaneId;
     let inlay_hints: Arc<[InlayHintRow]> = Arc::from(Vec::<InlayHintRow>::new().into_boxed_slice());
-    let folds: Arc<[lattice_core::Fold]> =
-        Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice());
+    let foldenable = !fold_spec.is_empty();
+    let folds: Arc<[lattice_core::Fold]> = fold_spec
+        .iter()
+        .map(|&(start_line, end_line)| lattice_core::Fold {
+            start_line,
+            end_line,
+            closed: true,
+            identity: None,
+        })
+        .collect();
     let pane_entry = PaneCellsInputs {
         conceal_reveal: false,
         indent_guides: Default::default(),
@@ -161,11 +176,11 @@ fn rs_for_with_strip(
         // (scroll 0); the windowed bench relies on this too — at
         // scroll 0 a large doc windows to its first ~chunk regardless
         // of total size, which is exactly the O(viewport) measurement.
-        scroll: 0,
+        scroll,
         viewport_width: 0,
         wrap: false,
         wrap_reserved_cols: 0,
-        foldenable: false,
+        foldenable,
         last_edit,
     };
     let pane_matrices = {
@@ -188,7 +203,7 @@ fn rs_for_with_strip(
         inlay_hints,
         folds,
         viewport_height: VIEWPORT_HEIGHT,
-        foldenable: false,
+        foldenable,
         last_edit,
         // T.6.t: the host `Theme` struct is gone; the cell builder reads
         // styles through the resolved table + builtin ids.
@@ -635,6 +650,73 @@ fn bench_sticky_context_build(c: &mut Criterion) {
                         Some(handle.clone()),
                         empty_display(),
                         lines,
+                        &[],
+                        0,
+                    );
+                    black_box(recompute(&rs));
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// FW.1 (2026-08-31): the collapsed-screen build.
+///
+/// Every other bench in this file runs with `foldenable: false`, which
+/// is exactly why the cost this measures was invisible: the matrix
+/// window is sized in BUFFER LINES the viewport reaches, and with
+/// nothing folded that equals `viewport_height`, so no bench ever moved
+/// the two apart. A collapsed org file moves them a long way — 60 rows
+/// can reach thousands of lines in — and the window (hence the
+/// highlight query) has to grow with it or the screen paints uncoloured
+/// below the first fold.
+///
+/// `fold_size` is the lines each closed fold swallows, so the span the
+/// 60-row viewport covers is `60 × fold_size`: `1` is the fold-free
+/// baseline, `40` is a realistically-collapsed outline (~2400 lines),
+/// `80` saturates the 5 000-line fixture. Growth should track the SPAN,
+/// not the file — the rows built stay O(viewport) either way, since
+/// folded interiors never materialise a row.
+fn bench_folded_viewport_build(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cells_worker_folded_build");
+    let line_count = 5_000usize;
+    let doc = synthetic_rust_doc(line_count);
+    let text = doc.text();
+    let snapshot = Arc::new(DocumentSnapshot::__bench_from_document(&doc));
+    let mut syn = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+        .unwrap()
+        .unwrap();
+    syn.parse_at(&text, 1);
+    let handle = Arc::new(lattice_syntax::SyntaxHandle::seeded(syn));
+    let version = MatrixVersion {
+        text: 1,
+        ..MatrixVersion::ZERO
+    };
+
+    for &fold_size in &[1u32, 40, 80] {
+        let folds: Vec<(u32, u32)> = (0..line_count as u32 / fold_size.max(2))
+            .map(|i| {
+                let start = i * fold_size.max(2);
+                (start, start + fold_size.max(2) - 1)
+            })
+            .filter(|_| fold_size > 1)
+            .collect();
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("fold_size_{fold_size}")),
+            &(snapshot.clone(), handle.clone(), folds),
+            |b, (snap, handle, folds)| {
+                b.iter(|| {
+                    let rs = rs_for_with_strip(
+                        snap.clone(),
+                        version,
+                        None,
+                        Arc::default(),
+                        Some(handle.clone()),
+                        empty_display(),
+                        &[],
+                        folds,
+                        0,
                     );
                     black_box(recompute(&rs));
                 });
@@ -647,6 +729,7 @@ fn bench_sticky_context_build(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_sticky_context_build,
+    bench_folded_viewport_build,
     bench_full_build,
     bench_incremental_build,
     bench_incremental_build_highlighted,

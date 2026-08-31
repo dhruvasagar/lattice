@@ -188,6 +188,7 @@ docs = [
   "architecture/plugin-transients",
   "architecture/plugin-mode-options",
   "architecture/wit-ownership",
+  "reference/plugin-api",
   "architecture/cross-file-writes",
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
@@ -276,6 +277,7 @@ docs = [
 "notes/lsp-features" = "LSP feature reference"
 "notes/ai-assisted-development" = "AI-assisted development"
 "operations/implementation" = "Implementation ledger"
+"reference/plugin-api" = "Plugin API reference"
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"
 "operations/releasing" = "Cutting a release"

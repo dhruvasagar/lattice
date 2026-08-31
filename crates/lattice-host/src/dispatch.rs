@@ -35061,11 +35061,11 @@ impl Editor {
                         lines: vec![
                             format!(
                                 "  direction:   {}",
-                                plugin_api_direction_prose(iface.direction)
+                                lattice_plugin_api::render::direction_prose(iface.direction)
                             ),
                             format!(
                                 "  capability:  {}",
-                                plugin_api_capability_prose(iface.capability)
+                                lattice_plugin_api::render::capability_prose(iface.capability)
                             ),
                         ],
                         anchor: Some("seam".to_string()),
@@ -35128,8 +35128,8 @@ impl Editor {
             lines.push(format!(
                 "  [{name}](exec:describe-plugin-api {name}){pad}  {dir:<12}  {cap:<10}  {nfn} fn  —  {first}",
                 name = iface.name,
-                dir = plugin_api_direction_short(iface.direction),
-                cap = plugin_api_capability_short(iface.capability),
+                dir = lattice_plugin_api::render::direction_short(iface.direction),
+                cap = lattice_plugin_api::render::capability_short(iface.capability),
                 nfn = iface.functions.len(),
             ));
         }
@@ -35380,7 +35380,7 @@ impl Editor {
         let (name, dump) = if json {
             ("*plugin-api.json*", plugin_api_json_dump())
         } else {
-            ("*plugin-api.md*", plugin_api_markdown_dump())
+            ("*plugin-api.md*", lattice_plugin_api::render::markdown())
         };
         let id = self.ensure_named_synthetic_document(
             name,
@@ -38113,46 +38113,6 @@ pub fn preview_register(s: &str) -> String {
 /// PI.2: prose / short labels for a plugin-API interface's world-derived
 /// direction and host-authored capability, rendered by the
 /// `:describe-plugin-api` / `:list-plugin-apis` builders.
-fn plugin_api_direction_prose(d: lattice_plugin_api::Direction) -> &'static str {
-    use lattice_plugin_api::Direction;
-    match d {
-        Direction::GuestExport => "guest implements this interface",
-        Direction::GuestImport => "guest calls into the host through it",
-        Direction::Both => "guest both implements and calls it",
-        Direction::TypesOnly => "shared types only (not called directly)",
-    }
-}
-
-fn plugin_api_direction_short(d: lattice_plugin_api::Direction) -> &'static str {
-    use lattice_plugin_api::Direction;
-    match d {
-        Direction::GuestExport => "exports",
-        Direction::GuestImport => "imports",
-        Direction::Both => "both",
-        Direction::TypesOnly => "types",
-    }
-}
-
-fn plugin_api_capability_prose(c: lattice_plugin_api::Capability) -> &'static str {
-    use lattice_plugin_api::Capability;
-    match c {
-        Capability::Fs => "filesystem",
-        Capability::Net => "network",
-        Capability::Proc => "subprocess",
-        Capability::None => "none (pure data / dispatch)",
-    }
-}
-
-fn plugin_api_capability_short(c: lattice_plugin_api::Capability) -> &'static str {
-    use lattice_plugin_api::Capability;
-    match c {
-        Capability::Fs => "fs",
-        Capability::Net => "net",
-        Capability::Proc => "proc",
-        Capability::None => "-",
-    }
-}
-
 /// PI.4: resolved metadata for one loaded plugin. The `doc` is the plugin's
 /// OWN documentation (its embedded WIT world doc-comment, or its manifest `doc`
 /// field) — both fixed at the plugin's build/package time, so it is extracted
@@ -38225,41 +38185,6 @@ fn plugin_api_capability_token(c: lattice_plugin_api::Capability) -> &'static st
 }
 
 /// PI.2b: the markdown export — the whole catalog as a savable document.
-fn plugin_api_markdown_dump() -> String {
-    let cat = lattice_plugin_api::catalog();
-    let mut out = String::new();
-    out.push_str("# Lattice Plugin API\n\n");
-    out.push_str(&format!(
-        "Derived from the canonical `wit/` package — {} seam(s).\n",
-        cat.interfaces.len()
-    ));
-    for iface in &cat.interfaces {
-        out.push_str(&format!(
-            "\n## {}  ({}, capability: {})\n\n",
-            iface.name,
-            plugin_api_direction_prose(iface.direction),
-            plugin_api_capability_prose(iface.capability),
-        ));
-        if let Some(doc) = &iface.doc {
-            out.push_str(doc);
-            out.push_str("\n\n");
-        }
-        out.push_str(&format!("### Functions ({})\n\n", iface.functions.len()));
-        if iface.functions.is_empty() {
-            out.push_str("_(none — a shared type interface)_\n");
-        } else {
-            for f in &iface.functions {
-                let first = f
-                    .doc
-                    .as_deref()
-                    .and_then(|d| d.lines().next())
-                    .unwrap_or("");
-                out.push_str(&format!("- `{}` — {first}\n", f.name));
-            }
-        }
-    }
-    out
-}
 
 /// PI.2b: the JSON export — hand-built (no serde dep on `lattice-plugin-api`),
 /// so string fields are escaped explicitly by [`json_escape`].

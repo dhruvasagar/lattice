@@ -114,6 +114,23 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     // is what makes that true, and annotating it `Fs` would misreport a
     // deliberate design property as a permission.
     ("scanned-excerpt-source", Capability::None),
+    // The three REGISTRY-shaped seams, `None` for `scanned-excerpt-source`'s
+    // reason immediately above and not by default: in each the host owns the
+    // mechanism — the walk, the view, the picker — and the guest declares what
+    // to make of it or receives what the host already read. The capability
+    // belongs to the host's I/O, not to the seam that describes it. A seam
+    // where the GUEST reaches the filesystem would be annotated `Fs` here even
+    // though its WIT looks the same, which is why this table is hand-written.
+    ("multibuffer-view-registry", Capability::None),
+    ("multibuffer-view-source", Capability::None),
+    ("picker-registry", Capability::None),
+    // MV.3: the host owns the view, the walk and every file read; a guest
+    // declares a view spec and receives excerpts. `None` for
+    // `scanned-excerpt-source`'s reason, immediately above — the capability
+    // belongs to the host's walk, not to the seam that describes what to make
+    // of it.
+    ("multibuffer-view-registry", Capability::None),
+    ("multibuffer-view-source", Capability::None),
     ("buffer", Capability::None),
     ("command", Capability::None),
     ("completion-source", Capability::None),
@@ -184,6 +201,8 @@ include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 
 /// The plugin-API catalog, derived from `wit/` at build time and merged with
 /// the host-authored capability annotation. Computed once, then cached.
+pub mod render;
+
 pub fn catalog() -> &'static PluginApiCatalog {
     static CATALOG: OnceLock<PluginApiCatalog> = OnceLock::new();
     CATALOG.get_or_init(|| {

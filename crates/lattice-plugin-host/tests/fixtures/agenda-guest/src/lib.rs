@@ -97,6 +97,7 @@ impl Guest for Component {
                 group: "tree".to_string(),
                 label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
                 sort_key: 0,
+                spans: Vec::new(),
             }]);
         }
         if text.contains("BROKEN") {
@@ -120,6 +121,14 @@ impl Guest for Component {
                 // observable from the host without another export.
                 label: format!("Day {sort_key} (file {seen})"),
                 sort_key,
+                // OA.5: one styled run over the row's keyword, so the host
+                // test can assert the spans crossed the boundary at all.
+                // Offsets are into THIS row's line, which is the contract.
+                spans: vec![crate::lattice::plugin_host::types::DisplaySpan {
+                    start: 2,
+                    end: 6,
+                    slot: "keyword".to_string(),
+                }],
             });
         }
         Ok(out)

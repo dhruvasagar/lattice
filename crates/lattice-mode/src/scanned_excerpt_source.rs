@@ -40,6 +40,33 @@ pub struct ScannedExcerpt {
     /// The host stable-sorts every file's rows together on this, ascending.
     /// The producer owns what it means.
     pub sort_key: i64,
+    /// OA.5: how this row is coloured, as byte spans into the row's own first
+    /// line — NOT into the composed view, which the producer cannot see until
+    /// every other file's rows have been interleaved by the sort.
+    ///
+    /// Empty is the ordinary case, and means "say nothing about colour": the
+    /// source file's own grammar highlighting is what shows, unchanged. A
+    /// producer fills this when the row has semantics its grammar does not
+    /// carry — an agenda's TODO keyword, priority and tags are org's, not the
+    /// org grammar's, which is why an agenda looked like org text out of
+    /// order before this existed.
+    pub spans: Vec<RowSpan>,
+}
+
+/// One styled run within a row, naming a style rather than carrying one.
+///
+/// The WIT `display-span`, native side. `slot` resolves host-side through the
+/// same path a `highlights.scm` capture takes, so a plugin's own registered
+/// theme element (`org.todo.WAITING`) reaches the row with the active
+/// colourscheme applied, and an unresolvable name renders unstyled rather
+/// than failing the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowSpan {
+    /// Byte offset from the start of the row's line.
+    pub start: u32,
+    pub end: u32,
+    /// Capture or theme-element name.
+    pub slot: String,
 }
 
 /// The boxed future an [`ScannedExcerptSource::scan`] returns.

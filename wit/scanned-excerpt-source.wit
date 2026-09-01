@@ -58,6 +58,11 @@ package lattice:plugin-host@0.1.0;
 /// Validates and drops, never traps. A malformed file must not fail the
 /// agenda — `error-parser`'s rule, because it is the same failure class.
 interface scanned-excerpt-source {
+    /// OA.5: reused, not reinvented — `display-span` already names a style by
+    /// slot and resolves host-side through `name_to_style_with_theme`, which
+    /// is how a plugin's own theme element reaches a rendered row.
+    use types.{display-span};
+
     /// One agenda row the guest recognised in a file.
     record entry {
         /// **0-based** line of the row's anchor, `error-parser`'s
@@ -88,6 +93,26 @@ interface scanned-excerpt-source {
         /// Host stable-sorts across files on this, ascending. The guest
         /// owns what it means (an epoch day, a priority rank, a composite).
         sort-key: s64,
+        /// OA.5: how this row is COLOURED, as byte spans into the row's own
+        /// first line.
+        ///
+        /// Without this a row is painted by the source file's tree-sitter
+        /// grammar, because that is all the host has — so an agenda looks
+        /// like org text that happens to be out of order, rather than like an
+        /// agenda. The keyword, the priority, the tags and the date are
+        /// semantics only the guest knows.
+        ///
+        /// Offsets are relative to the start of `line`, not to the composed
+        /// view: the guest cannot know where its row lands once every other
+        /// file's rows are interleaved by the sort. The host translates after
+        /// sorting, the same way it titles group runs.
+        ///
+        /// `display-span.slot` names a style rather than carrying one, so a
+        /// guest's own registered theme elements (`org.todo.WAITING`) resolve
+        /// through exactly the path a `highlights.scm` capture takes. Empty is
+        /// the ordinary case for a source with nothing to say about colour —
+        /// the grammar's own highlighting is then what shows, unchanged.
+        spans: list<display-span>,
     }
 }
 

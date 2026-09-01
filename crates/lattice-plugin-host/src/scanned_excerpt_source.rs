@@ -211,12 +211,41 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
         group: e.group,
         label: e.label,
         sort_key: e.sort_key,
+        // OA.5: spans are guest output too, so they are validated rather than
+        // trusted. Dropped PER SPAN, not per row — `display-span`'s own
+        // contract is that one bad run must not cost a row its other runs,
+        // and a row that vanished because its colour was wrong would be a
+        // much worse failure than a row that renders plain.
+        spans: e
+            .spans
+            .into_iter()
+            .filter(|s| {
+                let ok = s.end > s.start && !s.slot.is_empty();
+                if !ok {
+                    tracing::debug!(
+                        path,
+                        line = e.line,
+                        start = s.start,
+                        end = s.end,
+                        slot = %s.slot,
+                        "agenda source returned an empty or inverted span; skipping it"
+                    );
+                }
+                ok
+            })
+            .map(|s| lattice_mode::scanned_excerpt_source::RowSpan {
+                start: s.start,
+                end: s.end,
+                slot: s.slot,
+            })
+            .collect(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agenda_task::DisplaySpan;
 
     fn entry(line: u32, end_line: u32) -> Entry {
         Entry {
@@ -225,7 +254,53 @@ mod tests {
             group: "Today".into(),
             label: "TODO write tests".into(),
             sort_key: 42,
+            spans: Vec::new(),
         }
+    }
+
+    /// OA.5: guest output is untrusted, and a bad span must cost the row its
+    /// COLOUR, never the row. Dropped per span rather than per row —
+    /// `display-span`'s own contract is that one bad run must not take the
+    /// others with it, and a row that vanished because its colour was wrong
+    /// would be a far worse failure than one that renders plain.
+    #[test]
+    fn a_bad_span_is_dropped_without_losing_the_row() {
+        let mut e = entry(3, 3);
+        e.spans = vec![
+            // Inverted.
+            DisplaySpan {
+                start: 6,
+                end: 2,
+                slot: "keyword".into(),
+            },
+            // Empty.
+            DisplaySpan {
+                start: 4,
+                end: 4,
+                slot: "keyword".into(),
+            },
+            // No slot to resolve.
+            DisplaySpan {
+                start: 1,
+                end: 3,
+                slot: String::new(),
+            },
+            // The good one.
+            DisplaySpan {
+                start: 2,
+                end: 6,
+                slot: "keyword".into(),
+            },
+        ];
+        let row = validate("/p/a.org", e).expect("the row survives its bad spans");
+        assert_eq!(
+            row.spans
+                .iter()
+                .map(|s| (s.start, s.end))
+                .collect::<Vec<_>>(),
+            vec![(2, 6)]
+        );
+        assert_eq!(row.spans[0].slot, "keyword");
     }
 
     #[test]

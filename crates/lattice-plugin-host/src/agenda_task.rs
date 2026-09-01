@@ -33,6 +33,8 @@ use crate::{
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
 pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
+/// OA.5: the per-row style spans an [`Entry`] carries.
+pub use crate::agenda_host::bindings::lattice::plugin_host::types::DisplaySpan;
 
 /// OT.3: parse one scanned file, from text the host has already read.
 ///

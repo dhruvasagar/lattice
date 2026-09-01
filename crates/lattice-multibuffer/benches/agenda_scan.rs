@@ -63,6 +63,7 @@ impl ScannedExcerptSource for BenchSource {
                         group: format!("day-{key}"),
                         label: format!("Day {key}"),
                         sort_key: key,
+                        spans: Vec::new(),
                     })
                 })
                 .collect())
@@ -128,6 +129,9 @@ fn bench_agenda_scan(c: &mut Criterion) {
                         exts: vec!["org".to_string()],
                     })],
                     registry.clone(),
+                    None,
+                    // OA.5: no span sink in a bench — the scan
+                    // publishes nothing and the walk is what is timed.
                     None,
                 );
                 loop {

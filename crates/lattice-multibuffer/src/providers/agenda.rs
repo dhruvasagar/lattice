@@ -400,6 +400,7 @@ pub fn open_scan_view(
         sources_for_scan,
         (*mb_registry).clone(),
         events,
+        Some(Arc::clone(&services)),
     );
 
     ProviderViewOutcome::Opened {
@@ -466,12 +467,19 @@ struct SortedRow {
 /// `pub` for the same reason `search::spawn_scan_task` is: OM.A3's `gr`
 /// handler respawns without going back through the trigger, and the
 /// throughput bench drives it without an activator.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_agenda_scan(
     view: BufferId,
     options: AgendaOptions,
     sources: Vec<Arc<dyn ScannedExcerptSource>>,
     mb_registry: MultibufferRegistryHandle,
     events: Option<Arc<EventBus>>,
+    // OA.5: `services` because the scan carries per-row style spans back, and
+    // publishing them needs two things the walk itself does not — the
+    // synthetic-highlight sink and the theme that resolves a slot name. A
+    // registry rather than two handles: the scan runs long after the opener
+    // returned, and a third consumer would otherwise mean a third parameter.
+    services: Option<Arc<lattice_mode::ServiceRegistry>>,
 ) {
     tokio::spawn(async move {
         // `begin` first, and a source that refuses is dropped from THIS scan
@@ -647,7 +655,15 @@ pub fn spawn_agenda_scan(
         if sorted.is_empty() {
             finish_empty(&mb_registry, &events, view, &outcome);
         } else {
-            append_sorted(&mb_registry, &events, view, &files, sorted, &outcome);
+            append_sorted(
+                &mb_registry,
+                &events,
+                view,
+                &files,
+                sorted,
+                &outcome,
+                services.as_deref(),
+            );
         }
     });
 }
@@ -828,6 +844,7 @@ fn sort_rows(files: &[FileRows]) -> Vec<SortedRow> {
 
 /// Build one source `Document` per contributing file and append the rows in
 /// sorted order, titling the first row of each group run.
+#[allow(clippy::too_many_arguments)]
 fn append_sorted(
     mb_registry: &MultibufferRegistryHandle,
     events: &Option<Arc<EventBus>>,
@@ -835,6 +852,7 @@ fn append_sorted(
     files: &[FileRows],
     rows: Vec<SortedRow>,
     outcome: &ScanOutcome,
+    services: Option<&lattice_mode::ServiceRegistry>,
 ) {
     let Some(handle) = mb_registry.handle(view) else {
         return;
@@ -870,6 +888,7 @@ fn append_sorted(
 
     let excerpts = build_excerpts(&rows, &source_ids);
     let count = excerpts.len();
+    publish_row_spans(services, view, &rows, &excerpts);
     // OA.0c: REPLACE, not append. This is the swap that makes keeping the old
     // rows safe — appending onto a view we deliberately did not clear would
     // show the previous scan's rows and this one's together. Replacing also
@@ -921,6 +940,83 @@ fn build_excerpts(rows: &[SortedRow], source_ids: &HashMap<usize, BufferId>) -> 
             Excerpt::new(source, row.entry.line, row.entry.end_line)
                 .with_header(ExcerptHeader::new(title)),
         );
+    }
+    out
+}
+
+/// OA.5: paint the rows with the colour the source asked for.
+///
+/// Without this an agenda row is coloured by the SOURCE FILE's tree-sitter
+/// grammar — all the host has — so the view looks like org text that happens
+/// to be out of order. Which word is a TODO keyword, a priority or a tag is
+/// org semantics, not the org grammar's.
+///
+/// Two translations happen here, and both are the reason this is host-side.
+/// A producer reports offsets into its row's OWN line, because it cannot know
+/// where that row lands until every other file's rows have been interleaved
+/// by the sort; the composed row index is only knowable after
+/// `build_excerpts`. And a `slot` is a NAME, resolved through exactly the path
+/// a `highlights.scm` capture takes — so a plugin's own registered element
+/// (`org.todo.WAITING`) picks up the active colourscheme, and an unresolvable
+/// name renders unstyled rather than failing the row.
+///
+/// Silent no-op when no source asked for colour, which is the ordinary case:
+/// an empty publish would still cost a drain and a repaint.
+fn publish_row_spans(
+    services: Option<&lattice_mode::ServiceRegistry>,
+    view: BufferId,
+    rows: &[SortedRow],
+    excerpts: &[Excerpt],
+) {
+    let Some(services) = services else {
+        return;
+    };
+    if rows.iter().all(|r| r.entry.spans.is_empty()) {
+        return;
+    }
+    let Some(sink) = services.get::<lattice_mode::PendingSyntheticHighlights>() else {
+        tracing::debug!("agenda: no synthetic-highlight sink; rows keep grammar colour");
+        return;
+    };
+    let theme = services.get::<lattice_theme::ThemeRegistryHandle>();
+    let theme_ref: Option<&dyn lattice_theme::ThemeRegistry> = theme
+        .as_deref()
+        .map(|t| &**t as &dyn lattice_theme::ThemeRegistry);
+
+    sink.store_and_wake(view, composed_row_spans(rows, excerpts, theme_ref));
+}
+
+/// The translation itself, pure so it can be tested without an Editor — the
+/// sink's map is private and only the Editor drains it.
+///
+/// Two things to get right, and both fail INVISIBLY: the rows still render,
+/// just wrongly coloured.
+///
+/// - A span's offsets stay relative to its own LINE and are not rebased.
+/// - A row lands at its COMPOSED index, which is not its index among its own
+///   file's rows — the sort interleaves files, so the two differ whenever
+///   more than one file contributes.
+fn composed_row_spans(
+    rows: &[SortedRow],
+    excerpts: &[Excerpt],
+    theme: Option<&dyn lattice_theme::ThemeRegistry>,
+) -> Vec<Vec<lattice_cells::StyledSpan>> {
+    // `excerpt_start_rows` is the same helper the fold providers use, so a
+    // row's spans and its fold agree on where that row is.
+    let starts = crate::motions::excerpt_start_rows(excerpts);
+    let total: usize = excerpts.iter().map(|e| e.line_count() as usize).sum();
+    let mut out: Vec<Vec<lattice_cells::StyledSpan>> = vec![Vec::new(); total];
+    for (row, &start) in rows.iter().zip(starts.iter()) {
+        let Some(slot) = out.get_mut(start as usize) else {
+            continue;
+        };
+        for span in &row.entry.spans {
+            slot.push(lattice_cells::StyledSpan {
+                start: span.start as usize,
+                end: span.end as usize,
+                style: lattice_syntax::style::name_to_style_with_theme(&span.slot, theme),
+            });
+        }
     }
     out
 }
@@ -1230,6 +1326,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// OA.5: the two translations `composed_row_spans` owns, on the layout
+    /// that makes them differ — two files interleaved by the sort, so a row's
+    /// composed index is NOT its index among its own file's rows.
+    #[test]
+    fn row_spans_land_on_the_composed_row_with_line_relative_offsets() {
+        let mut a = entry(7, "day-1", "Day 1", 1);
+        a.spans = vec![lattice_mode::scanned_excerpt_source::RowSpan {
+            start: 2,
+            end: 6,
+            slot: "keyword".to_string(),
+        }];
+        let mut b = entry(3, "day-2", "Day 2", 2);
+        b.spans = vec![lattice_mode::scanned_excerpt_source::RowSpan {
+            start: 0,
+            end: 4,
+            slot: "comment".to_string(),
+        }];
+        // Row `a` is line 7 of file 0; row `b` is line 3 of file 1. Sorted,
+        // `a` is composed row 0 and `b` composed row 1 — neither matching the
+        // source line either carries.
+        let rows = vec![
+            SortedRow { file: 0, entry: a },
+            SortedRow { file: 1, entry: b },
+        ];
+        let src_a = BufferId::next();
+        let src_b = BufferId::next();
+        let excerpts = vec![Excerpt::new(src_a, 7, 7), Excerpt::new(src_b, 3, 3)];
+
+        let out = composed_row_spans(&rows, &excerpts, None);
+
+        assert_eq!(out.len(), 2, "one entry per composed row");
+        assert_eq!(out[0].len(), 1);
+        assert_eq!(
+            (out[0][0].start, out[0][0].end),
+            (2, 6),
+            "offsets stay relative to the row's own line, not rebased"
+        );
+        assert_eq!(out[1].len(), 1);
+        assert_eq!((out[1][0].start, out[1][0].end), (0, 4));
+        assert_ne!(
+            out[0][0].style, out[1][0].style,
+            "each slot resolves to its own style"
+        );
+    }
+
+    /// A multi-line row must not smear its spans over the rows below it, and
+    /// the row after it must still land at the right composed index.
+    #[test]
+    fn a_multi_line_row_does_not_shift_the_row_after_it() {
+        let mut a = entry(0, "g", "G", 1);
+        a.spans = vec![lattice_mode::scanned_excerpt_source::RowSpan {
+            start: 0,
+            end: 3,
+            slot: "keyword".to_string(),
+        }];
+        let mut b = entry(9, "g", "", 2);
+        b.spans = vec![lattice_mode::scanned_excerpt_source::RowSpan {
+            start: 1,
+            end: 2,
+            slot: "comment".to_string(),
+        }];
+        let rows = vec![
+            SortedRow { file: 0, entry: a },
+            SortedRow { file: 0, entry: b },
+        ];
+        let src = BufferId::next();
+        // The first excerpt spans TWO lines, so the second row is composed
+        // row 2 rather than row 1.
+        let excerpts = vec![Excerpt::new(src, 0, 1), Excerpt::new(src, 9, 9)];
+
+        let out = composed_row_spans(&rows, &excerpts, None);
+
+        assert_eq!(out.len(), 3, "two lines plus one: {out:?}");
+        assert_eq!(out[0].len(), 1, "the first row's span is on its head line");
+        assert!(out[1].is_empty(), "its second line carries nothing");
+        assert_eq!(out[2].len(), 1, "the next row is at composed row 2");
+    }
+
     fn entry(line: u32, group: &str, label: &str, sort_key: i64) -> ScannedExcerpt {
         ScannedExcerpt {
             line,
@@ -1237,6 +1411,7 @@ mod tests {
             group: group.to_string(),
             label: label.to_string(),
             sort_key,
+            spans: Vec::new(),
         }
     }
 
@@ -1421,6 +1596,7 @@ mod tests {
                             group: format!("day-{key}"),
                             label: format!("Day {key}"),
                             sort_key: key,
+                            spans: Vec::new(),
                         })
                     })
                     .collect())
@@ -1502,6 +1678,7 @@ mod tests {
             vec![source],
             registry.clone(),
             None,
+            None,
         );
 
         let status = settle_agenda(&registry, view).await;
@@ -1558,6 +1735,7 @@ mod tests {
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
             None,
+            None,
         );
 
         settle_agenda(&registry, view).await;
@@ -1585,6 +1763,7 @@ mod tests {
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
+            None,
             None,
         );
 
@@ -1618,6 +1797,7 @@ mod tests {
             },
             vec![source],
             registry.clone(),
+            None,
             None,
         );
 
@@ -1684,6 +1864,7 @@ mod tests {
             vec![Arc::new(FakeSource::new(1, &["org"])), dead],
             registry.clone(),
             None,
+            None,
         );
 
         let status = settle_agenda(&registry, view).await;
@@ -1735,6 +1916,7 @@ mod tests {
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
+            None,
             None,
         );
 

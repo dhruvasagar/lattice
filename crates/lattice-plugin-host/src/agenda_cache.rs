@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agenda_task::Entry;
+use crate::agenda_task::{DisplaySpan, Entry};
 
 /// Bumped whenever the on-disk shape changes. A mismatch discards the file
 /// rather than attempting migration — this is a cache, and rebuilding it costs
@@ -94,6 +94,25 @@ struct CachedEntry {
     group: String,
     label: String,
     sort_key: i64,
+    /// OA.5: the row's colour, cached with it — a cache hit skips the guest
+    /// call entirely, so spans left out here would make a warm agenda render
+    /// uncoloured while a cold one rendered correctly.
+    ///
+    /// `serde(default)` so a cache file written before this field loads
+    /// rather than failing: those rows render with no spans until their file
+    /// next changes, which is the same "degrade, never break" the rest of
+    /// this module takes.
+    #[serde(default)]
+    spans: Vec<CachedSpan>,
+}
+
+/// The WIT `display-span`, in a form that survives a round trip to disk.
+/// Same reasoning as [`CachedEntry`]: bindgen owns the generated type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedSpan {
+    start: u32,
+    end: u32,
+    slot: String,
 }
 
 impl From<&Entry> for CachedEntry {
@@ -104,6 +123,15 @@ impl From<&Entry> for CachedEntry {
             group: e.group.clone(),
             label: e.label.clone(),
             sort_key: e.sort_key,
+            spans: e
+                .spans
+                .iter()
+                .map(|s| CachedSpan {
+                    start: s.start,
+                    end: s.end,
+                    slot: s.slot.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -116,6 +144,15 @@ impl From<&CachedEntry> for Entry {
             group: c.group.clone(),
             label: c.label.clone(),
             sort_key: c.sort_key,
+            spans: c
+                .spans
+                .iter()
+                .map(|s| DisplaySpan {
+                    start: s.start,
+                    end: s.end,
+                    slot: s.slot.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -310,7 +347,30 @@ mod tests {
             group: "g".to_string(),
             label: label.to_string(),
             sort_key: line as i64,
+            spans: vec![DisplaySpan {
+                start: 2,
+                end: 6,
+                slot: "keyword".to_string(),
+            }],
         }
+    }
+
+    /// OA.5: spans round-trip through the on-disk form. A cache hit skips the
+    /// guest call entirely, so spans dropped here would make a WARM agenda
+    /// render uncoloured while a cold one rendered correctly — a difference
+    /// nothing else in the system would explain.
+    #[test]
+    fn spans_survive_the_cache_round_trip() {
+        let e = entry(4, "row");
+        let cached = CachedEntry::from(&e);
+        let back = Entry::from(&cached);
+        assert_eq!(
+            back.spans
+                .iter()
+                .map(|s| (s.start, s.end, s.slot.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, 6, "keyword")]
+        );
     }
 
     #[test]

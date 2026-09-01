@@ -31,7 +31,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.4b | `<Tab>` is declared once, on a shared `foldable-view-mode` | ✅ |
 | OA.4c | A one-line excerpt is not a fold | ✅ |
 | **Phase 2 — the view looks like an agenda** | | |
-| OA.5 | `display-span` spans on the scan result (WIT seam) | 📝 |
+| OA.5 | `display-span` spans on the scan result (WIT seam) | ✅ |
 | OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | 📝 |
 | OA.7 | Header cells carry the block's own shape | 📝 |
 | OA.7b | Conceal resolves per excerpt, so it works in a multibuffer | 📝 |
@@ -362,18 +362,39 @@ binding (6 closed folds → 6).
 
 ## Phase 2 — the view looks like an agenda
 
-### OA.5 — `display-span` spans on the scan result (WIT seam) 📝
+### OA.5 — `display-span` spans on the scan result (WIT seam) ✅
 
-Cross-repo. Carry `list<list<display-span>>` back from the guest's scan and
-route it into `PendingSyntheticHighlights` for the view buffer.
+`entry` gains `spans: list<display-span>` — **per row**, not per view. A guest
+cannot know where its row lands until every other file's rows have been
+interleaved by the host's sort, so offsets are relative to the row's own line
+and the host does the two translations it alone can: line-relative offsets stay
+put, and the row goes to its COMPOSED index.
 
-`display-span` is reused, not invented: it names styles by string slot resolved
-host-side against the theme, so no colour crosses the boundary. The merge path
-already reaches multibuffer views and prepends extra spans over per-excerpt
-syntax, so they win.
+Reused rather than invented. `display-span` already names a style by string
+slot and resolves host-side through the path a `highlights.scm` capture takes —
+its own doc names `org.todo.WAITING` as the motivating case — so a plugin's
+theme elements reach the row with the colourscheme applied and no colour
+crosses the ABI.
 
-**Test:** host-side, a guest returning spans results in `ExtraHighlights` on the
-view; and an unresolvable slot name is dropped rather than failing the scan.
+**Spans are validated, not trusted**, and dropped PER SPAN: `display-span`'s
+contract is that one bad run must not cost a row its others, and a row that
+vanished because its colour was wrong is a far worse failure than one that
+renders plain.
+
+**Cached with the row.** A cache hit skips the guest call entirely, so spans
+left out of the on-disk form would make a WARM agenda render uncoloured while a
+cold one rendered correctly — a difference nothing else in the system would
+explain. `serde(default)` so a cache written before this field still loads.
+
+**Tests:** the guest fixture emits a span and the host asserts it crosses with
+its slot NAME intact; a bad span is dropped without losing the row; spans
+survive the cache round trip; and the composed-row translation is a pure
+function with its own tests, over a layout where a row's composed index differs
+from its index within its file — because both translations fail INVISIBLY, the
+rows still render, just wrongly.
+
+Nothing emits spans yet, which is OA.6. Empty is the ordinary case and means
+"say nothing about colour": the grammar's own highlighting shows, unchanged.
 
 ### OA.6 — Org emits agenda spans **(plugin)** 📝
 

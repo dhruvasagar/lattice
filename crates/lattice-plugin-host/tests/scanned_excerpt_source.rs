@@ -382,3 +382,42 @@ async fn a_source_names_the_paths_it_wants_scanned() {
         "and answers consistently while config is stable"
     );
 }
+
+/// OA.5: a guest's per-row style spans cross the boundary and survive
+/// validation.
+///
+/// The seam exists so an agenda row is coloured by the SOURCE's semantics —
+/// which word is a TODO keyword, a priority, a tag — rather than by the file's
+/// tree-sitter grammar, which is all the host has on its own.
+///
+/// Offsets stay relative to the row's own line: the guest cannot know where
+/// its row lands until every other file's rows have been interleaved by the
+/// host's sort, so rebasing them here would be rebasing against nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_guests_row_spans_cross_the_boundary() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin().await.expect("begin");
+    let rows = src
+        .scan(PathBuf::from("/p/a.org"), org(&[1]))
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]
+            .spans
+            .iter()
+            .map(|s| (s.start, s.end, s.slot.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(2, 6, "keyword")],
+        "the guest's span arrives with its own line's offsets and its slot NAME \
+         — a name, because a `Style` is a closed Rust enum plus an interned id \
+         and neither crosses an ABI"
+    );
+}

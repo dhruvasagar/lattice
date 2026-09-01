@@ -24,10 +24,10 @@ the shared minor). Catalogue entry: the agenda in
 | OA.0c | A refresh keeps the old rows until the new ones arrive | ✅ |
 | OA.0d | A configured directory means its files, not its subtree | ✅ |
 | **Phase 1 — correctness before cosmetics** | | |
-| OA.1 | Agenda rows are one line **(plugin)** | 📝 |
+| OA.1 | Agenda rows are one line **(plugin)** | ✅ |
 | OA.2 | Title-run header grouping; the `[untitled]` rows go | ✅ |
 | OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ⛔ |
-| OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | 📝 |
+| OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | ✅ |
 | **Phase 2 — the view looks like an agenda** | | |
 | OA.5 | `display-span` spans on the scan result (WIT seam) | 📝 |
 | OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | 📝 |
@@ -265,7 +265,7 @@ a semantics question for org, not a walk question, so it does not ride here.
 The view should stop lying before it starts looking good. Every slice here is
 small, and three of them are bugs.
 
-### OA.1 — Agenda rows are one line **(plugin)** 📝
+### OA.1 — Agenda rows are one line **(plugin)** ✅
 
 `end_line` runs out to the planning line so `SCHEDULED:` shows under the
 headline. Set `end_line = line` at both construction sites (the tree scan and
@@ -275,8 +275,16 @@ One field, zero host work — `compose_snapshot` copies exactly
 `start_line..=end_line` with no padding, and the agenda never opted into the
 context-lines setting that only the search provider has.
 
-**Test:** an agenda over a file whose TODO has a planning line composes one row,
-not two. Assert on the composed text, not on `Row`.
+Three existing tests asserted the old two-line shape and were updated rather
+than worked around — they pinned it deliberately, so changing them IS the
+slice. The new test asserts on the COMPOSED view as well as the excerpts,
+because excerpt bounds and what the user reads are different things and only
+the second is the promise.
+
+**A trap for the next guest change here:** `tests/org_agenda.rs` loads the
+prebuilt component from `target/wasm32-wasip2/release/`, so a source edit is
+invisible until `cargo build --release --target wasm32-wasip2`. The first run
+of this slice reported eleven passes against a stale wasm.
 
 ### OA.2 — Title-run header grouping; the `[untitled]` rows go ✅
 
@@ -324,7 +332,7 @@ seconds, so what you observe is an agenda that never comes back. Kept here
 rather than deleted, because the symptom is the one that gets reported and the
 next person will look for it under this name.
 
-### OA.4 — `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** 📝
+### OA.4 — `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** ✅
 
 Bind both on `org-agenda-mode`, whose `ActivationPolicy::Manual` scopes them to
 agenda views. `<Tab>` → cycle the block at the cursor, `<S-Tab>` → global
@@ -337,8 +345,15 @@ is *not* reusable — it requires an org tree-sitter tree and matches org node
 kinds, neither of which exists in a multibuffer. So this binds the app effects
 directly rather than routing through `org-cycle`.
 
-**Test:** `<Tab>` in the agenda changes fold state; and it does **not** fire
-jump-list-forward, the global `<Tab>` it now shadows.
+Two new actions rather than reusing `org-cycle`, for the reason the slice
+predicted: the guest body needs an org tree and matches org node kinds, and a
+multibuffer has neither. They emit the fold effects directly.
+
+No `Declined` fallback — falling through to the global `<Tab>` (jump-list
+forward) would move the user out of a read-only view they are reading. The test
+asserts the jump list did not move, because fold count alone cannot tell
+"cycled a block" from "did the global thing". Verified to fail without the
+binding (6 closed folds → 6).
 
 ---
 

@@ -201,6 +201,72 @@ mod tests {
     // `lattice_host::overlay_worker::recompute` tests (display-line
     // B4.2: the span-cache worker was gutted to the overlay bucket).
 
+    /// Reported 2026-09-01: navigating from the agenda (or through an org
+    /// link) to another org file "does not unfold enough to reveal the
+    /// headline we navigated to".
+    ///
+    /// `org-mode` sets `foldlevel = 0`, so an org file opens fully collapsed.
+    /// The cross-file jump then set the cursor and stopped, leaving it inside
+    /// a closed fold — the user arrives looking at a collapsed outline with no
+    /// sign of where they went.
+    ///
+    /// Driven through the real `Effect::OpenBufferAt` — the effect BOTH the
+    /// agenda's `<CR>` and org's link-follow emit — against a real file with
+    /// real syntax folds, because the doubt was never whether
+    /// `auto_open_folds_at_cursor` works. It was whether the folds exist yet at
+    /// the moment the jump positions the cursor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cross_file_jump_reveals_the_line_it_lands_on() {
+        let dir = crate::app::test_helpers::unique_tempdir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.rs");
+        // Nested blocks so `foldmethod=syntax` yields a fold that CONTAINS the
+        // line we jump to, rather than one that merely starts there.
+        std::fs::write(
+            &target,
+            "fn outer() {\n    let a = 1;\n    if a > 0 {\n        let deep = 2;\n    }\n}\n",
+        )
+        .unwrap();
+
+        let mut a = app_with("elsewhere\n", 20);
+        a.mutate_editor(|e| {
+            e.handle_effect(lattice_grammar::Effect::SetOption {
+                spec: "foldmethod=syntax".to_string(),
+            });
+            // What `org-mode` contributes, spelled globally so this test needs
+            // no org plugin: the file opens fully collapsed.
+            e.handle_effect(lattice_grammar::Effect::SetOption {
+                spec: "foldlevel=0".to_string(),
+            });
+        });
+
+        let deep = Position::new(3, 8);
+        a.apply_effect(lattice_grammar::Effect::OpenBufferAt {
+            path: Some(target.clone()),
+            position: deep,
+            force: false,
+        });
+
+        let folds = a.editor.folds.clone();
+        assert!(
+            !folds.is_empty(),
+            "precondition: the target file has syntax folds; without any, this \
+             test would pass on the broken code too"
+        );
+        assert!(
+            folds
+                .iter()
+                .any(|f| deep.line >= f.start_line && deep.line <= f.end_line),
+            "precondition: the landing line is inside a fold, got {folds:?}"
+        );
+        assert!(
+            !folds
+                .iter()
+                .any(|f| f.closed && deep.line >= f.start_line && deep.line <= f.end_line),
+            "the jump revealed its target — no closed fold still hides it, got {folds:?}"
+        );
+    }
+
     // ---- compute_fold_hash ----
 
     #[test]

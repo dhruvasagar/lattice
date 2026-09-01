@@ -21400,6 +21400,31 @@ fn paragraph_bounds(buffer: &lattice_core::Buffer, cursor: u32, last: u32) -> (u
 /// 5.5.G.4: pure-editor scroll / page / viewport / bracket /
 /// redraw helpers.
 impl Editor {
+    /// Land the cursor after an open-and-jump, and REVEAL it.
+    ///
+    /// The pair every cross-file jump wants: position, then open whatever
+    /// closed folds the target sits inside. Vim spells the second half `zv`
+    /// and does it implicitly for jump-class motions; emacs org calls it
+    /// `org-fold-show-context` and runs it after `org-agenda-goto`.
+    ///
+    /// One method rather than the two calls each renderer used to make,
+    /// because the reveal was missing from BOTH and a fix applied at two call
+    /// sites is a fix that comes apart at one of them. `auto_open_folds_at_cursor`
+    /// already existed and its own doc says it is "called by jump-class motions
+    /// so the cursor never lands inside a hidden region" — the cross-file jump
+    /// simply never called it.
+    ///
+    /// Why this is load-bearing rather than polish: `org-mode` sets
+    /// `foldlevel = 0`, so an org file opens fully collapsed. Jumping from the
+    /// agenda (or through a link) to a headline therefore landed the cursor
+    /// inside closed folds, and the user arrived looking at a collapsed
+    /// outline with no sign of where they had gone. Navigation that does not
+    /// show you the thing you navigated to has not finished.
+    pub fn land_cursor_at(&mut self, position: lattice_protocol::position::Position) {
+        self.set_cursor_clamped(position);
+        self.auto_open_folds_at_cursor();
+    }
+
     /// Open every closed fold whose range contains the current
     /// cursor line. Called by jump-class motions so the cursor
     /// never lands inside a hidden region.

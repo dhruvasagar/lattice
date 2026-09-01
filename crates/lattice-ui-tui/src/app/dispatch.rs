@@ -1067,8 +1067,13 @@ impl App {
             // both writes against the post-do_edit active doc.
             Effect::OpenBufferAt { path, position, force } => {
                 self.do_edit(path, force);
+                // `land_cursor_at`, not `set_cursor_clamped`: the jump must
+                // also REVEAL its target. An org file opens at `foldlevel=0`,
+                // so a headline reached from the agenda or through a link
+                // otherwise lands inside a closed fold and the user arrives
+                // looking at a collapsed outline.
                 self.mutate_editor_with(move |e| {
-                    e.set_cursor_clamped(position);
+                    e.land_cursor_at(position);
                 });
             }
             // 5.5.E.7.5: `Substitute` migrated to

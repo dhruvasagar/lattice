@@ -1325,8 +1325,11 @@ impl GpuiApp {
             // GPUI parity with TUI per [[feedback_tui_gpui_parity]].
             Effect::OpenBufferAt { path, position, force } => {
                 self.apply_open_buffer(path, force);
+                // Same one call as the TUI peer — position AND reveal. The
+                // shared method is what keeps the two from drifting, which is
+                // how the reveal came to be missing from both.
                 self.mutate_editor(move |e| {
-                    e.set_cursor_clamped(position);
+                    e.land_cursor_at(position);
                 });
             }
             // I3/BC.8c follow-up: `SaveBuffer` is now HOST-applied in

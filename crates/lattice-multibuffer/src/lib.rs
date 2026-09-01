@@ -5609,12 +5609,31 @@ impl lattice_core::FoldSource for ExcerptFoldProvider {
         self.id
     }
 
+    /// One fold per excerpt — **except a single-line one, which is not a
+    /// fold at all** (OA.4c).
+    ///
+    /// A fold whose `start_line == end_line` can never hide anything: closed,
+    /// it shows its head, which is the whole of it. Emitting one is not merely
+    /// wasteful, it is actively wrong, because `innermost_fold_idx` picks the
+    /// fold with the greatest `start_line` — so a degenerate per-excerpt fold
+    /// SHADOWS the group fold that actually contains the row, and `<Tab>`
+    /// toggles something with no visible effect while the block stays closed.
+    ///
+    /// That is what one-line agenda rows (OA.1) turned this into: before them
+    /// an agenda excerpt spanned its planning line, so every fold here was a
+    /// real two-line one. The report was "`<Tab>` doesn't work cleanly, only
+    /// `<S-Tab>` seems to work" — `<S-Tab>` sets every fold at once, so it was
+    /// unaffected.
+    ///
+    /// Generic, not agenda-shaped: project search with `context_lines = 0`
+    /// produces one-line excerpts too.
     fn compute_folds(&self) -> Vec<lattice_core::Fold> {
         let excerpts = self.handle.excerpts();
         let starts = crate::motions::excerpt_start_rows(&excerpts);
         excerpts
             .iter()
             .zip(starts.iter())
+            .filter(|(excerpt, _)| excerpt.line_count() > 1)
             .map(|(excerpt, &start)| {
                 let line_count = excerpt.line_count();
                 let end = start.saturating_add(line_count.saturating_sub(1));

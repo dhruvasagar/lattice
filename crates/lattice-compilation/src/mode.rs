@@ -275,6 +275,13 @@ impl Mode for CompilationMode {
         Some("action:compilation-recompile")
     }
 
+    /// OA.4b: this view folds by blocks, so `<Tab>` / `<S-Tab>` come from the
+    /// shared `foldable-view-mode`. Nothing special to do on a block, so it
+    /// names the generic body.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        Some(lattice_mode::FOLD_TOGGLE_DEFAULT_ACTION)
+    }
+
     /// CM.3c: severity gutter marks for the `*compilation*` buffer. Reads
     /// the per-buffer severity index the renderer injected as
     /// [`CompilationSeverityData`] — produced off-thread by the drain,

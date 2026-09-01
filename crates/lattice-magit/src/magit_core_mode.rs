@@ -14,7 +14,7 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_core::BufferId;
-use lattice_grammar::{AppEffect, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
     ActionContext, ActivationPolicy, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry,
     LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet, keymap_entry,
@@ -1284,6 +1284,19 @@ impl Mode for MagitCoreMode {
         Some("action:magit-refresh")
     }
 
+    /// OA.4b: `<Tab>` comes from `foldable-view-mode` now; magit declares
+    /// only its BODY. The specialisation is real and stays — on a status file
+    /// line the first press expands the diff so `<Tab>` and `=` agree, and
+    /// everywhere else it is the plain fold toggle.
+    ///
+    /// `<S-Tab>` is not declared because it never needed to be: magit's
+    /// `action:magit-cycle-sections` body was literally
+    /// `Effect::AppAction(AppEffect::CycleFoldsGlobal)`, which is what the
+    /// shared mode's own action evaluates to. The copy is deleted.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        Some("action:magit-toggle-fold")
+    }
+
     /// Re-opening a magit buffer re-runs that refresh.
     ///
     /// Every magit view's content is a snapshot of the repository, and
@@ -1639,14 +1652,6 @@ impl Mode for MagitCoreMode {
                 // toggle it has always been.
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     crate::actions::toggle_diff_or_fold(ctx)
-                }),
-            },
-            // S-TAB — cycle overview / all-headings / everything-shown,
-            // matching magit's own section-cycling convention.
-            lattice_mode::ActionHandlerContribution {
-                action_name: "action:magit-cycle-sections",
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(Effect::AppAction(AppEffect::CycleFoldsGlobal))
                 }),
             },
         ]

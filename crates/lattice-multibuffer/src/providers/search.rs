@@ -472,6 +472,14 @@ impl Mode for ProjectSearchMode {
     fn refresh_action(&self) -> Option<&'static str> {
         Some("action:search-refresh")
     }
+
+    /// OA.4b: this view folds by blocks, so `<Tab>` / `<S-Tab>` come from the
+    /// shared `foldable-view-mode`. Nothing special to do on a block, so it
+    /// names the generic body.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        Some(lattice_mode::FOLD_TOGGLE_DEFAULT_ACTION)
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             // ModeContext::buffer_id() returns lattice_protocol::BufferId;

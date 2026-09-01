@@ -456,6 +456,21 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// Which of this mode's actions `<Tab>` fires, and the declaration that
+    /// pulls in
+    /// [`foldable-view-mode`](crate::foldable_view_mode::FoldableViewMode) —
+    /// the shared minor owning the chord.
+    ///
+    /// `Some(FOLD_TOGGLE_DEFAULT_ACTION)` for the ordinary "cycle the fold at
+    /// the cursor"; `Some(own_action)` for a view with a real specialisation
+    /// (magit expands a diff on the first press over a status file line).
+    ///
+    /// `None` — the default — means this mode's buffers keep `<Tab>` as
+    /// jump-list-forward, which is what every ordinary document wants.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Should re-opening this view **re-run its refresh**?
     ///
     /// A synthetic buffer is created once and reused: the host's
@@ -578,6 +593,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
     fn refresh_action(&self) -> Option<&'static str>;
+    fn fold_toggle_action(&self) -> Option<&'static str>;
     fn refresh_on_open(&self) -> bool;
     fn activation_policy(&self) -> ActivationPolicy;
     fn editable_tail(&self) -> Option<EditableTail>;
@@ -640,6 +656,9 @@ impl<M: Mode> DynMode for M {
     }
     fn refresh_action(&self) -> Option<&'static str> {
         <M as Mode>::refresh_action(self)
+    }
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        <M as Mode>::fold_toggle_action(self)
     }
     fn refresh_on_open(&self) -> bool {
         <M as Mode>::refresh_on_open(self)

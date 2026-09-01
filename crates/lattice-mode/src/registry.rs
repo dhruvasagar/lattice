@@ -619,6 +619,25 @@ impl ModeRegistry {
                 }
             }
         }
+        // OA.4b: the same contract, one chord later. A mode that declares a
+        // fold-toggle action pulls in `foldable-view-mode`, which owns the
+        // shared `<Tab>` / `<S-Tab>`. Folded into the implies walk for the
+        // reason above — the copied chords this replaced (magit's and the
+        // agenda's) left four foldable views with no fold chord at all, and a
+        // forgotten `implies()` entry is how that stays true.
+        if entry.fold_toggle_action().is_some() {
+            let shared = crate::FoldableViewMode::mode_id();
+            if !active.has_minor(shared) && mode != shared {
+                if self.is_registered(shared) {
+                    self.validate_and_record_minor(active, plan, buffer, shared, caps, guards)?;
+                } else {
+                    tracing::debug!(
+                        %mode,
+                        "mode declares fold_toggle_action but foldable-view-mode is not registered; `<Tab>` will not bind"
+                    );
+                }
+            }
+        }
         Ok(())
     }
 

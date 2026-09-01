@@ -753,6 +753,38 @@ shared minor lands, before anyone implements its refresh body.
 
 Sequencing: [`../operations/slice-plans/archive/refreshable-views.md`](../operations/slice-plans/archive/refreshable-views.md).
 
+### 5.5a The same shape for `<Tab>`, and the evidence it generalises
+
+`foldable-view-mode` owns `<Tab>` / `<S-Tab>` exactly as §5.5's mode owns
+`gr`, and it exists because the pattern §5.5 describes was re-derived
+independently rather than reused.
+
+By 2026-09-01 `magit-nav-mode` bound both chords — its own module doc already
+generalising the idea, *"navigating sections and folding are meaningful
+wherever there are sections"*, while scoping it to magit — and `org-agenda-mode`
+had grown a second copy. Project search, the LSP references view, `*problems*`
+and `*compilation*` had **neither**: four grouped, foldable views with no way
+to collapse a block. The `gr` history repeating, one chord later, and
+undetected for the same reason — a gap in a copied set does not announce
+itself.
+
+The split differs from `gr` in one instructive way. **`<S-Tab>` is owned
+outright rather than declared**, because there was nothing per-view to declare:
+magit's `action:magit-cycle-sections` body was literally
+`Effect::AppAction(AppEffect::CycleFoldsGlobal)`, which is the expression the
+shared action evaluates to. A declaration whose every implementation would be
+identical is indirection without a variable, so `<S-Tab>` skips the level.
+`<Tab>` keeps it, because magit's specialisation is real: on a status file line
+the first press expands the diff so `<Tab>` and `=` agree.
+
+That asymmetry is the rule worth carrying forward — **share the chord always,
+share the body when every view would write the same one.**
+
+Guarded by `foldable_views_declare_their_fold.rs`, which mirrors the two `gr`
+guards: nobody binds the chords themselves (a source property, because a second
+binding shadows rather than conflicts — which is how the copies accumulated),
+and nobody joins the cascade without declaring a target.
+
 ## 6. Option resolution
 
 ### 6.1 Layers (highest to lowest priority)

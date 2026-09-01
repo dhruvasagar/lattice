@@ -87,6 +87,7 @@ pub mod emacs_keys_mode;
 // reachable. See `docs/dev/architecture/cancellation.md`.
 pub mod error;
 pub mod event;
+pub mod foldable_view_mode;
 pub mod foreground_cancel;
 pub mod guards;
 pub mod refreshable_view_mode;
@@ -208,6 +209,12 @@ pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_acti
 pub use crate::refreshable_view_mode::{
     RefreshableViewMode, VIEW_REFRESH_ACTION, register_refreshable_view_actions,
     register_refreshable_view_mode,
+};
+// OA.4b: the one place `<Tab>` folds the block at point — the chord lives
+// here, each view's mode declares its own `fold_toggle_action()` target.
+pub use crate::foldable_view_mode::{
+    FOLD_TOGGLE_DEFAULT_ACTION, FoldableViewMode, VIEW_FOLD_CYCLE_ACTION, VIEW_FOLD_TOGGLE_ACTION,
+    register_foldable_view_actions, register_foldable_view_mode,
 };
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::foreground_cancel::{ForegroundCancel, ForegroundCancelHandle};

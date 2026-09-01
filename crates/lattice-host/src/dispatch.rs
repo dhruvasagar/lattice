@@ -39593,6 +39593,23 @@ impl Editor {
             }
         }
 
+        // OA.4b: the same rewrite for `<Tab>`, and the same reason it lands on
+        // `inv.command` rather than a local — a fold-toggle can be satisfied
+        // by an `ActionHandler` closure (magit) or by a live `ActionSpec`
+        // (the generic default), and only the first goes through the handler
+        // lookup below.
+        //
+        // Unlike refresh there is no echo on `None`: this chord only reaches
+        // here at all when `foldable-view-mode` is active, so a `None` means a
+        // view pulled the mode in without declaring a target — a wiring bug,
+        // not something to tell the user about mid-keystroke.
+        if self.is_view_fold_toggle_command(inv.command) {
+            match self.resolve_fold_toggle_action(buf_id) {
+                Some(target) => inv.command = target,
+                None => return,
+            }
+        }
+
         if let Some(action_handlers_arc) = self
             .services
             .get::<lattice_mode::ActionHandlerRegistryHandle>()

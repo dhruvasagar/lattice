@@ -750,6 +750,13 @@ impl Editor {
         // the name resolves for the keymap binding.
         lattice_mode::register_refreshable_view_actions(boot.commands_mut());
 
+        // OA.4b: and `foldable-view-mode`'s three. `action:view-fold-toggle`
+        // is the same dead-apply indirection as `action:view-refresh`; the
+        // other two are real bodies, because "cycle the fold at the cursor"
+        // and "cycle every fold" are generic and have nothing per-view to
+        // declare.
+        lattice_mode::register_foldable_view_actions(boot.commands_mut());
+
         // BC.7 (2026-06-24): the multibuffer excerpt-jump motions
         // (`]e`/`[e`/`]E`/`[E`), the `:multibuffer-*` / `:narrow` / `:widen` /
         // `:search` ex-commands, AND the `zn` narrow operator SPEC are all

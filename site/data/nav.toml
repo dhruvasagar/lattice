@@ -314,6 +314,7 @@ title = "Shared behaviour minors"
 description = "Modes that exist so several buffer kinds share one implementation rather than a copied keymap."
 docs = [
   "refreshable-view-mode",
+  "foldable-view-mode",
   "directory-listing-mode",
 ]
 
@@ -331,6 +332,7 @@ docs = [
 "magit-project-diff-mode" = "Project diff"
 "plugin-trace-mode"    = "Plugin boundary trace"
 "refreshable-view-mode" = "gr — refresh a view"
+"foldable-view-mode"   = "Tab — fold a block"
 "directory-listing-mode" = "Listing presentation"
 "getting-started"      = "First steps"
 "tutor-mode"           = "Interactive tutor"

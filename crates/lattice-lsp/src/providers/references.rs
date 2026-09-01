@@ -218,6 +218,13 @@ impl Mode for LspReferencesMode {
         Some(REFRESH_ACTION)
     }
 
+    /// OA.4b: this view folds by blocks, so `<Tab>` / `<S-Tab>` come from the
+    /// shared `foldable-view-mode`. Nothing special to do on a block, so it
+    /// names the generic body.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        Some(lattice_mode::FOLD_TOGGLE_DEFAULT_ACTION)
+    }
+
     /// LR.3: the refresh handler. Mode owns the *decision*; the host
     /// owns the generic async execution — §16's split, unchanged. The
     /// handler holds only `&ActionContext` and so could not drive the

@@ -1028,6 +1028,13 @@ impl lattice_mode::Mode for AgendaViewMode {
         Some(REFRESH_ACTION)
     }
 
+    /// OA.4b: this view folds by blocks, so `<Tab>` / `<S-Tab>` come from the
+    /// shared `foldable-view-mode`. Nothing special to do on a block, so it
+    /// names the generic body.
+    fn fold_toggle_action(&self) -> Option<&'static str> {
+        Some(lattice_mode::FOLD_TOGGLE_DEFAULT_ACTION)
+    }
+
     /// The mode that declares the target also supplies the body. Leaving the
     /// handler to the host would be the half-migration the standing rule
     /// forbids.

@@ -2239,6 +2239,71 @@ impl Editor {
         id
     }
 
+    /// OA.4b: is `id` the generic `action:view-fold-toggle` the shared
+    /// `<Tab>` binds to? Peer of [`Self::is_view_refresh_command`], same
+    /// resolve-by-name reasoning.
+    pub fn is_view_fold_toggle_command(&self, id: lattice_protocol::ids::CommandId) -> bool {
+        self.services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+            .and_then(|reg| reg.load().id_by_name(lattice_mode::VIEW_FOLD_TOGGLE_ACTION))
+            == Some(id)
+    }
+
+    /// OA.4b: resolve the fold-toggle action for `buffer_id` by walking the
+    /// active modes (minors most-recently-activated first, then major) and
+    /// returning the `CommandId` of the first
+    /// [`lattice_mode::Mode::fold_toggle_action`] declared.
+    ///
+    /// Identical walk to [`Self::resolve_refresh_action`], different table,
+    /// and deliberately so: `<Tab>` and `gr` are the same shape of problem —
+    /// one chord that means the same *verb* in every grouped view while the
+    /// *body* stays each view's own. Most-specific wins, so a provider minor
+    /// on a multibuffer beats the generic `MultibufferMode`.
+    ///
+    /// `None` when no active mode declares one — the caller leaves `<Tab>`
+    /// alone, so an ordinary document keeps jump-list-forward.
+    pub fn resolve_fold_toggle_action(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Option<lattice_protocol::ids::CommandId> {
+        let modes = self.active_modes.get(&buffer_id)?;
+        let registry = self.mode_registry.load();
+        let mut declared: Option<&'static str> = None;
+        let candidates = modes
+            .minors()
+            .iter()
+            .rev()
+            .copied()
+            .chain(modes.major())
+            .filter_map(|id| registry.get(id).map(|m| (id, m)));
+        for (mode_id, mode) in candidates {
+            let Some(action) = mode.fold_toggle_action() else {
+                continue;
+            };
+            match declared {
+                None => declared = Some(action),
+                Some(winner) => tracing::debug!(
+                    %mode_id,
+                    shadowed = action,
+                    winner,
+                    "several active modes declare a fold toggle; the most specific wins"
+                ),
+            }
+        }
+        let action = declared?;
+        let cmd_reg = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()?;
+        let id = cmd_reg.load().id_by_name(action);
+        if id.is_none() {
+            tracing::debug!(
+                action,
+                "fold_toggle_action names an unregistered command; `<Tab>` will do nothing"
+            );
+        }
+        id
+    }
+
     /// D.4.d.0 (2026-05-29): lazy port into the per-document
     /// [`Self::cells_matrices`] registry. Returns the matrix
     /// cell for `buffer_id`, inserting an empty

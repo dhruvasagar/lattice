@@ -82,6 +82,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     // attaches to an ordinary document — `gr` there stays LSP
     // references. Registered here so the cascade can find it.
     crate::refreshable_view_mode::register_refreshable_view_mode(registry);
+    // OA.4b: `foldable-view-mode` owns the shared `<Tab>` / `<S-Tab>` ("fold
+    // the block at point / every block"). Same shape and same reason as the
+    // line above: a `Manual` minor pulled in by the implies cascade for any
+    // mode declaring `fold_toggle_action()`, so `<Tab>` in an ordinary
+    // document stays jump-list-forward.
+    crate::foldable_view_mode::register_foldable_view_mode(registry);
     // msg-mode.1: `messages-mode` is the major mode for the
     // editor's `*messages*` audit-log buffer. Replaces the
     // pre-msg-mode `text-mode + read-only-mode` combo so the

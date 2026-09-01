@@ -368,6 +368,15 @@ vocabulary rather than bolting a parallel command set beside it.
 
 ## 6. The agenda
 
+> **The agenda as a dashboard has its own fragment.**
+> [`org-agenda.md`](org-agenda.md) covers what the view becomes: agenda-aware
+> colour over a reused `display-span` seam, layered display modes that each own
+> one concept as virtual rows, headline-only rows, block cycling on `<Tab>`, a
+> tags/todo query language and `org-agenda-custom-commands`. This section stays
+> the account of what the agenda *is* — the multibuffer, the seam, the walk,
+> the sort, the sections. Sequencing lives in
+> `docs/dev/operations/slice-plans/org-agenda.md`.
+
 > **MV.3 (2026-08-30): the agenda is a plugin-owned view now.** `*agenda*`, the
 > provider name and the reuse policy come from org's own `view-spec`, declared
 > through `multibuffer-view-source`; the host supplies the machinery. What §6.2

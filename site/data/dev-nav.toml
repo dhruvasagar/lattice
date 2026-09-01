@@ -219,6 +219,7 @@ docs = [
   "architecture/org-mode",
   "architecture/org-todo-keywords",
   "architecture/org-capture",
+  "architecture/org-agenda",
   "architecture/org-roam",
 ]
 

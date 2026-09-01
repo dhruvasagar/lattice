@@ -2512,6 +2512,11 @@ pub struct MultibufferExcerptHeaderProvider {
     /// `ui.nerd_fonts` here needs the `FrameView::for_buffer` seam
     /// plumbed into the provider, deferred to avoid over-building.
     nerd_fonts: bool,
+    /// OA.2: how consecutive excerpts share a header row. The same
+    /// declaration that decides folding, because the two MUST agree — a fold
+    /// spanning a different range than a header run would swallow a visible
+    /// header, or leave one stranded above a closed fold.
+    grouping: FoldGrouping,
 }
 
 impl std::fmt::Debug for MultibufferExcerptHeaderProvider {
@@ -2536,7 +2541,15 @@ impl MultibufferExcerptHeaderProvider {
             theme: None,
             elements: MultibufferHeaderElementIds::default(),
             nerd_fonts: false,
+            grouping: FoldGrouping::SourceFile,
         }
+    }
+
+    /// OA.2: group header rows the way this view folds. Defaults to
+    /// `SourceFile`, which is what every provider but the agenda wants.
+    pub fn with_grouping(mut self, grouping: FoldGrouping) -> Self {
+        self.grouping = grouping;
+        self
     }
 
     /// T.7: construct with the resolved theme handle + the header
@@ -2555,6 +2568,7 @@ impl MultibufferExcerptHeaderProvider {
             theme: Some(theme),
             elements,
             nerd_fonts,
+            grouping: FoldGrouping::SourceFile,
         }
     }
 }
@@ -2618,7 +2632,7 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
         let nerd_fonts = self.nerd_fonts;
-        compose_header_rows(&self.multibuffer.excerpts(), |excerpt| {
+        compose_header_rows(&self.multibuffer.excerpts(), self.grouping, |excerpt| {
             header_cells(&excerpt.header, nerd_fonts, header_fg, path_fg, count_fg)
         })
         .into_iter()
@@ -2722,30 +2736,61 @@ pub(crate) fn header_cells(
     Arc::from(cells)
 }
 
-/// Pure function from excerpt list → header virtual rows.
-/// Emits ONE row per distinct consecutive source — i.e. when N
-/// consecutive excerpts share `excerpt.source` (BufferId), only
-/// the first contributes a header row, anchored `Above` its
-/// first composed line. The rest advance the composed cursor
-/// without emitting a header.
+/// Pure function from excerpt list → header virtual rows, under `grouping`.
 ///
-/// K.4.6 follow-up (2026-06-02): pre-fix this emitted one row
-/// per excerpt unconditionally, which broke "1 header per file"
-/// for providers like search that emit multiple excerpts per
-/// file (one per hit cluster). The dedup happens here in
-/// substrate, not in providers — every provider gets the
-/// correct "1 header per source" behavior by default.
-/// Providers that intentionally want one header per excerpt
-/// can emit excerpts with distinct synthetic `source` BufferIds.
+/// [`FoldGrouping::SourceFile`] emits ONE row per distinct consecutive
+/// source — when N consecutive excerpts share `excerpt.source`, only the first
+/// contributes a header, anchored `Above` its first composed line.
+///
+/// K.4.6 follow-up (2026-06-02): pre-fix this emitted one row per excerpt
+/// unconditionally, which broke "1 header per file" for providers like search
+/// that emit multiple excerpts per file (one per hit cluster). The dedup
+/// happens here in substrate, not in providers.
+///
+/// [`FoldGrouping::HeaderRuns`] groups by the header TITLE instead, with
+/// exactly the rule [`HeaderGroupFoldProvider`] already folds by:
+///
+/// - a non-empty title differing from the current group's starts a group;
+/// - a non-empty title equal to it continues it;
+/// - an **empty** title continues it — that is what "I belong to the group
+///   above" has always meant in this tree.
+///
+/// OA.2. The agenda needs this because it groups by DATE and its rows
+/// interleave files by design, so a file boundary is not a group boundary
+/// there. It gave the first row of a date group the label and the rest an
+/// empty title, on the documented assumption that an empty title renders no
+/// header — but source-run dedup emitted one at every file change, and
+/// `header_cells` renders a titleless, pathless header as `[untitled]`. One
+/// date group drawn from two files rendered
+/// `["2026-08-31 Mon (today)", "[untitled]", "[untitled]"]`.
+///
+/// Not the default, and that is not timidity: `lattice-lsp`'s references view
+/// titles each excerpt with its LINE NUMBER, so consecutive excerpts from one
+/// file carry different titles and title-runs would give it a header per
+/// reference instead of per file.
 pub fn compose_header_rows(
     excerpts: &[Excerpt],
+    grouping: FoldGrouping,
     mut render_cells: impl FnMut(&Excerpt) -> Arc<[Cell]>,
 ) -> Vec<VirtualRow> {
     let mut rows = Vec::with_capacity(excerpts.len());
     let mut composed_cursor: u32 = 0;
     let mut last_source: Option<BufferId> = None;
+    let mut group_title: Option<String> = None;
     for excerpt in excerpts {
-        if last_source != Some(excerpt.source) {
+        let starts_group = match grouping {
+            FoldGrouping::SourceFile => last_source != Some(excerpt.source),
+            FoldGrouping::HeaderRuns => {
+                let title = excerpt.header.title.as_str();
+                // An empty title continues whatever is open. With nothing
+                // open it starts nothing either — emitting here is what
+                // produced `[untitled]`, and a header with no text is not a
+                // header.
+                !title.is_empty() && group_title.as_deref() != Some(title)
+            }
+        };
+        if starts_group {
+            group_title = Some(excerpt.header.title.clone());
             let cells = render_cells(excerpt);
             rows.push(VirtualRow {
                 media: None,
@@ -2759,8 +2804,8 @@ pub fn compose_header_rows(
                 gutter_line: None,
                 gutter_fg: None,
             });
-            last_source = Some(excerpt.source);
         }
+        last_source = Some(excerpt.source);
         composed_cursor = composed_cursor.saturating_add(excerpt.line_count());
     }
     rows
@@ -4669,7 +4714,9 @@ mod tests {
             Excerpt::new(mb_source, 0, 1).with_header(ExcerptHeader::new("b")),
             Excerpt::new(mb_source, 0, 0).with_header(ExcerptHeader::new("c")),
         ];
-        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+        let rows = compose_header_rows(&excerpts, FoldGrouping::SourceFile, |_| {
+            Arc::from(Vec::<Cell>::new())
+        });
 
         assert_eq!(
             rows.len(),
@@ -4698,7 +4745,9 @@ mod tests {
             Excerpt::new(src_b, 0, 1).with_header(ExcerptHeader::new("b")),
             Excerpt::new(src_c, 0, 0).with_header(ExcerptHeader::new("c")),
         ];
-        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+        let rows = compose_header_rows(&excerpts, FoldGrouping::SourceFile, |_| {
+            Arc::from(Vec::<Cell>::new())
+        });
 
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].anchor_line, 0);
@@ -4726,7 +4775,9 @@ mod tests {
             Excerpt::new(src_b, 0, 0).with_header(ExcerptHeader::new("b")),
             Excerpt::new(src_a, 1, 1).with_header(ExcerptHeader::new("a-again")),
         ];
-        let rows = compose_header_rows(&excerpts, |_| Arc::from(Vec::<Cell>::new()));
+        let rows = compose_header_rows(&excerpts, FoldGrouping::SourceFile, |_| {
+            Arc::from(Vec::<Cell>::new())
+        });
 
         assert_eq!(
             rows.len(),
@@ -4744,9 +4795,44 @@ mod tests {
     /// the title — and a date group interleaves files by design — so
     /// each file change inside one group emits another header, and an
     /// empty title with no path renders `[untitled]`.
+    /// The other half of the title-run rule, and why one rule serves both
+    /// header conventions: search titles every excerpt of a file with the
+    /// same path, so equal titles must CONTINUE a group rather than start one.
+    /// If they did not, `HeaderRuns` would be agenda-only.
     #[test]
-    #[ignore = "OA.2 has not landed: this is the failing test that specifies it. \
-                Un-ignore with the title-run grouping fix."]
+    fn header_runs_continue_across_equal_titles() {
+        let a = BufferId::next();
+        let b = BufferId::next();
+        let excerpts = vec![
+            Excerpt::new(a, 0, 0).with_header(ExcerptHeader::new("src/lib.rs")),
+            Excerpt::new(a, 9, 9).with_header(ExcerptHeader::new("src/lib.rs")),
+            Excerpt::new(b, 3, 3).with_header(ExcerptHeader::new("src/main.rs")),
+        ];
+        let rows = compose_header_rows(&excerpts, FoldGrouping::HeaderRuns, |e| {
+            header_cells(&e.header, false, 0, 0, 0)
+        });
+        assert_eq!(rows.len(), 2, "one header per title run");
+        assert_eq!(rows[0].anchor_line, 0);
+        assert_eq!(rows[1].anchor_line, 2);
+    }
+
+    /// A leading empty title emits nothing rather than `[untitled]`. A header
+    /// with no text is not a header, and this is the shape that produced the
+    /// bug — it must not merely be rarer now.
+    #[test]
+    fn header_runs_never_emit_an_untitled_row() {
+        let a = BufferId::next();
+        let excerpts = vec![
+            Excerpt::new(a, 0, 0).with_header(ExcerptHeader::new("")),
+            Excerpt::new(a, 1, 1).with_header(ExcerptHeader::new("")),
+        ];
+        let rows = compose_header_rows(&excerpts, FoldGrouping::HeaderRuns, |e| {
+            header_cells(&e.header, false, 0, 0, 0)
+        });
+        assert!(rows.is_empty(), "got {} header row(s)", rows.len());
+    }
+
+    #[test]
     fn agenda_group_of_interleaved_files_emits_one_header_not_untitled_rows() {
         let todo = BufferId::next();
         let plans = BufferId::next();
@@ -4756,7 +4842,9 @@ mod tests {
             Excerpt::new(plans, 4, 4).with_header(ExcerptHeader::new("")),
             Excerpt::new(todo, 9, 9).with_header(ExcerptHeader::new("")),
         ];
-        let rows = compose_header_rows(&excerpts, |e| header_cells(&e.header, false, 0, 0, 0));
+        let rows = compose_header_rows(&excerpts, FoldGrouping::HeaderRuns, |e| {
+            header_cells(&e.header, false, 0, 0, 0)
+        });
         let text = |r: &VirtualRow| {
             r.cells
                 .iter()

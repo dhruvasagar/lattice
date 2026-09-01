@@ -206,16 +206,22 @@ pub fn create_multibuffer_view(
                     .get::<Arc<lattice_config::ConfigRegistry>>()
                     .and_then(|cfg| cfg.get_bool_by_name("ui.nerd_fonts"))
                     .unwrap_or(false);
-                Arc::new(MultibufferExcerptHeaderProvider::with_theme(
-                    (*typed_handle).clone(),
-                    theme,
-                    elements,
-                    nerd_fonts,
-                ))
+                Arc::new(
+                    MultibufferExcerptHeaderProvider::with_theme(
+                        (*typed_handle).clone(),
+                        theme,
+                        elements,
+                        nerd_fonts,
+                    )
+                    // OA.2: headers group the way this view folds. The two
+                    // must agree, so they read one declaration.
+                    .with_grouping(fold_grouping),
+                )
             }
-            _ => Arc::new(MultibufferExcerptHeaderProvider::new(
-                (*typed_handle).clone(),
-            )),
+            _ => Arc::new(
+                MultibufferExcerptHeaderProvider::new((*typed_handle).clone())
+                    .with_grouping(fold_grouping),
+            ),
         };
     let registered = activator.register_virtual_row_provider(buffer_id, excerpt_header_provider);
     if !registered {

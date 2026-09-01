@@ -1169,7 +1169,7 @@ mod tests {
         std::fs::write(dir.join("sub").join("b.org"), "* TODO b\n").unwrap();
 
         let exts = vec!["org".to_string()];
-        let found = collect_candidates(&[dir.clone()], &exts, usize::MAX);
+        let found = collect_candidates(std::slice::from_ref(&dir), &exts, usize::MAX);
         let names: Vec<String> = found
             .iter()
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -1192,7 +1192,8 @@ mod tests {
         std::fs::write(dir.join("a.org"), "* TODO a\n").unwrap();
         std::fs::write(dir.join(".hidden.org"), "* TODO h\n").unwrap();
 
-        let found = collect_candidates(&[dir.clone()], &vec!["org".to_string()], usize::MAX);
+        let found =
+            collect_candidates(std::slice::from_ref(&dir), &["org".to_string()], usize::MAX);
         let names: Vec<String> = found
             .iter()
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -1212,7 +1213,11 @@ mod tests {
         let deep = dir.join("deep").join("c.org");
         std::fs::write(&deep, "* TODO c\n").unwrap();
 
-        let found = collect_candidates(&[deep.clone()], &vec!["org".to_string()], usize::MAX);
+        let found = collect_candidates(
+            std::slice::from_ref(&deep),
+            &["org".to_string()],
+            usize::MAX,
+        );
         assert_eq!(found, vec![deep]);
 
         let _ = std::fs::remove_dir_all(&dir);

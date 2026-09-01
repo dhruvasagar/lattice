@@ -25,7 +25,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.0d | A configured directory means its files, not its subtree | ✅ |
 | **Phase 1 — correctness before cosmetics** | | |
 | OA.1 | Agenda rows are one line **(plugin)** | 📝 |
-| OA.2 | Title-run header grouping; the `[untitled]` rows go | 📝 |
+| OA.2 | Title-run header grouping; the `[untitled]` rows go | ✅ |
 | OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ⛔ |
 | OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | 📝 |
 | **Phase 2 — the view looks like an agenda** | | |
@@ -278,7 +278,7 @@ context-lines setting that only the search provider has.
 **Test:** an agenda over a file whose TODO has a planning line composes one row,
 not two. Assert on the composed text, not on `Row`.
 
-### OA.2 — Title-run header grouping; the `[untitled]` rows go 📝
+### OA.2 — Title-run header grouping; the `[untitled]` rows go ✅
 
 `compose_header_rows` dedups on `excerpt.source`; the agenda needs dedup on the
 header *title run*. A date group interleaves files, so today each file change
@@ -290,11 +290,26 @@ search (`header_rows_dedupe_consecutive_same_source` and its two siblings pin
 it). So this is a grouping *choice* alongside `FoldGrouping`, not a change of
 the default.
 
-**Test:** already written and currently failing —
-`agenda_group_of_interleaved_files_emits_one_header_not_untitled_rows` in
-`crates/lattice-multibuffer/src/lib.rs`. It asserts one header reading
-`2026-08-31 Mon (today)` where today three come back, two of them `[untitled]`.
-Keep the three existing source-run tests green.
+`compose_header_rows` takes a `FoldGrouping` and the header provider carries
+it, set from the same `create_multibuffer_view` argument that decides folding.
+Reusing that enum rather than minting a second one is not economy: the fold and
+the header MUST agree, or a fold spans a different range than the header run
+above it and either swallows a visible header or strands one over a closed
+fold. One declaration, read twice.
+
+**A blanket switch would have broken the references view**, which is why this
+is a parameter. `lattice-lsp`'s references provider titles each excerpt with
+its LINE NUMBER, so consecutive excerpts from one file carry *different*
+titles; title-runs would give it a header per reference instead of per file.
+Search is the opposite — every excerpt of a file carries the same path string —
+which is what lets one rule serve both conventions once the choice is
+explicit.
+
+**Tests:** the specifying test is un-ignored and passes; the three source-run
+tests are unchanged and green; two new ones pin the halves of the title-run
+rule that are easy to get wrong — equal titles CONTINUE a run (search's shape,
+without which `HeaderRuns` would be agenda-only), and a leading empty title
+emits nothing rather than `[untitled]`.
 
 ### OA.3 — Refresh repopulates the view ⛔ not a defect
 

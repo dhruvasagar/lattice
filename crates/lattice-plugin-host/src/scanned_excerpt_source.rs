@@ -9,11 +9,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use lattice_mode::scanned_excerpt_source::{
-    AgendaBeginFuture, AgendaFuture, AgendaRootsFuture, ScannedExcerpt, ScannedExcerptSource,
+    AgendaBeginFuture, AgendaFuture, AgendaRootsFuture, ClockSpan, ScanResult, ScannedExcerpt,
+    ScannedExcerptSource,
 };
 
 use crate::PluginId;
 use crate::agenda_cache::AgendaCache;
+use crate::agenda_task::ClockSpan as WitClockSpan;
 use crate::agenda_task::{AgendaClient, Entry};
 
 /// An async agenda-row producer over a plugin's [`AgendaClient`].
@@ -111,14 +113,17 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
             // against the ~2 ms parse this avoids.
             if let Some(cache) = &self.cache
                 && let Ok(mut cache) = cache.lock()
-                && let Some(rows) = cache.get(&display, &text)
+                && let Some((rows, clock)) = cache.get(&display, &text)
             {
-                return Ok(rows
-                    .into_iter()
-                    .filter_map(|e| validate(&display, e))
-                    .collect());
+                return Ok(ScanResult {
+                    entries: rows
+                        .into_iter()
+                        .filter_map(|e| validate(&display, e))
+                        .collect(),
+                    clock: clock.into_iter().map(native_clock_span).collect(),
+                });
             }
-            let raw: Vec<Entry> = match self.client.scan(display.clone(), text.clone()).await {
+            let raw = match self.client.scan(display.clone(), text.clone()).await {
                 // The guest's own `err` and a host-surface failure land in the
                 // same place because the caller does the same thing with both:
                 // skip this file, keep scanning.
@@ -128,12 +133,16 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
             if let Some(cache) = &self.cache
                 && let Ok(mut cache) = cache.lock()
             {
-                cache.put(&display, &text, &raw);
+                cache.put(&display, &text, &raw.entries, &raw.clock);
             }
-            Ok(raw
-                .into_iter()
-                .filter_map(|e| validate(&display, e))
-                .collect())
+            Ok(ScanResult {
+                entries: raw
+                    .entries
+                    .into_iter()
+                    .filter_map(|e| validate(&display, e))
+                    .collect(),
+                clock: raw.clock.into_iter().map(native_clock_span).collect(),
+            })
         })
     }
 }
@@ -194,6 +203,22 @@ pub fn normalise_extensions(raw: Vec<String>) -> Vec<String> {
 /// renders nothing and jumps nowhere.
 ///
 /// `debug!`, never `info!` — this fires per row of a project-wide scan.
+/// OA.14b: the WIT clock span, native side.
+///
+/// Unvalidated where [`validate`] is not, and deliberately: a row carries line
+/// numbers the host turns into an excerpt, so a bad one renders nothing and
+/// jumps nowhere. A clock span is only ever summed into a report, so the worst
+/// a nonsensical one produces is a wrong total in a row that names itself —
+/// visible, and not worth dropping data over.
+fn native_clock_span(c: WitClockSpan) -> ClockSpan {
+    ClockSpan {
+        line: c.line,
+        outline: c.outline,
+        day: c.day,
+        minutes: c.minutes,
+    }
+}
+
 fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
     if e.line == u32::MAX || e.end_line == u32::MAX {
         tracing::debug!(

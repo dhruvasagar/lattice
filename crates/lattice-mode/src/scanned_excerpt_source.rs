@@ -69,13 +69,57 @@ pub struct RowSpan {
     pub slot: String,
 }
 
+/// OA.14b: time clocked on one headline on one day.
+///
+/// The WIT `clock-span`, native side. Reported for every clocked headline a
+/// producer saw — NOT only for the ones that became rows. A clock report totals
+/// what you actually logged, and agenda rows are a filtered subset, so a
+/// headline clocked yesterday with no TODO and no date must still count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSpan {
+    /// 0-based line of the HEADLINE the time was logged under.
+    pub line: u32,
+    /// Outline path, outermost ancestor first, the headline itself last. Its
+    /// length is the outline level.
+    ///
+    /// A path rather than a name plus a level, because the report is a
+    /// hierarchy whose totals roll up it: an ancestor that logged no time of
+    /// its own emits no span, so the chain is the only way to name it.
+    pub outline: Vec<String>,
+    /// Days since the Unix epoch the time is filed under.
+    pub day: i64,
+    /// Minutes clocked, already summed per (headline, day) by the producer.
+    pub minutes: u32,
+}
+
+/// What one file's scan produced.
+///
+/// A record rather than a bare row list because the clock report is not a view
+/// of the rows — see [`ClockSpan`]. It rides the same call so the walk still
+/// makes ONE producer call per file: the scan is a producer's critical path,
+/// and a second crossing to carry data most files have none of would double it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanResult {
+    pub entries: Vec<ScannedExcerpt>,
+    pub clock: Vec<ClockSpan>,
+}
+
+impl ScanResult {
+    /// The common case: rows and nothing clocked.
+    pub fn rows(entries: Vec<ScannedExcerpt>) -> Self {
+        Self {
+            entries,
+            clock: Vec::new(),
+        }
+    }
+}
+
 /// The boxed future an [`ScannedExcerptSource::scan`] returns.
 ///
 /// `Err(reason)` skips THIS FILE and the scan continues — one malformed file
 /// must not fail the agenda. That is `error-parser`'s rule, because it is the
 /// same failure class.
-pub type AgendaFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<ScannedExcerpt>, String>> + Send + 'a>>;
+pub type AgendaFuture<'a> = Pin<Box<dyn Future<Output = Result<ScanResult, String>> + Send + 'a>>;
 
 /// The boxed future an [`ScannedExcerptSource::begin`] returns.
 ///
@@ -291,7 +335,7 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
         fn scan(&self, _p: PathBuf, _t: String) -> AgendaFuture<'_> {
-            Box::pin(async { Ok(Vec::new()) })
+            Box::pin(async { Ok(ScanResult::default()) })
         }
     }
 

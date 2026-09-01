@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agenda_task::{DisplaySpan, Entry};
+use crate::agenda_task::{ClockSpan, DisplaySpan, Entry};
 
 /// Bumped whenever the on-disk shape changes. A mismatch discards the file
 /// rather than attempting migration — this is a cache, and rebuilding it costs
@@ -79,6 +79,45 @@ struct CachedFile {
     /// Hash of the text these rows were derived from.
     hash: u64,
     rows: Vec<CachedEntry>,
+    /// OA.14b: the file's clock spans, cached beside its rows for the reason
+    /// `CachedEntry::spans` records — a hit skips the guest call entirely, so
+    /// anything left out here is simply absent from a warm scan. A clock
+    /// report that is complete on a cold start and lossy on a warm one would
+    /// be the least debuggable version of this feature.
+    #[serde(default)]
+    clock: Vec<CachedClockSpan>,
+}
+
+/// The WIT `clock-span`, in a form that survives a round trip to disk. Same
+/// reasoning as [`CachedEntry`]: bindgen owns the generated type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedClockSpan {
+    line: u32,
+    outline: Vec<String>,
+    day: i64,
+    minutes: u32,
+}
+
+impl From<&ClockSpan> for CachedClockSpan {
+    fn from(c: &ClockSpan) -> Self {
+        Self {
+            line: c.line,
+            outline: c.outline.clone(),
+            day: c.day,
+            minutes: c.minutes,
+        }
+    }
+}
+
+impl From<&CachedClockSpan> for ClockSpan {
+    fn from(c: &CachedClockSpan) -> Self {
+        Self {
+            line: c.line,
+            outline: c.outline.clone(),
+            day: c.day,
+            minutes: c.minutes,
+        }
+    }
 }
 
 /// The WIT `entry`, in a form that survives a round trip to disk.
@@ -247,13 +286,16 @@ impl AgendaCache {
         }
     }
 
-    /// Cached rows for `path`, if the text still hashes the same.
-    pub fn get(&mut self, path: &str, text: &str) -> Option<Vec<Entry>> {
+    /// Cached rows + clock spans for `path`, if the text still hashes the same.
+    pub fn get(&mut self, path: &str, text: &str) -> Option<(Vec<Entry>, Vec<ClockSpan>)> {
         let hash = content_hash(text);
         match self.files.get(path) {
             Some(cached) if cached.hash == hash => {
                 self.hits += 1;
-                Some(cached.rows.iter().map(Entry::from).collect())
+                Some((
+                    cached.rows.iter().map(Entry::from).collect(),
+                    cached.clock.iter().map(ClockSpan::from).collect(),
+                ))
             }
             _ => {
                 self.misses += 1;
@@ -263,7 +305,7 @@ impl AgendaCache {
     }
 
     /// Remember what the guest returned for `path`.
-    pub fn put(&mut self, path: &str, text: &str, rows: &[Entry]) {
+    pub fn put(&mut self, path: &str, text: &str, rows: &[Entry], clock: &[ClockSpan]) {
         if self.files.len() >= MAX_FILES && !self.files.contains_key(path) {
             tracing::debug!(cap = MAX_FILES, "agenda cache full; discarding");
             self.files.clear();
@@ -273,6 +315,7 @@ impl AgendaCache {
             CachedFile {
                 hash: content_hash(text),
                 rows: rows.iter().map(CachedEntry::from).collect(),
+                clock: clock.iter().map(CachedClockSpan::from).collect(),
             },
         );
         self.dirty += 1;
@@ -373,6 +416,46 @@ mod tests {
         );
     }
 
+    /// OA.14b: clock spans round-trip too, for the reason above one step
+    /// further on. A hit skips the guest call, so a span left out of the
+    /// on-disk form is simply absent from a warm scan — a clock report that is
+    /// complete on a cold start and lossy afterwards, with nothing to explain
+    /// the difference.
+    ///
+    /// Driven through the real `put`/`get` rather than the two `From` impls:
+    /// the failure this guards is the FIELD being dropped somewhere on the
+    /// path, and a conversion test passes happily while `put` ignores its
+    /// argument.
+    #[test]
+    fn clock_spans_survive_the_cache_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = AgendaCache::open(dir.path(), 1);
+        cache.begin(7);
+        let spans = vec![ClockSpan {
+            line: 3,
+            outline: vec!["Project".to_string(), "Subtask".to_string()],
+            day: 20_000,
+            minutes: 90,
+        }];
+        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &spans);
+
+        let (rows, clock) = cache.get("/p/a.org", "* TODO a\n").expect("a warm hit");
+        assert_eq!(rows.len(), 1, "the rows still come back");
+        assert_eq!(
+            clock
+                .iter()
+                .map(|c| (c.line, c.outline.clone(), c.day, c.minutes))
+                .collect::<Vec<_>>(),
+            vec![(
+                3,
+                vec!["Project".to_string(), "Subtask".to_string()],
+                20_000,
+                90
+            )],
+            "…and so does every field of the clock span, the outline path included"
+        );
+    }
+
     #[test]
     fn unchanged_text_hits_and_changed_text_misses() {
         let dir = tempfile::tempdir().unwrap();
@@ -380,11 +463,11 @@ mod tests {
         cache.begin(7);
 
         assert!(cache.get("/p/a.org", "* TODO a\n").is_none());
-        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")]);
+        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &[]);
 
         let hit = cache.get("/p/a.org", "* TODO a\n").expect("same text hits");
-        assert_eq!(hit.len(), 1);
-        assert_eq!(hit[0].label, "Today");
+        assert_eq!(hit.0.len(), 1);
+        assert_eq!(hit.0[0].label, "Today");
 
         assert!(
             cache.get("/p/a.org", "* TODO a changed\n").is_none(),
@@ -400,7 +483,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut cache = AgendaCache::open(dir.path(), 1);
         cache.begin(7);
-        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "tomorrow")]);
+        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "tomorrow")], &[]);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_some());
 
         cache.begin(8);
@@ -417,7 +500,7 @@ mod tests {
         {
             let mut cache = AgendaCache::open(dir.path(), 1);
             cache.begin(7);
-            cache.put("/p/a.org", "* TODO a\n", &[entry(3, "Today")]);
+            cache.put("/p/a.org", "* TODO a\n", &[entry(3, "Today")], &[]);
             cache.flush();
         }
         let mut reopened = AgendaCache::open(dir.path(), 1);
@@ -425,8 +508,8 @@ mod tests {
         let hit = reopened
             .get("/p/a.org", "* TODO a\n")
             .expect("a restart reads the cache back");
-        assert_eq!(hit[0].line, 3);
-        assert_eq!(hit[0].label, "Today");
+        assert_eq!(hit.0[0].line, 3);
+        assert_eq!(hit.0[0].label, "Today");
     }
 
     /// Dropping without an explicit flush must still persist — an editor exits
@@ -437,7 +520,7 @@ mod tests {
         {
             let mut cache = AgendaCache::open(dir.path(), 1);
             cache.begin(7);
-            cache.put("/p/a.org", "* TODO a\n", &[entry(1, "Today")]);
+            cache.put("/p/a.org", "* TODO a\n", &[entry(1, "Today")], &[]);
             // no flush() — Drop is the only thing that can save this
         }
         let mut reopened = AgendaCache::open(dir.path(), 1);
@@ -454,7 +537,7 @@ mod tests {
         cache.begin(7);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_none());
         // …and it recovers: the next scan repopulates and persists normally.
-        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")]);
+        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &[]);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_some());
     }
 
@@ -487,7 +570,7 @@ mod tests {
         {
             let mut one = AgendaCache::open(dir.path(), 1);
             one.begin(7);
-            one.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")]);
+            one.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &[]);
             one.flush();
         }
         let mut two = AgendaCache::open(dir.path(), 2);

@@ -114,6 +114,58 @@ interface scanned-excerpt-source {
         /// the grammar's own highlighting is then what shows, unchanged.
         spans: list<display-span>,
     }
+
+    /// OA.14b: time clocked on one headline on one day.
+    ///
+    /// Independent of [`entry`] on purpose — see `scan`'s doc. A span is
+    /// reported for every clocked headline the guest saw, whether or not that
+    /// headline became an agenda row.
+    ///
+    /// **Aggregated per (headline, day) by the guest**, not one span per
+    /// `CLOCK:` line. A headline clocked four times in a morning is one span,
+    /// which is the granularity every report actually renders and keeps a file
+    /// with years of history from crossing thousands of records it would only
+    /// sum again.
+    ///
+    /// **Every span the file has, not just the ones in view.** The report's
+    /// range is the agenda's span — day, week, month or year — and the host
+    /// filters on `day` when it builds the table. Carrying them all is what
+    /// lets `gD` switch that range and redraw from data already in hand
+    /// instead of re-walking the corpus for each answer.
+    record clock-span {
+        /// 0-based line of the HEADLINE the time was logged under (not of the
+        /// `CLOCK:` line), so a report row can locate its entry.
+        line: u32,
+        /// The headline's outline path: outermost ancestor first, the headline
+        /// itself last. Its length is the outline level, which is what emacs's
+        /// `:maxlevel` bounds.
+        ///
+        /// A PATH rather than a name plus a level, because the report is a
+        /// hierarchy and totals roll up it. An ancestor that logged no time of
+        /// its own emits no span, so the host cannot name it from the span
+        /// list — carrying the chain is what lets the tree be rebuilt without
+        /// inventing zero-minute rows for every parent.
+        outline: list<string>,
+        /// Days since the Unix epoch that the clocked time is filed under.
+        ///
+        /// A span crossing midnight is counted whole on the day it began
+        /// rather than split. Emacs splits it; matching that is a refinement
+        /// this record can carry later without changing shape.
+        day: s64,
+        /// Minutes clocked. A running (unclosed) clock contributes nothing —
+        /// its duration is not yet a fact, and guessing one would make the
+        /// report disagree with the file.
+        minutes: u32,
+    }
+
+    /// What one file's scan produced.
+    record scan-result {
+        /// The agenda rows, filtered by whatever the guest's sections admit.
+        entries: list<entry>,
+        /// Every clocked span in the file, unfiltered. Empty for the
+        /// overwhelming majority of files, which costs nothing.
+        clock: list<clock-span>,
+    }
 }
 
 /// The world an scanned-excerpt-source plugin implements.
@@ -136,7 +188,7 @@ world scanned-excerpt-source-plugin {
     /// leaves the export unimplementable.
     import config;
 
-    use scanned-excerpt-source.{entry};
+    use scanned-excerpt-source.{entry, clock-span, scan-result};
     use tree-sitter.{tree-snapshot};
     /// OT.3: the host lends a parse tree per file, so `scan`'s `tree` param
     /// resolves. The guest never parses and never reads — it is handed the
@@ -270,16 +322,31 @@ world scanned-excerpt-source-plugin {
     /// Empty is the ordinary case and means "the default scan".
     export begin: func(args: list<string>) -> u64;
 
-    /// Scan one file; return its agenda rows.
+    /// Scan one file; return its agenda rows AND the time clocked in it.
     ///
     /// `path` is absolute. Rows may be returned in any order; the host
     /// stable-sorts every file's rows together on `sort-key`.
     ///
     /// An `err` skips this file with a `debug` log and the scan continues.
     /// One bad file must not fail the agenda.
+    ///
+    /// ## Why a record rather than a bare row list (OA.14b)
+    ///
+    /// The clock report is not a view of the agenda's rows. Emacs's clocktable
+    /// totals every clocked headline in the agenda files; agenda rows are a
+    /// FILTERED subset, so a headline clocked yesterday with no TODO and no
+    /// date is not a row at all. Hanging clock data off `entry` would report
+    /// only the time that happened to land on a row and silently drop the
+    /// rest — and a clock report that under-reports is worse than none, since
+    /// nothing distinguishes a quiet week from a lossy one.
+    ///
+    /// It rides this call rather than an export of its own so the walk still
+    /// makes ONE guest call per file. The scan is a producer's critical path
+    /// (§7); a second crossing per file would double it to carry data most
+    /// files have none of.
     export scan: func(
         path: string,
         text: string,
         tree: option<borrow<tree-snapshot>>,
-    ) -> result<list<entry>, string>;
+    ) -> result<scan-result, string>;
 }

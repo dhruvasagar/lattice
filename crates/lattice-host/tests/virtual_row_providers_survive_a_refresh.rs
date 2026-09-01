@@ -109,7 +109,7 @@ impl lattice_mode::ScannedExcerptSource for EmptyScanSource {
         Box::pin(async { Ok(()) })
     }
     fn scan(&self, _p: std::path::PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
-        Box::pin(async { Ok(Vec::new()) })
+        Box::pin(async { Ok(lattice_mode::ScanResult::default()) })
     }
 }
 

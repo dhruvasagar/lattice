@@ -106,21 +106,34 @@ impl Guest for Component {
         _path: String,
         text: String,
         tree: Option<&TreeSnapshot>,
-    ) -> Result<Vec<Entry>, String> {
+    ) -> Result<ScanResult, String> {
+        // OA.14b: one deterministic, obviously-synthetic span, so a host test
+        // can tell "the clock half of the record crossed" from "the guest
+        // happened to have nothing to say". Independent of the rows below —
+        // which is the property the seam exists for.
+        let clock = vec![ClockSpan {
+            line: 0,
+            outline: vec!["Clocked".to_string()],
+            day: 20_000,
+            minutes: 90,
+        }];
         // OT.3: text is always here; the tree comes beside it when the file's
         // extension resolves to a registered language. This fixture reports the
         // ROOT KIND when it got a tree — something no text scan could produce —
         // so the host test can tell the two apart.
         if let Some(snapshot) = tree {
             let root = snapshot.root();
-            return Ok(vec![Entry {
-                line: 0,
-                end_line: 0,
-                group: "tree".to_string(),
-                label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
-                sort_key: 0,
-                spans: Vec::new(),
-            }]);
+            return Ok(ScanResult {
+                entries: vec![Entry {
+                    line: 0,
+                    end_line: 0,
+                    group: "tree".to_string(),
+                    label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
+                    sort_key: 0,
+                    spans: Vec::new(),
+                }],
+                clock,
+            });
         }
         if text.contains("BROKEN") {
             return Err("agenda-guest: malformed file".to_string());
@@ -166,7 +179,10 @@ impl Guest for Component {
                 }],
             });
         }
-        Ok(out)
+        Ok(ScanResult {
+            entries: out,
+            clock,
+        })
     }
 }
 

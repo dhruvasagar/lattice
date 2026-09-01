@@ -108,12 +108,12 @@ async fn scan_crosses_text_in_and_rows_back() {
         .await
         .expect("scan");
 
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].line, 1, "0-based, past the `#+TITLE:` line");
-    assert_eq!(rows[0].end_line, 1);
-    assert_eq!(rows[0].sort_key, 30);
-    assert_eq!(rows[0].group, "day-30");
-    assert_eq!(rows[1].sort_key, 10);
+    assert_eq!(rows.entries.len(), 2);
+    assert_eq!(rows.entries[0].line, 1, "0-based, past the `#+TITLE:` line");
+    assert_eq!(rows.entries[0].end_line, 1);
+    assert_eq!(rows.entries[0].sort_key, 30);
+    assert_eq!(rows.entries[0].group, "day-30");
+    assert_eq!(rows.entries[1].sort_key, 10);
 }
 
 /// `begin` is not decoration. The fixture counts the files it has been given
@@ -140,8 +140,11 @@ async fn begin_resets_the_guests_per_scan_state() {
         .scan(PathBuf::from("/p/b.org"), org(&[2]))
         .await
         .unwrap();
-    assert_eq!(first[0].label, "Day 1 (file 1)");
-    assert_eq!(second[0].label, "Day 2 (file 2)", "state accumulates…");
+    assert_eq!(first.entries[0].label, "Day 1 (file 1)");
+    assert_eq!(
+        second.entries[0].label, "Day 2 (file 2)",
+        "state accumulates…"
+    );
 
     src.begin(&[]).await.expect("second begin");
     let third = src
@@ -149,7 +152,7 @@ async fn begin_resets_the_guests_per_scan_state() {
         .await
         .unwrap();
     assert_eq!(
-        third[0].label, "Day 3 (file 1)",
+        third.entries[0].label, "Day 3 (file 1)",
         "…and `begin` is what clears it"
     );
 }
@@ -177,8 +180,8 @@ async fn a_malformed_file_errs_without_killing_the_source() {
         .scan(PathBuf::from("/p/good.org"), org(&[7]))
         .await
         .expect("still alive after a guest err");
-    assert_eq!(ok.len(), 1);
-    assert_eq!(ok[0].sort_key, 7);
+    assert_eq!(ok.entries.len(), 1);
+    assert_eq!(ok.entries[0].sort_key, 7);
 }
 
 /// A file with nothing dated in it returns an empty list, not an error. The
@@ -201,7 +204,7 @@ async fn a_file_with_no_rows_returns_empty_rather_than_erring() {
         )
         .await
         .expect("no rows is not an error");
-    assert!(rows.is_empty());
+    assert!(rows.entries.is_empty());
 }
 
 /// OT.3: the host parses the file it already read and lends the guest a
@@ -234,9 +237,9 @@ async fn scan_lends_a_tree_when_the_extension_has_a_language() {
         .await
         .expect("scan");
 
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.entries.len(), 1);
     assert_eq!(
-        rows[0].label, "tree:source_file:2",
+        rows.entries[0].label, "tree:source_file:2",
         "the host parsed off-buffer and lent the tree; the guest read it"
     );
 }
@@ -263,10 +266,10 @@ async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
         .await
         .expect("scan");
 
-    assert_eq!(rows.len(), 1, "the text arm still produced the row");
-    assert_eq!(rows[0].sort_key, 7);
+    assert_eq!(rows.entries.len(), 1, "the text arm still produced the row");
+    assert_eq!(rows.entries[0].sort_key, 7);
     assert!(
-        !rows[0].label.starts_with("tree:"),
+        !rows.entries[0].label.starts_with("tree:"),
         "no grammar for this extension, so the guest must have been handed text"
     );
 }
@@ -408,9 +411,9 @@ async fn a_guests_row_spans_cross_the_boundary() {
         .await
         .unwrap();
 
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.entries.len(), 1);
     assert_eq!(
-        rows[0]
+        rows.entries[0]
             .spans
             .iter()
             .map(|s| (s.start, s.end, s.slot.as_str()))
@@ -447,7 +450,7 @@ async fn the_views_scan_args_reach_the_guest() {
         .await
         .unwrap();
     assert_eq!(
-        rows[0].label, "Day 1 (file 1) [waiting,extra]",
+        rows.entries[0].label, "Day 1 (file 1) [waiting,extra]",
         "both args cross, in order"
     );
 
@@ -458,7 +461,7 @@ async fn the_views_scan_args_reach_the_guest() {
         .scan(PathBuf::from("/p/a.org"), org(&[1]))
         .await
         .unwrap();
-    assert_eq!(rows[0].label, "Day 1 (file 1)");
+    assert_eq!(rows.entries[0].label, "Day 1 (file 1)");
 }
 
 /// OA.11a: a differently-parameterised scan is a different generation.
@@ -514,5 +517,40 @@ async fn scan_args_change_the_generation_key() {
             .await
             .expect("begin"),
         "the same args are the same generation, or nothing would ever cache"
+    );
+}
+
+/// OA.14b: a file's clocked time crosses the boundary beside its rows.
+///
+/// The fixture guest reports one span; this asserts the record arrives with its
+/// outline path, day and minutes intact. Driven through the real component
+/// because the shape of this seam — a RECORD rather than a bare row list — is
+/// the whole slice, and a unit test of the guest's parser would not notice if
+/// the host dropped the second half.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_files_clocked_time_crosses_beside_its_rows() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin(&[]).await.expect("begin");
+    let result = src
+        .scan(PathBuf::from("/p/a.org"), org(&[1]))
+        .await
+        .expect("scan");
+
+    // Rows still arrive — the record did not displace them.
+    assert_eq!(result.entries.len(), 1, "the rows are unaffected");
+    assert_eq!(
+        result
+            .clock
+            .iter()
+            .map(|c| (c.outline.clone(), c.day, c.minutes))
+            .collect::<Vec<_>>(),
+        vec![(vec!["Clocked".to_string()], 20_000, 90)],
+        "the span crosses with its outline path, day and minutes"
     );
 }

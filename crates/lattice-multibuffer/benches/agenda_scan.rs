@@ -51,22 +51,23 @@ impl ScannedExcerptSource for BenchSource {
     }
     fn scan(&self, _path: PathBuf, text: String) -> AgendaFuture<'_> {
         Box::pin(async move {
-            Ok(text
-                .lines()
-                .enumerate()
-                .filter_map(|(i, line)| {
-                    let rest = line.strip_prefix("* TODO ")?;
-                    let key: i64 = rest.trim().parse().ok()?;
-                    Some(ScannedExcerpt {
-                        line: i as u32,
-                        end_line: i as u32,
-                        group: format!("day-{key}"),
-                        label: format!("Day {key}"),
-                        sort_key: key,
-                        spans: Vec::new(),
+            Ok(lattice_mode::ScanResult::rows(
+                text.lines()
+                    .enumerate()
+                    .filter_map(|(i, line)| {
+                        let rest = line.strip_prefix("* TODO ")?;
+                        let key: i64 = rest.trim().parse().ok()?;
+                        Some(ScannedExcerpt {
+                            line: i as u32,
+                            end_line: i as u32,
+                            group: format!("day-{key}"),
+                            label: format!("Day {key}"),
+                            sort_key: key,
+                            spans: Vec::new(),
+                        })
                     })
-                })
-                .collect())
+                    .collect(),
+            ))
         })
     }
 }

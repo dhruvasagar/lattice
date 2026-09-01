@@ -33,6 +33,10 @@ use crate::{
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
 pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
+/// OA.14b: a file's clocked time, reported beside its rows.
+pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::{
+    ClockSpan, ScanResult,
+};
 /// OA.5: the per-row style spans an [`Entry`] carries.
 pub use crate::agenda_host::bindings::lattice::plugin_host::types::DisplaySpan;
 
@@ -94,7 +98,7 @@ enum AgendaCall {
     Scan {
         path: String,
         text: String,
-        reply: oneshot::Sender<CallResult<Result<Vec<Entry>, String>>>,
+        reply: oneshot::Sender<CallResult<Result<ScanResult, String>>>,
     },
 }
 
@@ -165,7 +169,7 @@ impl AgendaClient {
     /// inner `Result<_, String>` is the guest's own WIT `result`. Either way
     /// the caller skips THIS FILE and continues — one bad file must not fail
     /// the agenda.
-    pub async fn scan(&self, path: String, text: String) -> CallResult<Result<Vec<Entry>, String>> {
+    pub async fn scan(&self, path: String, text: String) -> CallResult<Result<ScanResult, String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .unbounded_send(AgendaCall::Scan { path, text, reply })
@@ -305,7 +309,7 @@ impl AgendaActor {
         &mut self,
         path: &str,
         text: &str,
-    ) -> CallResult<Result<Vec<Entry>, String>> {
+    ) -> CallResult<Result<ScanResult, String>> {
         if self.quarantine.is_tripped() {
             return Err(PluginHostError::Quarantined { func: "scan" });
         }

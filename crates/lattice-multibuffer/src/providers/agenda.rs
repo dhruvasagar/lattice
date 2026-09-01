@@ -137,6 +137,19 @@ fn project_root_from_cwd() -> PathBuf {
 #[derive(Debug, Clone)]
 pub struct AgendaState {
     pub options: AgendaOptions,
+    /// OA.14b: every clocked span the last completed scan saw, across every
+    /// file and source, unfiltered by date.
+    ///
+    /// Held per view rather than recomputed because the report's RANGE is a
+    /// display choice — `gD` switches between day, week, month and year — and
+    /// re-walking the corpus to answer a question the data already contains
+    /// would make a toggle cost a scan. `org-agenda-clockreport-mode` (OA.16)
+    /// filters on `day` and rolls the totals up each span's outline path.
+    ///
+    /// Written once at the end of a scan, not incrementally: a half-filled
+    /// report is a wrong report, and unlike rows — which stream so the view
+    /// fills in — nobody is reading a total until it is a total.
+    pub clock: Vec<lattice_mode::ClockSpan>,
 }
 
 /// Per-view state, shared between the trigger and the scan task.
@@ -388,6 +401,10 @@ pub fn open_scan_view(
             view,
             AgendaState {
                 options: options.clone(),
+                // The scan that is about to run fills this; carrying the
+                // PREVIOUS scan's spans forward would be worse than empty,
+                // since a stale total reads exactly like a current one.
+                clock: Vec::new(),
             },
         );
     } else {
@@ -605,6 +622,11 @@ pub fn spawn_agenda_scan(
 
         let total = candidates.len();
         let mut files: Vec<FileRows> = Vec::new();
+        // OA.14b: every clocked span the walk saw, across every file and every
+        // source. Accumulated flat rather than per file because the report
+        // groups by outline and day, not by which file a span came from — and
+        // a headline's time is its own wherever it lives.
+        let mut clock: Vec<lattice_mode::ClockSpan> = Vec::new();
         let mut scanned = 0usize;
         // OM.A3: a source that stops answering must not cost the user the rows
         // already collected, and must not be silently absent either.
@@ -637,17 +659,26 @@ pub fn spawn_agenda_scan(
                         continue;
                     }
                     match source.scan(path.clone(), text.clone()).await {
-                        Ok(entries) => {
+                        Ok(result) => {
                             // A file it could read resets the counter: the
                             // budget is for a source that has STOPPED
                             // answering, not one with a few bad files in a
                             // large project.
                             health.insert(id, 0);
-                            if !entries.is_empty() {
+                            // OA.14b: clock spans are collected whether or not
+                            // the file produced any ROWS. A file whose only
+                            // headline is untagged and undated contributes no
+                            // agenda row and can still hold a week of clocked
+                            // time — dropping it with the rows is exactly the
+                            // under-reporting this seam exists to avoid.
+                            if !result.clock.is_empty() {
+                                clock.extend(result.clock);
+                            }
+                            if !result.entries.is_empty() {
                                 files.push(FileRows {
                                     path: path.clone(),
                                     text: text.clone(),
-                                    entries,
+                                    entries: result.entries,
                                 });
                             }
                         }
@@ -697,6 +728,21 @@ pub fn spawn_agenda_scan(
             skipped_files,
             dropped_sources: dropped.len(),
         };
+        // OA.14b: publish the clock spans the walk collected, at the END and in
+        // one write. A report is a total; a half-filled one is simply wrong,
+        // and unlike rows — which stream so the view fills in — nothing reads
+        // this until the scan has finished.
+        //
+        // Published even when the scan produced no ROWS: a corpus can hold a
+        // week of clocked time and not a single agenda row, and that is
+        // precisely the case a report has to answer.
+        if let Some(services) = services.as_deref()
+            && let Some(svc) = services.get::<AgendaServiceHandle>()
+            && let Some(state) = svc.state(view)
+            && let Ok(mut state) = state.write()
+        {
+            state.clock = clock;
+        }
         let sorted = sort_rows(&files);
         if sorted.is_empty() {
             finish_empty(&mb_registry, &events, view, &outcome);
@@ -1638,22 +1684,23 @@ mod tests {
                 }
                 // One row per `* TODO <key>` line, keyed off the file so the
                 // sort assertion is testing the producer's data.
-                Ok(text
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, line)| {
-                        let rest = line.strip_prefix("* TODO ")?;
-                        let key: i64 = rest.trim().parse().ok()?;
-                        Some(ScannedExcerpt {
-                            line: i as u32,
-                            end_line: i as u32,
-                            group: format!("day-{key}"),
-                            label: format!("Day {key}"),
-                            sort_key: key,
-                            spans: Vec::new(),
+                Ok(lattice_mode::ScanResult::rows(
+                    text.lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            let rest = line.strip_prefix("* TODO ")?;
+                            let key: i64 = rest.trim().parse().ok()?;
+                            Some(ScannedExcerpt {
+                                line: i as u32,
+                                end_line: i as u32,
+                                group: format!("day-{key}"),
+                                label: format!("Day {key}"),
+                                sort_key: key,
+                                spans: Vec::new(),
+                            })
                         })
-                    })
-                    .collect())
+                        .collect(),
+                ))
             })
         }
     }
@@ -1797,6 +1844,93 @@ mod tests {
             ]),
         );
         assert_eq!(options.scan_args, vec!["refile".to_string()]);
+    }
+
+    /// OA.14b: a file with NO agenda rows still contributes its clocked time.
+    ///
+    /// The property the whole seam exists for, and the one an implementation
+    /// that hung clock data off rows cannot have: a corpus can hold a week of
+    /// logged time and not a single agenda row. Asserted through
+    /// `spawn_agenda_scan` so it covers the driver's own filter — an earlier
+    /// draft collected clock only inside the `!entries.is_empty()` branch,
+    /// which passes every row test and loses exactly this file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_with_no_rows_still_reports_its_clocked_time() {
+        let dir = tempdir();
+        // No `* TODO` line anywhere: the fake source yields zero rows.
+        write(&dir, "notes.org", "* Notes\nsome prose\n");
+
+        let (registry, view) = view_handle();
+        let mut registry_builder = lattice_mode::ServiceRegistry::new();
+        let svc = InMemoryAgendaService::handle();
+        registry_builder.register::<AgendaServiceHandle>(svc.clone());
+        let services = Arc::new(registry_builder);
+        svc.set_state(
+            view,
+            AgendaState {
+                options: AgendaOptions::default(),
+                clock: Vec::new(),
+            },
+        );
+
+        spawn_agenda_scan(
+            view,
+            AgendaOptions {
+                roots: vec![dir.clone()],
+                max_files: None,
+                ..Default::default()
+            },
+            vec![Arc::new(ClockOnlySource {
+                exts: vec!["org".to_string()],
+            })],
+            registry.clone(),
+            None,
+            Some(services),
+        );
+        settle_agenda(&registry, view).await;
+
+        let state = svc.state(view).expect("the view has state");
+        let clock = state.read().expect("readable").clock.clone();
+        assert_eq!(
+            clock
+                .iter()
+                .map(|c| (c.outline.clone(), c.minutes))
+                .collect::<Vec<_>>(),
+            vec![(vec!["Notes".to_string()], 90)],
+            "the clocked time survives a file that produced no rows"
+        );
+    }
+
+    /// A source with time but no rows — the shape the test above needs and the
+    /// one a row-attached design could not express at all.
+    #[derive(Debug)]
+    struct ClockOnlySource {
+        exts: Vec<String>,
+    }
+
+    impl lattice_mode::ScannedExcerptSource for ClockOnlySource {
+        fn source_id(&self) -> u64 {
+            42
+        }
+        fn extensions(&self) -> &[String] {
+            &self.exts
+        }
+        fn begin(&self, _args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
+            Box::pin(async { Ok(()) })
+        }
+        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
+            Box::pin(async {
+                Ok(lattice_mode::ScanResult {
+                    entries: Vec::new(),
+                    clock: vec![lattice_mode::ClockSpan {
+                        line: 0,
+                        outline: vec!["Notes".to_string()],
+                        day: 20_000,
+                        minutes: 90,
+                    }],
+                })
+            })
+        }
     }
 
     /// OA.11a: the view's scan args reach every source's `begin`.
@@ -2185,6 +2319,7 @@ mod tests {
                     max_files: Some(10),
                     ..Default::default()
                 },
+                clock: Vec::new(),
             },
         );
         let got = svc.state(view).unwrap();

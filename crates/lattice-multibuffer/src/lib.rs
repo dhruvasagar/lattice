@@ -4735,6 +4735,44 @@ mod tests {
         );
     }
 
+    /// The agenda's grouping contract vs. what the substrate does.
+    ///
+    /// `providers/agenda.rs::build_excerpts` gives the FIRST row of a
+    /// date group the label and every later row `String::new()`, on the
+    /// documented assumption that "an empty `ExcerptHeader.title`
+    /// renders no header row". The dedup is on `excerpt.source`, not on
+    /// the title — and a date group interleaves files by design — so
+    /// each file change inside one group emits another header, and an
+    /// empty title with no path renders `[untitled]`.
+    #[test]
+    #[ignore = "OA.2 has not landed: this is the failing test that specifies it. \
+                Un-ignore with the title-run grouping fix."]
+    fn agenda_group_of_interleaved_files_emits_one_header_not_untitled_rows() {
+        let todo = BufferId::next();
+        let plans = BufferId::next();
+        // One date group, three rows, drawn from two files in sort order.
+        let excerpts = vec![
+            Excerpt::new(todo, 0, 0).with_header(ExcerptHeader::new("2026-08-31 Mon (today)")),
+            Excerpt::new(plans, 4, 4).with_header(ExcerptHeader::new("")),
+            Excerpt::new(todo, 9, 9).with_header(ExcerptHeader::new("")),
+        ];
+        let rows = compose_header_rows(&excerpts, |e| header_cells(&e.header, false, 0, 0, 0));
+        let text = |r: &VirtualRow| {
+            r.cells
+                .iter()
+                .filter_map(|c| char::from_u32(c.codepoint))
+                .collect::<String>()
+        };
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "one date group renders one header; got {:?}",
+            rows.iter().map(text).collect::<Vec<_>>()
+        );
+        assert_eq!(text(&rows[0]), "2026-08-31 Mon (today)");
+    }
+
     #[test]
     fn default_header_paints_box_rules_around_title() {
         let mb_source = BufferId::next();

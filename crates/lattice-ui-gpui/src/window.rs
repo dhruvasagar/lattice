@@ -1853,11 +1853,16 @@ impl EditorView {
         let total_lines_for_gutter = total_lines.max(1);
         // PU.1b-1a: reserve line-number digits only when `number` is set;
         // gutterless buffers (help / dashboard) get 0 (matches the TUI gate).
-        let show_line_numbers = rs_guard
-            .active_document
-            .load()
-            .option_cache
-            .show_line_numbers;
+        //
+        // Resolved against THIS PANE's buffer (PI.4's `resolved_option_for`),
+        // not the active document. Reading `active_document.option_cache` here
+        // gave every pane the focused buffer's gutter: a magit view sitting
+        // beside a focused file grew line numbers its own mode turns off, and
+        // a file beside a focused magit view lost them. The TUI has resolved
+        // this per pane since M.4 (`FrameView::for_buffer`); this is the peer
+        // half of that seam, which PI.4 built and never finished wiring.
+        let pane_options = crate::pane_options::PaneOptions::for_pane(&rs_guard, pane.buffer_id);
+        let show_line_numbers = pane_options.show_line_numbers;
         let gutter_width = if show_line_numbers {
             total_lines_for_gutter.to_string().len()
         } else {
@@ -2390,20 +2395,18 @@ impl EditorView {
         // option-cache seam the TUI reads (`render.rs` cursorline path)
         // and the same seam used for `foldenable` above. Without this the
         // GPUI peer painted the cursorline unconditionally.
-        // PI.4: a focused preview pane resolves cursorline from the
-        // DISPLAYED buffer through the renderer-agnostic seam (the same
-        // `RenderState` method the TUI peer calls), so the previewed
-        // buffer keeps its own cursorline; otherwise the active document's
-        // resolved value.
-        let cursorline_enabled = if pane.is_previewing() {
-            rs_guard.current_line_highlight_for(pane.buffer_id)
-        } else {
-            rs_guard
-                .active_document
-                .load()
-                .option_cache
-                .current_line_highlight
-        };
+        // PI.4: resolved from the DISPLAYED buffer through the
+        // renderer-agnostic seam (the same `RenderState` method the TUI peer
+        // calls), so a pane keeps its own cursorline.
+        //
+        // The `is_previewing()` branch is gone rather than extended: it was
+        // the one case where a pane's own buffer was known to differ from the
+        // active document, so it alone got the per-buffer answer. That is true
+        // of EVERY pane whose buffer is not the focused one, which is what
+        // made a `cursorline = false` buffer (magit) paint one anyway while
+        // sitting next to a focused file. One rule for every pane is both
+        // simpler and the correct one.
+        let cursorline_enabled = pane_options.cursorline;
 
         // Slice X3.full.4: gather LSP inlay hints + diagnostic
         // underline ranges for this pane's buffer. Both arrive
@@ -2637,12 +2640,13 @@ impl EditorView {
             gutter: gutter_meta,
             gutter_width,
             // PU.1b-1a (`signcolumn`): reserve the sign columns per the
-            // active buffer's resolved option (mirrors how GPUI reads
-            // `option_cache.foldenable`). Correct for the active pane;
-            // inactive panes inherit the active value — the same
-            // pre-existing per-pane-option limitation as the rest of
-            // this element. TUI peer: `FrameView::sign_column`.
-            sign_column: rs_guard.active_document.load().option_cache.sign_column,
+            // resolved option of the buffer THIS pane shows. The comment that
+            // stood here admitted the limitation — "inactive panes inherit the
+            // active value" — and it is now closed through PI.4's seam, which
+            // exists precisely so both peers stop reading the active
+            // document's `option_cache` for per-pane questions.
+            // TUI peer: `FrameView::sign_column`.
+            sign_column: pane_options.sign_column,
             // PI.0: centring pad follows the *rendered* buffer's
             // `CenterContentWidth` local + this pane's width, not the
             // active-buffer identity — so the dashboard keeps its centring
@@ -2796,11 +2800,11 @@ impl EditorView {
                     .indent_guides_for_pane(pane.id)
                     .map(|cell| cell.load_full())
                     .unwrap_or_default();
-                rs_guard
-                    .active_document
-                    .load()
-                    .option_cache
-                    .indent_guide_active
+                // Per-pane like its neighbours above: the active block is a
+                // property of the buffer being painted, not of the focused
+                // one.
+                pane_options
+                    .indent_guides_active
                     .then(|| guides.active_block(pane.cursor.line))
                     .flatten()
             },

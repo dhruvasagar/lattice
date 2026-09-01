@@ -84,6 +84,13 @@ pub mod gpui_chord;
 #[cfg(feature = "window")]
 pub mod window;
 
+/// Per-pane resolved view options (gutter, cursorline, sign columns, indent
+/// guides). Deliberately NOT behind the `window` feature: it names no gpui
+/// type, and the rule it enforces — a pane's options come from the buffer it
+/// shows, never the active document — is worth testing in the headless build
+/// that CI runs.
+pub mod pane_options;
+
 /// Slice W.3: pure `decorations` → GPUI window-chrome map
 /// (`window_chrome`/`full_titlebar`). Gated identically to `window` since
 /// it names `gpui::{SharedString, TitlebarOptions, WindowDecorations}` and

@@ -102,7 +102,7 @@ async fn scan_crosses_text_in_and_rows_back() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let rows = src
         .scan(PathBuf::from("/p/a.org"), org(&[30, 10]))
         .await
@@ -131,7 +131,7 @@ async fn begin_resets_the_guests_per_scan_state() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let first = src
         .scan(PathBuf::from("/p/a.org"), org(&[1]))
         .await
@@ -143,7 +143,7 @@ async fn begin_resets_the_guests_per_scan_state() {
     assert_eq!(first[0].label, "Day 1 (file 1)");
     assert_eq!(second[0].label, "Day 2 (file 2)", "state accumulates…");
 
-    src.begin().await.expect("second begin");
+    src.begin(&[]).await.expect("second begin");
     let third = src
         .scan(PathBuf::from("/p/c.org"), org(&[3]))
         .await
@@ -166,7 +166,7 @@ async fn a_malformed_file_errs_without_killing_the_source() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let err = src
         .scan(PathBuf::from("/p/bad.org"), "BROKEN\n".to_string())
         .await
@@ -193,7 +193,7 @@ async fn a_file_with_no_rows_returns_empty_rather_than_erring() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let rows = src
         .scan(
             PathBuf::from("/p/prose.org"),
@@ -225,7 +225,7 @@ async fn scan_lends_a_tree_when_the_extension_has_a_language() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let rows = src
         .scan(
             PathBuf::from("/p/a.rs"),
@@ -257,7 +257,7 @@ async fn scan_falls_back_to_text_when_the_extension_has_no_language() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let rows = src
         .scan(PathBuf::from("/p/a.unknownext"), org(&[7]))
         .await
@@ -402,7 +402,7 @@ async fn a_guests_row_spans_cross_the_boundary() {
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
     let src = source(&host).await;
 
-    src.begin().await.expect("begin");
+    src.begin(&[]).await.expect("begin");
     let rows = src
         .scan(PathBuf::from("/p/a.org"), org(&[1]))
         .await
@@ -419,5 +419,100 @@ async fn a_guests_row_spans_cross_the_boundary() {
         "the guest's span arrives with its own line's offsets and its slot NAME \
          — a name, because a `Style` is a closed Rust enum plus an interned id \
          and neither crosses an ABI"
+    );
+}
+
+/// OA.11a: the view's scan arguments reach the guest, uninterpreted.
+///
+/// The fixture stashes them in `begin` and rides them in every row's label,
+/// so this asserts the whole path — `AgendaClient::begin` → the actor → the
+/// WIT call → the guest's own state → back out through `scan`. The seam's
+/// recurring failure is the one OT.4 spent a slice on: wired end to end and
+/// delivering nothing. A test that only checked `begin` returned `Ok` would
+/// pass against a host that dropped the args on the floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_views_scan_args_reach_the_guest() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let src = source(&host).await;
+
+    src.begin(&["waiting".to_string(), "extra".to_string()])
+        .await
+        .expect("begin");
+    let rows = src
+        .scan(PathBuf::from("/p/a.org"), org(&[1]))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows[0].label, "Day 1 (file 1) [waiting,extra]",
+        "both args cross, in order"
+    );
+
+    // …and a scan opened for nothing is byte-for-byte what it was before this
+    // slice, which is what keeps every existing trigger unchanged.
+    src.begin(&[]).await.expect("begin");
+    let rows = src
+        .scan(PathBuf::from("/p/a.org"), org(&[1]))
+        .await
+        .unwrap();
+    assert_eq!(rows[0].label, "Day 1 (file 1)");
+}
+
+/// OA.11a: a differently-parameterised scan is a different generation.
+///
+/// The guest folds its args into the key `begin` returns, and it must: two
+/// custom commands ask two different questions of the same unchanged files, so
+/// a cache keyed only on the files would serve the first command's rows under
+/// the second command's name. Every one of those rows would look plausible,
+/// which is what makes this worth pinning rather than trusting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_args_change_the_generation_key() {
+    let Some(_) = guest_wasm() else {
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .expect("compile agenda fixture");
+    let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
+    let (client, actor) = host
+        .spawn_agenda_source(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
+        )
+        .await
+        .expect("spawn agenda source");
+    tokio::spawn(actor.run());
+
+    let default = client.begin(Vec::new()).await.expect("begin");
+    let waiting = client
+        .begin(vec!["waiting".to_string()])
+        .await
+        .expect("begin");
+    let refile = client
+        .begin(vec!["refile".to_string()])
+        .await
+        .expect("begin");
+
+    assert_ne!(
+        default, waiting,
+        "the default scan and a named command are not the same question"
+    );
+    assert_ne!(waiting, refile, "…and neither are two different commands");
+    assert_eq!(
+        waiting,
+        client
+            .begin(vec!["waiting".to_string()])
+            .await
+            .expect("begin"),
+        "the same args are the same generation, or nothing would ever cache"
     );
 }

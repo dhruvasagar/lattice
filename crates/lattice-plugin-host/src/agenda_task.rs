@@ -83,8 +83,11 @@ enum AgendaCall {
     Roots {
         reply: oneshot::Sender<CallResult<Vec<String>>>,
     },
-    /// `begin()` — drop per-scan state, and return the generation key (OT.3b).
+    /// `begin(args)` — drop per-scan state, and return the generation key
+    /// (OT.3b). `args` (OA.11a) are the view's own scan arguments, which the
+    /// host forwards without reading.
     Begin {
+        args: Vec<String>,
         reply: oneshot::Sender<CallResult<u64>>,
     },
     /// `scan(path, text)` — one file's agenda rows.
@@ -145,10 +148,12 @@ impl AgendaClient {
     /// generation key (OT.3b): an opaque `u64` that changes when anything
     /// scan-wide would change its rows, so the host can invalidate cached
     /// results without knowing what those things are.
-    pub async fn begin(&self) -> CallResult<u64> {
+    ///
+    /// OA.11a: `args` are the view's own scan arguments, forwarded verbatim.
+    pub async fn begin(&self, args: Vec<String>) -> CallResult<u64> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::Begin { reply })
+            .unbounded_send(AgendaCall::Begin { args, reply })
             .map_err(|_| PluginHostError::PluginGone { func: "begin" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "begin" })?
@@ -208,8 +213,8 @@ impl AgendaActor {
                 AgendaCall::Roots { reply } => {
                     let _ = reply.send(self.call_roots().await);
                 }
-                AgendaCall::Begin { reply } => {
-                    let _ = reply.send(self.call_begin().await);
+                AgendaCall::Begin { args, reply } => {
+                    let _ = reply.send(self.call_begin(&args).await);
                 }
                 AgendaCall::Scan { path, text, reply } => {
                     let _ = reply.send(self.call_scan(&path, &text).await);
@@ -272,13 +277,13 @@ impl AgendaActor {
         )
     }
 
-    async fn call_begin(&mut self) -> CallResult<u64> {
+    async fn call_begin(&mut self, args: &[String]) -> CallResult<u64> {
         if self.quarantine.is_tripped() {
             return Err(PluginHostError::Quarantined { func: "begin" });
         }
         arm_store(&mut self.store, self.budget)?;
         let start = std::time::Instant::now();
-        let result = self.bindings.call_begin(&mut self.store).await;
+        let result = self.bindings.call_begin(&mut self.store, args).await;
         crate::trip_and_map_traced(
             self.tracer.as_ref(),
             self.id.0,

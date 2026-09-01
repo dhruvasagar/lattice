@@ -86,6 +86,21 @@ pub struct AgendaOptions {
     /// root: the fallback moved to the one place that can see every source's
     /// answer, rather than being baked in before any of them was asked.
     pub roots: Vec<PathBuf>,
+    /// OA.11a: the view's own scan arguments, handed to every source's `begin`
+    /// **uninterpreted**. The host routes these; it never reads them.
+    ///
+    /// Separate from `roots` because they have separate owners. The host must
+    /// understand a root — it does the walk — and must not need to understand
+    /// this: it is the source's own vocabulary (org's agenda dispatcher names
+    /// which custom command to run). Folding the two together means a command
+    /// key gets taken for a directory path and the scan silently covers
+    /// nothing.
+    ///
+    /// Sticky across a refresh exactly as `roots` is, and for the same reason:
+    /// `gr` re-enters through this path, so an agenda opened for one command
+    /// must not quietly revert to the default one. Replaced only when a new
+    /// open supplies its own.
+    pub scan_args: Vec<String>,
     /// Cap on files *offered to a source* (not files walked). `None` =
     /// unlimited. A bound exists because the walk is unattended: a user who
     /// runs the agenda from `$HOME` should get a slow answer, not a hung one.
@@ -232,6 +247,36 @@ pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderVi
     open_scan_view(activator, &ScanViewIdentity::agenda(), args)
 }
 
+/// OA.11a: split a trigger's arguments into the host's slot and the guest's.
+///
+/// The arguments are **positional**: index 0 is the root override, which the
+/// host interprets because it does the walk, and everything after it is the
+/// source's own vocabulary, which the host must not read. `Args::String` is
+/// the one-argument spelling and still means a root, so every trigger that
+/// predates this slice — `:org-agenda`, `:org-agenda ~/notes` — arrives here
+/// unchanged.
+///
+/// Returns the root already trimmed; empty means "no override", which is how a
+/// caller names scan args without naming a root.
+fn split_view_args(args: &Args) -> (String, Vec<String>) {
+    let as_str = |v: &lattice_grammar::args::ArgValue| match v {
+        lattice_grammar::args::ArgValue::String(s) => s.clone(),
+        // The boundary admits only strings here, so this is unreachable from a
+        // plugin. A native caller passing something else gets the slot treated
+        // as absent rather than stringified into a path nobody typed.
+        _ => String::new(),
+    };
+    match args {
+        Args::String(s) => (s.trim().to_string(), Vec::new()),
+        Args::List(values) => {
+            let mut it = values.iter().map(as_str);
+            let root = it.next().unwrap_or_default().trim().to_string();
+            (root, it.collect())
+        }
+        _ => (String::new(), Vec::new()),
+    }
+}
+
 /// MV.3: the agenda's opener, with its identity as a parameter.
 ///
 /// Byte-for-byte the previous `open_agenda` body except that the four names it
@@ -297,14 +342,15 @@ pub fn open_scan_view(
     {
         options = state.options.clone();
     }
-    if let Args::String(s) = args {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            // An explicit argument REPLACES the list rather than joining it:
-            // `:org-agenda ~/notes` means "this, instead of what I configured",
-            // which is what makes the argument an escape hatch and not a filter.
-            options.roots = vec![PathBuf::from(shellexpand_tilde(trimmed))];
-        }
+    let (root_arg, scan_args) = split_view_args(args);
+    if !root_arg.is_empty() {
+        // An explicit argument REPLACES the list rather than joining it:
+        // `:org-agenda ~/notes` means "this, instead of what I configured",
+        // which is what makes the argument an escape hatch and not a filter.
+        options.roots = vec![PathBuf::from(shellexpand_tilde(&root_arg))];
+    }
+    if !scan_args.is_empty() {
+        options.scan_args = scan_args;
     }
 
     let view = match existing {
@@ -487,7 +533,7 @@ pub fn spawn_agenda_scan(
         // rows would be untrustworthy, but the other sources' are fine.
         let mut live: Vec<Arc<dyn ScannedExcerptSource>> = Vec::with_capacity(sources.len());
         for source in sources {
-            match source.begin().await {
+            match source.begin(&options.scan_args).await {
                 Ok(()) => live.push(source),
                 Err(e) => tracing::debug!(
                     source = source.source_id(),
@@ -1549,6 +1595,10 @@ mod tests {
         exts: Vec<String>,
         begins: Arc<std::sync::atomic::AtomicUsize>,
         offered: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+        /// OA.11a: the scan args `begin` was handed, so a test can assert the
+        /// view's arguments reached the producer rather than only that the
+        /// scan ran.
+        begin_args: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl FakeSource {
@@ -1558,6 +1608,7 @@ mod tests {
                 exts: exts.iter().map(|e| e.to_string()).collect(),
                 begins: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 offered: Arc::new(std::sync::Mutex::new(Vec::new())),
+                begin_args: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
     }
@@ -1569,9 +1620,12 @@ mod tests {
         fn extensions(&self) -> &[String] {
             &self.exts
         }
-        fn begin(&self) -> lattice_mode::AgendaBeginFuture<'_> {
+        fn begin(&self, args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
             self.begins
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut a) = self.begin_args.lock() {
+                *a = args.to_vec();
+            }
             Box::pin(async { Ok(()) })
         }
         fn scan(&self, path: PathBuf, text: String) -> lattice_mode::AgendaFuture<'_> {
@@ -1654,6 +1708,142 @@ mod tests {
         dir
     }
 
+    /// OA.11a: a trigger's arguments split into the host's slot and the
+    /// guest's, positionally.
+    ///
+    /// The cases that matter are the two that predate the slice — a bare open
+    /// and a root — because they must be untouched, and the two that motivate
+    /// it: a command key with no root, and a root and a command key together.
+    #[test]
+    fn view_args_split_into_a_root_and_the_guests_own() {
+        use lattice_grammar::args::ArgValue;
+
+        // Unchanged by this slice: every trigger that existed before it.
+        assert_eq!(split_view_args(&Args::None), (String::new(), Vec::new()));
+        assert_eq!(
+            split_view_args(&Args::String("  ~/notes  ".to_string())),
+            ("~/notes".to_string(), Vec::new()),
+            "trimmed, and still a root"
+        );
+
+        // A command key with no root — the dispatcher's ordinary case. Position
+        // 0 is empty rather than missing, which is what keeps the list
+        // positional instead of making the first element ambiguous.
+        assert_eq!(
+            split_view_args(&Args::List(vec![
+                ArgValue::String(String::new()),
+                ArgValue::String("waiting".to_string()),
+            ])),
+            (String::new(), vec!["waiting".to_string()]),
+            "no root override, one scan arg"
+        );
+
+        // Both at once: neither consumes the other. This is the case a
+        // single-slot design cannot express at all.
+        assert_eq!(
+            split_view_args(&Args::List(vec![
+                ArgValue::String("~/notes".to_string()),
+                ArgValue::String("waiting".to_string()),
+            ])),
+            ("~/notes".to_string(), vec!["waiting".to_string()])
+        );
+    }
+
+    /// OA.11a: scan args are sticky across a re-open, exactly as roots are.
+    ///
+    /// `gr` re-enters through the opener, so an agenda opened for one command
+    /// must not quietly revert to the default one on refresh. Replaced only
+    /// when a new open supplies its own — which is how the dispatcher moves
+    /// you between commands.
+    #[test]
+    fn a_re_open_without_args_keeps_the_command_it_was_opened_for() {
+        use lattice_grammar::args::ArgValue;
+
+        // What the opener does to a stored set of options, in the same order.
+        let apply = |options: &mut AgendaOptions, args: &Args| {
+            let (root, scan_args) = split_view_args(args);
+            if !root.is_empty() {
+                options.roots = vec![PathBuf::from(shellexpand_tilde(&root))];
+            }
+            if !scan_args.is_empty() {
+                options.scan_args = scan_args;
+            }
+        };
+
+        let mut options = AgendaOptions::default();
+        apply(
+            &mut options,
+            &Args::List(vec![
+                ArgValue::String(String::new()),
+                ArgValue::String("waiting".to_string()),
+            ]),
+        );
+        assert_eq!(options.scan_args, vec!["waiting".to_string()]);
+
+        // A refresh carries no arguments and must not lose the command.
+        apply(&mut options, &Args::None);
+        assert_eq!(
+            options.scan_args,
+            vec!["waiting".to_string()],
+            "`gr` keeps the agenda you chose"
+        );
+
+        // Choosing another command replaces it.
+        apply(
+            &mut options,
+            &Args::List(vec![
+                ArgValue::String(String::new()),
+                ArgValue::String("refile".to_string()),
+            ]),
+        );
+        assert_eq!(options.scan_args, vec!["refile".to_string()]);
+    }
+
+    /// OA.11a: the view's scan args reach every source's `begin`.
+    ///
+    /// The walk is untouched by them — this asserts the same file set is
+    /// offered either way — because that is the whole point of the two-slot
+    /// split. `roots` is the host's parameter and drives the walk; `scan_args`
+    /// are the guest's and drive nothing the host does. A single-slot design
+    /// fails here by turning the command key into a root and offering no files
+    /// at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_views_scan_args_reach_every_source() {
+        let dir = tempdir();
+        write(&dir, "a.org", "* TODO 1\n");
+
+        let (registry, view) = view_handle();
+        let source = Arc::new(FakeSource::new(1, &["org"]));
+        let begin_args = source.begin_args.clone();
+        let offered = source.offered.clone();
+
+        spawn_agenda_scan(
+            view,
+            AgendaOptions {
+                roots: vec![dir.clone()],
+                max_files: None,
+                scan_args: vec!["waiting".to_string()],
+            },
+            vec![source],
+            registry.clone(),
+            None,
+            None,
+        );
+        settle_agenda(&registry, view).await;
+
+        assert_eq!(
+            *begin_args.lock().unwrap(),
+            vec!["waiting".to_string()],
+            "the args the view carries are handed to the producer verbatim"
+        );
+        assert_eq!(
+            offered.lock().unwrap().len(),
+            1,
+            "and the walk is unchanged by them — scan args parameterise the \
+             GUEST, not the file set"
+        );
+    }
+
     /// The headline assertion: rows from three files land in one view, in the
     /// producer's global order, with one header per date group.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1674,6 +1864,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             vec![source],
             registry.clone(),
@@ -1731,6 +1922,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
@@ -1760,6 +1952,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
@@ -1794,6 +1987,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             vec![source],
             registry.clone(),
@@ -1826,7 +2020,7 @@ mod tests {
         fn extensions(&self) -> &[String] {
             &self.exts
         }
-        fn begin(&self) -> lattice_mode::AgendaBeginFuture<'_> {
+        fn begin(&self, _args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
             Box::pin(async { Ok(()) })
         }
         fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
@@ -1858,6 +2052,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             // The healthy source still contributes: one bad producer must not
             // cost the user the other's rows.
@@ -1913,6 +2108,7 @@ mod tests {
             AgendaOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
+                ..Default::default()
             },
             vec![Arc::new(FakeSource::new(1, &["org"]))],
             registry.clone(),
@@ -1987,6 +2183,7 @@ mod tests {
                 options: AgendaOptions {
                     roots: vec![PathBuf::from("/p")],
                     max_files: Some(10),
+                    ..Default::default()
                 },
             },
         );

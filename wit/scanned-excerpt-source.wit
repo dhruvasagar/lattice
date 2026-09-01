@@ -241,7 +241,34 @@ world scanned-excerpt-source-plugin {
     ///
     /// A guest with nothing to declare returns a constant, and its results are
     /// then cached until the files themselves change.
-    export begin: func() -> u64;
+    ///
+    /// ## `args` — what this particular scan was asked for (OA.11a)
+    ///
+    /// The `scan-args` the view was opened with, verbatim. **The host never
+    /// interprets these** — they are the guest's own vocabulary, and the host
+    /// carries them the way it carries a generation key: as something it can
+    /// route but not read.
+    ///
+    /// This is what lets one source serve more than one scan. Org's agenda
+    /// dispatcher opens "Waiting and Postponed" by name; without a channel
+    /// here, the guest would have to publish its selection through an option
+    /// and read it back, which makes view state look like user configuration
+    /// and leaves the host unable to tell that the view is parameterised at
+    /// all.
+    ///
+    /// Distinct from the provider view's `argument`, which is the **root
+    /// override** and is host-interpreted precisely because the host does the
+    /// walk. The two are separate slots because they have separate owners:
+    /// folding them together means a command key gets taken for a directory
+    /// path, and the scan silently covers nothing.
+    ///
+    /// `begin` runs before `roots`, so args stashed here are in hand for
+    /// `roots`, every `scan` call and the generation key — which is where they
+    /// belong, since a scan parameterised differently must not read a cache
+    /// filled by the previous one.
+    ///
+    /// Empty is the ordinary case and means "the default scan".
+    export begin: func(args: list<string>) -> u64;
 
     /// Scan one file; return its agenda rows.
     ///

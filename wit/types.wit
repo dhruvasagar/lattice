@@ -853,16 +853,31 @@ interface types {
     /// `provider` is the name a provider registered on the generic
     /// provider-view seam (`"agenda"`, `"search"`).
     ///
-    /// `argument` is `option<string>` and not the full `args` shape a command
-    /// handler receives, deliberately. A provider view takes at most one
-    /// free-text parameter today — a root for the agenda, a query for search —
-    /// and mirroring the recursive `Args` enum here would cost a second args
-    /// encoding on the boundary to express cases no provider has. A native
-    /// caller passing anything richer is refused with a typed error rather than
-    /// silently flattened, which is the `NarrowTrigger` precedent.
+    /// `argument` is the **host-interpreted** parameter: a root for the agenda,
+    /// a query for search. One free-text string rather than the full recursive
+    /// `Args` shape a command handler receives, because mirroring that enum
+    /// here would cost a second args encoding on the boundary to express cases
+    /// no provider has. A native caller passing anything richer is refused with
+    /// a typed error rather than silently flattened, which is the
+    /// `NarrowTrigger` precedent.
+    ///
+    /// `scan-args` (OA.11a) is the **guest-interpreted** one, passed through to
+    /// a scan source's `begin` verbatim and never read by the host.
+    ///
+    /// Two slots because they have two owners, and conflating them breaks. The
+    /// host must understand `argument` — it does the walk, and it *replaces*
+    /// the source's roots with it. So a guest sending a command key down that
+    /// slot would set the scan root to a path that does not exist and quietly
+    /// cover nothing. `scan-args` is the channel for anything only the guest
+    /// can read.
+    ///
+    /// Empty `scan-args` reproduces the pre-OA.11a boundary exactly: the
+    /// payload maps to `Args::None` / `Args::String`, so every existing trigger
+    /// is unchanged.
     record open-provider-view-payload {
         provider: string,
         argument: option<string>,
+        scan-args: list<string>,
     }
 
     /// Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`

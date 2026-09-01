@@ -135,7 +135,18 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     ///
     /// An `Err` drops this source from the scan (its state is unknown, so its
     /// rows would be untrustworthy) while every other source carries on.
-    fn begin(&self) -> AgendaBeginFuture<'_>;
+    ///
+    /// OA.11a: `args` is what the VIEW was opened with, passed through
+    /// **uninterpreted**. The host routes these; it does not read them. They
+    /// are how one source serves more than one scan — org's agenda dispatcher
+    /// names which custom command to run — and they are deliberately not the
+    /// provider view's `argument`, which is the root override and *is*
+    /// host-interpreted because the host does the walk.
+    ///
+    /// Called before [`Self::roots`], so a source that stashes its args here
+    /// has them for `roots`, every `scan`, and the generation key it returns.
+    /// Empty is the ordinary case: the default scan.
+    fn begin(&self, args: &[String]) -> AgendaBeginFuture<'_>;
 
     /// Scan one file. `text` is the file's contents, already read by the host
     /// — the host must read it anyway to build the source `Document`, so it
@@ -276,7 +287,7 @@ mod tests {
         fn view_mode(&self) -> Option<&str> {
             self.view_mode.as_deref()
         }
-        fn begin(&self) -> AgendaBeginFuture<'_> {
+        fn begin(&self, _args: &[String]) -> AgendaBeginFuture<'_> {
             Box::pin(async { Ok(()) })
         }
         fn scan(&self, _p: PathBuf, _t: String) -> AgendaFuture<'_> {

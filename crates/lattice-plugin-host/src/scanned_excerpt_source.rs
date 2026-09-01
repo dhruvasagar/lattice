@@ -74,15 +74,23 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
         })
     }
 
-    fn begin(&self) -> AgendaBeginFuture<'_> {
+    fn begin(&self, args: &[String]) -> AgendaBeginFuture<'_> {
+        // Owned before the async move: `args` is borrowed from the caller and
+        // the returned future outlives the call.
+        let args = args.to_vec();
         Box::pin(async move {
             // OT.3b: `begin` now answers with the guest's generation key, and
             // handing it to the cache is what discards rows computed under an
             // anchor that no longer holds (org: yesterday's day, an old keyword
             // set). The host never learns what the key means.
+            //
+            // OA.11a: the view's scan args go in, uninterpreted. A guest that
+            // scans differently for different args folds them into the key it
+            // returns — which is what stops a dispatcher's second command from
+            // reading rows the first one cached.
             let generation = self
                 .client
-                .begin()
+                .begin(args)
                 .await
                 .map_err(|e| format!("agenda plugin: {e}"))?;
             if let Some(cache) = &self.cache

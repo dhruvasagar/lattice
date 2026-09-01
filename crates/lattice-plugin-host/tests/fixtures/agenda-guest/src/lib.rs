@@ -25,6 +25,12 @@ wit_bindgen::generate!({
 // is exactly the state `begin` exists to clear.
 thread_local! {
     static FILES_SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// OA.11a: what THIS scan was opened for. Stashed in `begin` and read in
+    /// `scan`, which is the ordering the seam promises and the shape a real
+    /// source uses (org resolves its custom command here).
+    static SCAN_ARGS: std::cell::RefCell<Vec<String>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
 }
 
 struct Component;
@@ -71,13 +77,29 @@ impl Guest for Component {
         ]
     }
 
-    fn begin() -> u64 {
+    fn begin(args: Vec<String>) -> u64 {
         FILES_SEEN.set(0);
-        // OT.3b: this fixture's rows do not depend on the day or on any option,
-        // so a constant is the honest generation — its results stay valid until
-        // the files themselves change. A guest WITH scan-wide state (org's today
-        // anchor, its keyword set) derives the key from that instead.
-        1
+        // OA.11a: the args are per-scan state like any other, so they are
+        // captured here — the one call the seam guarantees runs before `roots`
+        // and every `scan`.
+        SCAN_ARGS.with(|a| *a.borrow_mut() = args.clone());
+        // OT.3b: this fixture's rows do not otherwise depend on the day or on
+        // any option, so the generation is a constant — its results stay valid
+        // until the files themselves change. A guest WITH scan-wide state
+        // (org's today anchor, its keyword set) derives the key from that.
+        //
+        // OA.11a folds the args in, and that is not decoration: a scan asked
+        // for a different thing must not be served rows the previous one
+        // cached. A guest that took args and did NOT key on them would render
+        // the first command's rows under the second command's name.
+        let mut key: u64 = 1;
+        for a in &args {
+            for b in a.as_bytes() {
+                key = key.wrapping_mul(31).wrapping_add(*b as u64);
+            }
+            key = key.wrapping_mul(31);
+        }
+        key
     }
 
     fn scan(
@@ -118,8 +140,21 @@ impl Guest for Component {
                 end_line: i as u32,
                 group: format!("day-{sort_key}"),
                 // The counter rides in the label so `begin`'s reset is
-                // observable from the host without another export.
-                label: format!("Day {sort_key} (file {seen})"),
+                // observable from the host without another export, and OA.11a's
+                // scan args ride beside it for the same reason — a seam that
+                // looks wired and delivers nothing is the failure this fixture
+                // exists to catch.
+                label: format!(
+                    "Day {sort_key} (file {seen}){}",
+                    SCAN_ARGS.with(|a| {
+                        let a = a.borrow();
+                        if a.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", a.join(","))
+                        }
+                    })
+                ),
                 sort_key,
                 // OA.5: one styled run over the row's keyword, so the host
                 // test can assert the spans crossed the boundary at all.

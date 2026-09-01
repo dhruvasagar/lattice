@@ -46,7 +46,7 @@ impl ScannedExcerptSource for BenchSource {
     fn extensions(&self) -> &[String] {
         &self.exts
     }
-    fn begin(&self) -> AgendaBeginFuture<'_> {
+    fn begin(&self, _args: &[String]) -> AgendaBeginFuture<'_> {
         Box::pin(async { Ok(()) })
     }
     fn scan(&self, _path: PathBuf, text: String) -> AgendaFuture<'_> {
@@ -124,6 +124,10 @@ fn bench_agenda_scan(c: &mut Criterion) {
                     AgendaOptions {
                         roots: vec![dir.clone()],
                         max_files: None,
+                        // OA.11a: the default scan, which is what this bench
+                        // has always measured — args parameterise the guest,
+                        // not the walk, so they must not move this number.
+                        scan_args: Vec::new(),
                     },
                     vec![Arc::new(BenchSource {
                         exts: vec!["org".to_string()],

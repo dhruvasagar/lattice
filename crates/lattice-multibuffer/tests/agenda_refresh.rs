@@ -120,7 +120,10 @@ impl ScannedExcerptSource for FakeSource {
         let roots = self.roots.clone();
         Box::pin(async move { Ok(roots) })
     }
-    fn begin(&self) -> lattice_mode::scanned_excerpt_source::AgendaBeginFuture<'_> {
+    fn begin(
+        &self,
+        _args: &[String],
+    ) -> lattice_mode::scanned_excerpt_source::AgendaBeginFuture<'_> {
         self.begins
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async { Ok(()) })

@@ -494,16 +494,52 @@ impl WitBoundary for NativeAppEffect {
             // user calls `org-agenda` shipped as `:agenda` and the plugin could
             // not fix it from its own side.
             //
-            // The argument crosses as `option<string>`: every provider view
-            // takes at most one free-text parameter (a root, a query), and
-            // mirroring the recursive `Args` enum would add a second args
-            // encoding to the boundary for cases no provider has. Anything
-            // richer is a typed error rather than a silent flattening — the
-            // `NarrowTrigger` precedent two arms up.
+            // The argument crosses as `option<string>` — the host-interpreted
+            // parameter, of which every provider view takes at most one (a
+            // root, a query). Mirroring the whole recursive `Args` enum would
+            // add a second args encoding to the boundary for cases no provider
+            // has, so anything it cannot express is a typed error rather than a
+            // silent flattening — the `NarrowTrigger` precedent two arms up.
+            //
+            // OA.11a: `Args::List` is now expressible, as `argument` plus
+            // `scan-args`. That is not the recursive mirror this comment used
+            // to refuse; it is the flat positional case, and it exists because
+            // a scan source needs a channel the host does NOT read. Position 0
+            // is the host's argument, the rest are the guest's. An empty
+            // position 0 means "no root override", which is how a caller sends
+            // scan args without one.
             NativeAppEffect::OpenProviderView { provider, args } => {
-                let argument = match args {
-                    lattice_grammar::args::Args::None => None,
-                    lattice_grammar::args::Args::String(s) => Some(s.clone()),
+                let (argument, scan_args) = match args {
+                    lattice_grammar::args::Args::None => (None, Vec::new()),
+                    lattice_grammar::args::Args::String(s) => (Some(s.clone()), Vec::new()),
+                    lattice_grammar::args::Args::List(values) => {
+                        let mut strings = Vec::with_capacity(values.len());
+                        for v in values {
+                            match v {
+                                lattice_grammar::args::ArgValue::String(s) => {
+                                    strings.push(s.clone())
+                                }
+                                // Only the string form crosses. A provider
+                                // view's arguments are free text on both sides
+                                // of the boundary, and quietly stringifying an
+                                // `Int` or an `Invocation` here would invent a
+                                // spelling the guest never agreed to.
+                                other => {
+                                    return Err(format!(
+                                        "AppEffect::OpenProviderView carries a non-string list \
+                                         argument the provider-view boundary does not mirror \
+                                         ({other:?}); provider-view arguments are free text"
+                                    ));
+                                }
+                            }
+                        }
+                        let mut it = strings.into_iter();
+                        let first = it.next().unwrap_or_default();
+                        // An empty first element is "no root override" rather
+                        // than a root of "", which is not a path anyone means.
+                        let argument = (!first.is_empty()).then_some(first);
+                        (argument, it.collect())
+                    }
                     other => {
                         return Err(format!(
                             "AppEffect::OpenProviderView carries args the provider-view boundary \
@@ -515,6 +551,7 @@ impl WitBoundary for NativeAppEffect {
                 WitAppEffect::OpenProviderView(WitOpenProviderViewPayload {
                     provider: provider.clone(),
                     argument,
+                    scan_args,
                 })
             }
         })
@@ -678,11 +715,22 @@ impl WitBoundary for NativeAppEffect {
             // AG.1: the direction that matters — a plugin's ex-command opening
             // the view. `none` becomes `Args::None`, which is what a bare
             // `:org-agenda` with no root means.
+            // OA.11a: with no scan args this is byte-for-byte the old mapping,
+            // which is what keeps every existing trigger — `:org-agenda`,
+            // `:org-agenda ~/notes` — unchanged. Scan args promote it to the
+            // positional list form, with the host's argument still at 0 so the
+            // two never contend for one slot.
             WitAppEffect::OpenProviderView(p) => NativeAppEffect::OpenProviderView {
                 provider: p.provider,
-                args: match p.argument {
-                    Some(s) => lattice_grammar::args::Args::String(s),
-                    None => lattice_grammar::args::Args::None,
+                args: match (p.argument, p.scan_args.is_empty()) {
+                    (Some(s), true) => lattice_grammar::args::Args::String(s),
+                    (None, true) => lattice_grammar::args::Args::None,
+                    (argument, false) => lattice_grammar::args::Args::List(
+                        std::iter::once(argument.unwrap_or_default())
+                            .chain(p.scan_args)
+                            .map(lattice_grammar::args::ArgValue::String)
+                            .collect(),
+                    ),
                 },
             },
             WitAppEffect::InsertLineEdit(edit) => {
@@ -814,6 +862,101 @@ mod tests {
         ] {
             assert_eq!(h, NativeHScroll::from_wit(h.to_wit().unwrap()).unwrap());
         }
+    }
+
+    /// OA.11a: a provider view's two argument slots have two owners, and the
+    /// boundary keeps them apart.
+    ///
+    /// `argument` is the root the HOST interprets; `scan-args` are the guest's
+    /// own vocabulary, which it does not. Round-tripping both together is what
+    /// pins that neither consumes the other — the failure this shape exists to
+    /// prevent is a command key landing in the root slot, where the opener
+    /// would turn it into a directory that does not exist and the scan would
+    /// silently cover nothing.
+    #[test]
+    fn a_provider_views_root_and_scan_args_do_not_consume_each_other() {
+        use lattice_grammar::args::{ArgValue, Args};
+
+        let native = NativeAppEffect::OpenProviderView {
+            provider: "agenda".to_string(),
+            args: Args::List(vec![
+                ArgValue::String("~/notes".to_string()),
+                ArgValue::String("waiting".to_string()),
+            ]),
+        };
+        let wit = native.to_wit().expect("to_wit");
+        let WitAppEffect::OpenProviderView(p) = &wit else {
+            panic!("wrong arm");
+        };
+        assert_eq!(p.argument.as_deref(), Some("~/notes"), "the host's slot");
+        assert_eq!(p.scan_args, vec!["waiting".to_string()], "the guest's");
+        assert_round_trips(native);
+
+        // Scan args with NO root: position 0 is empty rather than absent, so
+        // the list form stays positional and `~/notes` cannot be mistaken for
+        // a command key by arriving first.
+        let native = NativeAppEffect::OpenProviderView {
+            provider: "agenda".to_string(),
+            args: Args::List(vec![
+                ArgValue::String(String::new()),
+                ArgValue::String("waiting".to_string()),
+            ]),
+        };
+        let wit = native.to_wit().expect("to_wit");
+        let WitAppEffect::OpenProviderView(p) = &wit else {
+            panic!("wrong arm");
+        };
+        assert_eq!(
+            p.argument, None,
+            "an empty root is no root, not a root of \"\""
+        );
+        assert_eq!(p.scan_args, vec!["waiting".to_string()]);
+    }
+
+    /// OA.11a must not have moved the triggers that already existed. With no
+    /// scan args the mapping is what it was: `None` ⇄ `Args::None`, one string
+    /// ⇄ `Args::String`. `:org-agenda` and `:org-agenda ~/notes` are those two
+    /// cases, so this is the regression guard for every pre-existing caller.
+    #[test]
+    fn a_provider_view_with_no_scan_args_maps_exactly_as_before() {
+        use lattice_grammar::args::Args;
+
+        for (args, expect) in [
+            (Args::None, None),
+            (Args::String("~/notes".to_string()), Some("~/notes")),
+        ] {
+            let native = NativeAppEffect::OpenProviderView {
+                provider: "agenda".to_string(),
+                args,
+            };
+            let wit = native.to_wit().expect("to_wit");
+            let WitAppEffect::OpenProviderView(p) = &wit else {
+                panic!("wrong arm");
+            };
+            assert_eq!(p.argument.as_deref(), expect);
+            assert!(
+                p.scan_args.is_empty(),
+                "no scan args means no scan args — not an empty string in a list"
+            );
+            assert_round_trips(native);
+        }
+    }
+
+    /// Only free text crosses. Stringifying an `Int` or an `Invocation` here
+    /// would invent a spelling the guest never agreed to, so it is a typed
+    /// error — the `NarrowTrigger` precedent, applied to the list form.
+    #[test]
+    fn a_non_string_provider_view_argument_is_a_typed_error() {
+        use lattice_grammar::args::{ArgValue, Args};
+
+        let e = NativeAppEffect::OpenProviderView {
+            provider: "agenda".to_string(),
+            args: Args::List(vec![ArgValue::Int(7)]),
+        };
+        let err = e
+            .to_wit()
+            .expect_err("a non-string list argument must not cross");
+        assert!(err.contains("free text"), "error says why: {err}");
     }
 
     /// `NarrowTrigger` carries the recursive ex-command `Range`; it cannot cross

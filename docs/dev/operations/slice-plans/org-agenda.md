@@ -36,9 +36,9 @@ the shared minor). Catalogue entry: the agenda in
 | OA.7 | Header cells carry the block's own shape | ✅ |
 | OA.7b | Conceal resolves per excerpt, so it works in a multibuffer | ✅ |
 | **Phase 3 — the query language** | | |
-| OA.8 | `Row` carries tags and properties **(plugin)** | 📝 |
-| OA.9 | Match-expression parser **(plugin)** | 📝 |
-| OA.10 | `Filter` gains `match`; sections honour it **(plugin)** | 📝 |
+| OA.8 | `Row` carries tags and properties **(plugin)** | ✅ |
+| OA.9 | Match-expression parser **(plugin)** | ✅ |
+| OA.10 | `Filter` gains `match`; sections honour it **(plugin)** | ✅ |
 | **Phase 4 — custom commands** | | |
 | OA.11 | `org.agenda-custom-commands` parse + fallback **(plugin)** | 📝 |
 | OA.12 | The dispatcher transient **(plugin)** | 📝 |
@@ -476,7 +476,7 @@ resolves to nothing rather than to a neighbour's grammar, which is pinned.
 
 ## Phase 3 — the query language
 
-### OA.8 — `Row` carries tags and properties **(plugin)** 📝
+### OA.8 — `Row` carries tags and properties **(plugin)** ✅
 
 `Row` is `{ line, end_line, date, priority, keyword }` — no tags, no
 properties, and the scan extracts neither. This is the precondition for
@@ -487,28 +487,49 @@ Both scan paths need it: the tree walk and the text fallback. The fallback's
 known defects (planning line assumed to be the next line, phantom headlines
 inside `BEGIN_SRC`) are deliberate and stay.
 
-**Test:** tags on the headline, inherited tags from ancestors, and a
-`:PROPERTIES:` drawer. Tag inheritance is a real decision — org inherits by
-default; state which way this goes in the slice's commit.
+**Tags inherit; properties do not**, matching org's two defaults. The reason to
+keep inheritance is what a match is for: you cancel a project by tagging the
+PROJECT, and `-CANCELLED` is expected to drop its tasks without any of them
+being touched.
 
-### OA.9 — Match-expression parser **(plugin)** 📝
+Both scan paths agree on the chain by different means — the tree path threads
+it down the section nesting, the text fallback reconstructs it from the STARS.
+A sibling not inheriting its neighbour's tags is what distinguishes a correct
+level-pop from a plausible wrong one, so it is pinned.
+
+Properties are read from the drawer's LINES: the pinned grammar models
+`property_drawer` but not the `:key: value` inside it. The text fallback reads
+no drawers rather than guessing an extent, which would add a second
+line-offset assumption to the one it already carries.
+
+### OA.9 — Match-expression parser **(plugin)** ✅
 
 `+`/`-` conjunction, `|` alternation, `/` TODO section with `!` and explicit
 keywords, property equality. Parsed to **data**, not a closure, so it can come
 from a config file.
 
-**Test:** the six shapes in the design's §7 table, plus malformed input
-returning an error rather than a match-nothing expression — silently matching
-nothing is indistinguishable from a correct empty result, which is the failure
-this whole area guards against.
+**Landed together with OA.10.** OA.9 alone is a parser nothing calls, so every
+type it defines warns `dead_code`, and the standing rule forbids `#[allow]`ing
+that away — the documented "cannot stand without its neighbour" case.
 
-### OA.10 — `Filter` gains `match`; sections honour it **(plugin)** 📝
+An unsupported construct is an ERROR, never an ignored term: `{^work}` read as
+a literal tag would match nothing and look exactly like the rows being absent.
+
+Two decisions the tests pin, neither being the only defensible answer: `/!`
+does not admit a row with NO keyword (`!` means "is in a todo state", and no
+state is not a state), and a property key folds case while its value does not.
+
+### OA.10 — `Filter` gains `match`; sections honour it **(plugin)** ✅
 
 Extend `Filter` with `match: Option<MatchExpr>` and evaluate it in
 `Section::admits`. Extend the `org.agenda-sections` TOML with `match`.
 
-**Test:** a section with a match takes only matching rows; a section without one
-behaves exactly as before (the existing default-section tests must not move).
+A bad match costs its own SECTION and names it, matching the shape an unknown
+`when` already has — failing the set would let one typo cost every other block.
+
+The end-to-end test uses an INHERITED exclusion rather than a direct tag: it is
+the shape real configs depend on, and it is the case that fails if OA.8's
+inheritance is wrong, so the phase is asserted end to end.
 
 ---
 

@@ -1,0 +1,428 @@
+# Org agenda as a dashboard — slice plan
+
+> **Status: Active.** Opened 2026-08-31. Implements
+> [`org-agenda.md`](../../architecture/org-agenda.md), which extends
+> [`org-mode.md`](../../architecture/org-mode.md) §6.
+
+Design owns *what* and *why*; this file owns *when* and *in what order*.
+
+Spans two repos. Slices marked **(plugin)** land in
+`~/src/dhruvasagar/lattice-org-plugin`; the rest in `lattice`. Two slices are
+cross-repo and say so.
+
+Depends on [`refreshable-views.md`](refreshable-views.md) RV.1 (`gr` comes from
+the shared minor). Catalogue entry: the agenda in
+[`multibuffer-providers.md`](multibuffer-providers.md).
+
+## Status
+
+| Slice | Title | Status |
+|---|---|---|
+| **Phase 0 — the scan is quadratic** | | |
+| OA.0a | The tree walk stops being O(n²) — a host fix, not a guest one | ✅ |
+| OA.0b | The armed epoch deadline actually bounds a guest call | 📝 |
+| OA.0c | A refresh keeps the old rows until the new ones arrive | 📝 |
+| OA.0d | A configured directory means its files, not its subtree | 📝 |
+| **Phase 1 — correctness before cosmetics** | | |
+| OA.1 | Agenda rows are one line **(plugin)** | 📝 |
+| OA.2 | Title-run header grouping; the `[untitled]` rows go | 📝 |
+| OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ⛔ |
+| OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | 📝 |
+| **Phase 2 — the view looks like an agenda** | | |
+| OA.5 | `display-span` spans on the scan result (WIT seam) | 📝 |
+| OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | 📝 |
+| OA.7 | Header cells carry the block's own shape | 📝 |
+| **Phase 3 — the query language** | | |
+| OA.8 | `Row` carries tags and properties **(plugin)** | 📝 |
+| OA.9 | Match-expression parser **(plugin)** | 📝 |
+| OA.10 | `Filter` gains `match`; sections honour it **(plugin)** | 📝 |
+| **Phase 4 — custom commands** | | |
+| OA.11 | `org.agenda-custom-commands` parse + fallback **(plugin)** | 📝 |
+| OA.12 | The dispatcher transient **(plugin)** | 📝 |
+| OA.13 | `<leader>oa` / `C-c a` open the dispatcher **(plugin)** | 📝 |
+| **Phase 5 — layered display modes** | | |
+| OA.14 | A second virtual-row provider on one view (spike) | 📝 |
+| OA.15 | `org-agenda-log-mode` | 📝 |
+| OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
+| OA.17 | `org-agenda-timeline-mode` | 📝 |
+| OA.18 | The `gD` view-mode dispatch transient | 📝 |
+
+Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
+OA.14 proving the pattern, and on nothing else.
+
+---
+
+## Phase 0 — the scan is quadratic
+
+The reported bug ("agenda on refresh breaks") is here, not in refresh. Measured
+against the real plugin, one guest `scan` call, debug build — **before** OA.0a,
+kept because the shape is the diagnosis:
+
+| lines | bytes | scan time | after OA.0a | rows |
+|---|---|---|---|---|
+| 202 | 2.1 KB | 0.18 s | 0.10 s | 1 |
+| 402 | 4.2 KB | 0.47 s | 0.11 s | 1 |
+| 802 | 8.5 KB | 1.65 s | 0.13 s | 1 |
+| 1602 | 17 KB | 6.67 s | 0.18 s | 1 |
+| 3202 | 34 KB | 28.9 s | 0.28 s | 1 |
+
+Doubling the file quadrupled the time. The row count is constant at 1, so it
+was never output-driven — it was the walk itself. A 34 KB org file, an ordinary
+size, cost 29 seconds; a corpus of them was not a slow agenda, it was an agenda
+that never arrived.
+
+Three defects compound, and each is separately worth fixing:
+
+1. ✅ The tree walk is O(n²) in fan-out — **host-side, fixed in OA.0a**. This
+   was the whole of the reported bug.
+2. **The armed epoch deadline does not trip.** A scan measured at 6.8 s ran
+   against a ~1 s budget and was never interrupted. So nothing bounds a runaway
+   guest call — a plugin-host defect well beyond the agenda, and still open.
+3. `AgendaActor` is single-consumer, so one slow `scan` blocks every later call
+   on that plugin, including a refresh's `begin()`. Measured: a refresh's
+   `begin()` waited 10 s behind ONE in-flight scan. OA.0a removes the *cause*
+   of that particular stall without changing the *property* — a slow guest call
+   still blocks the actor, which is what (2) has to bound.
+
+`open_scan_view` clearing the view before spawning is what makes this visible
+on refresh and invisible on first open — on first open you have no rows yet, so
+a slow scan reads as "loading"; on refresh it reads as "broken".
+
+**This phase precedes everything.** OA.8 extends `Row` and the scan; doing that
+on top of a quadratic walk makes the quadratic worse and buries the cause.
+
+### OA.0a — The tree walk stops being O(n²) ✅
+
+**Not a plugin slice.** The plan called it one; it was wrong. The quadratic is
+entirely in the host's node API (`lattice-plugin-host/src/tree_resource.rs`) and
+reproduces with no WASM in the picture at all. The guest's own code was
+innocent — `scan_tree` precomputes its line index and `row_for_section` reads it
+in O(1), exactly as the plan guessed it might.
+
+`NodeResource` is a path of child indices from the root, re-resolved on every
+accessor. The last step is `Node::child(i)`, and tree-sitter walks the sibling
+list to reach `i`, so resolving the i-th child is **O(i)**. The module header
+claimed "resolution is O(depth)", which is what let this sit. `named_child`
+compounded it by rescanning the child list from zero per call. A pass over one
+node's k children was O(k²).
+
+The fix memoises two things per resource: the node's own kind/range/flags, and
+one `TreeCursor` pass over its children indexed **both** ways, so `named_child`
+is O(1) rather than a filter-and-count. An immutable snapshot cannot go stale,
+so the caches need no invalidation. **No WIT change and no guest change** — the
+seam's API is byte-identical, which is why this landed without touching the org
+repo at all.
+
+Measured: the host walk went 91.3 ms → 1.43 ms at 800 children (64×) and from
+quadratic to 2.0× per doubling. End to end, one guest `scan` of a 34 KB org
+file went **28.9 s → 280 ms (103×)**.
+
+**Tests:** `named_child_indexes_past_anonymous_children` (the named-ordinal →
+all-children index mapping, which is the one thing a cache could silently get
+wrong) and `cached_answers_match_a_fresh_resolve` (every accessor agrees with an
+uncached resource on the same path). 302 existing plugin-host tests unchanged.
+
+**Bench:** `benches/tree_walk.rs`, swept across fan-out — a single size cannot
+tell linear from quadratic. Results and the wider lesson in
+[`benchmarks.md`](../benchmarks.md).
+
+**Follow-up left open.** `tests/org_agenda_hang.rs::scan_time_versus_size` in
+the org repo is still an `#[ignore]`d printing probe. It should become an
+assertion so the ratchet holds from the org side too, but the authoritative
+ratchet is now the bench.
+
+### OA.0b — The armed epoch deadline actually bounds a guest call 📝
+
+Host-side, in `lattice-plugin-host`. A guest call that overruns its budget must
+be interrupted. Today it is not, which means any plugin can wedge its actor
+indefinitely — paramount goal #1 and #4 both, and not an org problem.
+
+Check the arming site against the re-arm rule: a repeatedly-called seam must
+re-arm per call, and arm-once dies silently after a while.
+
+**The existing test no longer demonstrates this, and that is a trap.** Both
+tests in `tests/org_agenda_refresh_stall.rs` now PASS — not because the deadline
+works, but because OA.0a made the org scan fast enough to finish inside the
+budget. The evidence for the defect is historical: a 6.8 s call against a ~1 s
+budget ran to completion uninterrupted.
+
+**So this slice needs a test that does not depend on how fast org happens to
+be** — a guest that deliberately burns past its budget, asserting the host
+interrupts it. Reusing the org scan as the vehicle would be measuring org, and
+would silently pass the day org gets slow again.
+
+### OA.0c — A refresh keeps the old rows until the new ones arrive 📝
+
+`replace_excerpts(empty)` before spawning turns any slow scan into a blank
+view. Populate into the view and swap, so a refresh degrades to "stale for a
+moment" instead of "empty for as long as the scan takes".
+
+This is defence in depth, not the fix — it would have made the reported bug
+invisible rather than absent, which is why it lands third and not first.
+
+**Test:** the view retains its previous rows while a refresh's scan is in
+flight, and the headerline says it is refreshing.
+
+### OA.0d — A configured directory means its files, not its subtree 📝
+
+`walk_candidates` uses `ignore::Walk`, which recurses. Emacs does not: a
+directory in `org-agenda-files` is expanded with `directory-files`, one level,
+filtered by `org-agenda-file-regexp`. So an org directory with `roam/`,
+`journal/` or `archive/` beneath it currently pulls all of them into every
+scan.
+
+**This is a correctness fix that happens to cut the corpus — it is not a fix
+for the quadratic.** Recording that here because the two will be tempting to
+conflate: OA.0d makes the file set the size the user asked for, OA.0a makes
+each file cheap. Landing only OA.0d would leave a 34 KB file costing 29
+seconds.
+
+Read the directory one level rather than walking it. No new configuration:
+`org.agenda-files` is already newline-separated with multiple entries, so a
+user who wants a subdirectory lists it — which is exactly how emacs users do
+it, and why emacs never needed a recursion flag either.
+
+Not a per-source declaration in the WIT, deliberately. That was the first
+instinct — recursion depth looks like "a fact about this source's file set",
+the same category `roots` is in. But `WasmScannedExcerptSource` is the only
+production implementor of the trait (every other is a test or bench fake), so a
+`recursive()` knob would be an abstraction with exactly one caller and one
+possible answer. Non-recursive is also not org-specific policy: it is the
+ordinary meaning of a configured root, and recursion is the surprising default
+nobody asked for. **If a second source ever wants the subtree, it declares it
+then** — and that is the point at which the knob earns its place.
+
+Keep `ignore`'s hidden-file and `.gitignore` filtering for the single level, so
+`.git` and ignored files stay out.
+
+**Test:** a root with `a.org` and `sub/b.org` scans `a.org` only; listing
+`sub` explicitly picks up `b.org`.
+
+**Separate observation, not this slice.** The host walks the *union* of every
+source's claimed extensions, and org claims `org_archive` alongside `org`. So
+archive files are scanned into the agenda today. Emacs's directory expansion
+matches `\.org\'` only, and archived entries are archived precisely so they
+stop appearing. Worth deciding deliberately rather than inheriting — but it is
+a semantics question for org, not a walk question, so it does not ride here.
+
+---
+
+## Phase 1 — correctness before cosmetics
+
+The view should stop lying before it starts looking good. Every slice here is
+small, and three of them are bugs.
+
+### OA.1 — Agenda rows are one line **(plugin)** 📝
+
+`end_line` runs out to the planning line so `SCHEDULED:` shows under the
+headline. Set `end_line = line` at both construction sites (the tree scan and
+the text fallback).
+
+One field, zero host work — `compose_snapshot` copies exactly
+`start_line..=end_line` with no padding, and the agenda never opted into the
+context-lines setting that only the search provider has.
+
+**Test:** an agenda over a file whose TODO has a planning line composes one row,
+not two. Assert on the composed text, not on `Row`.
+
+### OA.2 — Title-run header grouping; the `[untitled]` rows go 📝
+
+`compose_header_rows` dedups on `excerpt.source`; the agenda needs dedup on the
+header *title run*. A date group interleaves files, so today each file change
+inside a group emits a spurious `[untitled]` header.
+
+Substrate fix, not an agenda fix — the agenda is the first provider to want
+title-run grouping, and the existing source-run behaviour must keep working for
+search (`header_rows_dedupe_consecutive_same_source` and its two siblings pin
+it). So this is a grouping *choice* alongside `FoldGrouping`, not a change of
+the default.
+
+**Test:** already written and currently failing —
+`agenda_group_of_interleaved_files_emits_one_header_not_untitled_rows` in
+`crates/lattice-multibuffer/src/lib.rs`. It asserts one header reading
+`2026-08-31 Mon (today)` where today three come back, two of them `[untitled]`.
+Keep the three existing source-run tests green.
+
+### OA.3 — Refresh repopulates the view ⛔ not a defect
+
+Diagnosed and closed. **The refresh mechanism is correct.** Four end-to-end
+tests drive the real plugin, open the agenda, press `gr` and get their rows
+back — including after an edit in the agenda, with roots from the option, and
+on a second consecutive `gr`.
+
+"Refresh does not load anything back" is Phase 0 seen from the user's chair.
+The refresh empties the view and then queues behind a scan that takes tens of
+seconds, so what you observe is an agenda that never comes back. Kept here
+rather than deleted, because the symptom is the one that gets reported and the
+next person will look for it under this name.
+
+### OA.4 — `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** 📝
+
+Bind both on `org-agenda-mode`, whose `ActivationPolicy::Manual` scopes them to
+agenda views. `<Tab>` → cycle the block at the cursor, `<S-Tab>` → global
+cycle.
+
+The host half is buffer-agnostic already: `CycleFoldAtCursor` reads the
+buffer's folds and works on any buffer that has them, which the agenda does
+(`foldlevel=0` plus `FoldGrouping::HeaderRuns`). The guest's `org-cycle` body
+is *not* reusable — it requires an org tree-sitter tree and matches org node
+kinds, neither of which exists in a multibuffer. So this binds the app effects
+directly rather than routing through `org-cycle`.
+
+**Test:** `<Tab>` in the agenda changes fold state; and it does **not** fire
+jump-list-forward, the global `<Tab>` it now shadows.
+
+---
+
+## Phase 2 — the view looks like an agenda
+
+### OA.5 — `display-span` spans on the scan result (WIT seam) 📝
+
+Cross-repo. Carry `list<list<display-span>>` back from the guest's scan and
+route it into `PendingSyntheticHighlights` for the view buffer.
+
+`display-span` is reused, not invented: it names styles by string slot resolved
+host-side against the theme, so no colour crosses the boundary. The merge path
+already reaches multibuffer views and prepends extra spans over per-excerpt
+syntax, so they win.
+
+**Test:** host-side, a guest returning spans results in `ExtraHighlights` on the
+view; and an unresolvable slot name is dropped rather than failing the scan.
+
+### OA.6 — Org emits agenda spans **(plugin)** 📝
+
+Keyword, priority, tags, date. Slots resolve against org's already-registered
+`org.todo.*` theme elements.
+
+Watch the drain-order trap that already bit this area once: `config` and `theme`
+drain at the same rank with a stable sort, so a theme registration that needs
+`org.todo-keywords` must not be ordered before the config that supplies it.
+
+**Test:** assert resolved styles, not span offsets — a span that lands on the
+right bytes with the wrong slot is the failure mode here.
+
+### OA.7 — Header cells carry the block's own shape 📝
+
+Section headers today are one flat line of cells at `height: 1`. `VirtualRow`
+supports multi-line, per-cell background and per-column font scale. Give the
+block header a shape of its own (count badge, dimmed date suffix).
+
+Generic: search, diff and references all inherit it. Keep the change in
+`header_cells` rather than in the agenda.
+
+---
+
+## Phase 3 — the query language
+
+### OA.8 — `Row` carries tags and properties **(plugin)** 📝
+
+`Row` is `{ line, end_line, date, priority, keyword }` — no tags, no
+properties, and the scan extracts neither. This is the precondition for
+everything in phases 3 and 4, and the reason custom commands are not a small
+item.
+
+Both scan paths need it: the tree walk and the text fallback. The fallback's
+known defects (planning line assumed to be the next line, phantom headlines
+inside `BEGIN_SRC`) are deliberate and stay.
+
+**Test:** tags on the headline, inherited tags from ancestors, and a
+`:PROPERTIES:` drawer. Tag inheritance is a real decision — org inherits by
+default; state which way this goes in the slice's commit.
+
+### OA.9 — Match-expression parser **(plugin)** 📝
+
+`+`/`-` conjunction, `|` alternation, `/` TODO section with `!` and explicit
+keywords, property equality. Parsed to **data**, not a closure, so it can come
+from a config file.
+
+**Test:** the six shapes in the design's §7 table, plus malformed input
+returning an error rather than a match-nothing expression — silently matching
+nothing is indistinguishable from a correct empty result, which is the failure
+this whole area guards against.
+
+### OA.10 — `Filter` gains `match`; sections honour it **(plugin)** 📝
+
+Extend `Filter` with `match: Option<MatchExpr>` and evaluate it in
+`Section::admits`. Extend the `org.agenda-sections` TOML with `match`.
+
+**Test:** a section with a match takes only matching rows; a section without one
+behaves exactly as before (the existing default-section tests must not move).
+
+---
+
+## Phase 4 — custom commands
+
+### OA.11 — `org.agenda-custom-commands` parse + fallback **(plugin)** 📝
+
+A TOML-string option shaped like `org.agenda-sections`, with its failure model
+inherited whole: malformed ⇒ fall back with the notice ridden onto the first
+section title; one bad entry ⇒ skipped and named.
+
+**Test:** mirror `agenda_sections`' own tests, including that a broken set costs
+you your layout and never your rows.
+
+### OA.12 — The dispatcher transient **(plugin)** 📝
+
+Rows from the parsed custom commands, keyed as configured. Branch inside org's
+existing `transient_source::build` on a new `args` discriminator —
+`transient-source::id()` is one per guest, so this is not a second source.
+
+Guest transients get `Action` / `Argument` / `Dismiss` rows only; no submenus,
+no flags, no live preview. Drill-down is re-opening the same source with
+different `args`, as capture already does.
+
+**Test:** a configured command appears with its key; opening the menu with no
+configuration still lists the built-in agenda.
+
+### OA.13 — `<leader>oa` / `C-c a` open the dispatcher **(plugin)** 📝
+
+A deliberate behaviour change: those chords open the default agenda today. Land
+it separately from OA.12 so it can be reverted alone if it turns out to annoy.
+
+---
+
+## Phase 5 — layered display modes
+
+### OA.14 — A second virtual-row provider on one view (spike) 📝
+
+Before writing three display modes, prove one non-agenda provider can register
+alongside the multibuffer's two and have its rows survive a refresh.
+`register_virtual_row_provider` dedups by `ProviderId`, so the risk is
+lifecycle (does a provider registered by a minor survive the view rebuild that
+refresh performs?), not capability.
+
+**If it does not survive**, phase 5 needs a re-registration hook and that is
+better discovered here than three slices in.
+
+### OA.15 — `org-agenda-log-mode` 📝
+### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝
+### OA.17 — `org-agenda-timeline-mode` 📝
+
+One shape, three times: a manual minor activated on the agenda view, owning its
+keymap, its toggle and one virtual-row provider registered in `on_activate`.
+
+These are display-only by design (design §3) — the cursor cannot rest on their
+rows. If that proves intolerable in use, the deferred synthetic-source work in
+design §9 is the escape, and it is a WIT seam, not a tweak.
+
+OA.16 needs clock data on `Row`, which OA.8 should carry if this phase is
+expected; otherwise it extends `Row` again.
+
+### OA.18 — The `gD` view-mode dispatch transient 📝
+
+Toggles for OA.15–17 plus span (day/week). Same guest transient constraints as
+OA.12.
+
+---
+
+## Cross-renderer note
+
+OA.7 and phase 5 touch virtual rows, which both renderers paint. Per the
+lockstep rule, any `VirtualRow` field or `VirtualRowKind` variant added here
+updates `lattice-ui-gpui` in the same patch. End-of-slice check:
+
+```
+grep -rn "VirtualRowKind::<NewVariant>" crates/lattice-ui-gpui/ --include="*.rs"
+```
+
+An empty grep means GPUI was missed.

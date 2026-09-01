@@ -7010,6 +7010,13 @@ harness, which read as a product bug through three rounds of diagnosis.
 
 ## The agenda as a dashboard, and the capture buffer (2026-08-31)
 
+> **Continued in its own plan.** The agenda's next phase — headline-only rows,
+> agenda-aware colour, layered display modes, a tags/todo query language and
+> `org-agenda-custom-commands` — is designed in
+> [`org-agenda.md`](../architecture/org-agenda.md) and sequenced in
+> [`slice-plans/org-agenda.md`](slice-plans/org-agenda.md) as `OA.1`–`OA.18`.
+> The table below is the phase that landed on 2026-08-31 and stays closed.
+
 | Slice | What | Status |
 |---|---|---|
 | FW.1 | the cell matrix's chunk window is sized in buffer LINES, not screen rows | ✅ |

@@ -534,6 +534,63 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ---
 
+## OA.0a — the tree WALK, and the same bug a second time (2026-09-01)
+
+`tree_enclosing` above pins the *ancestor* walk: one path, cursor to root. A
+guest scanning a file for structure does the other shape — visit every child of
+a node, read each one's kind and range, resolve a field on some. The org
+agenda's `walk_sections` is exactly that, and it was quadratic.
+
+`NodeResource` is a path of child indices from the root, re-resolved on every
+accessor. The final step is `Node::child(i)`, and tree-sitter walks the sibling
+list to reach `i` — so resolving the i-th child is **O(i), not O(1)**, and the
+module header's claim that "resolution is O(depth)" was wrong in the one place
+it mattered. `named_child` compounded it by rescanning the child list from zero
+on each call. A pass over one node's k children was therefore O(k²).
+
+Bench: `crates/lattice-plugin-host/benches/tree_walk.rs`, swept across fan-out
+because a single size cannot tell linear from quadratic.
+
+| children | before | after | |
+|---|---|---|---|
+| 100 | — | **83.0 µs** | |
+| 200 | — | **170.0 µs** | 2.05× |
+| 400 | — | **345.1 µs** | 2.03× |
+
+Ratios are what to read: 2× per doubling is linear, 4× would be the bug back.
+
+The end-to-end effect, one guest `scan` of an org file (debug build, via the
+real plugin):
+
+| file | before | after | |
+|---|---|---|---|
+| 2.1 KB | 183 ms | 102 ms | 1.8× |
+| 8.5 KB | 1.65 s | 131 ms | 12.6× |
+| 17 KB | 6.67 s | 180 ms | 37× |
+| 34 KB | **28.9 s** | **280 ms** | **103×** |
+
+The fix memoises two things on the resource — the node's own kind/range/flags,
+and one `TreeCursor` pass over its children indexed both ways so `named_child`
+is O(1). A snapshot is immutable, so a cached answer cannot go stale. No WIT
+change and no guest change: the seam's API is identical.
+
+**This is the second time this exact class has landed here.** TS.1 above shipped
+a linear sibling scan at the root of a large file and was fixed with a cursor;
+this is the same "walk the siblings to reach index i" cost in a different
+accessor, and it survived because the sync path TS.1 benched was never the path
+a bulk walk takes. The lesson is not "use a cursor" — it is that **fan-out is
+the axis this seam degrades on, and a bench at one size cannot see it.** Any new
+node-API surface gets a swept bench or it is not covered.
+
+**What it looked like as a bug report:** "agenda on refresh breaks (does not
+load anything back)". Nothing about it pointed at tree-sitter. The agenda view
+is cleared before its scan is spawned, so a slow scan reads as *empty* on
+refresh and merely as *loading* on first open — which is why it was reported as
+a refresh defect, and why the refresh path (which is correct, and has four
+passing end-to-end tests) was the first place looked.
+
+---
+
 ## Predictive indent, after the freshness-gate fix (2026-08-16)
 
 The gate deciding whether `<CR>` / `o` / `O` consult the tree asked

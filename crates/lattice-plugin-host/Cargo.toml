@@ -233,6 +233,14 @@ harness = false
 name = "tree_enclosing"
 harness = false
 
+# OA.0a: a full guest-shaped tree WALK, swept across fan-out. `tree_enclosing`
+# pins the one sync ancestor walk; this pins the other shape — visiting every
+# child of a node — which was quadratic and made an org agenda scan of a 34 KB
+# file take 28.9 s. Read the ratio between sizes: 2x per doubling, not 4x.
+[[bench]]
+name = "tree_walk"
+harness = false
+
 # OT.3: the agenda `scan-input` trade — the per-file parse the host now pays
 # against the per-file text copy it no longer sends across the boundary. The
 # slice plan (D3) says the net must be measured rather than assumed, because

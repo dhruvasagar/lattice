@@ -15,11 +15,16 @@
 //! re-resolves the node against the snapshot's tree. This is deliberately NOT a
 //! stored `tree_sitter::Node<'tree>` (which borrows the `Tree` and can't be a
 //! `'static` resource) and NOT a byte-range + kind (which collide on wrapper
-//! nodes sharing a span). The path is safe and unambiguous; resolution is
-//! O(depth), and the one sync on-keystroke use (`enclosing`) is a single
-//! ancestor walk over an already-parsed tree — no parsing on the dispatch thread.
+//! nodes sharing a span). The path is safe and unambiguous.
+//!
+//! **Resolution is NOT O(depth), which is what made this quadratic (OA.0a).**
+//! The final step of a path walk is `Node::child(i)`, and tree-sitter walks the
+//! sibling list to reach index `i` — so resolving the i-th child is O(i), not
+//! O(1). Re-resolving on every accessor therefore made a full pass over one
+//! node's children O(k²). `NodeResource` now memoises both its own facts and one
+//! cursor pass over its children; see the type's own docs.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lattice_protocol::position::{Position, Range as NativeRange};
 use lattice_syntax::{Lang, SyntaxSnapshot};
@@ -33,9 +38,69 @@ pub struct TreeSnapshotResource {
 
 /// Backing for a `node` WIT resource: a path of `Node::child` indices from the
 /// tree root (empty = root), re-resolved against `snapshot` on each call.
+///
+/// ## Why the two caches (OA.0a)
+///
+/// The path is the identity, and re-resolving it walks from the root — the last
+/// step, `Node::child(i)`, is O(i). So *every* accessor on the i-th child cost
+/// O(i), and `named_child` additionally rescanned the child list from zero on
+/// each call. Iterating one node's k children was therefore O(k²), which made a
+/// guest tree walk quadratic in file size: a 34 KB org file took 29 seconds to
+/// scan, and the agenda it fed never arrived.
+///
+/// Both caches close that without changing the WIT or the guest:
+///
+/// - `meta` — this node's own kind / range / flags, resolved at most once.
+/// - `children` — one `TreeCursor` pass over the children, which is O(k) and
+///   answers `named_child_count`, `named_child` and `child_by_field` in O(1)
+///   thereafter. Each entry carries enough to seed the child's own `meta`, so
+///   walking into a child resolves nothing at all.
+///
+/// A snapshot is immutable, so a cached answer cannot go stale.
 pub struct NodeResource {
     snapshot: Arc<SyntaxSnapshot>,
     path: Vec<u32>,
+    meta: OnceLock<NodeMeta>,
+    children: OnceLock<Arc<Children>>,
+}
+
+/// One cursor pass over a node's children, indexed both ways.
+///
+/// `named` holds positions into `all`, so `named_child(i)` is O(1). Walking it
+/// with `filter(..).nth(i)` instead left a residual O(k²) — cheap per step, but
+/// still quadratic, and quadratic is the thing being fixed.
+struct Children {
+    all: Vec<ChildMeta>,
+    named: Vec<u32>,
+}
+
+/// A node's own cheap facts, resolved once.
+#[derive(Clone)]
+struct NodeMeta {
+    kind: Arc<str>,
+    range: NativeRange,
+    is_named: bool,
+    is_error: bool,
+}
+
+/// One child, as seen from its parent's single cursor pass.
+struct ChildMeta {
+    /// Index among ALL children — the value that goes in a path.
+    index: u32,
+    field: Option<Arc<str>>,
+    meta: NodeMeta,
+}
+
+fn meta_of(node: Node<'_>) -> NodeMeta {
+    NodeMeta {
+        kind: Arc::from(node.kind()),
+        range: NativeRange {
+            start: position_of(node.start_position()),
+            end: position_of(node.end_position()),
+        },
+        is_named: node.is_named(),
+        is_error: node.is_error(),
+    }
 }
 
 /// TS.2 backing for the `query` WIT resource: a compiled tree-sitter query plus
@@ -151,6 +216,8 @@ impl TreeSnapshotResource {
         NodeResource {
             snapshot: Arc::clone(&self.snapshot),
             path,
+            meta: OnceLock::new(),
+            children: OnceLock::new(),
         }
     }
 
@@ -254,6 +321,8 @@ impl TreeSnapshotResource {
                     NodeResource {
                         snapshot: Arc::clone(&self.snapshot),
                         path: path_of(cap.node),
+                        meta: OnceLock::from(meta_of(cap.node)),
+                        children: OnceLock::new(),
                     },
                 ));
             }
@@ -334,42 +403,85 @@ impl NodeResource {
         NodeResource {
             snapshot: Arc::clone(&self.snapshot),
             path,
+            meta: OnceLock::new(),
+            children: OnceLock::new(),
         }
+    }
+
+    /// `with_path`, plus the metadata the caller already holds — so stepping
+    /// into a child resolves nothing.
+    fn with_path_and_meta(&self, path: Vec<u32>, meta: NodeMeta) -> NodeResource {
+        NodeResource {
+            snapshot: Arc::clone(&self.snapshot),
+            path,
+            meta: OnceLock::from(meta),
+            children: OnceLock::new(),
+        }
+    }
+
+    /// This node's own facts, resolved at most once.
+    fn meta(&self) -> Option<&NodeMeta> {
+        if let Some(m) = self.meta.get() {
+            return Some(m);
+        }
+        let node = self.tree().and_then(|t| resolve(t, &self.path))?;
+        Some(self.meta.get_or_init(|| meta_of(node)))
+    }
+
+    /// Every child, in one `TreeCursor` pass. O(k) once, then cached.
+    fn children(&self) -> &Children {
+        self.children.get_or_init(|| {
+            let Some(node) = self.tree().and_then(|t| resolve(t, &self.path)) else {
+                return Arc::new(Children {
+                    all: Vec::new(),
+                    named: Vec::new(),
+                });
+            };
+            let mut cursor = node.walk();
+            let mut all: Vec<ChildMeta> = Vec::with_capacity(node.child_count());
+            let mut named: Vec<u32> = Vec::with_capacity(node.named_child_count());
+            if cursor.goto_first_child() {
+                let mut index = 0u32;
+                loop {
+                    let meta = meta_of(cursor.node());
+                    if meta.is_named {
+                        named.push(all.len() as u32);
+                    }
+                    all.push(ChildMeta {
+                        index,
+                        field: cursor.field_name().map(Arc::from),
+                        meta,
+                    });
+                    index = index.saturating_add(1);
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+            Arc::new(Children { all, named })
+        })
     }
 
     /// The node's grammar kind (empty string if the path can't resolve — never
     /// panics; an immutable snapshot always resolves).
     pub fn kind(&self) -> String {
-        self.tree()
-            .and_then(|t| resolve(t, &self.path))
-            .map(|n| n.kind().to_string())
-            .unwrap_or_default()
+        self.meta().map(|m| m.kind.to_string()).unwrap_or_default()
     }
 
     pub fn is_named(&self) -> bool {
-        self.tree()
-            .and_then(|t| resolve(t, &self.path))
-            .map(|n| n.is_named())
-            .unwrap_or(false)
+        self.meta().map(|m| m.is_named).unwrap_or(false)
     }
 
     pub fn is_error(&self) -> bool {
-        self.tree()
-            .and_then(|t| resolve(t, &self.path))
-            .map(|n| n.is_error())
-            .unwrap_or(false)
+        self.meta().map(|m| m.is_error).unwrap_or(false)
     }
 
     /// The node's `[start, end)` span as byte-columns per line (matching the
     /// native structural objects' `ProtoRange`). A zero range if unresolved.
     pub fn byte_range(&self) -> NativeRange {
         let z = Position { line: 0, byte: 0 };
-        self.tree()
-            .and_then(|t| resolve(t, &self.path))
-            .map(|n| NativeRange {
-                start: position_of(n.start_position()),
-                end: position_of(n.end_position()),
-            })
+        self.meta()
+            .map(|m| m.range)
             .unwrap_or(NativeRange { start: z, end: z })
     }
 
@@ -384,44 +496,30 @@ impl NodeResource {
     }
 
     pub fn named_child_count(&self) -> u32 {
-        self.tree()
-            .and_then(|t| resolve(t, &self.path))
-            .map(|n| n.named_child_count() as u32)
-            .unwrap_or(0)
+        self.children().named.len() as u32
     }
 
     /// The `index`-th NAMED child, mapped to its `child` (all-children) index so
     /// the path stays in one indexing scheme.
     pub fn named_child(&self, index: u32) -> Option<NodeResource> {
-        let tree = self.tree()?;
-        let node = resolve(tree, &self.path)?;
-        let mut seen = 0u32;
-        for i in 0..node.child_count() {
-            let child = node.child(i as u32)?;
-            if child.is_named() {
-                if seen == index {
-                    let mut path = self.path.clone();
-                    path.push(i as u32);
-                    return Some(self.with_path(path));
-                }
-                seen += 1;
-            }
-        }
-        None
+        let children = self.children();
+        let at = *children.named.get(index as usize)? as usize;
+        let child = children.all.get(at)?;
+        let mut path = self.path.clone();
+        path.push(child.index);
+        Some(self.with_path_and_meta(path, child.meta.clone()))
     }
 
     /// The child under grammar field `name` (e.g. `"body"`), or `None`.
     pub fn child_by_field(&self, name: &str) -> Option<NodeResource> {
-        let tree = self.tree()?;
-        let node = resolve(tree, &self.path)?;
-        for i in 0..node.child_count() {
-            if node.field_name_for_child(i as u32) == Some(name) {
-                let mut path = self.path.clone();
-                path.push(i as u32);
-                return Some(self.with_path(path));
-            }
-        }
-        None
+        let child = self
+            .children()
+            .all
+            .iter()
+            .find(|c| c.field.as_deref() == Some(name))?;
+        let mut path = self.path.clone();
+        path.push(child.index);
+        Some(self.with_path_and_meta(path, child.meta.clone()))
     }
 
     pub fn next_named_sibling(&self) -> Option<NodeResource> {
@@ -480,6 +578,8 @@ impl CursorResource {
         NodeResource {
             snapshot: Arc::clone(&self.snapshot),
             path: self.path.clone(),
+            meta: OnceLock::new(),
+            children: OnceLock::new(),
         }
     }
 
@@ -630,6 +730,93 @@ mod tests {
         let x_col = src.find('x').unwrap() as u32;
         let node = ts.enclosing(pos(0, x_col), &[]).unwrap();
         assert_eq!(node.kind(), "identifier");
+    }
+
+    /// OA.0a: the cached children pass indexes two ways — `named` holds
+    /// positions into `all` — and the path must carry the ALL-children index.
+    /// Getting that mapping wrong would silently return the wrong node for
+    /// every tree with anonymous children, which is every tree.
+    #[test]
+    fn named_child_indexes_past_anonymous_children() {
+        // `fn main() {}` — the root's children include anonymous tokens, and
+        // `function_item`'s children interleave named and anonymous:
+        // `fn` (anon) `main` (named) `parameters` (named) `block` (named).
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn main() {}\n"));
+        let func = ts.root().named_child(0).unwrap();
+
+        let named: Vec<String> = (0..func.named_child_count())
+            .filter_map(|i| func.named_child(i))
+            .map(|n| n.kind())
+            .collect();
+        assert_eq!(named, vec!["identifier", "parameters", "block"]);
+
+        // The `name` field is the same node as named child 0, reached the
+        // other way — so both index schemes agree.
+        let by_field = func.child_by_field("name").unwrap();
+        let by_index = func.named_child(0).unwrap();
+        assert_eq!(by_field.kind(), by_index.kind());
+        assert_eq!(by_field.byte_range(), by_index.byte_range());
+        assert_eq!(by_field.path(), by_index.path());
+
+        // A node reached through the cache still navigates: its parent is the
+        // node we started from, which is only true if the path is right.
+        assert_eq!(by_index.parent().unwrap().kind(), "function_item");
+    }
+
+    /// The caches must not change answers. Every accessor is compared against
+    /// a freshly-constructed resource for the same path, which resolves from
+    /// the root the way the uncached code did.
+    #[test]
+    fn cached_answers_match_a_fresh_resolve() {
+        let src = "fn a() { let x = 1; }\nfn b(y: u32) -> u32 { y }\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let root = ts.root();
+        for i in 0..root.named_child_count() {
+            let warmed = root.named_child(i).unwrap();
+            // Touch everything, so the resource answers from cache.
+            let (kind, range) = (warmed.kind(), warmed.byte_range());
+            let fresh = ts.node_at_path(warmed.path().to_vec());
+            assert_eq!(kind, fresh.kind());
+            assert_eq!(range, fresh.byte_range());
+            assert_eq!(warmed.is_named(), fresh.is_named());
+            assert_eq!(warmed.is_error(), fresh.is_error());
+            assert_eq!(warmed.named_child_count(), fresh.named_child_count());
+        }
+    }
+
+    /// OA.0a diagnostic. Mirrors what a guest tree walk actually does —
+    /// iterate every named child, read its kind and range, resolve one field
+    /// — and reports how the cost scales with the number of children.
+    ///
+    /// Run with:
+    ///   cargo test -p lattice-plugin-host node_api_scaling -- --ignored --nocapture
+    #[test]
+    #[ignore = "diagnostic probe; prints a scaling table rather than asserting"]
+    fn node_api_scaling() {
+        for n in [50usize, 100, 200, 400, 800] {
+            let src: String = (0..n)
+                .map(|i| format!("fn f{i}() {{ let x = {i}; }}\n"))
+                .collect();
+            let ts = TreeSnapshotResource::new(rust_snapshot(&src));
+            let root = ts.root();
+            let started = std::time::Instant::now();
+            let count = root.named_child_count();
+            let mut matched = 0;
+            for i in 0..count {
+                let Some(child) = root.named_child(i) else {
+                    continue;
+                };
+                if child.kind() == "function_item" {
+                    matched += 1;
+                }
+                let _ = child.byte_range();
+                let _ = child.child_by_field("name");
+            }
+            println!(
+                "  children={count:<5} -> {:>12?}  ({matched} matched)",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

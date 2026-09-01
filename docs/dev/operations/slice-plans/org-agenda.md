@@ -20,7 +20,7 @@ the shared minor). Catalogue entry: the agenda in
 |---|---|---|
 | **Phase 0 — the scan is quadratic** | | |
 | OA.0a | The tree walk stops being O(n²) — a host fix, not a guest one | ✅ |
-| OA.0b | The armed epoch deadline actually bounds a guest call | 📝 |
+| OA.0b | The epoch budget is spent by the clock, not by callbacks | ✅ |
 | OA.0c | A refresh keeps the old rows until the new ones arrive | 📝 |
 | OA.0d | A configured directory means its files, not its subtree | 📝 |
 | **Phase 1 — correctness before cosmetics** | | |
@@ -131,25 +131,55 @@ the org repo is still an `#[ignore]`d printing probe. It should become an
 assertion so the ratchet holds from the org side too, but the authoritative
 ratchet is now the bench.
 
-### OA.0b — The armed epoch deadline actually bounds a guest call 📝
+### OA.0b — The epoch budget is spent by the clock, not by callbacks ✅
 
-Host-side, in `lattice-plugin-host`. A guest call that overruns its budget must
-be interrupted. Today it is not, which means any plugin can wedge its actor
-indefinitely — paramount goal #1 and #4 both, and not an org problem.
+Every piece was wired and none of it was the re-arm rule: the ticker thread
+runs, the agenda task arms per call, and `PluginBudget::default()` really is a
+~1 s deadline. The defect was in the **accounting**.
 
-Check the arming site against the re-arm rule: a repeatedly-called seam must
-re-arm per call, and arm-once dies silently after a while.
+`arm_store` sets a one-tick deadline and re-arms from a callback so the
+cancellation token can be polled each tick, and the callback enforced
+`budget.epoch_deadline` by counting **its own firings**. That equals elapsed
+milliseconds only while the guest is executing guest code continuously — one
+checkpoint crossed per tick, one firing per tick. A guest that calls host
+imports in a loop is suspended for most of its wall clock, and wasmtime reports
+an exceeded deadline **once** on re-entry however many ticks passed. So the
+budget stretched by the ratio of host time to guest time, and a call could run
+arbitrarily long while spending almost none of it. A tree-walking guest is
+exactly that shape, which is why OA.0a's 6.8 s scan sailed past a 1 s deadline.
 
-**The existing test no longer demonstrates this, and that is a trap.** Both
-tests in `tests/org_agenda_refresh_stall.rs` now PASS — not because the deadline
-works, but because OA.0a made the org scan fast enough to finish inside the
-budget. The evidence for the defect is historical: a 6.8 s call against a ~1 s
-budget ran to completion uninterrupted.
+Now measured against an `Instant` taken at arm time, so the unit the type has
+always documented is the unit it enforces.
 
-**So this slice needs a test that does not depend on how fast org happens to
-be** — a guest that deliberately burns past its budget, asserting the host
-interrupts it. Reusing the org scan as the vehicle would be measuring org, and
-would silently pass the day org gets slow again.
+**The trade-off, recorded rather than discovered later.** The new accounting is
+stricter: time the OS spends descheduling the thread counts against the call,
+where a firing count quietly forgave it. That is the right measure for what
+this guards — the editor was stalled either way — but the sync grammar budget
+(50 ms) is the one place a false trip would be user-visible, degrading a plugin
+motion to a no-op with a warn. If that ever shows up under load, raise
+`PluginBudget::grammar()`'s deadline; do not restore firing counts. Fuel is the
+primary bound on that path by design and is unaffected.
+
+**Tests.** The decision is split into `epoch_budget_exceeded` and pinned
+directly: the budget is spent by the clock, the boundary is inclusive (so a
+zero budget means "immediately", not "never"), and an unarmed call is never
+tripped by time.
+
+**What is NOT covered, and why.** There is no end-to-end test of a guest that
+blocks in a host import, because no fixture provides one — `spin.wat` and
+`busy.wat` are both pure guest loops, which is precisely the case that always
+worked. Building one means a bespoke component plus a deliberately-slow host
+import. The original evidence is the 6.8 s agenda scan, and it is no longer
+reproducible from org because OA.0a made that scan fast. So the mechanism is
+established by reading and pinned by unit test, not by an integration test —
+stated plainly because "the tests pass" would otherwise imply more than it
+should.
+
+**Do not reuse the org scan as the vehicle.** Both tests in
+`org_agenda_refresh_stall.rs` pass, and one of them —
+`a_single_guest_scan_stays_inside_its_epoch_budget` — passed *before* this
+slice too, for the wrong reason: OA.0a made the scan fast enough not to need
+interrupting. It measures org, not the deadline.
 
 ### OA.0c — A refresh keeps the old rows until the new ones arrive 📝
 

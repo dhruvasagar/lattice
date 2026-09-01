@@ -207,8 +207,24 @@ pub struct PluginBudget {
     /// Fuel (≈ units of work) a single lifecycle call may consume before it
     /// traps with [`TrapKind::Fuel`].
     pub fuel: u64,
-    /// Epoch ticks (≈ milliseconds, see [`EPOCH_TICK_INTERVAL`]) a single
-    /// call may run before it traps with [`TrapKind::Epoch`].
+    /// Milliseconds of WALL CLOCK a single call may run before it traps with
+    /// [`TrapKind::Epoch`].
+    ///
+    /// OA.0b made that literal. It used to be enforced by counting deadline-
+    /// callback firings, which equals elapsed milliseconds only while the
+    /// guest executes guest code continuously — one epoch checkpoint crossed
+    /// per [`EPOCH_TICK_INTERVAL`]. A guest that calls host imports in a loop
+    /// is suspended for most of its wall clock and crosses far fewer, so the
+    /// budget stretched by the ratio of host time to guest time: an org agenda
+    /// scan ran 6.8 s against this set to 1_000 and never tripped.
+    ///
+    /// **The new accounting is stricter, and one consequence is worth
+    /// knowing.** Time the OS spends descheduling the thread now counts
+    /// against the call, where firing-count quietly forgave it. That is the
+    /// correct measure for the thing this guards — the editor was stalled
+    /// either way — but if a sync grammar contribution ever false-trips under
+    /// load, the fix is to raise [`Self::grammar`]'s deadline, NOT to go back
+    /// to counting firings. Fuel is the primary bound on that path by design.
     pub epoch_deadline: u64,
 }
 
@@ -472,6 +488,7 @@ pub(crate) fn arm_store(
     // action) must not reach back and kill a call already in flight.
     let state = store.data_mut();
     state.epoch_spent = 0;
+    state.epoch_started = Some(std::time::Instant::now());
     state.cancel_token = state.cancel.as_ref().and_then(|c| c.current_token());
 
     // The deadline is re-armed ONE TICK AT A TIME so the callback runs
@@ -490,14 +507,37 @@ pub(crate) fn arm_store(
             return Err(wasmtime::Error::msg(CANCELLED_TRAP));
         }
         state.epoch_spent += 1;
-        if state.epoch_spent >= budget.epoch_deadline {
-            // The pre-CG.4 outcome, produced by us rather than by
-            // wasmtime's countdown: the call outran its time budget.
+        // OA.0b: measured against the clock, NOT against the number of times
+        // this callback has run. The two agree only while the guest is
+        // executing guest code continuously — one checkpoint crossed per
+        // tick, one firing per tick. A guest that calls host imports in a
+        // loop is suspended for most of its wall clock, and wasmtime reports
+        // an exceeded deadline ONCE on re-entry however many ticks passed. So
+        // the old firing count ran arbitrarily slower than real time, and the
+        // budget it enforced was not a time budget at all: an org agenda scan
+        // ran 6.8 s against a 1 s deadline without ever tripping it.
+        if epoch_budget_exceeded(state.epoch_started, budget.epoch_deadline) {
             return Err(wasmtime::Error::msg(EPOCH_TRAP));
         }
         Ok(wasmtime::UpdateDeadline::Continue(1))
     });
     Ok(())
+}
+
+/// Has this call outrun `epoch_deadline` milliseconds since `started`?
+///
+/// Split out so the accounting is testable without a guest: the bug OA.0b
+/// fixed lived entirely in this decision, and reproducing it end to end needs
+/// a guest that blocks in a host import, which no fixture provides.
+///
+/// `None` (nothing armed) never trips — a call with no start time recorded is
+/// not one we can time, and trapping it would be worse than letting the fuel
+/// bound catch it.
+fn epoch_budget_exceeded(started: Option<std::time::Instant>, deadline_ms: u64) -> bool {
+    let Some(started) = started else {
+        return false;
+    };
+    started.elapsed() >= std::time::Duration::from_millis(deadline_ms)
 }
 
 /// Marker in the trap message for a call stopped by `<C-g>` (CG.4).
@@ -696,6 +736,53 @@ pub(crate) fn trip_and_map_traced<T>(
         });
     }
     mapped
+}
+
+#[cfg(test)]
+mod epoch_budget_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// The property the old accounting did NOT have. It counted callback
+    /// firings, so the budget was spent at the rate the guest happened to
+    /// cross epoch checkpoints; a guest suspended in host imports crossed
+    /// them far more slowly than the clock ran. This is measured against the
+    /// clock, so it holds whatever the guest was doing in between.
+    #[test]
+    fn the_budget_is_spent_by_the_clock() {
+        let armed = Instant::now() - Duration::from_millis(1_500);
+        assert!(
+            epoch_budget_exceeded(Some(armed), 1_000),
+            "1.5s elapsed against a 1000ms budget must trip, regardless of \
+             how many times the callback happened to run"
+        );
+        assert!(
+            !epoch_budget_exceeded(Some(Instant::now()), 1_000),
+            "a call that just started has spent nothing"
+        );
+    }
+
+    /// The boundary is inclusive: a call that has used exactly its budget has
+    /// used it up. Stated because `>` vs `>=` here is the difference between
+    /// a budget of 0 meaning "never run" and meaning "unbounded".
+    #[test]
+    fn the_boundary_is_inclusive_so_a_zero_budget_is_not_unbounded() {
+        let armed = Instant::now() - Duration::from_millis(50);
+        assert!(epoch_budget_exceeded(Some(armed), 50));
+        assert!(
+            epoch_budget_exceeded(Some(Instant::now()), 0),
+            "a zero budget trips immediately rather than never"
+        );
+    }
+
+    /// Nothing armed cannot be timed, and trapping it would be worse than
+    /// leaving it to the fuel bound — which is a hard cap either way.
+    #[test]
+    fn an_unarmed_call_is_never_tripped_by_the_clock() {
+        assert!(!epoch_budget_exceeded(None, 0));
+        assert!(!epoch_budget_exceeded(None, 1_000));
+    }
 }
 
 #[cfg(test)]
@@ -924,13 +1011,21 @@ struct PluginState {
     /// `arm_store`, so each call is cancelled by the operation that was
     /// armed when it STARTED, not by one armed after it finished.
     cancel_token: Option<lattice_protocol::CancellationToken>,
-    /// CG.4: epoch ticks this call has consumed.
+    /// CG.4: how many times the deadline callback has fired this call.
     ///
-    /// The time budget moved in here when the deadline callback landed:
-    /// the deadline is now re-armed one tick at a time so the token can
-    /// be polled, so `budget.epoch_deadline` is enforced by counting
-    /// rather than by wasmtime's own countdown. Reset per call.
+    /// Diagnostic only since OA.0b. It used to BE the time budget — the
+    /// callback counted its own firings and trapped at
+    /// `budget.epoch_deadline` — which silently assumed the guest crosses
+    /// an epoch checkpoint every tick. A guest that spends its wall clock
+    /// inside HOST imports does not: wasmtime notices the deadline once on
+    /// re-entry however many ticks elapsed, so the counter undercounts by
+    /// exactly the ratio of host time to guest time. See `epoch_started`.
     epoch_spent: u64,
+    /// OA.0b: when the current call was armed. The time budget is enforced
+    /// against this, so `PluginBudget::epoch_deadline`'s documented unit —
+    /// milliseconds — is what it actually means, for every guest rather
+    /// than only for a compute-bound one. Reset per call by `arm_store`.
+    epoch_started: Option<std::time::Instant>,
     /// OC.3 / ML.6: what the `ui` seam's modeline calls act on — the element
     /// registry plus the bus content updates publish onto. `Some` on the async
     /// spawn paths that are handed a modeline; `None` on the sync grammar store.
@@ -3342,6 +3437,7 @@ impl PluginHost {
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,
+            epoch_started: None,
             // OC.3: stamped for every store here rather than per-spawn-path, on
             // the `project` reasoning — there is nothing to wait for, so no path
             // can forget it. The one store that must NOT have it, the sync

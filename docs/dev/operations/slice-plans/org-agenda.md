@@ -46,13 +46,18 @@ the shared minor). Catalogue entry: the agenda in
 | OA.13 | `<leader>oa` / `C-c a` open the dispatcher **(plugin)** | ✅ |
 | **Phase 5 — layered display modes** | | |
 | OA.14 | A second virtual-row provider on one view (spike) | ✅ |
+| OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
+| OA.14c | Typed configuration — a declared schema, not a TOML blob | 📝 |
 | OA.15 | `org-agenda-log-mode` | 📝 |
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
-OA.14 proving the pattern, and on nothing else.
+OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
+that slice landed before the display modes rather than after. OA.14c blocks
+nothing here and is recorded in this plan only because org's options are its
+motivating consumers — see its own entry on why it should graduate out.
 
 ---
 
@@ -763,6 +768,105 @@ returned before reaching any of the code under test — two green tests proving
 nothing. The opener needs a registered `ScannedExcerptSource` to get as far as
 the reuse path, and the helper now panics on a decline rather than treating it
 as a pass.
+
+### OA.14b — `scan` reports a file's clocked time **(cross-repo)** ✅
+
+OA.16 needs clock data and OA.8 carried none, exactly as this plan warned
+("otherwise it extends `Row` again"). Landed before the display modes so phase
+5 runs in order.
+
+**A record, not a field on `entry`.** Emacs's clocktable totals every clocked
+headline in the agenda files; agenda rows are a FILTERED subset, so a headline
+clocked yesterday with no TODO and no date is not a row at all. Hanging clock
+data off a row would report only the time that happened to land on one, and a
+clock report that under-reports is worse than none — nothing distinguishes a
+quiet week from a lossy scan. So `scan` returns
+`scan-result { entries, clock }`, riding the same call because the scan is a
+producer's critical path and a second crossing per file would double it to
+carry data most files have none of.
+
+`clock-span` carries an **outline path** rather than a name plus a level: the
+report is a hierarchy whose totals roll up it, and an ancestor that logged no
+time of its own emits no span, so the chain is the only way to name it. Spans
+are aggregated per (headline, day) guest-side, and every span is reported
+regardless of date — so `gD` can switch the report's range (day / week / month
+/ year) and redraw from data already in hand instead of re-walking the corpus
+per answer.
+
+Cached with the rows, for `CachedEntry::spans`' reason one step on: a hit skips
+the guest call, so anything missing from the on-disk form is simply absent from
+a WARM scan — a report complete on a cold start and lossy afterwards, with
+nothing to explain the difference.
+
+Guest side, `clock_scan` walks headlines by stars rather than by tree (it works
+where no org grammar is loaded). A running clock contributes nothing, an
+inverted span is skipped, and the `=> H:MM` summary is ignored in favour of the
+two stamps.
+
+**The driver test is the one that matters:** a file with NO rows still reports
+its time. An earlier draft collected clock inside the `!entries.is_empty()`
+branch — which passes every row test and loses exactly the case the seam exists
+for.
+
+### OA.14c — Typed configuration: a declared schema, not a TOML blob 📝
+
+**Not an agenda slice, and it should graduate out of this plan.** It is
+recorded here because org's options are what motivate it and because the
+question arose mid-phase; before execution it needs its own design fragment
+(`docs/dev/architecture/typed-configuration.md`) and its own slice plan. The
+entry below is the problem statement, not the design.
+
+**The problem.** Five org options are hand-rolled encodings —
+`capture-templates`, `agenda-sections` and `agenda-custom-commands` as
+TOML-in-a-string; `todo-keywords`, `todo-keyword-styles` and `agenda-files` as
+line formats. Each ships its own parser and its own error messages, and org
+carries the `toml` crate inside its wasm to do it.
+
+The cause is one narrow seam, not a general limitation: the ABI already carries
+~147 records and variants (`transient-spec`, `picker-source-spec`, `entry`,
+OA.14b's own `clock-span`). Structured data crosses everywhere EXCEPT config,
+where `register-option` takes `boolean | integer | string` and values move as
+`get-option -> option<string>` / `set-option(name, value: string)`.
+
+**Why "just use a struct" does not work, and what does.** WIT has no generics,
+so a plugin-defined record cannot be a fixed host-side type — the host would
+need a different record per plugin, which a shared ABI cannot have. The
+expressible shape is self-description:
+
+- the plugin **declares a schema** at registration — field descriptors (name,
+  kind, required, doc, nested fields), which is ordinary WIT data;
+- values cross as a **generic value tree** —
+  `variant { bool, int, string, list(...), record(list<tuple<string, value>>) }`;
+- the host validates the tree against the schema, so a bad `todo-only` is
+  rejected **with a path** instead of by each plugin's hand-rolled message.
+
+**What it unlocks.** Design §5.12 already promises `:customize` as "a
+type-aware editing buffer". That is impossible over a blob and straightforward
+over a declared schema — the promise is currently unkeepable, which is the
+strongest argument for doing this rather than living with the encodings.
+`:describe-option` stops showing a wall of TOML. Org drops a TOML parser from
+its component.
+
+**What it costs, stated rather than discovered later.** The guest still
+deserializes — the parse changes shape (walk a tree instead of parse text)
+rather than disappearing. And it gives up the one genuine merit the blob has,
+which `agenda_sections`' header names: ONE string serves `lattice.toml` and
+`init.rs` identically, with no second ordering rule to learn. A schema-shaped
+option needs both homes to agree about the tree, and that is the part of the
+design fragment to get right.
+
+**A dictionary was considered and rejected** — not by us, by the person who
+would use it: a bag of string keys reproduces the blob's weakness (nothing to
+validate against, nothing for `:customize` to render) while adding a second
+encoding. Types are the point; the schema is how types survive an ABI with no
+generics.
+
+**Sequencing note.** This does NOT fix the reported "`todo-keyword-styles`
+overrides don't apply" bug. That is an ORDERING defect — org reads
+`todo-keywords` at load, `lattice.toml` is applied before org registers its
+options (dropped as unknown), and `init.rs`'s `on-plugin-loaded` fires after
+org's load-time exports. No option SHAPE fixes it; a `pre-plugin-loaded`
+hook carrying the plugin name does, and that wants its own slice.
 
 ### OA.15 — `org-agenda-log-mode` 📝
 ### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝

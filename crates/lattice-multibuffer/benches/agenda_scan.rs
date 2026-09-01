@@ -17,15 +17,15 @@
 //! the "a file no source claims is never read" path is in the measurement
 //! rather than benched away.
 
-#![cfg(feature = "agenda")]
+#![cfg(feature = "scan-view")]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use lattice_core::BufferId;
-use lattice_mode::{AgendaBeginFuture, AgendaFuture, ScannedExcerpt, ScannedExcerptSource};
-use lattice_multibuffer::providers::agenda::{AgendaOptions, spawn_agenda_scan};
+use lattice_mode::{ScanBeginFuture, ScanFuture, ScannedExcerpt, ScannedExcerptSource};
+use lattice_multibuffer::providers::scan_view::{ScanViewOptions, spawn_scan_view_scan};
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferDocumentHandle,
     MultibufferRegistryHandle,
@@ -46,10 +46,10 @@ impl ScannedExcerptSource for BenchSource {
     fn extensions(&self) -> &[String] {
         &self.exts
     }
-    fn begin(&self, _args: &[String]) -> AgendaBeginFuture<'_> {
+    fn begin(&self, _args: &[String]) -> ScanBeginFuture<'_> {
         Box::pin(async { Ok(()) })
     }
-    fn scan(&self, _path: PathBuf, text: String) -> AgendaFuture<'_> {
+    fn scan(&self, _path: PathBuf, text: String) -> ScanFuture<'_> {
         Box::pin(async move {
             Ok(lattice_mode::ScanResult::rows(
                 text.lines()
@@ -120,9 +120,9 @@ fn bench_agenda_scan(c: &mut Criterion) {
             runtime.block_on(async {
                 let registry = InMemoryMultibufferRegistry::handle();
                 let view_id = view(&registry);
-                spawn_agenda_scan(
+                spawn_scan_view_scan(
                     view_id,
-                    AgendaOptions {
+                    ScanViewOptions {
                         roots: vec![dir.clone()],
                         max_files: None,
                         // OA.11a: the default scan, which is what this bench

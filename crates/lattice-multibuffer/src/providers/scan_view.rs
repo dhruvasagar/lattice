@@ -49,15 +49,6 @@ use crate::registry::MultibufferRegistryHandle;
 use crate::view::create_multibuffer_view;
 use crate::{Excerpt, ExcerptHeader, HeaderlineStatus};
 
-/// The name the provider-view seam registers under. Both front-ends (the
-/// `:agenda` ex-command and, from OM.A3, the view's own `gr`) name this
-/// constant so they cannot drift apart.
-pub const PROVIDER_NAME: &str = "agenda";
-
-/// The view's buffer name. One agenda, reused across triggers — a second
-/// `:agenda` re-scans into the same buffer rather than accumulating views.
-pub const VIEW_NAME: &str = "*agenda*";
-
 /// How many files one `spawn_blocking` hop reads. Big enough that the
 /// blocking-pool round-trip is amortised, small enough that a huge project
 /// still updates the headerline while it walks.
@@ -72,7 +63,7 @@ const PROGRESS_INTERVAL: usize = 50;
 
 /// What a scan walks.
 #[derive(Debug, Clone, Default)]
-pub struct AgendaOptions {
+pub struct ScanViewOptions {
     /// AF.2: the paths to scan — each a FILE or a DIRECTORY. A directory is
     /// walked; a file is taken as given, without asking whether any source
     /// claimed its extension, because naming a file IS the claim.
@@ -110,7 +101,7 @@ pub struct AgendaOptions {
     pub max_files: Option<usize>,
 }
 
-impl AgendaOptions {
+impl ScanViewOptions {
     /// The directory a view's `:files` / `:search` should answer for.
     ///
     /// The first configured root when there is one, else the project root. A
@@ -135,8 +126,17 @@ fn project_root_from_cwd() -> PathBuf {
 /// refresh re-scans what the view already shows rather than resetting to the
 /// current working directory.
 #[derive(Debug, Clone)]
-pub struct AgendaState {
-    pub options: AgendaOptions,
+pub struct ScanViewState {
+    /// The provider name this view was opened under.
+    ///
+    /// `gr` re-opens the view by name, and the name is the VIEW's, not this
+    /// module's: a scan view declared by a plugin is called whatever that
+    /// plugin called it. Before this the refresh handler re-emitted a
+    /// hardcoded `"agenda"`, so a refresh in any other scan view would have
+    /// gone to org's — which is the sort of thing a generic mode with an
+    /// org-shaped constant in it does.
+    pub provider: String,
+    pub options: ScanViewOptions,
     /// OA.14b: every clocked span the last completed scan saw, across every
     /// file and source, unfiltered by date.
     ///
@@ -153,37 +153,37 @@ pub struct AgendaState {
 }
 
 /// Per-view state, shared between the trigger and the scan task.
-pub trait AgendaService: Send + Sync + std::fmt::Debug {
-    fn state(&self, view: BufferId) -> Option<Arc<RwLock<AgendaState>>>;
-    fn set_state(&self, view: BufferId, state: AgendaState);
+pub trait ScanViewService: Send + Sync + std::fmt::Debug {
+    fn state(&self, view: BufferId) -> Option<Arc<RwLock<ScanViewState>>>;
+    fn set_state(&self, view: BufferId, state: ScanViewState);
     fn clear(&self, view: BufferId);
 }
 
 /// Register **and** look up with this exact alias (the `ServiceRegistry`
 /// `TypeId` rule).
-pub type AgendaServiceHandle = Arc<dyn AgendaService>;
+pub type ScanViewServiceHandle = Arc<dyn ScanViewService>;
 
 #[derive(Debug, Default)]
-pub struct InMemoryAgendaService {
-    views: RwLock<HashMap<BufferId, Arc<RwLock<AgendaState>>>>,
+pub struct InMemoryScanViewService {
+    views: RwLock<HashMap<BufferId, Arc<RwLock<ScanViewState>>>>,
 }
 
-impl InMemoryAgendaService {
+impl InMemoryScanViewService {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn handle() -> AgendaServiceHandle {
+    pub fn handle() -> ScanViewServiceHandle {
         Arc::new(Self::new())
     }
 }
 
-impl AgendaService for InMemoryAgendaService {
-    fn state(&self, view: BufferId) -> Option<Arc<RwLock<AgendaState>>> {
+impl ScanViewService for InMemoryScanViewService {
+    fn state(&self, view: BufferId) -> Option<Arc<RwLock<ScanViewState>>> {
         self.views.read().ok()?.get(&view).cloned()
     }
 
-    fn set_state(&self, view: BufferId, state: AgendaState) {
+    fn set_state(&self, view: BufferId, state: ScanViewState) {
         if let Ok(mut m) = self.views.write() {
             m.insert(view, Arc::new(RwLock::new(state)));
         }
@@ -231,33 +231,6 @@ pub struct ScanViewIdentity {
     /// caught it, which is exactly the job the "existing tests pass unedited"
     /// rule was given.
     pub no_rows_message: String,
-}
-
-impl ScanViewIdentity {
-    /// The agenda's own identity — the constants this type replaced, kept in
-    /// one place so `:agenda` and org's declaration cannot drift apart.
-    pub fn agenda() -> Self {
-        Self {
-            provider: PROVIDER_NAME.to_string(),
-            buffer_name: VIEW_NAME.to_string(),
-            view_mode: None,
-            no_rows_message: "no plugin provides agenda rows".to_string(),
-        }
-    }
-}
-
-/// The closure registered on the generic provider-view seam, and therefore
-/// the whole of what the host does for this feature: the host arm looks the
-/// name up, calls this with itself as the activator, and applies the returned
-/// [`ProviderViewOutcome`]. No `Editor::` method, no host `Action` variant,
-/// no dispatch arm.
-///
-/// The view opens **empty and immediately**; the scan runs off-thread. On a
-/// re-trigger the excerpts are cleared here rather than in the task, so the
-/// clear is visible before the first rows land instead of the two scans
-/// briefly showing together.
-pub fn open_agenda(activator: &mut dyn ModeActivator, args: &Args) -> ProviderViewOutcome {
-    open_scan_view(activator, &ScanViewIdentity::agenda(), args)
 }
 
 /// OA.11a: split a trigger's arguments into the host's slot and the guest's.
@@ -347,9 +320,9 @@ pub fn open_scan_view(
     // OM.A3's `gr` a refresh rather than a reset: refreshing an agenda over
     // `~/notes` must not silently turn it into an agenda over the current
     // checkout, which is the mistake magit's `gr` documents at PD.9.
-    let mut options = AgendaOptions::default();
+    let mut options = ScanViewOptions::default();
     if let Some(view) = existing
-        && let Some(svc) = services.get::<AgendaServiceHandle>()
+        && let Some(svc) = services.get::<ScanViewServiceHandle>()
         && let Some(state) = svc.state(view)
         && let Ok(state) = state.read()
     {
@@ -396,10 +369,11 @@ pub fn open_scan_view(
         };
     };
 
-    if let Some(svc) = services.get::<AgendaServiceHandle>() {
+    if let Some(svc) = services.get::<ScanViewServiceHandle>() {
         svc.set_state(
             view,
-            AgendaState {
+            ScanViewState {
+                provider: identity.provider.clone(),
                 options: options.clone(),
                 // The scan that is about to run fills this; carrying the
                 // PREVIOUS scan's spans forward would be worse than empty,
@@ -408,7 +382,7 @@ pub fn open_scan_view(
             },
         );
     } else {
-        tracing::debug!("agenda: service not registered; the view's root will not be tracked");
+        tracing::debug!("scan-view: service not registered; the view's root will not be tracked");
     }
 
     // OA.0c: the view is NOT emptied here. The scan collects every file,
@@ -434,7 +408,7 @@ pub fn open_scan_view(
     // OM.A3: the view's own minor. `gr` arrives through the implies cascade
     // (`refresh_action` returns `Some`), so this one call is the whole of the
     // wiring — the same shape `project_search` uses for `ProjectSearchMode`.
-    activator.activate_minor_by_id(view, AgendaViewMode::mode_id());
+    activator.activate_minor_by_id(view, ScanViewMode::mode_id());
 
     // MV.3: the view OWNER's minor, when it declared one. Distinct from the
     // per-source minors below: this one belongs to whoever owns the view, those
@@ -457,7 +431,7 @@ pub fn open_scan_view(
     let events = services.get::<Arc<EventBus>>().map(|b| (*b).clone());
     let sources_for_scan = snapshot.sources();
     drop(snapshot);
-    spawn_agenda_scan(
+    spawn_scan_view_scan(
         view,
         options,
         sources_for_scan,
@@ -531,9 +505,9 @@ struct SortedRow {
 /// handler respawns without going back through the trigger, and the
 /// throughput bench drives it without an activator.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_agenda_scan(
+pub fn spawn_scan_view_scan(
     view: BufferId,
-    options: AgendaOptions,
+    options: ScanViewOptions,
     sources: Vec<Arc<dyn ScannedExcerptSource>>,
     mb_registry: MultibufferRegistryHandle,
     events: Option<Arc<EventBus>>,
@@ -555,7 +529,7 @@ pub fn spawn_agenda_scan(
                 Err(e) => tracing::debug!(
                     source = source.source_id(),
                     error = %e,
-                    "agenda: a source failed to begin; skipping it this scan"
+                    "scan-view: a source failed to begin; skipping it this scan"
                 ),
             }
         }
@@ -590,7 +564,7 @@ pub fn spawn_agenda_scan(
                     Err(e) => tracing::debug!(
                         source = source.source_id(),
                         error = %e,
-                        "agenda: a source could not name its roots; ignoring it"
+                        "scan-view: a source could not name its roots; ignoring it"
                     ),
                 }
             }
@@ -615,7 +589,7 @@ pub fn spawn_agenda_scan(
         {
             Ok(paths) => paths,
             Err(e) => {
-                tracing::warn!(error = %e, "agenda: the walk task failed");
+                tracing::warn!(error = %e, "scan-view: the walk task failed");
                 Vec::new()
             }
         };
@@ -646,7 +620,7 @@ pub fn spawn_agenda_scan(
             let read = match tokio::task::spawn_blocking(move || read_batch(&owned)).await {
                 Ok(read) => read,
                 Err(e) => {
-                    tracing::warn!(error = %e, "agenda: a read batch failed; skipping it");
+                    tracing::warn!(error = %e, "scan-view: a read batch failed; skipping it");
                     continue;
                 }
             };
@@ -693,7 +667,7 @@ pub fn spawn_agenda_scan(
                                 path = %path.display(),
                                 error = %e,
                                 strikes = *strikes,
-                                "agenda: a source could not scan a file; skipping it"
+                                "scan-view: a source could not scan a file; skipping it"
                             );
                             // A quarantined plugin errors on EVERY later call,
                             // so continuing to ask costs a channel round-trip
@@ -702,7 +676,7 @@ pub fn spawn_agenda_scan(
                             if *strikes >= SOURCE_FAILURE_BUDGET {
                                 tracing::warn!(
                                     source = id,
-                                    "agenda: a source failed {SOURCE_FAILURE_BUDGET} files in a \
+                                    "scan-view: a source failed {SOURCE_FAILURE_BUDGET} files in a \
                                      row; dropping it from this scan (the agenda will be partial)"
                                 );
                                 dropped.push(id);
@@ -737,7 +711,7 @@ pub fn spawn_agenda_scan(
         // week of clocked time and not a single agenda row, and that is
         // precisely the case a report has to answer.
         if let Some(services) = services.as_deref()
-            && let Some(svc) = services.get::<AgendaServiceHandle>()
+            && let Some(svc) = services.get::<ScanViewServiceHandle>()
             && let Some(state) = svc.state(view)
             && let Ok(mut state) = state.write()
         {
@@ -826,7 +800,7 @@ fn collect_candidates(roots: &[PathBuf], extensions: &[String], max_files: usize
                 tracing::info!(
                     path = %root.display(),
                     %error,
-                    "agenda: a configured path could not be read; skipping it"
+                    "scan-view: a configured path could not be read; skipping it"
                 );
                 continue;
             }
@@ -849,7 +823,10 @@ fn collect_candidates(roots: &[PathBuf], extensions: &[String], max_files: usize
     // No silent truncation: a short agenda that looks complete is worse than a
     // slow one, so the cap says what it dropped.
     if out.len() >= max_files {
-        tracing::info!(max_files, "agenda: hit the file cap; the agenda is partial");
+        tracing::info!(
+            max_files,
+            "scan-view: hit the file cap; the view is partial"
+        );
     }
     out
 }
@@ -907,7 +884,7 @@ fn read_batch(paths: &[PathBuf]) -> Vec<(PathBuf, String)> {
         .filter_map(|p| match std::fs::read_to_string(p) {
             Ok(text) => Some((p.clone(), text)),
             Err(e) => {
-                tracing::debug!(path = %p.display(), error = %e, "agenda: could not read a file");
+                tracing::debug!(path = %p.display(), error = %e, "scan-view: could not read a file");
                 None
             }
         })
@@ -1067,7 +1044,7 @@ fn publish_row_spans(
         return;
     }
     let Some(sink) = services.get::<lattice_mode::PendingSyntheticHighlights>() else {
-        tracing::debug!("agenda: no synthetic-highlight sink; rows keep grammar colour");
+        tracing::debug!("scan-view: no synthetic-highlight sink; rows keep grammar colour");
         return;
     };
     let theme = services.get::<lattice_theme::ThemeRegistryHandle>();
@@ -1175,21 +1152,21 @@ fn finish_empty(
 /// state from the agenda, through `org-agenda-mode`'s own chords and its own
 /// handler bodies. Both modes are active on the view at once; neither is a
 /// half-migration.
-pub struct AgendaViewMode;
+pub struct ScanViewMode;
 
 /// The refresh body this view declares. Named, not anonymous, because
 /// `refresh_action` returns a *target* and the handler below must supply it —
 /// declaring one without the other is the gap `magit-project-diff` shipped
 /// with and PD.9 had to come back for.
-pub const REFRESH_ACTION: &str = "action:agenda-refresh";
+pub const REFRESH_ACTION: &str = "action:scan-view-refresh";
 
-impl AgendaViewMode {
+impl ScanViewMode {
     pub fn mode_id() -> lattice_mode::ModeId {
-        lattice_mode::ModeId::new("agenda-view-mode")
+        lattice_mode::ModeId::new("scan-view-mode")
     }
 }
 
-impl lattice_mode::Mode for AgendaViewMode {
+impl lattice_mode::Mode for ScanViewMode {
     type Guard = ();
 
     fn id(&self) -> lattice_mode::ModeId {
@@ -1241,7 +1218,7 @@ impl lattice_mode::Mode for AgendaViewMode {
                 // instead of two that can disagree.
                 let args = ctx
                     .services
-                    .get::<AgendaServiceHandle>()
+                    .get::<ScanViewServiceHandle>()
                     .and_then(|svc| svc.state(view))
                     .and_then(|state| {
                         state.read().ok().map(|s| match s.options.roots.first() {
@@ -1259,11 +1236,17 @@ impl lattice_mode::Mode for AgendaViewMode {
                         })
                     })
                     .unwrap_or(Args::None);
+                // The view's OWN provider, read back from its state — see
+                // `ScanViewState::provider`. Without a state entry there is no
+                // honest answer, and refreshing some other provider's view is
+                // worse than declining to refresh this one.
+                let provider = ctx
+                    .services
+                    .get::<ScanViewServiceHandle>()
+                    .and_then(|svc| svc.state(view))
+                    .and_then(|s| s.read().ok().map(|s| s.provider.clone()))?;
                 Some(lattice_grammar::Effect::AppAction(
-                    lattice_grammar::app_effect::AppEffect::OpenProviderView {
-                        provider: PROVIDER_NAME.to_string(),
-                        args,
-                    },
+                    lattice_grammar::app_effect::AppEffect::OpenProviderView { provider, args },
                 ))
             }),
         }]
@@ -1282,16 +1265,16 @@ impl lattice_mode::Mode for AgendaViewMode {
 // ─────────────────────────────────────────────────────────────────
 
 /// Register the view's minor mode.
-pub fn register_agenda_mode(modes: &mut lattice_mode::ModeRegistry) {
+pub fn register_scan_view_mode(modes: &mut lattice_mode::ModeRegistry) {
     modes
-        .register(AgendaViewMode)
-        .expect("agenda-view-mode registers without conflict at boot");
+        .register(ScanViewMode)
+        .expect("scan-view-mode registers without conflict at boot");
 }
 
 /// Register `action:agenda-refresh` so the mode's `refresh_action` target
 /// resolves. The body lives on the mode; this is the registry entry the host
 /// looks the name up in.
-pub fn register_agenda_actions(registry: &mut CommandRegistry) {
+pub fn register_scan_view_actions(registry: &mut CommandRegistry) {
     use lattice_grammar::effect::Effect;
     use lattice_grammar::registry::ActionSpec;
     registry.register_action(
@@ -1308,30 +1291,8 @@ pub fn register_agenda_actions(registry: &mut CommandRegistry) {
 }
 
 /// Register the per-view state service.
-pub fn register_agenda_service(services: &mut ServiceRegistry) {
-    services.register(InMemoryAgendaService::handle());
-}
-
-/// Register the view opener on the generic provider-view seam.
-///
-/// This plus the ex-command below is the whole trigger surface. A missing
-/// registry means the host did not publish the seam (an older boot, or a test
-/// harness); logged and skipped, because refusing to boot over an unavailable
-/// optional surface is the worse failure.
-pub fn register_agenda_provider(services: &ServiceRegistry) {
-    let Some(registry) = services.get::<lattice_mode::ProviderViewRegistryHandle>() else {
-        tracing::debug!("agenda: no ProviderViewRegistry; `:agenda` will not be available");
-        return;
-    };
-    if !registry.register(
-        PROVIDER_NAME,
-        Arc::new(|activator: &mut dyn ModeActivator, args: &Args| open_agenda(activator, args)),
-    ) {
-        tracing::warn!(
-            provider = PROVIDER_NAME,
-            "agenda: a provider view is already registered under this name"
-        );
-    }
+pub fn register_scan_view_service(services: &mut ServiceRegistry) {
+    services.register(InMemoryScanViewService::handle());
 }
 
 #[cfg(test)]
@@ -1666,7 +1627,7 @@ mod tests {
         fn extensions(&self) -> &[String] {
             &self.exts
         }
-        fn begin(&self, args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
+        fn begin(&self, args: &[String]) -> lattice_mode::ScanBeginFuture<'_> {
             self.begins
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Ok(mut a) = self.begin_args.lock() {
@@ -1674,7 +1635,7 @@ mod tests {
             }
             Box::pin(async { Ok(()) })
         }
-        fn scan(&self, path: PathBuf, text: String) -> lattice_mode::AgendaFuture<'_> {
+        fn scan(&self, path: PathBuf, text: String) -> lattice_mode::ScanFuture<'_> {
             if let Ok(mut o) = self.offered.lock() {
                 o.push(path.clone());
             }
@@ -1807,7 +1768,7 @@ mod tests {
         use lattice_grammar::args::ArgValue;
 
         // What the opener does to a stored set of options, in the same order.
-        let apply = |options: &mut AgendaOptions, args: &Args| {
+        let apply = |options: &mut ScanViewOptions, args: &Args| {
             let (root, scan_args) = split_view_args(args);
             if !root.is_empty() {
                 options.roots = vec![PathBuf::from(shellexpand_tilde(&root))];
@@ -1817,7 +1778,7 @@ mod tests {
             }
         };
 
-        let mut options = AgendaOptions::default();
+        let mut options = ScanViewOptions::default();
         apply(
             &mut options,
             &Args::List(vec![
@@ -1851,7 +1812,7 @@ mod tests {
     /// The property the whole seam exists for, and the one an implementation
     /// that hung clock data off rows cannot have: a corpus can hold a week of
     /// logged time and not a single agenda row. Asserted through
-    /// `spawn_agenda_scan` so it covers the driver's own filter — an earlier
+    /// `spawn_scan_view_scan` so it covers the driver's own filter — an earlier
     /// draft collected clock only inside the `!entries.is_empty()` branch,
     /// which passes every row test and loses exactly this file.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1862,20 +1823,21 @@ mod tests {
 
         let (registry, view) = view_handle();
         let mut registry_builder = lattice_mode::ServiceRegistry::new();
-        let svc = InMemoryAgendaService::handle();
-        registry_builder.register::<AgendaServiceHandle>(svc.clone());
+        let svc = InMemoryScanViewService::handle();
+        registry_builder.register::<ScanViewServiceHandle>(svc.clone());
         let services = Arc::new(registry_builder);
         svc.set_state(
             view,
-            AgendaState {
-                options: AgendaOptions::default(),
+            ScanViewState {
+                provider: "test".to_string(),
+                options: ScanViewOptions::default(),
                 clock: Vec::new(),
             },
         );
 
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -1915,10 +1877,10 @@ mod tests {
         fn extensions(&self) -> &[String] {
             &self.exts
         }
-        fn begin(&self, _args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
+        fn begin(&self, _args: &[String]) -> lattice_mode::ScanBeginFuture<'_> {
             Box::pin(async { Ok(()) })
         }
-        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
+        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::ScanFuture<'_> {
             Box::pin(async {
                 Ok(lattice_mode::ScanResult {
                     entries: Vec::new(),
@@ -1951,9 +1913,9 @@ mod tests {
         let begin_args = source.begin_args.clone();
         let offered = source.offered.clone();
 
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 scan_args: vec!["waiting".to_string()],
@@ -1993,9 +1955,9 @@ mod tests {
         let source = Arc::new(FakeSource::new(1, &["org"]));
         let offered = source.offered.clone();
 
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2051,9 +2013,9 @@ mod tests {
         write(&dir, "good.org", "* TODO 5\n");
 
         let (registry, view) = view_handle();
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2081,9 +2043,9 @@ mod tests {
         write(&dir, "prose.org", "just some prose\n");
 
         let (registry, view) = view_handle();
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2116,9 +2078,9 @@ mod tests {
         let source = Arc::new(FakeSource::new(1, &["org"]));
         let begins = source.begins.clone();
 
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2154,10 +2116,10 @@ mod tests {
         fn extensions(&self) -> &[String] {
             &self.exts
         }
-        fn begin(&self, _args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
+        fn begin(&self, _args: &[String]) -> lattice_mode::ScanBeginFuture<'_> {
             Box::pin(async { Ok(()) })
         }
-        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
+        fn scan(&self, _p: PathBuf, _t: String) -> lattice_mode::ScanFuture<'_> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async { Err("quarantined".to_string()) })
         }
@@ -2181,9 +2143,9 @@ mod tests {
         });
         let calls = dead.calls.clone();
 
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2237,9 +2199,9 @@ mod tests {
         }
 
         let (registry, view) = view_handle();
-        spawn_agenda_scan(
+        spawn_scan_view_scan(
             view,
-            AgendaOptions {
+            ScanViewOptions {
                 roots: vec![dir.clone()],
                 max_files: None,
                 ..Default::default()
@@ -2280,7 +2242,7 @@ mod tests {
     #[test]
     fn gr_resolves_to_this_views_own_refresh() {
         use lattice_mode::Mode;
-        let m = AgendaViewMode;
+        let m = ScanViewMode;
         assert_eq!(m.kind(), lattice_mode::ModeKind::Minor);
         assert!(
             matches!(
@@ -2308,13 +2270,14 @@ mod tests {
 
     #[test]
     fn service_state_roundtrips_and_clears() {
-        let svc = InMemoryAgendaService::new();
+        let svc = InMemoryScanViewService::new();
         let view = BufferId(3);
         assert!(svc.state(view).is_none());
         svc.set_state(
             view,
-            AgendaState {
-                options: AgendaOptions {
+            ScanViewState {
+                provider: "test".to_string(),
+                options: ScanViewOptions {
                     roots: vec![PathBuf::from("/p")],
                     max_files: Some(10),
                     ..Default::default()
@@ -2449,11 +2412,16 @@ mod af2_roots {
     #[test]
     fn the_default_names_no_root_so_the_scan_can_ask() {
         assert!(
-            AgendaOptions::default().roots.is_empty(),
+            ScanViewOptions::default().roots.is_empty(),
             "the fallback belongs to the scan, which is the only place that \
              has heard from the sources"
         );
         // …and the view's scope still resolves to something usable.
-        assert!(!AgendaOptions::default().scope_dir().as_os_str().is_empty());
+        assert!(
+            !ScanViewOptions::default()
+                .scope_dir()
+                .as_os_str()
+                .is_empty()
+        );
     }
 }

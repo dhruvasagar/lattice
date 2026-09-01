@@ -1,8 +1,8 @@
 //! OM.A1 — the agenda-row producer seam, driven through a real guest.
 //!
 //! Instantiates the `agenda-guest` fixture via
-//! [`PluginHost::spawn_agenda_source`], drives its `extensions` / `begin` /
-//! `scan` exports through the [`WasmScannedExcerptSource`] adapter + `AgendaActor`
+//! [`PluginHost::spawn_scan_source`], drives its `extensions` / `begin` /
+//! `scan` exports through the [`WasmScannedExcerptSource`] adapter + `ScanActor`
 //! bridge, and asserts the native result — the whole seam end to end:
 //!
 //!   - the declared extensions cross back and are normalised (the fixture
@@ -40,7 +40,7 @@ async fn source(host: &PluginHost) -> WasmScannedExcerptSource {
         .expect("compile agenda fixture");
     let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
     let (client, actor) = host
-        .spawn_agenda_source(
+        .spawn_scan_source(
             &component,
             &manifest,
             TrustTier::Bundled,
@@ -303,7 +303,7 @@ async fn a_source_answers_roots_from_its_own_option() {
         .expect("compile agenda fixture");
     let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
     let (client, actor) = host
-        .spawn_agenda_source(
+        .spawn_scan_source(
             &component,
             &manifest,
             TrustTier::Bundled,
@@ -352,7 +352,7 @@ async fn a_source_answers_roots_from_its_own_option() {
 /// through the WIT, the trampoline and the guest that delivers nothing, because
 /// nothing in production actually calls it. So this asserts on the ADAPTER —
 /// `ScannedExcerptSource::roots`, the method the scan calls — rather than on the
-/// `AgendaClient` beneath it, and it asserts the exact strings rather than
+/// `ScanClient` beneath it, and it asserts the exact strings rather than
 /// merely "not empty".
 ///
 /// Unexpanded on this side deliberately. `~` expansion is the host's, and a
@@ -428,7 +428,7 @@ async fn a_guests_row_spans_cross_the_boundary() {
 /// OA.11a: the view's scan arguments reach the guest, uninterpreted.
 ///
 /// The fixture stashes them in `begin` and rides them in every row's label,
-/// so this asserts the whole path — `AgendaClient::begin` → the actor → the
+/// so this asserts the whole path — `ScanClient::begin` → the actor → the
 /// WIT call → the guest's own state → back out through `scan`. The seam's
 /// recurring failure is the one OT.4 spent a slice on: wired end to end and
 /// delivering nothing. A test that only checked `begin` returned `Ok` would
@@ -483,7 +483,7 @@ async fn scan_args_change_the_generation_key() {
         .expect("compile agenda fixture");
     let manifest = PluginManifest::new("agenda-fixture", Vec::new(), CapabilitySet::empty());
     let (client, actor) = host
-        .spawn_agenda_source(
+        .spawn_scan_source(
             &component,
             &manifest,
             TrustTier::Bundled,

@@ -150,7 +150,7 @@ fn the_grouped_views_all_fold() {
     let registry = editor.mode_registry.load();
 
     for id in [
-        "agenda-view-mode",
+        "scan-view-mode",
         "project-search-mode",
         "problems-mode",
         "lsp-references-mode",

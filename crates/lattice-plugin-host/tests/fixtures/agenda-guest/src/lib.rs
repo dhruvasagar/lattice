@@ -2,7 +2,7 @@
 //!
 //! A minimal `wasm32-wasip2` component implementing the
 //! `scanned-excerpt-source-plugin` world, driving the agenda producer actor
-//! (`agenda_task.rs`) through real host→guest calls:
+//! (`scan_task.rs`) through real host→guest calls:
 //!
 //!   - `extensions` declares `["ORG"]` — deliberately upper-cased and
 //!     dot-prefixed in one entry, so the host's normalisation is proven

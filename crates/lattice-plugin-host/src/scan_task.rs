@@ -2,8 +2,8 @@
 //!
 //! The agenda analogue of `media_task.rs`, and deliberately its near-twin: a
 //! dedicated async task owns the plugin's `Store<PluginState>` for life (the
-//! Store is `!Sync`), an [`AgendaCall`] crosses an mpsc channel with a
-//! `oneshot` reply, and the `Send + Sync` [`AgendaClient`] serialises calls
+//! Store is `!Sync`), an [`ScanCall`] crosses an mpsc channel with a
+//! `oneshot` reply, and the `Send + Sync` [`ScanClient`] serialises calls
 //! onto the single-consumer loop.
 //!
 //! **The serialisation is load-bearing here, not incidental.** `begin` drops
@@ -25,20 +25,20 @@ use futures::channel::{mpsc, oneshot};
 use lattice_runtime::EventBus;
 use wasmtime::Store;
 
-use crate::agenda_host::bindings::ScannedExcerptSourcePlugin;
+use crate::scan_host::bindings::ScannedExcerptSourcePlugin;
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
     TrustTier, arm_store,
 };
 
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
-pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
+pub use crate::scan_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
 /// OA.14b: a file's clocked time, reported beside its rows.
-pub use crate::agenda_host::bindings::lattice::plugin_host::scanned_excerpt_source::{
+pub use crate::scan_host::bindings::lattice::plugin_host::scanned_excerpt_source::{
     ClockSpan, ScanResult,
 };
 /// OA.5: the per-row style spans an [`Entry`] carries.
-pub use crate::agenda_host::bindings::lattice::plugin_host::types::DisplaySpan;
+pub use crate::scan_host::bindings::lattice::plugin_host::types::DisplaySpan;
 
 /// OT.3: parse one scanned file, from text the host has already read.
 ///
@@ -55,18 +55,18 @@ fn parse_for_scan(path: &str, text: &str) -> Option<Arc<lattice_syntax::SyntaxSn
     let mut syntax = match lattice_syntax::Syntax::for_language(lang) {
         Ok(Some(syntax)) => syntax,
         Ok(None) => {
-            tracing::debug!(%path, ?lang, "agenda scan: no grammar; handing the guest text");
+            tracing::debug!(%path, ?lang, "scan: no grammar; handing the guest text");
             return None;
         }
         Err(error) => {
-            tracing::debug!(%path, ?lang, %error, "agenda scan: grammar load failed; handing the guest text");
+            tracing::debug!(%path, ?lang, %error, "scan: grammar load failed; handing the guest text");
             return None;
         }
     };
     syntax.parse(text);
     let snapshot = Arc::new(syntax.snapshot_owned());
     if snapshot.tree().is_none() {
-        tracing::debug!(%path, ?lang, "agenda scan: parsed to no tree; handing the guest text");
+        tracing::debug!(%path, ?lang, "scan: parsed to no tree; handing the guest text");
         return None;
     }
     Some(snapshot)
@@ -74,7 +74,7 @@ fn parse_for_scan(path: &str, text: &str) -> Option<Arc<lattice_syntax::SyntaxSn
 
 type CallResult<T> = Result<T, PluginHostError>;
 
-enum AgendaCall {
+enum ScanCall {
     /// `extensions()` — the file extensions this source wants offered.
     Extensions {
         reply: oneshot::Sender<CallResult<Vec<String>>>,
@@ -107,12 +107,12 @@ enum AgendaCall {
 /// single-consumer loop the `!Sync` `Store` requires — which is exactly what
 /// `begin`-then-`scan` needs.
 #[derive(Clone, Debug)]
-pub struct AgendaClient {
-    tx: mpsc::UnboundedSender<AgendaCall>,
+pub struct ScanClient {
+    tx: mpsc::UnboundedSender<ScanCall>,
     id: PluginId,
 }
 
-impl AgendaClient {
+impl ScanClient {
     pub fn id(&self) -> PluginId {
         self.id
     }
@@ -121,7 +121,7 @@ impl AgendaClient {
     pub async fn extensions(&self) -> CallResult<Vec<String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::Extensions { reply })
+            .unbounded_send(ScanCall::Extensions { reply })
             .map_err(|_| PluginHostError::PluginGone { func: "extensions" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "extensions" })?
@@ -131,7 +131,7 @@ impl AgendaClient {
     pub async fn view_mode(&self) -> CallResult<Option<String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::ViewMode { reply })
+            .unbounded_send(ScanCall::ViewMode { reply })
             .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "view-mode" })?
@@ -142,7 +142,7 @@ impl AgendaClient {
     pub async fn roots(&self) -> CallResult<Vec<String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::Roots { reply })
+            .unbounded_send(ScanCall::Roots { reply })
             .map_err(|_| PluginHostError::PluginGone { func: "roots" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "roots" })?
@@ -157,7 +157,7 @@ impl AgendaClient {
     pub async fn begin(&self, args: Vec<String>) -> CallResult<u64> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::Begin { args, reply })
+            .unbounded_send(ScanCall::Begin { args, reply })
             .map_err(|_| PluginHostError::PluginGone { func: "begin" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "begin" })?
@@ -172,7 +172,7 @@ impl AgendaClient {
     pub async fn scan(&self, path: String, text: String) -> CallResult<Result<ScanResult, String>> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(AgendaCall::Scan { path, text, reply })
+            .unbounded_send(ScanCall::Scan { path, text, reply })
             .map_err(|_| PluginHostError::PluginGone { func: "scan" })?;
         rx.await
             .map_err(|_| PluginHostError::PluginGone { func: "scan" })?
@@ -180,12 +180,12 @@ impl AgendaClient {
 }
 
 /// The per-plugin actor: owns the `Store` + agenda bindings for the plugin's
-/// life and serves calls off the channel until every [`AgendaClient`] drops.
-pub struct AgendaActor {
+/// life and serves calls off the channel until every [`ScanClient`] drops.
+pub struct ScanActor {
     store: Store<PluginState>,
     bindings: ScannedExcerptSourcePlugin,
     budget: PluginBudget,
-    rx: mpsc::UnboundedReceiver<AgendaCall>,
+    rx: mpsc::UnboundedReceiver<ScanCall>,
     id: PluginId,
     /// Crash-quarantine: the first trap trips this, fires one `PluginCrashed`,
     /// and every later call returns `Quarantined`. A trap mid-scan therefore
@@ -195,7 +195,7 @@ pub struct AgendaActor {
     tracer: Option<crate::trace::PluginTracerHandle>,
 }
 
-impl AgendaActor {
+impl ScanActor {
     pub fn id(&self) -> PluginId {
         self.id
     }
@@ -208,19 +208,19 @@ impl AgendaActor {
     pub async fn run(mut self) {
         while let Some(call) = self.rx.next().await {
             match call {
-                AgendaCall::Extensions { reply } => {
+                ScanCall::Extensions { reply } => {
                     let _ = reply.send(self.call_extensions().await);
                 }
-                AgendaCall::ViewMode { reply } => {
+                ScanCall::ViewMode { reply } => {
                     let _ = reply.send(self.call_view_mode().await);
                 }
-                AgendaCall::Roots { reply } => {
+                ScanCall::Roots { reply } => {
                     let _ = reply.send(self.call_roots().await);
                 }
-                AgendaCall::Begin { args, reply } => {
+                ScanCall::Begin { args, reply } => {
                     let _ = reply.send(self.call_begin(&args).await);
                 }
-                AgendaCall::Scan { path, text, reply } => {
+                ScanCall::Scan { path, text, reply } => {
                     let _ = reply.send(self.call_scan(&path, &text).await);
                 }
             }
@@ -374,7 +374,7 @@ impl PluginHost {
     /// grant and return the bridge. Grant / data-dir / WASI are identical to
     /// every other seam (shared `build_plugin_wasi` + `new_store`), and the
     /// actor is NOT spawned here — the lib owns no runtime.
-    pub async fn spawn_agenda_source(
+    pub async fn spawn_scan_source(
         &self,
         component: &Component,
         manifest: &PluginManifest,
@@ -384,13 +384,13 @@ impl PluginHost {
         // AF.3: the editor's option registry, so `config.get-option` answers
         // inside a `roots` / `begin` / `scan` call.
         config: Option<&Arc<lattice_config::ConfigRegistry>>,
-    ) -> Result<(AgendaClient, AgendaActor), PluginHostError> {
+    ) -> Result<(ScanClient, ScanActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
             tracing::warn!(
                 plugin = %manifest.id,
                 capability = ?denied,
-                "agenda plugin loaded with a withheld capability (reduced function)"
+                "scan source loaded with a withheld capability (reduced function)"
             );
         }
         let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
@@ -416,8 +416,8 @@ impl PluginHost {
             store.data_mut().config_registry = Some(Arc::clone(registry));
         }
         let (tx, rx) = mpsc::unbounded();
-        let client = AgendaClient { tx, id };
-        let actor = AgendaActor {
+        let client = ScanClient { tx, id };
+        let actor = ScanActor {
             store,
             bindings,
             budget,

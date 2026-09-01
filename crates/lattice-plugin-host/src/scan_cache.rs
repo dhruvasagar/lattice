@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agenda_task::{ClockSpan, DisplaySpan, Entry};
+use crate::scan_task::{ClockSpan, DisplaySpan, Entry};
 
 /// Bumped whenever the on-disk shape changes. A mismatch discards the file
 /// rather than attempting migration — this is a cache, and rebuilding it costs
@@ -208,7 +208,7 @@ struct CacheFile {
 
 /// A persistent agenda-result cache for one source.
 #[derive(Debug)]
-pub struct AgendaCache {
+pub struct ScanCache {
     path: PathBuf,
     generation: u64,
     files: HashMap<String, CachedFile>,
@@ -224,20 +224,20 @@ pub struct AgendaCache {
 /// much work rather than a whole scan.
 const FLUSH_EVERY: usize = 64;
 
-impl AgendaCache {
+impl ScanCache {
     /// Open (or start) the cache for `source_id` under `dir`.
     ///
     /// Never fails: an unreadable, corrupt or stale file yields an empty cache
     /// with a `debug` log. `dir` is the host's per-plugin data directory, so
     /// two plugins cannot collide and uninstalling one removes its cache.
     pub fn open(dir: &Path, source_id: u64) -> Self {
-        let path = dir.join(format!("agenda-cache-{source_id}.json"));
+        let path = dir.join(format!("scan-cache-{source_id}.json"));
         let loaded = std::fs::read(&path)
             .ok()
             .and_then(|bytes| match serde_json::from_slice::<CacheFile>(&bytes) {
                 Ok(file) => Some(file),
                 Err(error) => {
-                    tracing::debug!(path = %path.display(), %error, "agenda cache unreadable; starting empty");
+                    tracing::debug!(path = %path.display(), %error, "scan cache unreadable; starting empty");
                     None
                 }
             })
@@ -248,7 +248,7 @@ impl AgendaCache {
                         path = %path.display(),
                         found = file.version,
                         expected = SCHEMA_VERSION,
-                        "agenda cache schema mismatch; starting empty"
+                        "scan cache schema mismatch; starting empty"
                     );
                 }
                 ok
@@ -278,7 +278,7 @@ impl AgendaCache {
                 was = self.generation,
                 now = generation,
                 files = self.files.len(),
-                "agenda cache generation changed; discarding"
+                "scan cache generation changed; discarding"
             );
             self.files.clear();
             self.generation = generation;
@@ -307,7 +307,7 @@ impl AgendaCache {
     /// Remember what the guest returned for `path`.
     pub fn put(&mut self, path: &str, text: &str, rows: &[Entry], clock: &[ClockSpan]) {
         if self.files.len() >= MAX_FILES && !self.files.contains_key(path) {
-            tracing::debug!(cap = MAX_FILES, "agenda cache full; discarding");
+            tracing::debug!(cap = MAX_FILES, "scan cache full; discarding");
             self.files.clear();
         }
         self.files.insert(
@@ -338,7 +338,7 @@ impl AgendaCache {
             files: self.files.clone(),
         };
         let Ok(bytes) = serde_json::to_vec(&file) else {
-            tracing::debug!("agenda cache failed to serialise; not written");
+            tracing::debug!("scan cache failed to serialise; not written");
             return;
         };
         if let Some(parent) = self.path.parent() {
@@ -346,11 +346,11 @@ impl AgendaCache {
         }
         let tmp = self.path.with_extension("json.tmp");
         if let Err(error) = std::fs::write(&tmp, &bytes) {
-            tracing::debug!(path = %tmp.display(), %error, "agenda cache write failed");
+            tracing::debug!(path = %tmp.display(), %error, "scan cache write failed");
             return;
         }
         if let Err(error) = std::fs::rename(&tmp, &self.path) {
-            tracing::debug!(path = %self.path.display(), %error, "agenda cache rename failed");
+            tracing::debug!(path = %self.path.display(), %error, "scan cache rename failed");
             let _ = std::fs::remove_file(&tmp);
         }
     }
@@ -361,7 +361,7 @@ impl AgendaCache {
     }
 }
 
-impl Drop for AgendaCache {
+impl Drop for ScanCache {
     fn drop(&mut self) {
         if self.dirty > 0 {
             self.flush();
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn clock_spans_survive_the_cache_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cache = AgendaCache::open(dir.path(), 1);
+        let mut cache = ScanCache::open(dir.path(), 1);
         cache.begin(7);
         let spans = vec![ClockSpan {
             line: 3,
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn unchanged_text_hits_and_changed_text_misses() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cache = AgendaCache::open(dir.path(), 1);
+        let mut cache = ScanCache::open(dir.path(), 1);
         cache.begin(7);
 
         assert!(cache.get("/p/a.org", "* TODO a\n").is_none());
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn a_new_generation_discards_everything() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cache = AgendaCache::open(dir.path(), 1);
+        let mut cache = ScanCache::open(dir.path(), 1);
         cache.begin(7);
         cache.put("/p/a.org", "* TODO a\n", &[entry(0, "tomorrow")], &[]);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_some());
@@ -498,12 +498,12 @@ mod tests {
     fn rows_survive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         {
-            let mut cache = AgendaCache::open(dir.path(), 1);
+            let mut cache = ScanCache::open(dir.path(), 1);
             cache.begin(7);
             cache.put("/p/a.org", "* TODO a\n", &[entry(3, "Today")], &[]);
             cache.flush();
         }
-        let mut reopened = AgendaCache::open(dir.path(), 1);
+        let mut reopened = ScanCache::open(dir.path(), 1);
         reopened.begin(7);
         let hit = reopened
             .get("/p/a.org", "* TODO a\n")
@@ -518,12 +518,12 @@ mod tests {
     fn dropping_the_cache_persists_it() {
         let dir = tempfile::tempdir().unwrap();
         {
-            let mut cache = AgendaCache::open(dir.path(), 1);
+            let mut cache = ScanCache::open(dir.path(), 1);
             cache.begin(7);
             cache.put("/p/a.org", "* TODO a\n", &[entry(1, "Today")], &[]);
             // no flush() — Drop is the only thing that can save this
         }
-        let mut reopened = AgendaCache::open(dir.path(), 1);
+        let mut reopened = ScanCache::open(dir.path(), 1);
         reopened.begin(7);
         assert!(reopened.get("/p/a.org", "* TODO a\n").is_some());
     }
@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn corrupt_bytes_start_empty_rather_than_failing() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("agenda-cache-1.json"), b"{not json").unwrap();
-        let mut cache = AgendaCache::open(dir.path(), 1);
+        std::fs::write(dir.path().join("scan-cache-1.json"), b"{not json").unwrap();
+        let mut cache = ScanCache::open(dir.path(), 1);
         cache.begin(7);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_none());
         // …and it recovers: the next scan repopulates and persists normally.
@@ -551,12 +551,12 @@ mod tests {
             "files": {}
         });
         std::fs::write(
-            dir.path().join("agenda-cache-1.json"),
+            dir.path().join("scan-cache-1.json"),
             serde_json::to_vec(&stale).unwrap(),
         )
         .unwrap();
 
-        let mut cache = AgendaCache::open(dir.path(), 1);
+        let mut cache = ScanCache::open(dir.path(), 1);
         cache.begin(7);
         assert!(cache.get("/p/a.org", "* TODO a\n").is_none());
         let (hits, _) = cache.stats();
@@ -568,12 +568,12 @@ mod tests {
     fn each_source_gets_its_own_file() {
         let dir = tempfile::tempdir().unwrap();
         {
-            let mut one = AgendaCache::open(dir.path(), 1);
+            let mut one = ScanCache::open(dir.path(), 1);
             one.begin(7);
             one.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &[]);
             one.flush();
         }
-        let mut two = AgendaCache::open(dir.path(), 2);
+        let mut two = ScanCache::open(dir.path(), 2);
         two.begin(7);
         assert!(two.get("/p/a.org", "* TODO a\n").is_none());
     }

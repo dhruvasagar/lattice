@@ -79,8 +79,8 @@ pub mod decoration_host;
 pub mod decoration_source;
 pub mod decoration_task;
 // OM.A1: the `scanned-excerpt-source` guest→host producer seam.
-pub mod agenda_host;
-pub mod agenda_task;
+pub mod scan_host;
+pub mod scan_task;
 pub mod scanned_excerpt_source;
 pub use crate::scanned_excerpt_source::{WasmScannedExcerptSource, normalise_extensions};
 // XF.4: the fs:write gate for guest-returned effects, applied at the
@@ -96,7 +96,6 @@ pub mod grammar_trampoline;
 pub mod help_host;
 pub mod media_task;
 // LG.3c: the `language` guest→host registration seam.
-pub mod agenda_cache;
 pub mod host_services;
 pub mod keymap_host;
 pub mod language_host;
@@ -108,6 +107,7 @@ pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
 pub mod plugin_manager_host;
+pub mod scan_cache;
 // OR.1: the durable, plugin-scoped byte store the `host-services` `store-*`
 // calls act on. One per manifest id, shared across every seam's `Store`.
 pub mod plugin_store;

@@ -34,7 +34,7 @@
 //!
 //! ## Failure policy
 //!
-//! `agenda_cache.rs`'s, promoted from an agenda special case to a primitive:
+//! `scan_cache.rs`'s, promoted from an agenda special case to a primitive:
 //! temp-file-and-rename so a kill mid-write leaves the previous state intact, a
 //! schema version that refuses an older shape, a size cap, flush-on-drop, and
 //! degradation to **empty** on any corruption. Never to a partial read — a
@@ -75,7 +75,7 @@ const SCHEMA_VERSION: u32 = 1;
 /// under 1 MB for 706 files), so reaching it means a guest is using the store
 /// for something it was not meant for.
 ///
-/// Crude on purpose, and the same reasoning as `agenda_cache`'s: eviction
+/// Crude on purpose, and the same reasoning as `scan_cache`'s: eviction
 /// *order* does not matter, because every legitimate user of this store can
 /// rebuild what it lost. An LRU would be bookkeeping bought with nothing.
 const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;

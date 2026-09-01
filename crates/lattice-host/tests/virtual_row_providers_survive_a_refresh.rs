@@ -105,10 +105,10 @@ impl lattice_mode::ScannedExcerptSource for EmptyScanSource {
     fn extensions(&self) -> &[String] {
         &self.exts
     }
-    fn begin(&self, _args: &[String]) -> lattice_mode::AgendaBeginFuture<'_> {
+    fn begin(&self, _args: &[String]) -> lattice_mode::ScanBeginFuture<'_> {
         Box::pin(async { Ok(()) })
     }
-    fn scan(&self, _p: std::path::PathBuf, _t: String) -> lattice_mode::AgendaFuture<'_> {
+    fn scan(&self, _p: std::path::PathBuf, _t: String) -> lattice_mode::ScanFuture<'_> {
         Box::pin(async { Ok(lattice_mode::ScanResult::default()) })
     }
 }
@@ -128,9 +128,24 @@ fn boot_with_scan_source() -> Editor {
     editor
 }
 
+/// The view this spike opens. Named by the TEST rather than by the host,
+/// which is the shape every scan view has now: a plugin declares its own
+/// identity and the host supplies only the machinery.
+fn identity() -> lattice_multibuffer::providers::scan_view::ScanViewIdentity {
+    lattice_multibuffer::providers::scan_view::ScanViewIdentity {
+        provider: "test-scan-view".to_string(),
+        buffer_name: "*test-scan-view*".to_string(),
+        view_mode: None,
+        no_rows_message: "no source provides rows for it".to_string(),
+    }
+}
+
 fn open_the_agenda(editor: &mut Editor) -> BufferId {
-    match lattice_multibuffer::providers::agenda::open_agenda(editor, &lattice_grammar::Args::None)
-    {
+    match lattice_multibuffer::providers::scan_view::open_scan_view(
+        editor,
+        &identity(),
+        &lattice_grammar::Args::None,
+    ) {
         lattice_mode::ProviderViewOutcome::Opened { view, .. } => view,
         lattice_mode::ProviderViewOutcome::Declined { message } => {
             panic!("the agenda must open for this spike to test anything: {message}")

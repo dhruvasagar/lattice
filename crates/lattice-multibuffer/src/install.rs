@@ -79,8 +79,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::providers::search::register_project_search_mode(boot.modes_mut());
     // OM.A3: the agenda view's minor. `gr` arrives through the implies
     // cascade because it declares a `refresh_action`.
-    #[cfg(feature = "agenda")]
-    crate::providers::agenda::register_agenda_mode(boot.modes_mut());
+    #[cfg(feature = "scan-view")]
+    crate::providers::scan_view::register_scan_view_mode(boot.modes_mut());
 
     // ── Commands ────────────────────────────────────────────────────────────
     // M.2.b.3 / K.2.5: excerpt-jump motions (`]e`/`[e`/`]E`/`[E`). The returned
@@ -106,7 +106,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::providers::search::register_search_ex_command(boot.commands_mut());
     // OM.A1: `:agenda` (feature-gated with its provider). OM.A3 adds the
     // refresh action the view mode's `refresh_action` names.
-    #[cfg(feature = "agenda")]
+    #[cfg(feature = "scan-view")]
     {
         // AG.1: no ex-command here any more. The provider is registered above
         // and is generic; the TRIGGER belongs to whoever produces the rows,
@@ -114,7 +114,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         // was the host naming an org feature generically and the plugin having
         // no way to fix it — org registers `:org-agenda` itself now, through
         // `app-effect::open-provider-view`.
-        crate::providers::agenda::register_agenda_actions(boot.commands_mut());
+        crate::providers::scan_view::register_scan_view_actions(boot.commands_mut());
     }
 
     // ── Services ────────────────────────────────────────────────────────────
@@ -139,9 +139,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // plugin provides rows for it". The trigger (`:org-agenda`) is org's too,
     // so the provider and its command now arrive together instead of the
     // provider existing alone and empty.
-    #[cfg(feature = "agenda")]
+    #[cfg(feature = "scan-view")]
     {
-        crate::providers::agenda::register_agenda_service(boot.services_mut());
+        crate::providers::scan_view::register_scan_view_service(boot.services_mut());
     }
 
     // ── Off-keystroke wake ──────────────────────────────────────────────────

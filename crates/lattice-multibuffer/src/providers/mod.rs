@@ -25,8 +25,8 @@ pub mod search;
 /// `scanned-excerpt-source` producers find under the project root, globally ordered
 /// and date-grouped, as editable source excerpts. Feature-gated like
 /// `search` because it pulls the `ignore` walker.
-#[cfg(feature = "agenda")]
-pub mod agenda;
+#[cfg(feature = "scan-view")]
+pub mod scan_view;
 
 /// N.1.1 (2026-06-10): narrow mode — a focused, editable one-excerpt
 /// multibuffer view of a region. Unlike `search`, narrow is a

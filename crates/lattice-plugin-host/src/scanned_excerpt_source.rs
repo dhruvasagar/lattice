@@ -1,6 +1,6 @@
 //! OM.A1 — the `WasmScannedExcerptSource` adapter.
 //!
-//! Wraps an agenda plugin's [`AgendaClient`] bridge and exposes a **native**-
+//! Wraps an agenda plugin's [`ScanClient`] bridge and exposes a **native**-
 //! typed producer the host's scan calls, exactly like `WasmMediaSource`. The
 //! provider that drives it lives in `lattice-multibuffer` and knows nothing
 //! about WASM; this is the only place the two meet.
@@ -9,19 +9,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use lattice_mode::scanned_excerpt_source::{
-    AgendaBeginFuture, AgendaFuture, AgendaRootsFuture, ClockSpan, ScanResult, ScannedExcerpt,
+    ClockSpan, ScanBeginFuture, ScanFuture, ScanResult, ScanRootsFuture, ScannedExcerpt,
     ScannedExcerptSource,
 };
 
 use crate::PluginId;
-use crate::agenda_cache::AgendaCache;
-use crate::agenda_task::ClockSpan as WitClockSpan;
-use crate::agenda_task::{AgendaClient, Entry};
+use crate::scan_cache::ScanCache;
+use crate::scan_task::ClockSpan as WitClockSpan;
+use crate::scan_task::{Entry, ScanClient};
 
-/// An async agenda-row producer over a plugin's [`AgendaClient`].
+/// An async agenda-row producer over a plugin's [`ScanClient`].
 #[derive(Clone, Debug)]
 pub struct WasmScannedExcerptSource {
-    client: AgendaClient,
+    client: ScanClient,
     /// Resolved ONCE at load, so the walk's per-file test is a string compare
     /// rather than a guest call. A `scan`-per-file boundary crossing is
     /// already the producer's dominant cost; adding an `extensions()` call
@@ -41,7 +41,7 @@ pub struct WasmScannedExcerptSource {
     ///
     /// `None` when the host could not resolve a data directory. A cache that
     /// cannot be stored is simply not used.
-    cache: Option<Arc<Mutex<AgendaCache>>>,
+    cache: Option<Arc<Mutex<ScanCache>>>,
 }
 
 impl ScannedExcerptSource for WasmScannedExcerptSource {
@@ -64,19 +64,19 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
     ///
     /// A guest that traps or is quarantined answers empty rather than failing
     /// the scan — the same degradation `begin` gets, one step earlier.
-    fn roots(&self) -> AgendaRootsFuture<'_> {
+    fn roots(&self) -> ScanRootsFuture<'_> {
         Box::pin(async move {
             match self.client.roots().await {
                 Ok(roots) => Ok(roots),
                 Err(e) => {
-                    tracing::debug!(error = %e, "agenda: a source could not name its roots");
+                    tracing::debug!(error = %e, "scan: a source could not name its roots");
                     Ok(Vec::new())
                 }
             }
         })
     }
 
-    fn begin(&self, args: &[String]) -> AgendaBeginFuture<'_> {
+    fn begin(&self, args: &[String]) -> ScanBeginFuture<'_> {
         // Owned before the async move: `args` is borrowed from the caller and
         // the returned future outlives the call.
         let args = args.to_vec();
@@ -94,7 +94,7 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
                 .client
                 .begin(args)
                 .await
-                .map_err(|e| format!("agenda plugin: {e}"))?;
+                .map_err(|e| format!("scan plugin: {e}"))?;
             if let Some(cache) = &self.cache
                 && let Ok(mut cache) = cache.lock()
             {
@@ -104,7 +104,7 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
         })
     }
 
-    fn scan(&self, path: PathBuf, text: String) -> AgendaFuture<'_> {
+    fn scan(&self, path: PathBuf, text: String) -> ScanFuture<'_> {
         Box::pin(async move {
             let display = path.display().to_string();
             // OT.3b: an unchanged file skips the parse AND the guest call. The
@@ -128,7 +128,7 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
                 // same place because the caller does the same thing with both:
                 // skip this file, keep scanning.
                 Ok(inner) => inner?,
-                Err(host_err) => return Err(format!("agenda plugin: {host_err}")),
+                Err(host_err) => return Err(format!("scan plugin: {host_err}")),
             };
             if let Some(cache) = &self.cache
                 && let Ok(mut cache) = cache.lock()
@@ -148,7 +148,7 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
 }
 
 impl WasmScannedExcerptSource {
-    pub fn new(client: AgendaClient, extensions: Vec<String>, view_mode: Option<String>) -> Self {
+    pub fn new(client: ScanClient, extensions: Vec<String>, view_mode: Option<String>) -> Self {
         Self {
             client,
             extensions,
@@ -166,7 +166,7 @@ impl WasmScannedExcerptSource {
     /// slower, which is also what makes the cache easy to A/B.
     pub fn with_cache(mut self, dir: &std::path::Path) -> Self {
         let id = self.plugin_id().0 as u64;
-        self.cache = Some(Arc::new(Mutex::new(AgendaCache::open(dir, id))));
+        self.cache = Some(Arc::new(Mutex::new(ScanCache::open(dir, id))));
         self
     }
 
@@ -225,7 +225,7 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
             path,
             line = e.line,
             end_line = e.end_line,
-            "agenda source returned an out-of-range line; skipping the row"
+            "scan source returned an out-of-range line; skipping the row"
         );
         return None;
     }
@@ -234,7 +234,7 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
             path,
             line = e.line,
             end_line = e.end_line,
-            "agenda source returned an inverted span; skipping the row"
+            "scan source returned an inverted span; skipping the row"
         );
         return None;
     }
@@ -261,7 +261,7 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
                         start = s.start,
                         end = s.end,
                         slot = %s.slot,
-                        "agenda source returned an empty or inverted span; skipping it"
+                        "scan source returned an empty or inverted span; skipping it"
                     );
                 }
                 ok
@@ -278,7 +278,7 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agenda_task::DisplaySpan;
+    use crate::scan_task::DisplaySpan;
 
     fn entry(line: u32, end_line: u32) -> Entry {
         Entry {

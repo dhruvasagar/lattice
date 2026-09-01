@@ -58,7 +58,7 @@ same surface).
 |   — `<Tab>` fold a block   | [`foldable-view-mode`](help:foldable-view-mode) | ✅      |
 | Projects and roots         | [`project`](help:project)                | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
-| The agenda                 | [`agenda-view-mode`](help:agenda-view-mode) | ✅      |
+| Scan views                 | [`scan-view-mode`](help:scan-view-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
 | The problems view          | [`problems-minor-mode`](help:problems-minor-mode) | ✅      |

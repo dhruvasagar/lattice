@@ -53,12 +53,12 @@ fancy-regex = { workspace = true, optional = true }
 # M.6 (2026-06-01): each in-tree provider ships behind its own
 # cargo feature so opt-out builds disable per provider. Default
 # enables the providers we ship.
-default = ["search", "agenda"]
+default = ["search", "scan-view"]
 search = ["dep:ignore", "dep:fancy-regex"]
-# OM.A1 (2026-08-25): `providers::agenda` walks the project with the same
+# OM.A1 (2026-08-25): `providers::scan_view` walks the project with the same
 # .gitignore respect `search` uses, so it shares the `ignore` dep. No regex —
-# the agenda's predicate lives entirely in the guest.
-agenda = ["dep:ignore"]
+# the row predicate lives entirely in the guest.
+scan-view = ["dep:ignore"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt-multi-thread"] }
@@ -94,7 +94,7 @@ required-features = ["search"]
 [[bench]]
 name = "agenda_scan"
 harness = false
-required-features = ["agenda"]
+required-features = ["scan-view"]
 
 [[bench]]
 name = "actor_latency_during_scan"

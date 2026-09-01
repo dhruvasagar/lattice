@@ -1,7 +1,7 @@
 //! Repro harness for "agenda on refresh breaks (does not load anything back)".
 //!
 //! Drives `open_scan_view` twice against the same services — which is exactly
-//! what `gr` does: `AgendaViewMode`'s refresh handler emits
+//! what `gr` does: `ScanViewMode`'s refresh handler emits
 //! `AppEffect::OpenProviderView { provider: "agenda" }`, and the host's arm
 //! calls the registered opener a second time.
 
@@ -18,8 +18,8 @@ use lattice_mode::{
     ScannedExcerptSource, ScannedExcerptSourceRegistry, ScannedExcerptSourceRegistryHandle,
     ServiceRegistry,
 };
-use lattice_multibuffer::providers::agenda::{
-    AgendaServiceHandle, InMemoryAgendaService, ScanViewIdentity, open_scan_view,
+use lattice_multibuffer::providers::scan_view::{
+    InMemoryScanViewService, ScanViewIdentity, ScanViewServiceHandle, open_scan_view,
 };
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle,
@@ -116,14 +116,11 @@ impl ScannedExcerptSource for FakeSource {
     fn extensions(&self) -> &[String] {
         &self.exts
     }
-    fn roots(&self) -> lattice_mode::scanned_excerpt_source::AgendaRootsFuture<'_> {
+    fn roots(&self) -> lattice_mode::scanned_excerpt_source::ScanRootsFuture<'_> {
         let roots = self.roots.clone();
         Box::pin(async move { Ok(roots) })
     }
-    fn begin(
-        &self,
-        _args: &[String],
-    ) -> lattice_mode::scanned_excerpt_source::AgendaBeginFuture<'_> {
+    fn begin(&self, _args: &[String]) -> lattice_mode::scanned_excerpt_source::ScanBeginFuture<'_> {
         self.begins
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async { Ok(()) })
@@ -132,7 +129,7 @@ impl ScannedExcerptSource for FakeSource {
         &self,
         _path: PathBuf,
         text: String,
-    ) -> lattice_mode::scanned_excerpt_source::AgendaFuture<'_> {
+    ) -> lattice_mode::scanned_excerpt_source::ScanFuture<'_> {
         self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let blocked = Arc::clone(&self.blocked);
         Box::pin(async move {
@@ -221,7 +218,7 @@ fn harness(
     let cmd: CommandRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     services.register(cmd);
-    let agenda_service: AgendaServiceHandle = InMemoryAgendaService::handle();
+    let agenda_service: ScanViewServiceHandle = InMemoryScanViewService::handle();
     services.register(agenda_service);
 
     let activator = MockActivator {

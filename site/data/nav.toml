@@ -80,7 +80,7 @@ docs = [
   "project-search-mode",
   "multibuffer-mode",
   "narrow-mode",
-  "agenda-view-mode",
+  "scan-view-mode",
 ]
 
 [[section]]
@@ -345,7 +345,7 @@ docs = [
 "project-search-mode"  = "Project search"
 "multibuffer-mode"     = "Multibuffer views"
 "narrow-mode"          = "Narrow"
-"agenda-view-mode"     = "The agenda"
+"scan-view-mode"       = "Scan views"
 "lsp-mode"             = "The lsp-mode gate"
 "compilation-mode"     = "Compilation"
 "project"              = "Projects"

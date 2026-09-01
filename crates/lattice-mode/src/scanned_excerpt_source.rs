@@ -119,17 +119,17 @@ impl ScanResult {
 /// `Err(reason)` skips THIS FILE and the scan continues — one malformed file
 /// must not fail the agenda. That is `error-parser`'s rule, because it is the
 /// same failure class.
-pub type AgendaFuture<'a> = Pin<Box<dyn Future<Output = Result<ScanResult, String>> + Send + 'a>>;
+pub type ScanFuture<'a> = Pin<Box<dyn Future<Output = Result<ScanResult, String>> + Send + 'a>>;
 
 /// The boxed future an [`ScannedExcerptSource::begin`] returns.
 ///
-/// Separate from [`AgendaFuture`] rather than reusing it with an ignored
+/// Separate from [`ScanFuture`] rather than reusing it with an ignored
 /// `Vec`: `begin` produces nothing, and a signature that says otherwise
 /// invites a producer to return rows from it that the scan would drop.
-pub type AgendaBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type ScanBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 /// The boxed future an [`ScannedExcerptSource::roots`] returns (AF.1).
-pub type AgendaRootsFuture<'a> =
+pub type ScanRootsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 
 /// An async, off-keystroke-path producer of agenda rows.
@@ -171,7 +171,7 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     ///
     /// An `Err` is logged and treated as empty: a source that cannot say where
     /// to look should not be able to make the agenda scan nothing.
-    fn roots(&self) -> AgendaRootsFuture<'_> {
+    fn roots(&self) -> ScanRootsFuture<'_> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
@@ -190,12 +190,12 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     /// Called before [`Self::roots`], so a source that stashes its args here
     /// has them for `roots`, every `scan`, and the generation key it returns.
     /// Empty is the ordinary case: the default scan.
-    fn begin(&self, args: &[String]) -> AgendaBeginFuture<'_>;
+    fn begin(&self, args: &[String]) -> ScanBeginFuture<'_>;
 
     /// Scan one file. `text` is the file's contents, already read by the host
     /// — the host must read it anyway to build the source `Document`, so it
     /// reads once and hands the text over.
-    fn scan(&self, path: PathBuf, text: String) -> AgendaFuture<'_>;
+    fn scan(&self, path: PathBuf, text: String) -> ScanFuture<'_>;
 
     /// True when `path`'s extension is one this source claimed.
     fn claims(&self, path: &std::path::Path) -> bool {
@@ -331,10 +331,10 @@ mod tests {
         fn view_mode(&self) -> Option<&str> {
             self.view_mode.as_deref()
         }
-        fn begin(&self, _args: &[String]) -> AgendaBeginFuture<'_> {
+        fn begin(&self, _args: &[String]) -> ScanBeginFuture<'_> {
             Box::pin(async { Ok(()) })
         }
-        fn scan(&self, _p: PathBuf, _t: String) -> AgendaFuture<'_> {
+        fn scan(&self, _p: PathBuf, _t: String) -> ScanFuture<'_> {
             Box::pin(async { Ok(ScanResult::default()) })
         }
     }

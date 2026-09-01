@@ -1933,9 +1933,9 @@ impl PluginLoader {
                     // the walk, the sort or the grouping differs — only who
                     // named the view.
                     if !is_pull {
-                        return lattice_multibuffer::providers::agenda::open_scan_view(
+                        return lattice_multibuffer::providers::scan_view::open_scan_view(
                             activator,
-                            &lattice_multibuffer::providers::agenda::ScanViewIdentity {
+                            &lattice_multibuffer::providers::scan_view::ScanViewIdentity {
                                 provider: native.id.clone(),
                                 buffer_name: native.buffer_name.clone(),
                                 view_mode: native.view_mode.clone(),
@@ -3062,7 +3062,7 @@ impl PluginLoader {
 
         let (client, actor) = self
             .host
-            .spawn_agenda_source(
+            .spawn_scan_source(
                 component,
                 manifest,
                 tier,
@@ -3081,7 +3081,7 @@ impl PluginLoader {
             tracing::warn!(
                 plugin = %manifest.id,
                 error = %e,
-                "agenda plugin could not declare its file extensions; it will scan nothing"
+                "scan source could not declare its file extensions; it will scan nothing"
             );
             Vec::new()
         });
@@ -3089,7 +3089,7 @@ impl PluginLoader {
         if extensions.is_empty() {
             tracing::warn!(
                 plugin = %manifest.id,
-                "agenda plugin claims no file extensions; it will never be offered a file"
+                "scan source claims no file extensions; it will never be offered a file"
             );
         }
 
@@ -3104,7 +3104,7 @@ impl PluginLoader {
                 tracing::debug!(
                     plugin = %manifest.id,
                     error = %e,
-                    "agenda plugin declared no view mode"
+                    "scan source declared no view mode"
                 );
                 None
             }
@@ -3136,7 +3136,7 @@ impl PluginLoader {
         tracing::debug!(
             plugin = %manifest.id,
             id = id.0,
-            "agenda plugin registered its agenda-row producer"
+            "scan source registered its row producer"
         );
         Ok(id)
     }

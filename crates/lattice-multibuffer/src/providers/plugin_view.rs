@@ -82,7 +82,7 @@ pub struct PluginViewSpec {
 /// reads on the dispatch path, which paramount #1 forbids outright. So this
 /// half seats an empty view with an in-progress headerline and returns
 /// immediately; [`fill_plugin_view`] applies the guest's result when it lands.
-/// That is `providers/agenda.rs`'s shape (`open_agenda` + `spawn_agenda_scan`)
+/// That is `providers/agenda.rs`'s shape (`open_agenda` + `spawn_scan_view_scan`)
 /// and it is the same reason.
 pub fn open_plugin_view(
     activator: &mut dyn ModeActivator,

@@ -48,6 +48,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.14 | A second virtual-row provider on one view (spike) | ✅ |
 | OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
 | OA.14c | Typed configuration — a declared schema, not a TOML blob | 📝 |
+| OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | 📝 |
 | OA.15 | `org-agenda-log-mode` | 📝 |
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
@@ -55,9 +56,10 @@ the shared minor). Catalogue entry: the agenda in
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
-that slice landed before the display modes rather than after. OA.14c blocks
-nothing here and is recorded in this plan only because org's options are its
-motivating consumers — see its own entry on why it should graduate out.
+that slice landed before the display modes rather than after. OA.14c and OA.14d block
+nothing here and are recorded in this plan only because org's options are what
+motivate them — OA.14c should graduate to its own fragment (see its entry),
+and OA.14d fixes a reported bug that happens to be org's.
 
 ---
 
@@ -867,6 +869,55 @@ overrides don't apply" bug. That is an ORDERING defect — org reads
 options (dropped as unknown), and `init.rs`'s `on-plugin-loaded` fires after
 org's load-time exports. No option SHAPE fixes it; a `pre-plugin-loaded`
 hook carrying the plugin name does, and that wants its own slice.
+
+### OA.14d — `pre-plugin-loaded`, so config can reach a load-time option 📝
+
+**Reported, and a live defect:** `org.todo-keyword-styles` overrides do not
+apply — NEXT, WAITING, HOLD and the rest render unstyled on a fresh start.
+
+Separate from OA.14c on purpose. That slice is about the SHAPE of a value;
+this one is about WHEN it arrives, and no option shape fixes it.
+
+**The hole, which is structural rather than a mistake in anyone's config.**
+org reads `org.todo-keywords` in `register_theme_elements()` — at LOAD — and
+derives from it both the per-keyword theme elements and TK.4's generated
+highlight-query rules. Unset, it sees the compiled default `"TODO | DONE"`, so
+only those two keywords get elements or query rules at all. Every other keyword
+renders as plain headline text.
+
+Neither config home can reach it:
+
+- **`lattice.toml` is too early.** Plugin loading is deliberately spawned off
+  the boot thread ("a plugin cold-start must not delay boot"), while
+  `load_persistent_config` runs on it. When the TOML is applied org has not
+  registered its options yet, so the value is an `unknown option` warning and
+  is DROPPED — `loader.rs` stages nothing.
+- **`init.rs`'s `on-plugin-loaded` is too late**, firing after org's load-time
+  exports have already run.
+- **`init.rs`'s `register_options` is too early**, since init.rs loads before
+  user plugins by design.
+
+So there is currently no way for a user to influence a plugin option that the
+plugin reads at load time.
+
+**The fix: a `pre-plugin-loaded` event carrying the plugin name**, dispatched
+immediately before that plugin's load-time exports. `init.rs` handles it,
+matches on the name, and sets the options that plugin is about to read. Named
+rather than fired blindly for every plugin, so a handler is not invited to run
+config for a plugin it knows nothing about — the discrimination is the point,
+and it is what makes the handler's `set_option` calls legible.
+
+Preferred over the alternative (staging unknown-option values from user config
+and applying them at registration) because it is programmable: the same handler
+can compute a value, read the environment, or branch on what else is
+installed — where TOML staging only ever replays a literal. It also keeps the
+ordering explicit in the user's own file instead of implicit in the loader.
+
+**Tests:** the reported case end to end — a keyword set supplied from `init.rs`
+must produce theme elements and query rules for EVERY keyword, asserted through
+the real component, since the failure is invisible to any test that does not
+load org. Plus the ordering itself: the event fires before the named plugin's
+`register_theme_elements`, and not at all for a plugin nobody asked about.
 
 ### OA.15 — `org-agenda-log-mode` 📝
 ### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝

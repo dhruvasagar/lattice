@@ -45,7 +45,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.12 | The dispatcher transient **(plugin)** | ✅ |
 | OA.13 | `<leader>oa` / `C-c a` open the dispatcher **(plugin)** | ✅ |
 | **Phase 5 — layered display modes** | | |
-| OA.14 | A second virtual-row provider on one view (spike) | 📝 |
+| OA.14 | A second virtual-row provider on one view (spike) | ✅ |
 | OA.15 | `org-agenda-log-mode` | 📝 |
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
@@ -720,7 +720,7 @@ typo costs them.
 
 ## Phase 5 — layered display modes
 
-### OA.14 — A second virtual-row provider on one view (spike) 📝
+### OA.14 — A second virtual-row provider on one view (spike) ✅
 
 Before writing three display modes, prove one non-agenda provider can register
 alongside the multibuffer's two and have its rows survive a refresh.
@@ -730,6 +730,39 @@ refresh performs?), not capability.
 
 **If it does not survive**, phase 5 needs a re-registration hook and that is
 better discovered here than three slices in.
+
+**Finding: it survives. Phase 5 needs no re-registration hook, and OA.15–OA.17
+can be written as planned** — a manual minor registering one provider in
+`on_activate`.
+
+Both halves hold. A third provider is accepted alongside the view's own two
+(excerpt headers + the status headerline), and re-registering the same
+`ProviderId` is refused rather than duplicated — so a mode re-activating cannot
+double its own rows.
+
+The lifecycle half does not fire, and the reason is worth recording rather than
+re-deriving: **a refresh does not rebuild the view.** The agenda is
+`reuse: true`, so `gr` → `AppEffect::OpenProviderView` → `open_agenda` returns
+the EXISTING buffer and `create_multibuffer_view` is never called a second
+time; the refresh replaces the view's excerpts. Providers are keyed by
+`BufferId` in `Editor::virtual_row_providers` and are removed only by an
+explicit `unregister`, which nothing on that path calls.
+
+Tests: `lattice-host/tests/virtual_row_providers_survive_a_refresh.rs`. They
+drive the real opener rather than asserting "nothing calls `unregister`" — that
+assertion IS the reasoning under test, so using it as the method would prove
+nothing. The reuse itself is pinned (`again == view`), because a future change
+that made the agenda build a fresh buffer per refresh would orphan every
+provider a minor registered, and that is precisely the hook-shaped failure this
+slice exists to detect.
+
+**A trap this spike fell into first, worth repeating for whoever writes
+OA.15.** The first cut registered its provider on a hand-built multibuffer and
+called `open_agenda`, which DECLINED ("no plugin provides agenda rows") and
+returned before reaching any of the code under test — two green tests proving
+nothing. The opener needs a registered `ScannedExcerptSource` to get as far as
+the reuse path, and the helper now panics on a decline rather than treating it
+as a pass.
 
 ### OA.15 — `org-agenda-log-mode` 📝
 ### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝

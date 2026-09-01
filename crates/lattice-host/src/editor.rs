@@ -1476,6 +1476,18 @@ pub struct Editor {
     /// `Some((buffer_id, document_version))` records the cache
     /// state last reflected into `self.folds`.
     pub last_recomputed_lsp_fold_version: Option<(BufferId, u64)>,
+    /// OA.4d: `(buffer, text_version)` the current [`Editor::folds`] were
+    /// computed from, so the tick can notice when they no longer match.
+    ///
+    /// Folds are otherwise seeded in two places, and neither covers a view
+    /// that fills in ASYNCHRONOUSLY: `activate_buffer` seeds them when the
+    /// buffer is activated — which for a provider view is while it is still
+    /// EMPTY, before the scan lands — and `maybe_reparse_syntax` recomputes
+    /// on the edit path, which a view nobody typed into never takes. So the
+    /// agenda had no folds at all until something forced a redraw, and
+    /// `<Tab>` was a no-op because there was nothing under the cursor to
+    /// cycle.
+    pub last_folded_text_version: Option<(BufferId, u64)>,
     /// Per-buffer `inlayHint` cache.
     ///
     /// Phase 5.8.AF.5 / Slice 3b.1: see `lsp_folds_cache` note.

@@ -16796,6 +16796,20 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
+        self.maybe_refold_after_async_population();
+        // OA.4d: folds must follow the document, including when the document
+        // filled in without anyone typing.
+        //
+        // `activate_buffer` seeds folds on activation and `maybe_reparse_syntax`
+        // recomputes them on the edit path. A provider view is activated while
+        // still EMPTY — `open_scan_view` returns before its scan lands — and
+        // is never typed into, so neither fired: the org agenda had NO folds
+        // until something forced a redraw, which made `<Tab>` a no-op with
+        // nothing under the cursor to cycle.
+        //
+        // One `u64` compare per tick. On an ordinary buffer
+        // `maybe_reparse_syntax` has already recomputed and stamped the same
+        // version, so this is a no-op rather than a second pass.
         signals.extend(self.drain_autoread_changes());
         signals.extend(self.drain_option_changes());
         signals.extend(self.drain_pending_hover());
@@ -18787,6 +18801,10 @@ impl Editor {
     /// is empty (request still in-flight, server not attached, or
     /// sub-mode disabled).
     pub fn recompute_folds(&mut self) {
+        // OA.4d: stamp what these folds were computed from, so the tick can
+        // tell whether they still match the document.
+        self.last_folded_text_version =
+            Some((self.document_buffer_id, self.document.text_version()));
         let fm = self.foldmethod();
         // Pre-refactor parity: `foldmethod=manual` preserves the
         // existing fold list verbatim (vim behaviour — the user has
@@ -18925,6 +18943,25 @@ impl Editor {
     /// be the active buffer's, as a proxy — see the comment at the read
     /// for why that stopped being safe once mode-contributed `foldmethod`
     /// became buffer-scoped.
+    /// OA.4d: recompute folds when the active document has moved past the
+    /// version they were built from.
+    ///
+    /// Deliberately version-gated rather than `folds.is_empty()`-gated, which
+    /// was the tempting one-liner: a `gr` that REPLACES a view's rows leaves a
+    /// non-empty but stale fold list, and an emptiness check would keep it.
+    ///
+    /// `Manual` is NOT skipped here, and that was a bug on the first cut.
+    /// `recompute_folds` has its own, sharper policy: `Manual` preserves
+    /// hand-curated `zf` folds but STILL runs registered overlay sources — and
+    /// a multibuffer's folds are exactly such an overlay. Bailing on `Manual`
+    /// meant the agenda, which has no foldmethod of its own, never refolded.
+    pub fn maybe_refold_after_async_population(&mut self) {
+        let key = (self.document_buffer_id, self.document.text_version());
+        if self.last_folded_text_version != Some(key) {
+            self.recompute_folds();
+        }
+    }
+
     pub fn recompute_folds_for_buffer(&mut self, buffer_id: lattice_core::BufferId) {
         if buffer_id == self.document_buffer_id
             && matches!(

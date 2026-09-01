@@ -1289,14 +1289,23 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // local — only markdown buffers carry these tokens (Option A, design
     // §6.1; T.8 buffer-local remap stays deferred for true per-buffer
     // divergence like variable-pitch prose).
+    // No underline, and the comment above is why it USED to have one: the
+    // default was tuned on the premise that "Heading tokens are
+    // markdown-exclusive", where an h1 is typically the one document title and
+    // an underline reads as a title rule. Org made that premise false — it
+    // captures `@text.title.1` for every `*` headline, and a `*` in org is an
+    // ordinary top-level section, of which a file has many. Underlining all of
+    // them is noise, and no editor does it: emacs org-mode does not, and
+    // neither does markdown-mode.
+    //
+    // Nothing is lost where the underline was doing work. It was the TUI's
+    // stand-in for `scale`, which a fixed cell grid cannot render — but red +
+    // bold already separates an h1 there, and GPUI renders the scale ramp
+    // directly, so the underline was doubled-up emphasis on the peer the ramp
+    // exists for.
     reg_one(
         "syntax.heading.1",
-        spec()
-            .fg("red")
-            .bold()
-            .underline()
-            .weight(Weight::ExtraBold)
-            .scale(1.6),
+        spec().fg("red").bold().weight(Weight::ExtraBold).scale(1.6),
         "Markup heading level 1.",
     );
     reg_one(
@@ -1973,13 +1982,15 @@ mod tests {
             Style::empty().fg(Color::Rgb(0x6c, 0x70, 0x86)).italic()
         );
         // T.10: heading.1 carries the rich `ExtraBold` weight; F.3 adds
-        // the rich `scale` (1.6× = FontScale(160)).
+        // the rich `scale` (1.6× = FontScale(160)). No underline — see the
+        // registration's own comment: it was tuned for markdown, where an h1
+        // is the document title, and org captures the same token for every
+        // top-level `*` headline.
         assert_eq!(
             resolved_of(&reg, "syntax.heading.1"),
             Style::empty()
                 .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
                 .bold()
-                .underline()
                 .weight(Weight::ExtraBold)
                 .scale(FontScale::from_ratio(1.6))
         );
@@ -2487,13 +2498,12 @@ mod tests {
             resolved.get(ids.syntax_comment)
         );
         // T.10: heading.1 resolves with the rich `ExtraBold` weight too;
-        // F.3 adds the rich `scale` (1.6×).
+        // F.3 adds the rich `scale` (1.6×). Not underlined.
         assert_eq!(
             resolved.get(ids.syntax_heading_1),
             Style::empty()
                 .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
                 .bold()
-                .underline()
                 .weight(Weight::ExtraBold)
                 .scale(FontScale::from_ratio(1.6))
         );
@@ -2533,7 +2543,11 @@ mod tests {
         assert_eq!(resolved.get(ids.syntax_heading_6).weight, None);
         // The bold bool + fg survive alongside the weight.
         assert!(resolved.get(ids.syntax_heading_1).modifiers.bold);
-        assert!(resolved.get(ids.syntax_heading_1).modifiers.underline);
+        // …and h1 is NOT underlined. It was, on the premise that heading
+        // tokens are markdown-only and an h1 is a document title; org captures
+        // `@text.title.1` for every `*` headline, so that underlined every
+        // top-level section in the file.
+        assert!(!resolved.get(ids.syntax_heading_1).modifiers.underline);
     }
 
     #[test]

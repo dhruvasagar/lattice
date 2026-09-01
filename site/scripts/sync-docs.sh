@@ -36,7 +36,7 @@ USER_SRC = os.path.join(repo_root, 'docs', 'user')
 DEV_SRC = os.path.join(repo_root, 'docs', 'dev')
 DOCS_DST = os.path.join(site_dir, 'content', 'docs')
 DEV_DST = os.path.join(site_dir, 'content', 'dev')
-DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes']
+DEV_SUBDIRS = ['guides', 'architecture', 'operations', 'audit', 'notes', 'reference']
 
 GH_BLOB = 'https://github.com/dhruvasagar/lattice/blob/main'
 GH_TREE = 'https://github.com/dhruvasagar/lattice/tree/main'

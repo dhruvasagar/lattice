@@ -15607,6 +15607,7 @@ impl Editor {
                         composed_end: eh.composed_end,
                         source_start: eh.source_start,
                         handle: eh.highlighter,
+                        lang: eh.lang,
                     })
                     .collect::<Vec<_>>()
                     .into_boxed_slice()

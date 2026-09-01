@@ -250,4 +250,16 @@ pub struct ExcerptHighlight {
     pub composed_end: u32,
     pub source_start: u32,
     pub highlighter: Arc<dyn ExcerptHighlighter>,
+    /// OA.7b: the excerpt's grammar name, for the conceal rules that apply to
+    /// its rows.
+    ///
+    /// Conceal is otherwise resolved once per PANE from the buffer's single
+    /// syntax handle — and a multibuffer has no single language, so it
+    /// resolved to no rules and an org link in an agenda row showed its raw
+    /// brackets while the same line concealed correctly in its own file.
+    ///
+    /// A `&'static str` rather than the rules themselves: `lattice-cells` has
+    /// no business knowing what a conceal rule is, and the name is what the
+    /// registry is keyed by anyway.
+    pub lang: Option<&'static str>,
 }

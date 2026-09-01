@@ -32,9 +32,9 @@ the shared minor). Catalogue entry: the agenda in
 | OA.4c | A one-line excerpt is not a fold | ✅ |
 | **Phase 2 — the view looks like an agenda** | | |
 | OA.5 | `display-span` spans on the scan result (WIT seam) | ✅ |
-| OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | 📝 |
-| OA.7 | Header cells carry the block's own shape | 📝 |
-| OA.7b | Conceal resolves per excerpt, so it works in a multibuffer | 📝 |
+| OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | ✅ |
+| OA.7 | Header cells carry the block's own shape | ✅ |
+| OA.7b | Conceal resolves per excerpt, so it works in a multibuffer | ✅ |
 | **Phase 3 — the query language** | | |
 | OA.8 | `Row` carries tags and properties **(plugin)** | 📝 |
 | OA.9 | Match-expression parser **(plugin)** | 📝 |
@@ -441,7 +441,7 @@ reason. Filtering it breaks three tests that pin single-line group folds,
 including the invariant that the header and file-boundary providers agree on a
 file-grouped layout. That is a shared-substrate question rather than this bug.
 
-### OA.7b — Conceal resolves per excerpt 📝
+### OA.7b — Conceal resolves per excerpt ✅
 
 Reported alongside OA.4c: conceal does not work in the agenda, so an org link
 in a headline shows its raw brackets there while the same line conceals
@@ -454,11 +454,23 @@ handles, which is what K.4.7 added for highlighting. Highlighting has an
 explicit multibuffer branch; conceal has none, so it silently resolves to no
 rules.
 
-So the fix is K.4.7's shape applied to conceal: resolve rules per row from the
-excerpt's handle rather than once per pane. **Cells-worker hot path** — the
-conceal axis is deliberately kept out of the per-row cache key (CL.1 keeps a
-cursor move at 47 ns rather than a ~1.5 ms rebuild), so this needs a bench
-before and after, not just a test.
+K.4.7's shape, applied to conceal. An excerpt carries its grammar NAME — a
+`&'static str`, so nothing allocates and `lattice-cells` needs no idea what a
+conceal rule is — and the worker resolves rules once per DISTINCT language in
+the view. An agenda over one org corpus has one language and a thousand
+excerpts, so resolving per excerpt would take the registry lock a thousand
+times for one answer.
+
+Empty for every ordinary buffer, so the per-row lookup finds nothing and the
+row falls through to the pane's rules exactly as before — the hot path is
+unchanged where it is hot.
+
+**The incremental rebuild path gets it too**, and its own comment says why: a
+link that renders raw only on the line you just touched would be the most
+visible possible version of this bug.
+
+A row belonging to NO excerpt — a header's virtual row sits outside them —
+resolves to nothing rather than to a neighbour's grammar, which is pinned.
 
 ---
 

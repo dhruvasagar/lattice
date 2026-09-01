@@ -669,6 +669,10 @@ fn syntax_highlights_per_excerpt_use_source_language() {
             composed_end: ce,
             source_start: ss,
             handle: h,
+            // OA.7b: this test asserts per-excerpt HIGHLIGHTING, not conceal.
+            // `None` is the honest value — no grammar named, so no conceal
+            // rules resolve and the rows fall through to the pane's.
+            lang: None,
         })
         .collect::<Vec<_>>()
         .into_boxed_slice()

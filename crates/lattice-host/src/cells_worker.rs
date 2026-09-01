@@ -1078,6 +1078,7 @@ fn try_incremental_build(
                 // The cell path is the legacy parity oracle (deleted at B4)
                 // and builds via `build_chunk_rows`, which never reads these.
                 conceal_rules: &[],
+                excerpt_conceal: &[],
             };
             let rows = build_chunk_rows(&inputs, 0, new_line_count);
             let chunk = Arc::new(CellChunk::new(0, rows, new_version));
@@ -1118,7 +1119,8 @@ fn try_incremental_build(
             default_flags,
             whitespace,
             refine_by_line: &[],
-            conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+            conceal_rules: &[],
+            excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
             conceal_reveal_line: None,
         };
         rows.extend(build_chunk_rows(&inputs, edit_lo, affected_hi));
@@ -1216,6 +1218,7 @@ fn try_incremental_build(
         whitespace,
         refine_by_line: &[],
         conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+        excerpt_conceal: &[],
         conceal_reveal_line: None,
     };
     let mut cur = rebuild_lo;
@@ -1336,7 +1339,8 @@ fn build_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
-                conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+                conceal_rules: &[],
+                excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
                 conceal_reveal_line: None,
             };
             let rows = build_chunk_rows(&inputs, 0, line_count);
@@ -1372,7 +1376,8 @@ fn build_matrix(
                 default_flags,
                 whitespace,
                 refine_by_line: &[],
-                conceal_rules: &[], // legacy cell path; build_chunk_rows ignores these
+                conceal_rules: &[],
+                excerpt_conceal: &[], // legacy cell path; build_chunk_rows ignores these
                 conceal_reveal_line: None,
             };
             let mut chunks: Vec<Arc<CellChunk>> =
@@ -1656,6 +1661,11 @@ struct ChunkInputs<'a> {
     /// that declares none, and the emptiness is what makes the conceal
     /// path cost a Rust buffer nothing.
     conceal_rules: &'a [lattice_syntax::conceal::ConcealRule],
+    /// OA.7b: per-excerpt conceal rules for a multibuffer, in composed-row
+    /// order. Empty for an ordinary buffer, which resolves once from
+    /// `conceal_rules` above — a multibuffer has no single language to
+    /// resolve from, which is why conceal did nothing in the agenda.
+    excerpt_conceal: &'a [ExcerptConceal],
     /// CL.1: the one line whose conceals are suppressed, or `None`.
     conceal_reveal_line: Option<u32>,
 }
@@ -2220,7 +2230,11 @@ fn build_display_rows(
             if inputs.conceal_reveal_line == Some(line_idx) {
                 &[]
             } else {
-                inputs.conceal_rules
+                // OA.7b: a multibuffer row's rules come from the EXCERPT it
+                // belongs to, not from the pane — the pane has no one
+                // language. Falls through to the pane's rules for every
+                // ordinary buffer, where `excerpt_conceal` is empty.
+                rules_for_row(inputs.excerpt_conceal, line_idx).unwrap_or(inputs.conceal_rules)
             },
         );
         rows.push(DisplayLine {
@@ -2307,6 +2321,65 @@ pub(crate) fn extra_spans_version(spans: &[Vec<lattice_syntax::StyledSpan>]) -> 
 /// The empty `Arc` costs one allocation-free clone, and
 /// `conceal_spans` returns immediately on it, so a Rust buffer never
 /// reaches the matcher at all.
+/// OA.7b: one excerpt's composed row range and the conceal rules its grammar
+/// declares.
+pub(crate) struct ExcerptConceal {
+    composed_start: u32,
+    composed_end: u32,
+    rules: std::sync::Arc<[lattice_syntax::conceal::ConcealRule]>,
+}
+
+/// The rules covering `row`, or `None` when this is not a multibuffer (or the
+/// row belongs to no excerpt, which a header's virtual row does).
+fn rules_for_row(
+    excerpts: &[ExcerptConceal],
+    row: u32,
+) -> Option<&[lattice_syntax::conceal::ConcealRule]> {
+    excerpts
+        .iter()
+        .find(|e| row >= e.composed_start && row <= e.composed_end)
+        .map(|e| e.rules.as_ref())
+}
+
+/// Resolve conceal rules once per DISTINCT language in the view.
+///
+/// An agenda over one org corpus has one language and a thousand excerpts, so
+/// resolving per excerpt would take the registry lock a thousand times for one
+/// answer. Empty when nothing in the view declares rules — which is every
+/// view but org's — so the per-row lookup above finds nothing and costs a
+/// pointer compare.
+fn excerpt_conceal_for(
+    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
+) -> Vec<ExcerptConceal> {
+    if excerpt_syntax.is_empty() {
+        return Vec::new();
+    }
+    let Ok(reg) = lattice_syntax::registry::live() else {
+        return Vec::new();
+    };
+    let mut by_lang: std::collections::HashMap<
+        &'static str,
+        std::sync::Arc<[lattice_syntax::conceal::ConcealRule]>,
+    > = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for ex in excerpt_syntax {
+        let Some(lang) = ex.lang else { continue };
+        let rules = by_lang
+            .entry(lang)
+            .or_insert_with(|| reg.conceal_rules(lang))
+            .clone();
+        if rules.is_empty() {
+            continue;
+        }
+        out.push(ExcerptConceal {
+            composed_start: ex.composed_start,
+            composed_end: ex.composed_end,
+            rules,
+        });
+    }
+    out
+}
+
 fn conceal_rules_for(
     syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
 ) -> std::sync::Arc<[lattice_syntax::conceal::ConcealRule]> {
@@ -2381,6 +2454,9 @@ fn build_display_matrix(
     // buffer with no syntax handle, an unavailable registry, or — the
     // overwhelmingly common case — a language that declares no rules.
     let conceal_rules = conceal_rules_for(syntax_handle);
+    // OA.7b: and the per-excerpt rules for a multibuffer. Empty for every
+    // ordinary pane, so the row loop's lookup finds nothing.
+    let excerpt_conceal = excerpt_conceal_for(excerpt_syntax);
 
     let highlight_range = |lo: u32, hi: u32| -> Option<Vec<Vec<lattice_syntax::StyledSpan>>> {
         // K.4.7: multibuffer panes use per-excerpt handles.
@@ -2436,6 +2512,7 @@ fn build_display_matrix(
                 whitespace,
                 refine_by_line: extra_refine,
                 conceal_rules: &conceal_rules,
+                excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: reveal_line,
             };
             let rows = build_display_rows(&inputs, 0, line_count);
@@ -2464,6 +2541,7 @@ fn build_display_matrix(
                 whitespace,
                 refine_by_line: extra_refine,
                 conceal_rules: &conceal_rules,
+                excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: reveal_line,
             };
             let mut chunks: Vec<Arc<DisplayChunk>> =
@@ -2627,6 +2705,10 @@ fn try_incremental_display_build(
     // link that renders raw only on the line you just touched would be
     // the most visible possible version of this bug.
     let conceal_rules = conceal_rules_for(pane.syntax_handle.as_deref());
+    // OA.7b: and per excerpt, for the same reason as the comment above — a
+    // multibuffer row concealing only until you touch it would be worse than
+    // not concealing at all.
+    let excerpt_conceal = excerpt_conceal_for(&pane.excerpt_syntax);
     let edit = pane.last_edit?;
     if published.chunks.is_empty() {
         return None;
@@ -2742,6 +2824,7 @@ fn try_incremental_display_build(
                 whitespace,
                 refine_by_line: &[],
                 conceal_rules: &conceal_rules,
+                excerpt_conceal: &excerpt_conceal,
                 conceal_reveal_line: pane.conceal_reveal_line,
             };
             let rows = build_display_rows(&inputs, 0, new_line_count);
@@ -2776,6 +2859,7 @@ fn try_incremental_display_build(
             whitespace,
             refine_by_line: &[],
             conceal_rules: &conceal_rules,
+            excerpt_conceal: &excerpt_conceal,
             // CL.1: a sticky-context header is never the cursor line.
             conceal_reveal_line: None,
         };
@@ -2887,6 +2971,7 @@ fn try_incremental_display_build(
         whitespace,
         refine_by_line: &[],
         conceal_rules: &conceal_rules,
+        excerpt_conceal: &excerpt_conceal,
     };
 
     // Assemble the zone rows in source-line order:
@@ -4729,6 +4814,53 @@ mod tests {
     // ---- H.3: the display row elides ----
 
     /// Org's real two rules, compiled.
+    /// OA.7b: a multibuffer row conceals by ITS OWN excerpt's grammar.
+    ///
+    /// Conceal was resolved once per pane from the buffer's single syntax
+    /// handle, and a multibuffer has none — so it resolved to no rules and an
+    /// org link in an agenda row showed its raw `[[id:…][…]]` while the same
+    /// line concealed correctly in its own file.
+    #[test]
+    fn a_multibuffer_row_conceals_by_its_own_excerpts_language() {
+        let rules: std::sync::Arc<[lattice_syntax::conceal::ConcealRule]> =
+            std::sync::Arc::from(org_conceal_rules());
+        // Rows 0..=1 are org; row 2 belongs to no excerpt (a header's virtual
+        // row sits outside them) and must fall through to the pane's rules.
+        let excerpts = vec![ExcerptConceal {
+            composed_start: 0,
+            composed_end: 1,
+            rules: rules.clone(),
+        }];
+
+        assert!(
+            rules_for_row(&excerpts, 0).is_some_and(|r| !r.is_empty()),
+            "an org row gets org's rules"
+        );
+        assert!(rules_for_row(&excerpts, 1).is_some());
+        assert!(
+            rules_for_row(&excerpts, 2).is_none(),
+            "a row outside every excerpt resolves to nothing, so the caller \
+             falls back to the pane's rules rather than concealing by a \
+             neighbour's grammar"
+        );
+
+        // And the rules that come back actually conceal.
+        let line = "* TODO see [[id:abc][the note]]";
+        let (text, conceals, _) = row(line, rules_for_row(&excerpts, 0).unwrap());
+        assert!(
+            !conceals.is_empty() && text.contains("the note") && !text.contains("[[id:"),
+            "got {text:?} conceals={conceals:?}"
+        );
+    }
+
+    /// An ordinary buffer has no excerpts, so every row falls through to the
+    /// pane's own rules and the path is byte-identical to before.
+    #[test]
+    fn an_ordinary_buffer_resolves_no_per_excerpt_rules() {
+        assert!(rules_for_row(&[], 0).is_none());
+        assert!(rules_for_row(&[], 41).is_none());
+    }
+
     fn org_conceal_rules() -> Vec<lattice_syntax::conceal::ConcealRule> {
         // OL.1: slots carried, so these fixtures exercise the styled path the
         // shipped rules take rather than a conceal-only shape org no longer has.

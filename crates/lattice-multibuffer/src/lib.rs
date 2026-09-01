@@ -1802,6 +1802,9 @@ impl Document for MultibufferDocumentHandle {
                     composed_end: composed_row + line_count - 1,
                     source_start: ex.start_line,
                     highlighter: Arc::clone(handle) as Arc<dyn lattice_cells::ExcerptHighlighter>,
+                    // OA.7b: the row's own grammar, so conceal can resolve
+                    // per excerpt the way highlighting already does.
+                    lang: Some(handle.lang().name()),
                 });
             }
             composed_row += line_count;

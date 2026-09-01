@@ -1415,6 +1415,9 @@ pub struct ExcerptSyntax {
     pub composed_end: u32,
     pub source_start: u32,
     pub handle: std::sync::Arc<dyn lattice_cells::ExcerptHighlighter>,
+    /// OA.7b: the excerpt's grammar name, for its conceal rules. See
+    /// [`lattice_cells::ExcerptHighlight::lang`].
+    pub lang: Option<&'static str>,
 }
 
 impl std::fmt::Debug for ExcerptSyntax {

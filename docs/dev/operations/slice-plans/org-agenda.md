@@ -28,10 +28,13 @@ the shared minor). Catalogue entry: the agenda in
 | OA.2 | Title-run header grouping; the `[untitled]` rows go | ✅ |
 | OA.3 | ~~Refresh repopulates the view~~ — **not a defect**, see below | ⛔ |
 | OA.4 | `<Tab>` / `<S-Tab>` cycle agenda blocks **(plugin)** | ✅ |
+| OA.4b | `<Tab>` is declared once, on a shared `foldable-view-mode` | ✅ |
+| OA.4c | A one-line excerpt is not a fold | ✅ |
 | **Phase 2 — the view looks like an agenda** | | |
 | OA.5 | `display-span` spans on the scan result (WIT seam) | 📝 |
 | OA.6 | Org emits agenda spans; keyword/priority/tag colour **(plugin)** | 📝 |
 | OA.7 | Header cells carry the block's own shape | 📝 |
+| OA.7b | Conceal resolves per excerpt, so it works in a multibuffer | 📝 |
 | **Phase 3 — the query language** | | |
 | OA.8 | `Row` carries tags and properties **(plugin)** | 📝 |
 | OA.9 | Match-expression parser **(plugin)** | 📝 |
@@ -392,6 +395,49 @@ block header a shape of its own (count badge, dimmed date suffix).
 
 Generic: search, diff and references all inherit it. Keep the change in
 `header_cells` rather than in the agenda.
+
+### OA.4c — A one-line excerpt is not a fold ✅
+
+Fallout from OA.1, found in use rather than by test: "`<Tab>` doesn't work
+cleanly in org-agenda, only `<S-Tab>` seems to work."
+
+Two fold sources are registered per view — one fold per excerpt (M.7), one per
+group (AF.1). One-line rows made the per-excerpt fold `start == end`, which can
+hide nothing, *and* `innermost_fold_idx` prefers the greatest `start_line` — so
+the degenerate fold shadowed the group fold containing the row. `<Tab>` toggled
+it and nothing moved. `<S-Tab>` sets every fold at once, so it was unaffected,
+which is exactly how the report reads.
+
+**The test that should have caught this passed on the broken code**, and that
+is the part worth remembering. It asserted "the number of closed folds
+changed" — true when a degenerate fold toggles invisibly, and true again when
+`CycleFoldAtCursor` falls back to a global cycle. Both are the failure. It now
+asserts WHICH fold changed and that only it did, over two multi-row blocks,
+because a one-row group folds to nothing and proves neither.
+
+**Left open deliberately:** a single-row GROUP fold is degenerate for the same
+reason. Filtering it breaks three tests that pin single-line group folds,
+including the invariant that the header and file-boundary providers agree on a
+file-grouped layout. That is a shared-substrate question rather than this bug.
+
+### OA.7b — Conceal resolves per excerpt 📝
+
+Reported alongside OA.4c: conceal does not work in the agenda, so an org link
+in a headline shows its raw brackets there while the same line conceals
+correctly in its own file.
+
+Structural, not a wiring miss. Every `conceal_rules_for` call in
+`cells_worker.rs` takes `pane.syntax_handle` — the buffer's ONE language — and
+a multibuffer has no single language: its rows are coloured through per-excerpt
+handles, which is what K.4.7 added for highlighting. Highlighting has an
+explicit multibuffer branch; conceal has none, so it silently resolves to no
+rules.
+
+So the fix is K.4.7's shape applied to conceal: resolve rules per row from the
+excerpt's handle rather than once per pane. **Cells-worker hot path** — the
+conceal axis is deliberately kept out of the per-row cache key (CL.1 keeps a
+cursor move at 47 ns rather than a ~1.5 ms rebuild), so this needs a bench
+before and after, not just a test.
 
 ---
 

@@ -24567,11 +24567,21 @@ fn step_byte(
     p: lattice_protocol::position::Position,
     dir: lattice_grammar::SearchDirection,
 ) -> lattice_protocol::position::Position {
+    // Step a whole UTF-8 scalar, not one byte (same rule as
+    // `motion_char_right`): `n` / `N` across a multibyte glyph must
+    // land on a char boundary. A mid-scalar offset is snapped back
+    // by `lattice_core::search`'s defensive floor, which would leave
+    // `n` re-finding the match it was told to skip.
+    let line = buf.line(p.line).unwrap_or_default();
     match dir {
         lattice_grammar::SearchDirection::Forward => {
             let len = buf.line_byte_len(p.line);
             if p.byte < len {
-                lattice_protocol::position::Position::new(p.line, p.byte + 1)
+                let mut byte = p.byte as usize + 1;
+                while byte < line.len() && !line.is_char_boundary(byte) {
+                    byte += 1;
+                }
+                lattice_protocol::position::Position::new(p.line, byte as u32)
             } else {
                 let last = last_addressable_line(buf);
                 if p.line < last {
@@ -24581,7 +24591,17 @@ fn step_byte(
                 }
             }
         }
-        lattice_grammar::SearchDirection::Backward => previous_position(buf, p),
+        lattice_grammar::SearchDirection::Backward => {
+            if p.byte > 0 {
+                let mut byte = (p.byte as usize - 1).min(line.len());
+                while byte > 0 && !line.is_char_boundary(byte) {
+                    byte -= 1;
+                }
+                lattice_protocol::position::Position::new(p.line, byte as u32)
+            } else {
+                previous_position(buf, p)
+            }
+        }
     }
 }
 
@@ -51436,6 +51456,76 @@ mod tests {
             map.sign_at(3),
             None,
             "the file entry pushed down to line 3 is not a diff line"
+        );
+    }
+
+    // ── `n` / `N` step whole UTF-8 scalars ──
+    //
+    // `step_byte` advances past the match at the cursor before
+    // re-running the search. A raw byte step lands mid-scalar on a
+    // multibyte glyph, which `lattice_core::search` then snaps back
+    // to the scalar start -- leaving `n` re-finding the match it was
+    // asked to skip. (Before the snap existed it panicked ropey's
+    // `byte_slice` on the editor actor thread instead.)
+
+    #[test]
+    fn searching_an_empty_alternation_over_multibyte_text_does_not_panic() {
+        // The reported crash: `/|` matches zero-width at every
+        // position, and hlsearch's `find_all` walked those matches a
+        // byte at a time -- landing inside `│` and panicking ropey's
+        // `byte_slice` on the editor actor thread, which then took
+        // the main thread down with `RecvError`.
+        let mut ed = Editor::boot(lattice_core::Document::from_text("let a = │b;\nx│y\n"));
+        ed.execute_search(
+            "|",
+            lattice_grammar::SearchDirection::Forward,
+            lattice_protocol::position::Position::new(0, 0),
+        );
+        // Every hit is a real char boundary in the document.
+        let text = ed.active_text();
+        for m in &ed.all_matches {
+            assert!(
+                text.position_to_byte(m.start).is_ok(),
+                "hit {m:?} is not addressable"
+            );
+        }
+        assert!(!ed.all_matches.is_empty());
+    }
+
+    #[test]
+    fn step_byte_forward_clears_a_multibyte_scalar() {
+        // "a│b": 'a' at 0, '│' at 1..4, 'b' at 4.
+        let buf = lattice_core::Buffer::from_text("a│b");
+        let from = lattice_protocol::position::Position::new(0, 1);
+        let next = step_byte(&buf, from, lattice_grammar::SearchDirection::Forward);
+        assert_eq!(next.byte, 4, "step must clear all three bytes of `│`");
+    }
+
+    #[test]
+    fn step_byte_backward_clears_a_multibyte_scalar() {
+        let buf = lattice_core::Buffer::from_text("a│b");
+        let from = lattice_protocol::position::Position::new(0, 4);
+        let prev = step_byte(&buf, from, lattice_grammar::SearchDirection::Backward);
+        assert_eq!(prev.byte, 1, "step must land on `│`'s leading byte");
+    }
+
+    #[test]
+    fn repeat_search_advances_past_a_multibyte_match() {
+        // The match IS the multibyte glyph, so a one-byte step lands
+        // inside it and snaps straight back to the same match. "│a│":
+        // first `│` at 0..3, `a` at 3, second `│` at 4..7.
+        let mut ed = Editor::boot(lattice_core::Document::from_text("│a│\n"));
+        ed.execute_search(
+            "│",
+            lattice_grammar::SearchDirection::Forward,
+            lattice_protocol::position::Position::new(0, 0),
+        );
+        assert_eq!(ed.cursor, lattice_protocol::position::Position::new(0, 0));
+        ed.repeat_search(false);
+        assert_eq!(
+            ed.cursor,
+            lattice_protocol::position::Position::new(0, 4),
+            "`n` must advance to the second `│`, not stick on the first"
         );
     }
 }

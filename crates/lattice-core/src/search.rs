@@ -50,7 +50,12 @@
 //!
 //! Both directions are inclusive of `from`. To skip the match at
 //! the cursor (vim's `n` after `/`), the caller advances `from` by
-//! one byte before calling.
+//! one **UTF-8 scalar** before calling -- not one byte. A byte step
+//! lands mid-scalar on non-ASCII text; this module snaps such an
+//! offset back to the containing scalar (see `floor_char_boundary`)
+//! rather than panicking, which would leave `n` re-finding the very
+//! match the caller meant to skip. `dispatch::step_byte` is the
+//! in-tree caller that honours this.
 
 use fancy_regex::Regex;
 use lattice_protocol::CancellationToken;
@@ -122,9 +127,16 @@ pub fn find_all(
                 let end = buffer.byte_to_position(end_b)?;
                 hits.push(Range::new(start, end));
                 // Advance past the match to avoid overlapping. If the
-                // match was zero-width (e.g. `^`, `\b`), still advance
-                // one byte so we make progress.
-                next = if end_b > start_b { end_b } else { start_b + 1 };
+                // match was zero-width (e.g. `^`, `\b`, or the empty
+                // alternation in `/|`), still advance so we make
+                // progress -- by a whole UTF-8 scalar, not one byte.
+                // A byte step lands mid-scalar on non-ASCII text and
+                // panics ropey's `byte_slice` next iteration.
+                next = if end_b > start_b {
+                    end_b
+                } else {
+                    ceil_char_boundary(buffer.rope(), start_b + 1)
+                };
                 if next >= total {
                     break;
                 }
@@ -203,6 +215,11 @@ fn find_forward_in_rope(
     if from >= total {
         return Ok(None);
     }
+    // Defensive net (paramount #1: never panic on a keystroke). A
+    // caller-supplied `from` that lands mid-scalar would panic
+    // `byte_slice`; snap DOWN so the scan starts at the containing
+    // scalar. Reported offsets stay absolute and boundary-aligned.
+    let from = floor_char_boundary(rope, from);
     let slice = rope.byte_slice(from..total);
     let mut window: Vec<u8> = Vec::with_capacity(SCAN_WINDOW_BYTES + MAX_MATCH_LEN);
     let mut window_start_abs = from;
@@ -284,7 +301,12 @@ fn find_backward_in_rope(
     // Search window includes any match whose START byte is in
     // [0, from]. Allow up to MAX_MATCH_LEN past `from` for the
     // match to extend.
-    let end = (from + MAX_MATCH_LEN).min(total);
+    // Snap DOWN: `from + MAX_MATCH_LEN` is an arbitrary offset that
+    // lands mid-scalar whenever a multibyte glyph straddles it, and
+    // `byte_slice` panics on that. Rounding down only shortens the
+    // allowance for a match to extend past `from`, never the
+    // `[0, from]` start range the scan is specified over.
+    let end = floor_char_boundary(rope, (from + MAX_MATCH_LEN).min(total));
     let slice = rope.byte_slice(0..end);
 
     // ropey's `Chunks` is forward-only; collect to reverse-iterate.
@@ -363,6 +385,32 @@ fn round_down_utf8_boundary(bytes: &[u8], target: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+/// Round `byte` DOWN to the start of the UTF-8 scalar containing it.
+/// Ropey's `byte_to_char` floors on a mid-scalar index, so the
+/// round-trip through the char index is the snap. Peer of
+/// `buffer::snap_to_char_boundary`, kept local because the search
+/// path works in rope-absolute byte offsets, not `Position`s.
+fn floor_char_boundary(rope: &ropey::Rope, byte: usize) -> usize {
+    let byte = byte.min(rope.len_bytes());
+    rope.char_to_byte(rope.byte_to_char(byte))
+}
+
+/// Round `byte` UP to the next UTF-8 scalar boundary (or the rope
+/// end). Used by the zero-width match advance, which must make
+/// forward progress -- flooring there would loop forever.
+fn ceil_char_boundary(rope: &ropey::Rope, byte: usize) -> usize {
+    let total = rope.len_bytes();
+    if byte >= total {
+        return total;
+    }
+    let floor = floor_char_boundary(rope, byte);
+    if floor == byte {
+        byte
+    } else {
+        rope.char_to_byte(rope.byte_to_char(byte) + 1)
+    }
 }
 
 /// Bridge fancy-regex's runtime error type into `CoreError`.
@@ -661,6 +709,50 @@ mod tests {
         let b = Buffer::from_text("a1 b2 c3");
         let hits = find_all(&b, &re(r"\d"), &CancellationToken::never()).unwrap();
         assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn find_all_zero_width_advance_steps_over_multibyte_scalars() {
+        // `/|` (empty alternation) matches zero-width at every
+        // position. The advance must step a whole UTF-8 scalar, not
+        // one byte -- a byte step lands mid-`│` and panicked ropey's
+        // `byte_slice` on the editor actor thread.
+        let b = Buffer::from_text("a│b");
+        let hits = find_all(&b, &re("|"), &CancellationToken::never()).unwrap();
+        // One zero-width hit per scalar boundary: before 'a', before
+        // '│', before 'b'. (The buffer-end position is not scanned.)
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].start, p(0, 0));
+        assert_eq!(hits[1].start, p(0, 1));
+        assert_eq!(hits[2].start, p(0, 4));
+    }
+
+    #[test]
+    fn find_forward_from_mid_scalar_offset_does_not_panic() {
+        // Defensive net at the streaming boundary: a `from` that
+        // lands inside a multibyte scalar must snap, not panic.
+        let b = Buffer::from_text("a│bar");
+        let hit = find_forward_in_rope(b.rope(), &re("bar"), 2, &CancellationToken::never())
+            .unwrap()
+            .expect("match");
+        assert_eq!(hit.0, 4);
+    }
+
+    #[test]
+    fn find_backward_window_end_mid_scalar_does_not_panic() {
+        // The backward window end is `from + MAX_MATCH_LEN` clamped
+        // to `total`. With the clamp out of play, that offset is
+        // arbitrary and lands mid-scalar whenever a multibyte glyph
+        // straddles it. Place `│` (3 bytes) across byte 8192.
+        let filler = "a".repeat(MAX_MATCH_LEN - 4); // "bar" + filler ends at 8191
+        let text = format!("bar{filler}│tail");
+        assert!(!text.is_char_boundary(MAX_MATCH_LEN));
+        assert!(text.len() > MAX_MATCH_LEN);
+        let b = Buffer::from_text(&text);
+        let hit = find_backward_in_rope(b.rope(), &re("bar"), 0, &CancellationToken::never())
+            .unwrap()
+            .expect("match");
+        assert_eq!(hit.0, 0);
     }
 
     #[test]

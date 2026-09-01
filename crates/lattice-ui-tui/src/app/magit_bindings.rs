@@ -650,6 +650,157 @@ mod tests {
         );
     }
 
+    /// Reported 2026-09-01: a magit-status pane's line numbers appear when the
+    /// pane is focused and vanish when it is not.
+    ///
+    /// The two render paths resolve the SAME option from two different places.
+    /// `FrameView::from_app` (the active pane) reads
+    /// `ad().option_cache.show_line_numbers`, which describes the active
+    /// DOCUMENT; `FrameView::for_buffer` (every inactive pane) resolves
+    /// `Number` against the pane's OWN buffer. They agree only while the
+    /// active pane and the active document are the same buffer.
+    ///
+    /// Asserted as an invariant rather than against a literal, because which
+    /// of the two is "right" is a separate question from whether they may
+    /// differ: a pane's gutter is a property of the buffer it is showing, so
+    /// the same buffer must resolve the same way whichever path paints it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_magit_panes_gutter_does_not_depend_on_which_pane_is_focused() {
+        let mut app = app_with("the original file content\n", 20);
+        assert!(
+            app.editor.option_cache.show_line_numbers,
+            "fixture precondition: the file shows line numbers"
+        );
+
+        run_ex(&mut app, "magit-status");
+        assert!(settle_mode(&mut app, "magit-core-mode").await);
+        let magit_id = app.editor.document_buffer_id;
+
+        // What the ACTIVE path feeds `FrameView`, and what the INACTIVE path
+        // feeds it, for the very same buffer.
+        let active_path = app.show_line_numbers();
+        let inactive_path = app.show_line_numbers_for(magit_id);
+        assert_eq!(
+            active_path, inactive_path,
+            "the same buffer must get the same gutter from both render paths"
+        );
+        assert!(
+            !inactive_path,
+            "and magit's own `Number = false` is the answer both should give"
+        );
+    }
+
+    /// The same invariant once the active PANE and the active DOCUMENT are
+    /// different buffers — which is the configuration the report describes and
+    /// the one `from_app` cannot express, since it is keyed on the document.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_active_panes_gutter_follows_its_own_buffer_not_the_active_document() {
+        let mut app = app_with("the original file content\n", 20);
+        let file_id = app.editor.document_buffer_id;
+
+        run_ex(&mut app, "magit-status");
+        assert!(settle_mode(&mut app, "magit-core-mode").await);
+        let magit_id = app.editor.document_buffer_id;
+        assert_ne!(magit_id, file_id);
+
+        // Two panes, each showing a different buffer. Whichever one is
+        // focused, each pane's gutter must describe the buffer IT shows.
+        app.apply(lattice_host::action::Action::SplitPaneVertical);
+
+        assert!(
+            !app.show_line_numbers_for(magit_id),
+            "the magit pane is gutterless whoever is focused"
+        );
+        assert!(
+            app.show_line_numbers_for(file_id),
+            "and the file pane keeps its numbers whoever is focused"
+        );
+        // The active path has no pane parameter at all: it answers for the
+        // active DOCUMENT, so it necessarily gives one of these two answers to
+        // BOTH panes. That is the defect, stated as the shape rather than as a
+        // symptom.
+        assert_eq!(
+            app.show_line_numbers(),
+            *app.editor
+                .resolved_option::<lattice_config::Number>(app.editor.document_buffer_id),
+            "the active path describes the active document, not a pane"
+        );
+    }
+
+    /// The reported flow, exactly: a file open in a split, then navigate to the
+    /// magit-status pane. It comes up WITH line numbers.
+    ///
+    /// `NextPane` moves focus without activating a buffer, so the option cache
+    /// still describes the file — and the active pane's render path
+    /// (`FrameView::from_app`) reads that cache rather than the buffer the pane
+    /// is actually showing. The same pane painted while unfocused goes through
+    /// `for_buffer` and correctly resolves magit's `Number = false`, which is
+    /// why the numbers appear to "disappear on blur".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn navigating_to_a_magit_pane_does_not_give_it_the_files_gutter() {
+        let mut app = app_with("the original file content\n", 20);
+        let file_id = app.editor.document_buffer_id;
+
+        run_ex(&mut app, "magit-status");
+        assert!(settle_mode(&mut app, "magit-core-mode").await);
+        let magit_id = app.editor.document_buffer_id;
+        assert_ne!(magit_id, file_id);
+
+        // A split, then back to the file — so the two panes show two buffers
+        // and the active document is the FILE.
+        app.apply(lattice_host::action::Action::SplitPaneVertical);
+        app.mutate_editor(move |e| {
+            let _ = e.activate_buffer(file_id);
+        });
+        assert_eq!(app.editor.document_buffer_id, file_id);
+        assert!(
+            app.show_line_numbers(),
+            "the file is active and shows its numbers"
+        );
+
+        // Now navigate to the pane showing magit — the reported step.
+        app.apply(lattice_host::action::Action::NextPane);
+        let focused_buffer = app.panes().tree.active().buffer_id;
+        assert_eq!(
+            focused_buffer, magit_id,
+            "precondition: focus landed on the magit pane"
+        );
+
+        // What the ACTIVE render path will feed `FrameView` for this pane.
+        assert!(
+            !app.show_line_numbers(),
+            "the focused magit pane must be gutterless — it is showing a \
+             buffer whose mode sets `Number = false`"
+        );
+
+        // The gutter was the visible half. The invariant is the whole of it:
+        // the hot-path cache describes whatever buffer is actually focused,
+        // so a pane switch cannot leave ANY option describing the buffer we
+        // left. Stated generally because `readonly`, `cursorline` and the LSP
+        // gates were equally stale and none of them announces itself.
+        assert_eq!(
+            app.show_line_numbers(),
+            *app.editor
+                .resolved_option::<lattice_config::Number>(magit_id),
+            "option_cache must describe the focused pane's buffer"
+        );
+        assert_eq!(
+            app.editor.option_cache.current_line_highlight,
+            *app.editor
+                .resolved_option::<lattice_config::CursorLine>(magit_id),
+            "…and not only the option that happened to be reported"
+        );
+
+        // Non-vacuous: going back to the file pane restores ITS options, so
+        // this is measuring a switch and not a value that never moves.
+        app.apply(lattice_host::action::Action::NextPane);
+        assert_eq!(app.panes().tree.active().buffer_id, file_id);
+        assert!(
+            app.show_line_numbers(),
+            "the file pane comes back with its own numbers"
+        );
+    }
+
     /// The seam, not the symptom: `activate_buffer` now completes every
     /// activation itself, so a buffer switch by ANY route lands with the
     /// destination's own options.

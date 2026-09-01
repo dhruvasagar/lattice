@@ -32911,6 +32911,33 @@ impl Editor {
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.clone())
             .unwrap_or_default();
+        // Reported 2026-09-01: "open a file in a split, navigate to the
+        // magit-status pane, it gets line numbers."
+        //
+        // Everything above swaps the document's IDENTITY to follow the
+        // focused pane; none of it re-resolved that buffer's OPTIONS, so the
+        // renderer's hot-path cache went on describing the buffer we just
+        // left. `<C-w>w` onto a magit view therefore painted it with the
+        // file's `Number = true`, and the same pane painted while unfocused
+        // resolved magit's own `Number = false` through
+        // `FrameView::for_buffer` — which is why the numbers appeared to
+        // vanish on blur. The gutter was the visible half; `readonly`,
+        // `cursorline`, `signcolumn`, `wrap` and every LSP gate were equally
+        // stale.
+        //
+        // This is the hole `bury_buffer` had, in the one activation path that
+        // did not go through `activate_buffer_state`. The invariant those
+        // tests state — "option_cache must describe the buffer that is
+        // actually active" — has to hold for a pane switch too, because a
+        // pane switch IS a change of active buffer.
+        //
+        // The two calls rather than `activate_buffer_state()`: that also
+        // activates a major for `BufferKind::Document`, and this path serves
+        // Messages and Multibuffer panes as well, whose majors are not that.
+        // It would also reparse and reseed folds, which this method
+        // deliberately leaves to the pane's own restored view.
+        self.recompute_options_for_buffer(id);
+        self.rebuild_option_cache();
         // active_buffer was already set by load_active_pane
         // (pane.buffer = BufferKind::Document).
     }

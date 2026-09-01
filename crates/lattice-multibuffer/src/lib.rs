@@ -2718,7 +2718,22 @@ pub(crate) fn header_cells(
             if header.title.is_empty() {
                 push(&mut cells, "[untitled]", header_fg);
             } else {
-                push(&mut cells, header.title.as_str(), header_fg);
+                // OA.7: a trailing parenthetical is ANNOTATION, not identity,
+                // and reads as such when it is dimmed. The agenda's labels are
+                // `2026-09-01 Mon (today)`, `(overdue by 2 day(s))`,
+                // `(in 3 day(s))` — the date names the block and the phrase
+                // qualifies it, so rendering both at one weight makes the
+                // header longer without making it say more.
+                //
+                // Generic rather than agenda-shaped: it keys on the SHAPE of
+                // the title, and any provider whose header ends in a
+                // parenthetical gets the same reading. A title with no
+                // parenthetical is byte-identical to before.
+                let (name, note) = split_trailing_parenthetical(header.title.as_str());
+                push(&mut cells, name, header_fg);
+                if !note.is_empty() {
+                    push(&mut cells, note, path_fg);
+                }
             }
         }
     }
@@ -2734,6 +2749,55 @@ pub(crate) fn header_cells(
     }
 
     Arc::from(cells)
+}
+
+/// OA.7: split `title` into its name and a trailing ` (…)` annotation.
+///
+/// The note keeps its leading space so the two concatenate back to the input
+/// exactly — the dimming is the only difference, and a caller that ignores the
+/// second half still renders the whole title.
+///
+/// Only a parenthetical that CLOSES the string counts, and only when there is
+/// a name in front of it. `(overdue by 2 day(s))` therefore splits at the
+/// first `(` of the trailing run rather than at the nested one, and a title
+/// that is nothing but a parenthetical stays whole rather than becoming an
+/// empty name and a dim remainder.
+fn split_trailing_parenthetical(title: &str) -> (&str, &str) {
+    let trimmed = title.trim_end();
+    if !trimmed.ends_with(')') {
+        return (title, "");
+    }
+    // Walk back to the `(` that opens the trailing run, counting nesting so
+    // `day(s)` inside it does not close it early.
+    let bytes = trimmed.as_bytes();
+    let mut depth = 0i32;
+    let mut open = None;
+    for (i, b) in bytes.iter().enumerate().rev() {
+        match b {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    open = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(open) = open else {
+        return (title, "");
+    };
+    // Require a name before it, and a space between: `(today)` alone is the
+    // whole title, not an annotation on nothing.
+    if open == 0 || !title.is_char_boundary(open) {
+        return (title, "");
+    }
+    let name = title[..open].trim_end();
+    if name.is_empty() {
+        return (title, "");
+    }
+    (name, &title[open - 1..])
 }
 
 /// Pure function from excerpt list → header virtual rows, under `grouping`.
@@ -4799,6 +4863,58 @@ mod tests {
     /// header conventions: search titles every excerpt of a file with the
     /// same path, so equal titles must CONTINUE a group rather than start one.
     /// If they did not, `HeaderRuns` would be agenda-only.
+    /// OA.7: the split that dims a header's trailing annotation. Pure, so the
+    /// nesting and the refusals are pinned without rendering anything.
+    #[test]
+    fn a_trailing_parenthetical_splits_off_as_annotation() {
+        let cases: &[(&str, &str, &str)] = &[
+            // The agenda's three label shapes.
+            ("2026-09-01 Mon (today)", "2026-09-01 Mon", " (today)"),
+            (
+                "2026-08-30 Sat (overdue by 2 day(s))",
+                "2026-08-30 Sat",
+                " (overdue by 2 day(s))",
+            ),
+            (
+                "2026-09-04 Fri (in 3 day(s))",
+                "2026-09-04 Fri",
+                " (in 3 day(s))",
+            ),
+            // No parenthetical: unchanged, byte for byte.
+            ("Unscheduled", "Unscheduled", ""),
+            ("src/lib.rs", "src/lib.rs", ""),
+            // A parenthetical with no name in front is the whole title, not
+            // an annotation on nothing.
+            ("(today)", "(today)", ""),
+            // Unbalanced: left alone rather than guessed at.
+            ("Overdue )", "Overdue )", ""),
+            ("Overdue (", "Overdue (", ""),
+        ];
+        for (input, name, note) in cases {
+            assert_eq!(
+                split_trailing_parenthetical(input),
+                (*name, *note),
+                "on {input:?}"
+            );
+        }
+    }
+
+    /// The two halves must reconstruct the input exactly — dimming is the only
+    /// difference, so a header can never lose text to this.
+    #[test]
+    fn the_split_halves_reconstruct_the_title() {
+        for title in [
+            "2026-09-01 Mon (today)",
+            "Unscheduled",
+            "(today)",
+            "a (b) c (d)",
+            "café (naïve)",
+        ] {
+            let (name, note) = split_trailing_parenthetical(title);
+            assert_eq!(format!("{name}{note}"), title, "on {title:?}");
+        }
+    }
+
     #[test]
     fn header_runs_continue_across_equal_titles() {
         let a = BufferId::next();

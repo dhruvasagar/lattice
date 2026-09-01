@@ -348,7 +348,15 @@ pub fn open_scan_view(
         tracing::debug!("agenda: service not registered; the view's root will not be tracked");
     }
 
-    handle.replace_excerpts(HashMap::new(), Vec::new());
+    // OA.0c: the view is NOT emptied here. The scan collects every file,
+    // sorts once and writes its rows in a single terminal call, so clearing
+    // up front left the view blank for the WHOLE scan — which is why a slow
+    // scan read as "refresh is broken" rather than as "refresh is slow". A
+    // refresh now shows the previous rows, marked in-progress, until the new
+    // ones replace them atomically (`append_sorted`) or a genuinely empty
+    // result clears them (`finish_empty`).
+    //
+    // A first open has nothing to keep, so this costs it nothing.
     handle.set_headerline(HeaderlineStatus::InProgress {
         label: "Building agenda".to_string(),
         count: Some(0),
@@ -821,6 +829,7 @@ fn append_sorted(
     // otherwise a file with five agenda entries would be opened five times
     // and an edit through one row would not be visible through the others.
     let mut source_ids: HashMap<usize, BufferId> = HashMap::new();
+    let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
     for row in &rows {
         source_ids.entry(row.file).or_insert_with(|| {
             let f = &files[row.file];
@@ -831,14 +840,31 @@ fn append_sorted(
                 .build();
             let registry = Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
             let doc_handle = spawn_document(id, document, registry);
-            handle.add_source(id, Arc::new(doc_handle) as Arc<dyn Document>);
+            let doc = Arc::new(doc_handle) as Arc<dyn Document>;
+            // `add_source` is not redundant with the map below. It is what
+            // derives the per-excerpt `SyntaxHandle` from the path, and
+            // `replace_excerpts` only swaps the source map — so building the
+            // map alone leaves every agenda row uncoloured. Caught by
+            // `agenda_rows_carry_per_excerpt_syntax_handles`, which is the
+            // test AH.1 left behind for exactly this.
+            handle.add_source(id, Arc::clone(&doc));
+            sources.insert(id, doc);
             id
         });
     }
 
     let excerpts = build_excerpts(&rows, &source_ids);
     let count = excerpts.len();
-    handle.append_excerpts(excerpts);
+    // OA.0c: REPLACE, not append. This is the swap that makes keeping the old
+    // rows safe — appending onto a view we deliberately did not clear would
+    // show the previous scan's rows and this one's together. Replacing also
+    // drops the previous scan's source documents, which an append would leak
+    // into the view for as long as it stayed open.
+    //
+    // (`state.source_syntax` is NOT re-baselined by `replace_excerpts`, so a
+    // dropped source's handle outlives it. Pre-existing — the old
+    // clear-then-append path had the same hole — and untouched here.)
+    handle.replace_excerpts(sources, excerpts);
 
     handle.set_headerline(HeaderlineStatus::Complete {
         summary: format!(
@@ -884,10 +910,16 @@ fn build_excerpts(rows: &[SortedRow], source_ids: &HashMap<usize, BufferId>) -> 
     out
 }
 
-/// The terminal headerline for a scan that produced nothing.
+/// The terminal state for a scan that produced nothing.
 ///
 /// It still publishes [`MultibufferExcerptsReady`]: an empty agenda has to
 /// repaint too, or the view keeps showing "Building agenda…" forever.
+///
+/// OA.0c: and it must CLEAR. Since `open_scan_view` stopped emptying the view
+/// up front, this is the only thing standing between "you have nothing
+/// scheduled" and a refresh that silently keeps showing yesterday's rows —
+/// the worse of the two failures, because stale rows look exactly like
+/// correct ones.
 fn finish_empty(
     mb_registry: &MultibufferRegistryHandle,
     events: &Option<Arc<EventBus>>,
@@ -897,6 +929,7 @@ fn finish_empty(
     let Some(handle) = mb_registry.handle(view) else {
         return;
     };
+    handle.replace_excerpts(HashMap::new(), Vec::new());
     handle.set_headerline(HeaderlineStatus::Complete {
         summary: format!(
             "[agenda] nothing scheduled ({} file(s) scanned){}",

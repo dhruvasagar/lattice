@@ -93,6 +93,20 @@ struct FakeSource {
     roots: Vec<String>,
     begins: Arc<std::sync::atomic::AtomicUsize>,
     scans: Arc<std::sync::atomic::AtomicUsize>,
+    /// OA.0c: hold `scan` open so a test can look at the view MID-scan, which
+    /// is the whole window the slice is about.
+    blocked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FakeSource {
+    fn block(&self) {
+        self.blocked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn unblock(&self) {
+        self.blocked
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl ScannedExcerptSource for FakeSource {
@@ -117,7 +131,11 @@ impl ScannedExcerptSource for FakeSource {
         text: String,
     ) -> lattice_mode::scanned_excerpt_source::AgendaFuture<'_> {
         self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let blocked = Arc::clone(&self.blocked);
         Box::pin(async move {
+            while blocked.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
             Ok(text
                 .lines()
                 .enumerate()
@@ -165,13 +183,16 @@ async fn settle(registry: &MultibufferRegistryHandle, view: BufferId) -> Headerl
     panic!("the agenda scan never reached a terminal headerline");
 }
 
-/// `gr` re-runs the SAME opener with the SAME args. The rows must come back.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_refresh_repopulates_the_view() {
-    let dir = tempdir();
-    std::fs::write(dir.join("a.org"), "* TODO 30\n").unwrap();
-    std::fs::write(dir.join("b.org"), "* TODO 10\n* TODO 20\n").unwrap();
-
+/// The wiring every test here needs: a named buffer store, a multibuffer
+/// registry, one `FakeSource` rooted at `dir`, and the agenda's view identity.
+fn harness(
+    dir: &std::path::Path,
+) -> (
+    MockActivator,
+    MultibufferRegistryHandle,
+    Arc<FakeSource>,
+    ScanViewIdentity,
+) {
     let store = Arc::new(NamedBufferStore::default());
     let mb_registry: MultibufferRegistryHandle = Arc::new(InMemoryMultibufferRegistry::new());
     let source = Arc::new(FakeSource {
@@ -180,6 +201,7 @@ async fn a_refresh_repopulates_the_view() {
         roots: vec![dir.display().to_string()],
         begins: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         scans: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let mut sources = ScannedExcerptSourceRegistry::new();
     sources.register(source.clone());
@@ -197,18 +219,27 @@ async fn a_refresh_repopulates_the_view() {
     let agenda_service: AgendaServiceHandle = InMemoryAgendaService::handle();
     services.register(agenda_service);
 
-    let mut activator = MockActivator {
+    let activator = MockActivator {
         services: Arc::new(services),
     };
-
     let identity = ScanViewIdentity {
         provider: "agenda".to_string(),
         buffer_name: "*agenda*".to_string(),
         view_mode: None,
         no_rows_message: "no plugin provides rows for it".to_string(),
     };
+    (activator, mb_registry, source, identity)
+}
 
-    // ── first open ──────────────────────────────────────────────────────────
+/// `gr` re-runs the SAME opener with the SAME args. The rows must come back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_repopulates_the_view() {
+    let dir = tempdir();
+    std::fs::write(dir.join("a.org"), "* TODO 30\n").unwrap();
+    std::fs::write(dir.join("b.org"), "* TODO 10\n* TODO 20\n").unwrap();
+
+    let (mut activator, mb_registry, _source, identity) = harness(&dir);
+
     let first = open_scan_view(&mut activator, &identity, &Args::None);
     let ProviderViewOutcome::Opened { view, .. } = first else {
         panic!("first open declined: {first:?}");
@@ -217,17 +248,104 @@ async fn a_refresh_repopulates_the_view() {
     let first_rows = mb_registry.handle(view).unwrap().excerpts().len();
     assert_eq!(first_rows, 3, "first open, got {status:?}");
 
-    // ── the refresh: same provider, same args ───────────────────────────────
     let second = open_scan_view(&mut activator, &identity, &Args::None);
     let ProviderViewOutcome::Opened { view: view2, .. } = second else {
         panic!("refresh declined: {second:?}");
     };
     assert_eq!(view2, view, "the refresh must reuse the same view buffer");
     let status = settle(&mb_registry, view2).await;
-    let second_rows = mb_registry.handle(view2).unwrap().excerpts().len();
     assert_eq!(
-        second_rows, 3,
+        mb_registry.handle(view2).unwrap().excerpts().len(),
+        3,
         "the refresh must repopulate the view, got {status:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// OA.0c: a refresh must not blank the view while it is scanning.
+///
+/// The scan collects every file, sorts once and writes in a single terminal
+/// call, so clearing at open left the view empty for the WHOLE scan. With a
+/// quadratic walk that window was tens of seconds, which is why the bug was
+/// reported as "refresh does not load anything back" rather than as slowness.
+///
+/// Asserted by making the source block: the rows visible mid-scan must be the
+/// PREVIOUS scan's, not nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_keeps_the_old_rows_until_the_new_ones_land() {
+    let dir = tempdir();
+    std::fs::write(dir.join("a.org"), "* TODO 30\n").unwrap();
+    std::fs::write(dir.join("b.org"), "* TODO 10\n* TODO 20\n").unwrap();
+
+    let (mut activator, mb_registry, source, identity) = harness(&dir);
+
+    let first = open_scan_view(&mut activator, &identity, &Args::None);
+    let ProviderViewOutcome::Opened { view, .. } = first else {
+        panic!("first open declined: {first:?}");
+    };
+    settle(&mb_registry, view).await;
+    assert_eq!(mb_registry.handle(view).unwrap().excerpts().len(), 3);
+
+    // Hold the next scan open, then refresh.
+    source.block();
+    let second = open_scan_view(&mut activator, &identity, &Args::None);
+    let ProviderViewOutcome::Opened { view: view2, .. } = second else {
+        panic!("refresh declined: {second:?}");
+    };
+    assert_eq!(view2, view);
+
+    // Give the scan a chance to reach the blocked source and to have cleared
+    // the view if it were going to.
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        mb_registry.handle(view).unwrap().excerpts().len(),
+        3,
+        "the previous scan's rows must still be on screen while the refresh runs"
+    );
+
+    source.unblock();
+    settle(&mb_registry, view).await;
+    assert_eq!(
+        mb_registry.handle(view).unwrap().excerpts().len(),
+        3,
+        "and the new rows REPLACE them rather than appending to them"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half, and the one that makes keeping rows safe: a refresh that
+/// genuinely finds nothing must CLEAR. Stale rows are worse than an empty
+/// view, because they look exactly like correct ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refresh_that_finds_nothing_clears_the_view() {
+    let dir = tempdir();
+    std::fs::write(dir.join("a.org"), "* TODO 30\n").unwrap();
+
+    let (mut activator, mb_registry, _source, identity) = harness(&dir);
+
+    let first = open_scan_view(&mut activator, &identity, &Args::None);
+    let ProviderViewOutcome::Opened { view, .. } = first else {
+        panic!("first open declined: {first:?}");
+    };
+    settle(&mb_registry, view).await;
+    assert_eq!(mb_registry.handle(view).unwrap().excerpts().len(), 1);
+
+    // The rows are gone from disk before the refresh.
+    std::fs::remove_file(dir.join("a.org")).unwrap();
+
+    let second = open_scan_view(&mut activator, &identity, &Args::None);
+    let ProviderViewOutcome::Opened { view: view2, .. } = second else {
+        panic!("refresh declined: {second:?}");
+    };
+    settle(&mb_registry, view2).await;
+    assert_eq!(
+        mb_registry.handle(view2).unwrap().excerpts().len(),
+        0,
+        "an empty result must clear, or a refresh silently shows yesterday"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -527,6 +527,16 @@ fn record_matches(record: &LoadedRecord, target: &str) -> bool {
 /// future work; for now every plugin source shares this documented default.
 const PLUGIN_COMPLETION_DEFAULT_PRIORITY: u32 = 100;
 
+/// OA.14d: how long a load waits for its `pre-plugin-loaded` handlers.
+///
+/// Generous rather than tight, because what runs behind it is an `init.rs`
+/// handler doing a handful of `set-option` calls — a whole second is already
+/// three orders of magnitude of headroom, and the number exists only so a
+/// handler that hangs cannot hang the boot with it. It is not a latency budget;
+/// nothing user-visible is waiting on this (plugin loading is already off the
+/// boot thread by design).
+const PRE_PLUGIN_LOADED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The loader-owned minor mode that carries a plugin's completion source into
 /// the native aggregator (option A — completion is mode-attached everywhere:
 /// LSP rides the LSP mode, snippets ride the snippet mode). Registered
@@ -590,6 +600,16 @@ impl PluginLoader {
     /// plugin declares are driven against the wired handles; an absent handle
     /// makes that seam a logged skip.
     pub fn with_services(host: Arc<PluginHost>, services: LoaderServices) -> Self {
+        // OA.14d: give the HOST the option registry, so every store it mints
+        // can answer `get-option` — not only the seams whose spawn signature
+        // happens to take one. Done here rather than in `install` because a
+        // test harness builds its loader through this constructor too, and the
+        // gap this closes (`theme` and `language` reading org's keyword set)
+        // is exactly the kind that hides when production and tests wire
+        // different things.
+        if let Some(registry) = &services.config_registry {
+            host.set_config_registry(Arc::clone(registry));
+        }
         Self {
             host,
             env: services,
@@ -762,6 +782,12 @@ impl PluginLoader {
         let mut seam_ids: Vec<PluginId> = Vec::new();
 
         if manifest.provides.is_empty() {
+            // OA.14d: fires here too, so the event's contract is "once per
+            // load, before this plugin runs anything" rather than "once per
+            // load that happens to declare seams". A lifecycle-only plugin
+            // declares no options of its own, but a handler may still want to
+            // set a CORE option before its `activate` reads one.
+            self.announce_pre_load(&manifest.id).await;
             // Lifecycle-only (base `plugin` world): instantiate + activate.
             let mut instance = self
                 .host
@@ -781,7 +807,20 @@ impl PluginLoader {
             // keep the author's ordering.
             let mut seams = manifest.provides.clone();
             seams.sort_by_key(|s| s.drain_rank());
+            // OA.14d: `pre-plugin-loaded` fires on the rank-0 boundary — after
+            // every seam that DECLARES an option has drained, before the first
+            // seam that READS one. Both halves matter and neither is arbitrary:
+            // fire earlier and a handler's `set-option` names an option that
+            // does not exist yet (the host rejects it as unknown and logs);
+            // fire later and org's `register-theme-elements` has already
+            // derived its per-keyword elements from the compiled default,
+            // which IS the reported bug.
+            let mut announced = false;
             for seam in &seams {
+                if !announced && seam.drain_rank() > 0 {
+                    self.announce_pre_load(&manifest.id).await;
+                    announced = true;
+                }
                 match seam {
                     PluginSeam::PickerSource => {
                         let id = self
@@ -928,6 +967,13 @@ impl PluginLoader {
                                               // than a silent skip.
                 }
             }
+            // A plugin whose every seam is rank 0 never crossed the boundary.
+            // Fire anyway, so "exactly once per load" is a property a handler
+            // and a test can rely on rather than one that holds for most
+            // manifests.
+            if !announced {
+                self.announce_pre_load(&manifest.id).await;
+            }
         }
 
         // The FIRST id is the plugin's user-facing identity (`:list-plugins`,
@@ -974,6 +1020,49 @@ impl PluginLoader {
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
+    }
+
+    /// OA.14d: publish `PrePluginLoaded` for `name` and **wait** for every
+    /// guest handler to return before the load continues.
+    ///
+    /// The wait is the whole feature. An ordinary publish hands the event to
+    /// each plugin's actor channel and returns; the actor runs on the same
+    /// multi-thread runtime this load is running on, so without the barrier the
+    /// handler's `set-option` and the export that reads that option race — and
+    /// the race is invisible when it is lost, because the export simply sees
+    /// the compiled default and produces a plausible, wrong result.
+    ///
+    /// Bounded, because a barrier that a guest can hold forever is a boot that
+    /// a guest can hang. On expiry the load proceeds and says so: the user gets
+    /// an editor with one plugin misconfigured rather than no editor at all.
+    async fn announce_pre_load(&self, name: &str) {
+        let Some(bus) = &self.env.bus else { return };
+        let waits = bus.publish_awaited(Event::PrePluginLoaded {
+            name: name.to_string(),
+        });
+        if waits.is_empty() {
+            return;
+        }
+        let handlers = waits.len();
+        // `Err` on a receiver means the handler will never run (actor gone,
+        // plugin quarantined) — which is a completed wait, not a failure. So
+        // every arm of `join_all` is simply ignored; what is awaited is that
+        // each one is *over*.
+        let all = futures::future::join_all(waits);
+        match tokio::time::timeout(PRE_PLUGIN_LOADED_TIMEOUT, all).await {
+            Ok(_) => tracing::debug!(
+                plugin = %name,
+                handlers,
+                "pre-plugin-loaded handlers completed"
+            ),
+            Err(_) => tracing::warn!(
+                plugin = %name,
+                handlers,
+                timeout_secs = PRE_PLUGIN_LOADED_TIMEOUT.as_secs(),
+                "pre-plugin-loaded handlers did not finish in time; loading anyway \
+                 — options this plugin reads at load may fall back to their defaults"
+            ),
+        }
     }
 
     /// The name of a plugin's enable-gate option — `<id>.enabled` (PM.3).

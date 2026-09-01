@@ -48,7 +48,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.14 | A second virtual-row provider on one view (spike) | ✅ |
 | OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
 | OA.14c | Typed configuration — a declared schema, not a TOML blob | 📝 |
-| OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | 📝 |
+| OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
 | OA.15 | `org-agenda-log-mode` | 📝 |
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
@@ -870,7 +870,7 @@ options (dropped as unknown), and `init.rs`'s `on-plugin-loaded` fires after
 org's load-time exports. No option SHAPE fixes it; a `pre-plugin-loaded`
 hook carrying the plugin name does, and that wants its own slice.
 
-### OA.14d — `pre-plugin-loaded`, so config can reach a load-time option 📝
+### OA.14d — `pre-plugin-loaded`, so config can reach a load-time option ✅
 
 **Reported, and a live defect:** `org.todo-keyword-styles` overrides do not
 apply — NEXT, WAITING, HOLD and the rest render unstyled on a fresh start.
@@ -913,11 +913,58 @@ can compute a value, read the environment, or branch on what else is
 installed — where TOML staging only ever replays a literal. It also keeps the
 ordering explicit in the user's own file instead of implicit in the loader.
 
-**Tests:** the reported case end to end — a keyword set supplied from `init.rs`
-must produce theme elements and query rules for EVERY keyword, asserted through
-the real component, since the failure is invisible to any test that does not
-load org. Plus the ordering itself: the event fires before the named plugin's
-`register_theme_elements`, and not at all for a plugin nobody asked about.
+**Tests:** `lattice-plugin-loader/tests/pre_plugin_loaded.rs`, four of them,
+against a new `preload-guest` fixture — org reduced to the two seams that make
+the bug possible (declare an option from `config`, read it back from `theme`).
+The fixture registers a theme element NAMED after the value it saw, so the
+assertion is on what the guest held *at the moment it consumed the option*; an
+assertion on the option's value afterwards would pass even when the handler lost
+the race by a microsecond. Alongside the barrier test: a control proving the
+fixture can still show the bug (so the first test is not vacuous), the
+name-discrimination case, and the wiring case below.
+
+**What landed, and one thing the plan did not know.**
+
+The event fires on the **rank-0 seam boundary** — after every seam that
+*declares* an option has drained, before the first that *reads* one. Firing
+before the whole drain (the plan's literal "immediately before that plugin's
+load-time exports") does not work: a handler's `set-option` would then name an
+option the plugin has not registered, which the host rejects as unknown. The
+boundary is enforced rather than assumed: `PluginSeam::drain_rank` now ranks
+`config` strictly below `theme` and `language`, which previously TIED — so the
+order came from the stable sort, i.e. from the order org's own `plugin.toml`
+happened to list them in. org carried a comment begging the next author not to
+reorder them, which is exactly the guest-authored invariant `drain_rank` exists
+to abolish.
+
+Delivery is **awaited**. `EventBus::publish_awaited` mints a `oneshot` per
+matched plugin sink and the loader joins them (2s ceiling, then it loads anyway
+and warns) before continuing the drain. Without the barrier the handler races
+the export it exists to precede — and loses invisibly, because the export
+returns a plausible wrong answer rather than an error. The ack rides the
+delivery struct, so a trap, a quarantine, a closed actor channel and an aborted
+task all release the waiter without anyone having to remember to signal.
+
+**A wiring gap sat behind the ordering one, and it was the larger half.** The
+`theme` and `language` stores carried **no config registry at all**, so
+`get-option` inside `register-theme-elements` answered `none` no matter what was
+configured or when. org's keyword set came from the compiled default by
+construction, and no event could have fixed it — the ordering defect the plan
+diagnosed was real but was not sufficient. `PluginHost` now stamps the registry
+onto every store it mints (the `project` shape: set once at wiring, nothing per
+spawn path to forget), and `PluginLoader::with_services` supplies it, so a test
+harness and boot wire the same thing. `a_theme_seams_guest_can_read_an_option_at_all`
+is the isolating test: it passes with `pre-plugin-loaded` deleted and fails with
+the registry unwired.
+
+Cross-repo: `init.rs`'s org block moved from `plugin-loaded` to
+`pre-plugin-loaded` wholesale. Two of its options (`todo-keywords`,
+`todo-keyword-styles`) are read at load and had to move; the rest are read per
+use and would work from either, but one place is easier to reason about than
+two. The scaffolded `init.rs` and `docs/user/init.md` now teach the three-tier
+rule: immediate config for what exists, `PrePluginLoaded` for a plugin's
+options, `PluginLoaded` for what needs it fully loaded (`enable-mode` above
+all — the mode is not registered at pre-load time).
 
 ### OA.15 — `org-agenda-log-mode` 📝
 ### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝

@@ -106,6 +106,60 @@ dependent setup.
 A general primitive: lazy-loading, per-plugin setup, and plugin dependency
 ordering all ride it later — not auto-pair scaffolding.
 
+### 4.1 `pre-plugin-loaded` — for options the plugin reads while loading
+
+`plugin-loaded` is deliberately late: it fires once every seam has registered,
+which is what makes a handler's target reliably present. That is the right
+contract for *doing* something to a loaded plugin, and the wrong one for
+*configuring* one — because a plugin may read its own options during the load
+itself.
+
+org does. `register-theme-elements` derives one theme element per TODO keyword
+from `org.todo-keywords`, and `register-languages` generates a highlight-query
+rule per keyword from the same option. Both run at load. A `plugin-loaded`
+handler setting `org.todo-keywords` therefore changed a value that had already
+been consumed, and every keyword past the compiled `TODO | DONE` default
+rendered unstyled — the reported bug, with correct-looking config in the file.
+
+Neither existing home could reach it. `lattice.toml` is applied on the boot
+thread, before plugin loading (which is deliberately spawned off it), so an
+`org.*` key is an *unknown option* and is dropped. `init.rs`'s `register_options`
+runs before user plugins by design. `plugin-loaded` runs after. The window
+between "org declared its options" and "org read them" had no door.
+
+`Event::PrePluginLoaded { name }` is that door.
+
+**Contract:** fires **once per load**, after the plugin's `config` seam has
+drained — so every option it declares exists and can be set — and before the
+first seam that might read one. Delivery is **awaited**: the loader publishes it
+via `EventBus::publish_awaited` and does not continue the load until every guest
+handler has returned. It is the only event on the bus with that property, and
+without it the handler would simply race the export it exists to precede — a
+race that is invisible when lost, because the export produces a plausible wrong
+answer rather than an error.
+
+The seam boundary is enforced by `PluginSeam::drain_rank`, where `config` now
+ranks strictly below `theme` and `language`. They previously tied, so the order
+came from the stable sort — i.e. from the order a **guest-authored** manifest
+happened to list them in, which is the class of invariant `drain_rank` exists to
+remove.
+
+`name` is carried rather than the event firing anonymously: the handler runs for
+every plugin on the disk and must configure exactly one, and a handler that
+cannot tell which plugin is loading is a handler that cannot be written.
+
+**A wiring gap sat behind the ordering one, and it was the larger half.** The
+`theme` and `language` stores carried no config registry at all, so `get-option`
+inside those exports answered `none` regardless of ordering — org's keyword set
+came from the compiled default by construction. `PluginHost` now stamps the
+registry onto **every** store it mints (the `project` shape, set once at wiring)
+rather than leaving it to each seam's spawn signature, which had been answered
+correctly only for the seams somebody had thought about.
+
+**The rule for `init.rs`, stated once:** set a plugin's options from
+`pre-plugin-loaded`; do things that need the plugin fully loaded — `enable_mode`
+above all, which needs the mode registered — from `plugin-loaded`.
+
 ## 5. Config front-ends + read discipline
 
 `lattice.toml` (static option overrides, declarative) and `init.rs` (programmatic:

@@ -44,8 +44,9 @@ Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
   keymaps, commands, and options **layer on top of** the defaults — your
   `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same command
   registry as `:write`) but *before* the plugins in `~/.config/lattice/plugins/`,
-  so your `PluginLoaded` handlers are subscribed and ready when those plugins load
-  (see [Configuring plugins that load after you](#configuring-user-plugins-that-load-after-you-pluginloaded)).
+  so your `PrePluginLoaded` / `PluginLoaded` handlers are subscribed and ready
+  when those plugins load
+  (see [Configuring plugins that load after you](#configuring-user-plugins-that-load-after-you)).
 - **Loaded with boot capabilities** — `init.rs` is your own trusted config, so
   it gets the pre-granted (`Bundled`) trust tier, not the consent-prompted tier
   a downloaded plugin gets.
@@ -135,6 +136,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 | `OptionChanged` | `{ name, old?, new_value }` | a `:set` landed |
 | `MajorEntered` / `MajorExiting` | `{ buffer, mode }` | major mode lifecycle |
 | `MinorActivated` / `MinorDeactivated` | `{ buffer, mode }` | minor mode lifecycle |
+| `PrePluginLoaded` | `{ name }` | a plugin is about to run its load-time code — the hook for **that plugin's options** (see below). The load waits for your handler |
 | `PluginLoaded` / `PluginUnloaded` | `{ name, id }` | a plugin finished loading / was unloaded — the hook for **deferred plugin config** (see below) |
 | `Plugin` | `{ name, payload }` | a plugin-defined event (filter by `name` yourself) |
 
@@ -251,30 +253,45 @@ You can equally set these in `lattice.toml` (`auto-pair.enabled = false`) or liv
 with `:set`. See [`core-plugins`](help:core-plugins) for the full list and each
 plugin's options.
 
-### Configuring *user* plugins that load after you: `PluginLoaded`
+### Configuring *user* plugins that load after you
 
 Your `init.rs` loads **first** — before the *user* plugins in
 `~/.config/lattice/plugins/`. So config that targets a user plugin (enable its
 mode, set its options, bind keys to its commands) can't run at the top level: the
-plugin isn't there yet. Instead, **subscribe to `PluginLoaded` and react when it
-arrives** — the `with-eval-after-load` / lazy-autocmd pattern:
+plugin isn't there yet. Instead, **subscribe and react when it arrives** — the
+`with-eval-after-load` / lazy-autocmd pattern. There are two moments, and which
+one you want depends on what you are doing:
 
 ```rust
-fn on_event(_handler: u32, ev: Event) {
-    if let Event::PluginLoaded(p) = ev {
-        match p.name.as_str() {
-            // Enable a USER plugin's minor mode the moment it loads.
-            "my-plugin" => {
-                modes::enable_mode("my-plugin-mode");
-                config::set_option("my-plugin.option", "value");
-            }
-            _ => {}
+fn on_event(handler: u32, ev: Event) {
+    // OPTIONS — before the plugin has read any of them.
+    if let (1, Event::PrePluginLoaded(name)) = (handler, &ev) {
+        if name == "my-plugin" {
+            config::set_option("my-plugin.option", "value");
+        }
+    }
+    // EVERYTHING ELSE — once the plugin is fully loaded.
+    if let (2, Event::PluginLoaded(p)) = (handler, ev) {
+        if p.name == "my-plugin" {
+            modes::enable_mode("my-plugin-mode");
         }
     }
 }
 ```
 
-Why this shape, not a top-level `enable_mode(...)`:
+**`PrePluginLoaded` for options, `PluginLoaded` for everything else.** A plugin
+may read its own options *while it is loading* — org builds a theme element and a
+highlight-query rule per TODO keyword out of `org.todo-keywords` before its load
+finishes — and by `PluginLoaded` those reads have already happened. So an option
+set there is set too late, silently: the plugin keeps its default and nothing
+reports a problem. `PrePluginLoaded` fires after the plugin has declared its
+options and before it reads any, and **the load waits for your handler**, so the
+value is in place when the plugin looks for it. Conversely `enable-mode` cannot
+go there — the mode is not registered yet.
+
+Both fire for *every* plugin, so check the name.
+
+Why a handler at all, rather than a top-level `enable_mode(...)`:
 
 - **User-plugin minor modes are available-but-off.** A user plugin *provides* a
   mode; **you** enable it — the plugin author doesn't turn it on for you (the emacs
@@ -561,8 +578,9 @@ world init {
 `plugin.toml`: `provides = ["config", "keymap", "events"]` — the seams you
 register into. (`modes` is *not* listed: you don't declare a mode, you only call
 `enable-mode` on one another plugin declared.) Read the guest top to bottom —
-**immediate** config runs when `init.rs` loads; **deferred** config runs from the
-`PluginLoaded` handler.
+**immediate** config runs when `init.rs` loads; a plugin's **options** run from
+the `PrePluginLoaded` handler; the rest of its **deferred** config runs from the
+`PluginLoaded` one.
 
 ```rust
 wit_bindgen::generate!({ world: "init", path: "wit" });
@@ -596,25 +614,32 @@ impl Guest for Component {
 
     // ── Subscribe the DEFERRED + event-flow hooks ────────────────────────────
     fn register_events() {
-        events::subscribe(&kind(EventKind::PluginLoaded), 1); // deferred plugin config
-        events::subscribe(&kind(EventKind::DocumentOpened), 2); // options by filetype
+        events::subscribe(&kind(EventKind::PrePluginLoaded), 1); // a plugin's OPTIONS
+        events::subscribe(&kind(EventKind::PluginLoaded), 2);    // everything else
+        events::subscribe(&kind(EventKind::DocumentOpened), 3);  // options by filetype
     }
 
     fn on_event(handler: u32, ev: Event) {
-        match (handler, ev) {
-            // DEFERRED: configure each USER plugin the moment it loads. (Core
-            // plugins like auto-pair are on by default — configure them in
-            // `register_options` above, not here.)
-            (1, Event::PluginLoaded(p)) => match p.name.as_str() {
-                // A user plugin you installed that provides an off-by-default mode:
-                "my-linter" => {
-                    modes::enable_mode("my-linter-mode");             // turn it on
-                    config::set_option("my-linter.strict", "true");   // and configure it
+        match (handler, &ev) {
+            // OPTIONS: a plugin's options exist by now and it has not read any
+            // of them yet — and the load WAITS for this handler, so a value set
+            // here reaches an option the plugin consumes while loading.
+            (1, Event::PrePluginLoaded(name)) => {
+                if name == "my-linter" {
+                    config::set_option("my-linter.strict", "true");
                 }
-                _ => {}
-            },
+            }
+            // DEFERRED: what needs the plugin fully loaded. `enable-mode` needs
+            // the mode to be REGISTERED, which has not happened above. (Core
+            // plugins like auto-pair are on by default — configure them in
+            // `register_options`, not here.)
+            (2, Event::PluginLoaded(p)) => {
+                if p.name == "my-linter" {
+                    modes::enable_mode("my-linter-mode");
+                }
+            }
             // EVENT FLOW: set options as buffers open (e.g. wrap for markdown).
-            (2, Event::DocumentOpened(d)) => {
+            (3, Event::DocumentOpened(d)) => {
                 if d.path.as_deref().is_some_and(|p| p.ends_with(".md")) {
                     config::set_option("wrap", "on");
                 }
@@ -631,11 +656,24 @@ fn kind(k: EventKind) -> EventFilter {
 export!(Component);
 ```
 
-The pattern to internalize: **immediate config for what exists at load (option
-values via `set-option`, builtin/LSP keymaps via `register-binding`); deferred
-`PluginLoaded` handlers for anything that belongs to a plugin** (`enable-mode`,
-its options). Handlers call APIs (`enable-mode`, `set-option`), never `:` command
-strings. Add a custom command by also `provide`-ing `grammar` (see
+The pattern to internalize, in three tiers: **immediate config for what exists
+at load** (option values via `set-option`, builtin/LSP keymaps via
+`register-binding`); **`PrePluginLoaded` for a plugin's own options**; and
+**`PluginLoaded` for anything that needs the plugin fully loaded** —
+`enable-mode` above all. Handlers call APIs (`enable-mode`, `set-option`), never
+`:` command strings.
+
+Why the options tier is separate: a plugin may READ its own options while it is
+still loading. org builds one theme element and one highlight-query rule per
+TODO keyword out of `org.todo-keywords`, both at load time — so a
+`PluginLoaded` handler setting that option changes a value that has already been
+used, and the keywords render unstyled. `PrePluginLoaded` fires in the window
+between "the plugin declared its options" and "the plugin read them", and the
+load *waits* for your handler, so the value is there when the plugin looks. Set
+options there; do things there is nothing yet to do them to on `PluginLoaded`.
+
+Both carry the plugin's name, and you must check it — the events fire for every
+plugin, not only yours. Add a custom command by also `provide`-ing `grammar` (see
 [Custom grammar](#custom-grammar-commands-motions-text-objects-operators-ex-commands)).
 
 ---

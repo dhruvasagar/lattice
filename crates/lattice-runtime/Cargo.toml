@@ -27,6 +27,11 @@ lattice-keymap = { path = "../lattice-keymap" }
 # `glob::compile_glob_set`; `globset` runs N patterns in one pass.
 globset = { workspace = true }
 tokio = { workspace = true }
+# OA.14d: `EventAck` is a `futures::channel::oneshot::Sender`, not a tokio one.
+# The bus hands it to a PLUGIN sink, and `lattice-plugin-host` keeps `tokio` a
+# dev-dependency on purpose (the lib owns no runtime) — so the one type both
+# sides must name has to be the one the plugin host can already name.
+futures = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
 # `register_event!` (used by `messages` + tests) expands to a

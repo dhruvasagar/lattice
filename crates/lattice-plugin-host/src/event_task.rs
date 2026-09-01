@@ -53,6 +53,12 @@ use crate::{
 struct PluginEventDelivery {
     handler: u32,
     event: NativeEvent,
+    /// OA.14d: present only for an *awaited* publish. Dropped when the guest
+    /// handler has returned — which happens on every exit path, including a
+    /// trap, a quarantine short-circuit and the actor being dropped mid-queue,
+    /// because it rides the delivery struct rather than a line of code someone
+    /// has to remember to write.
+    ack: Option<lattice_runtime::EventAck>,
 }
 
 /// A pending `wake-every` sleep, resolving to the id that came due. Boxed
@@ -293,7 +299,16 @@ impl EventActor {
     /// *this* delivery with a `warn!`, never a panic — the plugin remains
     /// subscribed, the publisher and every other subscriber proceed.
     async fn deliver(&mut self, delivery: PluginEventDelivery) {
-        let PluginEventDelivery { handler, event } = delivery;
+        let PluginEventDelivery {
+            handler,
+            event,
+            // OA.14d: held for the body of this call and dropped on return —
+            // every early `return` below (quarantine, address mismatch,
+            // projection failure, arm failure) releases an awaited publisher,
+            // because "this handler will never run" is one of the ways it is
+            // over.
+            ack: _ack,
+        } = delivery;
         // Quarantine short-circuit (PH7.12): once this instance has trapped, its
         // `Store` is dead — skip the delivery silently (the `PluginCrashed` event
         // already fired at trip time; re-logging every subsequent delivery is
@@ -516,11 +531,17 @@ impl PluginHost {
             };
             let handler = sub.handler;
             let tx = tx.clone();
-            let sink: PluginEventSink = Arc::new(move |ev: NativeEvent| {
+            let sink: PluginEventSink = Arc::new(move |ev: NativeEvent, ack| {
                 // `false` when the actor's receiver has closed (the plugin was
-                // torn down) → the bus prunes this subscription lazily.
-                tx.unbounded_send(PluginEventDelivery { handler, event: ev })
-                    .is_ok()
+                // torn down) → the bus prunes this subscription lazily. A
+                // rejected send drops `ack` with it, so an awaited publish is
+                // released rather than left waiting on an actor that is gone.
+                tx.unbounded_send(PluginEventDelivery {
+                    handler,
+                    event: ev,
+                    ack,
+                })
+                .is_ok()
             });
             let sid = bus.subscribe(
                 filter,

@@ -1670,6 +1670,12 @@ interface types {
         // events share this one kind; the per-event `name` is not a bus
         // discriminator — a subscriber filters by name in its `on-event`.
         plugin,
+        // OA.14d: a named plugin is about to run the load-time exports that
+        // read its OWN options. Delivery is awaited — the loader does not
+        // continue the load until every handler has returned — which is what
+        // lets an `init.rs` `set-option` reach a value the plugin consumes at
+        // load. `plugin-loaded` is too late for those.
+        pre-plugin-loaded,
         // CI.1: plugin-lifecycle signals delivered to guests. An `init.rs`
         // subscribes to `plugin-loaded` (filtering by name in its handler) to run
         // deferred config against a now-present plugin (`with-eval-after-load`).
@@ -1715,6 +1721,11 @@ interface types {
         minor-activated(event-mode-lifecycle),
         minor-deactivated(event-mode-lifecycle),
         plugin(event-plugin),
+        /// OA.14d: the manifest id of the plugin whose load-time exports are
+        /// about to run. No numeric id: the plugin has not finished loading, so
+        /// the id its contributions will carry is not yet settled — and a
+        /// handler matches on the name anyway.
+        pre-plugin-loaded(string),
         plugin-loaded(event-plugin-lifecycle),
         plugin-unloaded(event-plugin-lifecycle),
         /// OR.2: absolute paths that changed under a directory this plugin

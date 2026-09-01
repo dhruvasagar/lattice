@@ -96,6 +96,9 @@ impl WitBoundary for NativeEventKind {
                         .to_string(),
                 );
             }
+            // OA.14d: the awaited pre-load signal, deliverable for the same
+            // reason and to the same subscriber.
+            NativeEventKind::PrePluginLoaded => WitEventKind::PrePluginLoaded,
             // CI.1: plugin-lifecycle signals ARE deliverable — an init.rs
             // subscribes to run deferred config.
             NativeEventKind::PluginLoaded => WitEventKind::PluginLoaded,
@@ -140,6 +143,7 @@ impl WitBoundary for NativeEventKind {
             WitEventKind::MinorActivated => NativeEventKind::MinorActivated,
             WitEventKind::MinorDeactivated => NativeEventKind::MinorDeactivated,
             WitEventKind::Plugin => NativeEventKind::Plugin,
+            WitEventKind::PrePluginLoaded => NativeEventKind::PrePluginLoaded,
             WitEventKind::PluginLoaded => NativeEventKind::PluginLoaded,
             WitEventKind::PluginUnloaded => NativeEventKind::PluginUnloaded,
             // OR.2: what a guest passes to `subscribe` to hear its own watch.
@@ -238,6 +242,8 @@ impl WitBoundary for NativeEvent {
                         .to_string(),
                 );
             }
+            // OA.14d: name only — see the WIT arm for why no id crosses.
+            NativeEvent::PrePluginLoaded { name } => WitEvent::PrePluginLoaded(name.clone()),
             // CI.1: plugin-lifecycle signals ARE delivered to guests.
             NativeEvent::PluginLoaded { name, id } => {
                 WitEvent::PluginLoaded(WitEventPluginLifecycle {
@@ -343,6 +349,7 @@ impl WitBoundary for NativeEvent {
                 name: p.name,
                 payload: p.payload,
             },
+            WitEvent::PrePluginLoaded(name) => NativeEvent::PrePluginLoaded { name },
             WitEvent::PluginLoaded(p) => NativeEvent::PluginLoaded {
                 name: p.name,
                 id: p.id,

@@ -7,6 +7,12 @@
 //! the events store, whose bus lets `enable-mode` publish its request
 //! (config-and-init.md §6). Config for a plugin that never loads never runs —
 //! graceful by construction.
+//!
+//! OA.14d added the OTHER half of the same pattern: a second subscription, to
+//! `pre-plugin-loaded`, for config a plugin reads at LOAD rather than after it.
+//! Both handlers live in this one fixture on purpose — a real `init.rs` uses
+//! both, and separating them into two fixtures would let a change break the
+//! interaction between them without any test noticing.
 
 wit_bindgen::generate!({
     world: "init-fixture",
@@ -28,9 +34,29 @@ impl Guest for Component {
             },
             1,
         );
+        // OA.14d: a SECOND handler, on the awaited pre-load signal. Distinct
+        // handler id, so a delivery routed to the wrong one is a visible
+        // failure rather than a coincidence that happens to work.
+        events::subscribe(
+            &EventFilter {
+                kinds: Some(vec![EventKind::PrePluginLoaded]),
+                path_globs: None,
+                major_modes: None,
+            },
+            2,
+        );
     }
 
     fn on_event(_handler: u32, ev: Event) {
+        // OA.14d: config for a value the plugin reads DURING its own load. The
+        // name match is the point of the event carrying a name — this handler
+        // runs for every plugin on the disk and must configure exactly one.
+        if let Event::PrePluginLoaded(name) = &ev {
+            if name == "preload-fixture" {
+                config::set_option("preload-fixture.keywords", "from-init");
+            }
+            return;
+        }
         if let Event::PluginLoaded(p) = ev {
             // Deferred config: enable auto-pair-mode the moment auto-pair loads.
             if p.name == "auto-pair" {

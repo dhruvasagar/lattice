@@ -78,7 +78,8 @@ pub use document::{
     ActiveDocument, DispatchEnv, Document, IndentResolverHandle, ScopeResolverHandle,
 };
 pub use events::{
-    EventBus, EventFilter, EventPredicate, PluginEventSink, SubscriptionId, SubscriptionTarget,
+    EventAck, EventBus, EventFilter, EventPredicate, PluginEventSink, SubscriptionId,
+    SubscriptionTarget,
 };
 pub use glob::compile_glob_set;
 pub use handle::{RopeDocumentHandle, spawn_document};

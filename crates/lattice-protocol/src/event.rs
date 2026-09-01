@@ -181,6 +181,29 @@ pub enum Event {
         func: String,
         kind: String,
     },
+    /// A named plugin is ABOUT to run the load-time exports that read its own
+    /// options (OA.14d). Published by the loader mid-load: after the plugin's
+    /// `config` seam drained — so every option it declares EXISTS and can be
+    /// set — and before every seam that consumes one.
+    ///
+    /// It exists because [`Self::PluginLoaded`] is too late for a value the
+    /// plugin reads at load. org derives its per-keyword theme elements and its
+    /// generated highlight-query rules from `org.todo-keywords` inside
+    /// `register-theme-elements`; a handler that runs after the load sets an
+    /// option nothing will read again until a restart.
+    ///
+    /// `name` is the manifest id, and it is carried rather than left implicit
+    /// so a handler discriminates: config for a plugin you know is legible,
+    /// config invited to run for every plugin on the disk is not.
+    ///
+    /// **Delivery is awaited.** The loader publishes this via
+    /// `EventBus::publish_awaited` and does not continue the load until every
+    /// guest handler has returned — an unawaited publish would leave the
+    /// handler racing the very export it exists to precede. It is the one event
+    /// with that property; everything else on the bus is fire-and-forget.
+    PrePluginLoaded {
+        name: String,
+    },
     /// A plugin finished loading (CI.1): every seam drained, its modes /
     /// options / commands all registered. Published by the loader at
     /// `load_discovered` completion. UNLIKE [`Self::PluginCrashed`], this IS
@@ -303,6 +326,7 @@ impl Event {
             Event::MinorDeactivated { .. } => EventKind::MinorDeactivated,
             Event::Plugin { .. } => EventKind::Plugin,
             Event::PluginCrashed { .. } => EventKind::PluginCrashed,
+            Event::PrePluginLoaded { .. } => EventKind::PrePluginLoaded,
             Event::PluginLoaded { .. } => EventKind::PluginLoaded,
             Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
             Event::ModeEnablementRequested { .. } => EventKind::ModeEnablementRequested,
@@ -339,6 +363,9 @@ pub enum EventKind {
     /// crash-notification surface or the Phase-8 plugin manager subscribes to
     /// every plugin crash with one filter.
     PluginCrashed,
+    /// Discriminator for [`Event::PrePluginLoaded`] (OA.14d) — the awaited
+    /// signal an `init.rs` subscribes to for config a plugin reads at LOAD.
+    PrePluginLoaded,
     /// Discriminator for [`Event::PluginLoaded`] (CI.1) — the plugin-load
     /// lifecycle signal an `init.rs` subscribes to for deferred config.
     PluginLoaded,

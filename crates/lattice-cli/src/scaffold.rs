@@ -117,21 +117,43 @@ impl Guest for Config {
 
     // Subscribe deferred / event-flow hooks (handler ids are yours to choose).
     fn register_events() {
+        // SET a plugin's options here: `pre-plugin-loaded` fires after that
+        // plugin has declared them and before it reads any, and the load WAITS
+        // for this handler. A plugin that reads an option while loading — to
+        // build theme elements or a highlight query from it, say — sees your
+        // value rather than its default.
+        events::subscribe(
+            &EventFilter {
+                kinds: Some(vec![EventKind::PrePluginLoaded]),
+                path_globs: None,
+                major_modes: None,
+            },
+            1,
+        );
+        // DO things that need the plugin fully loaded here — enabling a mode
+        // needs the mode to be registered, which has not happened yet above.
         events::subscribe(
             &EventFilter {
                 kinds: Some(vec![EventKind::PluginLoaded]),
                 path_globs: None,
                 major_modes: None,
             },
-            1,
+            2,
         );
     }
 
-    // React to events — e.g. configure a USER plugin the moment it loads.
-    // (Core plugins like auto-pair are on by default — configure them in
-    // `register_options` above, not here.)
+    // React to events. Core plugins like auto-pair are on by default —
+    // configure those in `register_options` above, not here.
     fn on_event(handler: u32, ev: Event) {
-        if let (1, Event::PluginLoaded(p)) = (handler, ev) {
+        // Options, before the plugin can read them. Full names: `set_option`
+        // prefixes a bare name with the CALLING plugin's id, so `style` would
+        // be looked up as `init.style`.
+        if let (1, Event::PrePluginLoaded(name)) = (handler, &ev) {
+            if name == "my-plugin" {
+                config::set_option("my-plugin.style", "manual");
+            }
+        }
+        if let (2, Event::PluginLoaded(p)) = (handler, ev) {
             if p.name == "my-plugin" {
                 modes::enable_mode("my-plugin-mode");
             }

@@ -248,7 +248,23 @@ impl ExtraFilter {
 /// `lattice-runtime` grows no dependency on either. The sink is invoked with the
 /// bus mutex **dropped** (the audit-M1 dispatch phase), so a slow plugin handler
 /// can never stall the publisher or another subscriber.
-pub type PluginEventSink = Arc<dyn Fn(Event) -> bool + Send + Sync>;
+pub type PluginEventSink = Arc<dyn Fn(Event, Option<EventAck>) -> bool + Send + Sync>;
+
+/// The completion signal an *awaited* publish threads through a plugin sink
+/// (OA.14d). The bus mints one per matched plugin subscription and
+/// [`EventBus::publish_awaited`] returns the matching receivers; the plugin's
+/// actor drops it once the guest handler has returned.
+///
+/// It is a bare `oneshot::Sender<()>` deliberately: dropping it resolves the
+/// receiver with `Err`, so a handler that traps, a store that is quarantined,
+/// and an actor whose task was aborted all release the waiter without anyone
+/// having to remember to signal. There is no way to hold the loader open by
+/// forgetting a line.
+///
+/// `None` on every ordinary publish, which is all of them but one — the bus is
+/// fire-and-forget by design, and this exists for the single event whose whole
+/// purpose is to happen *before* something else (`Event::PrePluginLoaded`).
+pub type EventAck = futures::channel::oneshot::Sender<()>;
 
 /// What the bus does when a matching event arrives.
 #[derive(Clone)]
@@ -463,6 +479,33 @@ impl EventBus {
     /// runs under the bus mutex -- see [`EventPredicate`] for its
     /// non-reentrancy contract.
     pub fn publish(&self, event: Event) {
+        self.dispatch(event, false);
+    }
+
+    /// [`Self::publish`] with a barrier: the returned receivers each resolve
+    /// once one matched *plugin* subscriber's guest handler has returned
+    /// (OA.14d). Awaiting them all is what makes an event able to precede
+    /// something — `Event::PrePluginLoaded` is published this way so a handler's
+    /// `set-option` lands before the export that reads it.
+    ///
+    /// Only plugin sinks are acknowledged. `Channel` subscribers are host-side
+    /// and their receivers are drained by their own owners, and `Invocation`
+    /// targets do not run until the App's next turn — neither can be waited on
+    /// here without inverting the ownership the bus deliberately does not have.
+    ///
+    /// A receiver resolving with `Err` means the handler will never run (the
+    /// actor's channel closed, the plugin was quarantined, the task was
+    /// aborted). That is *done*, not a failure: the caller waits for the
+    /// handler to be over, and "it cannot run" is one of the ways it is over.
+    #[must_use = "an awaited publish that is not awaited is just a publish"]
+    pub fn publish_awaited(&self, event: Event) -> Vec<futures::channel::oneshot::Receiver<()>> {
+        self.dispatch(event, true)
+    }
+
+    /// The shared body of [`Self::publish`] / [`Self::publish_awaited`]. When
+    /// `ack` is set, each plugin sink is handed an [`EventAck`] and the matching
+    /// receiver is returned.
+    fn dispatch(&self, event: Event, ack: bool) -> Vec<futures::channel::oneshot::Receiver<()>> {
         let kind = event.kind();
 
         // Snapshot phase: under the lock, copy out the channel
@@ -516,8 +559,14 @@ impl EventBus {
         }
         // PH7.8: plugin sinks run lock-dropped too. A sink returning `false`
         // (the plugin's actor channel closed) is pruned like a dead `Channel`.
+        let mut acks = Vec::new();
         for (id, sink) in plugin_targets {
-            if !sink(event.clone()) {
+            let ack = ack.then(|| {
+                let (tx, rx) = futures::channel::oneshot::channel();
+                acks.push(rx);
+                tx
+            });
+            if !sink(event.clone(), ack) {
                 dead.push(id);
             }
         }
@@ -532,6 +581,7 @@ impl EventBus {
             }
             inner.wildcard.retain(|s| !dead.contains(&s.id));
         }
+        acks
     }
 
     /// Pull every queued [`CommandInvocation`] target out of the
@@ -717,7 +767,9 @@ fn event_path(event: &Event) -> Option<&Path> {
         // A crash event carries the plugin id, not a path (PH7.12).
         | Event::PluginCrashed { .. }
         // Plugin-lifecycle events carry a name + id, not a path (CI.1); a
-        // handler filters by name.
+        // handler filters by name. `PrePluginLoaded` (OA.14d) carries the name
+        // alone and is filtered the same way.
+        | Event::PrePluginLoaded { .. }
         | Event::PluginLoaded { .. }
         | Event::PluginUnloaded { .. }
         // The enablement request carries a mode name, not a path (CI.4).
@@ -764,7 +816,9 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::Plugin { .. }
         // A crash event is not tied to a buffer's major mode (PH7.12).
         | Event::PluginCrashed { .. }
-        // Plugin-lifecycle events are not tied to a buffer's major mode (CI.1).
+        // Plugin-lifecycle events are not tied to a buffer's major mode (CI.1,
+        // OA.14d).
+        | Event::PrePluginLoaded { .. }
         | Event::PluginLoaded { .. }
         | Event::PluginUnloaded { .. }
         // The enablement request is not tied to a buffer's major mode (CI.4).
@@ -897,7 +951,7 @@ mod tests {
         let bus = EventBus::new();
         let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
         let seen_sink = Arc::clone(&seen);
-        let sink: crate::events::PluginEventSink = Arc::new(move |ev: Event| {
+        let sink: crate::events::PluginEventSink = Arc::new(move |ev: Event, _ack| {
             seen_sink.lock().expect("poisoned").push(ev);
             true // receiver open
         });
@@ -928,7 +982,7 @@ mod tests {
         let bus = EventBus::new();
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count_sink = Arc::clone(&count);
-        let sink: crate::events::PluginEventSink = Arc::new(move |_ev| {
+        let sink: crate::events::PluginEventSink = Arc::new(move |_ev, _ack| {
             count_sink.fetch_add(1, Ordering::SeqCst);
             true
         });
@@ -952,7 +1006,8 @@ mod tests {
         // A sink returning `false` (the plugin's actor channel closed) is pruned
         // lazily on the publish that observes it — the closed-`Channel` shape.
         let bus = EventBus::new();
-        let sink: crate::events::PluginEventSink = Arc::new(|_ev| false /* receiver gone */);
+        let sink: crate::events::PluginEventSink =
+            Arc::new(|_ev, _ack| false /* receiver gone */);
         bus.subscribe(
             EventFilter::kind(EventKind::DocumentSaved),
             SubscriptionTarget::Plugin {

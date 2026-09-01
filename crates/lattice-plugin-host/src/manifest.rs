@@ -240,22 +240,33 @@ impl PluginSeam {
     ///
     /// | rank | seams | reason |
     /// |---|---|---|
-    /// | 0 | `config`, `theme`, `logging` | declarations later seams may reference — options and theme elements exist before any producer runs |
-    /// | 1 | `language` | a major mode may declare `target-language`; the language should exist first |
-    /// | 2 | `grammar` | registers commands into the `CommandRegistry` |
-    /// | 3 | `modes` | keymap bindings resolve command *names* — needs rank 2 |
-    /// | 4 | `keymap` | user-layer bindings, same name resolution |
-    /// | 5 | everything else | producers and data seams with no registration dependency |
+    /// | 0 | `config`, `logging` | the option surface: every value any later seam reads exists after this |
+    /// | 1 | `theme` | theme elements later seams may name — and org derives its per-keyword elements from an OPTION, so it must follow rank 0 |
+    /// | 2 | `language` | a major mode may declare `target-language`; the language should exist first |
+    /// | 3 | `grammar` | registers commands into the `CommandRegistry` |
+    /// | 4 | `modes` | keymap bindings resolve command *names* — needs rank 3 |
+    /// | 5 | `keymap` | user-layer bindings, same name resolution |
+    /// | 6 | everything else | producers and data seams with no registration dependency |
     ///
     /// Ties keep manifest order (the sort is stable), so an author's intent is
     /// respected everywhere it cannot break anything.
+    ///
+    /// **OA.14d split `config` from `theme`.** They shared rank 0, so org's
+    /// `register-theme-elements` reading `org.todo-keywords` worked only
+    /// because org's `provides` happened to list `config` first — a
+    /// load-bearing invariant living in a guest-authored file again, which is
+    /// the exact thing this function exists to end. It is also the seam
+    /// boundary the awaited `pre-plugin-loaded` fires on: the loader publishes
+    /// it once every rank-0 seam has drained, so a handler can set an option
+    /// that rank 1 and up will read.
     pub fn drain_rank(self) -> u8 {
         match self {
-            PluginSeam::Config | PluginSeam::Theme | PluginSeam::Logging => 0,
-            PluginSeam::Language => 1,
-            PluginSeam::Grammar => 2,
-            PluginSeam::Modes => 3,
-            PluginSeam::Keymap => 4,
+            PluginSeam::Config | PluginSeam::Logging => 0,
+            PluginSeam::Theme => 1,
+            PluginSeam::Language => 2,
+            PluginSeam::Grammar => 3,
+            PluginSeam::Modes => 4,
+            PluginSeam::Keymap => 5,
             PluginSeam::PickerSource
             | PluginSeam::MultibufferViewSource
             | PluginSeam::CompletionSource
@@ -272,7 +283,7 @@ impl PluginSeam {
             // per OPEN rather than at registration — so this seam has no
             // ordering dependency on `grammar` the way `modes` does. Rank 5
             // with the other producers.
-            | PluginSeam::TransientSource => 5,
+            | PluginSeam::TransientSource => 6,
         }
     }
 
@@ -898,6 +909,13 @@ mod tests {
                 "{declaring} declares things later seams read"
             );
         }
+        // OA.14d: `theme` READS options (org's per-keyword elements come from
+        // `org.todo-keywords`), so it cannot tie with the seam that declares
+        // them — a tie makes the guest's `provides` order decide, which is
+        // where this bug lived.
+        assert!(PluginSeam::Config.drain_rank() < PluginSeam::Theme.drain_rank());
+        // ...and `language` reads them too (TK.4's generated highlight rules).
+        assert!(PluginSeam::Config.drain_rank() < PluginSeam::Language.drain_rank());
         // `keymap` binds command names too, so it cannot precede `grammar`.
         assert!(PluginSeam::Grammar.drain_rank() < PluginSeam::Keymap.drain_rank());
     }

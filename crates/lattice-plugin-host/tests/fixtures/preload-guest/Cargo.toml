@@ -1,0 +1,25 @@
+# OA.14d fixture guest — a `wasm32-wasip2` component implementing the
+# `preload-fixture` world: it declares one option from `register-options` and
+# then reads that option back from `register-theme-elements`, registering a
+# theme element named after the value it saw. That is org's shape, and the
+# element name is how a host test observes which value reached the load-time
+# read.
+# Standalone workspace (`[workspace]` below) so it targets wasm32-wasip2 without
+# inheriting the host toolchain — mirrors the sibling `config-guest` fixture.
+[package]
+name = "preload-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

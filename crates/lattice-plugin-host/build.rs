@@ -166,6 +166,14 @@ fn main() {
         "init-guest",
         "INIT_GUEST_WASM",
     );
+    // OA.14d: the load-time-option fixture — declares an option from `config`
+    // and reads it back from `theme`, which is org's shape and the one
+    // `plugin-loaded` is too late for.
+    build_guest(
+        &fixtures.join("preload-guest"),
+        "preload-guest",
+        "PRELOAD_GUEST_WASM",
+    );
     // PO.5: the `logging` (Layer 2) fixture — a base `plugin`-world guest whose
     // `activate` calls the imported `logging.log`; `tests/logging_source.rs`
     // asserts the lines reach the tracer.

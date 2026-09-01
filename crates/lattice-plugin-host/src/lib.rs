@@ -2710,6 +2710,18 @@ pub struct PluginHost {
     // → `wake-every` answers `0`, which is what every harness that never wires
     // one gets.
     sleeper: std::sync::OnceLock<wake::SleeperHandle>,
+    // OA.14d: the option registry EVERY store reads through, stamped in
+    // `new_store` like `project` rather than per spawn path.
+    //
+    // It used to be wired only by the seams that were noticed to need it, and
+    // the seams that were not noticed simply answered `none` — `get-option`
+    // inside `register-theme-elements` returned nothing at all, so org's
+    // per-keyword colours were derived from the compiled default no matter what
+    // anyone configured. That is the reported `todo-keyword-styles` bug, and it
+    // is a wiring gap rather than an ordering one, so no event could have fixed
+    // it. Reading configuration needs no plugin id and has nothing to wait for,
+    // so like `project` there is no path that can forget it.
+    config: std::sync::OnceLock<Arc<lattice_config::ConfigRegistry>>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3127,6 +3139,7 @@ impl PluginHost {
             project: std::sync::OnceLock::new(),
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
+            config: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3239,6 +3252,21 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_sleeper(&self, sleeper: wake::SleeperHandle) {
         let _ = self.sleeper.set(sleeper);
+    }
+
+    /// OA.14d: hand the host the option registry every store reads through.
+    ///
+    /// The floor, not a replacement for the per-seam wiring: a seam that cannot
+    /// function without a registry (`config` itself) still takes one as an
+    /// argument, because "this seam requires it" and "any guest may read an
+    /// option" are different claims. What this closes is the second one, which
+    /// had been answered seam by seam and was therefore wrong for whichever
+    /// seams nobody had thought about — `theme` and `language` among them, the
+    /// two org reads its keyword set from at load.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_config_registry(&self, registry: Arc<lattice_config::ConfigRegistry>) {
+        let _ = self.config.set(registry);
     }
 
     /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
@@ -3408,9 +3436,14 @@ impl PluginHost {
             // Set by `spawn_event_plugin` once the plugin's id is allocated; a
             // plugin not spawned onto a bus cannot emit (warn + drop).
             event_emit: None,
-            // Set by `spawn_config_plugin`; a plugin not spawned onto a registry
-            // cannot register/read options (warn + false / none).
-            config_registry: None,
+            // OA.14d: stamped for every store from the host-level registry (the
+            // `project` shape), so ANY seam's guest can read an option. A spawn
+            // path that takes a registry of its own still overwrites this with
+            // the one it was handed — same `Arc` in every real wiring, and an
+            // explicit argument where the seam genuinely cannot work without
+            // one. `None` only when boot wired no registry at all, which is the
+            // honest degradation (warn + false / none).
+            config_registry: self.config.get().cloned(),
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),
             config_contributions: Vec::new(),

@@ -227,8 +227,16 @@ impl<'a> FrameView<'a> {
             folds,
             inlay_hints,
             content_left_pad,
-            show_line_numbers: app.show_line_numbers_for(buffer_id),
-            relative_line_numbers: app.relative_line_numbers_for(buffer_id),
+            // PI.4: resolved from the PUBLISHED per-buffer snapshot, not
+            // through `App::resolved_option` — that routes via `read_editor`,
+            // so the four option reads here were four actor-seam calls per
+            // pane per frame. The active path never paid them (it read the
+            // hot-path `option_cache`), which is exactly why the guard on
+            // `compose_visible_lines` never caught it: it only watched the
+            // path that was already clean. Same seam the GPUI peer uses.
+            show_line_numbers: *rs.resolved_option_for::<lattice_config::Number>(buffer_id),
+            relative_line_numbers: *rs
+                .resolved_option_for::<lattice_config::RelativeNumber>(buffer_id),
             // Slice 3c.extension.fold-rs: per-buffer cache. The
             // mode gates resolve against `buffer_id` (the pane's
             // buffer, possibly different from the active doc).
@@ -243,8 +251,10 @@ impl<'a> FrameView<'a> {
             // emacs buffer-local pattern) so an inactive pane reflects
             // ITS mode stack — e.g. help-mode's `Wrap = true` /
             // `signcolumn = no` — not the active buffer's settings.
-            wrap_lines: app.wrap_lines_for(buffer_id),
-            sign_column: app.sign_column_for(buffer_id),
+            wrap_lines: *rs.resolved_option_for::<lattice_config::Wrap>(buffer_id),
+            sign_column: rs
+                .resolved_option_for::<lattice_config::SignColumnOption>(buffer_id)
+                .reserved(),
         }
     }
 
@@ -2964,11 +2974,7 @@ fn draw_pane_content(
     // Default path: document buffer. The active branch reads the
     // live `app.editor.cursor` / `app.editor.scroll`; the inactive one reads the
     // pane's stashed cursor + scroll.
-    if is_active {
-        draw_buffer(frame, content_rect, app, snap);
-    } else {
-        draw_inactive_document(frame, content_rect, app, pane);
-    }
+    draw_pane_document(frame, content_rect, app, snap, pane, is_active);
 }
 
 /// Map a terminal-substrate colour to ratatui's `Color`. `Default`
@@ -3345,11 +3351,7 @@ fn help_pane_render(
     // contribution); the render arm forwards to the generic path, so a
     // help pane is pixel-equivalent to a `:set nonu signcolumn=no wrap`
     // document (K.4 / `feedback_render_is_option_derived`).
-    if is_active {
-        draw_buffer(frame, area, app, snap);
-    } else {
-        draw_inactive_document(frame, area, app, pane);
-    }
+    draw_pane_document(frame, area, app, snap, pane, is_active);
 }
 
 fn help_pane_status(app: &App, _pane: &crate::pane::PaneState) -> String {
@@ -3842,73 +3844,139 @@ fn compose_modeline_segments(
 /// FULL buffer-intrinsic decoration set (syntax, semantic tokens,
 /// inlay hints, diagnostics) dimmed, per the design's §Render
 /// contract.
-fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
-    // Slice 3c.final.B (group 1): registry lookup via `app.buffers()`.
-    let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
-        return;
-    };
-    let snap = handle.snapshot();
-    // M.4: resolve options for THIS pane's buffer (its own mode stack
-    // drives gutter / LSP gates), not the active one.
+/// Assemble the compose inputs for ONE pane.
+///
+/// The single place a pane's `FrameView` and `PaneComposeCtx` are built, for
+/// both the focused pane and every other one. There used to be two — an
+/// `is_active` builder inside `compose_visible_lines` and a second inside
+/// `draw_inactive_document` — and they disagreed about where a pane's options
+/// come from: the active one read `ad().option_cache` (the active DOCUMENT),
+/// the inactive one resolved against the pane's own buffer. That is how a
+/// focused magit pane came to paint with the file's `number` and lose it again
+/// on blur.
+///
+/// `is_active` survives, but only as what it should have been: a flag for
+/// INTERACTION state — whose cursor and scroll to read, and whether this pane
+/// paints a cursorline. Everything that is a property of the buffer being
+/// painted is resolved from `pane.buffer_id` either way.
+fn pane_compose_inputs<'a>(
+    app: &'a App,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+) -> (FrameView<'a>, PaneComposeCtx) {
+    // M.4: options for THIS pane's buffer — its own mode stack drives its
+    // gutter and LSP gates — whether or not it is the focused one.
     let view = FrameView::for_buffer(app, pane.buffer_id);
-    // PI.3: the focused pane while *previewing* renders here (routed off the
-    // active path in `draw_panes`), showing the displayed buffer. It keeps
-    // its cursorline — the target line of an LSP-reference / grep preview
-    // stays highlighted — resolved from the displayed buffer's `CursorLine`.
-    // Ordinary (unfocused) inactive panes never paint a cursorline.
+    // Per-pane composed→source row map, pulled from the pane's OWN handle: a
+    // multibuffer pane shows source line numbers whoever is focused, and a
+    // regular Document returns None (identity numbering). The GPUI peer takes
+    // it from the same handle for the same reason.
+    let display_line_numbers = app
+        .buffers()
+        .registry
+        .document_handle(pane.buffer_id)
+        .and_then(|h| h.display_line_numbers());
+    // PI.3: a focused pane that is PREVIEWING renders through the unfocused
+    // path (routed in `draw_panes`) but keeps its cursorline, so the target
+    // line of an LSP-reference or grep preview stays highlighted. Ordinary
+    // unfocused panes paint none.
     let focused_preview = pane.is_previewing() && app.panes().tree.active().id == pane.id;
-    let ctx = PaneComposeCtx {
-        is_active: false,
-        pane_id: pane.id,
-        buffer_id: pane.buffer_id,
-        // Inactive panes read their stashed cursor / scroll; the
-        // active pane reads `app.ad()`.
-        cursor_line: pane.cursor.line,
-        cursor_line_highlight: focused_preview
-            && app
-                .render_state
-                .load()
-                .current_line_highlight_for(pane.buffer_id),
-        scroll: pane.scroll,
-        leftcol: pane.leftcol,
-        // Per-pane composed→source row map: a multibuffer pane shows
-        // source line numbers even when inactive; regular Documents
-        // return None (identity numbering).
-        display_line_numbers: handle.display_line_numbers(),
+    // The OPTION is a property of the buffer; whether this pane paints one at
+    // all is interaction state. Splitting the two is what lets one expression
+    // serve both paths.
+    let cursor_line_highlight = (is_active || focused_preview)
+        && app
+            .render_state
+            .load()
+            .current_line_highlight_for(pane.buffer_id);
+
+    // The one genuine difference: the focused pane's cursor and scroll are
+    // LIVE in `ad()`, while a pane's stashed copy is only written when it
+    // loses focus — so reading the stash for the active pane would render it
+    // one focus-change stale.
+    let ctx = if is_active {
+        let ad = app.ad();
+        PaneComposeCtx {
+            is_active,
+            pane_id: pane.id,
+            buffer_id: pane.buffer_id,
+            cursor_line: ad.cursor.line,
+            cursor_line_highlight,
+            scroll: ad.scroll,
+            leftcol: ad.leftcol,
+            display_line_numbers,
+        }
+    } else {
+        PaneComposeCtx {
+            is_active,
+            pane_id: pane.id,
+            buffer_id: pane.buffer_id,
+            cursor_line: pane.cursor.line,
+            cursor_line_highlight,
+            scroll: pane.scroll,
+            leftcol: pane.leftcol,
+            display_line_numbers,
+        }
     };
-    let lines = compose_pane_lines(&view, &snap, area.height as u32, area.width as u32, &ctx);
-    frame.render_widget(Paragraph::new(lines), area);
+    (view, ctx)
 }
 
-/// Render a file-tree pane vim-style: no decorative border, just
-/// the entries listed plain in the pane's content area with the
-/// cursor row reverse-videoed when the pane is focused. Status
-/// information (root path) lives in the per-pane status line, so
-/// the content area is purely the tree text -- consistent with
-/// how a Document pane looks.
-fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot) {
-    let lines = compose_visible_lines(app, snap, area.height as u32, area.width as u32);
+/// Paint one document pane — focused or not.
+///
+/// The unification: `draw_buffer` and `draw_inactive_document` were two
+/// functions that opened differently, built their compose inputs differently,
+/// and then called the same `compose_pane_lines`. The duplicated half is the
+/// half that drifted, and dimming — the thing that actually distinguishes an
+/// unfocused pane — was never in either of them: it lives inside
+/// `compose_pane_lines`, keyed on `ctx.is_active`, exactly where a decoration
+/// belongs.
+///
+/// So what is left of `is_active` here is the terminal caret, which only the
+/// focused pane owns.
+fn draw_pane_document(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    snap: &DocumentSnapshot,
+    pane: &crate::pane::PaneState,
+    is_active: bool,
+) {
+    // The focused pane paints the frame's already-taken snapshot, so its text
+    // cannot tear against the cursor and scroll read beside it. Another pane
+    // has no such snapshot and reads its own handle's.
+    let owned;
+    let snap = if is_active {
+        snap
+    } else {
+        let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
+            return;
+        };
+        owned = handle.snapshot();
+        &owned
+    };
+    let (view, ctx) = pane_compose_inputs(app, pane, is_active);
+    let lines = compose_pane_lines(&view, snap, area.height as u32, area.width as u32, &ctx);
     frame.render_widget(Paragraph::new(lines), area);
 
+    if !is_active {
+        return;
+    }
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
-    // Snapshot ad() once so prompt_owns_cursor and cursor_screen_position
-    // read from the same atomic snapshot.
     let ad = app.ad();
     let prompt_owns_cursor = matches!(ad.modal, ModalState::Command | ModalState::Search(_));
-    if !prompt_owns_cursor {
-        let view = FrameView::from_app(app);
-        if let Some((screen_x, screen_y)) = cursor_screen_position_at(
+    if !prompt_owns_cursor
+        && let Some((screen_x, screen_y)) = cursor_screen_position_at(
             &view,
             snap,
             area,
             ad.cursor,
             ad.scroll,
             app.panes().tree.active().id,
-        ) {
-            frame.set_cursor_position((screen_x, screen_y));
-        }
+        )
+    {
+        frame.set_cursor_position((screen_x, screen_y));
     }
 }
 
@@ -4279,22 +4347,13 @@ pub fn compose_visible_lines(
     // / `show_line_numbers` so a multi-thread renderer (GPUI,
     // future Web) can't see a torn mid-render view if a
     // concurrent input event mutates the underlying App fields.
-    let view = FrameView::from_app(app);
-    // Snapshot ad() once so cursor, scroll, and option reads
-    // come from the same atomic snapshot — without this the
-    // actor can publish between two app.ad() calls and the
-    // cursorline highlight lands on a stale line.
-    let ad = app.ad();
-    let ctx = PaneComposeCtx {
-        is_active: true,
-        pane_id: app.panes().tree.active().id,
-        buffer_id: ad.document_buffer_id,
-        cursor_line: ad.cursor.line,
-        cursor_line_highlight: ad.option_cache.current_line_highlight,
-        scroll: ad.scroll,
-        leftcol: ad.leftcol,
-        display_line_numbers: ad.display_line_numbers.clone(),
-    };
+    // Through the SAME builder the painter uses, with the active pane as its
+    // subject. This function is now a named shortcut for "compose the focused
+    // pane" rather than a second construction path — which is what it was, and
+    // what let it drift onto the active DOCUMENT's options while its inactive
+    // counterpart resolved per buffer.
+    let pane = *app.panes().tree.active();
+    let (view, ctx) = pane_compose_inputs(app, &pane, true);
     compose_pane_lines(&view, snap, height, width, &ctx)
 }
 
@@ -9686,15 +9745,28 @@ mod tests {
         assert!(past_eof.contains('~'), "expected ~ marker, got {past_eof}");
     }
 
+    /// Set an option the way `:set` does, then republish.
+    ///
+    /// Poking `editor.option_cache.<field>` directly used to work because the
+    /// active pane's `FrameView` read that cache. It reads the PUBLISHED
+    /// per-buffer resolved options now (PI.4, shared with the GPUI peer), so a
+    /// cache poke sets a field nothing consults. Going through the real
+    /// option path is what these tests meant all along — they are about what
+    /// `:set signcolumn=no` renders, not about a struct field.
+    fn set_opt(app: &mut App, spec: &str) {
+        let spec = spec.to_string();
+        app.mutate_editor(move |e| {
+            e.handle_effect(lattice_grammar::Effect::SetOption { spec });
+            e.publish_render_state();
+        });
+    }
+
     #[test]
     fn compose_wraps_long_line_when_wrap_on() {
         // 36-char single line; narrow total width forces wrapping.
         let long = "abcdefghijklmnopqrstuvwxyz0123456789";
         let mut app = app_with(long, 10);
-        app.editor.option_cache.wrap_lines = true;
-        // `ad()` reads the published render-state snapshot, not the
-        // live editor field, so publish after flipping wrap.
-        app.editor.publish_render_state();
+        set_opt(&mut app, "wrap=true");
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 10, 20);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         // Wrapping produces ↪ continuation gutters …
@@ -9747,9 +9819,8 @@ mod tests {
         // `signcolumn=no` + `nonu`: only the fold-marker gutter remains
         // (separator + fold slot + trailing gap = 3 cells, so a fold `▸`
         // still shows with numbers off), and the body starts at column 3.
-        app.editor.option_cache.sign_column = false;
-        app.editor.option_cache.show_line_numbers = false;
-        app.editor.publish_render_state();
+        set_opt(&mut app, "signcolumn=no");
+        set_opt(&mut app, "number=false");
         let lean0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
         assert_eq!(
             lean0.find("hello"),
@@ -9778,7 +9849,14 @@ mod tests {
     fn caret_lands_after_the_last_glyph_with_numbers_off() {
         for numbers in [false, true] {
             let mut app = app_with("abc\n", 5);
-            app.editor.option_cache.show_line_numbers = numbers;
+            set_opt(
+                &mut app,
+                if numbers {
+                    "number=true"
+                } else {
+                    "number=false"
+                },
+            );
             // Insertion point: end of "abc".
             app.editor
                 .set_cursor(lattice_protocol::position::Position::new(0, 3));
@@ -12364,6 +12442,81 @@ mod tests {
              read_editor / mutate_editor. See slice \
              3c.extension.fold-rs for the migration recipe.",
         );
+    }
+
+    /// The unfocused paint path must be as actor-free as the focused one.
+    ///
+    /// The guard above only ever watched `compose_visible_lines` — the path
+    /// that was already clean, because it read the hot-path `option_cache`.
+    /// Every OTHER pane went through `FrameView::for_buffer`, whose four
+    /// option reads called `App::resolved_option` → `read_editor`: four
+    /// actor-seam calls per unfocused pane per frame, in a split, forever,
+    /// with nothing watching. Unifying the two painters is what surfaced it,
+    /// and this is what stops it coming back on the side nobody was looking
+    /// at.
+    #[test]
+    fn an_unfocused_panes_compose_inputs_make_zero_actor_calls() {
+        let app = app_with("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n", 10);
+        let pane = *app.panes().tree.active();
+        let _warmup = pane_compose_inputs(&app, &pane, false);
+        let before = crate::actor_call_counter::snapshot();
+        let _inputs = pane_compose_inputs(&app, &pane, false);
+        let after = crate::actor_call_counter::snapshot();
+        let delta = after - before;
+        assert_eq!(
+            delta, 0,
+            "an unfocused pane's compose inputs made {delta} actor-seam calls; \
+             per-frame paint reads resolve through the published RS snapshot \
+             (`RenderState::resolved_option_for`), never `read_editor`.",
+        );
+    }
+
+    /// A pane's VIEW options do not depend on whether it is focused.
+    ///
+    /// `is_active` may change interaction state — whose cursor and scroll are
+    /// read, whether a cursorline paints. It must not change the gutter, the
+    /// wrap, the sign columns or the fold gates, which are properties of the
+    /// buffer being painted.
+    ///
+    /// **What this does NOT prove**, stated because the name would otherwise
+    /// promise it: the fixture's pane IS the active document, so the two
+    /// option sources agree here and this test still passes against the old
+    /// two-painter split (checked, by reintroducing it). Making them disagree
+    /// needs a buffer whose MODE overrides an option — magit's
+    /// `Number = false` — and that reproduction lives where it belongs, in
+    /// `magit_bindings::navigating_to_a_magit_pane_does_not_give_it_the_files_gutter`.
+    ///
+    /// What this one guards is the shape: one builder, agreeing with itself,
+    /// so a future option added to only one branch of `is_active` fails here
+    /// rather than in a split three months later.
+    #[test]
+    fn a_panes_view_options_do_not_depend_on_whether_it_is_focused() {
+        let mut app = app_with("hello\nworld\n", 5);
+        // Non-vacuous: pick values that differ from the defaults, so an
+        // implementation that ignored the buffer entirely would still have to
+        // agree with itself on something wrong — and the assertions below
+        // check the VALUES, not just that the two paths match.
+        set_opt(&mut app, "number=false");
+        set_opt(&mut app, "signcolumn=no");
+        set_opt(&mut app, "wrap=true");
+        let pane = *app.panes().tree.active();
+
+        let (focused, focused_ctx) = pane_compose_inputs(&app, &pane, true);
+        let (blurred, blurred_ctx) = pane_compose_inputs(&app, &pane, false);
+
+        assert!(!focused.show_line_numbers, "the option actually took");
+        assert_eq!(focused.show_line_numbers, blurred.show_line_numbers);
+        assert_eq!(focused.sign_column, blurred.sign_column);
+        assert!(!focused.sign_column);
+        assert_eq!(focused.wrap_lines, blurred.wrap_lines);
+        assert!(focused.wrap_lines);
+        assert_eq!(focused.relative_line_numbers, blurred.relative_line_numbers);
+        assert_eq!(focused.foldenable, blurred.foldenable);
+        // …and both describe the pane's own buffer, not the active document.
+        assert_eq!(focused_ctx.buffer_id, pane.buffer_id);
+        assert_eq!(blurred_ctx.buffer_id, pane.buffer_id);
+        // The one thing `is_active` is still allowed to decide.
+        assert!(focused_ctx.is_active && !blurred_ctx.is_active);
     }
 
     // Slice 3c.final.X.cleanup: modeline-text builder must read

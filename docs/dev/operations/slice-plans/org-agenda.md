@@ -40,10 +40,10 @@ the shared minor). Catalogue entry: the agenda in
 | OA.9 | Match-expression parser **(plugin)** | ✅ |
 | OA.10 | `Filter` gains `match`; sections honour it **(plugin)** | ✅ |
 | **Phase 4 — custom commands** | | |
-| OA.11a | The scan seam carries the view's own arguments **(cross-repo)** | 📝 |
-| OA.11 | `org.agenda-custom-commands` parse + fallback **(plugin)** | 📝 |
-| OA.12 | The dispatcher transient **(plugin)** | 📝 |
-| OA.13 | `<leader>oa` / `C-c a` open the dispatcher **(plugin)** | 📝 |
+| OA.11a | The scan seam carries the view's own arguments **(cross-repo)** | ✅ |
+| OA.11 | `org.agenda-custom-commands` parse + fallback **(plugin)** | ✅ |
+| OA.12 | The dispatcher transient **(plugin)** | ✅ |
+| OA.13 | `<leader>oa` / `C-c a` open the dispatcher **(plugin)** | ✅ |
 | **Phase 5 — layered display modes** | | |
 | OA.14 | A second virtual-row provider on one view (spike) | 📝 |
 | OA.15 | `org-agenda-log-mode` | 📝 |
@@ -563,7 +563,7 @@ re-invent the same trick.
 
 So the seam widens (OA.11a), and phase 4 becomes cross-repo.
 
-### OA.11a — The scan seam carries the view's own arguments 📝
+### OA.11a — The scan seam carries the view's own arguments ✅
 
 **`begin: func(args: list<string>) -> u64`.** The arguments the view was opened
 with reach the guest, so a scan can be parameterised by something other than an
@@ -624,7 +624,7 @@ failing — see OA.1's note on the same trap.
 trigger is unchanged; the root override and a scan-arg coexist without either
 consuming the other; and the args survive `gr`.
 
-### OA.11 — `org.agenda-custom-commands` parse + fallback **(plugin)** 📝
+### OA.11 — `org.agenda-custom-commands` parse + fallback **(plugin)** ✅
 
 A TOML-string option shaped like `org.agenda-sections`, with its failure model
 inherited whole: malformed ⇒ fall back with the notice ridden onto the first
@@ -633,7 +633,36 @@ section title; one bad entry ⇒ skipped and named.
 **Test:** mirror `agenda_sections`' own tests, including that a broken set costs
 you your layout and never your rows.
 
-### OA.12 — The dispatcher transient **(plugin)** 📝
+**Landed wired to `begin`, not as parse-plus-fallback alone.** The plan split
+the parser from its consumer, and OA.9 already showed why that does not work
+here: a parser nothing calls warns `dead_code` on every type it defines, and
+the standing rule forbids `#[allow]`ing that away. So this slice also resolves
+the scan's sections from the args OA.11a delivers — empty means the default
+agenda, a first element is a command key — which leaves OA.12 as purely the
+menu that supplies one.
+
+`[[command.section]]` deserialises through `agenda_sections`' OWN `RawSection`
+rather than a copy, and the validation is the shared
+`sections_from_raw`. A command's blocks are sections in every respect, and two
+declarations would be two places for `todo-only` to be spelled and one of them
+to be spelled wrong.
+
+Two decisions the tests pin, neither the only defensible one: a duplicate key
+keeps the FIRST and names the loser (silent shadowing gives a menu two
+identical rows of which one does nothing — indistinguishable from a broken
+feature), and an unknown key reports the keys that DO exist, because the set
+parsed, so the user has a typo or a stale binding.
+
+**A limitation found while testing, recorded rather than papered over.** The
+notice rides the first section's title, and the host attaches a group title to
+a ROW — so a first section that admits no rows renders no header and the
+complaint vanishes with it. That is AS.2's mechanism working as designed, not
+something introduced here; fixing it belongs in `agenda_sections` where it
+would fix both, and it is not obvious, since sections are resolved in `begin`
+before any row exists. The end-to-end test uses an overdue fixture for exactly
+this reason.
+
+### OA.12 — The dispatcher transient **(plugin)** ✅
 
 Rows from the parsed custom commands, keyed as configured. Branch inside org's
 existing `transient_source::build` on a new `args` discriminator —
@@ -646,10 +675,46 @@ different `args`, as capture already does.
 **Test:** a configured command appears with its key; opening the menu with no
 configuration still lists the built-in agenda.
 
-### OA.13 — `<leader>oa` / `C-c a` open the dispatcher **(plugin)** 📝
+**The key rides the SCAN-ARG slot, never the argument** — OA.11a's two-slot
+split one layer up, and the reason that slice exists. The argument is the root
+the host interprets, so `w` sent there becomes a directory that does not exist
+and the agenda silently covers no files. The test asserts the payload directly
+(position 0 empty, the key at position 1) because `apply_renderer_effects` has
+no arm for `OpenProviderView`: a test that only pressed and looked at the
+editor would see nothing happen and could not tell that from a broken row.
+
+**An unconfigured user still gets a menu**, which is where this deliberately
+differs from `todo_menu` erring on no keywords. A TODO menu with no states can
+do nothing at all; an agenda dispatcher with no custom commands can still open
+the agenda. A broken set likewise costs the ROWS it describes and not the menu,
+with the footer naming what was dropped — and the footer is the only channel
+that reaches the user BEFORE they open an agenda, since the section-title
+notice lands only after.
+
+The built-in row sends NO command rather than a key of its own, so it and a
+bare `:org-agenda` cannot diverge.
+
+### OA.13 — `<leader>oa` / `C-c a` open the dispatcher **(plugin)** ✅
 
 A deliberate behaviour change: those chords open the default agenda today. Land
 it separately from OA.12 so it can be reverted alone if it turns out to annoy.
+
+Emacs-faithful rather than novel, which is the argument for making it at all:
+`C-c a` has always meant "choose an agenda" and `C-c a a` the built-in one,
+which is why OA.12 keys the built-in agenda `a`. The spelling arriving hands
+know still works, one keystroke longer. `:org-agenda` still opens the default
+agenda with no menu, so nothing lost a way there — only the CHORD moved.
+
+Both spellings move together and both are tested: they are two spellings of one
+`ActionId`, so covering only the leader chord would let them drift silently.
+The chord test drives `press_chord` rather than the action, because a menu that
+builds correctly and cannot be opened by its chord is the failure the
+capture-menu test exists to catch — and here the chord IS the deliverable.
+Verified to fail on the old binding.
+
+`doc/org.md` gains a "Named agendas" section: OA.11–OA.13 were user-facing and
+undocumented, and a user reading about a config format needs to know what a
+typo costs them.
 
 ---
 

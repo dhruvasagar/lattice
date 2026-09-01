@@ -746,9 +746,24 @@ fn collect_candidates(roots: &[PathBuf], extensions: &[String], max_files: usize
     out
 }
 
+/// The files a configured directory names — **one level, not the subtree**.
+///
+/// OA.0d. This walked recursively, which no configuration asked for: emacs
+/// expands a directory in `org-agenda-files` with `directory-files`, one
+/// level, and a user who wants a subdirectory lists it. An org directory with
+/// `roam/`, `journal/` or `archive/` under it was pulling all of them into
+/// every scan — wrong rows, and a corpus far larger than the one configured.
+///
+/// No new option to express this. The roots list is already the mechanism:
+/// naming a subdirectory opts it in, which is exactly how emacs users do it
+/// and why emacs never needed a recursion flag either.
+///
+/// `max_depth(1)` rather than `read_dir` so `ignore`'s hidden-file and
+/// `.gitignore` filtering still applies — `.git` and ignored files stay out,
+/// which is the one thing the recursive walk was doing right.
 fn walk_candidates(root: &Path, extensions: &[String], max_files: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for entry in ignore::Walk::new(root) {
+    for entry in ignore::WalkBuilder::new(root).max_depth(Some(1)).build() {
         if out.len() >= max_files {
             break;
         }
@@ -1128,6 +1143,80 @@ pub fn register_agenda_provider(services: &ServiceRegistry) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// A unique scratch directory. Timestamp alone collides under parallel
+    /// `cargo test`, so a counter rides with it.
+    fn scratch(tag: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lattice-agenda-walk-{tag}-{nanos}-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// OA.0d: a configured directory means the files IN it. Emacs expands a
+    /// directory entry in `org-agenda-files` one level, and an org directory
+    /// with `roam/` or `archive/` beneath it should not drag those in.
+    #[test]
+    fn a_configured_directory_does_not_pull_in_its_subtree() {
+        let dir = scratch("subtree");
+        std::fs::write(dir.join("a.org"), "* TODO a\n").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("b.org"), "* TODO b\n").unwrap();
+
+        let exts = vec!["org".to_string()];
+        let found = collect_candidates(&[dir.clone()], &exts, usize::MAX);
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert_eq!(names, vec!["a.org"], "found: {found:?}");
+
+        // The escape hatch: naming the subdirectory opts it in, which is the
+        // whole reason this needs no recursion flag.
+        let both = collect_candidates(&[dir.clone(), dir.join("sub")], &exts, usize::MAX);
+        assert_eq!(both.len(), 2, "found: {both:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The one thing the recursive walk did right, kept: `ignore`'s filtering
+    /// still applies at the single level, so dotfiles stay out.
+    #[test]
+    fn the_single_level_walk_still_skips_hidden_files() {
+        let dir = scratch("hidden");
+        std::fs::write(dir.join("a.org"), "* TODO a\n").unwrap();
+        std::fs::write(dir.join(".hidden.org"), "* TODO h\n").unwrap();
+
+        let found = collect_candidates(&[dir.clone()], &vec!["org".to_string()], usize::MAX);
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert_eq!(names, vec!["a.org"], "found: {found:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file named directly is still taken, whatever its depth — the roots
+    /// list holds files as well as directories, and only the DIRECTORY
+    /// expansion changed.
+    #[test]
+    fn a_file_named_directly_is_still_taken() {
+        let dir = scratch("file");
+        std::fs::create_dir_all(dir.join("deep")).unwrap();
+        let deep = dir.join("deep").join("c.org");
+        std::fs::write(&deep, "* TODO c\n").unwrap();
+
+        let found = collect_candidates(&[deep.clone()], &vec!["org".to_string()], usize::MAX);
+        assert_eq!(found, vec![deep]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn entry(line: u32, group: &str, label: &str, sort_key: i64) -> ScannedExcerpt {
         ScannedExcerpt {

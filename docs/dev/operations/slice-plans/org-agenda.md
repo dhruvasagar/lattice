@@ -21,8 +21,8 @@ the shared minor). Catalogue entry: the agenda in
 | **Phase 0 — the scan is quadratic** | | |
 | OA.0a | The tree walk stops being O(n²) — a host fix, not a guest one | ✅ |
 | OA.0b | The epoch budget is spent by the clock, not by callbacks | ✅ |
-| OA.0c | A refresh keeps the old rows until the new ones arrive | 📝 |
-| OA.0d | A configured directory means its files, not its subtree | 📝 |
+| OA.0c | A refresh keeps the old rows until the new ones arrive | ✅ |
+| OA.0d | A configured directory means its files, not its subtree | ✅ |
 | **Phase 1 — correctness before cosmetics** | | |
 | OA.1 | Agenda rows are one line **(plugin)** | 📝 |
 | OA.2 | Title-run header grouping; the `[untitled]` rows go | 📝 |
@@ -181,19 +181,33 @@ should.
 slice too, for the wrong reason: OA.0a made the scan fast enough not to need
 interrupting. It measures org, not the deadline.
 
-### OA.0c — A refresh keeps the old rows until the new ones arrive 📝
+### OA.0c — A refresh keeps the old rows until the new ones arrive ✅
 
-`replace_excerpts(empty)` before spawning turns any slow scan into a blank
-view. Populate into the view and swap, so a refresh degrades to "stale for a
-moment" instead of "empty for as long as the scan takes".
+The view is no longer cleared at open; `append_sorted` replaces rather than
+appends, and `finish_empty` clears explicitly. The scan turned out not to be
+progressive at all — it collects every file, sorts once and writes in one
+terminal call — so the blank window was the entire scan rather than a gap at
+its start.
 
-This is defence in depth, not the fix — it would have made the reported bug
-invisible rather than absent, which is why it lands third and not first.
+**A regression it caught, worth carrying forward.** Building the source map and
+handing it to `replace_excerpts` is NOT equivalent to `add_source`: only
+`add_source` derives the per-excerpt `SyntaxHandle` from the path. The first
+cut left every agenda row uncoloured while every test about rows, refresh and
+folding stayed green — `agenda_rows_carry_per_excerpt_syntax_handles`, left
+behind by AH.1 after the identical silent-uncoloured-agenda bug, is what
+failed. **`replace_excerpts` is an incomplete peer of `add_source` and will
+bite the next provider that reaches for it.** Not fixed here; it is a substrate
+slice of its own.
 
-**Test:** the view retains its previous rows while a refresh's scan is in
-flight, and the headerline says it is refreshing.
+Also unfixed and now written down: `replace_excerpts` does not re-baseline
+`state.source_syntax`, so a dropped source's handle outlives it. Pre-existing —
+the old clear-then-append path had the same hole.
 
-### OA.0d — A configured directory means its files, not its subtree 📝
+**Tests**, each verified against its own half: the keep-rows test blocks the
+source mid-scan and sees 0 rows on the old behaviour; the clears-when-empty
+test sees a stale row when `finish_empty` does not clear.
+
+### OA.0d — A configured directory means its files, not its subtree ✅
 
 `walk_candidates` uses `ignore::Walk`, which recurses. Emacs does not: a
 directory in `org-agenda-files` is expanded with `directory-files`, one level,
@@ -225,8 +239,17 @@ then** — and that is the point at which the knob earns its place.
 Keep `ignore`'s hidden-file and `.gitignore` filtering for the single level, so
 `.git` and ignored files stay out.
 
-**Test:** a root with `a.org` and `sub/b.org` scans `a.org` only; listing
-`sub` explicitly picks up `b.org`.
+Implemented as `ignore::WalkBuilder::max_depth(Some(1))` rather than
+`read_dir`, so the hidden-file and `.gitignore` filtering the recursive walk
+was doing right still applies at the single level.
+
+**Tests:** a root with `a.org` and `sub/b.org` scans `a.org` only and listing
+`sub` explicitly picks up both (verified to fail on the recursive walk); a
+dotfile is still skipped; and a file named directly is still taken whatever its
+depth, since only the DIRECTORY expansion changed.
+
+User-facing, so `doc/org.md` says it: a directory is one level, list a
+subdirectory to include it, and that is why there is no recursion setting.
 
 **Separate observation, not this slice.** The host walks the *union* of every
 source's claimed extensions, and org claims `org_archive` alongside `org`. So

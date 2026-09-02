@@ -8,7 +8,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 |---|---|---|
 | TB.0 | `<leader>` expands on the native mode-keymap path | ✅ |
 | TB.1 | `table-mode`: the shared minor, at org's parity | ✅ |
-| TB.2 | The org plugin sheds the generic surface **(plugin)** | 📝 |
+| TB.2 | The org plugin sheds the generic surface **(plugin)** | ✅ |
 | TB.3 | Richness beyond parity — emacs' org-table surface | 📝 |
 
 TB.0 is a prerequisite, not a courtesy: `table-mode` inherits org's
@@ -68,17 +68,40 @@ same file asserts each chord's *target* rather than merely that something is
 bound: `translate_mode_keymaps` drops an entry whose command name does not
 resolve, so a typo between keymap and registration is a silent keymap.
 
-### TB.2 — the org plugin sheds the generic surface 📝
+### TB.2 — the org plugin sheds the generic surface ✅
 
-Delete `src/table.rs`'s engine and the eleven generic chords + actions from
-`org-table-mode`. The mode stays registered as org's table home (design §5).
+`src/table.rs` and the eleven generic chords + actions are gone from the org
+plugin. `org-table-mode` stays registered with an **empty keymap** as org's
+table home (design §5) — until `#+TBLFM:` lands it is a declared placeholder,
+which is worth saying plainly rather than papering over. Deleting it and
+re-adding it then would rename an entry in the plugin's mode list to buy
+nothing; keeping it is what makes the intent of the split legible.
 
-Its surface is empty the moment this lands, and that is worth saying plainly
-rather than papering over: until TB.3 or a formula slice, `org-table-mode` is
-a declared placeholder. The alternative — deleting it and re-adding it when
-`#+TBLFM:` arrives — trades a documented empty mode for a rename in the
-plugin's mode list, and keeping it is what makes the *intent* of the split
-legible to whoever picks up formulas.
+The callback ids 21..=31 are left as a **gap** rather than reused: a callback
+id is a wire value between the guest's registration and the host's dispatch,
+and shifting the ones above it to close a hole would silently re-point every
+action after it.
+
+**The plugin's suite found two real bugs in TB.1**, which is the argument for
+doing the two slices in this order rather than merging them:
+
+1. `rewrite` computed the replaced range's end line from the RENDERED result.
+   Align and the two swaps do not change the row count, so old span and new
+   agreed and it looked correct — then insert addressed a line past the
+   buffer's end and did nothing, and delete left its last row behind. Every
+   unit test asserted the rendered *text* and none the range, which is exactly
+   why they all passed. `the_replaced_range_is_the_old_table_not_the_new_one`
+   now asserts it in both directions.
+2. A `| a | b |` line inside `#+BEGIN_SRC` was taken for a table. OT.7 found
+   this in the plugin and answered it with the tree; that answer does not
+   survive the move, because `lattice-mode` has no tree-sitter dependency and
+   should not grow one to ask about `#+BEGIN_SRC`. Counting delimiters from
+   the top of the file is the same answer in `O(lines)` of `starts_with` —
+   once per chord, not per frame.
+
+`tab_off_a_table_falls_through_to_the_headline_cycle` passes unmodified, which
+is the assertion that the decline chain survived having one of its links move
+to another crate.
 
 ### TB.3 — beyond parity 📝
 

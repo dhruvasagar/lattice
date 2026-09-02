@@ -170,7 +170,7 @@ prevent.
 |---|---|---|---|
 | `org-mode` | major | `target-language = "org"` | headline motions, `ih`/`ah`/`ir`/`ar` text objects, promote/demote, subtree move, meta-return, toggle heading, archive, links, refile, capture, `<Tab>` on a headline |
 | `org-todo-mode` | minor | `majors = ["org-mode"]` | TODO keyword cycling, priority, tags, checkboxes + statistics cookies, timestamps |
-| `org-table-mode` | minor | `majors = ["org-mode"]` | alignment, cell and row motion, row/column insert and move |
+| `org-table-mode` | minor | `majors = ["org-mode"]` | **TB.2: table behaviour that is genuinely org's** — `#+TBLFM:` formulas, sorting, export. Empty today; the generic surface is the host's [`table-mode`](table-mode.md) |
 | `org-agenda-mode` | minor | manual — the provider activates it on the view, named by the source's `view-mode` export | TODO change from the agenda |
 
 ### 4.1 Why these four and not one, or ten
@@ -180,11 +180,23 @@ whether another major would want the behaviour, per the
 minor-mode-over-duplication rule.
 
 - **Tables** are the clearest yes. A markdown buffer wants the same
-  `<Tab>`-aligns-and-advances editing, and the day that lands,
-  `org-table-mode`'s activation policy grows a major rather than
-  markdown growing a copied keymap. The mode is named `org-table-mode`
-  today because its syntax is org's; generalising means renaming, not
-  restructuring.
+  `<Tab>`-aligns-and-advances editing.
+
+  **This section predicted the wrong resolution, and TB.2 settled it the
+  other way.** The prediction was that `org-table-mode`'s activation
+  policy would grow a major and the mode would be renamed — generalising
+  by widening from here. What that missed is that `markdown-mode` is a
+  **native** major, so a table mode owned by this plugin makes markdown
+  table editing require the org plugin installed and enabled, absent
+  otherwise with nothing to announce the gap. Only the host can serve
+  both, and it already owned the engine: `lattice-mode/src/modes/table/`
+  has carried the parse-measure-pad core since HP.1, naming a
+  `table-mode` as its next consumer, and measuring by display width
+  where this plugin's copy counted `char`s.
+
+  So the generic surface moved OUT rather than widening in place, and
+  `org-table-mode` keeps what is genuinely org's. See
+  [`table-mode.md`](table-mode.md) §1 and §5.
 - **TODO workflow** groups the surface that operates on a headline's
   *metadata* rather than its structure — and checkboxes (`- [ ]`) exist
   in markdown too. Same argument, one step weaker.

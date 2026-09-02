@@ -297,21 +297,73 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
             println!("cargo:rustc-env={env_var}={}", wasm.display());
         }
         Ok(o) => {
-            // Non-fatal: the test/bench skips when the var is empty. Surface the
-            // guest build's stderr so a real failure isn't silent; the common
-            // benign cause is a missing `wasm32-wasip2` target (`rustup target
-            // add wasm32-wasip2`) — CI installs it so the perf gate runs there.
             let err = String::from_utf8_lossy(&o.stderr);
-            let tail: String = err.lines().rev().take(4).collect::<Vec<_>>().join(" | ");
+            let tail: String = err.lines().rev().take(8).collect::<Vec<_>>().join(" | ");
+            // A fixture that cannot COMPILE is a broken test suite, and this
+            // used to be a warning plus an empty env var — which the dependent
+            // test reads as "not built" and SKIPS.
+            //
+            // The two cases it conflated are not alike. A contributor without
+            // `wasm32-wasip2` installed cannot build any guest, and skipping is
+            // the right answer for them. A guest that fails to compile is a
+            // regression in this repo — and adding a WIT export (OA.22) does
+            // exactly that to every fixture implementing the changed world.
+            // Thirteen tests stopped running in the file covering that seam,
+            // and the suite still reported green.
+            //
+            // So: ask whether the target is installed, and only forgive the
+            // failure when it is not.
+            if wasm_target_installed() {
+                panic!(
+                    "the `{name}` test fixture failed to build.\n\n\
+                     This is a compile error in `{}`, not a missing toolchain — \
+                     `wasm32-wasip2` IS installed. Tests that load this guest \
+                     would otherwise skip and the suite would report green.\n\n\
+                     Last stderr: {tail}",
+                    guest_dir.display()
+                );
+            }
             println!(
-                "cargo:warning={name} fixture guest not built (target missing or build failed); \
-                 the dependent test/bench will skip. Last stderr: {tail}"
+                "cargo:warning={name} fixture guest not built: the `wasm32-wasip2` target is \
+                 not installed, so the dependent test/bench will skip. \
+                 `rustup target add wasm32-wasip2` to run them. Last stderr: {tail}"
             );
             println!("cargo:rustc-env={env_var}=");
         }
         Err(e) => {
+            // Cargo itself would not run. Nothing here can distinguish a
+            // broken fixture from a broken environment, so this stays a
+            // warning — but it is a different failure from the one above and
+            // says so.
             println!("cargo:warning=could not run cargo for the {name} guest: {e}");
             println!("cargo:rustc-env={env_var}=");
         }
     }
+}
+
+/// Is `wasm32-wasip2`'s standard library present?
+///
+/// What separates "this contributor cannot build guests" from "this guest is
+/// broken" — see the panic in [`build_guest`]. `--print target-libdir` succeeds
+/// only when the target's std is actually installed, which is the thing a guest
+/// build needs; `rustup target list` would also match a target that is merely
+/// *known*.
+///
+/// Answered once and cached: this runs per fixture and there are a dozen.
+/// Unknown (rustc itself unrunnable) is reported as NOT installed, so a broken
+/// environment degrades to skipping rather than to a panic blaming the fixture.
+fn wasm_target_installed() -> bool {
+    use std::sync::OnceLock;
+    static INSTALLED: OnceLock<bool> = OnceLock::new();
+    *INSTALLED.get_or_init(|| {
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        Command::new(rustc)
+            .args(["--print", "target-libdir", "--target", "wasm32-wasip2"])
+            .output()
+            .map(|o| {
+                o.status.success()
+                    && PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()).is_dir()
+            })
+            .unwrap_or(false)
+    })
 }

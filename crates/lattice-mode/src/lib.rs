@@ -189,8 +189,8 @@ pub use crate::provider_view::{
     ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry, ProviderViewRegistryHandle,
 };
 pub use crate::scanned_excerpt_source::{
-    ClockSpan, ScanBeginFuture, ScanFuture, ScanResult, ScannedExcerpt, ScannedExcerptSource,
-    ScannedExcerptSourceRegistry, ScannedExcerptSourceRegistryHandle,
+    ClockSpan, ScanBeginFuture, ScanDescribeFuture, ScanFuture, ScanResult, ScannedExcerpt,
+    ScannedExcerptSource, ScannedExcerptSourceRegistry, ScannedExcerptSourceRegistryHandle,
 };
 pub use crate::services::ServiceRegistry;
 pub use crate::startup::Startup;

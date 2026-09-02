@@ -77,6 +77,12 @@ impl Guest for Component {
         ]
     }
 
+    /// OA.22: echo the args back, so a host test can assert the label crossed
+    /// the seam without this fixture growing a view model to describe.
+    fn describe(args: Vec<String>) -> String {
+        args.join(" · ")
+    }
+
     fn begin(args: Vec<String>) -> u64 {
         FILES_SEEN.set(0);
         // OA.11a: the args are per-scan state like any other, so they are

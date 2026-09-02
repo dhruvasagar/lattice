@@ -94,6 +94,11 @@ enum ScanCall {
         args: Vec<String>,
         reply: oneshot::Sender<CallResult<u64>>,
     },
+    /// OA.22: `describe(args)` — what this view is, for its headerline.
+    Describe {
+        args: Vec<String>,
+        reply: oneshot::Sender<CallResult<String>>,
+    },
     /// `scan(path, text)` — one file's agenda rows.
     Scan {
         path: String,
@@ -163,6 +168,21 @@ impl ScanClient {
             .map_err(|_| PluginHostError::PluginGone { func: "begin" })?
     }
 
+    /// OA.22: ask the guest what this view IS, for the headerline.
+    ///
+    /// Called once per scan, after [`Self::begin`], so the guest sees the args
+    /// `begin` stashed. The host cannot answer this itself: it deliberately
+    /// does not read `args`, so a filtered agenda would otherwise look exactly
+    /// like an unfiltered one.
+    pub async fn describe(&self, args: Vec<String>) -> CallResult<String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(ScanCall::Describe { args, reply })
+            .map_err(|_| PluginHostError::PluginGone { func: "describe" })?;
+        rx.await
+            .map_err(|_| PluginHostError::PluginGone { func: "describe" })?
+    }
+
     /// Call the guest's `scan(path, text)`.
     ///
     /// The outer result is the host surface (trap / gone / quarantined); the
@@ -220,6 +240,9 @@ impl ScanActor {
                 ScanCall::Begin { args, reply } => {
                     let _ = reply.send(self.call_begin(&args).await);
                 }
+                ScanCall::Describe { args, reply } => {
+                    let _ = reply.send(self.call_describe(&args).await);
+                }
                 ScanCall::Scan { path, text, reply } => {
                     let _ = reply.send(self.call_scan(&path, &text).await);
                 }
@@ -276,6 +299,24 @@ impl ScanActor {
             crate::PluginSeam::ScannedExcerptSource,
             &mut self.quarantine,
             "roots",
+            start,
+            result,
+        )
+    }
+
+    async fn call_describe(&mut self, args: &[String]) -> CallResult<String> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "describe" });
+        }
+        arm_store(&mut self.store, self.budget)?;
+        let start = std::time::Instant::now();
+        let result = self.bindings.call_describe(&mut self.store, args).await;
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::ScannedExcerptSource,
+            &mut self.quarantine,
+            "describe",
             start,
             result,
         )

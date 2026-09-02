@@ -538,6 +538,27 @@ pub fn spawn_scan_view_scan(
             return;
         }
 
+        // OA.22: ask the live sources what this view IS, once, before the walk.
+        //
+        // Before the walk rather than after, so the in-progress header carries
+        // it too — a long scan is exactly when the user has time to wonder what
+        // they are looking at. One crossing per scan, not per file.
+        //
+        // Joined with `·` when more than one source answers, which is the
+        // honest rendering: the view really is the union of what they found,
+        // and picking one arbitrarily would name a filter that governs only
+        // part of the rows.
+        let label = {
+            let mut parts: Vec<String> = Vec::new();
+            for source in &live {
+                let said = source.describe(&options.scan_args).await;
+                if !said.trim().is_empty() {
+                    parts.push(said.trim().to_string());
+                }
+            }
+            parts.join(" · ")
+        };
+
         // AF.2: resolve the roots, most specific first.
         //
         //   1. what the caller named (an explicit argument, or the open view's
@@ -690,7 +711,11 @@ pub fn spawn_scan_view_scan(
                 && let Some(handle) = mb_registry.handle(view)
             {
                 handle.set_headerline(HeaderlineStatus::InProgress {
-                    label: format!("Building agenda ({scanned}/{total} files)"),
+                    label: if label.is_empty() {
+                        format!("Building agenda ({scanned}/{total} files)")
+                    } else {
+                        format!("Building agenda: {label} ({scanned}/{total} files)")
+                    },
                     count: Some(files.iter().map(|f| f.entries.len()).sum()),
                     emphasis: None,
                 });
@@ -701,6 +726,7 @@ pub fn spawn_scan_view_scan(
             files_scanned: scanned,
             skipped_files,
             dropped_sources: dropped.len(),
+            label: label.clone(),
         };
         // OA.14b: publish the clock spans the walk collected, at the END and in
         // one write. A report is a total; a half-filled one is simply wrong,
@@ -747,11 +773,33 @@ const SOURCE_FAILURE_BUDGET: u32 = 3;
 /// Partial-and-honest beats empty-and-silent (`org-mode.md` §8) — but it also
 /// beats *partial-and-silent*, which is what a bare row count would be: an
 /// agenda missing a source's rows looks exactly like an agenda that had none.
-#[derive(Debug, Default, Clone, Copy)]
+// Not `Copy` since OA.22 — the label is a `String`. Cheap to clone at the one
+// call site that needs it (once per scan).
+#[derive(Debug, Default, Clone)]
 struct ScanOutcome {
     files_scanned: usize,
     skipped_files: usize,
     dropped_sources: usize,
+    /// OA.22: what the SOURCE says this view is — its command, span and active
+    /// filters. Empty when no source had anything to say, which keeps the
+    /// header in its plain form.
+    label: String,
+}
+
+/// OA.22: `"[agenda] "` or `"[agenda: Waiting · +work] "`.
+///
+/// The label goes in the BRACKET rather than after the counts, because the
+/// bracket is what the eye reads as "which view is this" — and the question a
+/// filtered agenda has to answer is exactly that. A filtered agenda that looks
+/// unfiltered is the trap: "you have no tasks" is the worst thing this view can
+/// say incorrectly, and a forgotten filter is the likeliest way to make it say
+/// so.
+fn header_prefix(provider: &str, label: &str) -> String {
+    if label.is_empty() {
+        format!("[{provider}] ")
+    } else {
+        format!("[{provider}: {label}] ")
+    }
 }
 
 impl ScanOutcome {
@@ -971,7 +1019,8 @@ fn append_sorted(
 
     handle.set_headerline(HeaderlineStatus::Complete {
         summary: format!(
-            "[agenda] {count} row(s) in {} file(s){}",
+            "{}{count} row(s) in {} file(s){}",
+            header_prefix("agenda", &outcome.label),
             outcome.files_scanned,
             outcome.caveat()
         ),
@@ -1111,8 +1160,12 @@ fn finish_empty(
     };
     handle.replace_excerpts(HashMap::new(), Vec::new());
     handle.set_headerline(HeaderlineStatus::Complete {
+        // The label matters MOST here. "nothing scheduled" under a filter the
+        // user forgot is this view saying "you have no tasks" when they have
+        // plenty — the single worst thing it can say incorrectly.
         summary: format!(
-            "[agenda] nothing scheduled ({} file(s) scanned){}",
+            "{}nothing scheduled ({} file(s) scanned){}",
+            header_prefix("agenda", &outcome.label),
             outcome.files_scanned,
             outcome.caveat()
         ),

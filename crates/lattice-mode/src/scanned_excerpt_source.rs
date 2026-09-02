@@ -128,6 +128,14 @@ pub type ScanFuture<'a> = Pin<Box<dyn Future<Output = Result<ScanResult, String>
 /// invites a producer to return rows from it that the scan would drop.
 pub type ScanBeginFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
+/// OA.22: the future [`ScannedExcerptSource::describe`] returns.
+///
+/// Infallible by design. A source that cannot say what it is has nothing to
+/// report rather than an error to raise, and the header falls back to the plain
+/// form — failing a whole scan because its label did not render would be the
+/// tail wagging the dog.
+pub type ScanDescribeFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+
 /// The boxed future an [`ScannedExcerptSource::roots`] returns (AF.1).
 pub type ScanRootsFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
@@ -191,6 +199,24 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
     /// has them for `roots`, every `scan`, and the generation key it returns.
     /// Empty is the ordinary case: the default scan.
     fn begin(&self, args: &[String]) -> ScanBeginFuture<'_>;
+
+    /// OA.22: what this view IS, in the source's own words, for its headerline.
+    ///
+    /// The host knows only how many rows it composed and how many files it
+    /// walked; it deliberately does not read `args` (see [`Self::begin`]). So an
+    /// agenda narrowed to one tag looks exactly like an unfiltered one — and
+    /// "you have no tasks" is the worst thing this view can say incorrectly.
+    ///
+    /// A short phrase naming the command, the span and any active filters. The
+    /// caller prefixes its own counts, so this must not repeat them. Empty
+    /// means "nothing worth saying" and the header keeps its plain form, which
+    /// is why the default is exactly that: a source with no view state to
+    /// report implements nothing.
+    ///
+    /// Called ONCE per scan, after `begin` — off the per-file path.
+    fn describe(&self, _args: &[String]) -> ScanDescribeFuture<'_> {
+        Box::pin(async { String::new() })
+    }
 
     /// Scan one file. `text` is the file's contents, already read by the host
     /// — the host must read it anyway to build the source `Document`, so it

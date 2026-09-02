@@ -322,6 +322,33 @@ world scanned-excerpt-source-plugin {
     /// Empty is the ordinary case and means "the default scan".
     export begin: func(args: list<string>) -> u64;
 
+    /// OA.22: what this view IS, in the guest's own words, for its headerline.
+    ///
+    /// The host knows how many rows it composed and how many files it walked,
+    /// and that is all it can say — it deliberately does not read `args` (see
+    /// `begin`). So an agenda narrowed to one tag looks exactly like an
+    /// unfiltered one, and "you have no tasks" is the worst thing this view can
+    /// say incorrectly. A forgotten filter is the likeliest way to make it say
+    /// so.
+    ///
+    /// Return a short phrase naming the command, the span and any active
+    /// filters — `"Waiting · next 7 days · +work"`. The host prefixes its own
+    /// counts, so do NOT repeat them; empty means "nothing worth saying" and
+    /// the header keeps the plain form.
+    ///
+    /// **Also the only place a bad view argument can be reported.** A guest
+    /// `logging::log` call makes the component import `logging`, which org's
+    /// multi-seam linker does not wire on every seam — the whole component then
+    /// fails to instantiate, a trap this plugin has paid for more than once. So
+    /// an unrecognised argument has nowhere else to surface, and silently
+    /// dropping it means a typo'd command shows the default agenda while
+    /// looking like the one that was asked for.
+    ///
+    /// Called ONCE per scan, after `begin`, so it sees the args `begin` stashed.
+    /// Off the per-file path by construction: one crossing per scan, not one
+    /// per file.
+    export describe: func(args: list<string>) -> string;
+
     /// Scan one file; return its agenda rows AND the time clocked in it.
     ///
     /// `path` is absolute. Rows may be returned in any order; the host

@@ -76,6 +76,22 @@ impl ScannedExcerptSource for WasmScannedExcerptSource {
         })
     }
 
+    /// OA.22. Degrades to empty on a trap or a quarantined guest, exactly as
+    /// `roots` does — a header that could not be built is a missing phrase, not
+    /// a failed scan.
+    fn describe(&self, args: &[String]) -> lattice_mode::ScanDescribeFuture<'_> {
+        let args = args.to_vec();
+        Box::pin(async move {
+            match self.client.describe(args).await {
+                Ok(label) => label,
+                Err(e) => {
+                    tracing::debug!(error = %e, "scan: a source could not describe its view");
+                    String::new()
+                }
+            }
+        })
+    }
+
     fn begin(&self, args: &[String]) -> ScanBeginFuture<'_> {
         // Owned before the async move: `args` is borrowed from the caller and
         // the returned future outlives the call.

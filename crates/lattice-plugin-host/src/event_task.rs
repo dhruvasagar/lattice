@@ -384,10 +384,15 @@ impl EventActor {
                 // and every later delivery short-circuits above rather than
                 // re-failing. Re-instantiation is PH7.12b.
                 let kind = classify_trap(&source);
+                // `elapsed_ms` because an epoch trap without it says only "too
+                // long" — and the two actionable answers (the budget is wrong
+                // vs. the guest is spinning) are hundreds of milliseconds apart.
+                // Diagnosing one cost a reproduction under synthetic load.
                 tracing::warn!(
                     plugin = self.id.0,
                     handler,
                     ?kind,
+                    elapsed_ms = __trace_start.elapsed().as_millis() as u64,
                     "plugin event handler trapped; delivery skipped"
                 );
                 // PO.2: record the trapped crossing at Error (always kept),

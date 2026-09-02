@@ -233,9 +233,15 @@ impl Default for PluginBudget {
     fn default() -> Self {
         // Generous defaults: a well-behaved `activate` finishes far inside
         // these. PH7.5 tightens them into CI-gated budgets.
+        //
+        // 5s for the same reason as `event()`: this covers the ASYNC seams
+        // (the scan producer, pickers, media, lifecycle `activate`), every one
+        // of which blocks in host imports whose duration it cannot control, and
+        // since OA.0b that time is charged to the guest. Fuel is the compute
+        // bound; this only has to stop a guest that blocks forever.
         Self {
             fuel: 1_000_000_000,
-            epoch_deadline: 1_000,
+            epoch_deadline: 5_000,
         }
     }
 }
@@ -258,17 +264,31 @@ impl PluginBudget {
     /// ticker granularity is 1ms ([`EPOCH_TICK_INTERVAL`]); a 2-tick deadline
     /// false-positives when the OS deschedules the dispatch thread mid-call
     /// (observed under a criterion warmup's millions of iterations). So the epoch
-    /// is set generously (`50` ticks ≈ 50ms) — it never trips on scheduling
-    /// jitter, and only catches the pathological case fuel somehow misses (near-
-    /// impossible for a sync compute guest). A trap of either kind is caught by
+    /// is set generously — it must never trip on scheduling jitter, and only
+    /// catch the pathological case fuel somehow misses (near-impossible for a
+    /// sync compute guest). A trap of either kind is caught by
     /// the trampoline → the contribution is a no-op with a warn
     /// ([`CommandError::Plugin`](lattice_grammar::CommandError::Plugin)), never a
     /// hang. Armed before every guest call — distinct from the lifecycle/producer
     /// budget by design (audit F1).
+    ///
+    /// **50ms was not jitter-proof, so this is 250.** A trivial org
+    /// `:org-clock-in` — read a line, rewrite it, emit an event — overran 50ms
+    /// and trapped whenever the machine was saturated (reproduced with one busy
+    /// loop per core). That is precisely the false-trip this deadline's own
+    /// prose said must not happen, and the fix it prescribed: raise the
+    /// deadline, never go back to counting firings.
+    ///
+    /// 250ms costs nothing real. Fuel remains the actual bound at ~one frame of
+    /// compute, so a runaway still dies on fuel in milliseconds; the epoch only
+    /// has to exceed the worst descheduling window, and 5× the observed failure
+    /// is that with room. The number is also no longer a cliff: since the strike
+    /// count in [`Quarantine::trip`], one overrun costs that call rather than
+    /// the plugin.
     pub fn grammar() -> Self {
         Self {
             fuel: 10_000_000,
-            epoch_deadline: 50,
+            epoch_deadline: 250,
         }
     }
 
@@ -285,10 +305,27 @@ impl PluginBudget {
     /// skipped with a warn, the plugin stays subscribed, other subscribers are
     /// untouched (§8). The marshalling+dispatch overhead itself is the CI-gated
     /// `< 250µs p99` row (PH7.8d), distinct from this runaway guard.
+    ///
+    /// **5s, not 1s, and the reason is what the epoch measures.** Since OA.0b
+    /// the deadline counts wall time including the time the guest sits BLOCKED
+    /// in a host import — correct, because a guest looping over imports was
+    /// otherwise unbounded (an agenda scan ran 6.8 s against a 1 s deadline
+    /// without tripping). The cost is that a handler is now charged for host
+    /// work it cannot make faster: org's roam scan opens with one `walk` of the
+    /// corpus, and under a saturated machine that single import took 1106 ms —
+    /// so a healthy plugin trapped, and since a trap kills the instance
+    /// ([`Quarantine::trip`]) the whole index died with it.
+    ///
+    /// Raising it does not weaken what the guard is for. Fuel still caps guest
+    /// COMPUTE at ~10 frames, so a spinning handler dies in milliseconds
+    /// regardless; the epoch's remaining job is bounding a guest that blocks in
+    /// imports forever, and 5 s bounds that just as surely as 1 s. What it buys
+    /// is that legitimate work — which a guest already self-limits to 250 ms
+    /// per delivery — is 20× inside the budget instead of within noise of it.
     pub fn event() -> Self {
         Self {
             fuel: 100_000_000,
-            epoch_deadline: 1_000,
+            epoch_deadline: 5_000,
         }
     }
 
@@ -631,6 +668,20 @@ impl Quarantine {
             );
             return;
         }
+        // Epoch is NOT softer than fuel here, and the evidence is worth
+        // keeping. An epoch overrun does say something weaker about the guest —
+        // it ran long on the wall clock, which under load happens to a healthy
+        // plugin — so a strike count that tolerated one overrun was tried.
+        //
+        // It does not work, because a wasm trap does not unwind: Rust
+        // destructors never run, so a trap taken inside a
+        // `RefCell::borrow_mut()` scope leaves that cell borrowed for the life
+        // of the instance and every later call panics on it. Letting a second
+        // delivery through produced exactly that — an `Epoch` trap followed
+        // immediately by a `kind=Other` guest trap on the next event.
+        //
+        // So the instance really is dead however it trapped, and the only
+        // useful lever is not trapping: see the budgets on `PluginBudget`.
         if self.tripped {
             return;
         }
@@ -849,6 +900,41 @@ mod trip_and_map_traced_tests {
             matches!(&recs[0].outcome, TraceOutcome::Trap { func, kind } if func == "init" && kind == "trap"),
             "a generic error classifies as a `trap`-kind Trap outcome"
         );
+    }
+
+    /// A trapped instance is dead however it trapped — including on epoch.
+    ///
+    /// Worth pinning, because the opposite is intuitive and was tried: an epoch
+    /// overrun says only "this ran long", which under load happens to a healthy
+    /// plugin, so tolerating one looks obviously right. It is not. A wasm trap
+    /// does not unwind, so Rust destructors never run and a trap taken inside a
+    /// `RefCell::borrow_mut()` leaves the cell borrowed for the life of the
+    /// instance; the next call panics on it. Letting a second delivery through
+    /// produced an `Epoch` trap followed at once by a `kind=Other` guest trap.
+    ///
+    /// The lever is not trapping — see the budgets on `PluginBudget`.
+    #[test]
+    fn an_epoch_overrun_quarantines_like_any_other_trap() {
+        let mut q = quarantine();
+        q.trip("on-event", TrapKind::Epoch);
+        assert!(q.is_tripped());
+    }
+
+    /// Fuel is unchanged: the guest computed a runaway, and one is enough.
+    #[test]
+    fn a_fuel_overrun_still_quarantines_immediately() {
+        let mut q = quarantine();
+        q.trip("on-event", TrapKind::Fuel);
+        assert!(q.is_tripped());
+    }
+
+    /// So is a real wasm trap — unreachable, out-of-bounds, a guest panic.
+    /// Those say the instance's own invariants are gone.
+    #[test]
+    fn a_genuine_trap_still_quarantines_immediately() {
+        let mut q = quarantine();
+        q.trip("init", TrapKind::Other);
+        assert!(q.is_tripped());
     }
 
     #[test]

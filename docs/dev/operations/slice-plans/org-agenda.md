@@ -59,7 +59,7 @@ OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
 that slice landed before the display modes rather than after. OA.14c and OA.14d
 block nothing here and were recorded in this plan only because org's options are
 what motivate them — OA.14c has since **graduated** to
-[`typed-configuration.md`](typed-configuration.md), and OA.14d fixed a reported
+[`typed-configuration.md`](archive/typed-configuration.md), and OA.14d fixed a reported
 bug that happens to be org's.
 
 ---
@@ -819,7 +819,7 @@ the entry was a problem statement, not a design.
 
 It now has both artefacts it was waiting for:
 [`typed-configuration.md`](../../architecture/typed-configuration.md) (the
-design) and [`typed-configuration.md`](typed-configuration.md) (its own slice
+design) and [`typed-configuration.md`](archive/typed-configuration.md) (its own slice
 plan, TC.1–TC.8). Nothing in phase 5 waits on it.
 
 **Two decisions were locked when it graduated**, and both went against the

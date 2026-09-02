@@ -5,7 +5,8 @@ related: [config, init, plugin, options, customize, describe-option, schema]
 
 # Typed configuration — a declared schema, not a TOML blob
 
-Slice plan: [`typed-configuration.md`](../operations/slice-plans/typed-configuration.md).
+Slice plan: [`typed-configuration.md`](../operations/slice-plans/archive/typed-configuration.md)
+(complete — every slice landed 2026-09-02).
 Extends design §5.12 (typed options + customize) and
 [`mode-architecture.md`](mode-architecture.md) §6.6, whose WIT sketch this
 supersedes. Companion: [`config-and-init.md`](config-and-init.md), which owns

@@ -2,18 +2,18 @@
 
 > **Status: Complete.** Opened and finished 2026-09-02. Every slice is ✅;
 > this plan is ready to archive. Implements
-> [`typed-configuration.md`](../../architecture/typed-configuration.md), which
+> [`typed-configuration.md`](../../../architecture/typed-configuration.md), which
 > extends design §5.12 and supersedes
-> [`mode-architecture.md`](../../architecture/mode-architecture.md) §6.6's WIT
+> [`mode-architecture.md`](../../../architecture/mode-architecture.md) §6.6's WIT
 > sketch.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
-Graduated out of [`org-agenda.md`](org-agenda.md) OA.14c, which recorded the
+Graduated out of [`org-agenda.md`](../org-agenda.md) OA.14c, which recorded the
 problem statement because org's options are what motivate it. Spans two repos:
 slices marked **(plugin)** land in `~/src/dhruvasagar/lattice-org-plugin`.
 
-Independent of [`config-and-init.md`](../../architecture/config-and-init.md)
+Independent of [`config-and-init.md`](../../../architecture/config-and-init.md)
 §4.1's `pre-plugin-loaded` (OA.14d, landed). That fixed *when* a value arrives;
 this fixes *what shape* it has. Neither substitutes for the other and they were
 entangled in one bug report, which is why this note exists.

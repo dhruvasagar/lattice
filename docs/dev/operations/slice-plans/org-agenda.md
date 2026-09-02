@@ -58,11 +58,13 @@ the shared minor). Catalogue entry: the agenda in
 | OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
 | OA.21 | Filtering — `/` tag, `\` narrow, `|` clear **(plugin)** | ✅ |
 | OA.22 | The headerline says what you are looking at **(plugin)** | 📝 |
-| OA.23 | A guest seam for an excerpt's source file **(cross-repo)** | 📝 |
+| OA.23 | A guest seam for an excerpt's source file **(cross-repo)** | ✅ |
+| OA.23b | …and one that can be READ and WRITTEN **(cross-repo)** | ✅ |
 | **Phase 7 — acting on a headline, from either surface** | | |
-| OA.24 | The org date grammar — `+1d`, `fri`, repeaters **(plugin)** | 📝 |
-| OA.25 | `org-plan-mode` — schedule + deadline, in files AND the agenda **(plugin)** | 📝 |
+| OA.24 | The org date grammar — `+1d`, `fri`, repeaters **(plugin)** | ✅ |
+| OA.25 | Schedule + deadline, in files AND the agenda **(plugin)** | ✅ |
 | OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | 📝 |
+| OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1081,7 +1083,7 @@ the component import `logging`, which org's multi-seam linker does not wire —
 the whole component then fails to instantiate, a trap this plugin has paid for
 more than once — so an unrecognised view argument has nowhere else to be said.
 
-### OA.23 — A guest seam for an excerpt's source file **(cross-repo)** 📝
+### OA.23 — A guest seam for an excerpt's source file **(cross-repo)** ✅
 
 What OA.21's `<` needs, and the reason it shipped without one. A guest acting in
 a multibuffer can read the VIEW's path and nothing about the excerpt under the
@@ -1094,6 +1096,40 @@ The guest-facing half is the new part: a `scanned-excerpt-source` question, or a
 field on the action context, that answers "which file did the row at this cursor
 come from". Worth doing for more than `<` — `org-agenda-goto` and any
 row-to-source action wants the same answer.
+
+**Landed, then landed again.** As first shipped the resolver asked the BUFFER
+STORE for the source's path, and a scan view's sources are not in it: they are
+minted with `BufferId::next()` and registered with `add_source` alone, because
+they are not buffers the user opened. So every real agenda row answered `none`
+— the one case the seam exists for — and it shipped because the only tests were
+the two `none` paths, which pass either way. A view answers on its own: each
+source is an `Arc<dyn Document>` carrying its path.
+
+### OA.23b — …and a seam that can be READ and WRITTEN **(cross-repo)** ✅
+
+OA.23 says WHERE a line came from. Acting on the answer needed two more things,
+and OA.25 needs both.
+
+**The document, not just the file.** `source-location` gains `buffer`. The two
+are not interchangeable: a view's sources are documents the VIEW owns and `:w`
+saves, and the editor may separately hold the user's own buffer on the same
+file. A guest that resolved the path and wrote to the file by name would edit
+the other document, and one `:w` could then overwrite the other. `path` to
+show, `buffer` to edit.
+
+**`host-services.source-line`**, because the write has to know what is already
+on the planning line. `read-file` is wrong twice over: it reads disk, so it
+misses edits the view has made and not saved — press `s` twice and the second
+read sees no `SCHEDULED:` line and stacks a duplicate — and it reads a file that
+may not be the document being edited.
+
+**`Effect::ApplyEdit` reaching a source.** `apply_targeted_edit` looked in the
+buffer store and nowhere else, so a source target answered `Cancelled` and the
+keystroke silently did nothing. It now falls back to the multibuffer sources,
+through the view's `apply_to_source` — which rides the source-forwarder FIFO
+rather than going straight at the document, so it queues behind composed edits
+still in flight. A direct write that overtook one would leave it landing at
+coordinates computed before the insert shifted them.
 
 ---
 
@@ -1110,14 +1146,21 @@ place propagates, which is why `<leader>ot` already works there. A planning line
 goes BELOW the headline, outside the excerpt, with nowhere to propagate to. The
 seam is the prerequisite, not a nicety.
 
-**Mode ownership settled without asking**: schedule and deadline are wanted in
-org files and in the agenda, so per `prefer-minor-modes-over-duplication` they
-go on a minor spanning both rather than being declared twice — the
-`magit-core-mode` precedent. Declaring them on `org-mode` and again on
-`org-agenda-mode` is the copied-keymap failure that rule exists to prevent, and
-it is silent: a gap in a copied set does not announce itself.
+**Mode ownership, revised by what the seam can express.** The plan said a minor
+spanning both surfaces, per `prefer-minor-modes-over-duplication`. The WIT
+cannot say it: `ActivationPolicy` is `Majors([...])` *or* `Manual`, never both,
+and the agenda's major is `multibuffer-mode` — shared with project search and
+magit diffs, where a scheduling key means nothing. So the actions live on
+`org-todo-mode` (a headline you schedule is a headline you track, and
+`:org-todo-mode` off should take scheduling with it), and `org-agenda-mode`
+repeats the four BIND lines. The handler bodies live once, behind the
+`ActionId`s — which is the same trade `<leader>ot` already makes, and the reason
+the rule's real target, duplicated *handlers*, is still avoided.
 
-### OA.24 — The org date grammar **(plugin)** 📝
+Worth revisiting if `ActivationPolicy` ever grows a "majors, plus manually"
+form; a fifth mode would not have fixed it.
+
+### OA.24 — The org date grammar **(plugin)** ✅
 
 `+1d` / `-2w` / `+3m`, weekday names (`mon`, `fri`), `today` / `tomorrow`, bare
 `YYYY-MM-DD`, and `<...>` carrying a repeater (`.+1d/3d`).
@@ -1133,15 +1176,19 @@ weekday forms are the ones worth being careful about — `fri` typed ON a Friday
 means *next* Friday in emacs, and getting that wrong makes the key silently do
 nothing one day in seven.
 
-### OA.25 — `org-plan-mode` **(plugin)** 📝
+### OA.25 — Schedule and deadline **(plugin)** ✅
 
 `s` schedules, `d` sets a deadline. An **empty answer removes** the line, which
 is emacs' behaviour and the only spelling of "unschedule" that does not need a
-second key.
+second key — and the reason the prompt opens PRE-FILLED: emptying a field you
+can see is deliberate, where submitting an empty box you were never shown is an
+accident.
 
 The write is a planning-line insert / replace / delete under the headline. In an
 org file that is an ordinary `ApplyEdit`; in the agenda it is an edit to the
-SOURCE, located through OA.23.
+SOURCE document, located through OA.23 and addressed through OA.23b.
+`PlanTarget` resolves that difference once, so neither handler grows an agenda
+branch.
 
 **Test:** scheduling something already scheduled REPLACES rather than stacking a
 second `SCHEDULED:`, and a headline with a `DEADLINE:` already on its planning
@@ -1149,12 +1196,36 @@ line keeps it when a `SCHEDULED:` is added. Planning lines are one line holding
 both, and an implementation that treats them as independent inserts produces a
 file org itself will not read back.
 
+**Bindings.** `<leader>os` / `<leader>od` and `<C-c><C-s>` / `<C-c><C-d>`, in
+both surfaces. `org-todo-select` moved to `<leader>oS`: emacs reaches fast
+select through `C-c C-t`, so ours was the invention with no convention to break.
+Not bare `s` / `d` in the agenda, unlike OA.20's `f` / `b` — emacs spells it
+`C-c C-s` there too, and a bare `d` in a read-only view reads like a delete.
+
+**What the integration test caught, and what nearly hid it.** The agenda case
+first wrote a SEPARATE `DEADLINE:` line above the existing `SCHEDULED:` one —
+the exact corruption the slice exists to prevent — because the test harness
+built its own `PluginHost` and so never ran `lattice_plugin_loader::install`,
+which is what wires the excerpt-source resolver. Unwired, the seam answers
+`none`, every agenda row looks like a plain buffer, and the guest takes its FILE
+path. Six file-surface tests passed throughout. Harnesses that bypass `install`
+must wire the seam themselves.
+
 ### OA.26 — The rest of OA.23's consumers **(plugin)** 📝
 
 `<` (restrict the agenda to the file at the cursor), which OA.21 shipped the
 `file:` term for and could not bind, and `org-agenda-goto` — jump from a row to
 the headline it came from, which is the most-used key in emacs' agenda and is
 the same question the seam answers.
+
+### OA.27 — The `<leader>o` reorganisation **(plugin)** 📝
+
+Clock moves under `<leader>ox…`, which is emacs' own `C-c C-x` (`oxi` in, `oxo`
+out, `oxq` cancel, `oxj` goto) — freeing `<leader>oi` for an insert group.
+
+A pure keymap change with no behaviour in it, which is why it is its own slice:
+it is the one thing here that costs muscle memory, so it should be revertible
+alone.
 
 ---
 

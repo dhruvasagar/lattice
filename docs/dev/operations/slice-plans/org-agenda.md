@@ -58,7 +58,11 @@ the shared minor). Catalogue entry: the agenda in
 | OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
 | OA.21 | Filtering — `/` tag, `\` narrow, `|` clear **(plugin)** | ✅ |
 | OA.22 | The headerline says what you are looking at **(plugin)** | 📝 |
-| OA.23 | A guest seam for an excerpt's source file, so `<` can exist **(cross-repo)** | 📝 |
+| OA.23 | A guest seam for an excerpt's source file **(cross-repo)** | 📝 |
+| **Phase 7 — acting on a headline, from either surface** | | |
+| OA.24 | The org date grammar — `+1d`, `fri`, repeaters **(plugin)** | 📝 |
+| OA.25 | `org-plan-mode` — schedule + deadline, in files AND the agenda **(plugin)** | 📝 |
+| OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1090,6 +1094,67 @@ The guest-facing half is the new part: a `scanned-excerpt-source` question, or a
 field on the action context, that answers "which file did the row at this cursor
 come from". Worth doing for more than `<` — `org-agenda-goto` and any
 row-to-source action wants the same answer.
+
+---
+
+## Phase 7 — acting on a headline, from either surface
+
+The agenda's job is task tracking, planning and **scheduling**, and nothing in
+this plugin writes a `SCHEDULED:` or `DEADLINE:` line. TODO state, priority and
+tags are all editable; the two fields the agenda is actually organised around
+are not. That is the gap this phase closes.
+
+**Both surfaces from the first slice that ships them**, which is why OA.23 comes
+first. An agenda row is ONE line (OA.1) — the headline — so rewriting it in
+place propagates, which is why `<leader>ot` already works there. A planning line
+goes BELOW the headline, outside the excerpt, with nowhere to propagate to. The
+seam is the prerequisite, not a nicety.
+
+**Mode ownership settled without asking**: schedule and deadline are wanted in
+org files and in the agenda, so per `prefer-minor-modes-over-duplication` they
+go on a minor spanning both rather than being declared twice — the
+`magit-core-mode` precedent. Declaring them on `org-mode` and again on
+`org-agenda-mode` is the copied-keymap failure that rule exists to prevent, and
+it is silent: a gap in a copied set does not announce itself.
+
+### OA.24 — The org date grammar **(plugin)** 📝
+
+`+1d` / `-2w` / `+3m`, weekday names (`mon`, `fri`), `today` / `tomorrow`, bare
+`YYYY-MM-DD`, and `<...>` carrying a repeater (`.+1d/3d`).
+
+The only date parser today is `roam_dailies::parse`, which takes `YYYY-MM-DD`
+and nothing else. That is the right surface for "open the journal for a date"
+and the wrong one for scheduling: most of the value of `s` is typing `+1d`
+rather than working out what Wednesday's date is.
+
+**Tests.** Each form against a fixed anchor day, because "today" in a test is
+the fastest way to write an assertion that passes until it does not. The
+weekday forms are the ones worth being careful about — `fri` typed ON a Friday
+means *next* Friday in emacs, and getting that wrong makes the key silently do
+nothing one day in seven.
+
+### OA.25 — `org-plan-mode` **(plugin)** 📝
+
+`s` schedules, `d` sets a deadline. An **empty answer removes** the line, which
+is emacs' behaviour and the only spelling of "unschedule" that does not need a
+second key.
+
+The write is a planning-line insert / replace / delete under the headline. In an
+org file that is an ordinary `ApplyEdit`; in the agenda it is an edit to the
+SOURCE, located through OA.23.
+
+**Test:** scheduling something already scheduled REPLACES rather than stacking a
+second `SCHEDULED:`, and a headline with a `DEADLINE:` already on its planning
+line keeps it when a `SCHEDULED:` is added. Planning lines are one line holding
+both, and an implementation that treats them as independent inserts produces a
+file org itself will not read back.
+
+### OA.26 — The rest of OA.23's consumers **(plugin)** 📝
+
+`<` (restrict the agenda to the file at the cursor), which OA.21 shipped the
+`file:` term for and could not bind, and `org-agenda-goto` — jump from a row to
+the headline it came from, which is the most-used key in emacs' agenda and is
+the same question the seam answers.
 
 ---
 

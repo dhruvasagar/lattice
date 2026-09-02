@@ -421,6 +421,17 @@ pub fn config_value_to_toml(value: &ConfigValue) -> toml::Value {
     }
 }
 
+/// The reserved key a non-record root is wrapped under in the `:set` text form.
+const ROOT_KEY: &str = "value";
+
+/// The inner value of a `{ value = ... }` wrapper, if `table` is exactly that.
+fn unwrap_root(table: &toml::Table) -> Option<&toml::Value> {
+    (table.len() == 1)
+        .then(|| table.get(ROOT_KEY))
+        .flatten()
+        .filter(|v| !matches!(v, toml::Value::Table(_)))
+}
+
 /// TC.3 — a `ConfigValue` is itself an option value type.
 ///
 /// This is what a plugin's structured option holds. The shape is NOT here: a
@@ -439,22 +450,33 @@ pub fn config_value_to_toml(value: &ConfigValue) -> toml::Value {
 /// that way — the text they wrote still parses, it is simply now validated.
 impl crate::OptionType for ConfigValue {
     fn parse(s: &str) -> Result<Self, String> {
-        let table: toml::Value = toml::from_str::<toml::Table>(s)
-            .map(toml::Value::Table)
-            .map_err(|e| format!("expected TOML: {e}"))?;
-        toml_to_config_value(&table).map_err(|e| e.to_string())
+        let table = toml::from_str::<toml::Table>(s).map_err(|e| format!("expected TOML: {e}"))?;
+        // The unwrap half of `format`'s wrapper, below. Symmetric on purpose:
+        // `parse(&v.format()) == Ok(v)` is `OptionType`'s contract and a
+        // structured option does not get an exemption from it.
+        if let Some(inner) = unwrap_root(&table) {
+            return toml_to_config_value(inner).map_err(|e| e.to_string());
+        }
+        toml_to_config_value(&toml::Value::Table(table)).map_err(|e| e.to_string())
     }
 
     fn format(&self) -> String {
-        // A non-table root has no top-level TOML spelling, so it is rendered as
-        // a one-key document under `value`. That is a corner an option is
-        // unlikely to occupy — a structured option is a record or a list of
-        // them — and being lossy here would be worse than being verbose.
+        // A non-table root has no top-level TOML spelling — a document cannot
+        // BE an array — so a list-rooted value is rendered under the reserved
+        // key `value`, and `parse` unwraps it again.
+        //
+        // The cost is one ambiguity, named rather than hidden: a RECORD option
+        // whose only field happens to be called `value` cannot round-trip
+        // through this text surface. It is not silent when it happens — the
+        // unwrapped tree fails schema validation with a path — and `:set` on a
+        // composite is deferred surface anyway (typed-configuration.md §2.2);
+        // `lattice.toml` and `set-option-value` both carry the tree natively
+        // and never come through here.
         match config_value_to_toml(self) {
             toml::Value::Table(t) => toml::to_string_pretty(&t).unwrap_or_default(),
             other => {
                 let mut t = toml::Table::new();
-                t.insert("value".to_string(), other);
+                t.insert(ROOT_KEY.to_string(), other);
                 toml::to_string_pretty(&t).unwrap_or_default()
             }
         }
@@ -605,5 +627,86 @@ mod tests {
         assert!(template_schema().is_composite());
         assert!(!ConfigSchema::string().is_composite());
         assert!(!ConfigSchema::Enum(vec!["a".into()]).is_composite());
+    }
+}
+
+#[cfg(test)]
+mod config_value_option_type_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::OptionType;
+
+    fn templates() -> ConfigValue {
+        ConfigValue::List(vec![ConfigValue::record([
+            ("key".to_string(), ConfigValue::Str("t".into())),
+            (
+                "target".to_string(),
+                ConfigValue::record([("file".to_string(), ConfigValue::Str("a.org".into()))]),
+            ),
+        ])])
+    }
+
+    #[test]
+    fn a_record_rooted_value_round_trips_as_a_plain_toml_document() {
+        let v = ConfigValue::record([
+            ("key".to_string(), ConfigValue::Str("t".into())),
+            ("count".to_string(), ConfigValue::Int(3)),
+            ("on".to_string(), ConfigValue::Bool(true)),
+        ]);
+        let text = v.format();
+        assert!(!text.contains("value"), "a record needs no wrapper: {text}");
+        assert_eq!(ConfigValue::parse(&text), Ok(v));
+    }
+
+    #[test]
+    fn a_list_rooted_value_round_trips_through_the_wrapper() {
+        // `OptionType`'s contract is `parse(&v.format()) == Ok(v)`, and a
+        // structured option does not get an exemption from it. A TOML document
+        // cannot BE an array, so the wrapper is how a list-rooted option has a
+        // text form at all — and `parse` has to undo exactly what `format` did.
+        let v = templates();
+        let text = v.format();
+        assert!(
+            text.contains("[[value]]"),
+            "wrapped under the reserved key: {text}"
+        );
+        assert_eq!(ConfigValue::parse(&text), Ok(v));
+    }
+
+    #[test]
+    fn every_kind_round_trips() {
+        for v in [
+            ConfigValue::Bool(true),
+            ConfigValue::Int(-7),
+            ConfigValue::Str("hello".into()),
+            ConfigValue::List(vec![ConfigValue::Int(1), ConfigValue::Int(2)]),
+            templates(),
+        ] {
+            assert_eq!(ConfigValue::parse(&v.format()), Ok(v.clone()), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_toml_string_a_user_already_wrote_still_parses() {
+        // The migration promise: an option that WAS a TOML-in-a-string does not
+        // break for someone who was setting it that way. The text is unchanged;
+        // what is new is that it is now validated against a schema.
+        let text = "[[template]]\nkey = \"t\"\ntarget = { file = \"a.org\" }\n";
+        let got = ConfigValue::parse(text).expect("still parses");
+        let list = got.field("template").and_then(ConfigValue::as_list);
+        assert_eq!(list.map(<[_]>::len), Some(1));
+    }
+
+    #[test]
+    fn a_wrapper_is_not_unwrapped_when_its_payload_is_a_table() {
+        // Guard on the ambiguity `format` documents: only a NON-table payload
+        // is a wrapper, so a record option with a `value` field that holds a
+        // table is left alone.
+        let text = "[value]\nfile = \"a.org\"\n";
+        let got = ConfigValue::parse(text).unwrap();
+        assert!(
+            got.field("value").is_some(),
+            "the `value` key survived as a field: {got:?}"
+        );
     }
 }

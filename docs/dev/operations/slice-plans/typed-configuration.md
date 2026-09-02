@@ -28,7 +28,7 @@ entangled in one bug report, which is why this note exists.
 | TC.3 | An option can be declared with a schema; values cross as a tree | ✅ |
 | TC.4 | The SDK derive — a Rust struct becomes a schema and a value | ✅ |
 | **Phase 3 — the encodings go** | | |
-| TC.5 | `capture-templates` is a record list **(plugin)** | 📝 |
+| TC.5 | `capture-templates` is a record list **(cross-repo)** | ✅ |
 | TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(plugin)** | 📝 |
 | TC.7 | The three line formats become list schemas **(plugin)** | 📝 |
 | **Phase 4 — the payoff that is in scope** | | |
@@ -244,14 +244,59 @@ nesting would leave every other assertion passing.
 Ordered easiest-shape-first, so the SDK derive is exercised on a clean record
 list before it meets the two awkward ones.
 
-### TC.5 — `capture-templates` is a record list 📝
+### TC.5 — `capture-templates` is a record list ✅ **(cross-repo)**
 
-The cleanest shape: a list of `{ key, description, target, body }` where
-`target` is a two-variant record. Its hand-rolled parser goes.
+The cleanest shape: `list<record { key, description?, target: record { file,
+headline? }, body?, clock-in? }>`. Its hand-rolled TOML parser is gone.
 
-**Test:** the multi-line `body` survives the crossing. It is the field the blob
-handled *well* (a `'''` literal block preserves newlines and nested `"""`), so
-it is the one a tree could plausibly regress.
+**Cross-repo, and it turned out to be three repos' worth of change** — org, the
+lattice-side text surface, and the user's own `init.rs`. That last one is the
+part a plan that said "(plugin)" had not accounted for: an option that changes
+shape changes what every config home must write, and `init.rs` was setting this
+one as a TOML string containing `[[template]]`. It now builds a `Vec<Template>`
+through `#[derive(ConfigShape)]`, which is the design's "each home writes the
+tree natively" arriving in the only place it can be observed.
+
+**A one-per-plugin adapter, not a per-option one.** `config_shape.rs` in org
+(and a write-only twin in `init.rs`) maps the SDK's WIT-agnostic node types to
+the generated ones and hides the arena entirely. It is the same one-off tax
+`#[derive(PluginOption)]` already charges for `OptionKind`.
+
+**`ConfigValue`'s `:set` text form needed a wrapper.** A TOML document cannot
+BE an array, so a list-rooted option has no bare text spelling; `format` wraps a
+non-record root under the reserved key `value` and `parse` unwraps it, because
+`parse(&v.format()) == Ok(v)` is `OptionType`'s contract and a structured option
+does not get an exemption. The one ambiguity — a record option whose only field
+is called `value` — is documented, is not silent when it happens (the unwrapped
+tree fails validation with a path), and does not touch `lattice.toml` or
+`set-option-value`, both of which carry the tree natively.
+
+**One behaviour deliberately changed, and it is the interesting part of the
+slice.** A template missing its `key` or its `target` used to be SKIPPED and
+named, on org's stated principle that one typo should not cost the feature. It
+is now a hard rejection of the whole option, because the host validates
+structure before org sees it. That principle was compelling when the
+alternative was a parser error with no location; it is not compelling against
+`capture-templates[2].key: required field is missing`. A silently absent menu
+row is the failure that sends a user looking in the wrong place, and now that
+the message says which template and which field, refusing is the kinder answer.
+
+What stayed a skip: a **blank** key or `target.file` (present, so `required` is
+satisfied, but meaningless — the schema cannot say "non-empty"), and a
+**duplicate** key. Both are cases where the value is usable and the only
+question is which row wins.
+
+**Tests.** The org-side suite rewritten against the declared shape rather than
+against TOML text. The multi-line `body` test survives the mechanism it was
+written for — it existed because a `'''` block preserving newlines was the
+reason the option COULD be a string, and it is now the field a tree could
+plausibly regress. Added: the declared shape itself is asserted (field names,
+kebab-casing, which fields are required), because the schema IS the
+documentation now — `:describe-option` renders it and `lattice.toml` is
+validated against it, so a renamed field is a user-visible change; and a
+round-trip through `to_value`/`from_value`, because a derive where those
+disagree changes a template on its way through the option and nothing else
+would notice.
 
 ### TC.6 — `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm 📝
 

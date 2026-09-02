@@ -1,6 +1,7 @@
 # Typed configuration — slice plan
 
-> **Status: Active.** Opened 2026-09-02. Implements
+> **Status: Complete.** Opened and finished 2026-09-02. Every slice is ✅;
+> this plan is ready to archive. Implements
 > [`typed-configuration.md`](../../architecture/typed-configuration.md), which
 > extends design §5.12 and supersedes
 > [`mode-architecture.md`](../../architecture/mode-architecture.md) §6.6's WIT
@@ -30,7 +31,7 @@ entangled in one bug report, which is why this note exists.
 | **Phase 3 — the encodings go** | | |
 | TC.5 | `capture-templates` is a record list **(cross-repo)** | ✅ |
 | TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(cross-repo)** | ✅ |
-| TC.7 | The three line formats become list schemas **(plugin)** | 📝 |
+| TC.7 | The three line formats become list schemas **(cross-repo)** | ✅ |
 | **Phase 4 — the payoff that is in scope** | | |
 | TC.8 | `:describe-option` renders the schema | ✅ |
 
@@ -354,16 +355,52 @@ their inputs: the structural cases moved to the host, so what they exercise now
 is a blank title, a negative `days`, a bad `min-priority` — the checks a schema
 has no way to express.
 
-### TC.7 — The three line formats become list schemas 📝
+### TC.7 — The three line formats become list schemas ✅
 
-`todo-keywords`, `todo-keyword-styles`, `agenda-files`. Lower value than TC.5–6
-(a line format is at least readable) but they are the remaining bespoke parsers,
-and `todo-keywords` in particular is read at load — so its errors currently
-surface as *missing colour*, which is the least legible failure org has.
+`agenda-files` and `todo-keywords` become `list<string>`; `todo-keyword-styles`
+becomes `list<record>`. Landed after TC.8, which is independent of it.
 
-**Test:** the OA.14d load-time path still works through the new shape — a
-keyword set supplied from `init.rs` produces theme elements for every keyword.
-That test already exists; this slice must not need it rewritten, only re-pointed.
+**`todo-keywords` keeps its grammar — a decision, not an omission.** It becomes
+a list of emacs' own sequence LINES (`"sequence: TODO(t) NEXT(n) | DONE(d)"`),
+not a decomposed record per keyword. That grammar, with its fast-select keys and
+logging specs, is org's *public spelling* rather than an encoding someone worked
+around: it was ported verbatim so an emacs config could be pasted, and
+decomposing it would have typed the parenthetical specs at the cost of the one
+property the option exists to have. What TC.7 changed is the container — a list
+of lines instead of one newline-joined string, so `:describe-option` says
+`list<string>` and a TOML array is what a user writes. TK.2 still parses the
+line contents.
+
+**`todo-keyword-styles` is where the shape got BETTER, not merely typed.** Its
+modifiers were already tri-state — `Some(true)` sets, `Some(false)` clears one
+inherited from the state's default, `None` leaves it alone — which is *exactly*
+what an optional boolean field in a schema means. `no-bold` existed only because
+a line format has no way to write "false"; it becomes `bold = false`, which is
+what it always meant.
+
+**A `:set` regression, found by the tests and fixed where the schema lives.**
+`:set org.agenda-files=~/org` was a working thing to type and stopped being one:
+the text is not TOML, so `ConfigValue::parse` refused it, and
+`value = ["~/org"]` on a command line is an implementation detail leaking into
+the one surface meant to be terse. `ErasedOption::parse_and_set` now falls back,
+on the FAILURE path only and only for `list<string>`, to ML.5's rule — split on
+commas or newlines. A well-formed TOML array still means what it says (the
+round-trip through `:set foo?` has to survive), and a list of *records* keeps
+its parse error, because there is no delimited spelling worth inventing and
+splitting one on commas would turn a typo into a list of nonsense strings that
+fails somewhere else.
+
+**Tests.** The style tests rewritten against declared values, keeping the
+tri-state assertion that is the whole reason `KeywordStyle` has `Option<bool>`
+fields. What they no longer cover moved to the host: an unknown modifier cannot
+be written at all now — there is no field it could be. The `agenda-files` tests
+shrank, and their disappearance is the point: "one per line, blanks and `#`
+comments dropped" was a rule implemented because a newline-joined string is the
+only container a string option has, and the separator test existed because a
+path may contain a colon or a comma. A list cannot have that bug; the assertion
+is kept as the record of why the question is closed. And the OA.14d load-time
+path still works through the new shape — that test needed re-pointing, not
+rewriting, which is what it was written to survive.
 
 ## Phase 4
 

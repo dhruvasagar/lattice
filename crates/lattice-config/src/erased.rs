@@ -154,8 +154,45 @@ impl<T: OptionType> ErasedOption for Option<T> {
     }
 
     fn parse_and_set(&self, value: &str) -> Result<(), String> {
-        let parsed = T::parse(value)?;
-        self.set(parsed)
+        match T::parse(value) {
+            Ok(parsed) => self.set(parsed),
+            // TC.7: a `list<string>` option typed at the command line.
+            //
+            // `:set org.agenda-files=~/org` is a natural thing to type and was
+            // a working one before those options declared list schemas; after,
+            // the text is not TOML and `parse` refuses it. Requiring
+            // `value = ["~/org"]` on a command line would be an implementation
+            // detail leaking into the one surface that is meant to be terse.
+            //
+            // So a failed parse on a string-list option falls back to the ML.5
+            // rule its predecessors used: split on commas. Only on the FAILURE
+            // path, so a well-formed TOML array still means what it says, and
+            // only for `list<string>` — a list of records has no delimited
+            // spelling worth inventing, and the original error is the honest
+            // answer there.
+            //
+            // Newlines separate as well as commas, because a `:set` spec can
+            // arrive from somewhere other than a command line and splitting
+            // only on commas would make one of those two spellings silently
+            // produce a single element containing newlines.
+            Err(err) => match self.declared_schema() {
+                crate::ConfigSchema::List(inner)
+                    if matches!(
+                        inner.as_ref(),
+                        crate::ConfigSchema::Scalar(crate::ScalarKind::Str)
+                    ) =>
+                {
+                    let items: Vec<crate::ConfigValue> = value
+                        .split([',', '\n'])
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| crate::ConfigValue::Str(s.to_string()))
+                        .collect();
+                    self.set_value(&crate::ConfigValue::List(items))
+                }
+                _ => Err(err),
+            },
+        }
     }
 
     fn parse_to_erased(&self, value: &str) -> Result<Arc<dyn Any + Send + Sync>, String> {
@@ -293,5 +330,111 @@ mod tests {
         assert!(typed.is_some());
         let bad = erased.as_any().downcast_ref::<Option<i64>>();
         assert!(bad.is_none());
+    }
+}
+
+#[cfg(test)]
+mod string_list_set_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::option::Option as ConfigOption;
+    use crate::{ConfigSchema, ConfigValue};
+
+    fn paths() -> ConfigOption<ConfigValue> {
+        ConfigOption::structured(
+            "org.agenda-files",
+            ConfigSchema::list(ConfigSchema::string()),
+            ConfigValue::List(Vec::new()),
+            "Which files the agenda scans.",
+        )
+    }
+
+    #[test]
+    fn a_bare_path_is_a_one_element_list() {
+        // `:set org.agenda-files=~/org` is a natural thing to type and was a
+        // working one before the option declared a list schema. Requiring
+        // `value = ["~/org"]` on a command line would be an implementation
+        // detail leaking into the surface meant to be terse.
+        let o = paths();
+        let erased: &dyn ErasedOption = &o;
+        erased.parse_and_set("~/org").unwrap();
+        assert_eq!(
+            erased.get_value(),
+            ConfigValue::List(vec![ConfigValue::Str("~/org".into())])
+        );
+    }
+
+    #[test]
+    fn commas_or_newlines_separate_and_blanks_are_dropped() {
+        let o = paths();
+        let erased: &dyn ErasedOption = &o;
+        erased.parse_and_set("~/org, ~/notes.org ,,").unwrap();
+        assert_eq!(
+            erased.get_value(),
+            ConfigValue::List(vec![
+                ConfigValue::Str("~/org".into()),
+                ConfigValue::Str("~/notes.org".into()),
+            ])
+        );
+        // A spec can arrive from somewhere other than a command line.
+        erased.parse_and_set("~/org\n~/notes.org\n").unwrap();
+        assert_eq!(
+            erased.get_value(),
+            ConfigValue::List(vec![
+                ConfigValue::Str("~/org".into()),
+                ConfigValue::Str("~/notes.org".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_well_formed_toml_array_still_means_what_it_says() {
+        // The fallback is on the FAILURE path only. A value that parses as
+        // TOML must never be reinterpreted — `value = [...]` is the form
+        // `format` emits, so a round-trip through `:set foo?` has to survive.
+        let o = paths();
+        let erased: &dyn ErasedOption = &o;
+        erased
+            .parse_and_set("value = [\"~/a\", \"~/b\"]")
+            .expect("the TOML form still works");
+        assert_eq!(
+            erased.get_value(),
+            ConfigValue::List(vec![
+                ConfigValue::Str("~/a".into()),
+                ConfigValue::Str("~/b".into()),
+            ])
+        );
+        // …and the round-trip closes: whatever `format` writes, `parse_and_set`
+        // reads back to the same value.
+        let text = erased.get_formatted();
+        let o2 = paths();
+        let erased2: &dyn ErasedOption = &o2;
+        erased2
+            .parse_and_set(&text)
+            .expect("its own output re-reads");
+        assert_eq!(erased2.get_value(), erased.get_value());
+    }
+
+    #[test]
+    fn a_record_list_keeps_the_parse_error_rather_than_being_split() {
+        // A list of records has no delimited spelling worth inventing, and
+        // splitting one on commas would turn a typo into a list of nonsense
+        // strings that then fails validation somewhere else. The original
+        // error is the honest answer.
+        let o = ConfigOption::<ConfigValue>::structured(
+            "org.capture-templates",
+            ConfigSchema::list(ConfigSchema::record([crate::SchemaField::new(
+                "key",
+                ConfigSchema::string(),
+                "",
+            )])),
+            ConfigValue::List(Vec::new()),
+            "",
+        );
+        let erased: &dyn ErasedOption = &o;
+        let err = erased
+            .parse_and_set("t, n, r")
+            .expect_err("no delimited form");
+        assert!(err.contains("TOML"), "the parse error survives: {err}");
     }
 }

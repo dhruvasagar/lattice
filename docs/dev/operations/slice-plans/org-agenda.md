@@ -53,6 +53,11 @@ the shared minor). Catalogue entry: the agenda in
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
+| **Phase 6 — the agenda is navigable** | | |
+| OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | 📝 |
+| OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | 📝 |
+| OA.21 | Filtering — `/` tag, `<` file, `\` narrow, `|` clear **(plugin)** | 📝 |
+| OA.22 | The headerline says what you are looking at **(plugin)** | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -956,6 +961,92 @@ expected; otherwise it extends `Row` again.
 
 Toggles for OA.15–17 plus span (day/week). Same guest transient constraints as
 OA.12.
+
+---
+
+## Phase 6 — the agenda is navigable
+
+The agenda's job is **task tracking, planning and scheduling**. Phases 1–5 make
+it show the right rows; this phase makes it a thing you can move around in. Both
+halves come from emacs, where they are the difference between an agenda you read
+and an agenda you work in.
+
+**Two decisions locked before the phase opens**, because both were forks with
+live alternatives:
+
+- **A filter RE-SCANS**, via `scan_args`, rather than hiding rows in the
+  displayed view. Emacs does the latter and it is instant; the cost is a second
+  filtering path beside section matches, and per-view state that `gr` has to be
+  taught to preserve or the filter silently resets. Re-scanning is one code
+  path, survives refresh for free, and composes with custom commands — and the
+  scan is cached per file, so it is mostly cache hits. The honest cost is that
+  it is still a scan, and OA.0's measurements are why that is worth saying.
+- **The span is PER VIEW**, an offset in `scan_args`, not a mutation of
+  `org.agenda-span`. Navigation must not rewrite a config value: `v w` to glance
+  at next week would otherwise change what every future agenda means. It also
+  lets two open agendas sit on different weeks, which is the shape "compare this
+  week to next" wants.
+
+### OA.19 — `scan_args` becomes a typed view-argument list **(plugin)** 📝
+
+`scan_args: Vec<String>` carries one positional value today — the custom-command
+key (OA.11a). Everything phase 6 adds is another per-view argument, so the slice
+is to give that list a grammar before three features invent three encodings.
+
+`key=value`, with a bare token still read as the command key. Backward
+compatible on purpose: the transient sends a bare key today and there is no
+reason to make it stop.
+
+```text
+    ["r"]                          the `r` agenda, as today
+    ["r", "span=7", "offset=1"]    …next week
+    ["", "tag:work", "file:a.org"] the default agenda, filtered
+```
+
+**Tests.** A bare key still selects its command (the compatibility that lets
+every existing caller keep working). An unknown key is IGNORED with a warning
+rather than failing the scan — a view that refuses to open because it did not
+recognise one argument is a worse failure than one that opens slightly wrong,
+and `gr` is the recovery either way. Round-trip: what the chords build parses
+back to what they meant.
+
+### OA.20 — Span walking **(plugin)** 📝
+
+`f` / `b` (emacs `org-agenda-later` / `org-agenda-earlier`), `.` for today, and
+`v d` / `v w` / `v m` / `v y` for the day / week / month / year spans.
+
+The span and offset ride `scan_args`; re-opening the view with new ones is the
+whole implementation, because `reuse: true` means the same buffer re-scans in
+place. `org.agenda-span` remains the DEFAULT a fresh agenda opens at.
+
+**Test:** `f` then `b` returns to the same rows — an off-by-one in the offset
+arithmetic is invisible in either direction alone. And `.` from anywhere lands
+on today, which is the escape hatch that makes the rest safe to explore.
+
+### OA.21 — Filtering **(plugin)** 📝
+
+`/` filters by tag (prompted), `\` narrows further, `<` restricts to the file
+at the cursor, `|` clears. Emacs' keys, because this is muscle memory and the
+UX-follows-convention rule applies.
+
+A filter is an extra `match` term ANDed onto every section's own — which is why
+the tags-search work had to land first: a filter that could only see agenda rows
+would answer differently from the same match written into a section.
+
+**Test:** a filter composes with a custom command rather than replacing it —
+`r` then `/work` is refile-AND-work, and getting this wrong silently shows one
+of the two. Plus: `gr` preserves the filter, which is the property the
+displayed-rows alternative would have had to implement by hand.
+
+### OA.22 — The headerline says what you are looking at **(plugin)** 📝
+
+A filtered agenda that looks like an unfiltered one is a trap: "you have no
+tasks" is the worst thing this view can say incorrectly, and a forgotten filter
+is the likeliest way to make it say so. The view header carries the command, the
+span and the active filters.
+
+Rides the async-buffer status rule (CLAUDE.md): progress and state belong in the
+headerline, never a status line or a notification.
 
 ---
 

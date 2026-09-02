@@ -54,10 +54,11 @@ the shared minor). Catalogue entry: the agenda in
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
 | **Phase 6 — the agenda is navigable** | | |
-| OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | 📝 |
-| OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | 📝 |
-| OA.21 | Filtering — `/` tag, `<` file, `\` narrow, `|` clear **(plugin)** | 📝 |
+| OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
+| OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
+| OA.21 | Filtering — `/` tag, `\` narrow, `|` clear **(plugin)** | ✅ |
 | OA.22 | The headerline says what you are looking at **(plugin)** | 📝 |
+| OA.23 | A guest seam for an excerpt's source file, so `<` can exist **(cross-repo)** | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -987,7 +988,7 @@ live alternatives:
   lets two open agendas sit on different weeks, which is the shape "compare this
   week to next" wants.
 
-### OA.19 — `scan_args` becomes a typed view-argument list **(plugin)** 📝
+### OA.19 — `scan_args` becomes a typed view-argument list **(plugin)** ✅
 
 `scan_args: Vec<String>` carries one positional value today — the custom-command
 key (OA.11a). Everything phase 6 adds is another per-view argument, so the slice
@@ -1010,7 +1011,7 @@ recognise one argument is a worse failure than one that opens slightly wrong,
 and `gr` is the recovery either way. Round-trip: what the chords build parses
 back to what they meant.
 
-### OA.20 — Span walking **(plugin)** 📝
+### OA.20 — Span walking **(plugin)** ✅
 
 `f` / `b` (emacs `org-agenda-later` / `org-agenda-earlier`), `.` for today, and
 `v d` / `v w` / `v m` / `v y` for the day / week / month / year spans.
@@ -1023,7 +1024,7 @@ place. `org.agenda-span` remains the DEFAULT a fresh agenda opens at.
 arithmetic is invisible in either direction alone. And `.` from anywhere lands
 on today, which is the escape hatch that makes the rest safe to explore.
 
-### OA.21 — Filtering **(plugin)** 📝
+### OA.21 — Filtering **(plugin)** ✅
 
 `/` filters by tag (prompted), `\` narrows further, `<` restricts to the file
 at the cursor, `|` clears. Emacs' keys, because this is muscle memory and the
@@ -1033,10 +1034,33 @@ A filter is an extra `match` term ANDed onto every section's own — which is wh
 the tags-search work had to land first: a filter that could only see agenda rows
 would answer differently from the same match written into a section.
 
-**Test:** a filter composes with a custom command rather than replacing it —
+**Landed with `<` missing, and that is a seam rather than a decision.** The
+agenda is a multibuffer, so `document.path()` answers for the VIEW; which source
+file the excerpt under the cursor came from is host-side knowledge with no
+guest-facing seam. The `file:` term itself is live — it parses, round-trips and
+filters in `scan`, which is the only place that knows the file — so `<` is one
+seam away rather than one feature away. See OA.23. Registering a chord that
+silently did nothing was the alternative, and that is the failure class this
+codebase keeps paying for.
+
+**The two kinds of term compose in opposite directions**, and both are
+deliberate. Tag terms AND: `\` NARROWS, which is the whole reason it is a
+separate key from `/`, and treating two tags as an OR would make every press
+show *more*. File terms OR: a row comes from exactly one file, so an AND would
+be unsatisfiable, while narrowing to two files is a sensible ask.
+
+A `tag:` term is applied to the ROWS rather than folded into each section's
+`match`, because the two say different things: a section's match is what that
+block is FOR, the filter is what you are looking at right now. A `file:` term is
+answered first in `scan` — the cheapest rejection available, since a
+filtered-out file is not parsed, not walked and not clocked.
+
+**Tests:** a filter composes with a custom command rather than replacing it —
 `r` then `/work` is refile-AND-work, and getting this wrong silently shows one
-of the two. Plus: `gr` preserves the filter, which is the property the
-displayed-rows alternative would have had to implement by hand.
+of the two. The round-trip is what makes `gr` preserve the filter for free,
+which is the property the displayed-rows alternative would have had to implement
+by hand. An empty answer at the prompt clears rather than filtering by nothing:
+`/` then `<CR>` is how a person backs out.
 
 ### OA.22 — The headerline says what you are looking at **(plugin)** 📝
 
@@ -1047,6 +1071,25 @@ span and the active filters.
 
 Rides the async-buffer status rule (CLAUDE.md): progress and state belong in the
 headerline, never a status line or a notification.
+
+It is also where `ViewArgs::problems` surfaces. A guest `logging::log` call makes
+the component import `logging`, which org's multi-seam linker does not wire —
+the whole component then fails to instantiate, a trap this plugin has paid for
+more than once — so an unrecognised view argument has nowhere else to be said.
+
+### OA.23 — A guest seam for an excerpt's source file **(cross-repo)** 📝
+
+What OA.21's `<` needs, and the reason it shipped without one. A guest acting in
+a multibuffer can read the VIEW's path and nothing about the excerpt under the
+cursor; the excerpt→source mapping is host-side (`lattice-multibuffer`), and
+CLAUDE.md's substrate-vs-helper rule says that data is consumed by a specific
+mode's handler rather than by generic host machinery — so it is a helper the
+mode imports, not a `Document` trait method.
+
+The guest-facing half is the new part: a `scanned-excerpt-source` question, or a
+field on the action context, that answers "which file did the row at this cursor
+come from". Worth doing for more than `<` — `org-agenda-goto` and any
+row-to-source action wants the same answer.
 
 ---
 

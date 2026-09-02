@@ -119,6 +119,7 @@ fn push_mode_keymap(
     // through.
     let mut all_bindings: Vec<KeymapBinding> = keymap.bindings.clone();
     all_bindings.extend(resolve_entries_into_bindings(
+        handle,
         &keymap.entries,
         command_registry,
     ));
@@ -193,6 +194,7 @@ fn group_bindings_into_tries(
 ///   resolution, and whose `source` and `doc` are carried
 ///   through from the entry's macro-captured fields.
 fn resolve_entries_into_bindings(
+    handle: &KeymapHandle,
     entries: &[&'static lattice_mode::KeymapEntry],
     command_registry: &CommandRegistry,
 ) -> Vec<KeymapBinding> {
@@ -213,11 +215,22 @@ fn resolve_entries_into_bindings(
             );
             continue;
         };
-        let chords: Vec<ChordPattern> = match lattice_protocol::parse_chord_sequence(entry.chord) {
+        // TB.0: `<leader>` is expanded HERE for the same reason
+        // `try_bind_chord_string` expands it — it is the choke point this
+        // path funnels through, and OM.2b's rule is that `<leader>` means
+        // the configured leader on every binding route. Until this line
+        // existed it meant nothing on the native-mode route: the token
+        // reached `parse_chord_sequence` as an unknown special key, the
+        // parse failed, and the binding was dropped below with a `warn`.
+        // No native mode had used `<leader>` yet, which is the only reason
+        // that never showed up as a dead chord.
+        let expanded = handle.expand_leader(entry.chord);
+        let chords: Vec<ChordPattern> = match lattice_protocol::parse_chord_sequence(&expanded) {
             Ok(parsed) => parsed.into_iter().map(ChordPattern::Literal).collect(),
             Err(err) => {
                 tracing::warn!(
                     chord = entry.chord,
+                    expanded = %expanded,
                     error = %err,
                     modes = ?entry.modes,
                     "keymap_entry: chord string failed to parse; skipping binding",
@@ -445,6 +458,53 @@ mod tests {
                 assert_eq!(command.command, visual_cmd, "Visual-mode binding");
             }
             other => panic!("expected Visual Bound, got {other:?}"),
+        }
+    }
+
+    /// TB.0: `<leader>` means the same thing on every binding path.
+    ///
+    /// It did not. `try_bind_chord_string` — the plugin-mode, plugin
+    /// `register-binding` and `init.rs` route — expands it at the single
+    /// choke point OM.2b built for exactly this. The NATIVE mode-keymap
+    /// route parsed `entry.chord` raw, so `<leader>` reached
+    /// `parse_chord_sequence` as an unknown special key, failed, and the
+    /// binding was dropped with a `warn` — a chord that does nothing, and
+    /// nothing on screen to say why.
+    ///
+    /// No native mode had used `<leader>` yet, which is the only reason
+    /// this never fired. `table-mode` is the first, and it inherits org's
+    /// `<leader>t…` set from the mode it takes over from.
+    #[test]
+    fn a_native_mode_can_bind_a_leader_chord() {
+        static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+        let entries = ENTRIES.get_or_init(|| {
+            vec![lattice_mode::keymap_entry! {
+                mode: Normal,
+                chord: "<leader>z",
+                doc: "TB.0 leader fixture",
+                cmd: "motion:line-down"
+            }]
+        });
+        let h = KeymapHandle::new();
+        let keymap = Keymap::from_entries(entries.as_slice());
+        let mut registry = ModeRegistry::new();
+        let mode_id = registry
+            .register(test_mode("test-mode/leader", keymap))
+            .expect("register");
+
+        translate_mode_keymaps(&h, &registry, &registry_with_builtins());
+
+        // The DEFAULT leader is `<Space>`, and the expansion happens at
+        // bind time — so the trie must hold `<Space>z`, not a literal
+        // `<leader>` nobody can type.
+        match lookup(
+            &h,
+            BindingMode::Normal,
+            &[mode_id],
+            &[KeyChord::char(' '), KeyChord::char('z')],
+        ) {
+            LookupResult::Bound { .. } => {}
+            other => panic!("`<leader>z` must reach the trie as `<Space>z`, got {other:?}"),
         }
     }
 

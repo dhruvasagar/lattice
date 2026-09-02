@@ -57,6 +57,7 @@ docs = [
   "architecture/host-provider-boundary",
   "architecture/buffer-local-options",
   "architecture/config-and-init",
+  "architecture/typed-configuration",
   "architecture/cancellation",
   "architecture/session-persistence",
   "notes/mode-keymap-authoring",

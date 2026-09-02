@@ -47,7 +47,7 @@ the shared minor). Catalogue entry: the agenda in
 | **Phase 5 — layered display modes** | | |
 | OA.14 | A second virtual-row provider on one view (spike) | ✅ |
 | OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
-| OA.14c | Typed configuration — a declared schema, not a TOML blob | 📝 |
+| OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ⛔ |
 | OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
 | OA.15 | `org-agenda-log-mode` | 📝 |
 | OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
@@ -56,10 +56,11 @@ the shared minor). Catalogue entry: the agenda in
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
-that slice landed before the display modes rather than after. OA.14c and OA.14d block
-nothing here and are recorded in this plan only because org's options are what
-motivate them — OA.14c should graduate to its own fragment (see its entry),
-and OA.14d fixes a reported bug that happens to be org's.
+that slice landed before the display modes rather than after. OA.14c and OA.14d
+block nothing here and were recorded in this plan only because org's options are
+what motivate them — OA.14c has since **graduated** to
+[`typed-configuration.md`](typed-configuration.md), and OA.14d fixed a reported
+bug that happens to be org's.
 
 ---
 
@@ -810,65 +811,36 @@ its time. An earlier draft collected clock inside the `!entries.is_empty()`
 branch — which passes every row test and loses exactly the case the seam exists
 for.
 
-### OA.14c — Typed configuration: a declared schema, not a TOML blob 📝
+### OA.14c — Typed configuration ⛔ **graduated**
 
-**Not an agenda slice, and it should graduate out of this plan.** It is
-recorded here because org's options are what motivate it and because the
-question arose mid-phase; before execution it needs its own design fragment
-(`docs/dev/architecture/typed-configuration.md`) and its own slice plan. The
-entry below is the problem statement, not the design.
+Never an agenda slice. It was recorded here because org's five hand-rolled
+option encodings are what motivate it and because the question arose mid-phase;
+the entry was a problem statement, not a design.
 
-**The problem.** Five org options are hand-rolled encodings —
-`capture-templates`, `agenda-sections` and `agenda-custom-commands` as
-TOML-in-a-string; `todo-keywords`, `todo-keyword-styles` and `agenda-files` as
-line formats. Each ships its own parser and its own error messages, and org
-carries the `toml` crate inside its wasm to do it.
+It now has both artefacts it was waiting for:
+[`typed-configuration.md`](../../architecture/typed-configuration.md) (the
+design) and [`typed-configuration.md`](typed-configuration.md) (its own slice
+plan, TC.1–TC.8). Nothing in phase 5 waits on it.
 
-The cause is one narrow seam, not a general limitation: the ABI already carries
-~147 records and variants (`transient-spec`, `picker-source-spec`, `entry`,
-OA.14b's own `clock-span`). Structured data crosses everywhere EXCEPT config,
-where `register-option` takes `boolean | integer | string` and values move as
-`get-option -> option<string>` / `set-option(name, value: string)`.
+**Two decisions were locked when it graduated**, and both went against the
+smaller change:
 
-**Why "just use a struct" does not work, and what does.** WIT has no generics,
-so a plugin-defined record cannot be a fixed host-side type — the host would
-need a different record per plugin, which a shared ABI cannot have. The
-expressible shape is self-description:
+- **One mechanism, not a fourth kind.** Every option becomes a schema plus a
+  value; `boolean | integer | string` are degenerate schemas. The additive
+  alternative — a `register-option-schema` beside the existing call — is smaller
+  and leaves the registry with two option mechanisms permanently, which every
+  consumer that renders an option would then carry forever.
+- **Each config home writes the tree natively.** `lattice.toml` gets real
+  nesting; `init.rs` builds the tree through an SDK derive. This gives up the
+  blob's one genuine merit — ONE string serving both homes identically — and the
+  design says so plainly rather than discovering it later.
 
-- the plugin **declares a schema** at registration — field descriptors (name,
-  kind, required, doc, nested fields), which is ordinary WIT data;
-- values cross as a **generic value tree** —
-  `variant { bool, int, string, list(...), record(list<tuple<string, value>>) }`;
-- the host validates the tree against the schema, so a bad `todo-only` is
-  rejected **with a path** instead of by each plugin's hand-rolled message.
-
-**What it unlocks.** Design §5.12 already promises `:customize` as "a
-type-aware editing buffer". That is impossible over a blob and straightforward
-over a declared schema — the promise is currently unkeepable, which is the
-strongest argument for doing this rather than living with the encodings.
-`:describe-option` stops showing a wall of TOML. Org drops a TOML parser from
-its component.
-
-**What it costs, stated rather than discovered later.** The guest still
-deserializes — the parse changes shape (walk a tree instead of parse text)
-rather than disappearing. And it gives up the one genuine merit the blob has,
-which `agenda_sections`' header names: ONE string serves `lattice.toml` and
-`init.rs` identically, with no second ordering rule to learn. A schema-shaped
-option needs both homes to agree about the tree, and that is the part of the
-design fragment to get right.
-
-**A dictionary was considered and rejected** — not by us, by the person who
-would use it: a bag of string keys reproduces the blob's weakness (nothing to
-validate against, nothing for `:customize` to render) while adding a second
-encoding. Types are the point; the schema is how types survive an ABI with no
-generics.
-
-**Sequencing note.** This does NOT fix the reported "`todo-keyword-styles`
-overrides don't apply" bug. That is an ORDERING defect — org reads
-`todo-keywords` at load, `lattice.toml` is applied before org registers its
-options (dropped as unknown), and `init.rs`'s `on-plugin-loaded` fires after
-org's load-time exports. No option SHAPE fixes it; a `pre-plugin-loaded`
-hook carrying the plugin name does, and that wants its own slice.
+**One correction to the sequencing note this entry carried.** It said OA.14c
+"does NOT fix the reported `todo-keyword-styles` bug" and named ordering as the
+whole cause. Ordering was real but not sufficient: the `theme` and `language`
+stores carried no config registry at all, so `get-option` inside org's load-time
+exports answered `none` regardless of when anything was set. OA.14d fixed both
+halves; see its entry.
 
 ### OA.14d — `pre-plugin-loaded`, so config can reach a load-time option ✅
 

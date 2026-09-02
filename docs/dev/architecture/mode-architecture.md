@@ -1127,6 +1127,17 @@ violate the §8 budget.
 
 ### 6.6 WIT shape for plugin options
 
+> **Superseded (2026-09-02) by
+> [`typed-configuration.md`](typed-configuration.md).** The sketch below is
+> kept because §6.6.1–§6.6.3's *reasoning* still holds — static declaration at
+> load, event-driven reads for hot paths, no host-callable validators — and
+> because §6.6.3's "the remaining 10% can decompose into multiple options" is
+> the specific claim that did not survive contact with org: a *list* of records
+> cannot decompose without inventing indexed option names at runtime. The
+> replacement keeps the option-type variant idea and adds `record`, moves
+> validation host-side against a declared schema, and re-bases every option
+> onto it rather than adding a kind.
+
 The WIT API is structured around the §8 perf budget: per-call
 WIT < 500ns p99, host-call overhead amortised. That dictates
 *static-declaration registration, event-driven reads, no

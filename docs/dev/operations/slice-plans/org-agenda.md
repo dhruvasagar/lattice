@@ -57,7 +57,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
 | OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
 | OA.21 | Filtering — `/` tag, `\` narrow, `|` clear **(plugin)** | ✅ |
-| OA.22 | The headerline says what you are looking at **(plugin)** | 📝 |
+| OA.22 | The headerline says what you are looking at **(cross-repo)** | ✅ |
 | OA.23 | A guest seam for an excerpt's source file **(cross-repo)** | ✅ |
 | OA.23b | …and one that can be READ and WRITTEN **(cross-repo)** | ✅ |
 | **Phase 7 — acting on a headline, from either surface** | | |
@@ -1068,7 +1068,7 @@ which is the property the displayed-rows alternative would have had to implement
 by hand. An empty answer at the prompt clears rather than filtering by nothing:
 `/` then `<CR>` is how a person backs out.
 
-### OA.22 — The headerline says what you are looking at **(plugin)** 📝
+### OA.22 — The headerline says what you are looking at **(cross-repo)** ✅
 
 A filtered agenda that looks like an unfiltered one is a trap: "you have no
 tasks" is the worst thing this view can say incorrectly, and a forgotten filter
@@ -1082,6 +1082,25 @@ It is also where `ViewArgs::problems` surfaces. A guest `logging::log` call make
 the component import `logging`, which org's multi-seam linker does not wire —
 the whole component then fails to instantiate, a trap this plugin has paid for
 more than once — so an unrecognised view argument has nowhere else to be said.
+
+**Cross-repo, not plugin-only** — the plan had this wrong. The headerline text is
+built host-side in `scan_view.rs`, and the seam gave the guest no channel to
+influence it: `begin` returns a bare `u64` and `ui` offers only modeline
+segments. So the slice added one:
+
+```wit
+export describe: func(args: list<string>) -> string;
+```
+
+Called once per scan, BEFORE the walk so the in-progress header carries the
+phrase too. The host puts it in the bracket — `[agenda: Waiting · +work]` — which
+is what the eye reads as "which view is this", and takes it on the
+nothing-scheduled header as well, the case the slice is really for.
+
+Additive: the trait method defaults to empty, so every existing source and test
+double is untouched, and infallible, because a source that cannot say what it is
+has nothing to report rather than an error to raise. A trapped guest degrades to
+the plain header exactly as `roots` degrades to no roots.
 
 ### OA.23 — A guest seam for an excerpt's source file **(cross-repo)** ✅
 

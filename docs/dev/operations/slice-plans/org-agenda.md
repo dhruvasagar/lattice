@@ -64,7 +64,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.24 | The org date grammar — `+1d`, `fri`, repeaters **(plugin)** | ✅ |
 | OA.25 | Schedule + deadline, in files AND the agenda **(plugin)** | ✅ |
 | OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | ✅ |
-| OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | 📝 |
+| OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1247,7 +1247,7 @@ would match no row and read as a key that empties the agenda — and REPLACES an
 existing file filter, because `file:` terms are an OR and accumulating them
 would widen the view on a key called "restrict".
 
-### OA.27 — The `<leader>o` reorganisation **(plugin)** 📝
+### OA.27 — The `<leader>o` reorganisation **(plugin)** ✅
 
 Clock moves under `<leader>ox…`, which is emacs' own `C-c C-x` (`oxi` in, `oxo`
 out, `oxq` cancel, `oxj` goto) — freeing `<leader>oi` for an insert group.
@@ -1255,6 +1255,25 @@ out, `oxq` cancel, `oxj` goto) — freeing `<leader>oi` for an insert group.
 A pure keymap change with no behaviour in it, which is why it is its own slice:
 it is the one thing here that costs muscle memory, so it should be revertible
 alone.
+
+**Landed with the emacs spellings alongside** — `<C-c><C-x><C-i>` and peers, on
+the same `ActionId`s, the `<leader>on…` / `<C-c>n…` pattern roam already set. No
+conflict with org's terminal `<C-x>` (OM.9): that is `<C-x>` as the FIRST key,
+while this reaches it only after `<C-c>`.
+
+Resume is `oxr` rather than emacs' `C-c C-x C-x` — `oxx` is a doubled letter
+that says nothing, and `org-clock-in-last` has no muscle memory to protect. The
+emacs spelling is still bound.
+
+`<leader>oi` is left FREE, not refilled. The slice is a reorganisation;
+inventing an insert group to justify it would be the creep it exists to make
+room for. `<leader>o$` (archive) also stays put — nvim-orgmode's spelling was a
+deliberate choice at OM.6b, not an accident of which letters were free.
+
+Two tests, because a keymap move fails silently both ways: each emacs/vim pair
+must resolve to the SAME command (a three-chord sequence that does not parse
+reaches nothing and reads as unbound), and the old flat chords must be GONE (a
+move that leaves them working is two ways to clock in, one undocumented).
 
 ---
 

@@ -192,12 +192,18 @@ mod tests {
 /// OA.23 — the [`ExcerptSourceResolver`](lattice_core::ExcerptSourceResolver)
 /// a multibuffer-aware host wires into the plugin host.
 ///
-/// Two handles, because the question needs both halves and neither answers it
-/// alone: the registry maps a view to its excerpts (composed line → source
-/// buffer + line), and the buffer store maps that source buffer to a path. The
-/// same pairing `ProjectCtx` uses, for the same reason — a resolver that held
-/// only the registry could say *which buffer* and never *which file*, which is
-/// not an answer a guest can act on.
+/// One handle, because a view answers the whole question: the registry maps a
+/// view to its excerpts (composed line → source buffer + line), and every
+/// source is an `Arc<dyn Document>` that carries its own path.
+///
+/// It first took a `BufferStoreHandle` too, on the reasoning that the registry
+/// could say *which buffer* and never *which file*. That was wrong, and wrong
+/// in the way that costs a whole slice: a **scan view** — the agenda — mints
+/// its sources with `BufferId::next()` and hands them to `add_source`, never to
+/// `BufferStore::insert_document_buffer`, because they are not buffers the user
+/// opened. So the store answered `none` for every agenda row, and the only
+/// tests were the two `none` paths, which pass either way. See
+/// `a_scan_views_source_resolves_by_the_documents_own_path`.
 ///
 /// Lives here rather than in the plugin host because this crate owns the
 /// composed→source translation; the host cannot depend on it (layering), which
@@ -205,12 +211,11 @@ mod tests {
 #[derive(Clone)]
 pub struct MultibufferExcerptSource {
     views: MultibufferRegistryHandle,
-    buffers: lattice_mode::BufferStoreHandle,
 }
 
 impl MultibufferExcerptSource {
-    pub fn new(views: MultibufferRegistryHandle, buffers: lattice_mode::BufferStoreHandle) -> Self {
-        Self { views, buffers }
+    pub fn new(views: MultibufferRegistryHandle) -> Self {
+        Self { views }
     }
 }
 
@@ -232,7 +237,13 @@ impl lattice_core::ExcerptSourceResolver for MultibufferExcerptSource {
         // line. Passing a real column would invite the answer to depend on it.
         let (source, position) =
             view.translate_composed_to_source(crate::Position { line, byte: 0 })?;
-        let path = self.buffers.path_for(source)?;
+        // The VIEW's source map, not the buffer store. A scan view mints its
+        // sources with `BufferId::next()` and registers them with `add_source`
+        // alone — they are not buffers the user opened and have no business in
+        // `:ls`, so the store has never heard of them. Asking the store was
+        // this seam's original shape and it answered `none` for every real
+        // agenda row: the one case it exists for.
+        let path = view.source_path(source)?;
         Some((path, position.line))
     }
 }
@@ -245,47 +256,6 @@ mod excerpt_source_tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// A buffer store that knows only paths, which is all the resolver asks of
-    /// one. Hand-written rather than reaching for the real store because the
-    /// property under test is the COMPOSITION of two lookups, and a real store
-    /// would bring a mode registry and an editor with it.
-    #[derive(Debug, Default)]
-    struct PathsOnly(HashMap<BufferId, PathBuf>);
-
-    impl lattice_mode::BufferStore for PathsOnly {
-        fn find_by_name(&self, _name: &str) -> Option<BufferId> {
-            None
-        }
-        fn name_for(&self, _id: BufferId) -> Option<String> {
-            None
-        }
-        fn path_for(&self, id: BufferId) -> Option<PathBuf> {
-            self.0.get(&id).cloned()
-        }
-        fn handle_for(&self, _id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>> {
-            None
-        }
-        fn insert_document_buffer(
-            &self,
-            _id: BufferId,
-            _kind: lattice_core::BufferKind,
-            _handle: Arc<dyn lattice_runtime::Document>,
-            _flags: lattice_core::BufferFlags,
-            _name: Option<String>,
-        ) {
-        }
-    }
-
-    fn resolver(
-        views: MultibufferRegistryHandle,
-        paths: HashMap<BufferId, PathBuf>,
-    ) -> MultibufferExcerptSource {
-        MultibufferExcerptSource::new(
-            views,
-            lattice_mode::BufferStoreHandle::new(Arc::new(PathsOnly(paths))),
-        )
-    }
-
     #[test]
     fn a_buffer_that_is_not_a_multibuffer_answers_none() {
         // Not its own path: the question is "which file does this COMPOSED
@@ -293,12 +263,8 @@ mod excerpt_source_tests {
         // `document.path()`. Answering the view's own path here would make the
         // agenda's synthetic buffer look like a file on disk.
         let views = InMemoryMultibufferRegistry::handle();
-        let plain = BufferId::next();
-        let r = resolver(
-            views,
-            HashMap::from([(plain, PathBuf::from("/org/notes.org"))]),
-        );
-        assert_eq!(r.excerpt_source(plain, 0), None);
+        let r = MultibufferExcerptSource::new(views);
+        assert_eq!(r.excerpt_source(BufferId::next(), 0), None);
     }
 
     #[test]
@@ -307,7 +273,54 @@ mod excerpt_source_tests {
         // ordinary answer rather than an error, which is why the seam returns
         // an option rather than a result.
         let views = InMemoryMultibufferRegistry::handle();
-        let r = resolver(views, HashMap::new());
+        let r = MultibufferExcerptSource::new(views);
         assert_eq!(r.excerpt_source(BufferId::next(), 9_999), None);
+    }
+
+    /// The case the seam exists for, and the one the two `None` tests above
+    /// could not catch: a view built the way a **scan view** builds one.
+    ///
+    /// `scan_view::append_sorted` mints its source ids with `BufferId::next()`
+    /// and hands the documents to `add_source` — the multibuffer's own source
+    /// map. It never calls `BufferStore::insert_document_buffer`, because a
+    /// scan's sources are not buffers the user opened and have no business in
+    /// `:ls`. So a resolver asking the BUFFER STORE for the path answers `none`
+    /// for every real agenda row, which is the only shape anybody asks about.
+    ///
+    /// The source document carries its own path, so the view alone can answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_scan_views_source_resolves_by_the_documents_own_path() {
+        let source = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text("* TODO write it\n  SCHEDULED: <2026-09-03>\n* TODO and it\n")
+            .with_path(PathBuf::from("/org/notes.org"))
+            .build();
+        let registry = Arc::new(arc_swap::ArcSwap::from_pointee(
+            lattice_grammar::CommandRegistry::new(),
+        ));
+        let handle: Arc<dyn lattice_runtime::Document> = Arc::new(lattice_runtime::spawn_document(
+            source,
+            doc,
+            Arc::clone(&registry),
+        ));
+
+        // Excerpt the third line, so a wrong answer cannot pass by returning 0.
+        let mb = Arc::new(
+            crate::MultibufferDocumentHandle::new(
+                HashMap::from([(source, Arc::clone(&handle))]),
+                vec![crate::Excerpt::new(source, 2, 2)],
+                registry,
+            )
+            .expect("view builds"),
+        );
+        let view = BufferId::next();
+        let views = InMemoryMultibufferRegistry::handle();
+        views.insert(view, mb);
+
+        let r = MultibufferExcerptSource::new(views);
+        assert_eq!(
+            r.excerpt_source(view, 0),
+            Some((PathBuf::from("/org/notes.org"), 2)),
+        );
     }
 }

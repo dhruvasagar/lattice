@@ -160,22 +160,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     }
     // OA.23: what answers "which file did this composed line come from".
     //
-    // Needs both handles and neither alone: the registry maps a view's
-    // composed line to a source BUFFER, the store maps that buffer to a PATH.
-    // Unwired leaves `excerpt-source` answering `none`, which is what a host
-    // with no multibuffers should say.
-    if let (Some(views), Some(buffers)) = (
-        boot.service::<lattice_multibuffer::MultibufferRegistryHandle>(),
-        boot.service::<lattice_mode::BufferStoreHandle>(),
-    ) {
+    // The registry alone: it maps a view's composed line to a source document,
+    // and a source carries its own path. Unwired leaves `excerpt-source`
+    // answering `none`, which is what a host with no multibuffers should say.
+    if let Some(views) = boot.service::<lattice_multibuffer::MultibufferRegistryHandle>() {
         host.set_excerpt_source_resolver(std::sync::Arc::new(
-            lattice_multibuffer::registry::MultibufferExcerptSource::new(
-                (*views).clone(),
-                (*buffers).clone(),
-            ),
+            lattice_multibuffer::registry::MultibufferExcerptSource::new((*views).clone()),
         ));
     } else {
-        tracing::debug!("excerpt-source seam unwired: no multibuffer registry or buffer store");
+        tracing::debug!("excerpt-source seam unwired: no multibuffer registry");
     }
 
     // Capture the editor environment from the generic boot seams. `service`

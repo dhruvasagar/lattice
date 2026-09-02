@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 
 use crate::registry::{ConfigError, ConfigRegistry};
 // TC.2: a composite-schema option takes its TOML value whole, as a tree.
-use crate::schema::{ConfigValue, SchemaError};
+use crate::schema::{dot_path, toml_to_config_value};
 
 /// Outcome of loading one or more TOML files. The caller drains
 /// `messages` into its echo / message buffer and walks `structural`
@@ -536,69 +536,6 @@ fn apply_tree_if_composite(
     true
 }
 
-/// Join a schema path onto an option name. A record field needs the separating
-/// dot (`opt` + `target.file`); an index does not (`opt` + `[2]`).
-fn dot_path(path: &str) -> String {
-    if path.is_empty() || path.starts_with('[') {
-        path.to_string()
-    } else {
-        format!(".{path}")
-    }
-}
-
-/// TC.2 — a TOML value as a [`ConfigValue`] tree.
-///
-/// Pure and schema-blind: it answers "what shape is this", and
-/// [`crate::schema::validate`] answers "is that the right shape". Keeping the
-/// two apart is what lets the shape error and the schema error carry the same
-/// kind of path.
-///
-/// Floats and datetimes are refused rather than stringified. `ConfigValue` has
-/// no kind for either, and quietly turning `1.5` into `"1.5"` would make an
-/// option's value depend on the host's float formatter — the sort of thing that
-/// works until a locale or a plugin language disagrees. Adding a kind later is
-/// additive; guessing now is not.
-fn toml_to_config_value(value: &toml::Value) -> Result<ConfigValue, SchemaError> {
-    fn go(path: &str, value: &toml::Value) -> Result<ConfigValue, SchemaError> {
-        match value {
-            toml::Value::String(s) => Ok(ConfigValue::Str(s.clone())),
-            toml::Value::Integer(i) => Ok(ConfigValue::Int(*i)),
-            toml::Value::Boolean(b) => Ok(ConfigValue::Bool(*b)),
-            toml::Value::Array(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for (i, item) in items.iter().enumerate() {
-                    out.push(go(&format!("{path}[{i}]"), item)?);
-                }
-                Ok(ConfigValue::List(out))
-            }
-            toml::Value::Table(table) => {
-                let mut out = std::collections::BTreeMap::new();
-                for (k, v) in table {
-                    let child = if path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{path}.{k}")
-                    };
-                    out.insert(k.clone(), go(&child, v)?);
-                }
-                Ok(ConfigValue::Record(out))
-            }
-            toml::Value::Float(_) => Err(SchemaError {
-                path: path.to_string(),
-                message: "floating-point values are not a configuration value shape".to_string(),
-            }),
-            toml::Value::Datetime(_) => Err(SchemaError {
-                path: path.to_string(),
-                message: "datetime values are not a configuration value shape".to_string(),
-            }),
-        }
-    }
-    go("", value).map_err(|mut e| {
-        e.path = dot_path(&e.path);
-        e
-    })
-}
-
 /// Render a scalar TOML value as a string the registry's
 /// per-option parser will accept. `None` for shapes (arrays,
 /// inline tables) that aren't a scalar option value.
@@ -618,6 +555,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::option::Option as ConfigOption;
+    // TC.2's composite fixture builds trees directly; the loader itself only
+    // ever names these through `crate::schema::`.
+    use crate::schema::ConfigValue;
 
     #[test]
     fn config_home_prefers_absolute_xdg_override() {

@@ -41,6 +41,19 @@ pub struct Option<T: OptionType> {
     /// `T` separately or re-running `format()` against the cell
     /// (which holds the *current*, not the default, value).
     pub(crate) default_formatted: String,
+    /// TC.3: a shape declared per OPTION rather than per type.
+    ///
+    /// `None` for every option whose type knows its own shape, which is all of
+    /// them that are written in Rust — `OptionType::schema()` answers and this
+    /// field stays empty. It exists for the case the type cannot cover: a
+    /// PLUGIN's structured option, whose shape arrives at registration as data
+    /// and therefore cannot be a static method on `ConfigValue`.
+    ///
+    /// The schema lives here rather than inside the value because a value that
+    /// carried its own shape could not survive `OptionType::from_value`, which
+    /// is a static function with no access to the option being set. Metadata
+    /// about an option belongs beside its doc and its default.
+    pub(crate) schema: std::option::Option<crate::ConfigSchema>,
     pub(crate) cell: ArcSwap<T>,
 }
 
@@ -71,6 +84,7 @@ impl<T: OptionType> Option<T> {
             doc: doc.into(),
             validate: None,
             default_formatted,
+            schema: None,
             cell: ArcSwap::from_pointee(default),
         }
     }
@@ -96,6 +110,31 @@ impl<T: OptionType> Option<T> {
             default,
             validate: None,
         }
+    }
+
+    /// TC.3: an option whose shape is declared rather than derived — the
+    /// plugin-contributed structured option.
+    ///
+    /// `default` is NOT validated here; the caller
+    /// (`config_host::register_structured_option`) checks it against `schema`
+    /// first, so a declaration that does not fit registers nothing at all
+    /// rather than producing an option that exists and cannot hold a legal
+    /// value.
+    pub fn structured(
+        name: impl Into<Cow<'static, str>>,
+        schema: crate::ConfigSchema,
+        default: T,
+        doc: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        let mut out = Self::new(name, default, doc);
+        out.schema = Some(schema);
+        out
+    }
+
+    /// The option's declared shape: what was given to [`Self::structured`], or
+    /// the type's own [`crate::OptionType::schema`].
+    pub fn declared_schema(&self) -> crate::ConfigSchema {
+        self.schema.clone().unwrap_or_else(T::schema)
     }
 
     /// Borrows the option's name. PL8.F: was `-> &'static str` when the field was
@@ -157,6 +196,7 @@ impl<T: OptionType> OptionBuilder<T> {
     pub fn build(self) -> Option<T> {
         let default_formatted = self.default.format();
         Option {
+            schema: None,
             name: self.name,
             aliases: self.aliases,
             doc: self.doc,

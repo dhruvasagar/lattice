@@ -110,6 +110,42 @@ fn build_and_register<T: OptionType>(
         .is_ok()
 }
 
+/// TC.3 — register an option whose value has structure.
+///
+/// The schema-taking peer of [`register_plugin_option`]. Kept here, beside it,
+/// because the two share every rule that is not about shape: auto-namespacing
+/// (the caller has already applied it), the name-collision refusal, and
+/// registering NOTHING when the declaration is bad.
+///
+/// The default is validated against the schema BEFORE registration for the same
+/// reason `build_and_register` parses before it allocates: a plugin whose own
+/// default does not fit its own declaration must get an error, not an option
+/// that exists and cannot hold a legal value — its later reads would then
+/// silently answer with a value nobody chose, which is the failure class this
+/// whole design is trying to end.
+pub fn register_structured_option(
+    registry: &ConfigRegistry,
+    name: &str,
+    schema: lattice_config::ConfigSchema,
+    default: lattice_config::ConfigValue,
+    doc: &str,
+) -> Result<(), String> {
+    if registry.lookup(name).is_some() {
+        return Err(format!("option `{name}` is already registered"));
+    }
+    lattice_config::schema::validate(&schema, &default)
+        .map_err(|e| format!("default does not fit the declared schema: {e}"))?;
+    registry
+        .try_register(ConfigOption::<lattice_config::ConfigValue>::structured(
+            name.to_owned(),
+            schema,
+            default,
+            doc.to_owned(),
+        ))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 impl PluginHost {
     /// Instantiate a `config-plugin` component under its capability grant, run its
     /// `register-options` export to declare options into `registry`, and return

@@ -105,16 +105,24 @@ async fn reloading_a_config_plugin_keeps_the_option_footprint_bounded() {
     assert_eq!(config.len(), 0, "registry starts empty");
     let loader = rig(base.path(), config.clone());
 
-    // Initial load: the fixture registers exactly 3 options.
+    // Initial load: the fixture registers exactly 4 options — three scalars and
+    // (TC.3) one structured. The structured one is the interesting member here:
+    // its schema and its value are OWNED trees hanging off the registry entry,
+    // so if teardown reclaimed entries but not what they point at, this is the
+    // option that would show it.
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "the config plugin loads");
-    const FIXTURE_OPTIONS: usize = 3;
+    const FIXTURE_OPTIONS: usize = 4;
     assert_eq!(
         config.len(),
         FIXTURE_OPTIONS,
-        "the fixture's 3 options are registered"
+        "the fixture's options are registered"
+    );
+    assert!(
+        config.lookup("config-fixture.templates").is_some(),
+        "the structured option is a registry entry like any other"
     );
     assert!(
         config.lookup("config-fixture.enabled").is_some(),
@@ -123,8 +131,8 @@ async fn reloading_a_config_plugin_keeps_the_option_footprint_bounded() {
 
     // The reclamation contract: reload N times. Each reload unloads (dropping the
     // prior options' entries — and, post-PL8.F, their owned `Cow` name/doc bytes)
-    // and re-registers. The LIVE option count must stay at 3 forever, not grow
-    // 3 → 6 → 9 → … The pre-PL8.F entry removal already kept `len()` bounded; the
+    // and re-registers. The LIVE option count must stay at 4 forever, not grow
+    // 4 → 8 → 12 → … The pre-PL8.F entry removal already kept `len()` bounded; the
     // point PL8.F adds is that the *strings* now free with those entries rather
     // than leaking as `&'static str`.
     for round in 1..=12 {

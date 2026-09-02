@@ -53,6 +53,7 @@
 
 pub mod boundary;
 pub mod boundary_app_effect;
+pub mod boundary_config;
 pub mod boundary_context;
 pub mod boundary_decoration;
 pub mod boundary_effect;
@@ -2400,6 +2401,131 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             return Some(opt.get_formatted());
         }
         registry.lookup(&name).map(|opt| opt.get_formatted())
+    }
+
+    /// TC.3: `register-structured-option` — declare an option whose value has
+    /// structure. The schema-taking peer of `register-option`, with the same
+    /// namespacing and the same collision rule.
+    ///
+    /// `false` on: a malformed arena (a bad index or a cycle — see
+    /// `boundary_config`), a `default` that does not fit the declared `schema`,
+    /// or a name collision. In every case NOTHING is registered: an option that
+    /// exists and cannot hold a legal value is worse than one that does not
+    /// exist, because the plugin's own reads then fall back to a default it
+    /// never chose.
+    fn register_structured_option(
+        &mut self,
+        name: String,
+        schema: crate::config_host::bindings::lattice::plugin_host::config::ConfigSchema,
+        default: crate::config_host::bindings::lattice::plugin_host::config::ConfigValue,
+        doc: String,
+    ) -> bool {
+        let Some(registry) = self.config_registry.as_ref() else {
+            tracing::warn!(
+                option = %name,
+                "register-structured-option ignored: plugin has no config registry wired"
+            );
+            return false;
+        };
+        // Auto-namespaced exactly like `register-option`: the host owns the
+        // namespace so plugins cannot collide, and a user sets it as
+        // `:set org.capture-templates=…`.
+        let full = match &self.plugin_name {
+            Some(id) => format!("{id}.{name}"),
+            None => name.clone(),
+        };
+        let schema = match crate::boundary_config::schema_from_wit(&schema) {
+            Ok(s) => s,
+            Err(error) => {
+                tracing::warn!(option = %full, %error, "register-structured-option: bad schema");
+                return false;
+            }
+        };
+        let default = match crate::boundary_config::value_from_wit(&default) {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(option = %full, %error, "register-structured-option: bad default");
+                return false;
+            }
+        };
+        match crate::config_host::register_structured_option(registry, &full, schema, default, &doc)
+        {
+            Ok(()) => {
+                self.config_contributions.push(full);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(option = %full, %error, "register-structured-option rejected");
+                false
+            }
+        }
+    }
+
+    /// TC.3: `get-option-value` — an option's current value as a tree.
+    ///
+    /// Works for scalar options too, a scalar being a degenerate schema, so a
+    /// guest that wants typed reads everywhere uses this one call rather than
+    /// choosing per option.
+    fn get_option_value(
+        &mut self,
+        name: String,
+    ) -> Option<crate::config_host::bindings::lattice::plugin_host::config::ConfigValue> {
+        let registry = self.config_registry.as_ref()?;
+        // Own namespace first, then the raw name — `get-option`'s resolution,
+        // because a guest that switches to typed reads must not also have to
+        // change every name it passes.
+        if let Some(id) = &self.plugin_name
+            && let Some(opt) = registry.lookup(&format!("{id}.{name}"))
+        {
+            return Some(crate::boundary_config::value_to_wit(&opt.get_value()));
+        }
+        registry
+            .lookup(&name)
+            .map(|opt| crate::boundary_config::value_to_wit(&opt.get_value()))
+    }
+
+    /// TC.3: `set-option-value` — set an option from a tree.
+    ///
+    /// Validated against the option's declared schema, so a bad field is
+    /// refused with a PATH rather than by whatever message the plugin would
+    /// have written. `false` on an unknown option / a value that does not fit /
+    /// no registry — never a trap, `set-option`'s contract.
+    fn set_option_value(
+        &mut self,
+        name: String,
+        value: crate::config_host::bindings::lattice::plugin_host::config::ConfigValue,
+    ) -> bool {
+        let Some(registry) = self.config_registry.as_ref() else {
+            tracing::warn!(
+                option = %name,
+                "set-option-value ignored: plugin has no config registry wired"
+            );
+            return false;
+        };
+        let target = self
+            .plugin_name
+            .as_ref()
+            .map(|id| format!("{id}.{name}"))
+            .filter(|full| registry.lookup(full).is_some())
+            .unwrap_or(name);
+        let Some(opt) = registry.lookup(&target) else {
+            tracing::warn!(option = %target, "set-option-value failed: unknown option");
+            return false;
+        };
+        let value = match crate::boundary_config::value_from_wit(&value) {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(option = %target, %error, "set-option-value: malformed value");
+                return false;
+            }
+        };
+        match opt.set_value(&value) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(option = %target, %error, "set-option-value rejected");
+                false
+            }
+        }
     }
 
     /// `set-option` (CI.7): override an existing option's value via the SAME

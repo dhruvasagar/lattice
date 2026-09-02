@@ -329,6 +329,159 @@ fn validate_at(path: &str, schema: &ConfigSchema, value: &ConfigValue) -> Result
     }
 }
 
+// ── TOML interop ──────────────────────────────────────────────────────────
+//
+// Lives here rather than in the loader because two callers need it: the loader
+// (a composite option's value written natively in `lattice.toml`) and
+// `ConfigValue`'s own `OptionType::parse` (the `:set` text surface, below).
+// One conversion, so the two homes cannot drift about what a TOML table means.
+
+/// Join a schema path onto an option name. A record field needs the separating
+/// dot (`opt` + `target.file`); an index does not (`opt` + `[2]`).
+pub fn dot_path(path: &str) -> String {
+    if path.is_empty() || path.starts_with('[') {
+        path.to_string()
+    } else {
+        format!(".{path}")
+    }
+}
+
+/// TC.2 — a TOML value as a [`ConfigValue`] tree.
+///
+/// Pure and schema-blind: it answers "what shape is this", and
+/// [`crate::schema::validate`] answers "is that the right shape". Keeping the
+/// two apart is what lets the shape error and the schema error carry the same
+/// kind of path.
+///
+/// Floats and datetimes are refused rather than stringified. `ConfigValue` has
+/// no kind for either, and quietly turning `1.5` into `"1.5"` would make an
+/// option's value depend on the host's float formatter — the sort of thing that
+/// works until a locale or a plugin language disagrees. Adding a kind later is
+/// additive; guessing now is not.
+pub fn toml_to_config_value(value: &toml::Value) -> Result<ConfigValue, SchemaError> {
+    fn go(path: &str, value: &toml::Value) -> Result<ConfigValue, SchemaError> {
+        match value {
+            toml::Value::String(s) => Ok(ConfigValue::Str(s.clone())),
+            toml::Value::Integer(i) => Ok(ConfigValue::Int(*i)),
+            toml::Value::Boolean(b) => Ok(ConfigValue::Bool(*b)),
+            toml::Value::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    out.push(go(&format!("{path}[{i}]"), item)?);
+                }
+                Ok(ConfigValue::List(out))
+            }
+            toml::Value::Table(table) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in table {
+                    let child = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    out.insert(k.clone(), go(&child, v)?);
+                }
+                Ok(ConfigValue::Record(out))
+            }
+            toml::Value::Float(_) => Err(SchemaError {
+                path: path.to_string(),
+                message: "floating-point values are not a configuration value shape".to_string(),
+            }),
+            toml::Value::Datetime(_) => Err(SchemaError {
+                path: path.to_string(),
+                message: "datetime values are not a configuration value shape".to_string(),
+            }),
+        }
+    }
+    go("", value).map_err(|mut e| {
+        e.path = dot_path(&e.path);
+        e
+    })
+}
+
+/// A [`ConfigValue`] as TOML. The inverse of [`toml_to_config_value`], used by
+/// `ConfigValue`'s `format()` — which is what `:set foo?` echoes and what
+/// `:describe-option` shows.
+///
+/// Total: every `ConfigValue` kind has a TOML counterpart, which is not true in
+/// the other direction (floats and datetimes have no `ConfigValue`).
+pub fn config_value_to_toml(value: &ConfigValue) -> toml::Value {
+    match value {
+        ConfigValue::Bool(b) => toml::Value::Boolean(*b),
+        ConfigValue::Int(i) => toml::Value::Integer(*i),
+        ConfigValue::Str(s) => toml::Value::String(s.clone()),
+        ConfigValue::List(items) => {
+            toml::Value::Array(items.iter().map(config_value_to_toml).collect())
+        }
+        ConfigValue::Record(map) => toml::Value::Table(
+            map.iter()
+                .map(|(k, v)| (k.clone(), config_value_to_toml(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// TC.3 — a `ConfigValue` is itself an option value type.
+///
+/// This is what a plugin's structured option holds. The shape is NOT here: a
+/// plugin declares its schema at registration and it is carried on the option
+/// spec ([`crate::option::Option::structured`]), because the schema is metadata
+/// about the option — like its doc and its default — rather than data inside
+/// the value. A value that carried its own schema could not survive
+/// `from_value`, which is a static function with no access to the option it is
+/// being set on.
+///
+/// `parse` / `format` are **TOML text**, which keeps the `:set` contract and
+/// costs nothing: the host already has a TOML parser, so a structured option
+/// stays settable from the command line and `:set foo?` still echoes something
+/// a user can read and paste back. It also means the migration of an option
+/// that was a TOML-in-a-string is not a break for anyone who was setting it
+/// that way — the text they wrote still parses, it is simply now validated.
+impl crate::OptionType for ConfigValue {
+    fn parse(s: &str) -> Result<Self, String> {
+        let table: toml::Value = toml::from_str::<toml::Table>(s)
+            .map(toml::Value::Table)
+            .map_err(|e| format!("expected TOML: {e}"))?;
+        toml_to_config_value(&table).map_err(|e| e.to_string())
+    }
+
+    fn format(&self) -> String {
+        // A non-table root has no top-level TOML spelling, so it is rendered as
+        // a one-key document under `value`. That is a corner an option is
+        // unlikely to occupy — a structured option is a record or a list of
+        // them — and being lossy here would be worse than being verbose.
+        match config_value_to_toml(self) {
+            toml::Value::Table(t) => toml::to_string_pretty(&t).unwrap_or_default(),
+            other => {
+                let mut t = toml::Table::new();
+                t.insert("value".to_string(), other);
+                toml::to_string_pretty(&t).unwrap_or_default()
+            }
+        }
+    }
+
+    fn type_label() -> &'static str {
+        "structured"
+    }
+
+    /// Unknowable statically — the shape belongs to the OPTION, not the type.
+    /// Every real structured option is built through
+    /// [`crate::option::Option::structured`], which records the declared schema
+    /// on the spec and is what `ErasedOption::schema()` answers with. This
+    /// fallback exists only so the trait is implementable.
+    fn schema() -> crate::ConfigSchema {
+        crate::ConfigSchema::string()
+    }
+
+    fn to_value(&self) -> ConfigValue {
+        self.clone()
+    }
+
+    fn from_value(value: &ConfigValue) -> Result<Self, String> {
+        Ok(value.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]

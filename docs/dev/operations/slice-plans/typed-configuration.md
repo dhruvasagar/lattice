@@ -25,7 +25,7 @@ entangled in one bug report, which is why this note exists.
 | TC.1 | `ConfigValue` + `ConfigSchema`; every option describes its shape | ✅ |
 | TC.2 | `lattice.toml` writes a real tree, not a string containing one | ✅ |
 | **Phase 2 — the ABI** | | |
-| TC.3 | `register-option` takes a schema; values cross as a tree | 📝 |
+| TC.3 | An option can be declared with a schema; values cross as a tree | ✅ |
 | TC.4 | The SDK derive — a Rust struct becomes a schema and a value | 📝 |
 | **Phase 3 — the encodings go** | | |
 | TC.5 | `capture-templates` is a record list **(plugin)** | 📝 |
@@ -141,23 +141,55 @@ option's dotted name. One redundant walk of a cold-path config value is a fair
 price for the message reading `org.capture-templates[1].target.file: ...`
 instead of `org.capture-templates: [1].target.file: ...`.
 
-### Phase 2 — the ABI
+## Phase 2 — the ABI
 
-### TC.3 — `register-option` takes a schema; values cross as a tree 📝
+### TC.3 — An option can be declared with a schema; values cross as a tree ✅
 
-WIT gains `option-schema` / `option-value`; `register-option` is re-based onto
-the schema-taking form and `get-option-value` / `set-option-value` join the
-string pair, which stays as the scalar front-end (`:set` is a text surface by
-design — typed-configuration.md §2.2).
+WIT gains `config-schema` / `config-value` and three calls:
+`register-structured-option`, `get-option-value`, `set-option-value`. The string
+pair stays as the scalar front-end — `:set` is a text surface by design
+(typed-configuration.md §2.2) — and `register-option` stays as the shorthand for
+declaring a scalar, which is ergonomics rather than a second mechanism (§2.1).
 
-`register_plugin_option` re-bases with it. Every seam store can already read the
-registry as of OA.14d, so there is no new wiring here — which is worth saying,
-because that gap is what made the same class of bug invisible last time.
+Every seam store can already read the registry as of OA.14d, so there was no new
+wiring here — worth saying, because that gap is what made this class of bug
+invisible last time.
 
-**Tests.** A guest declaring a record-schema option and reading it back typed,
-through the real component. A tree that violates the schema is rejected with a
-path and registers nothing — asserted at the boundary, since a partial
-registration is worse than a refused one.
+**WIT has no recursive types**, which the compiler said and the design fragment
+had not: `type config-schema depends on itself`. Both trees cross as an ARENA —
+a flat node list plus a root index, children by index — and
+`boundary_config.rs` is where an arena becomes a tree. The fragment's §2.0 now
+carries this; it is not a detail, it is the wire format.
+
+That boundary has to defend against two things nothing else in the crate does:
+an index pointing outside the list, and an index pointing back up the tree. The
+second is the dangerous one — following it naively is unbounded recursion on the
+HOST's stack from a value a plugin chose — so the walk carries the nodes on its
+current path and refuses one it is already inside. It tracks the *path*, not
+every node seen: a guest that emits one `string` node and points three fields at
+it has sent a DAG, which is a fine encoding of a tree, and rejecting it would
+punish exactly the encoding a careful generator produces.
+
+**The schema lives on the OPTION, not in the value** (§2.0.1). A value carrying
+its own shape is the obvious arrangement and it does not work:
+`OptionType::from_value` is static, so the shape would be lost on the first
+write. `Option<T>` grows a `schema` field beside its doc and its default, and
+`ConfigValue` becomes an `OptionType` whose `parse`/`format` are TOML text —
+which keeps `:set` working for structured options and means migrating an option
+that WAS a TOML-in-a-string breaks nobody who was setting it that way.
+
+**Tests.** `boundary_config.rs`'s own — round-trips of a two-level nested
+schema and value, every scalar kind crossing as itself, an out-of-range index
+(including the root, the one nobody checks because it does not arrive through a
+child link), a cycle refused rather than followed, and a shared node accepted.
+Plus `config_source.rs` end to end through the real component: the fixture
+declares org's `capture-templates` shape by hand as an arena, sets a value
+through `set-option-value` and reads it back through `get-option-value`. The
+assertion is on what came BACK, flattened with its links resolved — a seam that
+accepted the tree and stored a mangled one passes any assertion made on the
+write alone. An ill-shaped tree is refused AND leaves the previous value intact,
+both halves, because returning `false` while clearing the option would satisfy
+the first.
 
 ### TC.4 — The SDK derive — a Rust struct becomes a schema and a value 📝
 

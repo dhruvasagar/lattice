@@ -66,6 +66,59 @@ value   = bool(bool) | int(s64) | string(string)
         | record(list<tuple<string, value>>)
 ```
 
+### 2.0 …except that WIT has no recursive types
+
+The shape above is the *host's*. It is not what crosses, and the difference is
+not cosmetic: WIT rejects a variant whose arm holds the same variant —
+`type config-schema depends on itself` — so a schema cannot be spelled that way
+on the wire at all. This was discovered by the compiler while implementing TC.3;
+the fragment as first written proposed something unrepresentable.
+
+Both trees therefore cross as an **arena**: a flat list of nodes plus the index
+of the root, with children referenced by index.
+
+```wit
+record schema-field { name: string, schema: u32, required: bool, doc: string }
+variant schema-node  { scalar(option-type), enum-of(list<string>),
+                       list-of(u32), record(list<schema-field>) }
+record config-schema { nodes: list<schema-node>, root: u32 }
+// …and the same shape for value-node / config-value.
+```
+
+An arena is guest-controlled input in a shape that invites two failures nothing
+else on this boundary has: an index pointing outside the list, and an index
+pointing back up the tree. The second is the dangerous one — following it
+naively is unbounded recursion on the *host's* stack, from a value a plugin
+chose. So the tree-building walk carries the set of nodes on its current path
+and refuses one it is already inside. It tracks the *path*, not every node seen,
+because a guest that emits one `string` node and points three fields at it has
+sent a DAG, which is a perfectly good encoding of a tree; rejecting that would
+punish exactly the encoding a careful generator produces.
+
+Writing an arena by hand is unpleasant, and that is the argument for the SDK
+derive rather than an objection to the encoding — there is no alternative
+encoding to prefer.
+
+### 2.0.1 Where the schema lives
+
+On the **option**, not in the value. `Option<T>` grows a `schema: Option<ConfigSchema>`
+that a plugin's declaration fills in, beside the doc and the default; it is
+`None` for every option written in Rust, whose type answers `OptionType::schema()`
+for itself.
+
+A value carrying its own schema is the arrangement that does not work, and it is
+worth naming because it is the obvious one. `OptionType::from_value` is a
+*static* function — it has no access to the option being set — so a value that
+carried its shape would lose it on the first write. Metadata about an option
+belongs with the option.
+
+The corollary is that `ConfigValue` is itself an `OptionType`, and its
+`parse` / `format` are **TOML text**. That keeps the `:set` contract intact for
+structured options at no cost (the host already has a TOML parser), and it means
+migrating an option that *was* a TOML-in-a-string is not a break for anyone who
+was setting it that way: the text they wrote still parses, it is simply now
+validated against a schema.
+
 A dictionary — a bag of string keys — was considered and rejected by the person
 who would use it: it reproduces the blob's weakness (nothing to validate
 against, nothing for `:customize` to render) while adding a second encoding.
@@ -73,24 +126,38 @@ Types are the point; the schema is how types survive an ABI with no generics.
 
 ### 2.1 One mechanism, not a fourth kind
 
-**Every option is a schema plus a value.** `boolean | integer | string` become
-degenerate schemas and today's `register-option` becomes a thin wrapper over the
-schema-taking one. The rejected alternative was additive — a
-`register-option-schema` beside the existing call, leaving scalar options
-untouched — and it is rejected on heuristic #1: it is the smaller change and the
-worse end state. It would leave the registry with two option mechanisms
-permanently, and every consumer that renders an option (`:customize`,
-`:describe-option`, `:set` completion, the TOML loader) would grow two
-renderers, forever, to serve a distinction that has no meaning to a user.
+**Every option is a schema plus a value.** `boolean | integer | string` are
+degenerate schemas, not a separate kind of thing. The rejected alternative was
+additive — a second option mechanism beside the existing one, leaving scalar
+options outside the schema world — and it is rejected on heuristic #1: it is the
+smaller change and the worse end state. It would leave the registry with two
+option mechanisms permanently, and every consumer that renders an option
+(`:customize`, `:describe-option`, `:set` completion, the TOML loader) would
+grow two renderers, forever, to serve a distinction that has no meaning to a
+user.
+
+**One mechanism is a claim about the registry, not about the call count.** The
+WIT surface keeps `register-option(name, ty, default, doc)` beside
+`register-structured-option(name, schema, default, doc)`, and that is
+ergonomics rather than a second mechanism: declaring `boolean` should not
+require hand-building a one-node arena, and both calls produce the same kind of
+registry entry. The test of the decision is downstream — `ErasedOption` has one
+`schema()`, one `get_value()`, one `set_value()`, and a consumer never asks
+which call declared the option it is looking at.
 
 The blast radius is real and is stated rather than discovered later: every
 option in the workspace goes through the re-based surface. What makes it
 tractable is that **the native side is already typed** — `Option<T>` over an
 `OptionType` — so a scalar's schema is *derived*, not written. `OptionType`
 gains `schema()`, `to_value()` and `from_value()` with defaults good enough that
-a type which enumerates its forms gets an `enum` schema for free and everything
-else gets `scalar(string)`; only `bool` and `i64` need to say so. No existing
-option declaration changes.
+a type which declares its enumeration CLOSED gets an `enum` schema for free and
+everything else gets `scalar(string)`; only `bool` and `i64` need to say so. No
+existing option declaration changes.
+
+(The "closed" qualifier is load-bearing and was learnt the hard way — see the
+slice plan's TC.1 entry. `enumerate()` is documented as feeding `:set`
+completion, and three types use it as a hint over an open space; deriving an
+`enum` from it blindly described those as finite sets.)
 
 ### 2.2 Strings stay the `:set` surface
 

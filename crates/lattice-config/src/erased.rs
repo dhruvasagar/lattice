@@ -226,7 +226,10 @@ impl<T: OptionType> ErasedOption for Option<T> {
     }
 
     fn schema(&self) -> crate::ConfigSchema {
-        T::schema()
+        // The option's DECLARED shape: what a plugin gave at registration, or
+        // the type's own answer. Not `T::schema()` directly — a structured
+        // plugin option's shape is data, and a static method cannot know it.
+        self.declared_schema()
     }
 
     fn get_value(&self) -> crate::ConfigValue {
@@ -238,7 +241,7 @@ impl<T: OptionType> ErasedOption for Option<T> {
         // went wrong. `from_value` can only say that the whole tree is
         // the wrong shape, which for a list of records is no better
         // than the hand-rolled parsers this replaces.
-        crate::schema::validate(&T::schema(), value).map_err(|e| e.to_string())?;
+        crate::schema::validate(&self.declared_schema(), value).map_err(|e| e.to_string())?;
         let parsed = T::from_value(value)?;
         self.set(parsed)
     }

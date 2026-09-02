@@ -69,8 +69,9 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     // The guest declared them with SHORT names (`enabled` / `count` / `label`);
     // the host AUTO-NAMESPACES by plugin id, so they register (and report) as
     // `config-fixture.*` — no plugin can collide in the global option namespace.
-    assert_eq!(names.len(), 3, "three options declared: {names:?}");
+    assert_eq!(names.len(), 4, "four options declared: {names:?}");
     assert!(names.iter().any(|n| n == "config-fixture.enabled"));
+    assert!(names.iter().any(|n| n == "config-fixture.templates"));
 
     let enabled = registry
         .lookup("config-fixture.enabled")
@@ -97,10 +98,83 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     // `config-fixture.count`) after the `set-option` — the SET value (5, not the
     // default 3) crossed the round-trip.
     let logged = std::fs::read_to_string(option_log(&data_base)).unwrap_or_default();
+    assert!(
+        logged.contains("count=5"),
+        "get-option returned the set-option value: {logged}"
+    );
+
+    // ── TC.3: an option whose value has STRUCTURE ─────────────────────────
+    //
+    // The guest declared `templates` as `list<record{key, target:record{file},
+    // body?}>` — org's `capture-templates` reduced to its shape — through an
+    // ARENA, because WIT has no recursive types.
+    let templates = registry
+        .lookup("config-fixture.templates")
+        .expect("the structured option registered");
+
+    // The SHAPE reached the registry, nesting intact. Asserted field by field
+    // rather than on a label, because `list<record>` is what a schema that
+    // dropped its second level would also report.
+    let schema = templates.schema();
+    let lattice_config::ConfigSchema::List(inner) = &schema else {
+        panic!("expected a list schema, got {}", schema.label());
+    };
+    let lattice_config::ConfigSchema::Record(fields) = inner.as_ref() else {
+        panic!("expected a record element, got {}", inner.label());
+    };
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, vec!["key", "target", "body"], "fields, in order");
+    assert!(
+        !fields[2].required,
+        "`body` was declared optional and stayed optional"
+    );
     assert_eq!(
-        logged.trim(),
-        "count=5",
-        "get-option returned the set-option value"
+        fields[0].doc, "the key to press",
+        "per-field docs crossed — what :customize renders beside each field"
+    );
+    let target = &fields[1].schema;
+    let lattice_config::ConfigSchema::Record(target_fields) = target else {
+        panic!("`target` must still be a record, got {}", target.label());
+    };
+    assert_eq!(target_fields[0].name, "file", "the SECOND level survived");
+
+    // The VALUE the guest set through `set-option-value`, read back by the
+    // guest through `get-option-value` and flattened with its links resolved —
+    // so the assertion covers the arena's structure and not merely its nodes.
+    assert!(
+        logged.contains("templates=[{key=t,target={file=~/org/refile.org}}]"),
+        "the typed round-trip lost or mangled the tree: {logged}"
+    );
+
+    // …and the host holds the same value.
+    assert_eq!(
+        templates.get_value(),
+        lattice_config::ConfigValue::List(vec![lattice_config::ConfigValue::record([
+            (
+                "key".to_string(),
+                lattice_config::ConfigValue::Str("t".into())
+            ),
+            (
+                "target".to_string(),
+                lattice_config::ConfigValue::record([(
+                    "file".to_string(),
+                    lattice_config::ConfigValue::Str("~/org/refile.org".into()),
+                )]),
+            ),
+        ])]),
+    );
+
+    // A tree that violates the schema is refused — and refused WITHOUT
+    // disturbing the value already there. Both halves, because a seam that
+    // returned `false` and cleared the option would satisfy the first alone.
+    assert!(
+        logged.contains("rejected=false"),
+        "an ill-shaped tree must be refused: {logged}"
+    );
+    assert_eq!(
+        templates.get_value().as_list().map(<[_]>::len),
+        Some(1),
+        "the rejected write left the previous value intact"
     );
 
     // A plugin option is a first-class registry entry: `:set` works uniformly and

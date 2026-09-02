@@ -166,11 +166,23 @@ fn locate(ctx: &ActionContext) -> Option<Located> {
 /// a half-applied column is a corrupt table — worse than either end state.
 /// It also means `u` undoes the operation rather than its last row.
 fn rewrite(ctx: &ActionContext, table: &Table, rendered: Vec<String>, cell: Cell) -> Effect {
-    let last_len = rendered.last().map(|l| l.len() as u32).unwrap_or(0);
+    // **The replaced range is the OLD table's span, end to end.** Deriving the
+    // end line from `rendered` instead is the bug this comment exists to stop
+    // coming back: for align and the two swaps the row count is unchanged and
+    // the two agree, so it looks right — and then an insert addresses a line
+    // past the buffer's end and does nothing at all, while a delete leaves the
+    // last row behind. The org plugin's integration suite caught it on
+    // `<leader>tr`; the unit tests here did not, because they assert the
+    // rendered TEXT and never the range it lands in.
     let caret_line = table.first + cell.row as u32;
     let caret_col = rendered
         .get(cell.row)
         .map(|l| offset_of_column(l, cell.column) as u32)
+        .unwrap_or(0);
+    let end_byte = ctx
+        .buffer
+        .line(table.last)
+        .map(|l| l.len() as u32)
         .unwrap_or(0);
     let text = rendered.join("\n");
     Effect::ApplyEdit {
@@ -178,15 +190,7 @@ fn rewrite(ctx: &ActionContext, table: &Table, rendered: Vec<String>, cell: Cell
         edit: Edit {
             range: Range::new(
                 Position::new(table.first, 0),
-                Position::new(
-                    table.first + rendered.len().saturating_sub(1) as u32,
-                    // The OLD last line's length, not the new one: the range
-                    // being replaced is what is in the buffer now.
-                    ctx.buffer
-                        .line(table.last)
-                        .map(|l| l.len() as u32)
-                        .unwrap_or(last_len),
-                ),
+                Position::new(table.last, end_byte),
             ),
             kind: EditKind::Replace { text },
         },

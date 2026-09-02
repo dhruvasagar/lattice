@@ -86,6 +86,43 @@ fn separator_join(line: &str) -> Option<char> {
     Some(if t.contains('+') { '+' } else { '|' })
 }
 
+/// Is `at` inside a fenced code block?
+///
+/// A `| a | b |` line inside ```` ``` ```` or `#+BEGIN_SRC` is block *content*,
+/// and [`is_table_line`] cannot tell — it sees a pipe. Aligning it would
+/// reformat someone's ASCII art or, worse, their code.
+///
+/// The org plugin found this at OT.7 and answered it with the tree: an org
+/// `table` node does not span a src block. That answer is not available here,
+/// and deliberately so — `lattice-mode` has no tree-sitter dependency, and
+/// acquiring one to ask a question about `#+BEGIN_SRC` would be a large edge
+/// for a small fact. Counting delimiters from the top of the file is the same
+/// answer in `O(lines)` of `starts_with`, which is microseconds on a file far
+/// larger than anyone's notes and happens once per chord, not per frame.
+///
+/// Both spellings, because this mode serves both majors: markdown fences with
+/// backticks or tildes, org with `#+BEGIN_…`/`#+END_…` (any block type — a
+/// table inside `#+BEGIN_EXAMPLE` is as much not-a-table as one inside
+/// `#+BEGIN_SRC`).
+fn inside_a_code_block(line: &impl Fn(u32) -> Option<String>, at: u32) -> bool {
+    let mut open = false;
+    for n in 0..at {
+        let Some(text) = line(n) else { continue };
+        let t = text.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            open = !open;
+        } else {
+            let lower = t.to_ascii_lowercase();
+            if lower.starts_with("#+begin_") {
+                open = true;
+            } else if lower.starts_with("#+end_") {
+                open = false;
+            }
+        }
+    }
+    open
+}
+
 /// Parse one line into a row.
 pub fn parse_row(line: &str) -> Option<Row> {
     if !is_table_line(line) {
@@ -109,6 +146,9 @@ impl Table {
     pub fn at(line: impl Fn(u32) -> Option<String>, at: u32, line_count: u32) -> Option<Table> {
         let here = line(at)?;
         if !is_table_line(&here) {
+            return None;
+        }
+        if inside_a_code_block(&line, at) {
             return None;
         }
         let mut first = at;
@@ -349,5 +389,32 @@ mod tests {
     fn an_empty_column_is_still_visible() {
         let out = rendered("| a |  | b |\n", 0);
         assert!(!out.contains("||"), "no zero-width column: {out:?}");
+    }
+
+    /// OT.7's lesson, carried over: a pipe line inside a source block is
+    /// block CONTENT. Aligning it would reformat someone's code, and it is
+    /// also what leaves `<Tab>` free to fall through to org's headline cycle
+    /// in exactly the place a table command makes no sense.
+    #[test]
+    fn a_pipe_line_inside_an_org_src_block_is_not_a_table() {
+        let src = "#+BEGIN_SRC rust\n| not | a | table |\n#+END_SRC\n";
+        assert!(table_at(src, 1).is_none());
+    }
+
+    #[test]
+    fn a_pipe_line_inside_a_markdown_fence_is_not_a_table() {
+        let src = "```text\n| not | a | table |\n```\n";
+        assert!(table_at(src, 1).is_none());
+    }
+
+    /// …and a real table AFTER a closed block still is one. A one-way
+    /// "saw a fence, give up" check would kill every table below the first
+    /// code block in the file, which in a notes file is most of them.
+    #[test]
+    fn a_table_after_a_closed_block_is_still_a_table() {
+        let src = "#+BEGIN_SRC rust\nlet x = 1;\n#+END_SRC\n\n| a | b |\n";
+        assert!(table_at(src, 4).is_some());
+        let src = "```rust\nlet x = 1;\n```\n\n| a | b |\n";
+        assert!(table_at(src, 4).is_some());
     }
 }

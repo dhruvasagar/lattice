@@ -218,6 +218,47 @@ fn a_column_move_rewrites_every_row() {
     }
 }
 
+/// **The replaced range is the OLD table's span**, whatever the new one is.
+///
+/// Deriving the end line from the rendered result instead agrees with this
+/// for align and the swaps — same row count — and then silently breaks the
+/// two operations that change the count: an insert addresses a line past the
+/// buffer's end and does nothing, a delete leaves its last row behind. That
+/// shipped, and it was the org plugin's integration suite that caught it,
+/// because every unit test here asserted the rendered TEXT and none asserted
+/// the range it lands in.
+#[test]
+fn the_replaced_range_is_the_old_table_not_the_new_one() {
+    let one_row = "| a | b |\n";
+    match run("action:table-insert-row", one_row, 0, 2) {
+        Effect::ApplyEdit { edit, .. } => {
+            assert_eq!(
+                (edit.range.start.line, edit.range.end.line),
+                (0, 0),
+                "the table occupies line 0 alone; the replacement is two lines \
+                 long but it still REPLACES one"
+            );
+            let lattice_protocol::edit::EditKind::Replace { text } = &edit.kind;
+            assert_eq!(
+                text.lines().count(),
+                2,
+                "…and inserts the new row: {text:?}"
+            );
+        }
+        other => panic!("expected ApplyEdit, got {other:?}"),
+    }
+    // The same in the other direction: a delete shrinks the text but still
+    // spans every line the table had.
+    match run("action:table-delete-row", "| a |\n| b |\n", 0, 2) {
+        Effect::ApplyEdit { edit, .. } => {
+            assert_eq!((edit.range.start.line, edit.range.end.line), (0, 1));
+            let lattice_protocol::edit::EditKind::Replace { text } = &edit.kind;
+            assert_eq!(text.lines().count(), 1, "one row left: {text:?}");
+        }
+        other => panic!("expected ApplyEdit, got {other:?}"),
+    }
+}
+
 /// An operation that cannot apply consumes the chord rather than declining.
 /// The caret IS in a table, so falling through to a headline cycle would be a
 /// surprise — the user asked to move a row that has nowhere to go.

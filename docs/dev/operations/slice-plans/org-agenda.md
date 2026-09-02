@@ -50,7 +50,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ⛔ |
 | OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
 | OA.15 | `org-agenda-log-mode` | 📝 |
-| OA.16 | `org-agenda-clockreport-mode` + `cr` | 📝 |
+| OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
 | **Phase 6 — the agenda is navigable** | | |
@@ -951,18 +951,70 @@ options, `PluginLoaded` for what needs it fully loaded (`enable-mode` above
 all — the mode is not registered at pre-load time).
 
 ### OA.15 — `org-agenda-log-mode` 📝
-### OA.16 — `org-agenda-clockreport-mode` + `cr` 📝
 ### OA.17 — `org-agenda-timeline-mode` 📝
 
-One shape, three times: a manual minor activated on the agenda view, owning its
+One shape, twice: a manual minor activated on the agenda view, owning its
 keymap, its toggle and one virtual-row provider registered in `on_activate`.
+OA.16 below is the worked example.
 
 These are display-only by design (design §3) — the cursor cannot rest on their
 rows. If that proves intolerable in use, the deferred synthetic-source work in
 design §9 is the escape, and it is a WIT seam, not a tweak.
 
-OA.16 needs clock data on `Row`, which OA.8 should carry if this phase is
-expected; otherwise it extends `Row` again.
+### OA.16 — `scan-view-clockreport-mode` + `cr` ✅
+
+Clocked time, totalled up the outline, as virtual rows above line 0 of a scan
+view. Landed on OA.14b's `ClockSpan`, which is why that slice came first.
+
+**Named for the mechanism, not the plugin.** `scan-view-clockreport-mode`, not
+`org-agenda-clockreport-mode`: `ClockSpan` is a field of the generic
+`ScanResult`, so any scanned-excerpt-source that reports spans gets a report,
+and one that reports none gets an empty one. An `org-` prefix in the host is the
+vocabulary MV.3 removed from this module once already; a test pins it.
+
+**Totals roll UP, and that is the whole shape.** A span is filed against the
+headline it was clocked on, so a report listing only those answers "which leaf
+did I clock" and never "how long did the project take". `ClockSpan::outline`
+carries the whole chain precisely for this — an ancestor that logged no time
+emits no span, so the chain is the only thing that can name it, and rebuilding
+the tree from names-plus-levels would merge two projects sharing a child name
+(there is a test for exactly that). `own` is kept beside `total` because a tree
+of totals cannot tell a project whose time is all in its children from one where
+half went on the parent. Rows come out in **outline order**, not duration order:
+the report is a picture of the outline, and the indent is the only cue saying
+which rows belong together.
+
+**The toggle is the MODE, not the provider.** Activating registers the provider,
+deactivating drops a guard whose `Drop` unregisters it — one switch rather than
+two states that can disagree, and `:describe-mode` answers "is the report on"
+without anyone exposing provider state. `cr` and the auto-generated
+`:scan-view-clockreport-mode` are the same `Effect::ToggleMode`.
+
+**`cr` binds on `scan-view-mode`, not on the mode it switches** — the one place
+"modes own their full surface" cannot be read literally, since a keymap layer is
+gated to buffers where its mode is active and a `cr` on the clockreport mode
+could only ever turn the report *off*. The switch belongs to the surface that
+offers it; everything the report *does* stays with its mode. Same split as
+`refreshable-view-mode`, one layer over. `cr` rather than emacs' bare `R`: `R`
+is vim's replace-mode, and taking a grammar letter for a display toggle is a
+debt the moment a scan view becomes editable. A host test pins that `cr` is
+active with the view's mode and **inactive without it**, which is what keeps `c`
+meaning change everywhere else.
+
+**The range is the report's own, not the view's.** The host cannot read the
+view's window even in principle — span and offset live in `scan_args`, which it
+carries "as something it can route but not read". That is not a gap:
+`ScanViewState::clock` holds every span unfiltered precisely so the range stays
+a display choice for `gD` (OA.18) to switch. Defaults to today.
+
+Colours resolve from the theme registry (`scan-view.clockreport`,
+`scan-view.clockreport.total`, registered by the mode, `subtext` / `text`), and
+the resolved theme's version rides in `version()` so `:colorscheme` repaints the
+report rather than leaving it in the previous palette — at the top of the view,
+where a stale colour is impossible to miss.
+
+Empty renders `No clocked time in range`, a sentence rather than a table with a
+`0:00` total: a sentence reads as an answer, an empty table reads as a bug.
 
 ### OA.18 — The `gD` view-mode dispatch transient 📝
 

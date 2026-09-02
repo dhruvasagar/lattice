@@ -81,6 +81,7 @@ docs = [
   "multibuffer-mode",
   "narrow-mode",
   "scan-view-mode",
+  "scan-view-clockreport-mode",
 ]
 
 [[section]]
@@ -346,6 +347,7 @@ docs = [
 "multibuffer-mode"     = "Multibuffer views"
 "narrow-mode"          = "Narrow"
 "scan-view-mode"       = "Scan views"
+"scan-view-clockreport-mode" = "The clock report"
 "lsp-mode"             = "The lsp-mode gate"
 "compilation-mode"     = "Compilation"
 "project"              = "Projects"

@@ -59,6 +59,7 @@ same surface).
 | Projects and roots         | [`project`](help:project)                | ✅      |
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
 | Scan views                 | [`scan-view-mode`](help:scan-view-mode) | ✅      |
+|   — `cr` clock report      | [`scan-view-clockreport-mode`](help:scan-view-clockreport-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
 | The problems view          | [`problems-minor-mode`](help:problems-minor-mode) | ✅      |

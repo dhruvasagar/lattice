@@ -278,12 +278,54 @@ mod tests {
 use lattice_cells::Cell;
 use lattice_cells::virtual_rows::{AnchorPosition, VirtualRow, VirtualRowKind, VirtualRowProvider};
 use lattice_core::BufferId;
+use lattice_theme::{
+    ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle,
+};
 use std::sync::{Arc, RwLock};
 
 /// Element name: the clock report's own rows.
 pub const ELEM_CLOCKREPORT: &str = "scan-view.clockreport";
 /// Element name: the report's total line, which is the row people look at.
 pub const ELEM_CLOCKREPORT_TOTAL: &str = "scan-view.clockreport.total";
+
+/// The interned ids the report's rows paint with, captured once when the mode
+/// activates so `collect()` is an array-index resolve rather than a name lookup
+/// per row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockReportElementIds {
+    pub row: ElementId,
+    pub total: ElementId,
+}
+
+/// Register the report's two theme elements and return their interned ids.
+///
+/// Owned by the mode, not by core: nothing outside this report paints these,
+/// and the host has no business naming an element only the clock report uses.
+/// Idempotent by name, so a re-activation re-interns rather than duplicating.
+///
+/// `subtext` and `text` rather than hex: a hardcoded grey survives
+/// `:colorscheme` and then sits at the top of the view in the *previous*
+/// theme's palette, which is the one place a stale colour is impossible to
+/// miss. The total takes the brighter role because it is the row people
+/// actually read; the tree takes the muted one because it is context.
+pub fn register_clock_report_theme_elements(
+    reg: &dyn lattice_theme::ThemeRegistry,
+    owner: ElementOwner,
+) -> ClockReportElementIds {
+    let row = reg.register(
+        ElementName::from(ELEM_CLOCKREPORT.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("subtext".into())),
+        "Clock report tree row foreground.",
+    );
+    let total = reg.register(
+        ElementName::from(ELEM_CLOCKREPORT_TOTAL.to_string()),
+        owner,
+        StyleSpec::new().fg(ColorRef::Palette("text".into())),
+        "Clock report grand-total row foreground.",
+    );
+    ClockReportElementIds { row, total }
+}
 
 /// The `ProviderId` a view's clock report registers under.
 ///
@@ -310,8 +352,10 @@ pub struct ClockReportProvider {
     /// The inclusive epoch-day range the report covers, recomputed by the mode
     /// when the view's span changes.
     days: RwLock<std::ops::RangeInclusive<i64>>,
-    fg: u32,
-    total_fg: u32,
+    /// `None` on the test paths that wire no theme registry; the rows then
+    /// carry the `0` "use the renderer's default" sentinel.
+    theme: Option<ThemeRegistryHandle>,
+    elements: Option<ClockReportElementIds>,
     /// Bumped whenever the range changes, so the worker re-runs `collect`
     /// without waiting for the document's line count to move.
     version: std::sync::atomic::AtomicU64,
@@ -326,19 +370,40 @@ impl std::fmt::Debug for ClockReportProvider {
 }
 
 impl ClockReportProvider {
+    /// Unthemed — the rows paint with the renderer's default foreground.
+    /// Test convenience; production goes through [`Self::with_theme`].
     pub fn new(
         view: BufferId,
         state: Arc<RwLock<crate::providers::scan_view::ScanViewState>>,
         days: std::ops::RangeInclusive<i64>,
-        fg: u32,
-        total_fg: u32,
     ) -> Self {
         Self {
             view,
             state,
             days: RwLock::new(days),
-            fg,
-            total_fg,
+            theme: None,
+            elements: None,
+            version: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// The production constructor: colours resolve from the registry on every
+    /// `collect()`, and the resolved theme's version rides in `version()`, so a
+    /// `:colorscheme` swap re-paints the report instead of leaving it in the
+    /// previous palette.
+    pub fn with_theme(
+        view: BufferId,
+        state: Arc<RwLock<crate::providers::scan_view::ScanViewState>>,
+        days: std::ops::RangeInclusive<i64>,
+        theme: ThemeRegistryHandle,
+        elements: ClockReportElementIds,
+    ) -> Self {
+        Self {
+            view,
+            state,
+            days: RwLock::new(days),
+            theme: Some(theme),
+            elements: Some(elements),
             version: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -407,17 +472,37 @@ impl VirtualRowProvider for ClockReportProvider {
         // under this scan's rows, which is the class of staleness a report can
         // least afford.
         let scan = self.state.read().map(|s| s.clock.len() as u64).unwrap_or(0);
+        // …and the resolved theme's, so `:colorscheme` re-paints the report.
+        // Without this term the rows keep the palette they were baked in, at
+        // the top of the view, where a stale colour is impossible to miss.
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
         self.version
             .load(std::sync::atomic::Ordering::Acquire)
             .wrapping_add(scan)
+            .wrapping_add(theme)
     }
 
     fn collect(&self) -> Vec<VirtualRow> {
+        // Resolved ONCE per collect (off the UI thread) and baked into the
+        // rows. `0` is the Cell "use the renderer's default" sentinel, which
+        // is what an unthemed harness and an unresolved element both get.
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        let fg_for = |id: Option<ElementId>| -> u32 {
+            id.and_then(|id| resolved.as_ref().and_then(|r| r.get(id).fg))
+                .map(|c| c.to_rgb_u32(0))
+                .unwrap_or(0)
+        };
+        let row_fg = fg_for(self.elements.map(|e| e.row));
+        let total_fg = fg_for(self.elements.map(|e| e.total));
         self.lines()
             .into_iter()
             .enumerate()
             .map(|(i, text)| {
-                let fg = if i == 0 { self.total_fg } else { self.fg };
+                let fg = if i == 0 { total_fg } else { row_fg };
                 let cells: Vec<Cell> = text
                     .chars()
                     .map(|c| Cell::new(c as u32, fg, 0, 0))
@@ -469,7 +554,7 @@ mod provider_tests {
     }
 
     fn provider(spans: Vec<ClockSpan>, days: std::ops::RangeInclusive<i64>) -> ClockReportProvider {
-        ClockReportProvider::new(BufferId(7), state_with(spans), days, 0x999999, 0xffffff)
+        ClockReportProvider::new(BufferId(7), state_with(spans), days)
     }
 
     /// A sentence, not an empty table. `0:00` under a header reads as a broken
@@ -541,12 +626,137 @@ mod provider_tests {
             clock_report_provider_id(BufferId(2))
         );
     }
+
+    fn registry() -> Arc<lattice_theme::InMemoryThemeRegistry> {
+        // The default palette so `subtext` / `text` resolve, and NO core
+        // builtins — which is what proves the mode is the sole registrant of
+        // these two elements.
+        Arc::new(lattice_theme::InMemoryThemeRegistry::new(
+            lattice_theme::default_palette(),
+        ))
+    }
+
+    fn owner() -> ElementOwner {
+        ElementOwner::Mode(
+            ScanViewClockReportMode::mode_id()
+                .as_str()
+                .to_string()
+                .into(),
+        )
+    }
+
+    /// The colours come from the REGISTRY, not from a constant. A hardcoded
+    /// grey survives `:colorscheme` and then sits at the top of the view in
+    /// the previous theme's palette.
+    #[test]
+    fn row_colours_resolve_from_the_theme_registry() {
+        let reg = registry();
+        let ids = register_clock_report_theme_elements(reg.as_ref(), owner());
+        use lattice_theme::ThemeRegistry;
+        let resolved = reg.resolved();
+        let expect = |id: ElementId| {
+            resolved
+                .get(id)
+                .fg
+                .map(|c: lattice_theme::Color| c.to_rgb_u32(0))
+                .expect("the element registers a default fg")
+        };
+        let theme: lattice_theme::ThemeRegistryHandle = reg.clone();
+        let p = ClockReportProvider::with_theme(
+            BufferId(7),
+            state_with(vec![
+                span(&["Project"], 1, 30),
+                span(&["Project", "T"], 1, 60),
+            ]),
+            0..=10,
+            theme,
+            ids,
+        );
+        let rows = p.collect();
+        assert!(rows.len() >= 2, "a total line and at least one tree row");
+        assert_eq!(
+            rows[0].cells[0].fg,
+            expect(ids.total),
+            "the total row paints in the registered total element"
+        );
+        assert_eq!(
+            rows[1].cells[0].fg,
+            expect(ids.row),
+            "the tree rows paint in the registered row element"
+        );
+        assert_ne!(
+            expect(ids.total),
+            expect(ids.row),
+            "the total is the row people read; it must not be the tree's grey"
+        );
+    }
+
+    /// …and a `:colorscheme` swap has to REPAINT them. The worker's
+    /// fingerprint is `(id, version)`, so without the theme term the rows keep
+    /// the palette they were baked in.
+    #[test]
+    fn a_theme_swap_rebuilds_the_rows() {
+        let reg = registry();
+        let ids = register_clock_report_theme_elements(reg.as_ref(), owner());
+        let theme: lattice_theme::ThemeRegistryHandle = reg.clone();
+        let p = ClockReportProvider::with_theme(
+            BufferId(7),
+            state_with(vec![span(&["A"], 1, 60)]),
+            0..=10,
+            theme,
+            ids,
+        );
+        let before = p.version();
+        let before_fg = p.collect()[0].cells[0].fg;
+        let recoloured = lattice_theme::default_palette()
+            .with("text", lattice_theme::Color::Rgb(0x01, 0x02, 0x03));
+        reg.set_palette(recoloured);
+        assert_ne!(
+            p.version(),
+            before,
+            "a palette change must make the worker re-run collect"
+        );
+        assert_eq!(
+            p.collect()[0].cells[0].fg,
+            0x010203,
+            "…and the re-run must paint the NEW palette, not the baked one \
+             (was {before_fg:#08x})"
+        );
+    }
+
+    /// An unthemed harness gets the `0` "renderer's default" sentinel rather
+    /// than a colour invented here.
+    #[test]
+    fn without_a_registry_the_rows_carry_no_baked_colour() {
+        let p = provider(vec![span(&["A"], 1, 60)], 0..=10);
+        for row in p.collect() {
+            assert!(row.cells.iter().all(|c| c.fg == 0));
+        }
+    }
 }
 
 // ── The mode ────────────────────────────────────────────────────────────────
 
 /// The keymap target `cr` fires.
 pub const TOGGLE_ACTION: &str = "action:scan-view-clockreport-toggle";
+
+/// Removes the view's report when the mode deactivates.
+///
+/// The mode owns its full surface, and that cuts both ways: nothing else in
+/// the host knows this provider exists, so nothing else can take it down. A
+/// toggle whose "off" left the rows on screen would be the two-states-that-
+/// disagree failure the mode-as-the-switch shape exists to prevent.
+pub struct ClockReportRegistration {
+    registrar: Arc<dyn lattice_mode::VirtualRowRegistrar>,
+    view: BufferId,
+}
+
+impl Drop for ClockReportRegistration {
+    fn drop(&mut self) {
+        self.registrar
+            .unregister(self.view, clock_report_provider_id(self.view));
+    }
+}
 
 /// OA.16 — `scan-view-clockreport-mode`: the clock report, on a scan view.
 ///
@@ -571,7 +781,11 @@ impl ScanViewClockReportMode {
 }
 
 impl lattice_mode::Mode for ScanViewClockReportMode {
-    type Guard = ();
+    /// `Option`, because the harnesses that wire no registrar activate the
+    /// mode successfully and register nothing — the alternative is failing
+    /// activation over a missing display service, which would make the mode
+    /// unusable in exactly the tests that exercise everything around it.
+    type Guard = Option<ClockReportRegistration>;
 
     fn id(&self) -> lattice_mode::ModeId {
         Self::mode_id()
@@ -588,7 +802,8 @@ impl lattice_mode::Mode for ScanViewClockReportMode {
         lattice_mode::ActivationPolicy::Manual
     }
 
-    /// Registers the report's rows for the buffer it was activated on.
+    /// Registers the report's rows for the buffer it was activated on, and
+    /// returns the registration whose drop takes them down again.
     ///
     /// `&self` throughout: `VirtualRowRegistrar` is a service with interior
     /// mutability precisely so a mode can do this from `on_activate`, where
@@ -598,7 +813,10 @@ impl lattice_mode::Mode for ScanViewClockReportMode {
     /// report — the mode can be activated before the first scan lands, and a
     /// report that said "no clocked time" while the scan was still running
     /// would be answering a question nobody had asked yet.
-    fn on_activate(&self, ctx: lattice_mode::ModeContext) -> lattice_mode::LifecycleFuture<'_, ()> {
+    fn on_activate(
+        &self,
+        ctx: lattice_mode::ModeContext,
+    ) -> lattice_mode::LifecycleFuture<'_, Option<ClockReportRegistration>> {
         Box::pin(async move {
             // `ModeContext` speaks the protocol's `BufferId`; every registry
             // here speaks core's. One conversion at the boundary rather than
@@ -606,25 +824,66 @@ impl lattice_mode::Mode for ScanViewClockReportMode {
             let view = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(svc) = ctx.service::<crate::providers::scan_view::ScanViewServiceHandle>()
             else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(state) = svc.state(view) else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(registrar) = ctx.service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>()
             else {
-                return Ok(());
+                return Ok(None);
             };
+            let registrar: Arc<dyn lattice_mode::VirtualRowRegistrar> = (*registrar).clone();
+            // The mode owns its element vocabulary, and registering here is
+            // what makes that true — idempotent by name, so the second
+            // activation re-interns rather than duplicating.
+            let themed = ctx
+                .service::<ThemeRegistryHandle>()
+                .map(|outer| (*outer).clone())
+                .map(|theme| {
+                    let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
+                    let ids = register_clock_report_theme_elements(theme.as_ref(), owner);
+                    (theme, ids)
+                });
             // Today by default; `gD` (OA.18) widens it. See `today_range`.
             let days = today_range();
-            let (fg, total_fg) = (0x9a9a9a, 0xd8d8d8);
-            registrar.register(
-                view,
-                Arc::new(ClockReportProvider::new(view, state, days, fg, total_fg)),
-            );
-            Ok(())
+            let provider: Arc<dyn VirtualRowProvider> = match themed {
+                Some((theme, ids)) => Arc::new(ClockReportProvider::with_theme(
+                    view, state, days, theme, ids,
+                )),
+                None => Arc::new(ClockReportProvider::new(view, state, days)),
+            };
+            // `register` refuses to replace a live id, so clear whatever an
+            // earlier activation on this view left behind.
+            registrar.unregister(view, clock_report_provider_id(view));
+            registrar.register(view, provider);
+            Ok(Some(ClockReportRegistration { registrar, view }))
         })
     }
+}
+
+/// Register the `cr` target. Unlike `refreshable-view-mode`'s dead body, this
+/// one *is* the behaviour: the effect carries a mode name and nothing else, so
+/// there is no per-buffer state to read and no handler contribution to forget.
+///
+/// It resolves to the same [`lattice_grammar::Effect::ToggleMode`] the
+/// auto-generated `:scan-view-clockreport-mode` ex-command returns, so the
+/// chord and the command are one switch rather than two paths that can drift.
+pub fn register_clock_report_actions(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::registry::ActionSpec;
+    registry.register_action(
+        TOGGLE_ACTION,
+        "Toggle the clock report at the top of this view.",
+        ActionSpec {
+            apply: Arc::new(|_| {
+                Ok(Effect::ToggleMode {
+                    mode_name: ScanViewClockReportMode::mode_id().as_str().to_string(),
+                })
+            }),
+            args_schema: vec![],
+        },
+    );
 }
 
 /// The inclusive epoch-day range a fresh report covers: today.
@@ -680,6 +939,67 @@ mod mode_tests {
         assert!(
             !ScanViewClockReportMode::mode_id().as_str().contains("org"),
             "the host does not name a generic mechanism after one plugin"
+        );
+    }
+
+    /// `cr`'s target flips THIS mode. A toggle that named some other mode — or
+    /// that did its own registering beside the mode's — would be the two
+    /// states that disagree.
+    #[test]
+    fn the_toggle_action_flips_this_mode() {
+        let mut reg = lattice_grammar::CommandRegistry::new();
+        register_clock_report_actions(&mut reg);
+        let id = reg
+            .lookup_by_name(TOGGLE_ACTION)
+            .expect("cr's target must resolve, or the chord silently does nothing")
+            .id;
+        // Dispatched the way the chord dispatches it, not by reaching into the
+        // spec — a body reached only by a test path is a body nobody proves
+        // the chord can run.
+        let mut doc = lattice_core::Document::empty();
+        let effect = lattice_grammar::execute(
+            &reg,
+            &mut doc,
+            lattice_core::BufferId(1),
+            Default::default(),
+            lattice_grammar::CommandInvocation::of(id),
+            &lattice_grammar::CancellationToken::new(),
+        )
+        .expect("the toggle takes no arguments and cannot fail");
+        match effect {
+            lattice_grammar::effect::Effect::ToggleMode { mode_name } => {
+                assert_eq!(mode_name, "scan-view-clockreport-mode")
+            }
+            other => panic!("cr must flip this mode, got {other:?}"),
+        }
+    }
+
+    /// Turning the report OFF must take the rows down. A guard that dropped
+    /// without unregistering would leave last activation's report on screen
+    /// with the mode reporting itself inactive — exactly the disagreement the
+    /// mode-is-the-switch shape exists to prevent.
+    #[test]
+    fn dropping_the_registration_unregisters_the_provider() {
+        #[derive(Default)]
+        struct Spy {
+            removed: std::sync::Mutex<Vec<(BufferId, u64)>>,
+        }
+        impl lattice_mode::VirtualRowRegistrar for Spy {
+            fn register(&self, _b: BufferId, _p: Arc<dyn VirtualRowProvider>) -> bool {
+                true
+            }
+            fn unregister(&self, buffer: BufferId, id: u64) -> bool {
+                self.removed.lock().expect("spy lock").push((buffer, id));
+                true
+            }
+        }
+        let spy = Arc::new(Spy::default());
+        let registrar: Arc<dyn lattice_mode::VirtualRowRegistrar> = spy.clone();
+        let view = BufferId(9);
+        drop(ClockReportRegistration { registrar, view });
+        assert_eq!(
+            *spy.removed.lock().expect("spy lock"),
+            vec![(view, clock_report_provider_id(view))]
         );
     }
 }

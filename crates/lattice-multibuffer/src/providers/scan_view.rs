@@ -1262,6 +1262,27 @@ impl lattice_mode::Mode for ScanViewMode {
         Some(lattice_mode::FOLD_TOGGLE_DEFAULT_ACTION)
     }
 
+    /// OA.16: `cr` toggles the clock report.
+    ///
+    /// **The chord lives here and not on the mode it switches**, which is the
+    /// one place the "modes own their full surface" rule cannot be read
+    /// literally: a keymap layer is gated to buffers where its mode is
+    /// active, so a `cr` on `scan-view-clockreport-mode` could turn the report
+    /// off and never on. The switch belongs to the surface that offers it —
+    /// this view — and everything the report *does* (registering its rows,
+    /// its element vocabulary, tearing both down) stays with the mode. Same
+    /// split as `refreshable-view-mode`, one layer over.
+    ///
+    /// `cr` rather than emacs' bare `R`: `R` is vim's replace-mode, and while
+    /// a read-only view makes it inert today, taking a grammar letter for a
+    /// display toggle is a debt the moment any scan view becomes editable.
+    /// `c` is free here — the change operator has nothing to change — and `v`
+    /// is already the agenda's span prefix, so a two-key form is the shape
+    /// this view's chords already have.
+    fn keymap(&self) -> lattice_mode::Keymap {
+        lattice_mode::Keymap::from_entries(scan_view_keymap_entries())
+    }
+
     /// The mode that declares the target also supplies the body. Leaving the
     /// handler to the host would be the half-migration the standing rule
     /// forbids.
@@ -1322,6 +1343,21 @@ impl lattice_mode::Mode for ScanViewMode {
     }
 }
 
+/// The view's own chords. One today; `gr` and `<Tab>` arrive through the
+/// shared minors this mode declares targets for.
+fn scan_view_keymap_entries() -> &'static [lattice_mode::KeymapEntry] {
+    static ENTRIES: std::sync::OnceLock<Vec<lattice_mode::KeymapEntry>> =
+        std::sync::OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![lattice_mode::keymap_entry! {
+            mode: Normal,
+            chord: "cr",
+            doc: "Toggle the clock report",
+            cmd: Some(crate::providers::clock_report::TOGGLE_ACTION)
+        }]
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Boot integration
 // ─────────────────────────────────────────────────────────────────
@@ -1356,6 +1392,11 @@ pub fn register_scan_view_actions(registry: &mut CommandRegistry) {
             args_schema: vec![],
         },
     );
+    // OA.16: `cr`'s target rides the same call, for the reason the mode
+    // registration does — a chord whose command does not resolve is a chord
+    // that silently does nothing, and the two things had to be remembered
+    // together anyway.
+    crate::providers::clock_report::register_clock_report_actions(registry);
 }
 
 /// Register the per-view state service.
@@ -2333,6 +2374,43 @@ mod tests {
                 .iter()
                 .any(|c| c.action_name == REFRESH_ACTION),
             "…whose body this mode supplies"
+        );
+    }
+
+    /// OA.16: `cr` is bound HERE, on the surface that offers the report — not
+    /// on the mode it switches, whose layer is gated to buffers where it is
+    /// already active and so could only ever turn the report off.
+    #[test]
+    fn cr_toggles_the_clock_report_from_this_view() {
+        use lattice_mode::Mode;
+        let entries = ScanViewMode.keymap().entries;
+        let cr = entries
+            .iter()
+            .find(|e| e.chord == "cr")
+            .expect("the view offers the clock report");
+        assert_eq!(
+            cr.command,
+            Some(crate::providers::clock_report::TOGGLE_ACTION)
+        );
+        assert!(
+            entries.iter().all(|e| e.chord != "R"),
+            "not emacs' bare R — that is vim's replace-mode, and taking a \
+             grammar letter for a display toggle is a debt the moment a scan \
+             view becomes editable"
+        );
+    }
+
+    /// …and the target resolves, or the chord silently does nothing. Boot
+    /// registers both through `register_scan_view_actions`; this is the
+    /// assertion that they stay together.
+    #[test]
+    fn the_clock_report_toggle_is_registered_with_this_views_actions() {
+        let mut reg = CommandRegistry::new();
+        register_scan_view_actions(&mut reg);
+        assert!(
+            reg.lookup_by_name(crate::providers::clock_report::TOGGLE_ACTION)
+                .is_some(),
+            "cr's target must be in the registry the keymap resolves against"
         );
     }
 

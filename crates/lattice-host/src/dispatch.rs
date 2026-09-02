@@ -35784,11 +35784,22 @@ impl Editor {
         if !spec.aliases().is_empty() {
             lines.push(format!("aliases: {}", spec.aliases().join(", ")));
         }
+        // `type_label` stays the type line: it carries names a schema cannot —
+        // `foldmethod`, `signcolumn` — and flattening those to `enum` would
+        // trade information for uniformity. TC.8's addition is the Shape block
+        // below, which is where a composite finally has somewhere to be
+        // described instead of dumping a wall of TOML into `current:`.
         lines.push(format!("type:    {}", spec.type_label()));
         lines.push(format!("default: {}", spec.default_formatted()));
         lines.push(format!("current: {}", spec.get_formatted()));
         if let Some(values) = spec.enumerate_values() {
             lines.push(format!("values:  {}", values.join(", ")));
+        }
+        if let Some(shape) = spec.schema().describe() {
+            lines.push(String::new());
+            lines.push("## Shape".to_string());
+            lines.push(String::new());
+            lines.extend(shape);
         }
         lines.push(String::new());
         lines.push(spec.doc().to_string());

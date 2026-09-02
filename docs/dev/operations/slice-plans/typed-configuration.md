@@ -32,7 +32,7 @@ entangled in one bug report, which is why this note exists.
 | TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(cross-repo)** | ✅ |
 | TC.7 | The three line formats become list schemas **(plugin)** | 📝 |
 | **Phase 4 — the payoff that is in scope** | | |
-| TC.8 | `:describe-option` renders the schema | 📝 |
+| TC.8 | `:describe-option` renders the schema | ✅ |
 
 `:customize` is NOT here. This plan ends at "every option describes its shape as
 data, and every path in validates against it" — the buffer, its major mode and
@@ -367,12 +367,44 @@ That test already exists; this slice must not need it rewritten, only re-pointed
 
 ## Phase 4
 
-### TC.8 — `:describe-option` renders the schema 📝
+### TC.8 — `:describe-option` renders the schema ✅
 
-Today it prints a wall of TOML for a composite. After: the declared shape, its
-fields and their docs, and the current value rendered against it. The smallest
-slice that turns the schema from an internal invariant into something a user can
-see — and the reason it is in scope while `:customize` is not.
+It printed a wall of TOML for a composite, and the only thing a reader learnt
+about the SHAPE was whatever the doc string said in prose. Now a `## Shape`
+block carries the declared fields, their nesting, their docs, and which are
+optional.
+
+**Landed out of plan order, before TC.7**, because the two are independent —
+TC.8 renders whatever schema an option has, TC.7 migrates three more org
+options — and doing it first means `:describe-option` immediately shows the
+schemas TC.5 and TC.6 had just landed.
+
+`ConfigSchema::describe` lives in `lattice-config`, not in the help builder: it
+is a property of the schema, and a walk over `ConfigSchema`'s variants in a
+crate that does not own them is the arrangement that goes stale the first time
+a variant is added.
+
+**A scalar renders nothing**, and that is the decision worth recording. Almost
+every option in the editor is a scalar, `:describe-option` already prints
+`type: integer` a line above, and a block repeating it is noise on the common
+case — which is what stops people reading the uncommon one.
+
+**`type_label()` stays the type line.** Replacing it with the schema's label was
+the first cut and it was a regression: `foldmethod` and `signcolumn` carry names
+a schema cannot, and flattening those to `enum` trades information for
+uniformity. The schema's contribution is the block underneath, which is where a
+composite finally has somewhere to be described.
+
+**Tests.** Six, against a `capture-templates`-shaped fixture, each pinned to a
+question a config file actually raises. "What may I write" is asserted per field
+name, so a rendering change that drops one fails saying which. "Is it required"
+is the question a prose doc string was worst at — previously answerable only by
+reading the plugin's source. Nesting is asserted by comparing INDENTS rather
+than by matching a rendered string, because a renderer that stopped at depth one
+would look correct in every shape that has no depth two — which is most of them,
+and none of the ones this work exists for. And the enum's forms must appear
+beside the field that accepts them: the option-level `values:` line cannot help
+when the forms belong to a field several levels down.
 
 ---
 

@@ -773,3 +773,135 @@ mod config_value_option_type_tests {
         }
     }
 }
+
+// ── TC.8: rendering a schema for a reader ─────────────────────────────────
+
+impl ConfigSchema {
+    /// The shape, written out for `:describe-option`.
+    ///
+    /// Lives here rather than in the help builder because it is a property of
+    /// the schema, and the alternative is a walk over `ConfigSchema`'s variants
+    /// in a crate that does not own them — which is the arrangement that goes
+    /// stale the first time a variant is added.
+    ///
+    /// Returns `None` for a shape that says nothing a reader does not already
+    /// know from the type label: a bare scalar. `:describe-option` already
+    /// prints `type: integer` and a block underneath repeating it is noise.
+    ///
+    /// An `enum` renders even though `values:` already lists its forms, because
+    /// the two answer different questions once nesting exists — `values:` is
+    /// flat, and a list-of-enum has forms that belong to the ELEMENT.
+    pub fn describe(&self) -> Option<Vec<String>> {
+        if matches!(self, ConfigSchema::Scalar(_)) {
+            return None;
+        }
+        let mut out = Vec::new();
+        write_schema(&mut out, self, 0, None);
+        Some(out)
+    }
+}
+
+/// One line per node, indented by depth. `field` names the record field this
+/// node belongs to, when it has one.
+fn write_schema(
+    out: &mut Vec<String>,
+    schema: &ConfigSchema,
+    depth: usize,
+    field: Option<&SchemaField>,
+) {
+    let pad = "  ".repeat(depth);
+    // The field's own metadata leads, because a reader scanning for "what do I
+    // write here" is looking for names, not types.
+    let head = match field {
+        Some(f) => {
+            let req = if f.required { "" } else { "?" };
+            format!("{pad}{}{req}: {}", f.name, schema.label())
+        }
+        None => format!("{pad}{}", schema.label()),
+    };
+    match schema {
+        ConfigSchema::Scalar(_) | ConfigSchema::Record(_) | ConfigSchema::List(_) => out.push(head),
+        // The forms inline: an enum's whole advantage is that the answer is
+        // finite, and a reader who has to go looking for the values has lost it.
+        ConfigSchema::Enum(forms) => out.push(format!("{head} — {}", forms.join(" | "))),
+    }
+    // …then the field's doc, indented under it, so the shape stays scannable
+    // when the docs are long.
+    if let Some(f) = field
+        && !f.doc.is_empty()
+    {
+        out.push(format!("{pad}    {}", f.doc));
+    }
+    match schema {
+        ConfigSchema::List(inner) => write_schema(out, inner, depth + 1, None),
+        ConfigSchema::Record(fields) => {
+            for f in fields {
+                write_schema(out, &f.schema, depth + 1, Some(f));
+            }
+        }
+        ConfigSchema::Scalar(_) | ConfigSchema::Enum(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod describe_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    fn templates() -> ConfigSchema {
+        ConfigSchema::list(ConfigSchema::record([
+            SchemaField::new("key", ConfigSchema::string(), "the key to press"),
+            SchemaField::new(
+                "when",
+                ConfigSchema::Enum(vec!["overdue".into(), "days".into()]),
+                "which rows",
+            ),
+            SchemaField::new(
+                "target",
+                ConfigSchema::record([SchemaField::new("file", ConfigSchema::string(), "")]),
+                "where it goes",
+            ),
+            SchemaField::new("body", ConfigSchema::string(), "").optional(),
+        ]))
+    }
+
+    #[test]
+    fn a_scalar_says_nothing_the_type_label_has_not_already_said() {
+        // `:describe-option` prints `type: integer` a line above. A block
+        // repeating it is noise, and noise on the common case is what stops
+        // people reading the uncommon one.
+        assert_eq!(ConfigSchema::int().describe(), None);
+        assert_eq!(ConfigSchema::string().describe(), None);
+    }
+
+    #[test]
+    fn a_nested_shape_renders_field_by_field_with_its_docs() {
+        let lines = templates().describe().expect("a list is worth describing");
+        let text = lines.join("\n");
+        assert!(text.starts_with("list<record>"), "{text}");
+        // Field names lead, because a reader scanning for "what do I write
+        // here" is looking for names rather than types.
+        assert!(text.contains("  record"), "{text}");
+        assert!(text.contains("    key: string"), "{text}");
+        assert!(text.contains("      the key to press"), "{text}");
+        // Optionality is visible at a glance, which is the single most common
+        // question a config file raises.
+        assert!(text.contains("    body?: string"), "{text}");
+        assert!(
+            !text.contains("    key?:"),
+            "a required field has no `?`: {text}"
+        );
+        // The second level survives — a renderer that stopped at depth one
+        // would look right in every shape that has no depth two.
+        assert!(text.contains("      file: string"), "{text}");
+    }
+
+    #[test]
+    fn an_enum_shows_its_forms_where_it_appears() {
+        let text = templates().describe().unwrap().join("\n");
+        assert!(
+            text.contains("when: enum — overdue | days"),
+            "the forms belong beside the field that accepts them: {text}"
+        );
+    }
+}

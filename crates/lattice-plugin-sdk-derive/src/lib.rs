@@ -317,7 +317,12 @@ fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> Toke
         let Some(fident) = f.ident.as_ref() else {
             continue;
         };
-        let wire = to_kebab_case(&fident.to_string());
+        // `Ident::to_string()` on a RAW identifier yields `r#match`, and a
+        // field named after a keyword is not exotic here — org's agenda
+        // sections have a `match` field, because that is org's own name for
+        // it. Emitting `r#match` as the wire name would have produced a schema
+        // whose field no config file could ever spell.
+        let wire = to_kebab_case(fident.to_string().trim_start_matches("r#"));
         let doc = doc_string(&f.attrs);
         let ty = &f.ty;
         let optional = is_option_type(ty);
@@ -422,7 +427,7 @@ fn config_shape_for_enum(ident: &syn::Ident, e: &syn::DataEnum) -> TokenStream {
             .into();
         }
         let vident = &v.ident;
-        let wire = to_kebab_case(&vident.to_string());
+        let wire = to_kebab_case(vident.to_string().trim_start_matches("r#"));
         forms.push(quote! { #wire.to_string() });
         to_arms.push(quote! {
             Self::#vident => ::lattice_plugin_sdk::shape::Value::Str(#wire.to_string())

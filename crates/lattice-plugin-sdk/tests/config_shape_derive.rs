@@ -47,6 +47,9 @@ struct Template {
     disposition: Disposition,
     /// Two words, to pin the wire spelling.
     max_depth: i64,
+    /// A field named after a keyword — org's agenda sections have one, because
+    /// `match` is org's own name for it.
+    r#match: Option<String>,
 }
 
 fn one() -> Template {
@@ -59,6 +62,7 @@ fn one() -> Template {
         body: Some("* TODO %?\n".into()),
         disposition: Disposition::Append,
         max_depth: 3,
+        r#match: Some("-CANCELLED+WAITING".into()),
     }
 }
 
@@ -72,19 +76,25 @@ fn a_struct_describes_itself_as_a_record_of_its_fields() {
     // every other key in a TOML file, not like Rust identifiers.
     assert_eq!(
         names,
-        vec!["key", "target", "body", "disposition", "max-depth"]
+        vec!["key", "target", "body", "disposition", "max-depth", "match"],
+        "a raw identifier crosses as the name it spells — `r#match` would be a \
+         field no config file could ever write"
     );
 
     // Optionality comes from the TYPE. That is why there is no
     // `#[shape(optional)]` — a second place to say it is a second place to
     // disagree with the first.
     let required: Vec<bool> = fields.iter().map(|f| f.required).collect();
-    assert_eq!(required, vec![true, true, false, true, true]);
+    assert_eq!(required, vec![true, true, false, true, true, false]);
 
     // Per-field docs, from the `///` comments — what `:describe-option` and
     // `:customize` render beside each field.
     assert_eq!(fields[0].doc, "The key to press.");
     assert_eq!(fields[4].doc, "Two words, to pin the wire spelling.");
+    assert_eq!(
+        fields[5].name, "match",
+        "and it round-trips under that name"
+    );
 
     // Nesting: `target` is a record in its own right, with its own optional.
     let Schema::Record(target) = &fields[1].schema else {

@@ -115,6 +115,29 @@ impl<T> Pending<T> {
         }
     }
 
+    /// OA.23b: wrap a channel that a task ALREADY RUNNING will
+    /// complete.
+    ///
+    /// The peer of [`Self::spawn`] for producers that have no task
+    /// to spawn — the work is already queued somewhere else and all
+    /// they hold is the reply end. `MultibufferDocumentHandle::
+    /// apply_to_source` is the case: the edit rides the view's
+    /// source-forwarder FIFO (spawned once, on the shared runtime,
+    /// at view construction) and the forwarder answers this channel.
+    ///
+    /// Not a stylistic preference over `spawn`. `spawn` calls
+    /// `tokio::spawn` and so needs a runtime in scope at the point
+    /// of construction; this path is reached from the editor actor —
+    /// a `current_thread` runtime about to `block_on` the result —
+    /// where spawning the awaiter onto the caller's own runtime is
+    /// the deadlock `map_ok` was added to avoid.
+    ///
+    /// A dropped sender resolves to `ActorGone`, as with any other
+    /// `Pending`.
+    pub fn from_channel(rx: oneshot::Receiver<Result<T, RuntimeError>>) -> Self {
+        Self::new(InvocationId::next(), rx)
+    }
+
     /// M.3 (2026-06-01): build a `Pending<T>` that resolves when
     /// the spawned future completes. Lets callers compose
     /// multiple `Pending`s into one without blocking the runtime

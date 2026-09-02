@@ -19435,12 +19435,17 @@ impl Editor {
             return self.apply_edit_blocking(edit);
         }
         let Some(handle) = self.buffers.document_handle(target) else {
-            // The descriptor named a target that has since closed
-            // (race with auto-drop). Surface as Cancelled; the caller
-            // logs + leaves the cursor put.
-            return Err(lattice_runtime::RuntimeError::Core(
-                lattice_core::CoreError::Cancelled,
-            ));
+            // OA.23b: not a buffer the store holds — try the multibuffer
+            // SOURCES before giving up.
+            //
+            // A view's sources are documents the view owns and the store has
+            // never seen (they are not buffers the user opened). An agenda
+            // row's planning line lives in one, at a line no excerpt
+            // composes, so it can only be addressed as a source. Routed
+            // through the view rather than at the document so it queues
+            // behind composed edits still in flight — see
+            // `MultibufferDocumentHandle::apply_to_source`.
+            return self.apply_edit_to_multibuffer_source(target, edit);
         };
         let applied = block_on(handle.apply_edit(edit))?;
         let snap = handle.snapshot();
@@ -19460,6 +19465,53 @@ impl Editor {
             version: snap.version,
             edits: vec![edit_event],
         });
+        Ok(applied)
+    }
+
+    /// OA.23b: `apply_targeted_edit`'s last resort — `target` as a multibuffer
+    /// SOURCE rather than a buffer in the store.
+    ///
+    /// The agenda's `s` / `d` is what needs it. A row is one line, the
+    /// headline; the `SCHEDULED:` line goes below it, outside every excerpt,
+    /// so there is no composed coordinate to write at and no store entry to
+    /// address. The view owns that document, and this is the door to it.
+    ///
+    /// `Cancelled` when no registered view has `target` — the same answer a
+    /// closed peer buffer gets, and for the same reason: an id resolved a
+    /// moment ago can stop being one.
+    fn apply_edit_to_multibuffer_source(
+        &mut self,
+        target: lattice_core::BufferId,
+        edit: lattice_protocol::edit::Edit,
+    ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
+        let cancelled = || lattice_runtime::RuntimeError::Core(lattice_core::CoreError::Cancelled);
+        let views = self
+            .services
+            .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+            .ok_or_else(cancelled)?;
+        let view = lattice_multibuffer::registry::view_owning_source(&views, target)
+            .ok_or_else(cancelled)?;
+        let pending = view.apply_to_source(target, edit).ok_or_else(cancelled)?;
+        let applied = block_on(pending)?;
+
+        // The source is now dirty, and `:w` on the view will write it. Tell
+        // the world so the source's own LSP / syntax / diff recompute, exactly
+        // as the peer-buffer route above does — a document that changed
+        // without an event is one every subscriber has stale.
+        let snap = view.source_snapshot(target);
+        if let Some(snap) = snap {
+            self.event_bus.publish(Event::DocumentChanged {
+                id: snap.id,
+                path: snap.path().map(|p| p.to_path_buf()),
+                version: snap.version,
+                edits: vec![lattice_protocol::event::AppliedEdit {
+                    original_range: applied.original_range,
+                    inserted_range: applied.inserted_range,
+                    replaced_text: applied.replaced_text.clone(),
+                    inserted_text: applied.inserted_text.clone(),
+                }],
+            });
+        }
         Ok(applied)
     }
 

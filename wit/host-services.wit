@@ -24,6 +24,20 @@ interface host-services {
     record source-location {
         path: string,
         line: u32,
+        /// OA.23b: the source DOCUMENT's buffer id — what to act on.
+        ///
+        /// Not interchangeable with `path`, and the difference costs data if
+        /// it is treated as though it were. A multibuffer's sources are
+        /// documents the VIEW owns; no buffer store holds them, and the
+        /// editor may separately have the user's own buffer open on the same
+        /// file. A guest that resolved the path and then wrote to the file by
+        /// name would be editing the other document, and the view's `:w`
+        /// could later overwrite one with the other.
+        ///
+        /// So: `path` to SHOW the user which file a row came from, `buffer`
+        /// to EDIT it — `effect.apply-edit` takes exactly this id, and
+        /// `source-line` reads by it.
+        buffer: u32,
     }
 
     /// Recursively enumerate files under `root`, returning absolute UTF-8 paths.
@@ -57,6 +71,22 @@ interface host-services {
     /// "which file does this COMPOSED line come from", and a guest that wants
     /// the current file already has `document.path()`.
     excerpt-source: func(buffer: u64, line: u32) -> option<source-location>;
+
+    /// OA.23b: one line of a source document, without its trailing newline.
+    ///
+    /// The read half of acting on an excerpt's source, and it takes a
+    /// `source-location.buffer` — not an arbitrary buffer id, which a guest
+    /// has no way to come by. `none` for anything no view owns, and for a
+    /// line past the source's last.
+    ///
+    /// **The alternative is wrong twice.** `read-file` reads DISK, so it
+    /// misses edits the view has made and not yet saved — press the agenda's
+    /// `s` twice and the second read sees no `SCHEDULED:` line and stacks a
+    /// duplicate. It also reads a file the guest may not be editing at all,
+    /// per `source-location.buffer` above. The `document` resource is no help
+    /// either: it is the guest's OWN buffer, and the line in question is one
+    /// the view does not compose.
+    source-line: func(buffer: u32, line: u32) -> option<string>;
 
     /// Read a UTF-8 file, capability-gated the same way `walk` is.
     ///

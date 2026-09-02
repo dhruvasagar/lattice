@@ -53,6 +53,14 @@ pub trait MultibufferRegistry: Send + Sync + std::fmt::Debug {
 
     /// Count of currently-registered views. Test-friendly probe.
     fn len(&self) -> usize;
+
+    /// OA.23b: every registered view id.
+    ///
+    /// What lets a bare SOURCE id be resolved back to the view that owns it.
+    /// A source is not a buffer the user opened — the store has never heard of
+    /// it (see [`MultibufferExcerptSource`]) — so the only way to find its
+    /// document is to ask the views. View counts are small; the walk is fine.
+    fn view_ids(&self) -> Vec<BufferId>;
 }
 
 /// Cheap-clone Arc'd alias matching the existing service-handle
@@ -126,6 +134,30 @@ impl MultibufferRegistry for InMemoryMultibufferRegistry {
             .expect("MultibufferRegistry RwLock poisoned")
             .len()
     }
+
+    fn view_ids(&self) -> Vec<BufferId> {
+        self.inner
+            .read()
+            .expect("MultibufferRegistry RwLock poisoned")
+            .keys()
+            .copied()
+            .collect()
+    }
+}
+
+/// OA.23b: the view that owns `source`, across every registered view.
+///
+/// `None` when no view has it — an ordinary answer, because the caller is
+/// acting on an id a guest handed back and a view can close between the two.
+pub fn view_owning_source(
+    views: &MultibufferRegistryHandle,
+    source: BufferId,
+) -> Option<Arc<MultibufferDocumentHandle>> {
+    views
+        .view_ids()
+        .into_iter()
+        .filter_map(|view| views.handle(view))
+        .find(|handle| handle.has_source(source))
 }
 
 #[cfg(test)]
@@ -228,7 +260,7 @@ impl std::fmt::Debug for MultibufferExcerptSource {
 }
 
 impl lattice_core::ExcerptSourceResolver for MultibufferExcerptSource {
-    fn excerpt_source(&self, buffer: BufferId, line: u32) -> Option<(std::path::PathBuf, u32)> {
+    fn excerpt_source(&self, buffer: BufferId, line: u32) -> Option<lattice_core::ExcerptSource> {
         // Not a multibuffer: `none`, not the buffer's own path. The question is
         // "which file does this COMPOSED line come from", and a caller wanting
         // the current file already has one.
@@ -244,7 +276,15 @@ impl lattice_core::ExcerptSourceResolver for MultibufferExcerptSource {
         // this seam's original shape and it answered `none` for every real
         // agenda row: the one case it exists for.
         let path = view.source_path(source)?;
-        Some((path, position.line))
+        Some(lattice_core::ExcerptSource {
+            source,
+            path,
+            line: position.line,
+        })
+    }
+
+    fn source_line(&self, source: BufferId, line: u32) -> Option<String> {
+        view_owning_source(&self.views, source)?.source_line(source, line)
     }
 }
 
@@ -290,6 +330,83 @@ mod excerpt_source_tests {
     /// The source document carries its own path, so the view alone can answer.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_scan_views_source_resolves_by_the_documents_own_path() {
+        let (views, view, source) = scan_shaped_view().await;
+        let r = MultibufferExcerptSource::new(views);
+        assert_eq!(
+            r.excerpt_source(view, 0),
+            Some(lattice_core::ExcerptSource {
+                source,
+                path: PathBuf::from("/org/notes.org"),
+                line: 2,
+            }),
+        );
+    }
+
+    /// OA.23b: the id handed back is the one to ACT on.
+    ///
+    /// `path` and `source` are not two spellings of the same thing. The path
+    /// names a file the editor may separately have open as the user's own
+    /// buffer; the source names the document the VIEW owns and `:w` saves.
+    /// A caller that took the path and wrote to the file by name would be
+    /// editing the other one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_answer_names_the_source_document_not_just_its_file() {
+        let (views, view, source) = scan_shaped_view().await;
+        let r = MultibufferExcerptSource::new(Arc::clone(&views));
+        let found = r.excerpt_source(view, 0).expect("a row resolves");
+        assert_eq!(found.source, source);
+        assert!(
+            view_owning_source(&views, found.source).is_some(),
+            "the id must resolve back to the view that owns it, or nothing can act on it"
+        );
+    }
+
+    /// The read half. The line the agenda's `s` cares about is the one BELOW
+    /// the headline — line 1 here — which no excerpt composes, so neither the
+    /// view's text nor the guest's own document can show it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_line_outside_every_excerpt_is_readable() {
+        let (views, _view, source) = scan_shaped_view().await;
+        let r = MultibufferExcerptSource::new(views);
+        assert_eq!(
+            r.source_line(source, 1).as_deref(),
+            Some("  SCHEDULED: <2026-09-03>"),
+            "the planning line is outside the excerpt and must still be readable"
+        );
+        assert_eq!(r.source_line(source, 0).as_deref(), Some("* TODO write it"));
+        // Past the last line, and an id no view owns: ordinary `none`s.
+        assert_eq!(r.source_line(source, 99), None);
+        assert_eq!(r.source_line(BufferId::next(), 0), None);
+    }
+
+    /// A view that does not own the id must not answer for it. With one view
+    /// registered the walk cannot distinguish "found it" from "guessed"; two
+    /// can.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_resolves_to_the_view_that_owns_it() {
+        let (views_a, _va, source_a) = scan_shaped_view().await;
+        let (views_b, view_b, source_b) = scan_shaped_view().await;
+        // One registry holding both views.
+        let both = views_a;
+        both.insert(
+            view_b,
+            views_b.handle(view_b).expect("second view registered"),
+        );
+
+        let a = view_owning_source(&both, source_a).expect("view a owns source a");
+        let b = view_owning_source(&both, source_b).expect("view b owns source b");
+        assert!(a.has_source(source_a) && !a.has_source(source_b));
+        assert!(b.has_source(source_b) && !b.has_source(source_a));
+        assert!(
+            view_owning_source(&both, BufferId::next()).is_none(),
+            "an id no view owns must answer none, not the first view in the walk"
+        );
+    }
+
+    /// A view shaped the way `scan_view::append_sorted` shapes one: the source
+    /// lives in the view's own map and nowhere else. Returns the registry, the
+    /// view id and the source id.
+    async fn scan_shaped_view() -> (MultibufferRegistryHandle, BufferId, BufferId) {
         let source = BufferId::next();
         let doc = lattice_core::DocumentBuilder::default()
             .with_text("* TODO write it\n  SCHEDULED: <2026-09-03>\n* TODO and it\n")
@@ -304,10 +421,11 @@ mod excerpt_source_tests {
             Arc::clone(&registry),
         ));
 
-        // Excerpt the third line, so a wrong answer cannot pass by returning 0.
+        // Excerpt the THIRD line, so a wrong line answer cannot pass by
+        // returning 0 and a wrong read cannot pass by reading the excerpt.
         let mb = Arc::new(
             crate::MultibufferDocumentHandle::new(
-                HashMap::from([(source, Arc::clone(&handle))]),
+                HashMap::from([(source, handle)]),
                 vec![crate::Excerpt::new(source, 2, 2)],
                 registry,
             )
@@ -316,11 +434,6 @@ mod excerpt_source_tests {
         let view = BufferId::next();
         let views = InMemoryMultibufferRegistry::handle();
         views.insert(view, mb);
-
-        let r = MultibufferExcerptSource::new(views);
-        assert_eq!(
-            r.excerpt_source(view, 0),
-            Some((PathBuf::from("/org/notes.org"), 2)),
-        );
+        (views, view, source)
     }
 }

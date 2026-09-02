@@ -734,18 +734,43 @@ mod tests {
 /// `lattice-multibuffer`, which sits above it. Whoever owns multibuffers
 /// implements this and wires it in at boot; a host with none wired answers
 /// `None`, which is the honest degradation rather than a panic.
+/// Where a composed line came from: the source document, its file, and the
+/// 0-based line within it.
+///
+/// `source` is the identity to ACT on and `path` the identity to show. They
+/// are not interchangeable: a multibuffer's sources are documents the view
+/// owns and no buffer store holds, so a caller that resolved only the path
+/// and then addressed the file by name would be editing a *different*
+/// document — the user's own buffer for that file, if any — and the view's
+/// `:w` could later overwrite one with the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcerptSource {
+    /// The source document's id. Addressable by `Effect::ApplyEdit`.
+    pub source: crate::buffers::BufferId,
+    pub path: std::path::PathBuf,
+    pub line: u32,
+}
+
 pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
-    /// The file and 0-based line that composed `line` of `buffer` came from.
+    /// Where composed `line` of `buffer` came from.
     ///
     /// `None` when `buffer` is not composed, when `line` is not source text (a
     /// header or separator row belongs to the view, not to any file), or when
     /// the source has no path. All three are ordinary answers: a caller asks
     /// about the cursor's line, and a cursor can be anywhere.
-    fn excerpt_source(
-        &self,
-        buffer: crate::buffers::BufferId,
-        line: u32,
-    ) -> Option<(std::path::PathBuf, u32)>;
+    fn excerpt_source(&self, buffer: crate::buffers::BufferId, line: u32) -> Option<ExcerptSource>;
+
+    /// OA.23b: one line of a source document, without its trailing newline.
+    ///
+    /// The read that pairs with acting on [`ExcerptSource::source`]. A caller
+    /// deciding what to write at the line below a headline has to see what is
+    /// there, and that line is outside every excerpt — so neither the composed
+    /// text nor a file read answers it. A file read is wrong twice over: it
+    /// misses edits the view has made and not yet saved.
+    ///
+    /// `source` is an [`ExcerptSource::source`], not an arbitrary buffer:
+    /// `None` for anything no view owns.
+    fn source_line(&self, source: crate::buffers::BufferId, line: u32) -> Option<String>;
 }
 
 /// Shared handle to an [`ExcerptSourceResolver`].

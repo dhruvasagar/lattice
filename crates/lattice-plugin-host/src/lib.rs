@@ -1144,11 +1144,21 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         line: u32,
     ) -> Option<crate::lattice::plugin_host::host_services::SourceLocation> {
         let resolver = self.excerpt_source.as_ref()?;
-        let (path, line) = resolver.excerpt_source(lattice_core::BufferId(buffer as u32), line)?;
+        let found = resolver.excerpt_source(lattice_core::BufferId(buffer as u32), line)?;
         Some(crate::lattice::plugin_host::host_services::SourceLocation {
-            path: path.to_str()?.to_string(),
-            line,
+            path: found.path.to_str()?.to_string(),
+            line: found.line,
+            buffer: found.source.0,
         })
+    }
+
+    /// OA.23b: forwards to the wired resolver. `none` with no resolver, and
+    /// `none` for a `buffer` no view owns — a guest can only have got the id
+    /// from `excerpt-source`, and a view can close between the two calls.
+    fn source_line(&mut self, buffer: u32, line: u32) -> Option<String> {
+        self.excerpt_source
+            .as_ref()?
+            .source_line(lattice_core::BufferId(buffer), line)
     }
 
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {

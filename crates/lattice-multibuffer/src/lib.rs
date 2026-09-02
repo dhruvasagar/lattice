@@ -371,6 +371,30 @@ enum SourceForwardMsg {
         source_handle: Arc<dyn Document>,
         source_edit: Edit,
     },
+    /// OA.23b: an edit written straight at a source, in SOURCE
+    /// coordinates, for a line the view does not contain.
+    ///
+    /// The agenda's `s` / `d`: a row is one line — the headline — and
+    /// the planning line goes below it, outside every excerpt. There is
+    /// no composed coordinate for it, so it cannot arrive as an
+    /// ordinary [`Self::Edit`].
+    ///
+    /// **Through the forwarder rather than straight at the handle**, so
+    /// it queues behind whatever composed edits are still in flight. A
+    /// direct `source.apply_edit(..)` could overtake them, and then
+    /// their source coordinates — computed before this insert shifted
+    /// the lines below it — would land in the wrong place. FIFO is the
+    /// whole reason this channel exists; a second door into the same
+    /// document would defeat it.
+    ///
+    /// `reply` carries the result back because this one has a caller
+    /// waiting on it: the host's `Effect::ApplyEdit` route reports
+    /// failure, unlike composed propagation which is best-effort.
+    DirectEdit {
+        source_handle: Arc<dyn Document>,
+        source_edit: Edit,
+        reply: tokio::sync::oneshot::Sender<Result<AppliedEdit, RuntimeError>>,
+    },
     /// Save-flush barrier (2026-06-10). Sent by
     /// [`MultibufferDocumentHandle::save`] through the SAME FIFO
     /// channel as edits, so by the time the forwarder pops it every
@@ -632,6 +656,15 @@ impl MultibufferDocumentHandle {
                     } => {
                         let _ = source_handle.apply_edit(source_edit).await;
                     }
+                    // Same await, but the result goes back: this one has
+                    // a caller that reports failure.
+                    SourceForwardMsg::DirectEdit {
+                        source_handle,
+                        source_edit,
+                        reply,
+                    } => {
+                        let _ = reply.send(source_handle.apply_edit(source_edit).await);
+                    }
                     // FIFO: every prior Edit was applied + awaited
                     // above, so the sources are now current. Signal
                     // `save()` to proceed (best-effort — a dropped
@@ -721,6 +754,14 @@ impl MultibufferDocumentHandle {
         self.lock_state().sources.keys().copied().collect()
     }
 
+    /// OA.23b: whether `id` is one of this view's sources.
+    ///
+    /// Membership, not path-ness: a synthetic source has no path, and asking
+    /// `source_path(..).is_some()` would say a view does not own one it does.
+    pub fn has_source(&self, id: BufferId) -> bool {
+        self.lock_state().sources.contains_key(&id)
+    }
+
     /// Generic multibuffer jump-to-source: resolve a source buffer
     /// id to its on-disk path by reading the source document's path
     /// directly. Unlike the per-provider `source_path` mapping
@@ -749,6 +790,58 @@ impl MultibufferDocumentHandle {
     /// forwarder task's progress rather than the composed rope's.
     pub fn source_text(&self, source_buffer_id: BufferId) -> Option<String> {
         Some(self.lock_state().sources.get(&source_buffer_id)?.text())
+    }
+
+    /// OA.23b: one line of a source, by the key [`Self::source_path`] takes,
+    /// without its trailing newline. `None` for an unknown source or a line
+    /// past its last.
+    ///
+    /// The read half of acting on a row's source. A caller that has located a
+    /// headline through `translate_composed_to_source` needs to see the line
+    /// BELOW it to know whether there is already a planning line there, and
+    /// that line is outside every excerpt — the composed text cannot show it.
+    ///
+    /// Reads the source's own snapshot, so it sees edits the forwarder has
+    /// already applied. Reading the FILE instead would not: a second `s` in a
+    /// row would see the first one's absence and stack a duplicate line.
+    pub fn source_line(&self, source_buffer_id: BufferId, line: u32) -> Option<String> {
+        let source = self.lock_state().sources.get(&source_buffer_id)?.clone();
+        source.snapshot().buffer.line(line)
+    }
+
+    /// OA.23b: a source's current snapshot, by the key [`Self::source_path`]
+    /// takes. What a caller needs to publish a `DocumentChanged` for an edit
+    /// it just made through [`Self::apply_to_source`].
+    pub fn source_snapshot(&self, source_buffer_id: BufferId) -> Option<Arc<DocumentSnapshot>> {
+        Some(self.lock_state().sources.get(&source_buffer_id)?.snapshot())
+    }
+
+    /// OA.23b: apply an edit in SOURCE coordinates to one of this view's
+    /// sources — a line the view does not compose.
+    ///
+    /// See [`SourceForwardMsg::DirectEdit`] for why it goes through the
+    /// forwarder rather than at the handle. `None` when `source_buffer_id` is
+    /// not one of this view's sources; the returned `Pending` resolves to
+    /// whatever the source actor made of the edit.
+    pub fn apply_to_source(
+        &self,
+        source_buffer_id: BufferId,
+        edit: Edit,
+    ) -> Option<Pending<AppliedEdit>> {
+        let source_handle = self.lock_state().sources.get(&source_buffer_id)?.clone();
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.inner
+            .source_forward_tx
+            .send(SourceForwardMsg::DirectEdit {
+                source_handle,
+                source_edit: edit,
+                reply,
+            })
+            .ok()?;
+        // Wrapped rather than spawned: the work is already queued on the
+        // forwarder, and the caller is the editor actor about to block on
+        // this. See `Pending::from_channel`.
+        Some(Pending::from_channel(rx))
     }
 
     /// M.10.2 (2026-06-03): translate a composed-coordinate
@@ -3413,6 +3506,91 @@ mod tests {
         panic!(
             "source did not converge to multibuffer edit; got: {:?}",
             source_handle.text()
+        );
+    }
+
+    // ── OA.23b: writing at a line the view does not compose ───
+
+    /// The agenda's `s`: the row is the headline, and `SCHEDULED:` goes on a
+    /// line BELOW it that no excerpt contains. There is no composed coordinate
+    /// for it, so `apply_edit` cannot reach it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_to_source_writes_outside_every_excerpt() {
+        let (sources, ids) = make_sources(&["* TODO write it\n* TODO and it\n"]);
+        let source_handle = sources.get(&ids[0]).expect("source present").clone();
+        // Only the FIRST line is excerpted — an agenda row.
+        let excerpts = vec![Excerpt::new(ids[0], 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        assert_eq!(mb.snapshot().buffer.as_string(), "* TODO write it\n");
+
+        mb.apply_to_source(
+            ids[0],
+            Edit::insert(Position::new(1, 0), "  SCHEDULED: <2026-09-03 Thu>\n"),
+        )
+        .expect("the view owns this source")
+        .await
+        .expect("the edit lands");
+
+        assert_eq!(
+            source_handle.text(),
+            "* TODO write it\n  SCHEDULED: <2026-09-03 Thu>\n* TODO and it\n"
+        );
+        // The view shows the headline and only the headline: the planning line
+        // is outside it, which is the whole reason it needed this door.
+        assert_eq!(mb.snapshot().buffer.as_string(), "* TODO write it\n");
+        assert!(source_handle.dirty(), "`:w` on the view must write this");
+    }
+
+    /// A source id no view owns gets `None` rather than a panic or a write
+    /// somewhere else — the caller is acting on an id it was handed, and a
+    /// view can close between the two.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_to_source_declines_a_source_it_does_not_own() {
+        let (sources, ids) = make_sources(&["a\n"]);
+        let mb = MultibufferDocumentHandle::new(
+            sources,
+            vec![Excerpt::new(ids[0], 0, 0)],
+            empty_registry(),
+        )
+        .unwrap();
+        assert!(
+            mb.apply_to_source(BufferId::next(), Edit::insert(Position::new(0, 0), "x"))
+                .is_none()
+        );
+    }
+
+    /// The ordering the `DirectEdit` variant exists for.
+    ///
+    /// A composed edit reaches its source ASYNC, through the forwarder. A
+    /// direct source write that went straight at the document could overtake
+    /// one still in flight — and that queued edit's source coordinates were
+    /// computed BEFORE this insert shifted the lines below it, so it would
+    /// then land in the wrong place. Riding the same FIFO is what prevents it.
+    ///
+    /// Written as: type into the composed line, then immediately insert a line
+    /// ABOVE everything through the direct door. If the direct write overtook,
+    /// the composed edit's `X-` would land on the wrong row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_direct_write_queues_behind_composed_edits_in_flight() {
+        let (sources, ids) = make_sources(&["alpha\nbeta\ngamma\n"]);
+        let source_handle = sources.get(&ids[0]).expect("source present").clone();
+        let excerpts = vec![Excerpt::new(ids[0], 1, 2)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+
+        // Composed line 0 is source line 1 (`beta`). Queued, not yet applied.
+        mb.apply_edit(Edit::insert(Position::new(0, 0), "X-"))
+            .await
+            .expect("insert lands locally");
+        // Straight after, a write at the top of the FILE.
+        mb.apply_to_source(ids[0], Edit::insert(Position::new(0, 0), "header\n"))
+            .expect("the view owns this source")
+            .await
+            .expect("the edit lands");
+
+        assert_eq!(
+            source_handle.text(),
+            "header\nalpha\nX-beta\ngamma\n",
+            "the composed edit must have landed on `beta` before the header shifted it"
         );
     }
 

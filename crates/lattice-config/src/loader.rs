@@ -44,6 +44,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::registry::{ConfigError, ConfigRegistry};
+// TC.2: a composite-schema option takes its TOML value whole, as a tree.
+use crate::schema::{ConfigValue, SchemaError};
 
 /// Outcome of loading one or more TOML files. The caller drains
 /// `messages` into its echo / message buffer and walks `structural`
@@ -294,6 +296,15 @@ fn walk_table(
         let dotted = path.join(".");
         match value {
             toml::Value::Table(sub) => {
+                // TC.2: a table AT an option's name is that option's VALUE,
+                // not a namespace to walk into. Checked before both branches
+                // below because a composite option is a leaf — descending into
+                // it would apply each of its fields as if it were an option of
+                // its own, which is how `[[org.capture-templates]]` used to
+                // become a pile of `unknown option` warnings.
+                if apply_tree_if_composite(registry, source, out, &dotted, value) {
+                    continue;
+                }
                 if structural_prefixes.iter().any(|p| *p == dotted) {
                     record_namespace_children(source, out, &dotted, sub);
                 } else {
@@ -353,6 +364,13 @@ fn apply_scalar(
     // the delimited form the option's `parse` accepts. For a scalar
     // option (or an unknown key) an array stays the "not applicable"
     // warning it was before — never a panic.
+    // TC.2: an array-of-tables (`[[org.capture-templates]]`) reaches here as an
+    // Array at the option's name. A composite option takes it whole; ML.5's
+    // join-into-a-delimited-string is for the list-of-scalars options that
+    // predate schemas and still spell their value as text.
+    if apply_tree_if_composite(registry, source, out, dotted, value) {
+        return;
+    }
     if let toml::Value::Array(items) = value {
         apply_array(registry, source, out, dotted, items);
         return;
@@ -456,6 +474,129 @@ fn apply_assignment(
             body,
         });
     }
+}
+
+/// TC.2 — apply `value` as a whole tree if `dotted` names a registered option
+/// whose schema is composite. Returns `true` when it handled the key (applied
+/// or warned), `false` when the caller should fall through to its existing
+/// scalar / namespace / array handling.
+///
+/// This is the slice's entire behavioural change, and the reason it is a
+/// *predicate on the option* rather than on the TOML shape: what makes
+/// `[[org.capture-templates]]` a value and `[completion.per-language]` a
+/// namespace is not how they are written — both are tables — but whether an
+/// option by that exact name exists and says it has structure.
+fn apply_tree_if_composite(
+    registry: &ConfigRegistry,
+    source: &Path,
+    out: &mut LoadOutcome,
+    dotted: &str,
+    value: &toml::Value,
+) -> bool {
+    let Some(opt) = registry.lookup(dotted) else {
+        return false;
+    };
+    let schema = opt.schema();
+    if !schema.is_composite() {
+        return false;
+    }
+    let tree = match toml_to_config_value(value) {
+        Ok(v) => v,
+        Err(err) => {
+            out.messages.push(LoadMessage {
+                level: LoadMessageLevel::Warning,
+                source: source.to_path_buf(),
+                body: format!("`{dotted}{}`: {}", err.path, err.message),
+            });
+            return true;
+        }
+    };
+    // Validate here as well as inside `set_value`, because only here is the
+    // error still STRUCTURED — the loader can splice the schema path onto the
+    // option's dotted name and report
+    // `org.capture-templates[2].target.file: expected string, got integer`,
+    // where a flattened string would have read `org.capture-templates:
+    // [2].target.file: …`. The path is the whole user-facing win of this work;
+    // one redundant walk of a cold-path config value is a fair price for it.
+    if let Err(err) = crate::schema::validate(&schema, &tree) {
+        out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: source.to_path_buf(),
+            body: format!("`{dotted}{}`: {}", dot_path(&err.path), err.message),
+        });
+        return true;
+    }
+    if let Err(err) = opt.set_value(&tree) {
+        out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: source.to_path_buf(),
+            body: format!("`{dotted}`: {err}"),
+        });
+    }
+    true
+}
+
+/// Join a schema path onto an option name. A record field needs the separating
+/// dot (`opt` + `target.file`); an index does not (`opt` + `[2]`).
+fn dot_path(path: &str) -> String {
+    if path.is_empty() || path.starts_with('[') {
+        path.to_string()
+    } else {
+        format!(".{path}")
+    }
+}
+
+/// TC.2 — a TOML value as a [`ConfigValue`] tree.
+///
+/// Pure and schema-blind: it answers "what shape is this", and
+/// [`crate::schema::validate`] answers "is that the right shape". Keeping the
+/// two apart is what lets the shape error and the schema error carry the same
+/// kind of path.
+///
+/// Floats and datetimes are refused rather than stringified. `ConfigValue` has
+/// no kind for either, and quietly turning `1.5` into `"1.5"` would make an
+/// option's value depend on the host's float formatter — the sort of thing that
+/// works until a locale or a plugin language disagrees. Adding a kind later is
+/// additive; guessing now is not.
+fn toml_to_config_value(value: &toml::Value) -> Result<ConfigValue, SchemaError> {
+    fn go(path: &str, value: &toml::Value) -> Result<ConfigValue, SchemaError> {
+        match value {
+            toml::Value::String(s) => Ok(ConfigValue::Str(s.clone())),
+            toml::Value::Integer(i) => Ok(ConfigValue::Int(*i)),
+            toml::Value::Boolean(b) => Ok(ConfigValue::Bool(*b)),
+            toml::Value::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    out.push(go(&format!("{path}[{i}]"), item)?);
+                }
+                Ok(ConfigValue::List(out))
+            }
+            toml::Value::Table(table) => {
+                let mut out = std::collections::BTreeMap::new();
+                for (k, v) in table {
+                    let child = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    out.insert(k.clone(), go(&child, v)?);
+                }
+                Ok(ConfigValue::Record(out))
+            }
+            toml::Value::Float(_) => Err(SchemaError {
+                path: path.to_string(),
+                message: "floating-point values are not a configuration value shape".to_string(),
+            }),
+            toml::Value::Datetime(_) => Err(SchemaError {
+                path: path.to_string(),
+                message: "datetime values are not a configuration value shape".to_string(),
+            }),
+        }
+    }
+    go("", value).map_err(|mut e| {
+        e.path = dot_path(&e.path);
+        e
+    })
 }
 
 /// Render a scalar TOML value as a string the registry's
@@ -566,6 +707,313 @@ mod tests {
         let path = dir.join("lattice.toml");
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    // ── TC.2 fixture: a composite-schema option ───────────────────
+    //
+    // Modelled on org's `capture-templates`, which is the option that
+    // proves the point: a LIST of RECORDS, one of which nests another
+    // record. Nothing in the workspace has this shape yet (that is
+    // phase 3's job), and waiting for it would mean the loader change
+    // landed with no test of the case it exists for.
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Template {
+        key: String,
+        target: String,
+        body: Option<String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    struct Templates(Vec<Template>);
+
+    impl crate::OptionType for Templates {
+        // The `:set` text surface. A composite keeps `parse`/`format`
+        // round-tripping — the trait's contract does not get a
+        // exemption for having structure — over a compact
+        // `key>target` form. What the real migration spells here is
+        // its own call (typed-configuration.md §2.2); what matters to
+        // the loader is that it never touches this path.
+        fn parse(s: &str) -> Result<Self, String> {
+            if s.is_empty() {
+                return Ok(Templates(Vec::new()));
+            }
+            s.split(';')
+                .map(|item| {
+                    let (key, target) = item
+                        .split_once('>')
+                        .ok_or_else(|| format!("expected `key>target`, got `{item}`"))?;
+                    Ok(Template {
+                        key: key.to_string(),
+                        target: target.to_string(),
+                        body: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .map(Templates)
+        }
+
+        fn format(&self) -> String {
+            self.0
+                .iter()
+                .map(|t| format!("{}>{}", t.key, t.target))
+                .collect::<Vec<_>>()
+                .join(";")
+        }
+
+        fn type_label() -> &'static str {
+            "templates"
+        }
+
+        fn schema() -> crate::ConfigSchema {
+            use crate::{ConfigSchema, SchemaField};
+            ConfigSchema::list(ConfigSchema::record([
+                SchemaField::new("key", ConfigSchema::string(), "the key to press"),
+                SchemaField::new(
+                    "target",
+                    ConfigSchema::record([SchemaField::new(
+                        "file",
+                        ConfigSchema::string(),
+                        "where it lands",
+                    )]),
+                    "where the capture goes",
+                ),
+                SchemaField::new("body", ConfigSchema::string(), "template body").optional(),
+            ]))
+        }
+
+        fn to_value(&self) -> ConfigValue {
+            ConfigValue::List(
+                self.0
+                    .iter()
+                    .map(|t| {
+                        let mut fields = vec![
+                            ("key".to_string(), ConfigValue::Str(t.key.clone())),
+                            (
+                                "target".to_string(),
+                                ConfigValue::record([(
+                                    "file".to_string(),
+                                    ConfigValue::Str(t.target.clone()),
+                                )]),
+                            ),
+                        ];
+                        if let Some(b) = &t.body {
+                            fields.push(("body".to_string(), ConfigValue::Str(b.clone())));
+                        }
+                        ConfigValue::record(fields)
+                    })
+                    .collect(),
+            )
+        }
+
+        fn from_value(value: &ConfigValue) -> Result<Self, String> {
+            let items = value
+                .as_list()
+                .ok_or_else(|| format!("expected list, got {}", value.kind_label()))?;
+            items
+                .iter()
+                .map(|item| {
+                    let key = item
+                        .field("key")
+                        .and_then(ConfigValue::as_str)
+                        .ok_or("missing `key`")?
+                        .to_string();
+                    let target = item
+                        .field("target")
+                        .and_then(|t| t.field("file"))
+                        .and_then(ConfigValue::as_str)
+                        .ok_or("missing `target.file`")?
+                        .to_string();
+                    let body = item
+                        .field("body")
+                        .and_then(ConfigValue::as_str)
+                        .map(str::to_string);
+                    Ok(Template { key, target, body })
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .map(Templates)
+        }
+    }
+
+    fn registry_with_a_composite_option() -> ConfigRegistry {
+        let r = registry_with_options();
+        r.register(ConfigOption::<Templates>::new(
+            "org.capture-templates",
+            Templates::default(),
+            "Capture templates.",
+        ));
+        r
+    }
+
+    fn templates_of(r: &ConfigRegistry) -> Templates {
+        let opt = r.lookup("org.capture-templates").unwrap();
+        <Templates as crate::OptionType>::from_value(&opt.get_value()).unwrap()
+    }
+
+    #[test]
+    fn an_array_of_tables_lands_as_a_composite_options_value() {
+        // The case the blob existed to work around. Before TC.2 this
+        // produced "list / inline-table values aren't applicable to
+        // scalar options"; org's answer was to make the whole thing a
+        // string containing TOML.
+        let r = registry_with_a_composite_option();
+        let p = write_temp(
+            "composite-array-of-tables",
+            "[[org.capture-templates]]\n\
+             key = \"t\"\n\
+             target = { file = \"~/org/refile.org\" }\n\
+             body = \"\"\"\n\
+             * TODO %?\n\
+             \"\"\"\n\
+             \n\
+             [[org.capture-templates]]\n\
+             key = \"n\"\n\
+             target = { file = \"~/org/notes.org\" }\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert!(out.messages.is_empty(), "messages: {:?}", out.messages);
+
+        let got = templates_of(&r);
+        assert_eq!(got.0.len(), 2);
+        assert_eq!(got.0[0].key, "t");
+        assert_eq!(got.0[0].target, "~/org/refile.org");
+        // The multi-line body survives verbatim — the field the blob
+        // handled WELL (a `'''` literal preserves newlines), and so
+        // the one a tree could plausibly regress. TOML's `"""` eats
+        // the newline immediately after the opening delimiter, which
+        // is the format's rule and not the tree's doing.
+        assert_eq!(got.0[0].body.as_deref(), Some("* TODO %?\n"));
+        assert_eq!(got.0[1].key, "n");
+        assert_eq!(got.0[1].body, None, "an absent optional field stays absent");
+    }
+
+    #[test]
+    fn a_table_at_an_options_name_is_its_value_not_a_namespace() {
+        // A record-shaped option written as a section. Without the
+        // check, `walk_table` descends and applies `key` and `target`
+        // as options in their own right — two `unknown option`
+        // warnings and no value set.
+        let r = registry_with_options();
+        r.register(ConfigOption::<Templates>::new(
+            "org.one-template",
+            Templates::default(),
+            "",
+        ));
+        // A single record still has to satisfy `list<record>`, so this
+        // is the WRONG shape — and the point of the assertion is that
+        // the loader says so about the option rather than inventing
+        // two options that do not exist.
+        let p = write_temp(
+            "composite-table",
+            "[org.one-template]\nkey = \"t\"\ntarget = { file = \"a.org\" }\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "messages: {:?}", out.messages);
+        let body = &out.messages[0].body;
+        assert!(body.contains("org.one-template"), "{body}");
+        assert!(body.contains("expected list"), "{body}");
+        assert!(
+            !body.contains("unknown option"),
+            "the fields must not be read as options: {body}"
+        );
+    }
+
+    #[test]
+    fn a_shape_mismatch_is_reported_with_its_path() {
+        // The user-facing win of the whole design, and the assertion is
+        // on the PATH rather than on rejection: rejecting without
+        // saying where is exactly what the hand-rolled parsers did.
+        let r = registry_with_a_composite_option();
+        let p = write_temp(
+            "composite-bad-leaf",
+            "[[org.capture-templates]]\n\
+             key = \"t\"\n\
+             target = { file = \"a.org\" }\n\
+             \n\
+             [[org.capture-templates]]\n\
+             key = \"n\"\n\
+             target = { file = 7 }\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "messages: {:?}", out.messages);
+        let body = &out.messages[0].body;
+        assert!(
+            body.contains("org.capture-templates[1].target.file"),
+            "the path must name the index AND the field: {body}"
+        );
+        assert!(body.contains("expected string"), "{body}");
+        assert!(body.contains("integer"), "{body}");
+        // Nothing was committed — a partially-applied list is worse
+        // than a refused one, because half a config reads as a bug in
+        // the feature rather than a typo in the file.
+        assert_eq!(templates_of(&r).0.len(), 0);
+    }
+
+    #[test]
+    fn a_misspelled_field_names_the_key_and_the_alternatives() {
+        let r = registry_with_a_composite_option();
+        let p = write_temp(
+            "composite-typo",
+            "[[org.capture-templates]]\n\
+             key = \"t\"\n\
+             target = { file = \"a.org\" }\n\
+             bodyy = \"oops\"\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "messages: {:?}", out.messages);
+        let body = &out.messages[0].body;
+        assert!(body.contains("org.capture-templates[0].bodyy"), "{body}");
+        assert!(body.contains("unknown field"), "{body}");
+        assert!(body.contains("body"), "{body}");
+    }
+
+    #[test]
+    fn a_float_is_refused_by_name_rather_than_stringified() {
+        // `ConfigValue` has no float kind. Quietly rendering `1.5` as
+        // "1.5" would make the value depend on the host's float
+        // formatter, which works until something disagrees about it.
+        let r = registry_with_a_composite_option();
+        let p = write_temp(
+            "composite-float",
+            "[[org.capture-templates]]\nkey = 1.5\ntarget = { file = \"a.org\" }\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "messages: {:?}", out.messages);
+        let body = &out.messages[0].body;
+        assert!(body.contains("org.capture-templates[0].key"), "{body}");
+        assert!(body.contains("floating-point"), "{body}");
+    }
+
+    #[test]
+    fn scalar_options_are_untouched_by_the_composite_path() {
+        // The no-regression half. A table at a SCALAR option's name
+        // must still take the old warning, and a structural namespace
+        // must still be captured whole — TC.2 adds a branch, it does
+        // not re-route the existing ones.
+        let r = registry_with_a_composite_option();
+        let p = write_temp(
+            "composite-no-regression",
+            "[completion.per-language.markdown]\nsources = \"buffer\"\n\
+             \n[ui]\nseparator = \"|\"\n\
+             \n[tabstop]\nnope = 1\n",
+        );
+        let out = load_file(&r, &p, &["completion.per-language"]);
+        assert!(
+            out.structural
+                .contains_key("completion.per-language.markdown"),
+            "a structural namespace is still captured whole: {:?}",
+            out.structural.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(r.lookup("ui.separator").unwrap().get_formatted(), "|");
+        // `[tabstop]` is a table at a SCALAR option's name: it walks
+        // in and `tabstop.nope` is unknown, exactly as before.
+        assert!(
+            out.messages
+                .iter()
+                .any(|m| m.body.contains("unknown option")),
+            "messages: {:?}",
+            out.messages
+        );
     }
 
     #[test]

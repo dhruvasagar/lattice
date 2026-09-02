@@ -23,7 +23,7 @@ entangled in one bug report, which is why this note exists.
 |---|---|---|
 | **Phase 1 — the native surface** | | |
 | TC.1 | `ConfigValue` + `ConfigSchema`; every option describes its shape | ✅ |
-| TC.2 | `lattice.toml` writes a real tree, not a string containing one | 📝 |
+| TC.2 | `lattice.toml` writes a real tree, not a string containing one | ✅ |
 | **Phase 2 — the ABI** | | |
 | TC.3 | `register-option` takes a schema; values cross as a tree | 📝 |
 | TC.4 | The SDK derive — a Rust struct becomes a schema and a value | 📝 |
@@ -96,7 +96,7 @@ predates this slice — it was harmless while `enumerate` only fed a popup — a
 open types by name, because the failure mode is a type opting IN when it should
 not have, which a test of the default cannot see.
 
-### TC.2 — `lattice.toml` writes a real tree, not a string containing one 📝
+### TC.2 — `lattice.toml` writes a real tree, not a string containing one ✅
 
 The loader distinguishes a *structural namespace* (a sub-table captured whole)
 from a scalar leaf, and joins a TOML array into a delimited string for
@@ -107,12 +107,39 @@ The interesting case is the one that used to warn. `[[org.capture-templates]]`
 today produces "expected a sub-table; got a scalar" or an array-join into
 nonsense; after this it is the option's value.
 
-**Tests.** A nested table and an array-of-tables both land. A shape mismatch is
-rejected **with a path** (`capture-templates[2].target.file: expected string,
-got integer`) — the assertion is on the path, not on rejection, because
-rejecting without saying where is what the hand-rolled parsers already did. A
-scalar option fed a table still warns exactly as before (no regression in the
-loader's never-abort-on-one-bad-key contract).
+**The branch is on the OPTION, not on the TOML shape**, and that turned out to
+be the whole trick. `[[org.capture-templates]]` and `[completion.per-language]`
+are both tables; what makes one a value and the other a namespace is whether an
+option by that exact name exists and says it has structure. Inspecting the TOML
+shape instead would have had to guess.
+
+**Tests.** Six, in `loader.rs`'s own module, against a `list<record>` fixture
+modelled on org's `capture-templates` — nothing in the workspace has that shape
+yet (phase 3's job) and waiting for it would have landed the loader change with
+no test of the case it exists for.
+
+- an array-of-tables lands, and the **multi-line body survives verbatim** — the
+  field the blob handled *well*, so the one a tree could plausibly regress. The
+  triple-quote form eating its own leading newline is TOML's rule, and the test
+  says so rather than asserting around it;
+- a table at an option's name is that option's value, and the assertion is that
+  its fields do **not** appear as `unknown option` warnings — the failure that
+  descending into them would produce;
+- a shape mismatch reports `org.capture-templates[1].target.file`, index and
+  field, and commits nothing: a half-applied list reads as a bug in the feature
+  rather than a typo in the file;
+- a misspelled field names the key and the alternatives;
+- a float is refused by name rather than stringified (`ConfigValue` has no float
+  kind, and rendering `1.5` as `"1.5"` would make the value depend on the host's
+  float formatter);
+- and the no-regression case: a structural namespace is still captured whole, a
+  scalar option fed a table still walks in and warns exactly as before.
+
+Validation runs in the loader *and* inside `set_value`. Deliberate: only in the
+loader is the error still structured, so it can splice the schema path onto the
+option's dotted name. One redundant walk of a cold-path config value is a fair
+price for the message reading `org.capture-templates[1].target.file: ...`
+instead of `org.capture-templates: [1].target.file: ...`.
 
 ### Phase 2 — the ABI
 

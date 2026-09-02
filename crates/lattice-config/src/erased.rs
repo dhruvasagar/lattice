@@ -155,7 +155,37 @@ impl<T: OptionType> ErasedOption for Option<T> {
 
     fn parse_and_set(&self, value: &str) -> Result<(), String> {
         match T::parse(value) {
-            Ok(parsed) => self.set(parsed),
+            Ok(parsed) => {
+                // TC.7 fix: a COMPOSITE is checked against its declared schema
+                // here, exactly as `set_value` checks one — the two paths must
+                // not disagree about whether a value is acceptable, and before
+                // this they did.
+                //
+                // `T::parse` is not the check for a structured option. Such an
+                // option is a `ConfigOption<ConfigValue>`, so `parse` only
+                // establishes that the text is TOML; nothing looks at the
+                // declared shape. An enum field with a typo therefore STORED
+                // fine and failed later, in the guest, when it re-derived its
+                // typed value — where the failure is per-option and costs the
+                // whole thing. org's `agenda-custom-commands` lost every
+                // command to one bad `when`, silently at both ends.
+                //
+                // Scoped to composites deliberately. For a scalar or an enum,
+                // `T::parse` IS the check and already rejects what this would;
+                // running the validator there could only differ if a type's
+                // `to_value` disagreed with its own schema, and turning that
+                // into a rejected `:set` on every option is a risk with no
+                // matching benefit.
+                let schema = self.declared_schema();
+                if schema.is_composite() {
+                    // Named, because a schema error locates a spot INSIDE a
+                    // value (`[0].when: …`) and never says which option that
+                    // value belongs to. See `a_composites_rejection_names_the_option`.
+                    crate::schema::validate(&schema, &parsed.to_value())
+                        .map_err(|e| format!("{}: {e}", self.name))?;
+                }
+                self.set(parsed)
+            }
             // TC.7: a `list<string>` option typed at the command line.
             //
             // `:set org.agenda-files=~/org` is a natural thing to type and was
@@ -190,6 +220,12 @@ impl<T: OptionType> ErasedOption for Option<T> {
                         .collect();
                     self.set_value(&crate::ConfigValue::List(items))
                 }
+                // A composite's parse error is `expected TOML: … line 1,
+                // column 11` — a spot in text the user cannot see, with no
+                // clue which option it was. Name it, for the reason the schema
+                // rejection above is named. Scalars keep their wording
+                // verbatim: those are vim's `E474: …` and already say enough.
+                schema if schema.is_composite() => Err(format!("{}: {err}", self.name)),
                 _ => Err(err),
             },
         }
@@ -301,6 +337,98 @@ mod tests {
         assert_eq!(erased.get_formatted(), "false");
         erased.negate().unwrap();
         assert_eq!(erased.get_formatted(), "false");
+    }
+
+    /// The `:set` path must check a composite against its DECLARED schema.
+    ///
+    /// `set_value` did and `parse_and_set` did not, and the gap is not
+    /// cosmetic: a structured plugin option is `ConfigOption<ConfigValue>`, so
+    /// `T::parse` only checks that the text is TOML. An enum field with a typo
+    /// therefore stored fine and failed later, in the GUEST, when it re-derived
+    /// its typed shape — where the failure is per-OPTION and costs the whole
+    /// value. org's `agenda-custom-commands` lost every command to one bad
+    /// `when`, and the user was told nothing at either end.
+    #[test]
+    fn parse_and_set_validates_a_composite_against_its_schema() {
+        use crate::schema::SchemaField;
+        use crate::{ConfigSchema, ConfigValue, ScalarKind};
+        let schema = ConfigSchema::List(Box::new(ConfigSchema::Record(vec![
+            SchemaField::new("title", ConfigSchema::Scalar(ScalarKind::Str), ""),
+            SchemaField::new(
+                "when",
+                ConfigSchema::Enum(vec!["overdue".into(), "any".into()]),
+                "",
+            ),
+        ])));
+        let o: Option<ConfigValue> =
+            Option::structured("org.sections", schema, ConfigValue::List(Vec::new()), "doc");
+        let before = o.get_formatted();
+        let erased: &dyn ErasedOption = &o;
+
+        let err = erased
+            .parse_and_set("[[value]]\ntitle = \"Bad\"\nwhen = \"someday\"\n")
+            .expect_err("an unknown enum form is refused at `:set`, not later");
+        assert!(
+            err.contains("someday") && err.contains("overdue | any"),
+            "the rejection lists what IS valid — the one thing an enum knows \
+             that a free string does not: {err}"
+        );
+        assert_eq!(
+            erased.get_formatted(),
+            before,
+            "a refused set leaves the previous value alone"
+        );
+
+        erased
+            .parse_and_set("[[value]]\ntitle = \"Good\"\nwhen = \"any\"\n")
+            .expect("a value that fits still sets");
+    }
+
+    /// A composite's rejection names the OPTION, not just the position in it.
+    ///
+    /// `T::parse` for a structured option answers `expected TOML: … line 1,
+    /// column 11`, and the schema answers `[0].when: expected one of …`. Both
+    /// describe a spot inside a value the user cannot see, and neither says
+    /// which of forty options they were setting. A `:set` echo that does not
+    /// name the option is a message the user cannot act on — they have to guess
+    /// which line of their config it came from.
+    ///
+    /// Scalars keep their wording verbatim: those messages are vim's (`E474:
+    /// …`) and already carry what they need.
+    #[test]
+    fn a_composites_rejection_names_the_option() {
+        use crate::schema::SchemaField;
+        use crate::{ConfigSchema, ConfigValue, ScalarKind};
+        let schema = ConfigSchema::List(Box::new(ConfigSchema::Record(vec![SchemaField::new(
+            "key",
+            ConfigSchema::Scalar(ScalarKind::Str),
+            "",
+        )])));
+        let o: Option<ConfigValue> = Option::structured(
+            "org.capture-templates",
+            schema,
+            ConfigValue::List(Vec::new()),
+            "doc",
+        );
+        let erased: &dyn ErasedOption = &o;
+
+        // Not TOML at all — what a half-typed table header produces.
+        let err = erased
+            .parse_and_set("[[template]\nkey = \"t\"")
+            .expect_err("malformed TOML is refused");
+        assert!(
+            err.contains("org.capture-templates"),
+            "the echo names the option at fault: {err}"
+        );
+
+        // TOML, but the wrong shape.
+        let err = erased
+            .parse_and_set("[[value]]\nkey = 7\n")
+            .expect_err("a wrong-typed field is refused");
+        assert!(
+            err.contains("org.capture-templates"),
+            "…and so does a schema rejection: {err}"
+        );
     }
 
     #[test]

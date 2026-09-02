@@ -29,7 +29,7 @@ entangled in one bug report, which is why this note exists.
 | TC.4 | The SDK derive — a Rust struct becomes a schema and a value | ✅ |
 | **Phase 3 — the encodings go** | | |
 | TC.5 | `capture-templates` is a record list **(cross-repo)** | ✅ |
-| TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(plugin)** | 📝 |
+| TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(cross-repo)** | ✅ |
 | TC.7 | The three line formats become list schemas **(plugin)** | 📝 |
 | **Phase 4 — the payoff that is in scope** | | |
 | TC.8 | `:describe-option` renders the schema | 📝 |
@@ -298,15 +298,61 @@ round-trip through `to_value`/`from_value`, because a derive where those
 disagree changes a template on its way through the option and nothing else
 would notice.
 
-### TC.6 — `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm 📝
+### TC.6 — `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm ✅
 
 The two nested shapes, and the slice that pays the visible dividend: with all
-three TOML-in-a-string options migrated, org drops the `toml` crate from its
-component.
+three TOML-in-a-string options migrated, org's `toml` dependency moved to
+`[dev-dependencies]` and left the shipped component. The dependency's position
+in `Cargo.toml` is the durable check; a size assertion would not be.
 
-**Test:** a custom command whose sections nest — the case that motivated the
-array-of-tables in the first place. Plus a size assertion is *not* worth
-writing; the dependency's absence from `Cargo.toml` is the durable check.
+**`when` became an `enum-of`**, which is the first option in the workspace to
+use that arm for real. A typo is now refused with the four valid spellings
+inline, where before an unknown `when` cost that block silently. It also gives
+up case-insensitivity (`"Any"` used to work) — an exact closed set is what buys
+the listing error and, later, a `:customize` picker instead of a text field, and
+the error names all four so a user who writes `"Any"` is told what to write
+rather than losing a section without explanation.
+
+**`Option<Vec<_>>`, not `Vec<_>`, for a command's `section` list.** Optionality
+comes from the type, and a *required* list would mean a command with no blocks
+could not be written at all — TOML has no spelling for an empty array-of-tables.
+Absent is an empty list, which is then skipped by name: "`n` has no usable
+sections" is a better answer than a shape error, because a command with no
+blocks is a mistake made while editing rather than a malformed file.
+
+**`ConfigValue::parse` got more generous than `format`,** and that is what kept
+the migration painless. A TOML document cannot BE an array, so a list-rooted
+option needs a wrapper key; `format` writes `value = …`, but `parse` unwraps
+**any** single key whose payload is an array. So a `:set` string a user already
+wrote — `[[section]]`, `[[command]]`, `[[template]]` — keeps working, because
+the option's value is now the list and the wrapper name carries nothing the
+schema does not already know. A scalar root still requires the reserved name,
+since a single-field record holding a scalar is far commoner than a
+scalar-rooted option.
+
+**Where the error moved to, and one integration test that now asserts the
+opposite of what it did.** `a_malformed_section_set_falls_back_and_says_so_in_
+the_view` was written when any text at all was a legal value: a malformed set
+was stored, and the breakage surfaced a scan later as a complaint prefixed onto
+the first section header. That was the best answer available while the host had
+no idea what the string meant. The host validates on WRITE now, so
+`:set org.agenda-sections=<garbage>` fails at the command line where the user is
+looking, the option keeps its value, and the agenda draws its ordinary defaults
+with nothing to complain about. The test is renamed to say so. The fallback
+machinery stays and is still pinned by unit tests that construct the error
+directly — reaching it in production now needs a schema and a `from_value` that
+disagree, which is a bug rather than a typo.
+
+**Tests.** The unit suites rewritten against declared values, with a
+`from_toml` fixture helper so the fixtures did not have to be retyped as pages
+of nested `Value::record([...])` in which a test's intent disappears (this is
+what `toml` is a dev-dependency FOR). `resolve` split into a pure
+`resolve_with` and a thin reading shell, because reading the option needs a host
+and deciding what to do with what was read does not — and that decision is the
+part with three ways to go wrong. The skip tests keep their shape but change
+their inputs: the structural cases moved to the host, so what they exercise now
+is a blank title, a negative `days`, a bad `min-priority` — the checks a schema
+has no way to express.
 
 ### TC.7 — The three line formats become list schemas 📝
 

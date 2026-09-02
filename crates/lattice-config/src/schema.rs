@@ -421,15 +421,45 @@ pub fn config_value_to_toml(value: &ConfigValue) -> toml::Value {
     }
 }
 
-/// The reserved key a non-record root is wrapped under in the `:set` text form.
+/// The key `format` wraps a non-record root under. `parse` accepts any name —
+/// see [`unwrap_root`].
 const ROOT_KEY: &str = "value";
 
-/// The inner value of a `{ value = ... }` wrapper, if `table` is exactly that.
+/// The inner value of a single-key wrapper table, if `table` is one.
+///
+/// A TOML document cannot BE an array, so a list-rooted option has no bare text
+/// spelling and needs a wrapper. `format` writes `value = …`; `parse` accepts
+/// **any** single key whose payload is an array, not just that one.
+///
+/// The generosity is deliberate and is what makes the migration painless. A
+/// user who wrote `org.capture-templates` as `[[template]]`, or
+/// `agenda-sections` as `[[section]]`, keeps writing exactly that: the option's
+/// value is now the list itself, and their wrapper name — whatever they chose —
+/// unwraps to it. Insisting on `value` would have broken every existing `:set`
+/// string for no gain, since the name carries no information the schema does
+/// not already have.
+///
+/// Only an ARRAY payload unwraps. A single-key table whose value is a table is
+/// a record with one field, which is a shape an option legitimately has.
 fn unwrap_root(table: &toml::Table) -> Option<&toml::Value> {
-    (table.len() == 1)
-        .then(|| table.get(ROOT_KEY))
-        .flatten()
-        .filter(|v| !matches!(v, toml::Value::Table(_)))
+    if table.len() != 1 {
+        return None;
+    }
+    let (key, value) = table.iter().next()?;
+    match value {
+        // Any name, for an array: this is the migration path, and the name
+        // carries nothing the schema does not already know.
+        toml::Value::Array(_) => Some(value),
+        // A table under any name is a record with one field — a shape an
+        // option legitimately has — so it is left alone.
+        toml::Value::Table(_) => None,
+        // A scalar root has no bare spelling either, and `format` wraps it
+        // under the reserved name. Here the name DOES have to match: a
+        // single-field record holding a scalar is far commoner than a
+        // scalar-rooted option, so unwrapping every one of those would trade a
+        // real case for a rare one.
+        _ => (key == ROOT_KEY).then_some(value),
+    }
 }
 
 /// TC.3 — a `ConfigValue` is itself an option value type.
@@ -466,10 +496,11 @@ impl crate::OptionType for ConfigValue {
         // key `value`, and `parse` unwraps it again.
         //
         // The cost is one ambiguity, named rather than hidden: a RECORD option
-        // whose only field happens to be called `value` cannot round-trip
-        // through this text surface. It is not silent when it happens — the
-        // unwrapped tree fails schema validation with a path — and `:set` on a
-        // composite is deferred surface anyway (typed-configuration.md §2.2);
+        // with exactly one field, and that field a list, cannot round-trip
+        // through this text surface — `parse` reads the wrapper as the wrapper
+        // it usually is. It is not silent when it happens (the unwrapped tree
+        // fails schema validation with a path), `:set` on a composite is
+        // deferred surface anyway (typed-configuration.md §2.2), and
         // `lattice.toml` and `set-option-value` both carry the tree natively
         // and never come through here.
         match config_value_to_toml(self) {
@@ -690,23 +721,55 @@ mod config_value_option_type_tests {
     fn a_toml_string_a_user_already_wrote_still_parses() {
         // The migration promise: an option that WAS a TOML-in-a-string does not
         // break for someone who was setting it that way. The text is unchanged;
-        // what is new is that it is now validated against a schema.
+        // what is new is that the wrapper unwraps to the list the option now
+        // holds, and the result is validated against a schema.
         let text = "[[template]]\nkey = \"t\"\ntarget = { file = \"a.org\" }\n";
         let got = ConfigValue::parse(text).expect("still parses");
-        let list = got.field("template").and_then(ConfigValue::as_list);
-        assert_eq!(list.map(<[_]>::len), Some(1));
+        let list = got.as_list().expect("the wrapper unwrapped");
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0]
+                .field("target")
+                .and_then(|t| t.field("file"))
+                .and_then(ConfigValue::as_str),
+            Some("a.org"),
+        );
     }
 
     #[test]
     fn a_wrapper_is_not_unwrapped_when_its_payload_is_a_table() {
-        // Guard on the ambiguity `format` documents: only a NON-table payload
-        // is a wrapper, so a record option with a `value` field that holds a
-        // table is left alone.
+        // Only an ARRAY payload is a wrapper. A single-key table whose value is
+        // a table is a record with one field, which is a shape an option
+        // legitimately has.
         let text = "[value]\nfile = \"a.org\"\n";
         let got = ConfigValue::parse(text).unwrap();
         assert!(
             got.field("value").is_some(),
             "the `value` key survived as a field: {got:?}"
         );
+    }
+
+    #[test]
+    fn any_wrapper_name_unwraps_so_an_existing_set_string_keeps_working() {
+        // The migration nicety, and the reason `parse` is more generous than
+        // `format`. Someone who wrote `org.capture-templates` as `[[template]]`
+        // — or `agenda-sections` as `[[section]]` — keeps writing exactly that:
+        // the option's value is the list itself now, and their wrapper name,
+        // whatever they chose, unwraps to it. Insisting on `value` would have
+        // broken every existing `:set` string for no gain, since the name
+        // carries nothing the schema does not already know.
+        for wrapper in ["template", "section", "command", "value"] {
+            let text = format!("[[{wrapper}]]\nkey = \"t\"\n");
+            let got = ConfigValue::parse(&text)
+                .unwrap_or_else(|e| panic!("`{wrapper}` should parse: {e}"));
+            let list = got
+                .as_list()
+                .unwrap_or_else(|| panic!("`{wrapper}` should unwrap to a list, got {got:?}"));
+            assert_eq!(list.len(), 1);
+            assert_eq!(
+                list[0].field("key").and_then(ConfigValue::as_str),
+                Some("t")
+            );
+        }
     }
 }

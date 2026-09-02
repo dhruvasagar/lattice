@@ -63,7 +63,7 @@ the shared minor). Catalogue entry: the agenda in
 | **Phase 7 — acting on a headline, from either surface** | | |
 | OA.24 | The org date grammar — `+1d`, `fri`, repeaters **(plugin)** | ✅ |
 | OA.25 | Schedule + deadline, in files AND the agenda **(plugin)** | ✅ |
-| OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | 📝 |
+| OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | ✅ |
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | 📝 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
@@ -1211,12 +1211,22 @@ which is what wires the excerpt-source resolver. Unwired, the seam answers
 path. Six file-surface tests passed throughout. Harnesses that bypass `install`
 must wire the seam themselves.
 
-### OA.26 — The rest of OA.23's consumers **(plugin)** 📝
+### OA.26 — The rest of OA.23's consumers **(plugin)** ✅
 
 `<` (restrict the agenda to the file at the cursor), which OA.21 shipped the
 `file:` term for and could not bind, and `org-agenda-goto` — jump from a row to
 the headline it came from, which is the most-used key in emacs' agenda and is
 the same question the seam answers.
+
+**Bound as `<lt>` and `<CR>`.** A bare `<` is an unterminated special-key form
+and never parses, so the binding would have been silently absent; `<CR>` rather
+than emacs' `TAB` because the shared `foldable-view-mode` owns `TAB` across
+every foldable view.
+
+`<` passes the file NAME, not the path — `file:` matches on the name, so a path
+would match no row and read as a key that empties the agenda — and REPLACES any
+existing file filter, because `file:` terms are an OR and accumulating them
+would widen the view on a key called "restrict".
 
 ### OA.27 — The `<leader>o` reorganisation **(plugin)** 📝
 

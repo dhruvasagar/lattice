@@ -158,6 +158,25 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("project seam unwired: no resolver or buffer store at plugin install");
     }
+    // OA.23: what answers "which file did this composed line come from".
+    //
+    // Needs both handles and neither alone: the registry maps a view's
+    // composed line to a source BUFFER, the store maps that buffer to a PATH.
+    // Unwired leaves `excerpt-source` answering `none`, which is what a host
+    // with no multibuffers should say.
+    if let (Some(views), Some(buffers)) = (
+        boot.service::<lattice_multibuffer::MultibufferRegistryHandle>(),
+        boot.service::<lattice_mode::BufferStoreHandle>(),
+    ) {
+        host.set_excerpt_source_resolver(std::sync::Arc::new(
+            lattice_multibuffer::registry::MultibufferExcerptSource::new(
+                (*views).clone(),
+                (*buffers).clone(),
+            ),
+        ));
+    } else {
+        tracing::debug!("excerpt-source seam unwired: no multibuffer registry or buffer store");
+    }
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.

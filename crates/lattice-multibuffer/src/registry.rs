@@ -188,3 +188,126 @@ mod tests {
         assert!(!reg.remove_by_document_id(doc));
     }
 }
+
+/// OA.23 — the [`ExcerptSourceResolver`](lattice_core::ExcerptSourceResolver)
+/// a multibuffer-aware host wires into the plugin host.
+///
+/// Two handles, because the question needs both halves and neither answers it
+/// alone: the registry maps a view to its excerpts (composed line → source
+/// buffer + line), and the buffer store maps that source buffer to a path. The
+/// same pairing `ProjectCtx` uses, for the same reason — a resolver that held
+/// only the registry could say *which buffer* and never *which file*, which is
+/// not an answer a guest can act on.
+///
+/// Lives here rather than in the plugin host because this crate owns the
+/// composed→source translation; the host cannot depend on it (layering), which
+/// is why the trait is abstract in `lattice-core` at all.
+#[derive(Clone)]
+pub struct MultibufferExcerptSource {
+    views: MultibufferRegistryHandle,
+    buffers: lattice_mode::BufferStoreHandle,
+}
+
+impl MultibufferExcerptSource {
+    pub fn new(views: MultibufferRegistryHandle, buffers: lattice_mode::BufferStoreHandle) -> Self {
+        Self { views, buffers }
+    }
+}
+
+impl std::fmt::Debug for MultibufferExcerptSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Neither handle has a useful Debug and both are shared state; the
+        // trait requires one, so this says what it is and stops.
+        f.write_str("MultibufferExcerptSource")
+    }
+}
+
+impl lattice_core::ExcerptSourceResolver for MultibufferExcerptSource {
+    fn excerpt_source(&self, buffer: BufferId, line: u32) -> Option<(std::path::PathBuf, u32)> {
+        // Not a multibuffer: `none`, not the buffer's own path. The question is
+        // "which file does this COMPOSED line come from", and a caller wanting
+        // the current file already has one.
+        let view = self.views.handle(buffer)?;
+        // Byte 0 — the translation is line-wise and the caller asked about a
+        // line. Passing a real column would invite the answer to depend on it.
+        let (source, position) =
+            view.translate_composed_to_source(crate::Position { line, byte: 0 })?;
+        let path = self.buffers.path_for(source)?;
+        Some((path, position.line))
+    }
+}
+
+#[cfg(test)]
+mod excerpt_source_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use lattice_core::ExcerptSourceResolver;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    /// A buffer store that knows only paths, which is all the resolver asks of
+    /// one. Hand-written rather than reaching for the real store because the
+    /// property under test is the COMPOSITION of two lookups, and a real store
+    /// would bring a mode registry and an editor with it.
+    #[derive(Debug, Default)]
+    struct PathsOnly(HashMap<BufferId, PathBuf>);
+
+    impl lattice_mode::BufferStore for PathsOnly {
+        fn find_by_name(&self, _name: &str) -> Option<BufferId> {
+            None
+        }
+        fn name_for(&self, _id: BufferId) -> Option<String> {
+            None
+        }
+        fn path_for(&self, id: BufferId) -> Option<PathBuf> {
+            self.0.get(&id).cloned()
+        }
+        fn handle_for(&self, _id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>> {
+            None
+        }
+        fn insert_document_buffer(
+            &self,
+            _id: BufferId,
+            _kind: lattice_core::BufferKind,
+            _handle: Arc<dyn lattice_runtime::Document>,
+            _flags: lattice_core::BufferFlags,
+            _name: Option<String>,
+        ) {
+        }
+    }
+
+    fn resolver(
+        views: MultibufferRegistryHandle,
+        paths: HashMap<BufferId, PathBuf>,
+    ) -> MultibufferExcerptSource {
+        MultibufferExcerptSource::new(
+            views,
+            lattice_mode::BufferStoreHandle::new(Arc::new(PathsOnly(paths))),
+        )
+    }
+
+    #[test]
+    fn a_buffer_that_is_not_a_multibuffer_answers_none() {
+        // Not its own path: the question is "which file does this COMPOSED
+        // line come from", and a caller wanting the current file already has
+        // `document.path()`. Answering the view's own path here would make the
+        // agenda's synthetic buffer look like a file on disk.
+        let views = InMemoryMultibufferRegistry::handle();
+        let plain = BufferId::next();
+        let r = resolver(
+            views,
+            HashMap::from([(plain, PathBuf::from("/org/notes.org"))]),
+        );
+        assert_eq!(r.excerpt_source(plain, 0), None);
+    }
+
+    #[test]
+    fn an_unwired_line_beyond_every_excerpt_answers_none() {
+        // A cursor can be anywhere, including past the last row. That is an
+        // ordinary answer rather than an error, which is why the seam returns
+        // an option rather than a result.
+        let views = InMemoryMultibufferRegistry::handle();
+        let r = resolver(views, HashMap::new());
+        assert_eq!(r.excerpt_source(BufferId::next(), 9_999), None);
+    }
+}

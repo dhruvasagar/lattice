@@ -720,3 +720,33 @@ mod tests {
         cleanup(&base);
     }
 }
+
+/// OA.23 — where a line of a composed buffer came from.
+///
+/// A multibuffer shows excerpts of other files, so a consumer holding composed
+/// coordinates cannot say which file it is looking at. The agenda is the case
+/// that needs this: rewriting a headline in place propagates through the
+/// excerpt, but writing a planning line BELOW it targets a line the view does
+/// not contain — and the view is a synthetic buffer with no path of its own.
+///
+/// An abstract handle for the same reason [`ProjectResolver`] is one: the
+/// plugin host must be able to answer the question without depending on
+/// `lattice-multibuffer`, which sits above it. Whoever owns multibuffers
+/// implements this and wires it in at boot; a host with none wired answers
+/// `None`, which is the honest degradation rather than a panic.
+pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
+    /// The file and 0-based line that composed `line` of `buffer` came from.
+    ///
+    /// `None` when `buffer` is not composed, when `line` is not source text (a
+    /// header or separator row belongs to the view, not to any file), or when
+    /// the source has no path. All three are ordinary answers: a caller asks
+    /// about the cursor's line, and a cursor can be anywhere.
+    fn excerpt_source(
+        &self,
+        buffer: crate::buffers::BufferId,
+        line: u32,
+    ) -> Option<(std::path::PathBuf, u32)>;
+}
+
+/// Shared handle to an [`ExcerptSourceResolver`].
+pub type ExcerptSourceResolverHandle = Arc<dyn ExcerptSourceResolver>;

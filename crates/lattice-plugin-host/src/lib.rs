@@ -1003,6 +1003,10 @@ struct PluginState {
     /// PR.6: what the guest `project` seam resolves through. `None` in a
     /// harness that wired no resolver; the seam then answers `none`.
     project: Option<ProjectCtx>,
+    /// OA.23: resolves a composed line to the file it came from. `None` when
+    /// no multibuffer owner wired one, which answers `none` rather than
+    /// pretending.
+    excerpt_source: Option<lattice_core::ExcerptSourceResolverHandle>,
     /// CG.4: the foreground-cancel registry, stamped once per store.
     /// `arm_store` takes the lock once per guest call to refresh
     /// [`Self::cancel_token`]; the epoch callback never touches it.
@@ -1126,6 +1130,27 @@ impl WasiView for PluginState {
 /// [`host_services::walk_within_grant`]; the impl just forwards with the Store's
 /// grant.
 impl crate::lattice::plugin_host::host_services::Host for PluginState {
+    /// OA.23: where a line of a multibuffer came from.
+    ///
+    /// Forwards to the wired resolver and projects its answer. `none` on every
+    /// way of not knowing — no resolver, not a composed buffer, a line that is
+    /// not source text, a source with no path — because a guest asks about the
+    /// cursor's line and a cursor can be anywhere. A non-UTF-8 path is `none`
+    /// too: it cannot cross as a `string`, and that is the boundary's rule
+    /// everywhere else.
+    fn excerpt_source(
+        &mut self,
+        buffer: u64,
+        line: u32,
+    ) -> Option<crate::lattice::plugin_host::host_services::SourceLocation> {
+        let resolver = self.excerpt_source.as_ref()?;
+        let (path, line) = resolver.excerpt_source(lattice_core::BufferId(buffer as u32), line)?;
+        Some(crate::lattice::plugin_host::host_services::SourceLocation {
+            path: path.to_str()?.to_string(),
+            line,
+        })
+    }
+
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
         host_services::walk_within_grant(&self.grant, &root)
     }
@@ -2848,6 +2873,12 @@ pub struct PluginHost {
     // it. Reading configuration needs no plugin id and has nothing to wait for,
     // so like `project` there is no path that can forget it.
     config: std::sync::OnceLock<Arc<lattice_config::ConfigRegistry>>,
+    // OA.23: answers "which file did this composed line come from". Abstract
+    // for `project`'s reason — the plugin host cannot depend on
+    // `lattice-multibuffer`, which sits above it. Unset answers `none`, which
+    // is the honest degradation: a guest asking about an excerpt in a host
+    // with no multibuffers is asking about something that is not there.
+    excerpt_source: std::sync::OnceLock<lattice_core::ExcerptSourceResolverHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3266,6 +3297,7 @@ impl PluginHost {
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
             config: std::sync::OnceLock::new(),
+            excerpt_source: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3393,6 +3425,13 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_config_registry(&self, registry: Arc<lattice_config::ConfigRegistry>) {
         let _ = self.config.set(registry);
+    }
+
+    /// OA.23: hand the host what resolves a composed line to its source file.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_excerpt_source_resolver(&self, resolver: lattice_core::ExcerptSourceResolverHandle) {
+        let _ = self.excerpt_source.set(resolver);
     }
 
     /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
@@ -3593,6 +3632,10 @@ impl PluginHost {
             // `log_ctx` — resolution needs no plugin id, so there is nothing
             // to wait for and no path that can forget it.
             project: self.project.get().cloned(),
+            // OA.23: stamped for every store like `project`, and for the same
+            // reason — resolving a composed line needs no plugin id, so there
+            // is nothing to wait for and no spawn path that can forget it.
+            excerpt_source: self.excerpt_source.get().cloned(),
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,

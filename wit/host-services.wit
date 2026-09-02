@@ -19,6 +19,13 @@ package lattice:plugin-host@0.1.0;
 /// streaming-result question) lands when a real streaming consumer (live-grep)
 /// does — a bounded `walk` covers the fuzzy-finder.
 interface host-services {
+    /// OA.23: a file and a 0-based line in it — where a composed line came
+    /// from.
+    record source-location {
+        path: string,
+        line: u32,
+    }
+
     /// Recursively enumerate files under `root`, returning absolute UTF-8 paths.
     /// Host-side policy mirrors the native file picker (`walk_files_for_picker`):
     /// a bounded entry count, skipping `.git`/`target`/`node_modules`/`dist`/
@@ -30,6 +37,26 @@ interface host-services {
     /// grant reaches nothing. The check runs host-side because the host, unlike
     /// the guest's WASI view, has ambient authority the grant must bound.
     walk: func(root: string) -> result<list<string>, string>;
+
+    /// OA.23: where a line of a MULTIBUFFER came from.
+    ///
+    /// A multibuffer composes excerpts of other files, so a guest acting on a
+    /// row sees composed coordinates and cannot say which file it is looking
+    /// at. The agenda is the case that needs this: rewriting a headline in
+    /// place propagates through the excerpt, but writing a planning line BELOW
+    /// it targets a line the view does not contain — and `document.path()`
+    /// answers for the view, which is a synthetic buffer with no path at all.
+    ///
+    /// `none` when `buffer` is not a multibuffer, when `line` falls outside
+    /// every excerpt (a header or a separator row is not source text), or when
+    /// the source buffer has no path. All three are ordinary answers rather
+    /// than errors: a guest asks about the cursor's line and the cursor can be
+    /// anywhere.
+    ///
+    /// A plain buffer answers `none` too, not its own path. The question is
+    /// "which file does this COMPOSED line come from", and a guest that wants
+    /// the current file already has `document.path()`.
+    excerpt-source: func(buffer: u64, line: u32) -> option<source-location>;
 
     /// Read a UTF-8 file, capability-gated the same way `walk` is.
     ///

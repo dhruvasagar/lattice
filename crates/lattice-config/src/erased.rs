@@ -109,6 +109,31 @@ pub trait ErasedOption: Send + Sync {
     /// option's current registry value (resolution layer 5)
     /// before mode/buffer-local layers overlay on top.
     fn current_value_erased(&self) -> Arc<dyn Any + Send + Sync>;
+
+    // ── TC.1: the shape, and values in that shape ─────────────────
+    //
+    // The runtime-name surface every consumer that does not know the
+    // type at compile time already goes through — `:set`, the TOML
+    // loader, plugin introspection, `:describe-option`. Before this it
+    // offered a `type_label(): &str` and a formatted `String`, which is
+    // not enough to render a composite, validate a field, or write a
+    // value back to TOML. See `typed-configuration.md`.
+
+    /// This option's declared shape.
+    fn schema(&self) -> crate::ConfigSchema;
+
+    /// The current value as a schema-shaped tree.
+    fn get_value(&self) -> crate::ConfigValue;
+
+    /// Validate `value` against [`Self::schema`], then commit it.
+    ///
+    /// Validation runs against the SCHEMA first, so the error carries a
+    /// path (`target.file: expected string, got integer`), and only
+    /// then through the type's own conversion and post-parse validator
+    /// — the same two stages `parse_and_set` runs, in the same order,
+    /// so the tree path and the string path cannot disagree about
+    /// whether a value is acceptable.
+    fn set_value(&self, value: &crate::ConfigValue) -> Result<(), String>;
 }
 
 impl<T: OptionType> ErasedOption for Option<T> {
@@ -198,6 +223,24 @@ impl<T: OptionType> ErasedOption for Option<T> {
         // bounds satisfies Any + Send + Sync).
         let v: Arc<T> = self.cell.load_full();
         v
+    }
+
+    fn schema(&self) -> crate::ConfigSchema {
+        T::schema()
+    }
+
+    fn get_value(&self) -> crate::ConfigValue {
+        self.with(|v| v.to_value())
+    }
+
+    fn set_value(&self, value: &crate::ConfigValue) -> Result<(), String> {
+        // Schema first: it is the stage that knows WHERE a composite
+        // went wrong. `from_value` can only say that the whole tree is
+        // the wrong shape, which for a list of records is no better
+        // than the hand-rolled parsers this replaces.
+        crate::schema::validate(&T::schema(), value).map_err(|e| e.to_string())?;
+        let parsed = T::from_value(value)?;
+        self.set(parsed)
     }
 }
 

@@ -42,6 +42,12 @@ impl OptionType for BufferDisplayPreference {
         ])
     }
 
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
+
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
         // Slice `3c.unify.option-docs-builtin`: per-value
         // marginalia pulled from the variant's own `doc()`
@@ -78,6 +84,12 @@ impl OptionType for FoldMethod {
         // `:set foldmethod=<Tab>` shows the same candidates;
         // `lsp` (4.4.f) appended at the end.
         Some(vec!["manual", "indent", "markdown", "syntax", "lsp"])
+    }
+
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
     }
 
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
@@ -121,6 +133,12 @@ impl OptionType for IndentMethod {
         Some(IndentMethod::all().iter().map(|v| v.label()).collect())
     }
 
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
+
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
         Some(
             IndentMethod::all()
@@ -155,6 +173,12 @@ impl OptionType for lattice_core::ui::tab::TablineShow {
                 .map(|v| v.label())
                 .collect(),
         )
+    }
+
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
     }
 
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {

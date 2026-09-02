@@ -102,6 +102,12 @@ impl lattice_config::OptionType for SnippetActivationMode {
     fn enumerate() -> Option<Vec<&'static str>> {
         Some(vec!["global", "supported-languages", "off"])
     }
+
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
 }
 
 lattice_config::options! {

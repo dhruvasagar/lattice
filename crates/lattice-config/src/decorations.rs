@@ -93,6 +93,12 @@ impl OptionType for Decorations {
     fn enumerate() -> Option<Vec<&'static str>> {
         Some(Decorations::all().iter().map(|v| v.label()).collect())
     }
+
+    /// TC.1: closed — `parse` accepts these forms and nothing else, so
+    /// the schema is an `enum` and `:customize` can offer a picker.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
         Some(
             Decorations::all()

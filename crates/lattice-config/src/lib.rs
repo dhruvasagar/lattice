@@ -91,6 +91,9 @@ pub mod option;
 mod option_decl;
 mod option_type;
 mod origin;
+/// TC.1: `ConfigSchema` / `ConfigValue` — what an option's value is shaped
+/// like, as data, plus schema-checked validation that reports a path.
+pub mod schema;
 // M.4 dep-inversion: layer-input types (`OptionOverride`,
 // `OptionOverrideSet`, `OverridePriority`) live here now.
 // Previously hosted in `lattice-mode` to break a cycle through
@@ -186,6 +189,9 @@ pub use window_options::{StartMaximized, WindowDecorationsOption};
 // `Option<T>` survives for the future plugin-adapter path.
 pub use option_decl::{HasGroup, OPTION_DECLS, OptionDecl, OptionDeclMetadata};
 pub use option_type::OptionType;
+// TC.1: an option's shape as data, and values in that shape
+// (`typed-configuration.md`).
+pub use schema::{ConfigSchema, ConfigValue, ScalarKind, SchemaError, SchemaField};
 // Layer-input types live in this crate now (post M.4 dep
 // inversion). Modes pull them in via lattice-mode's re-export.
 pub use origin::OptionOrigin;

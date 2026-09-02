@@ -114,6 +114,80 @@ pub trait OptionType: Sized + Clone + Send + Sync + 'static {
             Self::type_label()
         ))
     }
+
+    // ── TC.1: the shape of this type's value, as data ─────────────
+    //
+    // Defaulted, so no existing option declaration changes. A type
+    // that already enumerates its forms for `:set foo=<Tab>` gets an
+    // `enum` schema for free — which is most of the renderer-owned
+    // types — and everything else falls back to the string form it
+    // already round-trips through. Only `bool` and `i64` need to say
+    // anything, and composite types override all three together.
+    //
+    // See `typed-configuration.md` §2.1 for why this is a re-base of
+    // every option rather than a fourth option kind.
+
+    /// Whether [`Self::enumerate`] is the COMPLETE set of valid values
+    /// (a closed enum) or a completion hint over an open space.
+    ///
+    /// Default `false`, and the default is the point.
+    /// [`Self::enumerate`]'s contract is "enumerate valid string forms
+    /// for `:set foo=<Tab>` completion", which several types read as a
+    /// *hint*: [`crate::ModelineZone`] advertises `auto` while
+    /// accepting any comma-separated list, [`crate::ExpandHeight`]
+    /// advertises `half`/`full` while also accepting a bare number, and
+    /// [`crate::RootMarkers`] advertises the default markers while
+    /// accepting any of them. That ambiguity was harmless while
+    /// `enumerate` only fed a completion popup; TC.1 gave it a second
+    /// consumer that draws a conclusion from it, so it has to be named.
+    ///
+    /// Deriving the schema from `enumerate` alone would have described
+    /// three open-ended types as closed sets, and `:customize` would
+    /// then offer a picker of one value for an option that accepts
+    /// arbitrary lists. Opting IN is one line per type and cannot be
+    /// wrong by omission.
+    fn enumerate_is_exhaustive() -> bool {
+        false
+    }
+
+    /// The declared shape of this type's values.
+    ///
+    /// Default: `enum(...)` for a type whose enumeration is closed
+    /// ([`Self::enumerate_is_exhaustive`]), else `scalar(string)` — the
+    /// honest description of a type whose only contract is
+    /// `parse`/`format`.
+    fn schema() -> crate::ConfigSchema {
+        match Self::enumerate() {
+            Some(forms) if Self::enumerate_is_exhaustive() => {
+                crate::ConfigSchema::Enum(forms.into_iter().map(str::to_string).collect())
+            }
+            _ => crate::ConfigSchema::string(),
+        }
+    }
+
+    /// This value as a schema-shaped tree.
+    ///
+    /// Default: the `format()` string, which matches the default
+    /// `schema()`. MUST agree with `schema()` — a type that overrides
+    /// one and not the other is a silently lossy option, which is what
+    /// the round-trip test in this module exists to catch.
+    fn to_value(&self) -> crate::ConfigValue {
+        crate::ConfigValue::Str(self.format())
+    }
+
+    /// Rebuild from a tree. Default: the inverse of [`Self::to_value`],
+    /// deferring to `parse` so a type's validation rules apply on this
+    /// path exactly as they do on `:set`.
+    fn from_value(value: &crate::ConfigValue) -> Result<Self, String> {
+        match value.as_str() {
+            Some(s) => Self::parse(s),
+            None => Err(format!(
+                "expected {}, got {}",
+                Self::type_label(),
+                value.kind_label()
+            )),
+        }
+    }
 }
 
 // --------------------------------------------------------------
@@ -187,6 +261,24 @@ impl OptionType for bool {
     fn try_negation_value() -> Result<Self, String> {
         Ok(false)
     }
+
+    // TC.1: a boolean is a boolean, not the string "true". The default
+    // would have described it as an enum of its two completion forms,
+    // which reads fine and would make `:customize` offer a two-item
+    // picker where a checkbox belongs.
+    fn schema() -> crate::ConfigSchema {
+        crate::ConfigSchema::bool()
+    }
+
+    fn to_value(&self) -> crate::ConfigValue {
+        crate::ConfigValue::Bool(*self)
+    }
+
+    fn from_value(value: &crate::ConfigValue) -> Result<Self, String> {
+        value
+            .as_bool()
+            .ok_or_else(|| format!("expected boolean, got {}", value.kind_label()))
+    }
 }
 
 impl OptionType for i64 {
@@ -201,6 +293,23 @@ impl OptionType for i64 {
 
     fn type_label() -> &'static str {
         "integer"
+    }
+
+    // TC.1: an integer crosses as an integer. The TOML loader is the
+    // caller that cares — `tabstop = 4` is a TOML integer, and turning
+    // it into "4" only to parse it back was the round-trip this removes.
+    fn schema() -> crate::ConfigSchema {
+        crate::ConfigSchema::int()
+    }
+
+    fn to_value(&self) -> crate::ConfigValue {
+        crate::ConfigValue::Int(*self)
+    }
+
+    fn from_value(value: &crate::ConfigValue) -> Result<Self, String> {
+        value
+            .as_int()
+            .ok_or_else(|| format!("expected integer, got {}", value.kind_label()))
     }
 }
 

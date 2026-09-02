@@ -22,7 +22,7 @@ entangled in one bug report, which is why this note exists.
 | Slice | Title | Status |
 |---|---|---|
 | **Phase 1 — the native surface** | | |
-| TC.1 | `ConfigValue` + `ConfigSchema`; every option describes its shape | 📝 |
+| TC.1 | `ConfigValue` + `ConfigSchema`; every option describes its shape | ✅ |
 | TC.2 | `lattice.toml` writes a real tree, not a string containing one | 📝 |
 | **Phase 2 — the ABI** | | |
 | TC.3 | `register-option` takes a schema; values cross as a tree | 📝 |
@@ -48,28 +48,53 @@ because a string option is a degenerate schema rather than a separate mechanism
 
 ## Phase 1 — the native surface
 
-### TC.1 — `ConfigValue` + `ConfigSchema`; every option describes its shape 📝
+### TC.1 — `ConfigValue` + `ConfigSchema`; every option describes its shape ✅
 
 `lattice-config` grows the two types and threads them through the surfaces that
 already exist:
 
 - `OptionType::schema()`, `to_value()`, `from_value()` — **defaulted**, so no
   existing option declaration changes. The default `schema()` reads
-  `enumerate()`: a type that enumerates its forms gets `enum(...)` for free,
-  everything else gets `scalar(string)`. `bool` and `i64` override to their own
-  scalar kinds.
+  `enumerate()` *for a type that declares its enumeration closed* (see the trap
+  below); everything else gets `scalar(string)`. `bool` and `i64` override to
+  their own scalar kinds.
 - `ErasedOption::schema()`, `get_value()`, `set_value()` — the runtime-name
   surface `:set`, the loader and plugin introspection already go through.
 
 Additive by construction: nothing is removed, `parse` / `format` keep their
 round-trip contract, and a scalar option behaves identically before and after.
 
-**Tests.** The round-trip that matters is `from_value(to_value(v)) == v` for
-every builtin `OptionType`, because `set_value`/`get_value` become a second way
-to move a value and a type where the two disagree is a silently lossy option.
-Plus: an enumerating type reports an `enum` schema naming exactly its forms (the
-free win is the one most likely to be quietly wrong); a `set_value` of the wrong
-kind is refused rather than coerced.
+**Tests.** `lattice-config/tests/every_option_describes_its_shape.rs`, plus the
+module's own unit tests. The round-trip that matters is
+`from_value(to_value(v)) == v` across a spread of real option types, because
+`set_value`/`get_value` become a second way to move a value and a type that
+overrides one of the three defaults and not the others compiles, registers and
+is silently lossy. Its companion is `assert_value_matches_schema`: a type can
+round-trip perfectly with itself while describing that value as something else,
+and then every consumer that trusts the schema is wrong about it. Plus:
+`set_value` refuses a `Str("4")` for an integer option rather than coercing it
+(coercion is what the string ABI did, and why failures surfaced far from their
+cause), and it runs the option's own validator, so a range-checked option is
+enforceable through `lattice.toml` exactly as through `:set`.
+
+**The free win was a trap, and the test found it.** The first cut derived
+`enum(...)` from `OptionType::enumerate`, which most enum-like types already
+implement for `:set foo=<Tab>`. But `enumerate`'s documented job is completion,
+and three types read it as a HINT over an open space: `ModelineZone` advertises
+`auto` while accepting any comma list, `ExpandHeight` advertises `half`/`full`
+while also accepting a bare number, `RootMarkers` advertises the defaults while
+accepting others. Derived blindly, all three would have been described as closed
+sets — `:customize` offering a one-item picker for an option that accepts
+arbitrary lists, and `lattice.toml` rejecting every value the option actually
+wants.
+
+So `OptionType::enumerate_is_exhaustive()` names the ambiguity, defaults to
+`false`, and the eight genuinely-closed types opt in with one line each. Opting
+in cannot be wrong by omission; deriving could be, and was. The ambiguity
+predates this slice — it was harmless while `enumerate` only fed a popup — and
+`an_open_enumeration_is_not_mistaken_for_a_closed_one` pins each of the three
+open types by name, because the failure mode is a type opting IN when it should
+not have, which a test of the default cannot see.
 
 ### TC.2 — `lattice.toml` writes a real tree, not a string containing one 📝
 

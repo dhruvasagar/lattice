@@ -167,7 +167,7 @@ fn parse_invocation(
             "`{cmd}` is a text-object; pair it with an operator \
              (`:operator delete {cmd}`) or use chord grammar"
         ))),
-        CommandKind::Action => Err(ExCommandError::Unknown(raw_cmd.to_string())),
+        CommandKind::Action => parse_naked_action(id, raw_cmd, rest, bang),
     }
 }
 
@@ -286,6 +286,44 @@ fn parse_naked_motion(
         return Err(ExCommandError::TrailingArgs);
     }
     Ok(CommandInvocation::of(id))
+}
+
+/// `:<action-name> [args]` -- run a registered action from the `:` line.
+///
+/// Actions were the one kind this parser refused, answering `Unknown` — which
+/// reports "unknown command" for a command that is registered, listed by
+/// `:describe-command`, and reachable from a chord. Motions, operators and
+/// text-objects were all already reachable here; the design this parser
+/// implements says every kind should be ("the `:` line is a parser
+/// front-end", design.md §5.2.1), and actions were simply the kind nobody had
+/// needed from `:` yet.
+///
+/// The consequence was concrete: a plugin that contributes actions — org
+/// contributes fifty-odd — could be driven by chords and by nothing else. No
+/// `:org-todo-cycle`, so no scripting it, no `:` history, no discovering it by
+/// typing part of the name.
+///
+/// **The remainder crosses as one `Args::String`**, unlike the naked-motion
+/// path which refuses trailing args. An action's argument shape is the
+/// registrant's business and there is no `parse_ex_args` for actions to
+/// declare one with, so the honest contract is to hand over what was typed and
+/// let the handler read it — which is exactly what the picker's
+/// `InvokeCommand` path already does when it dispatches an action with args.
+fn parse_naked_action(
+    id: lattice_grammar::CommandId,
+    raw_cmd: &str,
+    rest: &str,
+    bang: bool,
+) -> Result<CommandInvocation, ExCommandError> {
+    if bang {
+        return Err(ExCommandError::BangNotAllowed(raw_cmd.to_string()));
+    }
+    let invocation = CommandInvocation::of(id);
+    Ok(if rest.trim().is_empty() {
+        invocation
+    } else {
+        invocation.with_args(lattice_grammar::Args::String(rest.trim().to_string()))
+    })
 }
 
 /// `:operator <name> [target]` -- run the operator against a motion

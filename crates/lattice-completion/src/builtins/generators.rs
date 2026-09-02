@@ -48,9 +48,16 @@ impl CandidateGenerator for CommandsGenerator {
                 // invocable from the `:` line — `:w`, `:motion:line-down`
                 // — and now behave identically to a keystroke (the host
                 // dispatch is unified; see typed-motion-dispatch.md).
-                // Operators / text-objects / internal `action:*` entries
-                // are NOT actionable standalone via `:` (an operator
-                // needs a target) and stay filtered.
+                //
+                // OM.14: and ACTIONS, which the ex-command parser used to
+                // refuse. The exclusion here was true when it was written and
+                // stopped being true when `parse_naked_action` landed; leaving
+                // it would have made every action invocable and none of them
+                // discoverable, which is the worse half of the original bug —
+                // you can only type a name you already know.
+                //
+                // Operators and text-objects stay filtered: an operator needs
+                // a target, so it is not actionable standalone.
                 match spec.kind {
                     lattice_grammar::CommandKind::ExCommand => {
                         // Delimiter-only commands (`:s/.../`, `:g/.../`)
@@ -63,7 +70,8 @@ impl CandidateGenerator for CommandsGenerator {
                             return None;
                         }
                     }
-                    lattice_grammar::CommandKind::Motion => {}
+                    lattice_grammar::CommandKind::Motion | lattice_grammar::CommandKind::Action => {
+                    }
                     _ => return None,
                 }
                 // User-facing name: strip the `ex:` namespace prefix so

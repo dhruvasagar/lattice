@@ -48,7 +48,11 @@
 // consumes its own derive).
 extern crate self as lattice_plugin_sdk;
 
-pub use lattice_plugin_sdk_derive::{PluginEvent, PluginOption};
+pub use lattice_plugin_sdk_derive::{ConfigShape, PluginEvent, PluginOption};
+
+/// TC.4 — a Rust struct as a config schema and a config value, plus the arena
+/// flattening the WIT seam needs (`typed-configuration.md`).
+pub mod shape;
 
 /// A plugin-defined event: a typed view over the opaque `emit-event` /
 /// `on-event` wire (PH7.8b.2). Implement via `#[derive(PluginEvent)]` on a

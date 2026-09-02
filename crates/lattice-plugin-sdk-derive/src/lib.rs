@@ -124,6 +124,14 @@ fn to_kebab_case(s: &str) -> String {
                 out.push('-');
             }
             out.extend(ch.to_lowercase());
+        } else if ch == '_' {
+            // TC.4: `ConfigShape` kebab-cases FIELD names, which are
+            // `snake_case` where the type and variant names its two older
+            // callers pass are `CamelCase`. An underscore is not kebab-case by
+            // any reading, so handling it here rather than in a second helper
+            // keeps one answer to "what is this called on the wire" — and a
+            // type name containing one would have wanted this too.
+            out.push('-');
         } else {
             out.push(ch);
         }
@@ -252,4 +260,226 @@ fn parse_option_attr(attrs: &[Attribute]) -> Result<(Option<String>, Option<Stri
         })?;
     }
     Ok((name, default))
+}
+
+// ── TC.4: `#[derive(ConfigShape)]` ──────────────────────────────────────────
+
+/// Derive [`ConfigShape`](lattice_plugin_sdk::shape::ConfigShape) for a struct
+/// with named fields, or for an enum whose variants are all unit.
+///
+/// A struct becomes a `record`; each field's schema is its type's, its doc is
+/// its `///` comment, and its `required` comes from the TYPE — an `Option<T>`
+/// field is optional and everything else is required. That is the reason there
+/// is no `#[shape(optional)]` attribute: the type already says it, and a second
+/// place to say it is a second place to disagree.
+///
+/// An all-unit enum becomes an `enum-of` over its variants kebab-cased, which is
+/// the spelling `:set` completion and `:customize` show. A data-carrying variant
+/// is rejected rather than flattened — a tagged union has no `config-schema`
+/// arm, and inventing one silently would produce a shape the host validates
+/// against wrongly.
+///
+/// Field names cross **kebab-cased**, matching the option-name convention
+/// (`todo-keywords`, not `todo_keywords`) so a TOML key reads the way every
+/// other key in the file does.
+#[proc_macro_derive(ConfigShape, attributes(shape))]
+pub fn derive_config_shape(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let ident = &input.ident;
+
+    match &input.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(named) => config_shape_for_struct(ident, named),
+            _ => syn::Error::new_spanned(
+                ident,
+                "`#[derive(ConfigShape)]` on a struct requires named fields — a record's fields have names",
+            )
+            .to_compile_error()
+            .into(),
+        },
+        Data::Enum(e) => config_shape_for_enum(ident, e),
+        Data::Union(_) => syn::Error::new_spanned(
+            ident,
+            "`#[derive(ConfigShape)]` does not support unions",
+        )
+        .to_compile_error()
+        .into(),
+    }
+}
+
+fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> TokenStream {
+    let mut field_schema = Vec::new();
+    let mut field_to = Vec::new();
+    let mut field_from = Vec::new();
+    let mut binds = Vec::new();
+
+    for f in &named.named {
+        let Some(fident) = f.ident.as_ref() else {
+            continue;
+        };
+        let wire = to_kebab_case(&fident.to_string());
+        let doc = doc_string(&f.attrs);
+        let ty = &f.ty;
+        let optional = is_option_type(ty);
+
+        field_schema.push(quote! {
+            ::lattice_plugin_sdk::shape::Field {
+                name: #wire.to_string(),
+                schema: <#ty as ::lattice_plugin_sdk::shape::ConfigShape>::schema(),
+                required: !#optional,
+                doc: #doc.to_string(),
+            }
+        });
+
+        if optional {
+            // An absent optional field is OMITTED, not emitted as a placeholder
+            // — "absent" and "present but empty" are different values, and the
+            // host's `required` check reads absence.
+            field_to.push(quote! {
+                if let ::core::option::Option::Some(v) = &self.#fident {
+                    fields.push((
+                        #wire.to_string(),
+                        ::lattice_plugin_sdk::shape::ConfigShape::to_value(v),
+                    ));
+                }
+            });
+            field_from.push(quote! {
+                let #fident = match value.field(#wire) {
+                    ::core::option::Option::Some(v) => ::core::option::Option::Some(
+                        ::lattice_plugin_sdk::shape::ConfigShape::from_value(v)
+                            .map_err(|e| e.under(#wire))?,
+                    ),
+                    ::core::option::Option::None => ::core::option::Option::None,
+                };
+            });
+        } else {
+            field_to.push(quote! {
+                fields.push((
+                    #wire.to_string(),
+                    ::lattice_plugin_sdk::shape::ConfigShape::to_value(&self.#fident),
+                ));
+            });
+            field_from.push(quote! {
+                let #fident = {
+                    let v = value.field(#wire).ok_or_else(|| {
+                        ::lattice_plugin_sdk::shape::ShapeError::new("required field is missing")
+                            .under(#wire)
+                    })?;
+                    ::lattice_plugin_sdk::shape::ConfigShape::from_value(v)
+                        .map_err(|e| e.under(#wire))?
+                };
+            });
+        }
+        binds.push(quote! { #fident });
+    }
+
+    let expanded = quote! {
+        impl ::lattice_plugin_sdk::shape::ConfigShape for #ident {
+            fn schema() -> ::lattice_plugin_sdk::shape::Schema {
+                ::lattice_plugin_sdk::shape::Schema::Record(::std::vec![ #(#field_schema),* ])
+            }
+
+            fn to_value(&self) -> ::lattice_plugin_sdk::shape::Value {
+                let mut fields: ::std::vec::Vec<(::std::string::String, ::lattice_plugin_sdk::shape::Value)> =
+                    ::std::vec::Vec::new();
+                #(#field_to)*
+                ::lattice_plugin_sdk::shape::Value::record(fields)
+            }
+
+            fn from_value(
+                value: &::lattice_plugin_sdk::shape::Value,
+            ) -> ::core::result::Result<Self, ::lattice_plugin_sdk::shape::ShapeError> {
+                if !::core::matches!(value, ::lattice_plugin_sdk::shape::Value::Record(_)) {
+                    return ::core::result::Result::Err(
+                        ::lattice_plugin_sdk::shape::ShapeError::new(::std::format!(
+                            "expected record, got {}",
+                            value.kind_label()
+                        )),
+                    );
+                }
+                #(#field_from)*
+                ::core::result::Result::Ok(Self { #(#binds),* })
+            }
+        }
+    };
+    expanded.into()
+}
+
+fn config_shape_for_enum(ident: &syn::Ident, e: &syn::DataEnum) -> TokenStream {
+    let mut forms = Vec::new();
+    let mut to_arms = Vec::new();
+    let mut from_arms = Vec::new();
+
+    for v in &e.variants {
+        if !matches!(v.fields, Fields::Unit) {
+            return syn::Error::new_spanned(
+                v,
+                "`#[derive(ConfigShape)]` on an enum requires every variant to be a unit variant \
+                 — a data-carrying variant has no `config-schema` arm, and flattening one \
+                 silently would describe a shape the host then validates against wrongly",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let vident = &v.ident;
+        let wire = to_kebab_case(&vident.to_string());
+        forms.push(quote! { #wire.to_string() });
+        to_arms.push(quote! {
+            Self::#vident => ::lattice_plugin_sdk::shape::Value::Str(#wire.to_string())
+        });
+        from_arms.push(quote! { #wire => ::core::result::Result::Ok(Self::#vident) });
+    }
+
+    let expanded = quote! {
+        impl ::lattice_plugin_sdk::shape::ConfigShape for #ident {
+            fn schema() -> ::lattice_plugin_sdk::shape::Schema {
+                ::lattice_plugin_sdk::shape::Schema::Enum(::std::vec![ #(#forms),* ])
+            }
+
+            fn to_value(&self) -> ::lattice_plugin_sdk::shape::Value {
+                match self { #(#to_arms),* }
+            }
+
+            fn from_value(
+                value: &::lattice_plugin_sdk::shape::Value,
+            ) -> ::core::result::Result<Self, ::lattice_plugin_sdk::shape::ShapeError> {
+                let got = value.as_str().ok_or_else(|| {
+                    ::lattice_plugin_sdk::shape::ShapeError::new(::std::format!(
+                        "expected string, got {}",
+                        value.kind_label()
+                    ))
+                })?;
+                match got {
+                    #(#from_arms,)*
+                    // The valid set, inline. An enum's whole advantage over a
+                    // free string is that the answer is finite, so a rejection
+                    // that does not show it wastes the one thing it knows.
+                    other => ::core::result::Result::Err(
+                        ::lattice_plugin_sdk::shape::ShapeError::new(::std::format!(
+                            "expected one of {}, got `{}`",
+                            [ #(#forms),* ].join(" | "),
+                            other
+                        )),
+                    ),
+                }
+            }
+        }
+    };
+    expanded.into()
+}
+
+/// Whether `ty` is spelled `Option<...>` — how a field says it is not required.
+///
+/// Syntactic, by the last path segment, so `std::option::Option<T>` and a bare
+/// `Option<T>` both match and a user type happening to be named `Option` would
+/// too. That is the same trade `option_kind_for` makes for `bool` / `i64` /
+/// `String`, and a proc macro has no types to ask.
+fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(p) = ty
+        && let Some(seg) = p.path.segments.last()
+    {
+        return seg.ident == "Option"
+            && matches!(seg.arguments, syn::PathArguments::AngleBracketed(_));
+    }
+    false
 }

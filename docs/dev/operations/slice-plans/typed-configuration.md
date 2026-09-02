@@ -26,7 +26,7 @@ entangled in one bug report, which is why this note exists.
 | TC.2 | `lattice.toml` writes a real tree, not a string containing one | ✅ |
 | **Phase 2 — the ABI** | | |
 | TC.3 | An option can be declared with a schema; values cross as a tree | ✅ |
-| TC.4 | The SDK derive — a Rust struct becomes a schema and a value | 📝 |
+| TC.4 | The SDK derive — a Rust struct becomes a schema and a value | ✅ |
 | **Phase 3 — the encodings go** | | |
 | TC.5 | `capture-templates` is a record list **(plugin)** | 📝 |
 | TC.6 | `agenda-sections` + `agenda-custom-commands`; `toml` leaves the wasm **(plugin)** | 📝 |
@@ -191,7 +191,7 @@ write alone. An ill-shaped tree is refused AND leaves the previous value intact,
 both halves, because returning `false` while clearing the option would satisfy
 the first.
 
-### TC.4 — The SDK derive — a Rust struct becomes a schema and a value 📝
+### TC.4 — The SDK derive — a Rust struct becomes a schema and a value ✅
 
 `lattice-plugin-sdk` grows the derive that turns an ordinary Rust struct into a
 `schema()` and a `to_value()` / `from_value()`. Without it every guest
@@ -199,8 +199,45 @@ hand-writes trees, which is worse than the text parse it replaces — the design
 claim is that the guest's parse becomes *total and mechanical*, and this slice
 is what makes that true rather than aspirational.
 
-**Tests.** A nested struct with a list of records round-trips. A missing
-required field and a wrong-typed field each fail with the field's path.
+`lattice_plugin_sdk::shape` carries the trait, the tree types, impls for
+`bool` / `i64` / `String` / `Vec<T>` / `Option<T>`, and the arena flattening.
+WIT-agnostic like the rest of the SDK — a proc-macro crate cannot name a
+per-world WIT type — so a plugin writes one function mapping the SDK's node
+types to its generated ones, once, the same tax `#[derive(PluginOption)]`
+already charges for `OptionKind`.
+
+**Optionality comes from the type.** An `Option<T>` field is optional and
+everything else is required; there is no `#[shape(optional)]`, because the type
+already says it and a second place to say it is a second place to disagree. An
+absent optional field is OMITTED from the tree rather than emitted as a
+placeholder — "absent" and "present but empty" are different values, and the
+host's `required` check reads absence.
+
+**Field names cross kebab-cased** (`max_depth` → `max-depth`), so an option's
+fields read like every other key in a TOML file rather than like Rust
+identifiers. This widened `to_kebab_case`, which previously only saw the
+`CamelCase` type and variant names its two older callers pass; an underscore is
+not kebab-case by any reading, so one answer to "what is this called on the
+wire" is better than a second helper.
+
+An all-unit enum becomes `enum-of` over its kebab-cased variants — which is what
+lets `:customize` offer a picker. A data-carrying variant is **rejected** rather
+than flattened: a tagged union has no `config-schema` arm, and inventing one
+would describe a shape the host then validates against wrongly.
+
+**Tests.** Ten, against org's actual shapes rather than a toy struct — a list of
+records with a nested record, an optional field, and an enum field. A unit test
+of the macro proves it expands; these test the properties a hand-written parser
+kept getting wrong. The round-trip (`from_value` inverts `to_value`) is the
+contract that makes the derive trustworthy at all. Then: an absent optional
+survives as `None` rather than `Some("")`; a missing required field reports
+`target.file`, assembled from two segments discovered at different depths; a
+wrong-typed leaf inside a list reports `[1].target.file`, which is the message a
+user of org's `capture-templates` will actually get; a non-record is refused
+before any field is read, so the message blames the value rather than a field;
+and the whole loop — struct → tree → arena → tree → struct — because the derive
+produces a tree while the wire carries an arena, and a flattening that lost the
+nesting would leave every other assertion passing.
 
 ## Phase 3 — the encodings go **(plugin)**
 

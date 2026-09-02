@@ -717,7 +717,7 @@ pub fn spawn_scan_view_scan(
                         format!("Building agenda: {label} ({scanned}/{total} files)")
                     },
                     count: Some(files.iter().map(|f| f.entries.len()).sum()),
-                    emphasis: None,
+                    emphasis: (!label.is_empty()).then(|| label.clone()),
                 });
             }
         }
@@ -1024,7 +1024,13 @@ fn append_sorted(
             outcome.files_scanned,
             outcome.caveat()
         ),
-        emphasis: None,
+        // OA.22: the label carries the accent role
+        // (`multibuffer.status.query`), the project-search precedent. What the
+        // view IS — its window and its filters — is the part the eye should
+        // land on; the counts beside it are the part that changes every scan
+        // and means least. `None` when there is no label, which degrades to
+        // the plain complete colour rather than accenting an empty string.
+        emphasis: (!outcome.label.is_empty()).then(|| outcome.label.clone()),
     });
     if let Some(events) = events {
         events.publish_typed(MultibufferExcerptsReady { view });
@@ -1169,7 +1175,10 @@ fn finish_empty(
             outcome.files_scanned,
             outcome.caveat()
         ),
-        emphasis: None,
+        // Accented here MORE than anywhere: "nothing scheduled" under a filter
+        // is the sentence that misleads, and the filter is what has to catch
+        // the eye beside it.
+        emphasis: (!outcome.label.is_empty()).then(|| outcome.label.clone()),
     });
     if let Some(events) = events {
         events.publish_typed(MultibufferExcerptsReady { view });

@@ -88,6 +88,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     // mode declaring `fold_toggle_action()`, so `<Tab>` in an ordinary
     // document stays jump-list-forward.
     crate::foldable_view_mode::register_foldable_view_mode(registry);
+    // TB.1: `table-mode` owns pipe-table editing on every major that HAS
+    // pipe tables — markdown's and org's alike. A `Majors` policy rather
+    // than the cascade above, because a table mode is not something another
+    // mode declares a target for: it either applies to your major or it does
+    // not, and the list of majors is the whole statement.
+    crate::modes::table::mode::register_table_mode(registry);
     // msg-mode.1: `messages-mode` is the major mode for the
     // editor's `*messages*` audit-log buffer. Replaces the
     // pre-msg-mode `text-mode + read-only-mode` combo so the

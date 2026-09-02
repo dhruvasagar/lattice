@@ -184,6 +184,9 @@ pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
+// TB.1: `table-mode` — the shared pipe-table minor. Re-exported beside the
+// other shared minors so boot reaches it by the same path.
+pub use crate::modes::table::mode::{TableMode, register_table_actions, register_table_mode};
 pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::provider_view::{
     ProviderViewOpener, ProviderViewOutcome, ProviderViewRegistry, ProviderViewRegistryHandle,

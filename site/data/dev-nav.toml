@@ -71,6 +71,7 @@ description = "The vim grammar as implemented: operators, text objects, indentat
 docs = [
   "architecture/auto-indent",
   "architecture/surround-mode",
+  "architecture/table-mode",
   "architecture/select-mode",
   "architecture/search-operator",
   "architecture/narrow-mode",

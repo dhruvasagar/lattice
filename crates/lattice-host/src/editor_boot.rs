@@ -757,6 +757,14 @@ impl Editor {
         // declare.
         lattice_mode::register_foldable_view_actions(boot.commands_mut());
 
+        // TB.1: and `table-mode`'s eleven. All real bodies — pipe-table
+        // editing is generic, so there is nothing per-major to declare and no
+        // indirection to route through. Registered here so
+        // `translate_mode_keymaps` can resolve the mode's `cmd` names; an
+        // unresolvable name is dropped from the layer with a `warn`, which is
+        // a whole keymap that silently does nothing.
+        lattice_mode::register_table_actions(boot.commands_mut());
+
         // BC.7 (2026-06-24): the multibuffer excerpt-jump motions
         // (`]e`/`[e`/`]E`/`[E`), the `:multibuffer-*` / `:narrow` / `:widen` /
         // `:search` ex-commands, AND the `zn` narrow operator SPEC are all

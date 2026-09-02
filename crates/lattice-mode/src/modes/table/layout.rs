@@ -36,9 +36,23 @@
 use unicode_width::UnicodeWidthStr;
 
 /// Column alignment, from the separator row's `:` markers.
+///
+/// Public from TB.1: [`super::model`] renders the same rows under the caret
+/// that this module renders at content-build time, and it carries them in a
+/// `pub` row type — a second copy of the alignment vocabulary is the
+/// duplication the whole `table/` directory exists to avoid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Align {
+pub enum Align {
+    /// No marker — the default, and what an unmarked `---` column means.
     Left,
+    /// `:---` — left, said out loud.
+    ///
+    /// Distinct from [`Align::Left`] only so the marker ROUND-TRIPS. Both
+    /// render the same text; collapsing them would mean an interactive
+    /// realign silently deletes a `:` the author typed, which shows up in a
+    /// git diff of their notes as a change they did not make. TB.1 found
+    /// this; the unattended help pass gets the same fidelity for free.
+    LeftMarked,
     Right,
     Center,
 }
@@ -113,7 +127,7 @@ fn is_separator(line: &str) -> bool {
 /// `\|` is an escaped pipe and stays inside the cell it belongs to —
 /// several help tables document alternatives that way (`` `:reg\|:registers` ``),
 /// and splitting on it would invent a column.
-fn cells(line: &str) -> Vec<String> {
+pub(super) fn cells(line: &str) -> Vec<String> {
     let t = line.trim();
     let inner = t
         .strip_prefix('|')
@@ -148,7 +162,7 @@ fn cells(line: &str) -> Vec<String> {
 /// stripper leaves behind. Getting this wrong in the other direction —
 /// measuring the markup — would pad every column holding a cross-link
 /// out by the length of a URL nobody sees.
-fn visible_width(cell: &str) -> usize {
+pub(super) fn visible_width(cell: &str) -> usize {
     UnicodeWidthStr::width(strip_link_markup(cell).as_str())
 }
 
@@ -176,7 +190,7 @@ fn strip_link_markup(cell: &str) -> String {
     out
 }
 
-fn alignments(separator: &str) -> Vec<Align> {
+pub(super) fn alignments(separator: &str) -> Vec<Align> {
     cells(separator)
         .into_iter()
         .map(|c| {
@@ -184,7 +198,8 @@ fn alignments(separator: &str) -> Vec<Align> {
             match (c.starts_with(':'), c.ends_with(':')) {
                 (true, true) => Align::Center,
                 (false, true) => Align::Right,
-                _ => Align::Left,
+                (true, false) => Align::LeftMarked,
+                (false, false) => Align::Left,
             }
         })
         .collect()
@@ -224,21 +239,25 @@ fn layout(table: &[String]) -> Vec<String> {
     if let Some(header) = rows.next() {
         out.push(render_row(&header, &widths, align_of));
     }
-    out.push(render_separator(&widths, align_of));
+    out.push(render_separator(&widths, align_of, '|'));
     for row in rows {
         out.push(render_row(&row, &widths, align_of));
     }
     out
 }
 
-fn render_row(row: &[String], widths: &[usize], align_of: impl Fn(usize) -> Align) -> String {
+pub(super) fn render_row(
+    row: &[String],
+    widths: &[usize],
+    align_of: impl Fn(usize) -> Align,
+) -> String {
     let mut s = String::from("|");
     for (c, width) in widths.iter().enumerate() {
         let cell = row.get(c).map(String::as_str).unwrap_or("");
         let pad = width.saturating_sub(visible_width(cell));
         s.push(' ');
         match align_of(c) {
-            Align::Left => {
+            Align::Left | Align::LeftMarked => {
                 s.push_str(cell);
                 s.extend(std::iter::repeat_n(' ', pad));
             }
@@ -258,7 +277,17 @@ fn render_row(row: &[String], widths: &[usize], align_of: impl Fn(usize) -> Alig
     s
 }
 
-fn render_separator(widths: &[usize], align_of: impl Fn(usize) -> Align) -> String {
+/// A rule row, its columns joined by `join`.
+///
+/// `join` is `|` for markdown and `+` for org (TB.1). The parameter exists
+/// so [`super::model`] can reproduce the dialect it found instead of carrying
+/// a second copy of this function that differs by one character — which is
+/// how the two halves of table support drift apart.
+pub(super) fn render_separator(
+    widths: &[usize],
+    align_of: impl Fn(usize) -> Align,
+    join: char,
+) -> String {
     let mut s = String::from("|");
     for (c, width) in widths.iter().enumerate() {
         // `width + 2` covers the space either side of the cell, so the
@@ -266,6 +295,10 @@ fn render_separator(widths: &[usize], align_of: impl Fn(usize) -> Align) -> Stri
         let span = width + 2;
         match align_of(c) {
             Align::Left => s.extend(std::iter::repeat_n('-', span)),
+            Align::LeftMarked => {
+                s.push(':');
+                s.extend(std::iter::repeat_n('-', span - 1));
+            }
             Align::Right => {
                 s.extend(std::iter::repeat_n('-', span - 1));
                 s.push(':');
@@ -276,8 +309,12 @@ fn render_separator(widths: &[usize], align_of: impl Fn(usize) -> Align) -> Stri
                 s.push(':');
             }
         }
-        s.push('|');
+        s.push(join);
     }
+    // The loop wrote a trailing join; a table's right edge is always a pipe,
+    // even in org where the interior joins are `+`.
+    s.pop();
+    s.push('|');
     s
 }
 
@@ -358,7 +395,17 @@ mod tests {
     fn colons_still_mean_right_and_centre() {
         let out = fmt("| Left | Centre | Right |\n|:--|:-:|--:|\n| a | b | c |");
         let sep = out.lines().nth(1).unwrap();
-        assert!(sep.starts_with("|---"), "left column has no colon: {sep}");
+        // TB.1 changed this line's expectation, deliberately. It used to
+        // assert `|---` — the explicit left marker was DROPPED, since left is
+        // the default and the rendering is identical either way. That was
+        // fine for a pass over generated help pages and wrong the moment the
+        // same engine realigns the user's own file: a `:` they typed vanishing
+        // from a git diff is a change they did not make. The marker now
+        // round-trips; the alignment it means is unchanged.
+        assert!(
+            sep.starts_with("|:---"),
+            "an explicit left marker survives: {sep}"
+        );
         assert!(sep.contains(":------:"), "centre keeps both colons: {sep}");
         assert!(sep.ends_with(":|"), "right keeps its trailing colon: {sep}");
 

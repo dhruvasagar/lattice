@@ -181,6 +181,7 @@ docs = [
   "yaml-mode",
   "sql-mode",
   "markdown-mode",
+  "table-mode",
   "wit-mode",
 ]
 
@@ -346,6 +347,7 @@ docs = [
 "project-search-mode"  = "Project search"
 "multibuffer-mode"     = "Multibuffer views"
 "narrow-mode"          = "Narrow"
+"table-mode"           = "Tables"
 "scan-view-mode"       = "Scan views"
 "scan-view-clockreport-mode" = "The clock report"
 "lsp-mode"             = "The lsp-mode gate"

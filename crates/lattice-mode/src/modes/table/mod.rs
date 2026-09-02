@@ -13,4 +13,7 @@
 //! this placement avoids. The two consumers differ only in *when* they
 //! run it: help once at content-build, table-mode on every edit.
 
+pub mod edit;
 pub mod layout;
+pub mod mode;
+pub mod model;

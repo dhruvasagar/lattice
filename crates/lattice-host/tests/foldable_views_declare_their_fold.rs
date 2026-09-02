@@ -44,6 +44,23 @@ const ALLOWED: &[&str] = &[
     "crates/lattice-snippet/src/modes.rs",
     "crates/lattice-host/src/command_line_mode.rs",
     "crates/lattice-host/src/command_line_expand_mode.rs",
+    // TB.1 — `table-mode`, and the ONLY entry here that is a Normal-mode
+    // `<Tab>` outside the shared minor. It is allowed because it is not a
+    // fold: inside a pipe table `<Tab>` advances a cell, which is a different
+    // meaning rather than a fourth copy of the same one, and it is the
+    // meaning users arrive with from every other editor that has tables.
+    //
+    // What makes it safe is that it DECLINES. Outside a table the body
+    // returns `Effect::Declined`, the dispatcher peels this layer, and the
+    // chord resolves to whatever `<Tab>` already meant — org's headline
+    // cycle, then the builtin jump-forward. So the chain this guard protects
+    // is intact; `table-mode` sits above it rather than replacing it, and
+    // `table_mode_layering.rs` pins exactly that.
+    //
+    // It is deliberately NOT expressed as `fold_toggle_action()`. That would
+    // make the shared minor dispatch a cell-walk as if it were a fold, which
+    // is the vocabulary being wrong to satisfy a lint.
+    "crates/lattice-mode/src/modes/table/mode.rs",
 ];
 
 fn workspace_root() -> PathBuf {

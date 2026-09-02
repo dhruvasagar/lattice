@@ -53,6 +53,7 @@ same surface).
 | File tree                  | [`file-tree-mode`](help:file-tree-mode)  | ✅      |
 | Oil (editable directory)   | [`oil-mode`](help:oil-mode)              | ✅      |
 |   — listing presentation   | [`directory-listing-mode`](help:directory-listing-mode) | ✅      |
+| Tables (markdown + org)    | [`table-mode`](help:table-mode)          | ✅      |
 | Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
 |   — `gr` refresh          | [`refreshable-view-mode`](help:refreshable-view-mode) | ✅      |
 |   — `<Tab>` fold a block   | [`foldable-view-mode`](help:foldable-view-mode) | ✅      |

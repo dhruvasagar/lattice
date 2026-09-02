@@ -13164,7 +13164,40 @@ impl Editor {
                 // `std::mem::take` in `apply_picker_outcome` observes (the same
                 // contract `do_picker_accept`'s sync path upholds).
                 self.picker_open_target = pending.target;
-                self.apply_picker_outcome(outcome).renderer_signals
+                let out = self.apply_picker_outcome(outcome);
+                let mut signals = out.renderer_signals;
+                // OR.11b: the ASYNC accept path dropped `out.effects`, where
+                // the sync path (`do_picker_accept`) hands them back to the
+                // renderer that applies them.
+                //
+                // Invisible until an accept produced a RENDERER-owned effect.
+                // `WriteToFile` — the only one any source produced before —
+                // is applied inline by `handle_effect` on the way through, so
+                // dropping the record of it changed nothing, and a comment in
+                // `org_roam_index.rs` records a whole investigation that found
+                // this line, patched it, and could not tell the difference.
+                //
+                // `Effect::OpenTransient` is the first that is not: its body
+                // is `open_named_transient`, hoisted precisely so both
+                // renderer peers share it, and nothing on this path called it.
+                // A picker accept that opens a menu therefore did nothing at
+                // all — which is org-roam's create-from-template flow.
+                for effect in out.effects {
+                    match effect {
+                        Effect::OpenTransient { source, args } => {
+                            signals.extend(self.open_named_transient(source, args));
+                        }
+                        // Named rather than swallowed: the next effect to land
+                        // here should be a log line, not another silent
+                        // feature. `debug!` because an accept is a keystroke
+                        // path and most effects here are already applied.
+                        other => tracing::debug!(
+                            effect = ?std::mem::discriminant(&other),
+                            "picker accept: an effect reached the async drain with no handler"
+                        ),
+                    }
+                }
+                signals
             }
             Err(e) => {
                 self.set_message(EchoLevel::Error, format!("picker: {e}"));

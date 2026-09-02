@@ -1331,6 +1331,12 @@ pub fn register_scan_view_mode(modes: &mut lattice_mode::ModeRegistry) {
     modes
         .register(ScanViewMode)
         .expect("scan-view-mode registers without conflict at boot");
+    // OA.16: the clock report rides the same registration. A display mode the
+    // user can never activate is not a feature, and registering it here means
+    // one call site rather than a second thing to remember.
+    modes
+        .register(crate::providers::clock_report::ScanViewClockReportMode)
+        .expect("scan-view-clockreport-mode registers without conflict at boot");
 }
 
 /// Register `action:agenda-refresh` so the mode's `refresh_action` target

@@ -28,6 +28,11 @@ pub mod search;
 #[cfg(feature = "scan-view")]
 pub mod scan_view;
 
+/// OA.16: clocked time, rolled up an outline — the report
+/// `scan-view-clockreport-mode` renders over any scan view whose source
+/// reports clock spans.
+pub mod clock_report;
+
 /// N.1.1 (2026-06-10): narrow mode — a focused, editable one-excerpt
 /// multibuffer view of a region. Unlike `search`, narrow is a
 /// first-class built-in (no cargo feature gate): no async scan, no

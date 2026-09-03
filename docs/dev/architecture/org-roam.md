@@ -475,6 +475,38 @@ nicety.
 syntaxes coexist because they answer different questions: `%` interpolates the
 *capture context*, `${}` interpolates the *node*.
 
+**A templated create opens capture's buffer, not a write (OR.11b).** Half the
+placeholder set is meaningless without one — `%?` has no caret to place,
+`%^{Prompt}` has nobody to ask — and shipping the write first is exactly why
+those three expanded to the empty string and vanished from the note for three
+slices. The draft is `open_capture_buffer`'s, unchanged: an `org-mode` major
+with the `org-capture-mode` minor, `C-c C-c` to file and `C-c C-k` to discard.
+
+What made that reuse possible is a narrowing rather than an abstraction. The
+pending-capture state carried a whole `capture_templates::Template`, and
+`capture_finalize` read `target` and `clock_in` from it and nothing else. It now
+carries a **`CaptureDestination`** — those two fields — so roam fills it in
+honestly (`Target::File` at the computed path, `clock_in: false`) instead of
+synthesising a template with a dead key and description to satisfy a consumer.
+
+The fields menu is shared the same way: one row-builder, with the fire row's
+carried arguments the only difference. Capture carries its template key and
+re-resolves; roam carries `[title, key, id]`, because the **id must survive the
+hop**. The template is deliberately re-read from the option between hops so a
+`:set` takes effect — and re-deriving the id that way would mean the `${id}` in
+the draft is not the `:ID:` the note is filed with.
+
+**`C-c C-k` creates nothing, and that falls out rather than being cleaned up.**
+The file is written on finalize, so an abort has nothing to undo, including the
+minted id. That is the property §5.2's write-on-create could not have.
+
+**The stub path stays a direct write.** With no templates configured there is no
+menu and no draft: `WriteToFile` opens the note at its real path with the cursor
+at the end. A stub has no `%?` and no questions, so a draft would add a
+finalize keystroke to the one flow whose whole point is that it costs nothing —
+and §7's "an org user who has never heard of templates pays nothing" is the same
+argument one level up.
+
 **Keyword parsing is case-insensitive.** The corpus contains `#+TITLE:`,
 `#+title:`, `#+Filetags:` and `#+filetags:`, all written by org itself at
 different times. A case-sensitive parser would index half the corpus.

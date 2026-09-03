@@ -16,7 +16,10 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-08-30) — OR.1 and OR.2 landed.
+**Status:** 🚧 in progress (2026-09-03) — every slice is ✅ except **OR.7c**
+(`:org-roam-insert-node` as a picker), which is ⛔ deferred. The plan stays
+active for it: deferred is open work, and archiving a plan because only the
+deferred rows are left is what buried `ML.4` / `ML.6`.
 
 ---
 
@@ -118,7 +121,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.9 | the backlinks view | ✅ |
 | OR.10 | dailies | ✅ |
 | OR.11a | `${field}` — written and wired | ✅ |
-| OR.11b | the capture buffer — **built by OC.7**, roam reuses none of it | 🚧 |
+| OR.11b | the capture buffer — roam's draft, `%^{…}` and `C-c C-k` | ✅ |
 | OR.12 | docs — the user page is `doc/org-roam.md`, its own topic | ✅ |
 
 ### OR.1 — a plugin can persist something ✅
@@ -809,7 +812,7 @@ when `org.roam-directory` is unset rather than inventing a journal wherever the
 editor started. Plus 3 host tests for `create_parents` and 2 for the authorizer
 walk-up.
 
-### OR.11 — templates, the capture buffer, and the one thing capture cannot do 🚧
+### OR.11 — templates, the capture buffer, and the one thing capture cannot do ✅
 
 **Audited 2026-08-31. Both halves moved, in opposite directions.**
 
@@ -829,8 +832,9 @@ module with passing unit tests, unreachable because one `mod` line was absent.
 major and the `org-capture-mode` minor carrying `C-c C-c` / `C-c C-k`, and
 `capture::expand_for_buffer` places the cursor at `%?`.
 
-**Roam does not reuse any of it, and this section said it did.** Audited
-against the call site 2026-09-03. `roam_create_from_template`
+**Roam reused none of it, and this section said it did.** Audited against the
+call site 2026-09-03, and fixed the same day — the four findings below are what
+OR.11b then had to build. `roam_create_from_template`
 (`lib.rs`) ends in a bare `Effect::WriteToFile` and never touches
 `open_capture_buffer`. Four consequences, none of them the "ORDER" this
 section previously named as all that remained:
@@ -852,18 +856,56 @@ section previously named as all that remained:
    substance (a roam create has no origin buffer to link back to) but it
    should be *documented* rather than silently dropped.
 
-Only `%U` / `%T` / `%t` and `%%` survive the roam path, because those need no
-context. `doc/org-roam.md` now states exactly this rather than promising
-capture's placeholder set.
+Only `%U` / `%T` / `%t` and `%%` survived the roam path, because those need no
+context.
 
 The prompt ORDER — title first, then template, where org-capture asks template
-first — is *already* what roam does, and is the one thing this section got
+first — was *already* what roam did, and is the one thing this section got
 right. The title comes from the picker query or the `:org-roam-create-node`
 argument and the transient menu follows it; no title prompt is needed. So the
-order is done and the buffer is not, which is the reverse of what was written
+order was done and the buffer was not, which is the reverse of what was written
 here.
 
-The scope widening recorded below is therefore **not** already paid for.
+**All four are now built (2026-09-03).** What shipped:
+
+- **`CaptureDestination` replaces the pending template.** The state `C-c C-c`
+  reads held a whole `capture_templates::Template`, and `capture_finalize` used
+  it for one call that reads `target` and `clock_in`. It now carries exactly
+  those two, so roam fills it in honestly — `Target::File` at the computed
+  path — rather than synthesising a template with a dead key, description and
+  `clock_in` to satisfy a consumer. `open_capture_buffer` takes a name, a
+  destination and a body instead of a template; org-capture's own tests are the
+  regression gate and stayed green.
+- **`fields_menu_spec` is the shared row-builder.** Capture and roam differ only
+  in the fire row's carried arguments. Capture carries its key and re-resolves;
+  roam carries `[title, key, id]` through `ORG_TRANSIENT_ROAM_FIELDS`, because
+  the template is deliberately re-read between hops (so a `:set` takes effect)
+  and re-deriving the id that way would mean the `${id}` in the draft is not the
+  `:ID:` the note is filed with. A test asserts the menu's carried id is the one
+  in the draft, which is the only way that failure would ever be noticed.
+- **`%a` is passed in, not read from `CAPTURE_ORIGIN`.** Reading the thread-local
+  inside `open_capture_buffer` would have let a roam note inherit the `%a` of
+  whatever org-capture ran before it — a link back to a file the user was not in.
+  Roam passes `""`; capture passes a new `capture_origin()` that PEEKS rather
+  than takes, because the buffer path expands `%a` when the buffer opens and the
+  capture is not over until `C-c C-c` (the fields route would otherwise consume
+  its own origin on the way through).
+- **The stub path stays a direct write.** No templates configured means no menu
+  and no draft — `WriteToFile` opens the note at its real path with the cursor
+  at the end. A stub has no `%?` and no questions, so a draft would add a
+  finalize keystroke to the one flow whose point is costing nothing.
+
+Three tests, in `tests/org_roam_index.rs`: the templated create opens a draft
+and files it on `C-c C-c` (rewritten — it previously looked for the note by
+PATH, which a synthetic draft does not have, and it failed the moment the flow
+changed, which is the gate working); `C-c C-k` leaves no note buffer, no draft
+buffer and no new file; and a `%^{Category}` template asks its question, seats
+the answer, places `%?`, and carries its id across the hop.
+
+`apply_accept_effects` in that suite gained `OpenSyntheticBuffer`,
+`OpenTransient` and `BufferDelete` arms. Without them a working draft is
+indistinguishable from a create that did nothing — the dropped-renderer-effect
+failure mode again.
 
 The rest of this section is the original plan, kept because its reasoning about
 the surface still holds:

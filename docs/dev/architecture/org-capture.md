@@ -353,16 +353,34 @@ On the major, `C-c C-c` would file-and-close every org file you touched.
 Scoping to a minor activated on exactly one buffer is also what makes `<C-c>`
 safe to bind at all, since it is vim's interrupt.
 
-**Org-roam capture reuses this unchanged** (OR.11): same buffer, same chords,
-same handlers. Only the order of what is asked before the buffer opens differs
-— roam picks the title first, then the template.
+**Org-roam capture reuses this unchanged** (OR.11b): same buffer, same chords,
+same handlers, one fields-menu row-builder. Only the order of what is asked
+before the buffer opens differs — roam picks the title first, then the template.
+
+Sharing it took one narrowing. The state finalize recovers its target from held
+a whole `Template`, and finalize read `target` and `clock_in` from it and
+nothing else; it now carries a **`CaptureDestination`** of exactly those two.
+Roam has no capture template, no key and no `:clock-in` — what it has is a file
+to append to, which is a `Target::File`. The alternative, roam synthesising a
+`Template` with three dead fields to satisfy this consumer, is a struct built to
+fit a caller rather than to describe anything.
+
+One consequence worth naming because it is a live bug class: `%a`'s annotation
+is now **passed in** rather than read from `CAPTURE_ORIGIN` inside
+`open_capture_buffer`. Reading the thread-local there would let a roam note
+inherit the `%a` of whatever capture ran before it — a link back to a file the
+user was not in. Capture's own reader peeks rather than takes, because the
+buffer flow expands `%a` when the buffer OPENS and the capture is not over
+until `C-c C-c`; a taking read would have made the fields route consume its own
+origin on the way through.
 
 ### Aborting creates nothing
 
 `C-c C-k` writes no file, and that **falls out of the buffer model** rather
 than being cleaned up: the file is written on finalize, so an abort has nothing
-to undo. It is the property OR.6's `WriteToFile`-on-create does not have, and a
-large part of what the ABI addition bought.
+to undo. It is the property OR.6's `WriteToFile`-on-create did not have, and a
+large part of what the ABI addition bought — org-roam inherited it wholesale at
+OR.11b, including the discarding of an id already minted for the note.
 
 ### Known gaps
 

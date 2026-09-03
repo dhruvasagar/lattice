@@ -6850,7 +6850,7 @@ meant to exist.
 | OR.9 | backlinks — a picker, and why not a multibuffer | ✅ |
 | OR.10 | dailies — the journal, and two host defects it surfaced | ✅ |
 | OR.11a | `${field}` expansion — written and wired | ✅ |
-| OR.11b | the capture buffer — OC.7 built it for capture; roam reuses none of it | 🚧 |
+| OR.11b | the capture buffer — roam's draft, `%^{…}` and `C-c C-k` | ✅ |
 | OR.12 | docs — `doc/org-roam.md`, its own `:help org.roam` topic | ✅ |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).

@@ -227,3 +227,62 @@ async fn closing_the_command_line_restores_the_synthetic_buffer_not_its_origin()
          shows the other",
     );
 }
+
+/// MG.RO: a magit list buffer refuses mutating operators, not just typing.
+///
+/// **`ReadOnly = true` alone did not do this, and looked like it did.** The
+/// option is read by `read_only_edit_rejected`, which guards the insert-mode
+/// char path; operators never reach it, because a `Document`'s grammar
+/// dispatch applies its own edits and hands the host an already-applied
+/// `Effect::Edits`. Every magit major declared the option and none declared a
+/// runner, so `x` deleted a character out of `*magit:status*` while the buffer
+/// reported itself read-only — which the mode system's own comment calls worse
+/// than not gating at all.
+///
+/// Asserted on `x` specifically. `dd` passes on the broken build too: magit
+/// binds `d` to its own diff chord, so it never falls through to delete-line —
+/// a test that only pressed `dd` would have been green throughout.
+#[tokio::test]
+async fn a_magit_list_buffer_refuses_mutating_operators() {
+    let mut editor = Editor::boot(CoreDocument::from_text("origin\n"));
+    editor.open_synthetic_buffer("*magit:status*", "magit-status-mode");
+    let magit = editor
+        .buffers
+        .by_name("*magit:status*")
+        .expect("the magit status buffer exists");
+    editor.activate_buffer(magit);
+
+    // Seeded through the DOCUMENT HANDLE — magit's own write path
+    // (`buffer_io.rs`), and the owner bypass the read-only contract means.
+    // `Editor::apply_edit_batch_blocking` is itself gated and writes nothing
+    // here, which is correct and is why the first version of this test could
+    // not tell a protected buffer from an empty one.
+    if let Some(h) = editor.buffers.document_handle(magit) {
+        let _ = h.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(0, 0),
+            "Unstaged changes (1)\nmodified   src/main.rs\n",
+        )]);
+    }
+    editor.run_tick_pending();
+    let before = editor.document.snapshot().text().to_string();
+    assert!(
+        before.starts_with("Unstaged changes"),
+        "precondition: the owner's write landed, so there is something to protect: {before:?}"
+    );
+    assert!(
+        *editor.resolved_option::<lattice_config::ReadOnly>(magit),
+        "precondition: the buffer claims to be read-only"
+    );
+
+    for keys in ["x", "dd", "p"] {
+        let mut partial = Vec::new();
+        for c in lattice_host::chord::parse_chord_sequence(keys).expect("parses") {
+            let _ = editor.dispatch_chord(c, &mut partial);
+        }
+        assert_eq!(
+            editor.document.snapshot().text().to_string(),
+            before,
+            "`{keys}` must not edit a magit list buffer"
+        );
+    }
+}

@@ -177,6 +177,29 @@ impl Mode for MagitFileRevisionMode {
         }
     }
 
+    /// MG.RO: `read-only-mode` is where the gate actually is.
+    ///
+    /// `ReadOnly = true` above stops TYPING and nothing else. It is read by
+    /// `read_only_edit_rejected`, which guards the insert-mode char path;
+    /// operators never reach it, because a `Document`'s grammar dispatch
+    /// applies its own edits and hands the host an already-applied
+    /// `Effect::Edits`. `x` deleted a character out of `*magit:status*` while
+    /// the buffer reported itself read-only — worse than not gating at all,
+    /// because it looks protected.
+    ///
+    /// `read-only-mode` carries the option AND the `invocation_runner`
+    /// (`Editor::run_read_only_motion`) that refuses mutating operators while
+    /// letting motions, `:` and `/` through.
+    ///
+    /// Declared per MAJOR rather than once on `magit-core-mode`: an implied
+    /// mode is followed from the mode being ACTIVATED, and the majors are what
+    /// the host activates. Putting it on the shared minor looked right and was
+    /// verified not to fire.
+    fn implies(&self) -> &[lattice_mode::ModeId] {
+        static IMPLIED: std::sync::OnceLock<Vec<lattice_mode::ModeId>> = std::sync::OnceLock::new();
+        IMPLIED.get_or_init(|| vec![lattice_mode::modes::ReadOnlyMode::mode_id()])
+    }
+
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }

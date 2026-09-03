@@ -6933,7 +6933,7 @@ noise.
 
 ---
 
-## Org TODO keywords (TK, 2026-08-29 — ✅ complete)
+## Org TODO keywords (TK, 2026-08-29 — 🚧 TK.8/TK.9 land 2026-09-03)
 
 | Slice | What | Status |
 |---|---|---|
@@ -6944,9 +6944,19 @@ noise.
 | TK.5 | `org.todo-keyword-styles` — the org-shaped override spelling |✅ |
 | TK.6 | fast select |✅ |
 | TK.7 | docs |✅ |
+| TK.8 | the `(!)` / `(@/!)` flags record a state change | ✅ |
+| TK.9 | the note a `(@)` state asks for | ✅ |
 
 Design: [`../architecture/org-todo-keywords.md`](../architecture/org-todo-keywords.md).
 Slice plan: [`slice-plans/archive/org-todo-keywords.md`](slice-plans/archive/org-todo-keywords.md).
+
+**TK.8/TK.9 (2026-09-03).** Reported from use: `CANCELLED(c@/!)` recorded
+nothing. The flags were parsed with full fidelity and `Logging` had **zero
+consumers** — a deliberate deferral the design stated, come due. Org's rule is
+a precedence rather than a union (new state's entry, else old state's exit);
+`!` lands as one edit with the headline, `@` changes the state and then prompts
+in org's order, so dismissing the prompt leaves the state changed and unnoted.
+Design §5 carries the detail.
 
 Reported from use: *"TODO looks weird purple and all other states seem like a
 comment."* Three causes compound. `org.todo-keywords` is **one flat string**, so

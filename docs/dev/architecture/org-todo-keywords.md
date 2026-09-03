@@ -152,12 +152,38 @@ type: PROJECT TO-READ READING(!/!) TO-WATCH WATCHING(!/!)
 - **`(@)` / `(!)` / `(@/!)`** are logging specs — note on entry,
   timestamp on entry, timestamp on leaving.
 
-**Logging specs are parsed and then deliberately inert.** Acting on them
-means writing `:LOGBOOK:` notes on every state change, which is its own
-slice with its own tests. Parsing them now is what lets a user paste
-their emacs configuration and have nothing silently misread — the
-failure this replaces is `WAITING(w@/!)` becoming a keyword *named*
-`WAITING(w@/!)`.
+**Logging specs act, as of TK.8/TK.9.** They were parsed and deliberately
+inert for several slices — this section said so — and the gap was reported
+from use: `CANCELLED(c@/!)` recorded nothing at all.
+
+The rule is org's, and it is a **precedence, not a union** (`org-todo`,
+org.el):
+
+```elisp
+(setq dolog (or (nth 1 (assoc org-state org-todo-log-states))   ; NEW entry
+                (nth 2 (assoc this      org-todo-log-states)))) ; OLD exit
+```
+
+The state being *entered* decides first; only when it asks for nothing does
+the state being *left* get a say. `CANCELLED(c@/!)` → `WAITING(w@/!)`
+records WAITING's note and not also CANCELLED's timestamp — a union would
+write two log lines for one keypress. A note supersedes a timestamp on the
+same side, because an org note line carries a timestamp already.
+
+`!` writes the state line as **one edit with the headline**, so `u` takes
+the transition back in one step, and a transition that asks for nothing
+stays the single-line rewrite it always was.
+
+`@` cannot be one edit: it needs an answer first. The keyword changes
+**immediately** and the note follows, which is org's order — `org-todo`
+writes the keyword and then calls `org-add-log-setup` — so dismissing the
+prompt leaves the state changed and unnoted. The trade is stated rather than
+hidden: two undo steps for one action, against a keyword that would
+otherwise appear not to respond until you answered.
+
+Parsing them was already what lets a user paste their emacs configuration
+and have nothing silently misread — the failure that replaced was
+`WAITING(w@/!)` becoming a keyword *named* `WAITING(w@/!)`.
 
 **The keyword set resolves at load.** Both `register-language` and
 `register-element` are drained once, so a `:set org.todo-keywords` mid
@@ -274,8 +300,9 @@ happens.
 
 ## 10. Deferred
 
-- **Acting on logging specs** (`@` / `!`) — writing `:LOGBOOK:` notes
-  and timestamps on state change. Parsed now, inert now.
+- **`org-log-done`** — the `CLOSED: [ts]` planning stamp on completion. A
+  separate mechanism from the keyword flags (an option, not a spec), off by
+  default in emacs, and not implemented.
 - **Per-file `#+TODO:` / `#+SEQ_TODO:`** — needs per-buffer queries,
   which the language registry does not have.
 - **`org-todo-state-tags-triggers`** — the config sets tags on state

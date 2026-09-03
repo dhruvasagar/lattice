@@ -152,3 +152,62 @@ fn saving_an_untouched_multibuffer_view_returns() {
         eprintln!("do_write returned (untouched)");
     });
 }
+
+/// **The freeze, reproduced.**
+///
+/// In production `:w` runs inside the editor actor — a `current_thread`
+/// tokio runtime (`editor_actor.rs`) — which is the one ingredient the tests
+/// above lack: they enter the multi-thread shared runtime, where the bug
+/// cannot appear.
+///
+/// `MultibufferDocument::save()` builds its future with `Pending::spawn`,
+/// which is `tokio::spawn` — **onto whatever runtime is in scope**, i.e. the
+/// actor's own single-threaded one. `save_blocking` then blocks that same
+/// thread awaiting the result. Nothing is left to drive the task, so the
+/// flush barrier never completes, no source is ever written, and the editor
+/// is wedged with no recovery.
+///
+/// The codebase already knows this hazard: `Pending::from_channel`'s doc
+/// spells it out — "`spawn` calls `tokio::spawn` and so needs a runtime in
+/// scope at the point of construction; this path is reached from the editor
+/// actor — a `current_thread` runtime about to `block_on` the result — where
+/// spawning the awaiter onto the caller's own runtime is the deadlock". Two
+/// mitigations exist for it (`map_ok`, `from_channel`) and `save()` uses
+/// neither.
+///
+/// A normal buffer is unaffected because `RopeDocumentHandle::save` is a
+/// mailbox send to an actor already running on the shared runtime — which is
+/// exactly the reported asymmetry: editing the org file directly and saving
+/// works, saving the agenda view hangs.
+#[test]
+fn saving_a_multibuffer_from_inside_a_current_thread_runtime_does_not_deadlock() {
+    with_deadline("do_write inside a current_thread runtime", 20, || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let (mut editor, view, file) = boot_with_an_agenda_shaped_view();
+            assert!(editor.activate_buffer(view));
+            editor.apply_edit_effect_inline(
+                SOURCE,
+                lattice_protocol::edit::Edit {
+                    range: lattice_protocol::position::Range::new(
+                        lattice_protocol::position::Position::new(0, 2),
+                        lattice_protocol::position::Position::new(0, 6),
+                    ),
+                    kind: lattice_protocol::edit::EditKind::Replace {
+                        text: "DONE".to_string(),
+                    },
+                },
+                None,
+            );
+            editor.do_write(None);
+            let on_disk = std::fs::read_to_string(&file).unwrap();
+            assert!(
+                on_disk.contains("DONE"),
+                "the source must reach disk, got {on_disk:?}"
+            );
+        });
+    });
+}

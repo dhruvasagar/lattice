@@ -145,16 +145,41 @@ impl<T> Pending<T> {
     /// fan a translated batch across N source handles, await each
     /// source's Pending asynchronously, and combine the results).
     ///
-    /// Requires a current tokio runtime context. Panics inside
-    /// `tokio::spawn` if no runtime is in scope — same constraint
-    /// every async editor path observes.
+    /// **Spawns on the SHARED runtime, never on the ambient one**, and that
+    /// is the whole of its correctness.
+    ///
+    /// It used to call bare `tokio::spawn`, which lands the task on whatever
+    /// runtime happens to be in scope at the point of construction. Every
+    /// consumer of a `Pending` is a document operation, and the host reaches
+    /// those from the editor actor — a `current_thread` runtime that then
+    /// **blocks itself** awaiting the result (`block_on(document.save())`).
+    /// The task is queued on the one thread that is now blocked, so nothing
+    /// drives it and the editor wedges permanently, with the operation never
+    /// performed.
+    ///
+    /// That is not a hypothetical. It shipped three times: the pre-M.11
+    /// `apply_edit` freeze, the `undo` freeze, and `MultibufferDocument::save`
+    /// — the user-visible form of the last being "`:w` on the agenda hangs
+    /// forever and the change is not on disk". The first two were fixed by
+    /// making those paths synchronous, which left this constructor still
+    /// carrying the trap for the one caller that genuinely needs async work.
+    ///
+    /// Naming the target runtime fixes the class rather than the instance:
+    /// document actors all live on the shared runtime, so it is where a
+    /// composition over them belongs. It also drops the old "requires a
+    /// current tokio runtime context" requirement — there is nothing left to
+    /// get wrong at a call site.
+    ///
+    /// [`Self::map_ok`] and [`Self::from_channel`] remain the right tools for
+    /// their own cases (a synchronous transform, and a task that is already
+    /// running); they are no longer *workarounds* for this hazard.
     pub fn spawn<F>(future: F) -> Self
     where
         F: std::future::Future<Output = Result<T, RuntimeError>> + Send + 'static,
         T: Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        tokio::spawn(async move {
+        crate::runtime::shared_runtime().spawn(async move {
             let result = future.await;
             let _ = tx.send(result);
         });

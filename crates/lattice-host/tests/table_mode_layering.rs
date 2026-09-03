@@ -481,3 +481,196 @@ fn the_new_chords_also_consume_outside_a_table() {
         );
     }
 }
+
+// ── TB.4: the modal split ───────────────────────────────────────────────
+
+/// The same key, resolved per modal state. `<Tab>` is bound in BOTH Normal
+/// and Insert on this mode's layer, and to the same body — moving to a cell
+/// and realigning is one operation, and it emits no `Effect::EnterMode`, so
+/// Insert is simply kept.
+#[test]
+fn tab_is_bound_in_both_normal_and_insert() {
+    let editor = boot_with("x\n");
+    let active = [TableMode::mode_id()];
+    let expected = editor
+        .registry
+        .load()
+        .id_by_name("action:table-next-cell")
+        .unwrap();
+    let tab = [KeyChord::special(lattice_protocol::chord::SpecialKey::Tab)];
+    for mode in [BindingMode::Normal, BindingMode::Insert] {
+        let res = editor.keymap.resolve_trace(mode, &tab, &active);
+        let hit = res
+            .hits
+            .iter()
+            .find(|h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == TableMode::mode_id()))
+            .unwrap_or_else(|| panic!("`<Tab>` must bind on the table layer in {mode:?}"));
+        assert!(hit.active, "{mode:?}");
+        assert_eq!(hit.command.command.command, expected, "{mode:?}");
+    }
+}
+
+/// `<CR>` is bound in Insert ONLY, and the asymmetry is the design. In Normal
+/// it already means something a table row wants — first non-blank of the next
+/// line — where in Insert it means "split this line", which inside a table row
+/// is never what you meant.
+#[test]
+fn cr_is_bound_in_insert_only() {
+    let editor = boot_with("x\n");
+    let active = [TableMode::mode_id()];
+    let cr = [KeyChord::special(
+        lattice_protocol::chord::SpecialKey::Enter,
+    )];
+    let on_layer = |mode| {
+        editor
+            .keymap
+            .resolve_trace(mode, &cr, &active)
+            .hits
+            .iter()
+            .any(|h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == TableMode::mode_id()))
+    };
+    assert!(
+        on_layer(BindingMode::Insert),
+        "Insert `<CR>` is the table's"
+    );
+    assert!(
+        !on_layer(BindingMode::Normal),
+        "Normal `<CR>` is NOT — it already does what a table row wants"
+    );
+}
+
+/// `<Esc>` realigns and then falls through, so the mode never hardcodes
+/// exit-insert. Without `fall_through` this binding would trap the user in
+/// Insert mode inside every table, which is about the worst outcome available.
+#[test]
+fn esc_realigns_and_falls_through_to_the_native_exit() {
+    let editor = boot_with("x\n");
+    let active = [TableMode::mode_id()];
+    let esc = [KeyChord::special(lattice_protocol::chord::SpecialKey::Esc)];
+    let res = editor
+        .keymap
+        .resolve_trace(BindingMode::Insert, &esc, &active);
+    let hit = res
+        .hits
+        .iter()
+        .find(|h| matches!(&h.layer, KeymapLayer::MinorMode(id) if *id == TableMode::mode_id()))
+        .expect("`<Esc>` binds on the table layer in Insert");
+    assert!(
+        hit.command.fall_through,
+        "`<Esc>` MUST augment-and-continue, or the user cannot leave Insert"
+    );
+}
+
+/// `<CR>` in the last row adds one, which is what makes it the way you enter
+/// a table's contents — emacs' `org-table-next-row` does the same.
+#[test]
+fn cr_at_the_bottom_adds_a_row() {
+    let out = replaced(&run("action:table-next-row", "| a | b |\n", 0, 2));
+    assert_eq!(out.lines().count(), 2, "{out:?}");
+}
+
+/// …and it keeps the COLUMN, where `<Tab>` wraps to the start of the next
+/// row. That is the difference between filling a column and filling a row.
+#[test]
+fn cr_keeps_the_column_where_tab_wraps() {
+    match run("action:table-next-row", "| a | b |\n| c | d |\n", 0, 6) {
+        Effect::ApplyEdit { cursor, edit, .. } => {
+            let lattice_protocol::edit::EditKind::Replace { text } = &edit.kind;
+            let at = cursor.expect("a target").byte as usize;
+            let line = text.lines().nth(1).unwrap();
+            assert!(
+                line[at..].starts_with('d'),
+                "landed in the second column: {:?} of {line:?}",
+                &line[at..]
+            );
+        }
+        // An already-aligned table needs no edit; the cursor still moves.
+        Effect::CursorMove(p) => assert_eq!(p.line, 1),
+        other => panic!("expected ApplyEdit or CursorMove, got {other:?}"),
+    }
+}
+
+/// `<CR>` and `<Esc>` are SHARED with the native newline and exit-insert, so
+/// they decline outside a table. Consuming either would break it in every
+/// markdown and org buffer — a far larger surface than this mode.
+#[test]
+fn the_insert_chords_decline_outside_a_table() {
+    for name in ["action:table-next-row", "action:table-realign"] {
+        assert!(
+            is_declined(&run(name, "just prose\n", 0, 0)),
+            "{name} must fall through to its native meaning"
+        );
+    }
+}
+
+/// **No edit when nothing changed.** Walking an already-aligned table would
+/// otherwise push an undo entry per cell, and `<Esc>` one every time you left
+/// Insert in a table — undo steps for edits that changed nothing, which makes
+/// `u` stop meaning "undo my last change".
+#[test]
+fn an_aligned_table_moves_the_caret_without_editing() {
+    let aligned = "| a  | bb |\n| cc | d  |\n";
+    match run("action:table-next-cell", aligned, 0, 2) {
+        Effect::CursorMove(_) => {}
+        other => panic!("expected a cursor-only effect, got {other:?}"),
+    }
+    match run("action:table-realign", aligned, 0, 2) {
+        Effect::CursorMove(_) => {}
+        other => panic!("realigning an aligned table must not edit, got {other:?}"),
+    }
+}
+
+/// **The completion popup wins `<Tab>` while it is up.**
+///
+/// Binding `<Tab>` in Insert puts this mode in the same chord as
+/// completion-accept and snippet-placeholder jump. The design says that is
+/// safe because minor layers overlay in ACTIVATION order and both of those
+/// activate later than `table-mode` — the popup when it opens, the snippet
+/// session when it starts. This is that claim as a test rather than as
+/// reasoning: it is exactly the kind of ordering assumption that is true
+/// until someone changes an activation site.
+///
+/// Goes through `lookup_with_context`, which is what dispatch calls and the
+/// only thing that RANKS the layers. `resolve_trace` lists every hit in
+/// enumeration order for `:describe-key` and says nothing about which wins —
+/// asserting against it looked like a failure here and was a wrong test.
+#[test]
+fn the_completion_popup_shadows_the_table_tab_while_it_is_up() {
+    let editor = boot_with("x\n");
+    let popup = lattice_host::keymap_insert::completion_popup_mode_id();
+    editor.keymap.push_layer(
+        lattice_host::keymap_registry::PushLayerKind::MinorMode(popup),
+        "completion-popup",
+        lattice_host::keymap_insert::completion_popup_layer_bindings(&editor.action_ids),
+    );
+    let tab = [KeyChord::special(lattice_protocol::chord::SpecialKey::Tab)];
+
+    // Activation order: the table attached when the buffer opened, the popup
+    // when it opened — so the popup is LAST and overlays.
+    match editor.keymap.lookup_with_context(
+        BindingMode::Insert,
+        &tab,
+        &[TableMode::mode_id(), popup],
+    ) {
+        lattice_host::keymap_trie::LookupResult::Bound { command, .. } => {
+            assert_eq!(
+                command.layer,
+                KeymapLayer::MinorMode(popup),
+                "the popup must win `<Tab>` while it is up, or accepting a \
+                 completion inside a table jumps a cell instead"
+            );
+        }
+        other => panic!("expected Bound, got {other:?}"),
+    }
+
+    // …and with the popup down, the table gets it back.
+    match editor
+        .keymap
+        .lookup_with_context(BindingMode::Insert, &tab, &[TableMode::mode_id()])
+    {
+        lattice_host::keymap_trie::LookupResult::Bound { command, .. } => {
+            assert_eq!(command.layer, KeymapLayer::MinorMode(TableMode::mode_id()));
+        }
+        other => panic!("expected Bound, got {other:?}"),
+    }
+}

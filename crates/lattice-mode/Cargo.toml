@@ -106,5 +106,13 @@ harness = false
 name = "tick_callback"
 harness = false
 
+# TB.4: what a table realign costs, so "can it run per keystroke?" is answered
+# with a number. The answer is no on the UX contract rather than on cost (see
+# table-mode.md §8), and these are the baseline the field-exit realign — which
+# DOES run interactively — is held to.
+[[bench]]
+name = "table"
+harness = false
+
 [lints]
 workspace = true

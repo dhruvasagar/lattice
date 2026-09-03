@@ -527,6 +527,26 @@ impl Table {
         ))
     }
 
+    /// The cell directly below `at`, skipping rules — where Insert-mode
+    /// `<CR>` goes.
+    ///
+    /// Distinct from [`Self::next_cell`], which wraps to the start of the next
+    /// row: `<CR>` keeps the COLUMN, because it is how you fill one downwards.
+    /// `None` at the bottom; the caller decides whether that means a new row.
+    pub fn down_cell(&self, at: Cell) -> Option<Cell> {
+        let mut row = at.row + 1;
+        while row < self.rows.len() {
+            if !self.is_rule(row) {
+                return Some(Cell {
+                    row,
+                    column: at.column,
+                });
+            }
+            row += 1;
+        }
+        None
+    }
+
     /// Swap the table's rows and columns.
     ///
     /// **Rules do not survive**, and cannot: a rule separates row groups, and
@@ -978,6 +998,18 @@ mod tests {
         assert_eq!(increment_trailing_number("item-9"), "item-10");
         assert_eq!(increment_trailing_number("total"), "total");
         assert_eq!(increment_trailing_number(""), "");
+    }
+
+    /// `<CR>` keeps the COLUMN — it is how you fill one downwards — where
+    /// `<Tab>` wraps to the start of the next row.
+    #[test]
+    fn down_cell_keeps_the_column_and_skips_a_rule() {
+        let t = ruled();
+        assert_eq!(
+            t.down_cell(Cell { row: 0, column: 1 }).unwrap(),
+            Cell { row: 2, column: 1 }
+        );
+        assert!(t.down_cell(Cell { row: 2, column: 1 }).is_none());
     }
 
     #[test]

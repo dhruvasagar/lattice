@@ -71,6 +71,9 @@ pub const SORT_DESC: &str = "action:table-sort-descending";
 pub const BLANK_CELL: &str = "action:table-blank-cell";
 pub const COPY_DOWN: &str = "action:table-copy-down";
 pub const TRANSPOSE: &str = "action:table-transpose";
+// TB.4 — Insert-mode only.
+pub const NEXT_ROW: &str = "action:table-next-row";
+pub const REALIGN: &str = "action:table-realign";
 
 /// `table-mode` — pipe-table editing, on every major that has pipe tables.
 pub struct TableMode;
@@ -145,6 +148,36 @@ fn table_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "<leader>tb", doc: "Blank the table cell at the cursor", cmd: Some(BLANK_CELL) },
             keymap_entry! { mode: Normal, chord: "<leader>ty", doc: "Copy this cell down, incrementing a trailing number", cmd: Some(COPY_DOWN) },
             keymap_entry! { mode: Normal, chord: "<leader>tT", doc: "Transpose this table", cmd: Some(TRANSPOSE) },
+
+            // ── TB.4: the same keys, in Insert, meaning what a table wants
+            // there. A chord resolves per `BindingMode`, so this is the model
+            // working rather than a special case — a table is a thing you
+            // navigate in Normal and fill in in Insert.
+            //
+            // `<Tab>` and `<S-Tab>` reuse the Normal BODIES verbatim: moving
+            // to a cell and realigning is the same operation, and neither
+            // emits `Effect::EnterMode`, so Insert is simply kept. Writing a
+            // second pair of handlers to say that would be the duplication
+            // this mode exists to end.
+            keymap_entry! { mode: Insert, chord: "<Tab>", doc: "Next table cell", cmd: Some(NEXT_CELL) },
+            keymap_entry! { mode: Insert, chord: "<S-Tab>", doc: "Previous table cell", cmd: Some(PREV_CELL) },
+            // `<CR>` is bound in Insert ONLY, and the asymmetry is the point.
+            // In Normal it already means something a table row wants — the
+            // first non-blank of the next line. In Insert it means "split this
+            // line", which inside a table row is never what you meant.
+            keymap_entry! { mode: Insert, chord: "<CR>", doc: "Next table row, same column", cmd: Some(NEXT_ROW) },
+            // The chord that makes this feel like "as you type": fill a cell,
+            // press `<Esc>`, the table snaps. `fall_through` so the mode
+            // realigns and the dispatcher then continues to whatever `<Esc>`
+            // natively means — the mode never hardcodes exit-insert.
+            // `active-snippet-mode`'s `<Esc>` is the precedent (SN.3c.2b).
+            keymap_entry! {
+                mode: Insert,
+                chord: "<Esc>",
+                doc: "Realign this table, then exit insert (falls through to the native <Esc>)",
+                cmd: Some(REALIGN),
+                fall_through: true
+            },
         ]
     })
 }
@@ -195,6 +228,20 @@ fn rewrite(ctx: &ActionContext, table: &Table, rendered: Vec<String>, cell: Cell
         .get(cell.row)
         .map(|l| offset_of_column(l, cell.column) as u32)
         .unwrap_or(0);
+    // TB.4: **no edit when nothing changed.** Without this, `<Tab>` through an
+    // already-aligned table pushes an undo entry per cell and `<Esc>` pushes
+    // one every time you leave Insert inside a table — undo steps for edits
+    // that changed nothing, which is worse than the papercut it looks like:
+    // it makes `u` stop meaning "undo my last change". The caret still has to
+    // move, so this is a cursor-only effect rather than `None`.
+    let unchanged = rendered.len() as u32 == table.last - table.first + 1
+        && rendered
+            .iter()
+            .enumerate()
+            .all(|(i, l)| ctx.buffer.line(table.first + i as u32).as_deref() == Some(l.as_str()));
+    if unchanged {
+        return Effect::CursorMove(Position::new(caret_line, caret_col));
+    }
     let end_byte = ctx
         .buffer
         .line(table.last)
@@ -430,6 +477,39 @@ pub fn register_table_actions(registry: &mut CommandRegistry) {
             let (next, cell) = found.table.transpose(found.cell)?;
             let rendered = next.render();
             Some(rewrite(ctx, &found.table, rendered, cell))
+        }),
+    );
+
+    // ── TB.4 ────────────────────────────────────────────────────────────
+    // `<CR>` is SHARED with the native newline, so it declines outside a
+    // table — consuming it would break `<CR>` in every markdown and org
+    // buffer, which is a far larger surface than this mode.
+    registry.register_action(
+        NEXT_ROW,
+        "Move to the row below in the same table column, adding a row at the end.",
+        spec(true, |ctx, found| {
+            match found.table.down_cell(found.cell) {
+                Some(down) => move_to(ctx, &found.table, down),
+                None => {
+                    // Emacs' `org-table-next-row` creates a row at the bottom
+                    // rather than stopping, which is what makes `<CR>` the way
+                    // you enter a table's contents. You leave with `<Esc>`.
+                    let (next, cell) = found.table.insert_row(found.cell);
+                    let rendered = next.render();
+                    Some(rewrite(ctx, &found.table, rendered, cell))
+                }
+            }
+        }),
+    );
+    // `<Esc>` is shared too — and `fall_through` means the native exit-insert
+    // runs after this either way; declining is what keeps `<Esc>` working in
+    // the far more common case of not being in a table at all.
+    registry.register_action(
+        REALIGN,
+        "Realign the table at the cursor.",
+        spec(true, |ctx, found| {
+            let rendered = found.table.render();
+            Some(rewrite(ctx, &found.table, rendered, found.cell))
         }),
     );
 }

@@ -39,13 +39,32 @@ have to hand-space. It is on in **markdown and org buffers** and nowhere else.
 
 `<leader>` is `<Space>` unless you have changed it.
 
+In **insert mode**, the same navigation keys work and keep you typing:
+
+| Keystroke | Meaning |
+|---|---|
+| `<Tab>` / `<S-Tab>` | Next / previous cell, realigning — you stay in insert |
+| `<CR>` | The row below, same column. At the last row, adds one |
+| `<Esc>` | Realign the table, then leave insert as usual |
+
 ---
 
 ## Building a table
 
 Type the first row, press `<Tab>` at the end of it, and you get a new row to
 type into. That is the whole loop — `<Tab>` walks cells and adds a row when it
-runs out of them.
+runs out of them. It works the same in insert mode, so you never have to leave
+it while filling a table in.
+
+`<CR>` in insert mode goes to the row below in the **same column**, which is
+how you fill a column downwards; at the last row it adds one. To leave the
+table, press `<Esc>`.
+
+**The table realigns when you leave a field** — on `<Tab>`, `<S-Tab>`, `<CR>`
+or `<Esc>` — not on every character. While you are typing inside a cell the
+row stays ragged, and then snaps. That is what emacs does too, and it is
+deliberate: realigning on every keypress would redraw every row of the table
+while you type in one of them.
 
 `<leader>ty` fills a column downwards. It copies the cell you are on into the
 row below and **increments a trailing number**, so `Q3` becomes `Q4` and `07`

@@ -136,3 +136,91 @@ operation rather than its last row.
 The caret is tracked as a *cell*, not a byte offset: alignment rewrites every
 row, so the offset does not survive, and what the user means by "where I was"
 is the cell. The offset is re-derived from the rendered line.
+
+## 8. Realigning: on field exit, not on keystroke (TB.4)
+
+### What it costs
+
+Measured on the TB.4 bench (`crates/lattice-mode/benches/table.rs`, release,
+5 columns):
+
+| rows | parse | parse + render (one realign) |
+|---|---|---|
+| 5 | 3.2 µs | **7.5 µs** |
+| 50 | 32 µs | 78 µs |
+| 500 | 340 µs | 829 µs |
+
+Plus two recognition numbers: a line that is **not** a table costs **22 ns**
+(one `starts_with` and out — the path every declining `<Tab>` in a paragraph
+takes, and by far the most frequent), and a table **2000 lines into a file**
+costs **83 µs**, which is the `#+BEGIN_`/fence scan TB.1's fix introduced.
+
+A table someone actually typed realigns in 7.5 µs — under 0.1% of a 120 Hz
+frame. **Cost is not what decides this.**
+
+### What decides it
+
+The keystroke UX contract: *only the edited line may visibly change per
+keystroke; everything else stays pixel-stable.* A realign rewrites every row
+of the table. Running it per keystroke is, by construction, a pixel change to
+content the user did not edit — on every character. That is a veto, and it
+holds however fast the function gets.
+
+Recording the numbers anyway is the point of the bench. It stops the next
+person re-litigating this as a performance question, and it is the baseline
+for the realign that *does* run interactively.
+
+### Which is what emacs does anyway
+
+The TB.4 note originally said emacs realigns on every edit inside a table.
+**That is wrong**, and worth correcting rather than quietly dropping: org-mode
+calls `org-table-align` from `org-table-next-field`, `org-table-previous-field`
+and `org-return` — that is, **when you leave a field**. Type into a cell in
+emacs and the table stays ragged until you `TAB` out of it.
+
+So the emacs-parity answer and the contract-safe answer are the same answer,
+and the debounce this section was reserved to argue about is not needed.
+
+### The modal split
+
+`table-mode` is the first mode here where the same chord deliberately means
+different things in different modal states — which is not a special case but
+the model working: a chord resolves per `BindingMode`, and a table is a thing
+you both navigate (Normal) and fill in (Insert).
+
+| Chord | Normal | Insert |
+|---|---|---|
+| `<Tab>` | Next cell; realign; caret on the cell's text | Same, **staying in Insert** — you are filling a row |
+| `<S-Tab>` | Previous cell; realign | Same, staying in Insert |
+| `<CR>` | *unbound* — `<CR>` is "first non-blank of the next line", and a table row is a line | Next **row**, same column; realign; creates the row at the bottom |
+| `<Esc>` | *unbound* | Realign, then fall through to the native exit-insert |
+
+`<Esc>` is the one that makes this feel like "as you type": fill a cell, press
+`<Esc>`, the table snaps. It is `fall_through: true` (SN.3c.2b) — the mode
+realigns and the dispatcher continues to whatever `<Esc>` natively means, so
+the mode never hardcodes exit-insert. `active-snippet-mode`'s `<Esc>` is the
+precedent.
+
+`<CR>` is bound only in Insert, and that asymmetry is deliberate. In Normal it
+already means something a table row wants (move down a line); in Insert it
+means "split this line", which inside a table row is never what you meant.
+
+### No edit when nothing changed
+
+Every body compares the rendered table to what is in the buffer and emits
+`Effect::CursorMove` instead of `Effect::ApplyEdit` when they match.
+
+Without this, `<Tab>` through an already-aligned table would push an undo
+entry per cell, and `<Esc>` would push one every time you left Insert inside a
+table — undo steps for edits that changed nothing, which is worse than the
+papercut it looks like: it makes `u` stop meaning "undo my last change".
+
+### Insert `<Tab>` and the completion popup
+
+Binding `<Tab>` in Insert puts this mode in the same chord as completion
+accept and snippet-placeholder jump. It is safe because minor layers overlay
+**in activation order** (`ActiveModes::keymap_gated_ids`), and both of those
+modes activate *later* than `table-mode` — the popup when it opens, the
+snippet session when it starts — so they shadow it for as long as they are
+up. `table-mode` attaches when the buffer opens and is therefore underneath
+both. A host test pins the precedence rather than trusting the reasoning.

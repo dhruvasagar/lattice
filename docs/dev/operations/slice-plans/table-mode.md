@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | TB.1 | `table-mode`: the shared minor, at org's parity | ✅ |
 | TB.2 | The org plugin sheds the generic surface **(plugin)** | ✅ |
 | TB.3 | Richness beyond parity — emacs' org-table surface | ✅ |
-| TB.4 | Realign as you type | 📝 |
+| TB.4 | Realign on field exit + the Insert-mode surface | ✅ |
 
 TB.0 is a prerequisite, not a courtesy: `table-mode` inherits org's
 `<leader>t…` set and would have shipped it dead.
@@ -182,20 +182,65 @@ All six chords sit behind `<leader>t`, so like their TB.1 peers they
 **consume** outside a table rather than declining — a decline re-runs the
 trailing key alone, and `<leader>tS` would fire `S`.
 
-### TB.4 — realign as you type 📝
+### TB.4 — realign on field exit, and the Insert-mode surface ✅
 
-Emacs realigns a table on every edit inside it, not only on a chord. Carved
-out of TB.3 rather than folded in, because it is the only item in this plan
-that needs a performance argument before it needs a design: it is an
-edit-time hook on every keystroke inside a table, and paramount goal #1 is the
-constraint rather than a footnote.
+Design §8 carries the reasoning and the measurements. Three things happened
+here.
 
-The shape to argue about first: a full re-render per keystroke rewrites every
-line of the table, which under the keystroke UX contract is a pixel change to
-content the user did not edit — the contract permits only the edited line to
-change visibly. So the honest version is probably *debounced* realign, or
-realign-on-cell-exit (which `<Tab>` already gives). Neither is free, and
-neither should be built before the measurement says which.
+**The measurement said cost is not the constraint.** A 5-row table realigns in
+**7.5 µs** — under 0.1% of a 120 Hz frame; a 500-row one in 829 µs; a
+not-a-table line costs **22 ns**. What vetoes per-keystroke realign is the
+keystroke UX contract, not the clock: a realign rewrites every row, so per
+keystroke it is by construction a pixel change to content the user did not
+edit. The bench lands anyway (`crates/lattice-mode/benches/table.rs`) so the
+next person does not re-litigate this as a performance question.
+
+**The premise was wrong, and that is recorded rather than quietly dropped.**
+This slice was written as "emacs realigns a table on every edit inside it".
+Emacs does not — `org-table-align` is called from `org-table-next-field`,
+`org-table-previous-field` and `org-return`, i.e. **when you leave a field**.
+Type into a cell in emacs and the table stays ragged until you `TAB` out. So
+the emacs-parity answer and the contract-safe answer are the same answer, and
+the debounce this slice was reserved to argue about is not needed.
+
+**Same keys, different results by modal state.**
+
+| Chord | Normal | Insert |
+|---|---|---|
+| `<Tab>` / `<S-Tab>` | Next / previous cell, realigning | Same, **staying in Insert** |
+| `<CR>` | *unbound* | Next **row**, same column; adds a row at the bottom |
+| `<Esc>` | *unbound* | Realign, then fall through to the native exit-insert |
+
+`<Tab>` reuses the Normal bodies verbatim — moving to a cell and realigning is
+one operation, and it emits no `Effect::EnterMode`, so Insert is simply kept.
+A second pair of handlers to say that would be the duplication this mode
+exists to end.
+
+`<CR>` is Insert-only, and the asymmetry is the design: in Normal it already
+means something a table row wants (first non-blank of the next line); in
+Insert it means "split this line", which inside a table row is never what you
+meant. It keeps the COLUMN where `<Tab>` wraps — that is the difference
+between filling a column and filling a row — and adds a row at the bottom, so
+`<CR>` is how you enter a table's contents. You leave with `<Esc>`.
+
+`<Esc>` carries `fall_through: true`. Without it the binding would trap the
+user in Insert inside every table, which is about the worst outcome available;
+with it the mode realigns and never hardcodes what `<Esc>` natively means.
+`active-snippet-mode`'s `<Esc>` is the precedent.
+
+**No edit when nothing changed.** Every body now compares the rendered table
+to the buffer and emits `Effect::CursorMove` instead of `Effect::ApplyEdit`
+when they match. Without it, `<Tab>` through an aligned table pushes an undo
+entry per cell and `<Esc>` one per Insert exit — undo steps for edits that
+changed nothing, which makes `u` stop meaning "undo my last change".
+
+**One test was wrong before the code was.** The popup-precedence check first
+asserted against `resolve_trace`, which lists every hit in enumeration order
+for `:describe-key` and says nothing about which one wins — it reported
+`table-mode` beating the completion popup and looked like a real UX bug. The
+ranking path is `lookup_with_context`, which folds gated layers in
+`active_modes` order; the test goes through that now and pins both directions
+(popup up → popup wins; popup down → the table gets `<Tab>` back).
 
 ### Not this mode's
 

@@ -1,11 +1,28 @@
 # The org agenda as a dashboard
 
+> **Where the code is.** Everything this page describes is implemented in
+> [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
+> is a WASM Component plugin: nothing here is compiled into the editor, and
+> lattice has no `BufferKind::Org`, no `Lang::Org` arm and no `Editor::`
+> method for any of it. What lives in *this* tree is the seams the plugin
+> contributes through — see [`plugin-host.md`](plugin-host.md).
+>
+> **§5 and §5b are the exception, and it matters.** The `display-span` colour
+> channel and the `annotation` row are lattice's contract with *any*
+> `scanned-excerpt-source` provider — the scan view is a
+> [`lattice-multibuffer`](multibuffer-views.md) mechanism and knows nothing
+> about org. Org is its first and loudest consumer, not its owner. A reader
+> looking for "what does the seam guarantee" wants those two sections; a reader
+> looking for "what does the agenda do" wants the rest.
+
 `org-mode.md` §6 establishes that the agenda is a multibuffer and why. This
 fragment covers what it becomes: a view with agenda-aware colour, layered
 display modes that each own one concept, a tags/todo query language, and
 `org-agenda-custom-commands`.
 
-Slice plan: `docs/dev/operations/slice-plans/org-agenda.md`.
+Slice plan: [`slice-plans/org-agenda.md`](../operations/slice-plans/org-agenda.md).
+User documentation: [`org.md`](../../user/org.md), and the plugin's own
+`doc/org.md` for the full reference.
 
 ---
 

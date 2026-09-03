@@ -6933,25 +6933,39 @@ noise.
 
 ---
 
-## 📝 Pending: move the org design docs into the org plugin repo
+## Where org is documented, and why it is here
 
 `docs/dev/architecture/org-{mode,agenda,capture,habits,roam,todo-keywords}.md`
-(≈134 KB) describe a **plugin**, not the editor. They document org's grammar,
-its agenda semantics, its capture templates and its habit rules — none of which
-lattice knows anything about, and all of which live in
-`lattice-org-plugin`. The same argument that renamed `agenda_refresh.rs` to
-`scan_view_refresh.rs` applies one level up: a repo that must not know what an
-agenda *is* should not carry the document explaining it.
+describe a **plugin that lives in another repository**
+(`dhruvasagar/lattice-org-plugin`). Moving them there was considered and
+**declined**: they double as the worked example for the plugin seams. The
+agenda drove the multibuffer scan-view seam, capture drove cross-file writes,
+habits drove per-row annotations — a contributor reading "how do I build a
+plugin that contributes a view" wants those pages, and they are useless three
+repositories away from the seams they exercise.
 
-What stays here is the **seam** side: `scanned-excerpt-source`'s contract,
-`org-agenda.md` §5b's annotation design, the multibuffer/scan-view mechanics.
-Those are lattice's, and org is one consumer.
+So they stay, and carry their weight by being explicit about what they are:
 
-Deliberately deferred until the current run of org work settles — moving 134 KB
-mid-slice would collide with every edit in flight, and the split above is not
-a clean file boundary (`org-agenda.md` is mostly org's, its §5b is not). The
-inbound references to repoint are in `implementation.md`, `benchmarks.md`, and
-nine slice plans under `operations/slice-plans/` including six archived ones.
+- Every one opens with a **"Where the code is"** callout naming the plugin
+  repository and stating that nothing on the page is compiled into the editor.
+  `org-agenda.md` and `org-habits.md` were missing it and now have it.
+- Where a page documents something that IS lattice's, it says so. The two
+  cases are `org-agenda.md` §5 (`display-span` colour) and §5b (the
+  `annotation` row): both are contracts with *any* `scanned-excerpt-source`
+  provider, and org is their first consumer rather than their owner.
+- Each links to the **user** page and to the plugin's own `doc/org.md`.
+
+**User docs.** `docs/user/org.md` is the org page a user reaches through
+`:help org` and through the site's *Configuration & extension* section. It is
+deliberately thin — install, what you get, the `org.*` options, and a pointer.
+The exhaustive reference stays in the plugin's `doc/org.md` and versions with
+the code; duplicating it here would put two copies in two repositories that
+release on different schedules, and the copy in the slower one would quietly
+become wrong.
+
+**Site.** Dev pages sit under the `org` section of `dev-nav.toml`; the user
+page under `config` in `nav.toml`. The sync resolves `../../user/org.md`
+cross-links to `@/docs/config/org.md`, so the two halves reach each other.
 
 ## Org TODO keywords (TK, 2026-08-29 — 🚧 TK.8/TK.9 land 2026-09-03)
 

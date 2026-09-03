@@ -215,7 +215,7 @@ docs = [
 [[section]]
 slug = "org"
 title = "Org mode"
-description = "The outliner, TODO workflow, capture, agenda and org-roam. Lattice's deepest plugin and the hardest test of the WASM seams — developed in its own repository, dhruvasagar/lattice-org-plugin, with no org-specific code in the editor."
+description = "The outliner, TODO workflow, capture, agenda, habits and org-roam. Lattice's deepest plugin and the hardest test of the WASM seams — developed in its own repository, dhruvasagar/lattice-org-plugin, with no org-specific code in the editor. The user-facing page is under Configuration & extension; these are the design fragments, written for someone extending the editor."
 [[section.group]]
 docs = [
   "architecture/org-mode",

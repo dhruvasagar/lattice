@@ -1,6 +1,19 @@
 # Org habits — repeating tasks, and the consistency graph
 
+> **Where the code is.** Everything this page describes is implemented in
+> [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), a **separate repository**. It
+> is a WASM Component plugin: nothing here is compiled into the editor, and
+> lattice has no `BufferKind::Org`, no `Lang::Org` arm and no `Editor::`
+> method for any of it. What lives in *this* tree is the seams the plugin
+> contributes through — see [`plugin-host.md`](plugin-host.md).
+>
+> The one exception on this page is **HB.5's `annotation` seam**, which is
+> lattice's: see [`org-agenda.md`](org-agenda.md) §5b. Org is its first
+> consumer, not its owner.
+
 Sequencing and status: [`slice-plans/org-habits.md`](../operations/slice-plans/org-habits.md).
+User documentation: [`org.md`](../../user/org.md), and the plugin's own
+`doc/org.md` for the full reference.
 
 A **habit** in org is a repeating task with a *range*: `SCHEDULED: <2026-09-03
 Wed .+1d/3d>` on a headline carrying `:STYLE: habit`. It is due a day after you

@@ -1,9 +1,15 @@
-//! Repro harness for "agenda on refresh breaks (does not load anything back)".
+//! Refresh, for any scan view: `gr` must repopulate rather than blank.
 //!
 //! Drives `open_scan_view` twice against the same services — which is exactly
 //! what `gr` does: `ScanViewMode`'s refresh handler emits
-//! `AppEffect::OpenProviderView { provider: "agenda" }`, and the host's arm
-//! calls the registered opener a second time.
+//! `AppEffect::OpenProviderView { provider }`, and the host's arm calls the
+//! registered opener a second time.
+//!
+//! The provider here is a fixture, deliberately. A scan view is this crate's
+//! mechanism and belongs to no content type; org's agenda is one instance of
+//! it, and the bug that prompted this file was reported there, but naming the
+//! harness after it would put org's vocabulary in a crate that must not know
+//! what an agenda is.
 
 #![allow(clippy::unwrap_used)]
 
@@ -164,7 +170,7 @@ fn tempdir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("lattice-agenda-refresh-{nanos}-{n}"));
+    let dir = std::env::temp_dir().join(format!("lattice-scan-view-refresh-{nanos}-{n}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -182,11 +188,11 @@ async fn settle(registry: &MultibufferRegistryHandle, view: BufferId) -> Headerl
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    panic!("the agenda scan never reached a terminal headerline");
+    panic!("the scan never reached a terminal headerline");
 }
 
 /// The wiring every test here needs: a named buffer store, a multibuffer
-/// registry, one `FakeSource` rooted at `dir`, and the agenda's view identity.
+/// registry, one `FakeSource` rooted at `dir`, and the view's identity.
 fn harness(
     dir: &std::path::Path,
 ) -> (
@@ -218,15 +224,15 @@ fn harness(
     let cmd: CommandRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     services.register(cmd);
-    let agenda_service: ScanViewServiceHandle = InMemoryScanViewService::handle();
-    services.register(agenda_service);
+    let scan_service: ScanViewServiceHandle = InMemoryScanViewService::handle();
+    services.register(scan_service);
 
     let activator = MockActivator {
         services: Arc::new(services),
     };
     let identity = ScanViewIdentity {
-        provider: "agenda".to_string(),
-        buffer_name: "*agenda*".to_string(),
+        provider: "scan-fixture".to_string(),
+        buffer_name: "*scan-fixture*".to_string(),
         view_mode: None,
         no_rows_message: "no plugin provides rows for it".to_string(),
     };

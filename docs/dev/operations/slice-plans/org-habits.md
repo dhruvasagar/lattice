@@ -86,32 +86,56 @@ Deliberately no test in `org_agenda.rs` pinning today's answer — that would
 enshrine the destructive behaviour as intended. The org-file case is covered in
 `org_structure.rs`.
 
-**An attempt was made and reverted; here is what it established**, so the next
-one starts further along.
+**Two attempts, both reverted. What is now known, so the third starts at the
+actual question.**
 
-The shape is right and the pieces all exist: `PlanTarget::resolve` already
-answers for both surfaces (agenda row → source buffer + source line, file →
-active buffer + line), `host_services::source_line` reads a source line, and
+The shape is right and every piece exists: `PlanTarget::resolve` answers for
+both surfaces, `host_services::source_line` reads a source line,
 `replace_lines_at` writes to a named buffer. Reading the subtree through
-`source_line` and writing back with `replace_lines_at` compiles and leaves the
-org-file path untouched.
+`source_line` and writing back compiles, and leaves the org-file path green.
 
-It still fell through to the plain `DONE`, and the bail is **before**
-`complete_repeating` — the source ends up `* DONE`, so an edit happened, which
-means the ordinary rewrite ran rather than nothing. That puts it at either
-`read_line_of` answering `None` or the `want` not matching a done keyword; the
-run could not distinguish them because the diagnostic was written as an
-`Effect::Echo`, which goes to the editor's message area and is invisible to a
-test even under `--nocapture`. **Instrument with `logging::log` from the
-guest, not an echo** — that is the one-line difference between another blind
-run and an answer.
+**`logging::log` cannot be used to debug this, and the earlier note here
+saying to use it was wrong.** Calling it makes the component import
+`logging`, which the grammar seam's *sync* linker deliberately does not
+provide, and every import a component declares must resolve on every linker it
+instantiates against — so the WHOLE plugin stops loading. OC.2 shipped that
+once and it is scarred into four comments in `lib.rs`. An `Effect::Echo` is no
+better: it lands in the editor's message area, invisible to a test even under
+`--nocapture`. What works is writing the probe **into the buffer** as an edit
+and reading it back through `source_text` — crude, temporary, and the only
+channel a guest has that a test can see.
 
-Worth checking first, because it is cheap and would explain everything: in the
-agenda `ctx.cursor.line` is a composed row, and `PlanTarget` was built for
-`s`/`d` which act on the headline ALONE. Confirm `excerpt_source` answers for
-the `<leader>ot` dispatch specifically — the existing agenda TODO test passes
-through `rewrite_headline`, which never calls `row_source`, so nothing yet
-proves that path resolves here.
+**The probe's answer:**
+
+```
+resolved=true from_source=Some(false) head=Some("* TODO Ship the thing")
+cyc=Some("* DONE Ship the thing") want=Some("DONE") done=["DONE"]
+```
+
+So the done-keyword gate passes and the cycle is right. The failure is
+`from_source=false`: **`row_source(ctx)` → `excerpt_source(view, line)` returns
+`None` for a chord-dispatched guest action**, so `PlanTarget` falls to the file
+branch, the subtree is read from the composed view — one line, the headline —
+and `complete_repeating` correctly declines.
+
+**Where to look, in order.** The resolver itself is fine
+(`MultibufferExcerptSource` has passing unit tests) and it *is* wired at
+install (`lattice-plugin-loader/src/install.rs`, from the multibuffer registry
+service), and `new_store` stamps `excerpt_source` onto every store including
+the sync grammar one — which only strips `ui`. So the wiring looks correct on
+inspection and answers `None` in practice: the
+`plugin-gates-hand-guests-throwaway-contexts` shape, wired end to end and
+answering nothing. The next step is a **host-side** test that calls
+`excerpt_source(view_id, 0)` on a booted agenda, which no test currently does
+— every existing agenda TODO test goes through `rewrite_headline`, which never
+calls `row_source`.
+
+Worth checking while there: whether `ctx.buffer_id` inside a grammar-dispatched
+action is the view's id at all. The probe's edit reached the source, which the
+host may be doing by composed→source translation on apply rather than because
+the guest named the source — those two are indistinguishable from the guest
+side, and only one of them makes `excerpt_source(ctx.buffer_id, …)` the right
+question.
 
 ### HB.3 — completion history 📝
 

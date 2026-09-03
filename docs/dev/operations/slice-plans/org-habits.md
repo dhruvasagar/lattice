@@ -7,7 +7,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | Slice | Description | Status |
 |---|---|---|
 | HB.1 | The repeater grammar, parsed **(plugin)** | ✅ |
-| HB.2 | Completing a repeating task repeats it **(plugin)** | 📝 |
+| HB.2 | Completing a repeating task repeats it **(plugin)** | ✅ |
+| HB.2b | …and from the agenda row, through the source seam **(plugin)** | 📝 |
 | HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | 📝 |
 | HB.4 | The consistency graph — states and glyphs **(plugin)** | 📝 |
 | HB.5 | Drawn under the agenda row **(cross-repo)** | 📝 |
@@ -46,19 +47,44 @@ Month and year arithmetic clamps rather than overflowing: 31 January + 1 month
 is 28 February (29 in a leap year), because org does that and because the
 alternative is a date that does not exist.
 
-### HB.2 — completing a repeating task repeats it 📝
+### HB.2 — completing a repeating task repeats it ✅
 
-Design §3, whole. Shift the planning line, reset the keyword to
-`:REPEAT_TO_STATE:` or the sequence's first non-done keyword, append the
-state-change line to `:LOGBOOK:` (honouring `org-log-into-drawer`), set
-`:LAST_REPEAT:`.
+Design §3, whole: shift the planning stamps, reset the keyword to
+`:REPEAT_TO_STATE:` or the sequence's first non-done keyword, log the
+state change into `:LOGBOOK:`, stamp `:LAST_REPEAT:`. One edit over the
+subtree, so `u` takes the completion back as one action and neither half can
+land alone.
 
-One edit over the subtree's affected lines, not three — a half-repeated habit
-(shifted but not logged, or logged but not reset) is a worse state than either
-end, and `u` must undo the completion as one action.
+Wired to **both** `TODO_SET` and `TODO_CYCLE`. Routing only the first would
+have left `<leader>ot` — the key people actually press on a habit — still
+destroying it, which is the half-migration this plan exists to close. The
+cycle path reads its target keyword back out of the line `cycle_keyword`
+produced rather than re-deriving it, so the sequence rules stay in one place.
 
-Hooks into `TODO_SET` / `TODO_CYCLE`, which today call `rewrite_headline` — a
-single-line rewrite. This slice needs a multi-line peer.
+The gate is narrow on purpose: `complete_repeating` answers `None` for
+anything without a repeater, and the old single-line rewrite runs unchanged.
+A test pins that a plain `* TODO Ship it` still just becomes `DONE` — a change
+to every completion in every org file must not ride in on a habit fix.
+
+`org.log-into-drawer` is a new option defaulting to **on**, which is not
+emacs' default (`org-log-into-drawer` is nil). UX-follows-convention decides
+it: essentially every real org config sets it, because loose log lines under a
+habit are what people migrate away from once a file has history. Org reads
+both, so the deviation costs placement, not compatibility.
+
+### HB.2b — …from the agenda row 📝
+
+**Completing a habit from the agenda still takes the destructive path.**
+
+An agenda excerpt is ONE line — the headline — so the multi-line rewrite finds
+no planning line in the composed view and falls back to the plain `DONE`. The
+completion has to read and write the **source** through OA.23b's seam instead
+of the view, which is a real slice rather than a tweak: it needs the source's
+subtree lines out and a multi-line source edit back.
+
+Deliberately no test in `org_agenda.rs` pinning today's answer — that would
+enshrine the destructive behaviour as intended. The org-file case is covered in
+`org_structure.rs`.
 
 ### HB.3 — completion history 📝
 

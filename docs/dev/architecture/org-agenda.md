@@ -167,6 +167,82 @@ search, diff and references too. Keyword colour serves nobody but org.
 
 ---
 
+## 5b. Annotations: what hangs *under* a row (HB.5)
+
+Colour (§5) answers "how is this row painted". A habit's consistency graph asks
+a different question — "what else does the guest know about this row that is not
+in the row's own text" — and it cannot be answered the same way, because an
+agenda row is a **verbatim excerpt of a source line**. Org writes its graph at
+column 50 because its agenda line is generated text; ours is the file, and
+appending to it would mean editing the file (`org-habits.md` §5).
+
+So the answer is a `VirtualRow` anchored `Below` the row, and the seam question
+is only where the guest's contribution crosses.
+
+### It rides the entry, for the same reason `spans` does
+
+```wit
+record annotation {
+    text: string,
+    spans: list<display-span>,
+}
+```
+
+`entry` gains `annotation: option<annotation>`. Not a new producer seam, and the
+argument is coordinates rather than economy.
+
+A general `virtual-rows` producer — the shape `decorations` uses, and the honest
+generalisation — would hand the guest a `decoration-context` carrying a buffer
+id and a line count. For a multibuffer **that is the composed view**, and a scan
+guest works in source terms: it cannot know where its row lands until every
+other file's rows have been interleaved by the sort. That is not a new
+observation; it is exactly what `entry.spans` already documents about itself,
+and it is why spans are line-relative and translated host-side. An annotation is
+the same kind of thing arriving from the same place, so it crosses at the same
+point and is translated by the same machinery.
+
+The scan is also already the trigger. A producer seam would need the host to
+decide *when* to re-run it; the graph changes when the file changes or the day
+rolls over, which is when the agenda rescans. Nothing new to schedule, and
+nothing new on a hot path (paramount #1).
+
+**What this deliberately does not buy.** A plugin that is not a scan-view
+provider still cannot annotate a row. That is HB.7's general per-row slot,
+deferred with a real design behind it — and building the general mechanism for
+one consumer is the failure mode heuristic #1 names. When a second consumer
+appears, the general seam is the right answer and this one is not in its way:
+the entry field is a producer *contribution*, and a host-side registry could
+merge both.
+
+### Shape, and what is refused
+
+- **One line, not many.** The graph is one row. A `list<annotation>` is the
+  obvious widening when something needs it; heights and scroll interactions are
+  not worth inventing for a consumer that does not exist.
+- **`spans` over the annotation's own text**, byte offsets into `text`,
+  resolved through the same `name_to_style_with_theme` path — so org's eight
+  `org.habit.*` elements reach the row with the active colourscheme applied and
+  no colour crosses the boundary.
+- **Validated, never trusted.** Same rule as `spans`, and the same granularity:
+  a bad span costs itself, not the annotation; an annotation whose spans are all
+  bad still renders its text. A row must never vanish because its decoration was
+  malformed.
+
+### Host side
+
+`publish_row_annotations` is `publish_row_spans`' sibling and shares its
+translation: `excerpt_start_rows` gives each row's composed index, so a row's
+annotation and its fold agree on where that row is. The rows become a
+`VirtualRowProvider` registered on the view through `VirtualRowRegistrar` —
+`clock_report.rs` is the precedent, a scan-view provider already doing exactly
+this.
+
+**HB.5 is the first production emitter of `AnchorPosition::Below`.** Both
+renderers handle it and `lattice-cells` orders it, but only under test, so the
+slice owes an end-to-end check rather than a citation of those tests.
+
+---
+
 ## 6. `<Tab>` cycles the block
 
 The agenda opens collapsed (`foldlevel=0`, declared on `org-agenda-mode`) and

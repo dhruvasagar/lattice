@@ -11,7 +11,9 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | HB.2b | …and from the agenda row, through the source seam **(plugin)** | ✅ |
 | HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | ✅ |
 | HB.4 | The consistency graph — states and glyphs **(plugin)** | ✅ |
-| HB.5 | Drawn under the agenda row **(cross-repo)** | 📝 |
+| HB.5a | The `annotation` seam — WIT + boundary **(lattice)** | 📝 |
+| HB.5b | Annotations become virtual rows **(lattice)** | 📝 |
+| HB.5c | Org fills it — the graph appears **(plugin)** | 📝 |
 | HB.6 | Derived analytics: streak, rate, weekday pattern | 📝 |
 | HB.7 | A general per-row inline annotation slot | ⛔ |
 
@@ -213,19 +215,63 @@ cannot be warning-clean, and HB.4 is HB.3's only consumer. And both are still
 dead code until HB.5 draws them — the wasm build carries 14 `dead_code`
 warnings, three of them HB.1's, of which HB.4 now consumes `window_days`.
 
-### HB.5 — drawn under the agenda row 📝
+### HB.5 — drawn under the agenda row
 
-A `VirtualRow` anchored Below the habit's row.
+Design: [`org-agenda.md`](../../architecture/org-agenda.md) §5b, which is where
+the seam is argued; `org-habits.md` §5 says why it is a virtual row and not
+column 50.
 
-**The seam does not exist yet, and that is the whole slice.** `VirtualRow` /
-`VirtualRowProvider` / `VirtualRowRegistrar` are native-only
-(`lattice-cells`, `lattice-mode`); nothing in `wit/` exposes them, so a plugin
-cannot contribute a row today. The graph is computed in the guest (HB.4) and
-the row is registered by the host, so this needs a new plugin→host decoration
-seam plus both renderers in lockstep — a genuine cross-repo slice, not a
-follow-up line.
+The shape was chosen over a general `virtual-rows` producer seam (the
+`decorations` shape) on **coordinates, not economy**: that seam hands a guest a
+`decoration-context` whose buffer id is the COMPOSED view, and a scan guest
+works in source terms — it cannot know where its row lands until the sort has
+interleaved every other file's rows. `entry.spans` already documents exactly
+that about itself, which is why the annotation crosses at the same point and is
+translated by the same host-side machinery. The scan is also already the
+trigger, so nothing new is scheduled.
 
-Until it lands, HB.3 and HB.4 are dead code with passing tests.
+Deliberately not bought: a non-scan plugin still cannot annotate a row. That is
+HB.7, deferred.
+
+**HB.5 is the first production emitter of `AnchorPosition::Below`.** Both
+renderers handle it and `lattice-cells` orders it, but only under test — so
+HB.5b owes an end-to-end assertion rather than a citation of those tests.
+
+#### HB.5a — the seam 📝 *(lattice)*
+
+`wit/scanned-excerpt-source.wit`: a one-line `annotation` record (text +
+`list<display-span>`) and `entry.annotation: option<annotation>`. Native peer on
+`ScannedExcerpt`, and the boundary conversion in
+`lattice-plugin-host/src/scanned_excerpt_source.rs`, validated with `spans`'
+granularity: a bad span costs itself, not the annotation; an annotation with no
+surviving spans still renders its text; a row never vanishes because its
+decoration was malformed.
+
+Adding a field to a WIT record is a breaking change for every guest that
+constructs an `entry` — org must add `annotation: None` before it builds again.
+That is the cross-repo cost of this slice, and it is one line.
+
+#### HB.5b — annotations become rows 📝 *(lattice)*
+
+`publish_row_annotations`, sibling to `publish_row_spans` and sharing its
+translation (`excerpt_start_rows`, so a row's annotation and its fold agree on
+where the row is). The result is a `VirtualRowProvider` registered on the view
+through `VirtualRowRegistrar` — `clock_report.rs` is the precedent.
+
+Tests owed: composed-index translation with interleaved files (the case a
+single-file fixture cannot catch, exactly as `composed_row_spans`' tests
+established), a refresh replacing rather than appending, the empty case
+registering nothing, and the end-to-end `Below` assertion above.
+
+#### HB.5c — org fills it 📝 *(plugin)*
+
+Compute the graph during the scan the guest already performs: `history` for the
+completions, `habit_graph` for the states, glyphs per `ui.nerd_fonts`, spans
+naming the eight `org.habit.*` elements. `annotation` stays `none` for every row
+that is not a habit — an ordinary TODO grows no second row.
+
+This is what makes HB.3 and HB.4 live and clears the 14 `dead_code` warnings
+they currently carry.
 
 ### HB.6 — derived analytics 📝
 

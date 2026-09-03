@@ -128,6 +128,12 @@ on toggle.
 A `VirtualRow` anchored **Below** the habit's agenda row — the mechanism the
 clock report and the magit headerline already use.
 
+**How the guest's graph reaches that row** is designed in
+[`org-agenda.md`](./org-agenda.md) §5b: it rides the scan `entry` as an
+`annotation`, for the same coordinate reason `entry.spans` does, rather than
+through a general virtual-row producer seam. That general seam is §6's deferred
+item below.
+
 Not org's inline column-50 placement, and the cost is stated rather than
 hidden: the habit block is twice as tall as emacs'. Org can write at column 50
 because its agenda line is generated text; a lattice agenda row is a **real

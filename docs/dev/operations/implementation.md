@@ -6933,6 +6933,26 @@ noise.
 
 ---
 
+## 📝 Pending: move the org design docs into the org plugin repo
+
+`docs/dev/architecture/org-{mode,agenda,capture,habits,roam,todo-keywords}.md`
+(≈134 KB) describe a **plugin**, not the editor. They document org's grammar,
+its agenda semantics, its capture templates and its habit rules — none of which
+lattice knows anything about, and all of which live in
+`lattice-org-plugin`. The same argument that renamed `agenda_refresh.rs` to
+`scan_view_refresh.rs` applies one level up: a repo that must not know what an
+agenda *is* should not carry the document explaining it.
+
+What stays here is the **seam** side: `scanned-excerpt-source`'s contract,
+`org-agenda.md` §5b's annotation design, the multibuffer/scan-view mechanics.
+Those are lattice's, and org is one consumer.
+
+Deliberately deferred until the current run of org work settles — moving 134 KB
+mid-slice would collide with every edit in flight, and the split above is not
+a clean file boundary (`org-agenda.md` is mostly org's, its §5b is not). The
+inbound references to repoint are in `implementation.md`, `benchmarks.md`, and
+nine slice plans under `operations/slice-plans/` including six archived ones.
+
 ## Org TODO keywords (TK, 2026-08-29 — 🚧 TK.8/TK.9 land 2026-09-03)
 
 | Slice | What | Status |

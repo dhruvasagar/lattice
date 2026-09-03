@@ -104,6 +104,22 @@ doing the two slices in this order rather than merging them:
 is the assertion that the decline chain survived having one of its links move
 to another crate.
 
+**One chord DID change, and TB.1's commit message said otherwise.** It claimed
+org users keep the same keys; that is true of the `<leader>t…` family and
+false of align, which was `<leader>o|` and is now `<leader>t|`. The move is
+right — `<leader>o…` is org's namespace and a generic table mode should not
+squat in it, and align sitting with the rest of the table family is more
+coherent than org's old split across two prefixes — but it is a break in
+muscle memory and belongs in the record rather than in a surprise.
+
+**And TB.2's verification was weaker than reported.** The plugin's suite reads
+`target/wasm32-wasip2/release/`, and that component was days stale, so the
+"108 passed" ran the OLD binary. Two tests pressing the removed `<leader>o|`
+went unnoticed — one failing honestly, one PASSING because an unbound chord
+leaves the buffer unchanged and "unchanged" is what it asserted. Both fixed in
+the plugin repo. The lesson generalises past this plan: a suite that loads a
+built artefact is not verified by `cargo test` alone.
+
 ### TB.3 — beyond parity ✅
 
 Six operations and one behaviour change, all generic — every one of them is

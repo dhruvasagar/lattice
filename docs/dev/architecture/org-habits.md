@@ -174,16 +174,41 @@ clock report and the magit headerline already use.
 through a general virtual-row producer seam. That general seam is §6's deferred
 item below.
 
-Not org's inline column-50 placement, and the cost is stated rather than
-hidden: the habit block is twice as tall as emacs'. Org can write at column 50
-because its agenda line is generated text; a lattice agenda row is a **real
-excerpt of the source line**, and appending to it would mean editing the file.
+Not org's inline column-40 placement, and the cost is stated rather than
+hidden: the habit block is twice as tall as emacs'.
 
-The denser answer is a general per-row inline-annotation slot — today's inline
-diagnostic is a bespoke, cursor-line-only version of exactly that. Generalising
-it would serve inlay hints, blame and lenses too, and would let the graph sit
-at a column like org's. That is a host mechanism in both renderers and is
-deliberately deferred; see the slice plan.
+**An earlier revision of this section gave the wrong reason** — that appending
+to the row "would mean editing the file". It would not. Virtual text appends
+without touching the buffer, and lattice already does exactly that twice on
+every code buffer: inlay hints splice mid-line, and the cursor-line diagnostic
+summary splices at end-of-line. The mechanism is there. The reason is different
+and stronger.
+
+**A consistency graph is a bar chart, and a bar chart needs its columns to
+line up.** Reading one is comparing today's cell against the same cell on the
+row above. That property survives only if every graph starts at the same
+column, and an agenda row is a **verbatim excerpt of a source line** whose
+width is whatever the user typed — 32 to 77 columns across one real corpus. So
+an inline slot has three placements and none of them work:
+
+- **pad to a fixed column, push right when the headline is longer** — the
+  chart starts at four different columns and stops being a chart;
+- **truncate the headline** — it is editable source text, not a rendering;
+- **overwrite at the column** — which is exactly what emacs does. Its own
+  defcustom says so: *"consistency graphs will overwrite anything else in the
+  buffer"*, and `org-habit-build-graph` reaches the column with
+  `(move-to-column org-habit-graph-column t)` and writes over whatever is
+  there.
+
+That last line is the whole answer. Org can place inline because its agenda
+line is **generated, disposable text it is free to destroy**. Ours is the file.
+The row below is not a compromise forced by a missing mechanism — it is the
+placement that keeps the columns aligned once rows are editable excerpts.
+
+**HB.7 is still worth building, for other consumers.** Inlay hints, git blame
+and lenses are short, per-line and alignment-indifferent, which is precisely
+the shape an end-of-line slot serves well. It should not be framed as the thing
+that will one day replace this row; see the slice plan.
 
 ## 6. What is not built
 

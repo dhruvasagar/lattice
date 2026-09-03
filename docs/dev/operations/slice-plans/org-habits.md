@@ -325,9 +325,21 @@ the graph exactly.
 
 Deferred, with a real design behind it. Today's inline diagnostic is a
 bespoke, cursor-line-only end-of-line annotation. Generalised into a per-row
-slot any provider can contribute to, it would let the graph sit at a column
-like emacs' (halving the habit block's height), and would serve inlay hints,
-git blame and lenses.
+slot any provider can contribute to, it would serve inlay hints, git blame and
+lenses.
+
+**It would NOT be the right home for the consistency graph**, and this entry
+used to say it was — "halving the habit block's height" was listed as the
+payoff. Design §5 now carries the argument: a graph is a bar chart, a bar chart
+needs aligned columns, and an agenda row is a verbatim excerpt whose width is
+whatever the user typed (32–77 columns across one real corpus). Emacs gets
+inline placement by **overwriting the line** — its own defcustom says
+consistency graphs "will overwrite anything else in the buffer" — which is
+available to it because its agenda line is generated text and unavailable to us
+because ours is the file.
+
+So HB.7 is deferred on its own merits and for its own consumers, not as a
+better version of HB.5 that has not been built yet.
 
 Deferred rather than dropped because it is a host mechanism needing both
 renderers in lockstep, and because HB.5 delivers the feature without it.

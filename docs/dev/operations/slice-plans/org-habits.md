@@ -11,9 +11,9 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | HB.2b | …and from the agenda row, through the source seam **(plugin)** | ✅ |
 | HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | ✅ |
 | HB.4 | The consistency graph — states and glyphs **(plugin)** | ✅ |
-| HB.5a | The `annotation` seam — WIT + boundary **(lattice)** | 📝 |
-| HB.5b | Annotations become virtual rows **(lattice)** | 📝 |
-| HB.5c | Org fills it — the graph appears **(plugin)** | 📝 |
+| HB.5a | The `annotation` seam — WIT + boundary **(lattice)** | ✅ |
+| HB.5b | Annotations become virtual rows **(lattice)** | ✅ |
+| HB.5c | Org fills it — the graph appears **(plugin)** | ✅ |
 | HB.6 | Derived analytics: streak, rate, weekday pattern | 📝 |
 | HB.7 | A general per-row inline annotation slot | ⛔ |
 
@@ -215,7 +215,7 @@ cannot be warning-clean, and HB.4 is HB.3's only consumer. And both are still
 dead code until HB.5 draws them — the wasm build carries 14 `dead_code`
 warnings, three of them HB.1's, of which HB.4 now consumes `window_days`.
 
-### HB.5 — drawn under the agenda row
+### HB.5 — drawn under the agenda row ✅
 
 Design: [`org-agenda.md`](../../architecture/org-agenda.md) §5b, which is where
 the seam is argued; `org-habits.md` §5 says why it is a virtual row and not
@@ -237,7 +237,7 @@ HB.7, deferred.
 renderers handle it and `lattice-cells` orders it, but only under test — so
 HB.5b owes an end-to-end assertion rather than a citation of those tests.
 
-#### HB.5a — the seam 📝 *(lattice)*
+#### HB.5a — the seam ✅ *(lattice)*
 
 `wit/scanned-excerpt-source.wit`: a one-line `annotation` record (text +
 `list<display-span>`) and `entry.annotation: option<annotation>`. Native peer on
@@ -251,7 +251,7 @@ Adding a field to a WIT record is a breaking change for every guest that
 constructs an `entry` — org must add `annotation: None` before it builds again.
 That is the cross-repo cost of this slice, and it is one line.
 
-#### HB.5b — annotations become rows 📝 *(lattice)*
+#### HB.5b — annotations become rows ✅ *(lattice)*
 
 `publish_row_annotations`, sibling to `publish_row_spans` and sharing its
 translation (`excerpt_start_rows`, so a row's annotation and its fold agree on
@@ -263,15 +263,41 @@ single-file fixture cannot catch, exactly as `composed_row_spans`' tests
 established), a refresh replacing rather than appending, the empty case
 registering nothing, and the end-to-end `Below` assertion above.
 
-#### HB.5c — org fills it 📝 *(plugin)*
+#### HB.5c — org fills it ✅ *(plugin)*
 
 Compute the graph during the scan the guest already performs: `history` for the
 completions, `habit_graph` for the states, glyphs per `ui.nerd_fonts`, spans
 naming the eight `org.habit.*` elements. `annotation` stays `none` for every row
 that is not a habit — an ordinary TODO grows no second row.
 
-This is what makes HB.3 and HB.4 live and clears the 14 `dead_code` warnings
-they currently carry.
+This is what makes HB.3 and HB.4 live: **dead code 14 → 0**.
+`repeat::is_habit_range` was deleted rather than kept — it was HB.1's forward
+declaration, and HB.5 proves nothing needs it because `window_days` already
+defaults MAX to MIN for a repeater with no `/MAX` (design §2).
+
+**What landed beyond the plan, and why.**
+
+- The scan **cache** carries the annotation. A hit skips the guest call
+  entirely, so an annotation absent from the on-disk form would make a graph
+  appear on a file's first scan and vanish on every later one — read as the
+  feature being broken, not as a cache being incomplete. Round-tripped through
+  real `put`/`get`, because the failure is the field being dropped somewhere on
+  the PATH and a `From` test passes while `put` ignores its argument.
+- A slot on an annotation names a **theme element only**, unlike `entry.spans`
+  which also takes tree-sitter capture names. A virtual row's cells carry a
+  baked colour while a span stays a semantic style the cells worker resolves at
+  paint. Stated in the WIT rather than left to be found by getting a black row.
+- The provider reads its state **through the service**, not through a captured
+  `Arc`, because `set_state` inserts a new one on every open. See the finding
+  below.
+
+**Found while building this, not fixed here.** `ClockReportProvider` captures
+`Arc<RwLock<ScanViewState>>` in `on_activate`, and `set_state` REPLACES that
+Arc on every open. If a manual clockreport toggle survives a `gr`, its report
+should freeze at the pre-refresh data. That is a reading of the code, not a
+reproduction. The class fix is to make `set_state` write into the existing lock
+instead of replacing it, which would also retire HB.5b's indirection. Its own
+slice.
 
 ### HB.6 — derived analytics 📝
 

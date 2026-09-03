@@ -123,6 +123,46 @@ Glyphs follow the icon-degradation rule: a Nerd-Font palette and a BMP
 fallback occupying the same cell width, so the column geometry does not shift
 on toggle.
 
+## 4b. What the history says, beyond the picture (HB.6)
+
+§1's claim — richer tracking is *derived*, not stored — cashed out. Three
+numbers, appended to the graph row as an unstyled caption:
+
+```
+  ···○○!●●✓··○!●✓··○!✓··○✓··○  5× · 80% · Mon↓
+```
+
+Org has none of these, so each is a choice rather than a port, and **the units
+are the argument**. "A five-day streak" is only true for a `.+1d` habit; five in
+a row on `.+3d` is fifteen days. So:
+
+| number | definition |
+|---|---|
+| **streak** | kept repetitions in a row (`5×`), not days. A repetition is kept when the next completion lands within **MAX** — the range is exactly the tolerance the user wrote. **Zero when the habit is currently overdue.** |
+| **rate** | completions in the graph's past window over the repetitions it had *room for* (`window / MIN`), capped at 100. A day-based denominator would report a three-daily habit as 33% while it was kept perfectly. |
+| **weakest weekday** | the weekday completed on least often, over the whole history. Reported **only for daily habits**, and only once every weekday has ≥3 samples. |
+
+The gates on the weekday are the interesting part: a `.+3d` habit lands on a
+rotating subset of weekdays however well it is kept, so its distribution is an
+artefact of the cadence rather than of the person — and a young daily habit has
+not lived through enough Mondays to have a Monday problem. A level history
+nominates nobody rather than whichever weekday sorts first.
+
+A streak of zero under a habit dropped last week is deliberate. Showing `12×`
+there is the failure that makes people stop trusting the number, which costs
+more than the number is worth.
+
+**The caption carries no span.** That is what makes appending it safe: the
+graph's colour runs still tile the graph exactly, and the text paints in the
+row's own foreground rather than reading as another day.
+
+`org.habit-stats` gates the whole suffix, defaulting **on** — a derived number
+nobody sees is a number nobody checks. Off is a real setting rather than a
+courtesy: the graph is 29 cells and the caption a dozen more, which costs
+something on a narrow terminal.
+
+---
+
 ## 5. Where it is drawn
 
 A `VirtualRow` anchored **Below** the habit's agenda row — the mechanism the

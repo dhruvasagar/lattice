@@ -14,7 +14,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | HB.5a | The `annotation` seam — WIT + boundary **(lattice)** | ✅ |
 | HB.5b | Annotations become virtual rows **(lattice)** | ✅ |
 | HB.5c | Org fills it — the graph appears **(plugin)** | ✅ |
-| HB.6 | Derived analytics: streak, rate, weekday pattern | 📝 |
+| HB.6 | Derived analytics: streak, rate, weekday pattern | ✅ |
 | HB.7 | A general per-row inline annotation slot | ⛔ |
 
 **HB.2 is the foundation and it is also a bug fix.** Today marking a repeating
@@ -299,10 +299,27 @@ reproduction. The class fix is to make `set_state` write into the existing lock
 instead of replacing it, which would also retire HB.5b's indirection. Its own
 slice.
 
-### HB.6 — derived analytics 📝
+### HB.6 — derived analytics ✅
 
-Streak, completion rate over the window, per-weekday pattern. Computed from
-HB.3's data, stored nowhere (design §1).
+Streak, completion rate and weakest weekday, from HB.3's data, stored nowhere.
+Definitions and their rationale are in design §4b.
+
+**The plan said "computed" and stopped**, which left the surface open — and a
+computation with no consumer is exactly what left HB.3 and HB.4 dead across two
+sessions. Dhruva chose the graph row, so the suffix rides the annotation HB.5
+already draws: no new seam, no new crossing, no new trigger, and the same scan
+produces both.
+
+The units are the part that needed deciding rather than implementing. `5d` was
+in the option preview and is wrong for any non-daily habit, so the streak ships
+as a count of kept repetitions (`5×`); the rate's denominator is repetitions
+rather than days for the same reason; and the weekday term is suppressed unless
+the habit is daily with enough samples, because a `.+3d` habit's weekday
+distribution is an artefact of its cadence.
+
+`org.habit-stats` gates it, defaulting on. 16 tests here, 2 more in
+`habit_row` pinning that the caption is unspanned so the graph's runs still tile
+the graph exactly.
 
 ### HB.7 — a general per-row inline annotation slot ⛔
 

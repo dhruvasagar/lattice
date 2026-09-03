@@ -154,3 +154,100 @@ fn an_unknown_target_is_still_refused() {
 
     assert_eq!(source_text(&editor, view), before);
 }
+
+// ── MU.1: undo reaches the source ───────────────────────────────────────
+
+/// **`u` in a multibuffer must undo the FILE, not just the picture of it.**
+///
+/// This is the bug the test exists for, and its shape is what made it
+/// survivable: M.11 dropped the source fan-out to fix a deadlock, leaving
+/// undo operating on the composed doc alone. The view rolled back, so on
+/// screen `u` looked like it worked — while the source kept the change and a
+/// later `:w` persisted it. A visual undo over a real edit, with nothing
+/// saying so.
+///
+/// So the assertion is on `source_text`, deliberately. Asserting the composed
+/// view would have passed on the broken version.
+#[test]
+fn undo_in_the_view_rolls_the_source_back_too() {
+    let (mut editor, view) = boot_with_an_agenda_shaped_view();
+    let before = source_text(&editor, view);
+
+    // Edit through the VIEW (composed coordinates), which is what the user
+    // does when they type in an agenda row — not the targeted-source path the
+    // rest of this file exercises.
+    editor.activate_buffer(view);
+    editor
+        .apply_edit_blocking(lattice_protocol::edit::Edit {
+            range: lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 2),
+                lattice_protocol::position::Position::new(0, 6),
+            ),
+            kind: lattice_protocol::edit::EditKind::Replace {
+                text: "DONE".to_string(),
+            },
+        })
+        .expect("the edit applies to the view");
+    settle(&editor);
+    assert!(
+        source_text(&editor, view).starts_with("* DONE"),
+        "precondition: the edit reached the source"
+    );
+
+    editor.undo_blocking().expect("undo");
+    settle(&editor);
+
+    assert_eq!(
+        source_text(&editor, view),
+        before,
+        "`u` must roll the SOURCE back, not only the composed view"
+    );
+}
+
+/// Redo is symmetric, and the asymmetry would be the nastier half of the same
+/// bug: `u` then `<C-r>` leaving the file holding the undone text.
+#[test]
+fn redo_reapplies_to_the_source() {
+    let (mut editor, view) = boot_with_an_agenda_shaped_view();
+    editor.activate_buffer(view);
+    editor
+        .apply_edit_blocking(lattice_protocol::edit::Edit {
+            range: lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 2),
+                lattice_protocol::position::Position::new(0, 6),
+            ),
+            kind: lattice_protocol::edit::EditKind::Replace {
+                text: "DONE".to_string(),
+            },
+        })
+        .expect("the edit applies");
+    settle(&editor);
+    editor.undo_blocking().expect("undo");
+    settle(&editor);
+    // Assert the TROUGH before the peak. Without it this test passes on a
+    // build where NEITHER undo nor redo forwards: the source would simply sit
+    // at `DONE` throughout and the final assertion could not tell that apart
+    // from redo working. It caught exactly that here.
+    assert!(
+        source_text(&editor, view).starts_with("* TODO"),
+        "the undo must have reached the source first, got {:?}",
+        source_text(&editor, view)
+    );
+
+    editor.redo_blocking().expect("redo");
+    settle(&editor);
+    assert!(
+        source_text(&editor, view).starts_with("* DONE"),
+        "redo must reach the source too, got {:?}",
+        source_text(&editor, view)
+    );
+}
+
+/// The forwarder is a FIFO and the queue is drained asynchronously, so a test
+/// that read the source immediately would race it. `:w`'s flush barrier is
+/// the production answer to the same problem; here a short spin is enough and
+/// keeps the test off the save path it is not testing.
+fn settle(editor: &Editor) {
+    let _ = editor;
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}

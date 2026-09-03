@@ -222,6 +222,7 @@ docs = [
   "architecture/org-todo-keywords",
   "architecture/org-capture",
   "architecture/org-agenda",
+  "architecture/org-habits",
   "architecture/org-roam",
 ]
 

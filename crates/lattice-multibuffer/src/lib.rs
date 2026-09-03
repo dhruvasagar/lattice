@@ -822,6 +822,52 @@ impl MultibufferDocumentHandle {
     /// See [`SourceForwardMsg::DirectEdit`] for why it goes through the
     /// forwarder rather than at the handle. `None` when `source_buffer_id` is
     /// not one of this view's sources; the returned `Pending` resolves to
+    /// Replay `applied` — the result of an undo or redo on the composed doc —
+    /// at each edit's source.
+    ///
+    /// Each `AppliedEdit` says a composed range held `replaced_text` and now
+    /// holds `inserted_text`. Sending exactly that as a composed-coordinate
+    /// `Edit` through the same translation the forward path uses is what
+    /// keeps the two in step, and is why there is no second code path to
+    /// drift: `resolve_edit_target` + `build_source_edit`, unchanged.
+    ///
+    /// Fire-and-forget onto the same FIFO the forward edits ride, so the
+    /// source sees the undo strictly after the edit it undoes. A `:w` flushes
+    /// that queue before reading, so a save immediately after `u` persists
+    /// the undone text rather than racing it.
+    pub(crate) fn forward_applied_to_sources(&self, applied: &[AppliedEdit]) {
+        if applied.is_empty() {
+            return;
+        }
+        let messages: Vec<SourceForwardMsg> = {
+            let state = self.lock_state();
+            applied
+                .iter()
+                .filter_map(|a| {
+                    let edit = Edit {
+                        range: a.original_range,
+                        kind: lattice_protocol::edit::EditKind::Replace {
+                            text: a.inserted_text.clone(),
+                        },
+                    };
+                    let target = resolve_edit_target(&state, edit.range.start)?;
+                    let source_edit = build_source_edit(&target, &edit);
+                    Some(SourceForwardMsg::Edit {
+                        source_handle: target.source_handle.clone(),
+                        source_edit,
+                    })
+                })
+                .collect()
+        };
+        for msg in messages {
+            let _ = self.inner.source_forward_tx.send(msg);
+        }
+    }
+
+    /// MU.1: symmetric with [`Self::undo`] in every respect, including
+    /// carrying the result to the sources. An asymmetry here would be the
+    /// nastier half of the same bug — `u` then `<C-r>` would leave the file
+    /// holding the undone text.
     /// whatever the source actor made of the edit.
     pub fn apply_to_source(
         &self,
@@ -1658,36 +1704,38 @@ impl Document for MultibufferDocumentHandle {
         Pending::ready(self.apply_edit_batch_sync(edits))
     }
 
-    /// M.3 (2026-06-01): fan undo out to every source the view
-    /// references. Each source's undo independently rolls back
-    /// its most recent action; the multibuffer's recompose
-    /// (M.4 auto-driven, M.3 manual) reflects.
+    /// MU.1: undo the composed view **and carry it to the sources**.
     ///
-    /// v1 atomicity: each source's undo stack is independent.
-    /// When the user typed in the multibuffer last, each
-    /// affected source's most-recent entry IS that
-    /// multibuffer-originated edit, so a fan-out undo rolls
-    /// back the right thing. If a third pane edited a source
-    /// in between, that source's most-recent is the third
-    /// pane's edit — `u` from the multibuffer rolls THAT back.
-    /// M.6+ slices can add transaction tracking if the
-    /// independent-stack behaviour proves surprising.
+    /// ## Why this is not `source.undo()`
+    ///
+    /// The obvious shape — fan out and pop each source's undo stack — is
+    /// wrong twice over, and the code carried both bugs in turn.
+    ///
+    /// It is wrong on *correctness*: a source's undo stack is its own. If a
+    /// third pane edited that file since, its most-recent entry is the third
+    /// pane's edit, so `u` in the multibuffer would silently roll back
+    /// somebody else's work. The old comment here called that "v1 atomicity"
+    /// and queued transaction tracking for later; that is the later.
+    ///
+    /// It was also wrong on *liveness*: the pre-M.11 version awaited each
+    /// source and deadlocked the editor actor. M.11 fixed it by dropping the
+    /// fan-out entirely, which left `u` looking like it worked while the file
+    /// on disk kept the change — a visual undo over a real edit, which is the
+    /// worse failure of the two because nothing on screen says so.
+    ///
+    /// ## What it does instead
+    ///
+    /// The undo's OWN result is the transaction record. `composed_doc.undo()`
+    /// returns `AppliedEdit`s describing exactly what changed in composed
+    /// coordinates — `original_range` and `inserted_text` — so each one is
+    /// replayed at its source through the same `resolve_edit_target` +
+    /// `build_source_edit` translation the forward path uses.
+    ///
+    /// Nothing is guessed and nothing is stored: the record is derived from
+    /// the operation that just happened, so it cannot drift from it, and a
+    /// concurrent edit in another pane is untouched because we address a
+    /// range rather than pop a stack.
     fn undo(&self) -> Pending<Vec<AppliedEdit>> {
-        // M.11 (2026-06-02): undo operates on the LOCAL
-        // composed_doc — synchronous, no cross-actor round-trip.
-        // Pre-fix this used `Pending::spawn(async move { for
-        // source in sources { source.undo().await } })` which
-        // deadlocked the editor actor's current_thread runtime
-        // when the host called via `block_on(self.document.undo())`
-        // (same root cause as the apply_edit freeze before M.11).
-        //
-        // Source-side undo is NOT forwarded in v1 — the local
-        // composed_doc retains its own undo stack and reversing
-        // here gives the user visual undo of multibuffer edits.
-        // Sources stay forward-edited (the search-and-replace
-        // workflow's "I changed my mind on this hunk" semantics
-        // need richer transaction tracking to coordinate
-        // multi-source undo; queued for a future slice).
         let applied = {
             let mut doc = self
                 .inner
@@ -1704,12 +1752,14 @@ impl Document for MultibufferDocumentHandle {
                 Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
             }
         };
+        // AFTER the composed_doc lock is released, like `apply_edit` — the
+        // forwarding takes the state lock, and taking it under the doc lock
+        // would invent a lock order this file otherwise does not have.
+        self.forward_applied_to_sources(&applied);
         Pending::ready(Ok(applied))
     }
 
     fn redo(&self) -> Pending<Vec<AppliedEdit>> {
-        // M.11 (2026-06-02): redo operates on the LOCAL
-        // composed_doc — symmetric with `undo` above.
         let applied = {
             let mut doc = self
                 .inner
@@ -1726,6 +1776,7 @@ impl Document for MultibufferDocumentHandle {
                 Err(e) => return Pending::ready(Err(RuntimeError::Core(e))),
             }
         };
+        self.forward_applied_to_sources(&applied);
         Pending::ready(Ok(applied))
     }
 

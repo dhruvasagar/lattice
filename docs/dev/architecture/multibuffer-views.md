@@ -1422,6 +1422,29 @@ entries are grouped via the standard undo-group mechanism:
 one user action (one keypress, one operator+motion) generates
 one undo group spanning N source buffers.
 
+**Undo carries to the sources, and does not pop their stacks
+(MU.1).** `undo` reverses the composed doc and then replays
+its OWN result — the `AppliedEdit`s, which carry
+`original_range` and `inserted_text` in composed coordinates —
+at each source, through the same `resolve_edit_target` +
+`build_source_edit` translation the forward path uses. Redo is
+symmetric.
+
+The obvious alternative, fanning `source.undo()` out, is wrong
+twice. A source's undo stack is its own: if a third pane
+edited that file since, its most-recent entry is the third
+pane's edit, and `u` in the view would silently roll back
+somebody else's work. It was also the shape that deadlocked
+the editor actor pre-M.11 — and the fix then was to drop the
+fan-out entirely, which left `u` reversing the picture while
+the file kept the change. A visual undo over a real edit, with
+nothing on screen saying so, is the worse of the two failures.
+
+Deriving the record from the operation that just happened
+means there is nothing stored to drift, and a concurrent edit
+in another pane is untouched because the replay addresses a
+range rather than pops a stack.
+
 **Cross-pane edit visibility.** Because edits flow to the
 source buffer through the standard pipeline, any other pane
 showing the source buffer sees the edit on its next snapshot.

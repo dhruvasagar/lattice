@@ -6849,7 +6849,8 @@ meant to exist.
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | backlinks — a picker, and why not a multibuffer | ✅ |
 | OR.10 | dailies — the journal, and two host defects it surfaced | ✅ |
-| OR.11 | roam capture templates and `${field}` | 📝 |
+| OR.11a | `${field}` expansion — written and wired | ✅ |
+| OR.11b | the capture buffer — OC.7 built it; only the prompt ORDER remains | 🚧 |
 | OR.12 | docs | 📝 |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).

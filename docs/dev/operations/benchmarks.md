@@ -536,12 +536,9 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ## TB.4 — what a table realign costs (2026-09-03)
 
-> ⚠️ **Different hardware from every other row in this file.** Measured on
-> the macOS dev box (Darwin/arm64), not the Ryzen 7 9700X / WSL2 machine the
-> hardware caveat above describes. Do NOT compare these absolute numbers
-> against other sections; they are internally consistent (same machine, same
-> run) and that is all this table claims. Re-measure on the primary box before
-> treating any of it as a floor.
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** Same box as the LG / MG / H.3
+rows and the "Full-suite baseline — Apple M1 Pro" section below, so those are
+the comparable neighbours; not comparable to the Ryzen 9700X / WSL2 rows.
 
 `table-mode` realigns a whole table on every field exit — `<Tab>`, `<S-Tab>`,
 `<CR>`, `<Esc>`. The question TB.4 opened with was whether it could instead run
@@ -574,7 +571,10 @@ but it is the number to look at first if a table chord ever feels slow in a
 long file.
 
 **What this decided: nothing.** A realistic table realigns in 7.5 µs, under
-0.1% of a 120 Hz frame, so cost was never going to be the objection. The
+0.1% of a 120 Hz frame — and this box is the *slower* of the two on pure
+single-thread compute (the full-suite baseline below puts the M1 Pro 1.5-2×
+behind the Zen 5 on tight scalar loops), so the headroom is real rather than
+flattered by the hardware. Cost was never going to be the objection. The
 objection is the keystroke UX contract — a realign rewrites every row, and per
 keystroke that is a pixel change to content the user did not edit. The bench
 exists so that is on the record as a *contract* decision rather than a

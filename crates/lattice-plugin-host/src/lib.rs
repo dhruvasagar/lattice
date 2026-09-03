@@ -3530,6 +3530,17 @@ impl PluginHost {
         let _ = self.excerpt_source.set(resolver);
     }
 
+    /// HB.2b: whether a resolver was ever wired.
+    ///
+    /// Every store is stamped from this slot at creation, so a host that
+    /// reaches its first `instantiate_*` unwired hands every guest a seam that
+    /// answers `none` forever — and answering `none` is a legitimate reply the
+    /// guest cannot tell apart from "this line is not composed". Exposed so the
+    /// boot pin can assert the wiring rather than a reading of `install`.
+    pub fn excerpt_source_wired(&self) -> bool {
+        self.excerpt_source.get().is_some()
+    }
+
     /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
     ///
     /// Both halves at once, on the `set_project_context` reasoning: a registry

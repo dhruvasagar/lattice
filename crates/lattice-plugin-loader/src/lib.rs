@@ -403,6 +403,17 @@ pub struct WiredSeams {
     pub agenda_registry: bool,
     /// TR.2b: the transient-menu registry.
     pub transient_registry: bool,
+    /// MV.1: the multibuffer registry — where a plugin's declared views land.
+    pub multibuffer_registry: bool,
+    /// OA.23 / HB.2b: whether the HOST carries an excerpt-source resolver.
+    ///
+    /// Not a service capture like its neighbours: `install` builds the resolver
+    /// over the multibuffer registry and hands it to the host, so the thing to
+    /// assert is what the host holds. Reported because the failure is invisible
+    /// otherwise — an unwired seam answers `none`, which is also its answer for
+    /// "this line is not composed", so a guest standing on an agenda row cannot
+    /// tell a boot-ordering regression from an ordinary miss.
+    pub excerpt_source: bool,
 }
 
 impl WiredSeams {
@@ -426,6 +437,8 @@ impl WiredSeams {
             && self.help_topics
             && self.dashboard_sections
             && self.transient_registry
+            && self.multibuffer_registry
+            && self.excerpt_source
     }
 }
 
@@ -655,6 +668,8 @@ impl PluginLoader {
             media_registry: self.env.media_registry.is_some(),
             agenda_registry: self.env.agenda_registry.is_some(),
             transient_registry: self.env.transient_registry.is_some(),
+            multibuffer_registry: self.env.multibuffer_registry.is_some(),
+            excerpt_source: self.host.excerpt_source_wired(),
         }
     }
 

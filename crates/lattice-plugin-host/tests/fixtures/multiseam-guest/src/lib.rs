@@ -177,6 +177,18 @@ impl Guest for Component {
             &spec(),
             14,
         );
+        // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
+        // row. Every other test of that seam supplies the resolver's arguments
+        // itself; this one takes them from the context the HOST handed the
+        // guest, which is the only version production runs — and the version
+        // that answered `none` for every agenda row while each layer's own
+        // tests passed.
+        grammar::register_action(
+            "multiseam-excerpt-source",
+            "echo the source behind the row under the cursor (HB.2b)",
+            &spec(),
+            15,
+        );
         // OC.10: an EX-COMMAND that edits the buffer at the cursor. Before that
         // slice this was not merely awkward, it was impossible: the guest got no
         // cursor to locate the edit and no buffer id to name as the target, so
@@ -428,6 +440,26 @@ impl GrammarCallbacks for Component {
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text: format!("{put}:{}", host_services::store_keys("multiseam/").join(",")),
+                })])
+            }
+            // HB.2b: the seam as the guest sees it, echoed rather than applied
+            // as an edit so a `none` is as loud as a hit — the failure mode
+            // here is the seam answering nothing, and an edit-shaped probe
+            // reports that as silence.
+            15 => {
+                let answer = match host_services::excerpt_source(
+                    u64::from(ctx.buffer_id),
+                    ctx.cursor.line,
+                ) {
+                    Some(loc) => format!("{}@{} in {}", loc.path, loc.line, loc.buffer),
+                    None => "none".to_string(),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!(
+                        "excerpt-source({},{})={answer}",
+                        ctx.buffer_id, ctx.cursor.line
+                    ),
                 })])
             }
             // OR.3: two ids from the sync grammar seam, echoed as `<a>|<b>`.

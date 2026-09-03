@@ -86,6 +86,33 @@ Deliberately no test in `org_agenda.rs` pinning today's answer — that would
 enshrine the destructive behaviour as intended. The org-file case is covered in
 `org_structure.rs`.
 
+**An attempt was made and reverted; here is what it established**, so the next
+one starts further along.
+
+The shape is right and the pieces all exist: `PlanTarget::resolve` already
+answers for both surfaces (agenda row → source buffer + source line, file →
+active buffer + line), `host_services::source_line` reads a source line, and
+`replace_lines_at` writes to a named buffer. Reading the subtree through
+`source_line` and writing back with `replace_lines_at` compiles and leaves the
+org-file path untouched.
+
+It still fell through to the plain `DONE`, and the bail is **before**
+`complete_repeating` — the source ends up `* DONE`, so an edit happened, which
+means the ordinary rewrite ran rather than nothing. That puts it at either
+`read_line_of` answering `None` or the `want` not matching a done keyword; the
+run could not distinguish them because the diagnostic was written as an
+`Effect::Echo`, which goes to the editor's message area and is invisible to a
+test even under `--nocapture`. **Instrument with `logging::log` from the
+guest, not an echo** — that is the one-line difference between another blind
+run and an answer.
+
+Worth checking first, because it is cheap and would explain everything: in the
+agenda `ctx.cursor.line` is a composed row, and `PlanTarget` was built for
+`s`/`d` which act on the headline ALONE. Confirm `excerpt_source` answers for
+the `<leader>ot` dispatch specifically — the existing agenda TODO test passes
+through `rewrite_headline`, which never calls `row_source`, so nothing yet
+proves that path resolves here.
+
 ### HB.3 — completion history 📝
 
 Parse `- State "DONE" from "..." [ts]` lines out of a headline's `:LOGBOOK:`

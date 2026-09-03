@@ -141,10 +141,17 @@ interface scanned-excerpt-source {
         /// is the one place a scan source draws content of its own.
         text: string,
         /// Byte spans into `text` (NOT into the row's source line, which this
-        /// is not part of), resolved host-side exactly as [`entry.spans`] is —
-        /// so a guest's own registered elements (`org.habit.overdue`) reach the
-        /// row with the active colourscheme applied and no colour crosses the
-        /// boundary.
+        /// is not part of), so a guest's own registered elements
+        /// (`org.habit.overdue`) reach the row with the active colourscheme
+        /// applied and no colour crosses the boundary.
+        ///
+        /// **A slot here names a THEME ELEMENT, and only that.** `entry.spans`
+        /// also accepts tree-sitter capture names (`keyword`, `string`),
+        /// because those stay a semantic style the cells worker colours at
+        /// paint time — but a virtual row's cells carry a baked colour, so the
+        /// annotation resolves its slots when the row is built and a capture
+        /// name has nothing to resolve against. An unknown slot renders in the
+        /// renderer's default foreground rather than failing the row.
         ///
         /// Validated per span like `entry.spans`: a bad one costs itself, and
         /// an annotation whose spans are all bad still renders its text. A row

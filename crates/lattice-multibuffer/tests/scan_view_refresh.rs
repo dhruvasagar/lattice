@@ -26,6 +26,7 @@ use lattice_mode::{
 };
 use lattice_multibuffer::providers::scan_view::{
     InMemoryScanViewService, ScanViewIdentity, ScanViewServiceHandle, open_scan_view,
+    row_annotation_provider_id,
 };
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle,
@@ -72,11 +73,23 @@ impl BufferStore for NamedBufferStore {
 
 struct MockActivator {
     services: Arc<ServiceRegistry>,
+    providers: Arc<Mutex<Vec<Arc<dyn lattice_cells::VirtualRowProvider>>>>,
 }
 
 impl ModeActivator for MockActivator {
     fn activate_major_for_kind(&mut self, _buffer: BufferId, _kind: BufferKind) {}
     fn activate_minor_by_id(&mut self, _buffer: BufferId, _mode: ModeId) {}
+    /// HB.5: the seam `open_scan_view` registers the annotation provider
+    /// through. Captured rather than dropped, because the whole question this
+    /// harness can answer is what that provider emits after a real scan.
+    fn register_virtual_row_provider(
+        &mut self,
+        _buffer: BufferId,
+        provider: Arc<dyn lattice_cells::VirtualRowProvider>,
+    ) -> bool {
+        self.providers.lock().unwrap().push(provider);
+        true
+    }
     fn services(&self) -> Arc<ServiceRegistry> {
         Arc::clone(&self.services)
     }
@@ -155,7 +168,13 @@ impl ScannedExcerptSource for FakeSource {
                             label: format!("Day {key}"),
                             sort_key: key,
                             spans: Vec::new(),
-                            annotation: None,
+                            // HB.5: only the rows this fixture is asked to
+                            // annotate get one, so a test can tell "annotations
+                            // arrive" from "every row grew a second line".
+                            annotation: (key >= 100).then(|| lattice_mode::RowAnnotation {
+                                text: format!("graph-{key}"),
+                                spans: Vec::new(),
+                            }),
                         })
                     })
                     .collect(),
@@ -230,6 +249,7 @@ fn harness(
 
     let activator = MockActivator {
         services: Arc::new(services),
+        providers: Arc::new(Mutex::new(Vec::new())),
     };
     let identity = ScanViewIdentity {
         provider: "scan-fixture".to_string(),
@@ -355,6 +375,80 @@ async fn a_refresh_that_finds_nothing_clears_the_view() {
         mb_registry.handle(view2).unwrap().excerpts().len(),
         0,
         "an empty result must clear, or a refresh silently shows yesterday"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// HB.5 end-to-end: a scan's annotations become virtual rows anchored BELOW
+/// their own rows, through the provider `open_scan_view` registers.
+///
+/// This is the assertion the slice owes. `AnchorPosition::Below` is handled by
+/// both renderers and ordered by `lattice-cells`, but only under test — nothing
+/// in production emitted one before this feature, so citing those tests would
+/// be citing coverage of a path no caller had ever taken.
+///
+/// It also pins the two halves a unit test cannot: that only the rows the
+/// source annotated grow a second line, and that the anchor is the row's
+/// COMPOSED index after the sort interleaved two files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn annotated_rows_get_a_virtual_row_below_them() {
+    let dir = tempdir();
+    // Keys ≥ 100 are annotated by the fixture; 30 is not. Two files, so the
+    // sort interleaves and a composed index is not an index within a file.
+    std::fs::write(dir.join("a.org"), "* TODO 30\n* TODO 300\n").unwrap();
+    std::fs::write(dir.join("b.org"), "* TODO 100\n").unwrap();
+
+    let (mut activator, mb_registry, _source, identity) = harness(&dir);
+    let providers = Arc::clone(&activator.providers);
+
+    let ProviderViewOutcome::Opened { view, .. } =
+        open_scan_view(&mut activator, &identity, &Args::None)
+    else {
+        panic!("open declined");
+    };
+    settle(&mb_registry, view).await;
+
+    // Sorted by key: 30 (composed 0), 100 (composed 1), 300 (composed 2).
+    let excerpts = mb_registry.handle(view).unwrap().excerpts();
+    assert_eq!(excerpts.len(), 3, "three rows across two files");
+
+    // BY ID. A scan view also carries the excerpt-header and status providers,
+    // so collecting from all of them would measure those too — and asserting
+    // the id is itself worth doing: a provider registered under the wrong salt
+    // would collide with one of the other three and silently replace it.
+    let want = row_annotation_provider_id(view);
+    let held = providers.lock().unwrap();
+    let annotations = held
+        .iter()
+        .find(|p| p.id() == want)
+        .expect("the annotation provider registered at open");
+    let rows = annotations.collect();
+    let text = |r: &lattice_cells::VirtualRow| -> String {
+        r.cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect()
+    };
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "only the two annotated rows grow a line, got {:?}",
+        rows.iter().map(text).collect::<Vec<_>>()
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.position == lattice_cells::AnchorPosition::Below),
+        "every annotation hangs BELOW its row"
+    );
+    let mut got: Vec<(u32, String)> = rows.iter().map(|r| (r.anchor_line, text(r))).collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![(1, "graph-100".to_string()), (2, "graph-300".to_string()),],
+        "anchored at COMPOSED rows 1 and 2 — row 0 is the unannotated key-30 row, \
+         and 300 comes from the same file as 30 rather than being adjacent to it"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

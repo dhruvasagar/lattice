@@ -150,6 +150,29 @@ pub struct ScanViewState {
     /// report is a wrong report, and unlike rows — which stream so the view
     /// fills in — nobody is reading a total until it is a total.
     pub clock: Vec<lattice_mode::ClockSpan>,
+    /// HB.5: the rows a scan asked to hang below its own, already translated
+    /// into COMPOSED coordinates.
+    ///
+    /// Translated at publish rather than at paint, for `composed_row_spans`'
+    /// reason: a row's composed index is not its index among its own file's
+    /// rows — the sort interleaves files — and the arithmetic belongs where the
+    /// excerpt layout is in hand, not in a provider that would have to
+    /// reconstruct it.
+    pub annotations: Vec<RowAnnotationAt>,
+    /// Bumped whenever [`annotations`](Self::annotations) is written, so the
+    /// cells worker re-runs the provider's `collect` without waiting for the
+    /// document's line count to move. A refresh that returns the same NUMBER
+    /// of rows with different annotations is the case this exists for.
+    pub annotations_version: u64,
+}
+
+/// HB.5: one annotation, and the composed row it hangs below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowAnnotationAt {
+    /// The composed row of the entry this belongs to — the virtual row paints
+    /// immediately below it.
+    pub row: u32,
+    pub annotation: lattice_mode::RowAnnotation,
 }
 
 /// Per-view state, shared between the trigger and the scan task.
@@ -379,8 +402,33 @@ pub fn open_scan_view(
                 // PREVIOUS scan's spans forward would be worse than empty,
                 // since a stale total reads exactly like a current one.
                 clock: Vec::new(),
+                // Same reasoning, and the same failure: an annotation left
+                // over from the previous scan hangs under whichever row now
+                // happens to occupy that composed index.
+                annotations: Vec::new(),
+                annotations_version: 0,
             },
         );
+        // HB.5: the rows a scan hangs below its own. Registered at OPEN rather
+        // than when the annotations arrive, because the provider reads the
+        // state through the SERVICE on every `collect` — so it is correct
+        // before the first scan (it emits nothing) and stays correct across
+        // refreshes.
+        //
+        // That indirection is deliberate. `set_state` inserts a NEW
+        // `Arc<RwLock<ScanViewState>>` on every open, so a provider that
+        // captured the Arc here would hold the first scan's state forever and
+        // freeze its rows at whatever the first `gr` found — visible only as
+        // "the graph stopped updating", which is a bad thing to debug.
+        let theme = services
+            .get::<lattice_theme::ThemeRegistryHandle>()
+            .map(|t| (*t).clone());
+        let provider: Arc<dyn lattice_cells::VirtualRowProvider> =
+            Arc::new(RowAnnotationProvider::new(view, (*svc).clone(), theme));
+        // `register_virtual_row_provider` dedups by id, so a refresh that
+        // re-opens the same view re-registers the same provider rather than
+        // stacking a second one under every row.
+        activator.register_virtual_row_provider(view, provider);
     } else {
         tracing::debug!("scan-view: service not registered; the view's root will not be tracked");
     }
@@ -1006,6 +1054,7 @@ fn append_sorted(
     let excerpts = build_excerpts(&rows, &source_ids);
     let count = excerpts.len();
     publish_row_spans(services, view, &rows, &excerpts);
+    publish_row_annotations(services, view, &rows, &excerpts);
     // OA.0c: REPLACE, not append. This is the swap that makes keeping the old
     // rows safe — appending onto a view we deliberately did not clear would
     // show the previous scan's rows and this one's together. Replacing also
@@ -1143,6 +1192,209 @@ fn composed_row_spans(
         }
     }
     out
+}
+
+/// HB.5: publish the rows a scan asked to hang below its own.
+///
+/// `publish_row_spans`' sibling, and it shares the translation deliberately:
+/// `excerpt_start_rows` is the same helper the fold providers and the spans use,
+/// so a row's annotation, its colour and its fold all agree on where that row
+/// is. Three answers derived three ways would drift, and the drift would be
+/// invisible — everything still renders, just attached to the wrong line.
+fn publish_row_annotations(
+    services: Option<&lattice_mode::ServiceRegistry>,
+    view: BufferId,
+    rows: &[SortedRow],
+    excerpts: &[Excerpt],
+) {
+    let Some(services) = services else {
+        return;
+    };
+    let Some(svc) = services.get::<ScanViewServiceHandle>() else {
+        return;
+    };
+    let Some(state) = svc.state(view) else {
+        return;
+    };
+    let Ok(mut state) = state.write() else {
+        return;
+    };
+    // Written unconditionally, including when the answer is empty. A scan whose
+    // rows lost their annotations must CLEAR the previous ones — the same rule
+    // `finish_empty` follows for rows, and for the same reason: stale
+    // decorations look exactly like current ones.
+    state.annotations = composed_row_annotations(rows, excerpts);
+    state.annotations_version = state.annotations_version.wrapping_add(1);
+}
+
+/// The translation itself, pure so it can be tested without an editor.
+///
+/// A row's composed index is NOT its index among its own file's rows: the sort
+/// interleaves files, so the two differ the moment more than one file
+/// contributes. That is the mistake this function exists to make once, in the
+/// same place `composed_row_spans` makes it.
+fn composed_row_annotations(rows: &[SortedRow], excerpts: &[Excerpt]) -> Vec<RowAnnotationAt> {
+    let starts = crate::motions::excerpt_start_rows(excerpts);
+    rows.iter()
+        .zip(starts.iter())
+        .filter_map(|(row, &start)| {
+            row.entry.annotation.as_ref().map(|a| RowAnnotationAt {
+                row: start,
+                annotation: a.clone(),
+            })
+        })
+        .collect()
+}
+
+/// The `ProviderId` a view's annotations register under.
+///
+/// A distinct salt from the excerpt-header, status and clock-report providers,
+/// so the four never collide on one view.
+pub fn row_annotation_provider_id(view: BufferId) -> lattice_cells::ProviderId {
+    u64::from(view.0).wrapping_mul(4).wrapping_add(2)
+}
+
+/// HB.5: renders a scan's per-row annotations as virtual rows below their rows.
+///
+/// Reads the view's state through the SERVICE on every call rather than holding
+/// an `Arc` to it, because `set_state` replaces that `Arc` on every open — a
+/// provider that captured one would freeze at the first scan's answer and its
+/// symptom would be "the graph stopped updating".
+pub struct RowAnnotationProvider {
+    view: BufferId,
+    service: ScanViewServiceHandle,
+    /// `None` on test paths that wire no theme; cells then carry the `0`
+    /// "renderer's default" sentinel, exactly as the clock report's do.
+    theme: Option<lattice_theme::ThemeRegistryHandle>,
+}
+
+impl std::fmt::Debug for RowAnnotationProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowAnnotationProvider")
+            .field("view", &self.view)
+            .finish()
+    }
+}
+
+impl RowAnnotationProvider {
+    pub fn new(
+        view: BufferId,
+        service: ScanViewServiceHandle,
+        theme: Option<lattice_theme::ThemeRegistryHandle>,
+    ) -> Self {
+        Self {
+            view,
+            service,
+            theme,
+        }
+    }
+
+    fn annotations(&self) -> Vec<RowAnnotationAt> {
+        self.service
+            .state(self.view)
+            .and_then(|s| s.read().ok().map(|s| s.annotations.clone()))
+            .unwrap_or_default()
+    }
+}
+
+impl lattice_cells::VirtualRowProvider for RowAnnotationProvider {
+    fn id(&self) -> lattice_cells::ProviderId {
+        row_annotation_provider_id(self.view)
+    }
+
+    /// The state's counter, plus the theme's — a `:colorscheme` swap must
+    /// repaint the rows rather than leave them in the previous palette, which
+    /// is the lesson the clock report's `version` already carries.
+    fn version(&self) -> u64 {
+        let rows = self
+            .service
+            .state(self.view)
+            .and_then(|s| s.read().ok().map(|s| s.annotations_version))
+            .unwrap_or(0);
+        let theme = self
+            .theme
+            .as_ref()
+            .map(|t| t.resolved().version())
+            .unwrap_or(0);
+        rows.wrapping_mul(31).wrapping_add(theme)
+    }
+
+    fn collect(&self) -> Vec<lattice_cells::VirtualRow> {
+        // Resolved ONCE per collect, off the UI thread, and baked into the
+        // cells — the established pattern. `0` is the Cell "use the renderer's
+        // default" sentinel, which an unthemed harness and an unresolvable
+        // element name both land on.
+        let resolved = self.theme.as_ref().map(|t| t.resolved());
+        // A slot on an annotation names a THEME ELEMENT, and only that.
+        //
+        // `entry.spans` resolves through `name_to_style_with_theme`, which also
+        // recognises tree-sitter capture names — but those stay a semantic
+        // `Style` that the cells worker colours at paint time, and a virtual
+        // row's cells carry a baked `u32`. So the two seams accept the same
+        // shape and not quite the same vocabulary, which is stated in the WIT
+        // rather than left for someone to find by getting a black row.
+        let fg_of = |slot: &str| -> u32 {
+            let (Some(theme), Some(resolved)) = (self.theme.as_ref(), resolved.as_ref()) else {
+                return 0;
+            };
+            theme
+                .id(&lattice_theme::ElementName::from(slot.to_string()))
+                .and_then(|id| resolved.get(id).fg)
+                .map(|c| c.to_rgb_u32(0))
+                .unwrap_or(0)
+        };
+        self.annotations()
+            .into_iter()
+            .map(|a| {
+                let styled: Vec<(usize, usize, u32)> = a
+                    .annotation
+                    .spans
+                    .iter()
+                    .map(|s| (s.start as usize, s.end as usize, fg_of(&s.slot)))
+                    .collect();
+                let cells = annotation_cells(&a.annotation.text, &styled);
+                lattice_cells::VirtualRow {
+                    anchor_line: a.row,
+                    // BELOW the row it describes — the graph hangs under its
+                    // habit. Design `org-habits.md` §5.
+                    position: lattice_cells::AnchorPosition::Below,
+                    cells: std::sync::Arc::from(cells),
+                    height: 1,
+                    // `Annotation`: scrolls with its anchor and paints no
+                    // backdrop. `Generic` carries the diff deletion-block
+                    // backdrop, which under an agenda row would read as a
+                    // removed line.
+                    kind: lattice_cells::VirtualRowKind::Annotation,
+                    bg: None,
+                    scales: None,
+                    media: None,
+                    gutter_line: None,
+                    gutter_fg: None,
+                }
+            })
+            .collect()
+    }
+}
+
+/// The annotation's text as cells, with its spans applied.
+///
+/// Spans are BYTE offsets into the text (the seam's contract) while cells are
+/// per character, so the two are walked together rather than indexed — an
+/// annotation of box-drawing glyphs is multi-byte throughout, and indexing
+/// cells by a byte offset would colour the wrong ones.
+fn annotation_cells(text: &str, spans: &[(usize, usize, u32)]) -> Vec<lattice_cells::Cell> {
+    text.char_indices()
+        .map(|(byte, ch)| {
+            // First match wins, the same precedence the syntax pipeline gives
+            // overlapping spans.
+            let fg = spans
+                .iter()
+                .find(|(start, end, _)| byte >= *start && byte < *end)
+                .map(|(_, _, fg)| *fg)
+                .unwrap_or(0);
+            lattice_cells::Cell::new(ch as u32, fg, 0, 0)
+        })
+        .collect()
 }
 
 /// The terminal state for a scan that produced nothing.
@@ -1530,6 +1782,236 @@ mod tests {
         assert_ne!(
             out[0][0].style, out[1][0].style,
             "each slot resolves to its own style"
+        );
+    }
+
+    // ── HB.5: annotations ───────────────────────────────────────────────
+
+    fn annotated(line: u32, group: &str, key: i64, text: &str) -> ScannedExcerpt {
+        let mut e = entry(line, group, group, key);
+        e.annotation = Some(lattice_mode::RowAnnotation {
+            text: text.to_string(),
+            spans: vec![lattice_mode::scanned_excerpt_source::RowSpan {
+                start: 0,
+                end: 3,
+                slot: "org.habit.ready".to_string(),
+            }],
+        });
+        e
+    }
+
+    /// The translation, on the layout that makes it differ from the obvious
+    /// one: two files interleaved by the sort, so a row's composed index is
+    /// NOT its index among its own file's rows. A single-file fixture passes
+    /// against the wrong arithmetic.
+    #[test]
+    fn annotations_land_on_the_composed_row_not_the_source_line() {
+        let rows = vec![
+            SortedRow {
+                file: 0,
+                entry: annotated(7, "day-1", 1, "aaa"),
+            },
+            SortedRow {
+                file: 1,
+                entry: annotated(3, "day-2", 2, "bbb"),
+            },
+        ];
+        let excerpts = vec![
+            Excerpt::new(BufferId::next(), 7, 7),
+            Excerpt::new(BufferId::next(), 3, 3),
+        ];
+
+        let out = composed_row_annotations(&rows, &excerpts);
+        assert_eq!(
+            out.iter().map(|a| a.row).collect::<Vec<_>>(),
+            vec![0, 1],
+            "composed rows 0 and 1 — neither is the source line either row carries"
+        );
+        assert_eq!(out[0].annotation.text, "aaa");
+        assert_eq!(out[1].annotation.text, "bbb");
+    }
+
+    /// Only annotated rows produce entries, and they keep the composed index of
+    /// the row they belong to rather than being packed together. A row with no
+    /// annotation must not shift the ones after it.
+    #[test]
+    fn an_unannotated_row_produces_nothing_and_shifts_nothing() {
+        let rows = vec![
+            SortedRow {
+                file: 0,
+                entry: entry(0, "g", "G", 1),
+            },
+            SortedRow {
+                file: 0,
+                entry: annotated(1, "g", 2, "graph"),
+            },
+        ];
+        let excerpts = vec![
+            Excerpt::new(BufferId::next(), 0, 0),
+            Excerpt::new(BufferId::next(), 1, 1),
+        ];
+
+        let out = composed_row_annotations(&rows, &excerpts);
+        assert_eq!(out.len(), 1, "only the annotated row contributes");
+        assert_eq!(
+            out[0].row, 1,
+            "and it keeps ITS composed row, not the index it has among annotations"
+        );
+    }
+
+    /// A multi-line row pushes the rows after it down, and an annotation has to
+    /// follow — otherwise the graph hangs under somebody else's habit. The same
+    /// hazard `a_multi_line_row_does_not_shift_the_row_after_it` pins for spans.
+    #[test]
+    fn a_multi_line_row_moves_the_annotation_after_it() {
+        let rows = vec![
+            SortedRow {
+                file: 0,
+                entry: entry(0, "g", "G", 1),
+            },
+            SortedRow {
+                file: 0,
+                entry: annotated(5, "g", 2, "graph"),
+            },
+        ];
+        // The first excerpt covers TWO lines, so the second row is composed
+        // row 2, not row 1.
+        let excerpts = vec![
+            Excerpt::new(BufferId::next(), 0, 1),
+            Excerpt::new(BufferId::next(), 5, 5),
+        ];
+
+        let out = composed_row_annotations(&rows, &excerpts);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].row, 2);
+    }
+
+    /// The provider reads the state through the SERVICE, so a refresh that
+    /// replaces the state Arc is still seen. Registering with a captured Arc
+    /// would freeze the rows at the first scan and read as "the graph stopped
+    /// updating".
+    #[test]
+    fn the_provider_follows_a_state_replacement() {
+        use lattice_cells::VirtualRowProvider;
+
+        let svc: ScanViewServiceHandle = InMemoryScanViewService::handle();
+        let view = BufferId::next();
+        let state = |text: &str, version: u64| ScanViewState {
+            provider: "p".to_string(),
+            options: ScanViewOptions::default(),
+            clock: Vec::new(),
+            annotations: vec![RowAnnotationAt {
+                row: 0,
+                annotation: lattice_mode::RowAnnotation {
+                    text: text.to_string(),
+                    spans: Vec::new(),
+                },
+            }],
+            annotations_version: version,
+        };
+        svc.set_state(view, state("first", 1));
+        let provider = RowAnnotationProvider::new(view, svc.clone(), None);
+        let text_of = |p: &RowAnnotationProvider| -> String {
+            p.collect()[0]
+                .cells
+                .iter()
+                .filter_map(|c| char::from_u32(c.codepoint))
+                .collect()
+        };
+        assert_eq!(text_of(&provider), "first");
+        let before = provider.version();
+
+        // What `open_scan_view` does on a refresh: a WHOLE NEW Arc.
+        svc.set_state(view, state("second", 2));
+        assert_eq!(
+            text_of(&provider),
+            "second",
+            "the provider must follow the replacement, not hold the old state"
+        );
+        assert_ne!(
+            provider.version(),
+            before,
+            "and say so, or the worker caches the previous rows"
+        );
+    }
+
+    /// The rows the provider emits: one per annotation, anchored BELOW its row,
+    /// and painting no backdrop of its own.
+    #[test]
+    fn the_provider_emits_one_row_below_each_annotated_row() {
+        use lattice_cells::VirtualRowProvider;
+
+        let svc: ScanViewServiceHandle = InMemoryScanViewService::handle();
+        let view = BufferId::next();
+        svc.set_state(
+            view,
+            ScanViewState {
+                provider: "p".to_string(),
+                options: ScanViewOptions::default(),
+                clock: Vec::new(),
+                annotations: vec![RowAnnotationAt {
+                    row: 4,
+                    annotation: lattice_mode::RowAnnotation {
+                        text: "···".to_string(),
+                        spans: Vec::new(),
+                    },
+                }],
+                annotations_version: 1,
+            },
+        );
+        let rows = RowAnnotationProvider::new(view, svc, None).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].anchor_line, 4);
+        assert_eq!(rows[0].position, lattice_cells::AnchorPosition::Below);
+        assert_eq!(rows[0].height, 1);
+        assert_eq!(rows[0].kind, lattice_cells::VirtualRowKind::Annotation);
+        assert!(
+            rows[0].bg.is_none(),
+            "an annotation paints no backdrop; `Generic`'s would read as a deleted line"
+        );
+        assert_eq!(
+            rows[0].cells.len(),
+            3,
+            "one cell per CHARACTER, not per byte"
+        );
+    }
+
+    /// A view with no state registers nothing rather than an empty row — the
+    /// provider is registered at open, before the first scan has run.
+    #[test]
+    fn a_view_with_no_state_emits_no_rows() {
+        use lattice_cells::VirtualRowProvider;
+        let svc: ScanViewServiceHandle = InMemoryScanViewService::handle();
+        let provider = RowAnnotationProvider::new(BufferId::next(), svc, None);
+        assert!(provider.collect().is_empty());
+        assert_eq!(provider.version(), 0);
+    }
+
+    /// Spans are BYTE offsets and cells are per character. An annotation of
+    /// box-drawing glyphs is multi-byte throughout, so indexing cells by a byte
+    /// offset would colour the wrong ones — and the graph is exactly that kind
+    /// of string.
+    #[test]
+    fn spans_colour_by_byte_offset_over_multibyte_text() {
+        // `·` is U+00B7 — TWO bytes in UTF-8 — so "···" occupies bytes 0, 2
+        // and 4. A span of `0..2` therefore covers the first char and nothing
+        // else; an implementation that indexed cells by the byte offset would
+        // colour the first TWO.
+        assert_eq!("·".len(), 2, "the premise this test rests on");
+        let cells = annotation_cells("···", &[(0, 2, 0xAA_BB_CC)]);
+        assert_eq!(cells.len(), 3, "one cell per char");
+        assert_eq!(cells[0].fg, 0xAA_BB_CC, "byte 0 is inside 0..2");
+        assert_eq!(
+            cells[1].fg, 0,
+            "the second char starts at byte 2, which is past the span"
+        );
+        assert_eq!(cells[2].fg, 0);
+
+        // And a span wide enough for two chars colours exactly two.
+        let cells = annotation_cells("···", &[(0, 4, 0x11_22_33)]);
+        assert_eq!(
+            cells.iter().map(|c| c.fg).collect::<Vec<_>>(),
+            vec![0x11_22_33, 0x11_22_33, 0]
         );
     }
 
@@ -1943,6 +2425,8 @@ mod tests {
                 provider: "test".to_string(),
                 options: ScanViewOptions::default(),
                 clock: Vec::new(),
+                annotations: Vec::new(),
+                annotations_version: 0,
             },
         );
 
@@ -2431,6 +2915,8 @@ mod tests {
                     ..Default::default()
                 },
                 clock: Vec::new(),
+                annotations: Vec::new(),
+                annotations_version: 0,
             },
         );
         let got = svc.state(view).unwrap();

@@ -541,6 +541,8 @@ mod provider_tests {
             provider: "agenda".to_string(),
             options: Default::default(),
             clock: spans,
+            annotations: Vec::new(),
+            annotations_version: 0,
         }))
     }
 

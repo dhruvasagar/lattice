@@ -1574,6 +1574,7 @@ mod tests {
             label: label.to_string(),
             sort_key,
             spans: Vec::new(),
+            annotation: None,
         }
     }
 
@@ -1767,6 +1768,7 @@ mod tests {
                                 label: format!("Day {key}"),
                                 sort_key: key,
                                 spans: Vec::new(),
+                                annotation: None,
                             })
                         })
                         .collect(),

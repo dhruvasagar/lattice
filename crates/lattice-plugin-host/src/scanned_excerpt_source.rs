@@ -16,7 +16,7 @@ use lattice_mode::scanned_excerpt_source::{
 use crate::PluginId;
 use crate::scan_cache::ScanCache;
 use crate::scan_task::ClockSpan as WitClockSpan;
-use crate::scan_task::{Entry, ScanClient};
+use crate::scan_task::{Annotation, Entry, ScanClient};
 
 /// An async agenda-row producer over a plugin's [`ScanClient`].
 #[derive(Clone, Debug)]
@@ -288,6 +288,64 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
                 slot: s.slot,
             })
             .collect(),
+        // HB.5: same rule as `spans`, one level in. An annotation whose spans
+        // are all bad still renders its text, and a row never loses its
+        // annotation because a decoration was malformed — the row is the
+        // information, the colour is the polish.
+        annotation: e
+            .annotation
+            .and_then(|a| validate_annotation(path, e.line, a)),
+    })
+}
+
+/// HB.5: an annotation is dropped only when it has no text to render.
+///
+/// Its spans index into `text`, so the bound they are checked against is
+/// `text.len()` and not the source line's — the annotation is not part of that
+/// line. An out-of-range span would otherwise paint a run of a string it does
+/// not belong to, which is the one way a bad decoration can produce something
+/// worse than no decoration.
+fn validate_annotation(
+    path: &str,
+    line: u32,
+    a: Annotation,
+) -> Option<lattice_mode::scanned_excerpt_source::RowAnnotation> {
+    if a.text.is_empty() {
+        tracing::debug!(
+            path,
+            line,
+            "scan source returned an empty annotation; skipping it"
+        );
+        return None;
+    }
+    let len = a.text.len() as u32;
+    let spans = a
+        .spans
+        .into_iter()
+        .filter(|s| {
+            let ok = s.end > s.start && s.end <= len && !s.slot.is_empty();
+            if !ok {
+                tracing::debug!(
+                    path,
+                    line,
+                    start = s.start,
+                    end = s.end,
+                    text_len = len,
+                    slot = %s.slot,
+                    "scan source returned a bad annotation span; skipping it"
+                );
+            }
+            ok
+        })
+        .map(|s| lattice_mode::scanned_excerpt_source::RowSpan {
+            start: s.start,
+            end: s.end,
+            slot: s.slot,
+        })
+        .collect();
+    Some(lattice_mode::scanned_excerpt_source::RowAnnotation {
+        text: a.text,
+        spans,
     })
 }
 
@@ -304,6 +362,24 @@ mod tests {
             label: "TODO write tests".into(),
             sort_key: 42,
             spans: Vec::new(),
+            annotation: None,
+        }
+    }
+
+    fn annotated(text: &str, spans: Vec<DisplaySpan>) -> Entry {
+        let mut e = entry(3, 3);
+        e.annotation = Some(Annotation {
+            text: text.to_string(),
+            spans,
+        });
+        e
+    }
+
+    fn span(start: u32, end: u32) -> DisplaySpan {
+        DisplaySpan {
+            start,
+            end,
+            slot: "habit".into(),
         }
     }
 
@@ -377,6 +453,103 @@ mod tests {
     fn an_out_of_range_line_is_dropped() {
         assert!(validate("/p/n.org", entry(u32::MAX, u32::MAX)).is_none());
         assert!(validate("/p/n.org", entry(0, u32::MAX)).is_none());
+    }
+
+    // ── HB.5: the annotation ────────────────────────────────────────────
+
+    #[test]
+    fn an_annotation_crosses_with_its_spans() {
+        let row = validate("/p/n.org", annotated("···✓··", vec![span(0, 3)]))
+            .expect("accepted")
+            .annotation
+            .expect("the annotation crossed");
+        assert_eq!(row.text, "···✓··");
+        assert_eq!(row.spans.len(), 1);
+        assert_eq!((row.spans[0].start, row.spans[0].end), (0, 3));
+        assert_eq!(row.spans[0].slot, "habit");
+    }
+
+    /// `none` is the ordinary case and must stay distinguishable from an empty
+    /// one — an agenda of plain TODOs grows no second rows.
+    #[test]
+    fn no_annotation_stays_none() {
+        assert!(
+            validate("/p/n.org", entry(3, 3))
+                .expect("accepted")
+                .annotation
+                .is_none()
+        );
+    }
+
+    /// The rule `entry.spans` set, one level in: a bad span costs itself, and
+    /// the annotation still renders its text. A graph that lost its row because
+    /// one cell's colour was wrong would be the worse failure.
+    #[test]
+    fn a_bad_annotation_span_costs_itself_not_the_annotation() {
+        let a = annotated(
+            "······",
+            vec![
+                span(5, 5), // empty
+                span(4, 2), // inverted
+                DisplaySpan {
+                    start: 0,
+                    end: 3,
+                    slot: String::new(),
+                }, // no slot
+                span(0, 3), // the survivor
+            ],
+        );
+        let got = validate("/p/n.org", a)
+            .expect("accepted")
+            .annotation
+            .expect("the annotation survives its bad spans");
+        assert_eq!(got.text, "······");
+        assert_eq!(
+            got.spans
+                .iter()
+                .map(|s| (s.start, s.end))
+                .collect::<Vec<_>>(),
+            vec![(0, 3)]
+        );
+    }
+
+    /// The bound is the ANNOTATION's text, not the row's source line — the
+    /// annotation is not part of that line. A span past the end would paint a
+    /// run of a string it does not belong to, which is the one way a bad
+    /// decoration is worse than none.
+    #[test]
+    fn a_span_past_the_annotations_own_end_is_dropped() {
+        let got = validate("/p/n.org", annotated("abc", vec![span(0, 99), span(0, 3)]))
+            .expect("accepted")
+            .annotation
+            .expect("present");
+        assert_eq!(
+            got.spans
+                .iter()
+                .map(|s| (s.start, s.end))
+                .collect::<Vec<_>>(),
+            vec![(0, 3)],
+            "only the in-range span survives"
+        );
+    }
+
+    /// An annotation with no text has nothing to render, so it is dropped
+    /// rather than becoming a blank row the user cannot explain.
+    #[test]
+    fn an_empty_annotation_is_dropped() {
+        assert!(
+            validate("/p/n.org", annotated("", vec![span(0, 1)]))
+                .expect("the ROW still survives")
+                .annotation
+                .is_none()
+        );
+    }
+
+    /// And the row itself is never lost to a bad annotation.
+    #[test]
+    fn a_bad_annotation_never_costs_the_row() {
+        let got = validate("/p/n.org", annotated("", Vec::new())).expect("the row survives");
+        assert_eq!((got.line, got.end_line), (3, 3));
     }
 
     #[test]

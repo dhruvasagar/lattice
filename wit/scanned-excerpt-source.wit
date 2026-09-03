@@ -113,6 +113,43 @@ interface scanned-excerpt-source {
         /// the ordinary case for a source with nothing to say about colour —
         /// the grammar's own highlighting is then what shows, unchanged.
         spans: list<display-span>,
+        /// HB.5: a row to hang BELOW this one, or `none`.
+        ///
+        /// A row's own text is a verbatim excerpt of a source line, so there is
+        /// nowhere in it to put something the guest computed — org writes a
+        /// habit's consistency graph at column 50 because its agenda line is
+        /// generated text, and ours is the file. The annotation becomes a
+        /// `virtual-row` anchored below the row instead.
+        ///
+        /// It rides the entry rather than a producer seam of its own for
+        /// [`spans`]'s reason: a general producer would be handed the COMPOSED
+        /// buffer, and a guest cannot know where its row lands until the sort
+        /// has interleaved every other file's rows. See `org-agenda.md` §5b.
+        ///
+        /// `none` is the ordinary case — an agenda of plain TODOs grows no
+        /// second rows.
+        annotation: option<annotation>,
+    }
+
+    /// HB.5: one line hung below a row, and how it is coloured.
+    ///
+    /// One line rather than a list: the consistency graph is one row, and
+    /// heights and scroll interactions are not worth inventing for a consumer
+    /// that does not exist. A `list<annotation>` is the obvious widening.
+    record annotation {
+        /// The line's text, rendered as-is. Not an excerpt of anything — this
+        /// is the one place a scan source draws content of its own.
+        text: string,
+        /// Byte spans into `text` (NOT into the row's source line, which this
+        /// is not part of), resolved host-side exactly as [`entry.spans`] is —
+        /// so a guest's own registered elements (`org.habit.overdue`) reach the
+        /// row with the active colourscheme applied and no colour crosses the
+        /// boundary.
+        ///
+        /// Validated per span like `entry.spans`: a bad one costs itself, and
+        /// an annotation whose spans are all bad still renders its text. A row
+        /// must never lose its annotation because a decoration was malformed.
+        spans: list<display-span>,
     }
 
     /// OA.14b: time clocked on one headline on one day.

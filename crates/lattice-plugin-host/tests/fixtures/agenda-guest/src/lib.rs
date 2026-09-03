@@ -137,6 +137,9 @@ impl Guest for Component {
                     label: format!("tree:{}:{}", root.kind(), root.named_child_count()),
                     sort_key: 0,
                     spans: Vec::new(),
+                    // The tree path says nothing about annotations; `none` here
+                    // keeps this fixture's two branches distinguishable.
+                    annotation: None,
                 }],
                 clock,
             });
@@ -183,6 +186,18 @@ impl Guest for Component {
                     end: 6,
                     slot: "keyword".to_string(),
                 }],
+                // HB.5: only SOME rows carry an annotation, which is the half a
+                // fixture annotating everything could not test — `none` is the
+                // ordinary case and the host must not grow a row for it. Row 0
+                // of each file gets one; the rest do not.
+                annotation: (i == 0).then(|| crate::lattice::plugin_host::scanned_excerpt_source::Annotation {
+                    text: format!("graph {sort_key}"),
+                    spans: vec![crate::lattice::plugin_host::types::DisplaySpan {
+                        start: 0,
+                        end: 5,
+                        slot: "habit".to_string(),
+                    }],
+                }),
             });
         }
         Ok(ScanResult {

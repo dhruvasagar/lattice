@@ -155,6 +155,7 @@ impl ScannedExcerptSource for FakeSource {
                             label: format!("Day {key}"),
                             sort_key: key,
                             spans: Vec::new(),
+                            annotation: None,
                         })
                     })
                     .collect(),

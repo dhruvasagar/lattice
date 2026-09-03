@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::scan_task::{ClockSpan, DisplaySpan, Entry};
+use crate::scan_task::{Annotation, ClockSpan, DisplaySpan, Entry};
 
 /// Bumped whenever the on-disk shape changes. A mismatch discards the file
 /// rather than attempting migration — this is a cache, and rebuilding it costs
@@ -143,6 +143,25 @@ struct CachedEntry {
     /// this module takes.
     #[serde(default)]
     spans: Vec<CachedSpan>,
+    /// HB.5: the row hung below this one, cached with it, for `spans`' reason
+    /// and with a sharper consequence. A cache hit skips the guest entirely, so
+    /// an annotation left out here would make a habit's graph appear on the
+    /// first scan of a file and vanish on every later one — which reads as the
+    /// feature being broken rather than as a cache being incomplete.
+    ///
+    /// `serde(default)` so a cache written before this field still loads; those
+    /// rows carry no annotation until their file next changes.
+    #[serde(default)]
+    annotation: Option<CachedAnnotation>,
+}
+
+/// The WIT `annotation`, in a form that survives a round trip to disk.
+/// Same reasoning as [`CachedEntry`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAnnotation {
+    text: String,
+    #[serde(default)]
+    spans: Vec<CachedSpan>,
 }
 
 /// The WIT `display-span`, in a form that survives a round trip to disk.
@@ -171,6 +190,18 @@ impl From<&Entry> for CachedEntry {
                     slot: s.slot.clone(),
                 })
                 .collect(),
+            annotation: e.annotation.as_ref().map(|a| CachedAnnotation {
+                text: a.text.clone(),
+                spans: a
+                    .spans
+                    .iter()
+                    .map(|s| CachedSpan {
+                        start: s.start,
+                        end: s.end,
+                        slot: s.slot.clone(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -192,6 +223,18 @@ impl From<&CachedEntry> for Entry {
                     slot: s.slot.clone(),
                 })
                 .collect(),
+            annotation: c.annotation.as_ref().map(|a| Annotation {
+                text: a.text.clone(),
+                spans: a
+                    .spans
+                    .iter()
+                    .map(|s| DisplaySpan {
+                        start: s.start,
+                        end: s.end,
+                        slot: s.slot.clone(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }
@@ -395,7 +438,21 @@ mod tests {
                 end: 6,
                 slot: "keyword".to_string(),
             }],
+            annotation: None,
         }
+    }
+
+    fn annotated(line: u32, label: &str) -> Entry {
+        let mut e = entry(line, label);
+        e.annotation = Some(Annotation {
+            text: "···✓··".to_string(),
+            spans: vec![DisplaySpan {
+                start: 0,
+                end: 3,
+                slot: "org.habit.ready".to_string(),
+            }],
+        });
+        e
     }
 
     /// OA.5: spans round-trip through the on-disk form. A cache hit skips the
@@ -454,6 +511,50 @@ mod tests {
             )],
             "…and so does every field of the clock span, the outline path included"
         );
+    }
+
+    /// HB.5: and the annotation, for the reason above with the sharpest
+    /// consequence of the three. A hit skips the guest, so an annotation left
+    /// out of the on-disk form makes a habit's graph appear on the first scan
+    /// of a file and vanish on every later one — which reads as the feature
+    /// being broken rather than as a cache being incomplete.
+    ///
+    /// Driven through `put`/`get` like the clock span, and for the same
+    /// reason: the failure is the field being dropped somewhere on the PATH,
+    /// and a `From` test passes while `put` ignores its argument.
+    #[test]
+    fn annotations_survive_the_cache_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = ScanCache::open(dir.path(), 1);
+        cache.begin(7);
+        cache.put("/p/a.org", "* TODO a\n", &[annotated(0, "Today")], &[]);
+
+        let (rows, _) = cache.get("/p/a.org", "* TODO a\n").expect("a warm hit");
+        let a = rows[0]
+            .annotation
+            .as_ref()
+            .expect("the annotation came back");
+        assert_eq!(a.text, "···✓··");
+        assert_eq!(
+            a.spans
+                .iter()
+                .map(|s| (s.start, s.end, s.slot.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, 3, "org.habit.ready")],
+            "…with its spans, or a warm agenda draws the graph uncoloured"
+        );
+    }
+
+    /// A row that never had one must not grow one on the way back — `none` is
+    /// the ordinary case and the cache has to preserve the distinction.
+    #[test]
+    fn a_row_without_an_annotation_gets_none_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = ScanCache::open(dir.path(), 1);
+        cache.begin(7);
+        cache.put("/p/a.org", "* TODO a\n", &[entry(0, "Today")], &[]);
+        let (rows, _) = cache.get("/p/a.org", "* TODO a\n").expect("a warm hit");
+        assert!(rows[0].annotation.is_none());
     }
 
     #[test]

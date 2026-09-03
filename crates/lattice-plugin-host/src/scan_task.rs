@@ -31,6 +31,8 @@ use crate::{
     TrustTier, arm_store,
 };
 
+/// HB.5: the row an [`Entry`] hangs below itself.
+pub use crate::scan_host::bindings::lattice::plugin_host::scanned_excerpt_source::Annotation;
 /// The WIT `entry`, re-exported so the adapter and the loader name one type.
 pub use crate::scan_host::bindings::lattice::plugin_host::scanned_excerpt_source::Entry;
 /// OA.14b: a file's clocked time, reported beside its rows.

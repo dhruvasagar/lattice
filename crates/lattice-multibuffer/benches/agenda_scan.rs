@@ -64,6 +64,7 @@ impl ScannedExcerptSource for BenchSource {
                             label: format!("Day {key}"),
                             sort_key: key,
                             spans: Vec::new(),
+                            annotation: None,
                         })
                     })
                     .collect(),

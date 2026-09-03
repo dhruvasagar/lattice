@@ -51,6 +51,26 @@ pub struct ScannedExcerpt {
     /// org grammar's, which is why an agenda looked like org text out of
     /// order before this existed.
     pub spans: Vec<RowSpan>,
+    /// HB.5: a row to hang BELOW this one, or `None`.
+    ///
+    /// The WIT `annotation`, native side. A row's text is a verbatim excerpt of
+    /// a source line, so a producer with something of its own to show — a
+    /// habit's consistency graph — has nowhere to put it; this becomes a
+    /// virtual row anchored below instead.
+    ///
+    /// `None` is the ordinary case. A scan of plain TODOs grows no second rows.
+    pub annotation: Option<RowAnnotation>,
+}
+
+/// HB.5: one line hung below a row, and how it is coloured.
+///
+/// The WIT `annotation`, native side. Its [`spans`](Self::spans) index into
+/// [`text`](Self::text) — not into the row's source line, which this is not
+/// part of — and resolve through the same path [`RowSpan`] does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowAnnotation {
+    pub text: String,
+    pub spans: Vec<RowSpan>,
 }
 
 /// One styled run within a row, naming a style rather than carrying one.

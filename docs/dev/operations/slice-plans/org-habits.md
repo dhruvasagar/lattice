@@ -9,8 +9,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 | HB.1 | The repeater grammar, parsed **(plugin)** | ✅ |
 | HB.2 | Completing a repeating task repeats it **(plugin)** | ✅ |
 | HB.2b | …and from the agenda row, through the source seam **(plugin)** | ✅ |
-| HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | 📝 |
-| HB.4 | The consistency graph — states and glyphs **(plugin)** | 📝 |
+| HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | ✅ |
+| HB.4 | The consistency graph — states and glyphs **(plugin)** | ✅ |
 | HB.5 | Drawn under the agenda row **(cross-repo)** | 📝 |
 | HB.6 | Derived analytics: streak, rate, weekday pattern | 📝 |
 | HB.7 | A general per-row inline annotation slot | ⛔ |
@@ -154,28 +154,78 @@ Two notes for the next debugging session here:
   nothing does today. The `multiseam` fixture is the pattern; org would need the
   same treatment, or a shared harness that loads whichever component is on disk.
 
-### HB.3 — completion history 📝
+### HB.3 — completion history ✅
 
-Parse `- State "DONE" from "..." [ts]` lines out of a headline's `:LOGBOOK:`
-into a set of dates. Also read `:LAST_REPEAT:` as a fallback for habits whose
-log was trimmed.
+`history::completions` reads a subtree's state-change lines back into a sorted,
+unique set of dates. `complete` writes them; this is the inverse, and
+deliberately the more permissive half — **emacs wrote most of the lines it will
+ever see**, which is exactly why the graph shows real data on day one.
 
-Emacs has been writing these for years, so this slice is what makes the graph
-show real data immediately.
+What that permissiveness is for, concretely: org pads its log fields
+(`State %-12s from %-12s`), so a parser splitting on single spaces reads every
+file in the wild as having no history. Notes continue the line with ` \\`. With
+`org-log-into-drawer` off the line sits loose under the planning line rather
+than in `:LOGBOOK:`, and requiring the drawer would blank the graph for exactly
+the users who turned the option off.
 
-### HB.4 — the graph 📝
+A completion is a state change **into a done keyword** — checked against the
+user's sequence, not the literal word `DONE` — so `TODO` → `NEXT` is not one,
+and clock lines and notes are ignored rather than guessed at. Reading stops at
+the first nested headline: a child's `:LOGBOOK:` is the child's, and rolling it
+up would make a parent look better kept than it is.
 
-Per-day state (clear / ready / alert / overdue) from the completion set, the
-repeater's MIN/MAX and the scheduled date; glyphs in two palettes per the
-icon-degradation rule; colours as mode-owned theme elements so `:colorscheme`
-recolours them (OA.16's hardcoded hex is the lesson).
+`:LAST_REPEAT:` is **added and deduplicated**, not used as a conditional
+fallback. Deciding when a log counts as "trimmed" is wrong somewhere — a log
+holding only older entries is neither empty nor complete — and adding-then-
+deduping is correct in both cases and cannot lose a day.
+
+13 tests, including the two round trips that matter: what this plugin writes,
+and what emacs writes.
+
+### HB.4 — the graph ✅
+
+`habit_graph::build` gives one `Day` per column over org's 21+7 window.
+
+**Ported from `org-habit.el`, not reconstructed from how the graph looks**, and
+that distinction changed the answer. See design §4 for the corrected rule; the
+short version is that `alert` is the deadline day itself rather than "today" or
+a band, and the design fragment's own table used to imply otherwise. A question
+put to Dhruva offered "org's rule" against "the band rule" with both
+descriptions wrong about which was which — he chose to match org, and the
+deadline-day rule is what org does.
+
+Also ported: the pre-first-completion clear (with the very first done day as
+`ready`), per-column recomputation of `due` for all three repeater bases, and
+the solid/muted axis — eight theme elements, not four.
+
+Glyphs in two palettes at one cell each per the icon-degradation rule; colours
+resolved from the theme palette so `:colorscheme` moves them (OA.16's hardcoded
+hex is the lesson). Org fills the cell with a *background*; a terminal cell here
+carries a glyph the user reads, so the colour goes on the foreground.
+
+10 tests. One is worth reading before writing another: `a_habit_kept_on_time_
+shows_no_overdue_day` first asserted over the whole window and **failed against
+correct output**, because the trailing seven columns of even a perfect habit go
+green → yellow → red. A future day assumes you have not done it yet.
+
+**Both slices landed in one commit**, deliberately: a parser with no consumer
+cannot be warning-clean, and HB.4 is HB.3's only consumer. And both are still
+dead code until HB.5 draws them — the wasm build carries 14 `dead_code`
+warnings, three of them HB.1's, of which HB.4 now consumes `window_days`.
 
 ### HB.5 — drawn under the agenda row 📝
 
-A `VirtualRow` anchored Below the habit's row. Needs a seam: the graph is
-computed in the guest and the row is registered by the host, so the plugin has
-to hand over per-row decorations. That is the cross-repo half and the reason
-this is its own slice.
+A `VirtualRow` anchored Below the habit's row.
+
+**The seam does not exist yet, and that is the whole slice.** `VirtualRow` /
+`VirtualRowProvider` / `VirtualRowRegistrar` are native-only
+(`lattice-cells`, `lattice-mode`); nothing in `wit/` exposes them, so a plugin
+cannot contribute a row today. The graph is computed in the guest (HB.4) and
+the row is registered by the host, so this needs a new plugin→host decoration
+seam plus both renderers in lockstep — a genuine cross-repo slice, not a
+follow-up line.
+
+Until it lands, HB.3 and HB.4 are dead code with passing tests.
 
 ### HB.6 — derived analytics 📝
 

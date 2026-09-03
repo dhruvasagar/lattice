@@ -76,16 +76,44 @@ would then re-file differently.
 ## 4. The consistency graph
 
 One column per day over a window (org: 21 preceding + 7 following). Each day is
-one of four states, and the colour is the whole point:
+one of four states, and the colour is the whole point. With `due` the day the task becomes ready and `late = due + (MAX - MIN)` the
+deadline day:
 
 | state | when | org face |
 |---|---|---|
-| **clear** | before the habit is due again | `org-habit-clear-face` (blue) |
-| **ready** | past MIN — you may do it | `org-habit-ready-face` (green) |
-| **alert** | past MIN, approaching MAX | `org-habit-alert-face` (yellow) |
-| **overdue** | past MAX — you missed it | `org-habit-overdue-face` (red) |
+| **clear** | `d < due` — before the habit is due again | `org-habit-clear-face` (blue) |
+| **ready** | `due <= d < late` — you may do it | `org-habit-ready-face` (green) |
+| **alert** | `d == late` — the deadline day itself | `org-habit-alert-face` (yellow) |
+| **overdue** | `d > late` — you missed it | `org-habit-overdue-face` (red) |
+
+**Alert is a day, not a mood.** An earlier revision of this table said "past
+MIN, approaching MAX", which reads like a band and invites the guess that
+yellow means "today, and you should get on with it". It is neither: `alert` is
+the deadline day itself, in every column of the window, past or future, and red
+is only ever *past* it. Completing ON the deadline day is completing in time,
+so that cell is green. Verified against `org-habit-get-faces`, with
+`deadline = scheduled + (MAX - MIN)` from `org-habit-parse-todo`.
 
 A day you completed on is drawn with the completed glyph regardless of state.
+
+**Eight faces, not four.** Each state has a solid and a muted variant. A future
+column is muted; so is a past column that was neither missed nor kept. That is
+what stops three weeks of ordinary days shouting as loudly as a miss, and it is
+why the theme elements come in pairs (`org.habit.ready` /
+`org.habit.ready.muted`).
+
+**The trailing columns of a kept habit go green → yellow → red.** A future day
+assumes you have not done it yet, so even a perfectly kept habit ends its window
+in red. That run is the graph prompting you, not a record of failure — worth
+stating because it looks like a bug, and a test asserting "a kept habit shows no
+red" fails against correct output.
+
+**`due` moves as you look back.** A past column is coloured by what was true
+then, not by today's schedule, or every day before the last completion reads as
+overdue. So `due` is recomputed per column from the completion that most
+recently preceded it, and how depends on the repeater's base — `.+` counts from
+when you did it, `+` from the stamp, `++` replays its catch-up hops. All three
+branches are ported.
 
 Colours resolve from the theme registry as elements the mode owns
 (`org.habit.clear`, `.ready`, `.alert`, `.overdue`), so `:colorscheme`

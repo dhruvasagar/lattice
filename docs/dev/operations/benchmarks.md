@@ -534,6 +534,55 @@ bench is what made the O(n) cut visible instead of shipping it.
 
 ---
 
+## TB.4 — what a table realign costs (2026-09-03)
+
+> ⚠️ **Different hardware from every other row in this file.** Measured on
+> the macOS dev box (Darwin/arm64), not the Ryzen 7 9700X / WSL2 machine the
+> hardware caveat above describes. Do NOT compare these absolute numbers
+> against other sections; they are internally consistent (same machine, same
+> run) and that is all this table claims. Re-measure on the primary box before
+> treating any of it as a floor.
+
+`table-mode` realigns a whole table on every field exit — `<Tab>`, `<S-Tab>`,
+`<CR>`, `<Esc>`. The question TB.4 opened with was whether it could instead run
+on every keystroke, as the slice's premise (wrongly) claimed emacs does.
+
+Bench: `crates/lattice-mode/benches/table.rs`, 5 columns, swept across rows.
+
+| rows | parse | parse + render (one realign) |
+|---|---|---|
+| 5 | 3.2 µs | **7.5 µs** |
+| 50 | 31.9 µs | 77.9 µs |
+| 500 | 339.6 µs | 828.9 µs |
+
+Linear in cells, as expected — 10× the rows is ~10× the time in both columns.
+
+Two recognition numbers matter more than the realign itself, because they run
+far more often:
+
+| | |
+|---|---|
+| a line that is **not** a table (`Table::at` miss) | **22.2 ns** |
+| a table **2000 lines into a file** | **82.8 µs** |
+
+The miss is the path every declining `<Tab>` in an ordinary paragraph takes —
+one `starts_with` and out. The second is the `#+BEGIN_`/fence scan TB.1 added
+so a `| a | b |` inside a source block is not treated as a table; it counts
+delimiters from the top of the file, so a table deep in a document pays for
+everything above it. Per chord, not per frame, and 83 µs is comfortable there —
+but it is the number to look at first if a table chord ever feels slow in a
+long file.
+
+**What this decided: nothing.** A realistic table realigns in 7.5 µs, under
+0.1% of a 120 Hz frame, so cost was never going to be the objection. The
+objection is the keystroke UX contract — a realign rewrites every row, and per
+keystroke that is a pixel change to content the user did not edit. The bench
+exists so that is on the record as a *contract* decision rather than a
+performance one, and so the field-exit realign that does run interactively has
+a baseline. See `../architecture/table-mode.md` §8.
+
+---
+
 ## OA.0a — the tree WALK, and the same bug a second time (2026-09-01)
 
 `tree_enclosing` above pins the *ancestor* walk: one path, cursor to root. A

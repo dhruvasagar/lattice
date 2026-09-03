@@ -117,7 +117,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | the backlinks view | ✅ |
 | OR.10 | dailies | ✅ |
-| OR.11a | `${field}` — written, **not wired** (see below) | 🚧 |
+| OR.11a | `${field}` — written and wired | ✅ |
 | OR.11b | the capture buffer — **built by OC.7**, roam reuses it | 🚧 |
 | OR.12 | docs | 📝 |
 
@@ -813,15 +813,15 @@ walk-up.
 
 **Audited 2026-08-31. Both halves moved, in opposite directions.**
 
-**OR.11a (`${field}`) is written and does not run.** `src/roam_capture.rs`
-exists, is committed, has `expand_fields` and a unit-test module — and
-**`mod roam_capture;` is missing from `lib.rs`**, so the file is not compiled,
-`expand_fields` has no caller, and its tests never execute (`cargo test --lib`
-matches none of them). The consequence is the one this slice was written to
-prevent: ten of the eleven corpus templates open with `#+Title: ${title}`, so a
-created note still gets a literal `${title}`. Fixing it is one `mod` line plus
-wiring the call into the node-create path — but the wiring is the part that was
-never done, and the tests passing in isolation is exactly why it looked done.
+**OR.11a (`${field}`) is done — re-audited 2026-09-03.** The 2026-08-31 audit
+found `mod roam_capture;` missing from `lib.rs`, so the module was not compiled,
+`expand_fields` had no caller and its tests never ran. All three are now true:
+the `mod` line is present, `expand_fields` has three call sites on the
+node-create path, and its eight tests execute. Marked ✅.
+
+Kept here because the *shape* of that miss is the reusable part: a committed
+module with passing unit tests, unreachable because one `mod` line was absent.
+`cargo test` matched none of them and said so only by omission.
 
 **OR.11b (the capture buffer) was built by OC.7**, for org-capture, and roam
 reuses it unchanged: same `org-capture-mode` minor on an `org-mode` major, same

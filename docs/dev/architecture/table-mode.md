@@ -1,6 +1,6 @@
 # `table-mode` — pipe tables, once
 
-Sequencing and status: [`slice-plans/table-mode.md`](../operations/slice-plans/table-mode.md).
+Sequencing and status: [`slice-plans/archive/table-mode.md`](../operations/slice-plans/archive/table-mode.md).
 
 Pipe tables belong to markdown and org alike. `| a | b |` means the same thing
 in both, and so does every operation over it: line the columns up, walk to the

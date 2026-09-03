@@ -53,6 +53,24 @@ impl Mode for MessagesMode {
     fn target_buffer_kind(&self) -> Option<BufferKind> {
         Some(BufferKind::Messages)
     }
+    /// MG.RO: `read-only-mode` is where the operator gate actually is.
+    ///
+    /// `ReadOnly = true` above stops Insert-mode TYPING and nothing else — it
+    /// is read by `read_only_edit_rejected`, which guards the char path, while
+    /// a `Document`'s grammar dispatch applies its own edits and hands the host
+    /// an already-applied `Effect::Edits`. So `x` deleted a character out of
+    /// this buffer while it reported itself read-only. Verified, not inferred.
+    ///
+    /// `read-only-mode` carries the option AND the `invocation_runner`
+    /// (`Editor::run_read_only_motion`): motions move, `:` and `/` fall
+    /// through, mutating operators echo instead of silently editing. Declared
+    /// on the MAJOR because an implied mode is followed from the mode being
+    /// activated.
+    fn implies(&self) -> &[ModeId] {
+        static IMPLIED: std::sync::OnceLock<Vec<ModeId>> = std::sync::OnceLock::new();
+        IMPLIED.get_or_init(|| vec![crate::modes::ReadOnlyMode::mode_id()])
+    }
+
     fn options(&self) -> OptionOverrideSet {
         // User keystrokes can't mutate `*messages*` -- the
         // subsystem owns the content. Subsystem writes route

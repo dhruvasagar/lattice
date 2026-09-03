@@ -117,6 +117,24 @@ impl Mode for PluginTraceMode {
         ModeKind::Major
     }
 
+    /// MG.RO: `read-only-mode` is where the operator gate actually is.
+    ///
+    /// `ReadOnly = true` above stops Insert-mode TYPING and nothing else — it
+    /// is read by `read_only_edit_rejected`, which guards the char path, while
+    /// a `Document`'s grammar dispatch applies its own edits and hands the host
+    /// an already-applied `Effect::Edits`. So `x` deleted a character out of
+    /// this buffer while it reported itself read-only. Verified, not inferred.
+    ///
+    /// `read-only-mode` carries the option AND the `invocation_runner`
+    /// (`Editor::run_read_only_motion`): motions move, `:` and `/` fall
+    /// through, mutating operators echo instead of silently editing. Declared
+    /// on the MAJOR because an implied mode is followed from the mode being
+    /// activated.
+    fn implies(&self) -> &[lattice_mode::ModeId] {
+        static IMPLIED: std::sync::OnceLock<Vec<lattice_mode::ModeId>> = std::sync::OnceLock::new();
+        IMPLIED.get_or_init(|| vec![lattice_mode::modes::ReadOnlyMode::mode_id()])
+    }
+
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,

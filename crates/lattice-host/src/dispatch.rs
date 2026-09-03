@@ -1177,9 +1177,30 @@ impl Editor {
                 // fired in every buffer (the dashboard-jumps-to-EOF
                 // regression). Empty when no ActiveModes entry
                 // exists for the active buffer (mid-boot).
+                //
+                // **`active_buffer_id()`, NOT `document_buffer_id`.** They
+                // differ for every focused surface that is not a plain
+                // Document: a popup resolves to `popup_buffer`, and a focused
+                // file-tree / oil / terminal pane to the pane's own buffer —
+                // `self.document` is deliberately not switched for any of
+                // them (see `active_buffer_id`). Reading the document's id
+                // here gated the popup's keys on the modes of the buffer
+                // BEHIND it, so `/` in a `:describe-buffer` popup over the org
+                // agenda fired `org-agenda-filter-by-tag`, and the prompt that
+                // opened then owned the keys that would have dismissed the
+                // popup.
+                //
+                // `dispatch_chord` always computed this correctly. The two
+                // builders disagreed and the LIVE key path reads this one
+                // (`lattice-ui-tui`'s `runtime.rs` hands
+                // `translator.active_minor_modes` to the translator), which is
+                // why every host test passed while the editor misrouted: a
+                // test that drives `dispatch_chord` takes the branch that was
+                // never wrong. `popup_keys_go_to_the_popup.rs` asserts on the
+                // PUBLISHED state for that reason.
                 active_minor_modes: self
                     .active_modes
-                    .get(&self.document_buffer_id)
+                    .get(&self.active_buffer_id())
                     .map(|am| std::sync::Arc::from(am.keymap_gated_ids().into_boxed_slice()))
                     .unwrap_or_else(|| std::sync::Arc::from(Vec::new().into_boxed_slice())),
             }),

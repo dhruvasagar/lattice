@@ -129,3 +129,43 @@ open each popup kind, assert its visible content equals what
 `compose_pane_lines` produces for the same buffer + inner rect, and
 assert no popup path calls a bespoke content renderer (grep-gate in
 CI, mirroring the `Effect::*` / `DiffSignKind::*` GPUI-parity grep).
+
+## 8. The same divergence, in the INPUT direction
+
+This initiative unified what a popup *shows*. It said nothing about
+what a popup's keys *do*, and the identical divergence existed there —
+found in use, 2026-09-04: `/` inside a `:describe-buffer` popup over
+the org agenda fired `org-agenda-filter-by-tag` on the agenda
+underneath, and the filter prompt that opened then owned the keys that
+would have dismissed the popup.
+
+The cause is §3's thesis read only halfway. Popup content **is** a
+registry buffer (`popup_buffer: Option<BufferId>`), and
+`Editor::active_buffer_id()` already resolves a focused popup to it —
+but the per-keystroke K.1.c mode gate was built in *two* places that
+disagreed:
+
+- `dispatch_chord` built it from `active_buffer_id()`. Correct.
+- `publish_render_state` built it from `document_buffer_id` — the
+  pane's document, which a popup does not replace.
+
+The live TUI and GPUI key paths both read the *published* one
+(`translator.active_minor_modes`), so the correct site was the one that
+never ran in use, and every host test passed because host tests drive
+`dispatch_chord` directly. `popup_keys_go_to_the_popup.rs` asserts on
+the published state for exactly that reason: a test that presses a key
+through the host API passes on the bug.
+
+**The generalisable lesson, which is not about popups.** Whenever a
+question is answered off a buffer id, `document_buffer_id` is the wrong
+default: it diverges from `active_buffer_id()` for *every* focused
+surface that is not a plain Document — popups, and equally the
+file-tree, oil and terminal panes, none of which switch
+`self.document`. A second answer to "which buffer is this" is the shape
+this initiative removed from rendering; §3's model only pays off if
+input reads the same identity.
+
+The queued "help into the registry" move (§3, first bullet) removes the
+class rather than this instance — once popup content is an ordinary
+listed buffer in an ordinary pane, there is no second identity left to
+pick the wrong one of.

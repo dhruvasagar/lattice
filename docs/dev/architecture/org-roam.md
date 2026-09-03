@@ -371,7 +371,6 @@ failure would write an empty drawer and nothing would ever say so.
 | `:org-roam-dailies-today` / `-yesterday` / `-tomorrow` / `-goto-date` (`<leader>ondd` / `ondy` / `ondt` / `ondD`) | the journal — §6.2 |
 | `:org-roam-sync` | force a full rescan — the escape hatch when the watcher missed something |
 | `<CR>` on an `[[id:…]]` link | resolves through `n/<id>` and jumps — file **and** line |
-| `:org-roam-id-create` | give the headline at point an `:ID:`, making it a node |
 
 Naming follows the standing rule: dashed, namespaced, no collapsed forms and no
 generic-name aliases. `:org-roam-find-node` does not also register `:find-node`.
@@ -507,6 +506,13 @@ Every path degrades the way the seam it rides already does.
 - **A duplicate `:ID:` across two files** keeps the first indexed and logs the
   collision at `warn` naming both paths. Emacs' `org-id` behaves the same way,
   and silently preferring one would make a real corpus problem invisible.
+
+  📝 **Neither half is built.** `roam_index` writes each node under `n/<id>`
+  with an unconditional `put`, so the *last* file indexed wins, not the first;
+  and the guest cannot log at all — `logging` is absent from the grammar
+  linker and importing it fails the whole component (the OC.2 scar), so
+  surfacing the collision needs a host-side channel. `doc/org-roam.md` says so
+  rather than describing behaviour the corpus does not get.
 - **An `id:` link with no matching node** reports that the node is unknown and
   names the id. Distinguishable from "no index configured" (§7) and from "no
   index built yet", because the three have different fixes.

@@ -71,8 +71,11 @@ every command, capture template syntax, the agenda query language, roam, and
 the habit rules. It versions with the code.
 
 - **`doc/org.md`** in the plugin repository — the complete reference.
+- **`doc/org-roam.md`** — roam has its own page: nodes, the index, backlinks,
+  the journal and note templates.
 - **`:help`** inside lattice — the plugin contributes its own help topics at
-  load, so they describe the version you have installed.
+  load (`:help org`, `:help org.roam`), so they describe the version you have
+  installed.
 
 This page is deliberately thin. Duplicating that reference here would put two
 copies of the same text in two repositories that release on different

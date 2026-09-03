@@ -6851,7 +6851,7 @@ meant to exist.
 | OR.10 | dailies — the journal, and two host defects it surfaced | ✅ |
 | OR.11a | `${field}` expansion — written and wired | ✅ |
 | OR.11b | the capture buffer — OC.7 built it; only the prompt ORDER remains | 🚧 |
-| OR.12 | docs | 📝 |
+| OR.12 | docs — `doc/org-roam.md`, its own `:help org.roam` topic | ✅ |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
 Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).

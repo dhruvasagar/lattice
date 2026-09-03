@@ -119,7 +119,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.10 | dailies | ✅ |
 | OR.11a | `${field}` — written and wired | ✅ |
 | OR.11b | the capture buffer — **built by OC.7**, roam reuses it | 🚧 |
-| OR.12 | docs | 📝 |
+| OR.12 | docs — the user page is `doc/org-roam.md`, its own topic | ✅ |
 
 ### OR.1 — a plugin can persist something ✅
 
@@ -894,13 +894,12 @@ unknown `${x}` surviving verbatim (capture's rule for unknown `%x`, for the same
 reason — a template is user text, and a placeholder that vanished cannot be
 found and fixed); each of the eleven corpus templates round-tripping.
 
-### OR.12 — docs 📝
+### OR.12 — docs ✅
 
 **Deps:** OR.1–OR.11.
 
 `org-roam.md` lands with the phase and is amended in place where the build
-disagreed with it. The plugin's `doc/org.md` gains the roam commands and the
-`org.roam-*` options. `implementation.md` gains the OR rows and a section.
+disagreed with it. `implementation.md` gains the OR rows and a section.
 `site/data/dev-nav.toml` gains `architecture/org-roam`, and the sync runs — a
 docs change is not finished until the site carries it.
 
@@ -908,3 +907,35 @@ The three `host-services` additions (OR.1–OR.3) are **host** surface and belon
 in `plugin-host.md` beside `read-file` and `local-utc-offset-seconds`, not only
 here. A plugin author looking for "can I persist something" will not think to
 open the org-roam fragment.
+
+**The user-facing page is `doc/org-roam.md`, registered as its own topic
+(`:help org.roam`) — not a section appended to `doc/org.md`.** This slice
+originally said the latter, and the split is the better answer for two
+reasons that are about the reader rather than the file size. Roam is a
+self-contained layer with its own model — nodes, an index, a watcher, a
+journal — that an org user who keeps no zettelkasten never touches, so
+folding it into the manual makes everyone page past it. And `help.register-topic`
+auto-namespaces, so a second page costs one call and becomes reachable **by
+name** from the help picker, where a heading two thirds of the way down
+someone else's page is not.
+
+`doc/org.md` keeps two things instead: a short "Org-roam" section that links
+to the topic, and its link table's `id:` row, which had gone stale in the
+other direction — it still said an `id:` link was "recognised, not yet
+resolvable" and that the index was "not built yet". The same staleness was in
+"What this plugin is not", which listed org-roam as out of scope. Both are
+corrected here; OR.8 and OR.4 had made them wrong months earlier and nothing
+pointed at them.
+
+`docs/user/org.md` in the lattice tree — the thin page that defers to the
+plugin's own reference — names both files and both topics.
+
+**One gap the page reports rather than hides.** Design §8 says a duplicate
+`:ID:` across two files "keeps the first indexed and logs the collision at
+`warn` naming both paths". Neither half is true today: `roam_index` writes
+each node under `n/<id>` with an unconditional `put`, so the *last* file
+indexed wins, and the guest cannot log at all (the OC.2 scar — `logging` is
+absent from the grammar linker and importing it fails the whole component).
+The page says one of them wins, that nothing tells you which, and that this
+is a gap rather than a design. Carrying it forward as prose beats carrying it
+forward as a slice-plan footnote nobody reads.

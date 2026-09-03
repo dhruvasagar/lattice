@@ -917,6 +917,35 @@ impl Editor {
             ),
             lattice_runtime::SubscriptionTarget::Channel(mode_enablement_tx),
         );
+        // OA.15a: the provider-view refresh bridge. A plugin's `refresh-view`
+        // publishes `ProviderViewRefreshRequested`; `drain_provider_view_refresh`
+        // re-opens the view through the registered opener (the guest cannot
+        // reach the activator, so it routes through here — `enable-mode`'s
+        // shape, one seam over).
+        //
+        // TWO subscriptions, and the second is the load-bearing one. The
+        // channel accumulates for the per-tick drain; the wake forwarder fires
+        // `async_landed` so that tick HAPPENS without a keystroke. A plugin
+        // toggling a display mode and seeing nothing until the next keypress is
+        // precisely the failure class `boot-composition.md` §3 designs out, and
+        // it has been re-introduced by reaching for a bare channel more than
+        // once.
+        let (view_refresh_tx, view_refresh_rx) = tokio::sync::mpsc::unbounded_channel::<
+            lattice_mode::provider_view::ProviderViewRefreshRequested,
+        >();
+        event_bus.subscribe_typed(view_refresh_tx);
+        {
+            let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<
+                lattice_mode::provider_view::ProviderViewRefreshRequested,
+            >();
+            event_bus.subscribe_typed(wake_tx);
+            let wake = async_landed.clone();
+            runtime_handle.spawn(async move {
+                while wake_rx.recv().await.is_some() {
+                    wake.notify_one();
+                }
+            });
+        }
         // SN.2: the live snippet session, shared between the host
         // (creates it on expand) and `SnippetActiveMode`'s
         // `<Tab>`/`<S-Tab>` handlers (navigate it). The same Arc is
@@ -2369,6 +2398,7 @@ impl Editor {
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_major_entered_rx: Some(major_entered_rx),
             pending_mode_enablement_rx: Some(mode_enablement_rx),
+            pending_provider_view_refresh_rx: Some(view_refresh_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),
             semantic_tokens_refresh_pending: std::collections::HashSet::new(),

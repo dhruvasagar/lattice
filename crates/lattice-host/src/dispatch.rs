@@ -16876,6 +16876,11 @@ impl Editor {
         // CI.4: apply any pending `enable-mode` / `disable-mode` (a plugin's
         // deferred config) — flip enablement + re-activate open buffers.
         signals.extend(self.drain_mode_enablement());
+        // OA.15a: …and any pending `refresh-view`. AFTER the enablement and
+        // activation drains above, deliberately: a guest's `minor-activated`
+        // handler is what publishes the refresh, so draining it first would
+        // apply this tick's requests before the activation that produces them.
+        signals.extend(self.drain_provider_view_refresh());
         // IM.7: drive the inline-media producers. Cheap when nothing changed —
         // registry-epoch and cache-version gated, exactly like the decoration
         // pump beside it.
@@ -18561,6 +18566,100 @@ impl Editor {
             signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
         }
         signals
+    }
+
+    /// OA.15a: drain `ProviderViewRefreshRequested` (a plugin's `refresh-view`)
+    /// — re-open each requested view through its registered opener.
+    ///
+    /// The guest→activator bridge for VIEWS, `drain_mode_enablement`'s shape
+    /// one seam over: a guest cannot reach the `&mut ModeActivator`, so the
+    /// call is a request and this applies it. The body is deliberately the same
+    /// as `AppEffect::OpenProviderView`'s arm — look the name up, hand the
+    /// opener `&mut *self`, apply the outcome — because they ARE the same
+    /// operation reached from two places, and a second opening path that
+    /// differed would be the divergence `ProviderViewRegistry` exists to
+    /// prevent.
+    ///
+    /// **Requests are de-duplicated by (provider, args).** A mode toggled twice
+    /// before a tick lands, or an activation event delivered alongside its own
+    /// re-activation, would otherwise re-scan identically twice — and a scan is
+    /// the expensive thing at the end of this path (OA.0's measurements).
+    /// Distinct args are NOT collapsed: two different arguments are two
+    /// different questions, and the last one is the one the user asked.
+    ///
+    /// A decline is echoed rather than swallowed. This path has no user gesture
+    /// behind it — nobody typed anything — so silence would leave a view that
+    /// did not refresh with nothing to explain it.
+    pub fn drain_provider_view_refresh(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_provider_view_refresh_rx.take() else {
+            return Vec::new();
+        };
+        let mut requests: Vec<lattice_mode::provider_view::ProviderViewRefreshRequested> =
+            Vec::new();
+        while let Ok(req) = rx.try_recv() {
+            if !requests.contains(&req) {
+                requests.push(req);
+            }
+        }
+        self.pending_provider_view_refresh_rx = Some(rx);
+
+        for req in requests {
+            // Owned `Arc`, so the immutable borrow of `self` ends before the
+            // opener takes `&mut *self` — the same dance the effect arm does.
+            let opener = self
+                .services
+                .get::<lattice_mode::ProviderViewRegistryHandle>()
+                .and_then(|reg| reg.lookup(&req.provider));
+            let Some(open) = opener else {
+                // A stale name after a plugin reload, or a guest naming a view
+                // it never registered. A warning, not a trap: the plugin is
+                // running and this is one bad call.
+                tracing::warn!(
+                    provider = %req.provider,
+                    "refresh-view: no provider view registered under this name"
+                );
+                continue;
+            };
+            // The SAME encoding `AppEffect::OpenProviderView` arrives in
+            // (`boundary_app_effect.rs`): a positional list whose slot 0 is the
+            // host's own `argument` — the agenda's root — and whose tail is the
+            // provider's scan args. Empty at 0 here because a refresh never
+            // re-points the view at a different root: it re-asks the question
+            // the view is already open on, with one argument changed.
+            //
+            // Building this by hand rather than reusing the boundary converter
+            // is the one duplication in this path, and it is load-bearing that
+            // it stays identical — an opener reads slot 0 as the root, so a
+            // list that omitted it would shift every scan arg down one and the
+            // provider would silently answer the wrong question.
+            let args = lattice_grammar::Args::List(
+                std::iter::once(String::new())
+                    .chain(req.args.iter().cloned())
+                    .map(lattice_grammar::args::ArgValue::String)
+                    .collect(),
+            );
+            match open(self, &args) {
+                lattice_mode::ProviderViewOutcome::Opened { view, message } => {
+                    // NOT activated, unlike the effect arm. That arm runs
+                    // because the user just asked for the view and expects to
+                    // land in it; this one runs because a mode changed, and
+                    // stealing focus to a view the user may not be looking at
+                    // is a jump they did not ask for. A `reuse: true` view —
+                    // which is the shape this path is for — is already on
+                    // screen and re-scans in place.
+                    let _ = view;
+                    if let Some(message) = message {
+                        self.set_message(EchoLevel::Info, message);
+                    }
+                }
+                lattice_mode::ProviderViewOutcome::Declined { message } => {
+                    self.set_message(EchoLevel::Warn, message);
+                }
+            }
+        }
+        // The opener's own activator calls stash their signals on
+        // `pending_renderer_signals`; nothing here adds more.
+        Vec::new()
     }
 
     /// CI.4: drain `Event::ModeEnablementRequested` (a plugin's `enable-mode` /

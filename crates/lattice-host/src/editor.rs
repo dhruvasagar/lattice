@@ -2083,6 +2083,16 @@ pub struct Editor {
     /// re-activates open buffers.
     pub pending_mode_enablement_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
+    /// OA.15a: receives `ProviderViewRefreshRequested` (a plugin's
+    /// `refresh-view`) so the per-tick `drain_provider_view_refresh` re-opens
+    /// the view. The guest cannot reach the activator, so the call is a request
+    /// and this is where it is applied — `pending_mode_enablement_rx`'s shape,
+    /// with a typed event so the wake comes for free.
+    pub pending_provider_view_refresh_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<
+            lattice_mode::provider_view::ProviderViewRefreshRequested,
+        >,
+    >,
     pub pending_insert_completion_async_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_completion::AsyncCompletionOutcome>>,
     pub pending_insert_completion_async_token: Option<CancellationToken>,

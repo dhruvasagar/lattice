@@ -97,8 +97,8 @@ does not, because the computed content does not belong in excerpts at all:
 | Headline rows | Excerpt | the agenda provider |
 | Section / date headers | Virtual row | the agenda provider |
 | Timeline strip | Virtual row | `org-agenda-timeline-mode` |
-| Clock report | Virtual row | `org-agenda-clockreport-mode` |
-| Log entries | Virtual row | `org-agenda-log-mode` |
+| Clock report | Virtual row | `scan-view-clockreport-mode` |
+| Log entries | **Excerpt** | `org-agenda-log-mode` — see §3a |
 
 A timeline strip and a clock summary have no source range and nothing to jump
 to. `VirtualRow` already models exactly that, and models it far more richly
@@ -119,6 +119,79 @@ means excerpts over a synthetic pathless source, which is reachable natively
 but not from a plugin — the guest excerpt record carries a `path` and the host
 drops any row whose file it cannot read. That is deferred, not designed away;
 §9 records what it would take.
+
+---
+
+## 3a. Log entries are excerpts, not virtual rows (OA.15)
+
+The table above originally filed log entries beside the clock report. That was
+wrong, and the correction is worth keeping visible because the reasoning
+generalises to the next display mode someone adds.
+
+**A clock report is a computed aggregate with no source range. A log entry is a
+line in a file.** The whole use of seeing "you closed *Ship the thing* at 14:32"
+is being able to press `<CR>` and go there, or `<leader>ot` and reopen it —
+neither of which a display-only row can do. §3's stated cost is acceptable for
+an aggregate and is exactly wrong for a record of something that happened to a
+headline you own.
+
+So a log row is an ordinary `entry` over the headline the event happened to,
+and everything the agenda already does to a row — jump, act, colour, fold —
+works on it with nothing added.
+
+Three consequences, each a decision rather than a detail:
+
+- **Log mode is a view ARGUMENT** (`log=closed,clock` in `scan_args`), because
+  the rows come from the scan and the scan is argument-driven. It therefore
+  survives `gr`, differs between two open agendas, and is writable — the same
+  properties phase 6 locked for `span` and filters. `org-agenda-log-mode` is a
+  real minor mode that OWNS that argument (§3b); the argument is how the mode
+  reaches the rows, not a replacement for it.
+- **The row is the HEADLINE; the event hangs under it.** An excerpt is verbatim
+  source, so there is no line in the file that reads `Closed 14:32`. The
+  headline is what you want to read and jump to; the detail rides HB.5's
+  `annotation`. Excerpting the `CLOCK:` or LOGBOOK line instead would read as
+  drawer noise and land the cursor inside a drawer.
+- **The window looks BACKWARD.** A section's window is `anchor ..= anchor +
+  span`; a log has nothing to say about the future, so log rows filed into that
+  window would only ever be today's. Log mode covers `anchor - span ..=
+  anchor` — the plan looks forward, the record looks back, over the same length
+  of time, which is what "this week" means in both directions.
+
+**What this gives up.** Emacs interleaves log items into the day block with the
+plan; ours land in a block of their own, ranked after every section. Our unit
+is the user-configurable *section*, and a user's set need not contain a
+date-grouped block at all — interleaving would then silently produce nothing.
+A dedicated block is predictable and honours the same span; the loss is that
+"what I planned and what I did on Thursday" reads as two blocks rather than one.
+
+## 3b. …and it is a mode, not a bare argument
+
+An argument alone would have been simpler and is not enough. "Modes own their
+full surface" is the standing rule, and a display toggle that is only an
+argument has no owner: nothing for `:describe-mode` to answer, nothing for the
+`gD` transient (OA.18) to name, no home for a log-specific chord added later,
+and no ex-command.
+
+`org-agenda-log-mode` is therefore a real guest-declared minor, activated on
+the agenda view, and it is the **single switch** — the property OA.16 chose for
+`scan-view-clockreport-mode`, where activation registers the report and
+deactivation drops it, so the mode and the rows cannot disagree.
+
+Reaching that took a host seam, and the reason is structural rather than an
+oversight. A native mode supplies its own `on_activate` body; a plugin mode is
+DATA, and the host builds it into a `PluginMode` whose `on_activate` is a no-op.
+The guest can *see* `minor-activated` but had no way to answer it — so the mode
+would have been a label beside a switch rather than the switch. `refresh-view`
+(`plugin-multibuffer-views.md` §8) is the body the host cannot supply: the
+guest's lifecycle handler re-opens its own view with `log=` set or cleared.
+
+`l` binds on `org-agenda-mode`, not on the mode it toggles — the one place
+"modes own their full surface" cannot be read literally, since a keymap layer
+is gated to buffers where its mode is active and an `l` on log mode could only
+ever turn it off. Same split as `cr` on `scan-view-mode`, one layer over. The
+switch belongs to the surface that offers it; everything the mode *does* stays
+with the mode.
 
 ---
 

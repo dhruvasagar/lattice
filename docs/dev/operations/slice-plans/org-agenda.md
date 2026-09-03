@@ -49,7 +49,8 @@ the shared minor). Catalogue entry: the agenda in
 | OA.14b | `scan` reports a file's clocked time **(cross-repo)** | ✅ |
 | OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ⛔ |
 | OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
-| OA.15 | `org-agenda-log-mode` | 📝 |
+| OA.15a | A guest can refresh its own view — `refresh-view` **(cross-repo)** | ✅ |
+| OA.15b | `org-agenda-log-mode` **(plugin)** | 🚧 |
 | OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
@@ -950,16 +951,92 @@ rule: immediate config for what exists, `PrePluginLoaded` for a plugin's
 options, `PluginLoaded` for what needs it fully loaded (`enable-mode` above
 all — the mode is not registered at pre-load time).
 
-### OA.15 — `org-agenda-log-mode` 📝
 ### OA.17 — `org-agenda-timeline-mode` 📝
 
-One shape, twice: a manual minor activated on the agenda view, owning its
-keymap, its toggle and one virtual-row provider registered in `on_activate`.
-OA.16 below is the worked example.
+A manual minor activated on the agenda view, owning its keymap, its toggle and
+one virtual-row provider registered in `on_activate`. OA.16 below is the worked
+example.
 
-These are display-only by design (design §3) — the cursor cannot rest on their
-rows. If that proves intolerable in use, the deferred synthetic-source work in
-design §9 is the escape, and it is a WIT seam, not a tweak.
+Display-only by design (design §3) — the cursor cannot rest on its rows. If
+that proves intolerable in use, the deferred synthetic-source work in design §9
+is the escape, and it is a WIT seam, not a tweak.
+
+**OA.15 no longer shares this shape**, and the plan said it did ("one shape,
+twice"). A timeline strip is a computed aggregate with no source range; a log
+entry is a line in a file. See OA.15a/b.
+
+### OA.15a — A guest can refresh its own view **(cross-repo)** ✅
+
+Design: [`plugin-multibuffer-views.md`](../../architecture/plugin-multibuffer-views.md) §8.
+
+**Not planned as a slice.** It was carved when OA.15's design turned out to
+need a mode, and the mode turned out to be unreachable.
+
+The chain: log rows are excerpts, so they come from the scan; the scan is
+argument-driven; so log mode is a view argument. An argument alone has no owner
+— nothing for `:describe-mode`, the `gD` transient or a later chord — so it
+must also be a mode. But a plugin mode is DATA: the host builds it into a
+`PluginMode` whose `on_activate` is a no-op, where a native mode
+(`scan-view-clockreport-mode`) supplies that body itself and is the single
+switch because of it. The guest sees `minor-activated` and could not answer it,
+because `on-event` returns `()` by construction and opening a view is only
+reachable as an `Effect` from a trigger.
+
+So `org-agenda-log-mode` could have been toggled and changed nothing —
+declaring it anyway would have shipped a live `:org-agenda-log-mode` flipping a
+mode that does nothing, the silent-chord class this repo keeps paying for.
+
+`refresh-view(view, args)` is the missing body: a REQUEST (`enable-mode`'s
+shape) publishing a typed `ProviderViewRefreshRequested`, drained per tick
+through the SAME opener the effect arm uses.
+
+**Typed rather than a plain `Event` variant, and that is the load-bearing
+choice.** `ModeEnablementRequested` carries no wake, which is tolerable because
+it fires during boot when ticks run anyway; a mode toggle does not, so a bare
+channel would refresh the view only on the next keypress. The wake test asserts
+`async_landed` directly and was **verified to fail with the notify removed** —
+a drain-only assertion would have passed on the broken version.
+
+`events-plugin` gains `import multibuffer-view-registry`, safe only because
+that seam is already on both linkers (the OC.2 scar: an import missing from one
+linker fails the whole component silently).
+
+Tests: `lattice-host/tests/refresh_view_reaches_the_editor.rs`, six — the
+opener is reached, the args arrive in `open-provider-view`'s exact positional
+encoding (slot 0 the root, or every scan arg shifts down one), the wake fires,
+an unknown name is survivable and does not poison the drain, identical requests
+in a tick collapse, distinct ones do not. Gate: 1410 green in `lattice-host`,
+787 in `lattice-mode` + `lattice-plugin-host`.
+
+No bench: the drain is an empty `try_recv` on virtually every tick, and the
+work it triggers is a provider re-scan already covered by phase 0's numbers.
+
+### OA.15b — `org-agenda-log-mode` **(plugin)** 🚧
+
+Design: [`org-agenda.md`](../../architecture/org-agenda.md) §3a–§3b.
+
+Emacs' `l`. Admits what a file records about its own past — closed, clocked,
+state-changed — as **ordinary excerpt rows** over the headline each happened to,
+filed under the day it happened.
+
+**Reversed against the design fragment's §3 table**, which filed log entries as
+host-side virtual rows beside the clock report. That would have made them
+display-only, and the use of seeing "you closed Ship it at 14:32" is being able
+to go there. §3a carries the argument and what the change gives up (emacs
+interleaves log items into the day block; ours get a block of their own,
+because our unit is the user-configurable section and a user's set need not
+contain a date-grouped block at all).
+
+Built and green: `agenda_log.rs` (the three log-line parsers — reusing
+`history::state_change` and `clock_scan::closed_span` rather than second copies,
+so org's `%-12s` padding and the running-clock refusal are inherited),
+`org.agenda-log-mode-items` (emacs' default, `closed clock`), three theme
+elements, the `log=` view argument with its backward window, and the scan-side
+emission. 522 guest tests green.
+
+Remaining: declare the minor, move the toggle onto its `minor-activated` /
+`minor-deactivated` handler over OA.15a's seam, and bind `l` on
+`org-agenda-mode` (not on the mode it toggles — `cr`'s split, design §3b).
 
 ### OA.16 — `scan-view-clockreport-mode` + `cr` ✅
 

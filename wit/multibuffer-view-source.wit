@@ -38,6 +38,52 @@ interface multibuffer-view-registry {
     /// naming both, and this guest's other views still register — one bad name
     /// must not cost a plugin its whole contribution.
     register-multibuffer-view: func(spec: multibuffer-view-spec);
+
+    /// OA.15a: re-open one of THIS guest's views with `args`, from somewhere
+    /// that cannot return an effect.
+    ///
+    /// ## Why this is not `open-provider-view`
+    ///
+    /// `app-effect::open-provider-view` already says "open my view", and every
+    /// trigger that RETURNS an effect should keep using it — an action handler,
+    /// an ex-command, a transient row. This exists for the producers that do
+    /// not return anything at all: `on-event` is `func(handler, ev)` with no
+    /// result by construction (the event seam is observation-shaped, §5.10),
+    /// and a wake handler is the same.
+    ///
+    /// ## What made the gap visible
+    ///
+    /// A guest MODE that is supposed to change its view. The host delivers
+    /// `minor-activated` / `minor-deactivated`, so a guest can see its mode go
+    /// on and off — but a plugin mode is DATA (`mode-declaration`), and the
+    /// host builds it into a `PluginMode` whose `on_activate` is a no-op. A
+    /// native mode supplies that body itself: `scan-view-clockreport-mode`
+    /// registers its provider on activation and drops it on deactivation,
+    /// which is what makes the mode the single switch rather than a label
+    /// beside one. Without this call a guest mode has no equivalent, so
+    /// `org-agenda-log-mode` could be toggled and change nothing.
+    ///
+    /// ## Contract
+    ///
+    /// A REQUEST, not an apply — `enable-mode`'s shape (`modes.wit`), and for
+    /// the same reason: the activator is `&mut`-backed and the guest cannot
+    /// reach it. The host publishes it and the Editor re-opens on its next
+    /// tick, with the wake baked in so the result reaches the screen WITHOUT a
+    /// keystroke.
+    ///
+    /// `view` must name a view this guest registered; the host refuses an
+    /// unknown name with a warning rather than trapping, because a stale name
+    /// after a reload is a plugin-author mistake, not a reason to kill a
+    /// running plugin. `args` are routed verbatim and never read — the same
+    /// contract `scan-args` carries, since they are the provider's own
+    /// vocabulary.
+    ///
+    /// A view declared `reuse: true` (the agenda) re-scans in place; one
+    /// declared `reuse: false` opens another view, so a guest calling this on
+    /// a non-reuse view from a handler that fires often will accumulate views.
+    /// That is the guest's choice to make and the host does not second-guess
+    /// it.
+    refresh-view: func(view: string, args: list<string>);
 }
 
 interface multibuffer-view-source {

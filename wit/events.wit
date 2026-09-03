@@ -89,6 +89,23 @@ world events-plugin {
     /// the guest asks — so core never depends on a plugin being alive.
     /// Inert for guests that don't call it.
     import project;
+
+    /// OA.15a: so a handler can act on a view this guest owns.
+    ///
+    /// Without it, an event handler can observe everything and change nothing
+    /// that is on screen — it can reindex a store, emit an event or push a
+    /// modeline segment, but not touch its own view. That is what made a guest
+    /// minor mode unable to be a switch: the host delivers `minor-activated`,
+    /// and the guest had no way to answer it.
+    ///
+    /// Safe to add to this world specifically because `multibuffer-view-registry`
+    /// is already wired into BOTH linkers (`PluginHost::new`, the async and the
+    /// sync-grammar one). An import absent from a linker a component is
+    /// instantiated against fails the WHOLE component, silently — the OC.2 scar
+    /// where one `logging::log` call took org down entirely — so an import is
+    /// only added to a world once its seam is known to resolve everywhere.
+    import multibuffer-view-registry;
+
     use types.{event};
     use events.{wake-id};
 

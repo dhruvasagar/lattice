@@ -1493,6 +1493,43 @@ impl crate::multibuffer_view_host::bindings::lattice::plugin_host::multibuffer_v
         }
         self.multibuffer_view_contributions.declare(spec);
     }
+
+    /// OA.15a: `refresh-view` — re-open one of this guest's views.
+    ///
+    /// A REQUEST, exactly like `enable-mode`: the opener needs the `&mut`
+    /// `ModeActivator` and a plugin store cannot reach it, so this publishes
+    /// and the Editor applies on its next tick. The typed event carries its own
+    /// wake, so the re-scan reaches the screen without a keystroke — a plain
+    /// `Event` variant would have landed only on the next keypress, which is
+    /// the "works, but only after I hit something" class this codebase has paid
+    /// for repeatedly.
+    ///
+    /// Validated here only for emptiness, which is the one thing that is wrong
+    /// no matter what is registered. Whether `view` names a live provider is
+    /// checked by the drain, where the registry is visible — the same division
+    /// `register-multibuffer-view` already makes with `providers::plugin_view`.
+    fn refresh_view(&mut self, view: String, args: Vec<String>) {
+        if view.trim().is_empty() {
+            tracing::warn!("refresh-view refused: view name must be non-empty");
+            return;
+        }
+        match &self.event_emit {
+            Some(ctx) => {
+                ctx.bus
+                    .publish_typed(lattice_mode::provider_view::ProviderViewRefreshRequested {
+                        provider: view,
+                        args,
+                    })
+            }
+            // The "not boot-wired yet" case, like `emit-event` and
+            // `enable-mode`: a warn and a drop, never a trap. A guest calling
+            // this from a test harness with no bus is not misbehaving.
+            None => tracing::warn!(
+                %view,
+                "refresh-view dropped: no bus wired (plugin not spawned onto a bus)"
+            ),
+        }
+    }
 }
 
 impl crate::lattice::plugin_host::ui::Host for PluginState {

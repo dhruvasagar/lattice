@@ -93,6 +93,53 @@ pub type ProviderViewOpener =
 /// silently returns `None`.
 pub type ProviderViewRegistryHandle = Arc<ProviderViewRegistry>;
 
+/// OA.15a: "re-open the view I own, with these arguments" — asked for
+/// from somewhere that holds no activator and returns no [`Effect`].
+///
+/// ## Why an effect was not enough
+///
+/// [`AppEffect::OpenProviderView`](lattice_grammar::app_effect::AppEffect)
+/// already says this, and every trigger that can *return* an effect
+/// should keep using it. What it cannot serve is a producer that is not
+/// running inside a trigger at all: a plugin's `on-event` handler
+/// returns `()` by construction (`wit/types.wit`'s event seam is
+/// observation-shaped), and a background task holds neither the
+/// dispatcher nor the activator.
+///
+/// The first consumer is the one that made the gap visible. A guest
+/// mode's activation is delivered as `minor-activated`, and a guest mode
+/// has no lifecycle body of its own to hang behaviour on — `PluginMode`
+/// is data with a no-op `on_activate` (`mode_host.rs`). So a plugin
+/// whose mode is supposed to CHANGE ITS VIEW could observe the
+/// activation and do nothing about it, which makes such a mode a label
+/// rather than a switch.
+///
+/// ## The `enable-mode` precedent, one step further
+///
+/// `Event::ModeEnablementRequested` is the same shape: the guest cannot
+/// reach the activator, so the call is a REQUEST and the Editor applies
+/// it. This is that pattern for views, with one deliberate difference —
+/// it is a **typed** event, so `BootContext::wake_on_event` covers it
+/// and the re-scan reaches the screen with no keystroke. A request that
+/// only landed on the next keypress would reproduce, exactly, the
+/// "works, but only after I hit something" class this codebase has paid
+/// for repeatedly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderViewRefreshRequested {
+    /// The provider name, as registered in [`ProviderViewRegistry`].
+    pub provider: String,
+    /// The view arguments, verbatim. Routed, never read: they are the
+    /// provider's own vocabulary, the same contract `scan_args` carries.
+    pub args: Vec<String>,
+}
+
+lattice_protocol::register_event!(
+    ProviderViewRefreshRequested,
+    "provider-view.refresh-requested",
+    "A provider asked the Editor to re-open one of its views.",
+    "lattice-mode",
+);
+
 /// Name → opener, registered at boot and read once per trigger.
 ///
 /// Same wait-free shape as

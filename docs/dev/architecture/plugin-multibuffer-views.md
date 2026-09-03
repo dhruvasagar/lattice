@@ -212,3 +212,107 @@ removed.
   register.
 - A guest that traps during `build` is quarantined by the existing actor
   machinery; the view shows the decline.
+
+## 8. `refresh-view` — acting on a view from outside a trigger (OA.15a)
+
+`app-effect::open-provider-view` already says "open my view", and every trigger
+that RETURNS an effect keeps using it: an action handler, an ex-command, a
+transient row. §2's seam gave a plugin the view; that effect gave it the
+trigger.
+
+What neither covers is a producer that returns nothing at all. `on-event` is
+`func(handler: u32, ev: event)` **by construction** — the event seam is
+observation-shaped (§5.10) — and `on-wake` is the same. So a guest handler
+could reindex a store, emit an event or push a modeline segment, but could not
+touch a view it owns.
+
+### What made the gap visible: a guest mode cannot be a switch
+
+A guest minor mode. The host already delivers `minor-activated` /
+`minor-deactivated` to plugins, so a guest can *see* its mode go on and off.
+What it cannot do is answer.
+
+The asymmetry is with native modes, and it is worth naming precisely because
+it looks like a parity bug and is not. `scan-view-clockreport-mode` (`cr`, the
+clock report) registers its virtual-row provider in `on_activate` and drops it
+via the guard's `Drop` — that body is what makes the *mode* the single switch
+rather than a label sitting beside one, which is the property OA.16 chose the
+shape for. A plugin mode has no such body: `mode-declaration` is DATA, and the
+host builds it into a `PluginMode` whose `on_activate` is a no-op
+(`plugin_host/mode_host.rs`).
+
+So `org-agenda-log-mode` could be toggled and change nothing. Declaring it
+anyway would have put a live `:org-agenda-log-mode` / `ToggleMode` path in the
+tree that flips a mode changing nothing — the "registered a chord that silently
+does nothing" class this codebase keeps paying for.
+
+`refresh-view` is the body the host cannot supply: the guest's
+`minor-activated` handler re-opens its own view with the mode's argument set,
+and the mode becomes the switch it claimed to be.
+
+### Contract
+
+```wit
+refresh-view: func(view: string, args: list<string>);
+```
+
+A **request, not an apply** — `enable-mode`'s shape (`modes.wit`), and for the
+same reason: the opener needs the `&mut ModeActivator` and a plugin store
+cannot reach it. The host publishes `ProviderViewRefreshRequested`
+(`lattice-mode`), and `Editor::drain_provider_view_refresh` applies it on the
+next tick through **the same opener the effect arm calls** — deliberately one
+opening path, since a second that differed is exactly the divergence
+`ProviderViewRegistry` exists to prevent.
+
+Three decisions worth having written down:
+
+- **Typed event, so the wake is structural.** `ModeEnablementRequested` is a
+  plain `Event` variant with no wake, which is tolerable there because it fires
+  during boot, when ticks are running anyway. A mode toggle does not: a bare
+  channel would refresh the view only when the user next pressed a key, which
+  is the "works, but only after I hit something" class. The typed event gets a
+  `wake_on_event`-shaped forwarder firing `async_landed`, and the test asserts
+  the wake directly rather than inferring it from the drain — verified to fail
+  when the notify is removed, so it is not vacuous.
+- **The drain does NOT activate the view.** The effect arm does, because the
+  user just asked for the view and expects to land in it. This path runs
+  because a mode changed, so stealing focus would be a jump nobody asked for —
+  and a `reuse: true` view, which is the shape this is for, is already on
+  screen and re-scans in place.
+- **Requests de-duplicate by (provider, args) within a tick**, since a mode
+  toggled twice before a tick lands would otherwise re-scan identically twice
+  and the scan is the expensive thing at the end of this path (org-agenda
+  OA.0's measurements). Distinct args are *not* collapsed: two arguments are
+  two questions.
+
+### Failure behaviour
+
+- An **unknown view name** is a `warn` and a skip. A stale name after a plugin
+  reload is an author mistake, not a reason to kill a running plugin — and a
+  test pins that one bad name does not poison the drain for a good one.
+- **No bus wired** (a test harness, a plugin not spawned onto one) is a `warn`
+  and a drop, matching `emit-event` and `enable-mode`.
+- An **empty view name** is refused at the boundary, where it is the one thing
+  wrong regardless of what is registered. Whether the name resolves is checked
+  in the drain, where the registry is visible — the division
+  `register-multibuffer-view` already makes with `providers::plugin_view`.
+- A **decline is echoed**, not swallowed. Nothing the user typed is behind this
+  path, so silence would leave a view that did not refresh with nothing to
+  explain it.
+
+### Why no benchmark
+
+The four-artefact rule asks for one; this seam has no hot path to measure. The
+drain is a `try_recv` loop that is empty on virtually every tick, and the work
+it can trigger — a provider re-scan — is already covered by the agenda's own
+scan measurements (`org-agenda.md` phase 0), which is where a regression would
+show. A bench of the empty drain would measure the tick loop, not this.
+
+### The import's world, and the OC.2 scar
+
+`events-plugin` gains `import multibuffer-view-registry`. That is safe only
+because the seam is already wired into **both** linkers — the async one and the
+sync grammar one (`PluginHost::new`). An import absent from a linker a
+component is instantiated against fails the WHOLE component, silently, not just
+the one seam; one `logging::log` call once took org down entirely. An import is
+added to a world only once its seam is known to resolve everywhere.

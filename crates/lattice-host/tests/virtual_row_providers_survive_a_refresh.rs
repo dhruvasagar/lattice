@@ -160,8 +160,9 @@ async fn a_third_provider_registers_alongside_the_multibuffers_two() {
     let view = open_the_agenda(&mut editor);
     assert_eq!(
         editor.virtual_row_providers.snapshot(view).len(),
-        2,
-        "precondition: the view brings its excerpt-header + status providers"
+        3,
+        "precondition: the view brings its excerpt-header, status and \
+         row-annotation providers (HB.5b added the third)"
     );
 
     let mine = Arc::new(FakeDisplayModeProvider {
@@ -174,8 +175,8 @@ async fn a_third_provider_registers_alongside_the_multibuffers_two() {
     );
     assert_eq!(
         editor.virtual_row_providers.snapshot(view).len(),
-        3,
-        "three providers coexist on one view"
+        4,
+        "a fourth coexists with the view's own three"
     );
 
     // Registering the SAME id twice is refused — the dedup contract phase 5
@@ -184,7 +185,11 @@ async fn a_third_provider_registers_alongside_the_multibuffers_two() {
         !editor.virtual_row_providers.register(view, mine),
         "the same ProviderId is refused rather than duplicated"
     );
-    assert_eq!(editor.virtual_row_providers.snapshot(view).len(), 3);
+    assert_eq!(
+        editor.virtual_row_providers.snapshot(view).len(),
+        4,
+        "still four — the refused duplicate added nothing"
+    );
 }
 
 /// (2) The lifecycle question the plan called the real risk: a provider
@@ -228,7 +233,7 @@ async fn a_minors_provider_survives_a_refresh() {
     );
     assert_eq!(
         providers.len(),
-        3,
-        "the view's own two are not duplicated by the re-open either"
+        4,
+        "the view's own three are not duplicated by the re-open either"
     );
 }

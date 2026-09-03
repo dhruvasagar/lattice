@@ -8,7 +8,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 |---|---|---|
 | HB.1 | The repeater grammar, parsed **(plugin)** | ✅ |
 | HB.2 | Completing a repeating task repeats it **(plugin)** | ✅ |
-| HB.2b | …and from the agenda row, through the source seam **(plugin)** | 📝 |
+| HB.2b | …and from the agenda row, through the source seam **(plugin)** | ✅ |
 | HB.3 | Completion history from `:LOGBOOK:` **(plugin)** | 📝 |
 | HB.4 | The consistency graph — states and glyphs **(plugin)** | 📝 |
 | HB.5 | Drawn under the agenda row **(cross-repo)** | 📝 |
@@ -72,70 +72,87 @@ it: essentially every real org config sets it, because loose log lines under a
 habit are what people migrate away from once a file has history. Org reads
 both, so the deviation costs placement, not compatibility.
 
-### HB.2b — …from the agenda row 📝
+### HB.2b — …from the agenda row ✅
 
-**Completing a habit from the agenda still takes the destructive path.**
+**Completing a habit from the agenda took the destructive path**, and now does
+not.
 
-An agenda excerpt is ONE line — the headline — so the multi-line rewrite finds
-no planning line in the composed view and falls back to the plain `DONE`. The
-completion has to read and write the **source** through OA.23b's seam instead
-of the view, which is a real slice rather than a tweak: it needs the source's
-subtree lines out and a multi-line source edit back.
+An agenda excerpt is ONE line — the headline — so `set_keyword_repeating` read
+the subtree from the ACTIVE buffer, got the headline alone, `complete_repeating`
+correctly found no planning line to shift, and the fallback wrote a plain
+`DONE`. That is not a failure to repeat: it *destroys the habit*, because the
+headline stops being scheduled and the completion is never recorded.
 
-Deliberately no test in `org_agenda.rs` pinning today's answer — that would
-enshrine the destructive behaviour as intended. The org-file case is covered in
-`org_structure.rs`.
+The fix reuses `PlanTarget` — the same resolution `s` / `d` already do — rather
+than growing a second answer to the same question. `PlanTarget` gains
+`line(n, doc)` (generalising the old `read_line_of` from the headline to any
+line) and `subtree_end(doc, tree)`: the tree-sitter walk in a file, and behind
+the agenda a new `headline::subtree_end_unbounded`, because the source seam
+reads one line at a time and will not say how long the document is. Passing
+`u32::MAX` to the counted walk would make "no headline follows" a
+four-billion-line scan on a keystroke path, so the end is discovered by reading
+until the document runs out.
 
-**Two attempts, both reverted. What is now known, so the third starts at the
-actual question.**
+The done-state gate now runs BEFORE the target is resolved, so `TODO` → `NEXT`
+costs no host call. The cursor is not translated: the edit lands in the source,
+the caret is in the view and stays put.
 
-The shape is right and every piece exists: `PlanTarget::resolve` answers for
-both surfaces, `host_services::source_line` reads a source line,
-`replace_lines_at` writes to a named buffer. Reading the subtree through
-`source_line` and writing back compiles, and leaves the org-file path green.
+Deliberately no test in `org_agenda.rs` pinning the OLD answer — that would have
+enshrined the destructive behaviour as intended. The org-file case is covered in
+`org_structure.rs`, and must not change: a plain `* TODO Ship it` still just
+becomes `DONE`.
 
-**`logging::log` cannot be used to debug this, and the earlier note here
-saying to use it was wrong.** Calling it makes the component import
-`logging`, which the grammar seam's *sync* linker deliberately does not
-provide, and every import a component declares must resolve on every linker it
-instantiates against — so the WHOLE plugin stops loading. OC.2 shipped that
-once and it is scarred into four comments in `lib.rs`. An `Effect::Echo` is no
-better: it lands in the editor's message area, invisible to a test even under
-`--nocapture`. What works is writing the probe **into the buffer** as an edit
-and reading it back through `source_text` — crude, temporary, and the only
-channel a guest has that a test can see.
+**The diagnosis this slice carried for two sessions was wrong, and the way it
+was wrong is the reusable part.**
 
-**The probe's answer:**
+It said `row_source(ctx)` → `excerpt_source(view, line)` returned `None` for a
+chord-dispatched guest action, on the evidence of an in-buffer probe reporting
+`from_source=false`. That reading was never checked against the code path the
+chord actually takes: **`set_keyword_repeating` did not call `row_source` at
+all.** It never resolved a target, so `from_source` was a property of a
+different function than the one that was failing.
 
-```
-resolved=true from_source=Some(false) head=Some("* TODO Ship the thing")
-cyc=Some("* DONE Ship the thing") want=Some("DONE") done=["DONE"]
-```
+The seam is fine, and is now proved fine rather than assumed either way, by five
+tests on the lattice side that did not exist:
 
-So the done-keyword gate passes and the cycle is right. The failure is
-`from_source=false`: **`row_source(ctx)` → `excerpt_source(view, line)` returns
-`None` for a chord-dispatched guest action**, so `PlanTarget` falls to the file
-branch, the subtree is read from the composed view — one line, the headline —
-and `complete_repeating` correctly declines.
+- `lattice-multibuffer` — the resolver against a view built by `open_scan_view`,
+  not a hand-assembled one (the existing unit tests all built their own).
+- `lattice-plugin-host/tests/excerpt_source_seam.rs` — a real WASM guest on the
+  *sync* grammar seam calling `excerpt-source` with the ids from its own
+  context. The store the guest runs in is what decides the answer, and
+  `instantiate_grammar_plugin` strips a neighbouring field (`ui`) off that same
+  store on purpose, so "every store gets it" needed asserting.
+- `boot_regression_pins` — `WiredSeams` now reports the excerpt-source resolver
+  and the multibuffer registry, via a new `PluginHost::excerpt_source_wired`.
+  An unwired seam answers `none`, which is also its answer for "not composed",
+  so a boot-ordering regression here is invisible from the guest.
+- `an_agenda_row_can_write_to_its_source.rs` — the id the dispatch gate puts in
+  a grammar action's context is the view's.
+- `a_plugin_action_on_an_agenda_row_finds_its_file.rs` — all of it at once: real
+  `Editor`, real multibuffer view, real dispatch path, real guest, resolver
+  wired the way `install` wires it. Excerpts deliberately non-contiguous, so
+  composed row 1 is source line 2 and a seam echoing its argument back would
+  fail.
 
-**Where to look, in order.** The resolver itself is fine
-(`MultibufferExcerptSource` has passing unit tests) and it *is* wired at
-install (`lattice-plugin-loader/src/install.rs`, from the multibuffer registry
-service), and `new_store` stamps `excerpt_source` onto every store including
-the sync grammar one — which only strips `ui`. So the wiring looks correct on
-inspection and answers `None` in practice: the
-`plugin-gates-hand-guests-throwaway-contexts` shape, wired end to end and
-answering nothing. The next step is a **host-side** test that calls
-`excerpt_source(view_id, 0)` on a booted agenda, which no test currently does
-— every existing agenda TODO test goes through `rewrite_headline`, which never
-calls `row_source`.
+Four of those layers were already green *individually* before this slice, and
+the chain still could not be said to work — because each test supplied by hand
+what the next one produces. That is the shape to watch for, not this particular
+seam.
 
-Worth checking while there: whether `ctx.buffer_id` inside a grammar-dispatched
-action is the view's id at all. The probe's edit reached the source, which the
-host may be doing by composed→source translation on apply rather than because
-the guest named the source — those two are indistinguishable from the guest
-side, and only one of them makes `excerpt_source(ctx.buffer_id, …)` the right
-question.
+Two notes for the next debugging session here:
+
+- **`logging::log` cannot be used in this plugin.** Calling it makes the
+  component import `logging`, which the sync grammar linker deliberately does
+  not provide, and every import must resolve on every linker the component
+  instantiates against — so the WHOLE plugin stops loading. OC.2 shipped that
+  once. `Effect::Echo` is no better from the plugin repo: it lands in the
+  message area. What works is an edit into the buffer, read back through
+  `source_text` — or, better, the fixture route above, where an `Echo` IS
+  readable because the test holds the `Editor`.
+- **The test that would have caught this does not exist.** Marking a habit done
+  from a real agenda needs org's component inside lattice's test suite, which
+  nothing does today. The `multiseam` fixture is the pattern; org would need the
+  same treatment, or a shared harness that loads whichever component is on disk.
 
 ### HB.3 — completion history 📝
 

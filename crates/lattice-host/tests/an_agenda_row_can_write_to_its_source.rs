@@ -251,3 +251,71 @@ fn settle(editor: &Editor) {
     let _ = editor;
     std::thread::sleep(std::time::Duration::from_millis(50));
 }
+
+// ── HB.2b: the read half, through the gate a chord actually takes ──────────
+
+/// **What a grammar action is told it is looking at, when the agenda is what
+/// is on screen.**
+///
+/// A plugin action asks `excerpt-source(ctx.buffer-id, ctx.cursor.line)` to
+/// find the file behind an agenda row. The answer is `none` for any id that
+/// is not a view's, so the id the host puts in that context decides whether
+/// the seam can work at all — and no test looked at it: every agenda test
+/// goes through a mode's `ActionHandler`, which is a different arm with a
+/// different context, and the multibuffer crate's resolver tests build the
+/// context themselves.
+///
+/// A native `CommandKind::Action` is the guest's stand-in. It reaches the
+/// same gate (`dispatch_invocation`'s Action branch) and gets the same
+/// `ActionContext`, without a WASM component in the test.
+#[test]
+fn a_grammar_action_is_told_the_view_it_fired_in() {
+    use std::sync::Mutex;
+
+    let (mut editor, view) = boot_with_an_agenda_shaped_view();
+    editor.activate_buffer(view);
+
+    let seen: Arc<Mutex<Option<(BufferId, String)>>> = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&seen);
+    let mut id = None;
+    editor.registry.rcu(|current| {
+        let mut next = (**current).clone();
+        let sink = Arc::clone(&sink);
+        id = Some(next.register_action(
+            "hb2b-probe",
+            "HB.2b fixture: record the context the gate hands a grammar action.",
+            lattice_grammar::ActionSpec {
+                apply: Arc::new(move |ctx: &lattice_grammar::ActionContext| {
+                    let line = ctx
+                        .buffer
+                        .line(ctx.cursor.line)
+                        .unwrap_or_default()
+                        .to_string();
+                    *sink.lock().unwrap() = Some((ctx.buffer_id, line));
+                    Ok(lattice_grammar::Effect::None)
+                }),
+                args_schema: Vec::new(),
+            },
+        ));
+        Arc::new(next)
+    });
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    editor.dispatch_invocation(
+        lattice_grammar::CommandInvocation::of(id.expect("registered")),
+        &mut out,
+    );
+
+    let (buffer_id, line) = seen.lock().unwrap().clone().expect("the action ran");
+    assert_eq!(
+        line.trim_end(),
+        "* TODO write it",
+        "precondition: the action reads the COMPOSED row it fired on"
+    );
+    assert_eq!(
+        buffer_id, view,
+        "the text comes from the view, so the id must name the view too — an id \
+         that is not a view's makes `excerpt-source` answer none, and a plugin \
+         acting on an agenda row falls back to editing the picture of the file"
+    );
+}

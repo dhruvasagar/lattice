@@ -55,6 +55,16 @@ mod tests {
             register: Register::default(),
             count: Count::default(),
             buffer_id: lattice_core::BufferId::default(),
+            // OC.10 added these four so a PLUGIN ex-command could name the
+            // buffer its `Effect::ApplyEdit` targets. Every command in this
+            // module is transport-level — it starts an agent, opens a log,
+            // toggles a server — and reads none of them, so they carry their
+            // empty forms rather than a fabricated cursor into a buffer this
+            // test never builds.
+            cursor: Default::default(),
+            buffer: Default::default(),
+            path: None,
+            syntax: None,
             cancel: CancellationToken::new(),
         }
     }

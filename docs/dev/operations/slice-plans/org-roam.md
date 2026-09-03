@@ -118,7 +118,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.9 | the backlinks view | ✅ |
 | OR.10 | dailies | ✅ |
 | OR.11a | `${field}` — written and wired | ✅ |
-| OR.11b | the capture buffer — **built by OC.7**, roam reuses it | 🚧 |
+| OR.11b | the capture buffer — **built by OC.7**, roam reuses none of it | 🚧 |
 | OR.12 | docs — the user page is `doc/org-roam.md`, its own topic | ✅ |
 
 ### OR.1 — a plugin can persist something ✅
@@ -823,13 +823,47 @@ Kept here because the *shape* of that miss is the reusable part: a committed
 module with passing unit tests, unreachable because one `mod` line was absent.
 `cargo test` matched none of them and said so only by omission.
 
-**OR.11b (the capture buffer) was built by OC.7**, for org-capture, and roam
-reuses it unchanged: same `org-capture-mode` minor on an `org-mode` major, same
-`C-c C-c` / `C-c C-k`, same handlers. See
-[`../../architecture/org-capture.md`](../../architecture/org-capture.md) §8.
-What remains for roam is only the ORDER — roam asks for the node title first,
-then the template, where org-capture asks for the template first. The scope
-widening recorded below is therefore already paid for.
+**OR.11b (the capture buffer) was built by OC.7** — for org-capture. See
+[`../../architecture/org-capture.md`](../../architecture/org-capture.md) §8:
+`open_capture_buffer` emits `Effect::OpenSyntheticBuffer` with an `org-mode`
+major and the `org-capture-mode` minor carrying `C-c C-c` / `C-c C-k`, and
+`capture::expand_for_buffer` places the cursor at `%?`.
+
+**Roam does not reuse any of it, and this section said it did.** Audited
+against the call site 2026-09-03. `roam_create_from_template`
+(`lib.rs`) ends in a bare `Effect::WriteToFile` and never touches
+`open_capture_buffer`. Four consequences, none of them the "ORDER" this
+section previously named as all that remained:
+
+1. **No capture buffer.** The note is written into a file-backed buffer
+   directly. There is no draft to edit before filing, no `C-c C-c`, and no
+   `C-c C-k` — so "an aborted roam capture creates nothing at all" is
+   approximated only by the user not saving.
+2. **`%^{…}` is never asked.** `capture_flow::questions` is called at two
+   sites, both org-capture's; the roam path passes `answers = &[]`, so each
+   question expands to the empty string and *disappears from the note*. A
+   template written around `%^{Category}` silently loses the field.
+   `fields_menu` takes a `capture_templates::ParsedSet`, so it cannot serve
+   `roam_templates::RoamTemplateSet` without work.
+3. **`%?` places no cursor.** `expand_with` is used rather than
+   `expand_for_buffer`, and `entered` is `""` — so `%?` also expands to
+   nothing.
+4. **`%a` expands to nothing**, `annotation` being `""`. Correct in
+   substance (a roam create has no origin buffer to link back to) but it
+   should be *documented* rather than silently dropped.
+
+Only `%U` / `%T` / `%t` and `%%` survive the roam path, because those need no
+context. `doc/org-roam.md` now states exactly this rather than promising
+capture's placeholder set.
+
+The prompt ORDER — title first, then template, where org-capture asks template
+first — is *already* what roam does, and is the one thing this section got
+right. The title comes from the picker query or the `:org-roam-create-node`
+argument and the transient menu follows it; no title prompt is needed. So the
+order is done and the buffer is not, which is the reverse of what was written
+here.
+
+The scope widening recorded below is therefore **not** already paid for.
 
 The rest of this section is the original plan, kept because its reasoning about
 the surface still holds:

@@ -64,6 +64,13 @@ pub const INSERT_ROW: &str = "action:table-insert-row";
 pub const INSERT_COLUMN: &str = "action:table-insert-column";
 pub const DELETE_ROW: &str = "action:table-delete-row";
 pub const DELETE_COLUMN: &str = "action:table-delete-column";
+// TB.3
+pub const INSERT_RULE: &str = "action:table-insert-rule";
+pub const SORT: &str = "action:table-sort";
+pub const SORT_DESC: &str = "action:table-sort-descending";
+pub const BLANK_CELL: &str = "action:table-blank-cell";
+pub const COPY_DOWN: &str = "action:table-copy-down";
+pub const TRANSPOSE: &str = "action:table-transpose";
 
 /// `table-mode` — pipe-table editing, on every major that has pipe tables.
 pub struct TableMode;
@@ -129,6 +136,15 @@ fn table_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "<leader>tc", doc: "Insert a table column right", cmd: Some(INSERT_COLUMN) },
             keymap_entry! { mode: Normal, chord: "<leader>tdr", doc: "Delete this table row", cmd: Some(DELETE_ROW) },
             keymap_entry! { mode: Normal, chord: "<leader>tdc", doc: "Delete this table column", cmd: Some(DELETE_COLUMN) },
+            // TB.3. `-` for a rule is emacs' own mnemonic (`C-c -`), and the
+            // rest read as what they do rather than as emacs' chord letters:
+            // this mode is not org's, so `C-c ^` for sort has no claim here.
+            keymap_entry! { mode: Normal, chord: "<leader>t-", doc: "Insert a table rule below", cmd: Some(INSERT_RULE) },
+            keymap_entry! { mode: Normal, chord: "<leader>ts", doc: "Sort this section by the column at the cursor", cmd: Some(SORT) },
+            keymap_entry! { mode: Normal, chord: "<leader>tS", doc: "Sort this section descending", cmd: Some(SORT_DESC) },
+            keymap_entry! { mode: Normal, chord: "<leader>tb", doc: "Blank the table cell at the cursor", cmd: Some(BLANK_CELL) },
+            keymap_entry! { mode: Normal, chord: "<leader>ty", doc: "Copy this cell down, incrementing a trailing number", cmd: Some(COPY_DOWN) },
+            keymap_entry! { mode: Normal, chord: "<leader>tT", doc: "Transpose this table", cmd: Some(TRANSPOSE) },
         ]
     })
 }
@@ -261,8 +277,24 @@ pub fn register_table_actions(registry: &mut CommandRegistry) {
         NEXT_CELL,
         "Move to the next cell of the table at the cursor, aligning it.",
         spec(true, |ctx, found| {
-            let next = found.table.next_cell(found.cell)?;
-            move_to(ctx, &found.table, next)
+            // TB.3: at the last cell, `<Tab>` ADDS a row and lands in it.
+            // Emacs' org-table does, and it is how people actually build a
+            // table — type a row, Tab, type the next. `Table::next_cell`
+            // deliberately answers `None` there rather than inventing this,
+            // because "add a row" and "leave the table" are both defensible
+            // and the choice belongs to the surface, not the model.
+            match found.table.next_cell(found.cell) {
+                Some(next) => move_to(ctx, &found.table, next),
+                None => {
+                    let last = found.table.rows.len().saturating_sub(1);
+                    let (next, cell) = found.table.insert_row(Cell {
+                        row: last,
+                        column: found.cell.column,
+                    });
+                    let rendered = next.render();
+                    Some(rewrite(ctx, &found.table, rendered, cell))
+                }
+            }
         }),
     );
     registry.register_action(
@@ -337,4 +369,91 @@ pub fn register_table_actions(registry: &mut CommandRegistry) {
             Some(rewrite(ctx, &found.table, rendered, cell))
         }),
     );
+
+    // ── TB.3 ────────────────────────────────────────────────────────────
+    registry.register_action(
+        INSERT_RULE,
+        "Insert a horizontal rule below the cursor's table row.",
+        spec(false, |ctx, found| {
+            let (next, cell) = found.table.insert_rule(
+                found.cell,
+                rule_fallback(ctx.path.as_deref().map(|p| p.as_path())),
+            );
+            let rendered = next.render();
+            Some(rewrite(ctx, &found.table, rendered, cell))
+        }),
+    );
+    for (name, doc, descending) in [
+        (
+            SORT,
+            "Sort this table section by the column at the cursor.",
+            false,
+        ),
+        (
+            SORT_DESC,
+            "Sort this table section by the column at the cursor, descending.",
+            true,
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            spec(false, move |ctx, found| {
+                let (next, cell) = found.table.sort_section(found.cell, descending)?;
+                let rendered = next.render();
+                Some(rewrite(ctx, &found.table, rendered, cell))
+            }),
+        );
+    }
+    registry.register_action(
+        BLANK_CELL,
+        "Empty the table cell at the cursor.",
+        spec(false, |ctx, found| {
+            let (next, cell) = found.table.blank_cell(found.cell)?;
+            let rendered = next.render();
+            Some(rewrite(ctx, &found.table, rendered, cell))
+        }),
+    );
+    registry.register_action(
+        COPY_DOWN,
+        "Copy this cell into the row below, incrementing a trailing number.",
+        spec(false, |ctx, found| {
+            let (next, cell) = found.table.copy_down(found.cell)?;
+            let rendered = next.render();
+            Some(rewrite(ctx, &found.table, rendered, cell))
+        }),
+    );
+    registry.register_action(
+        TRANSPOSE,
+        "Swap the table's rows and columns.",
+        spec(false, |ctx, found| {
+            let (next, cell) = found.table.transpose(found.cell)?;
+            let rendered = next.render();
+            Some(rewrite(ctx, &found.table, rendered, cell))
+        }),
+    );
+}
+
+/// Which rule style a table with NO rule should get: `+` for org, `|` for
+/// everything else.
+///
+/// This is the single place the dialect is not readable off the buffer — §2
+/// of the design says the table says which dialect it is, and a table with no
+/// rule has not said. So the file's extension answers, which is crude but
+/// true: the thing that decides whether `|---+---|` is idiomatic IS whether
+/// this is an org file.
+///
+/// Not a `table.dialect` option, for §2's reason — an option is a second
+/// source that can disagree with the buffer. Not the buffer's major mode
+/// either, tempting as that is: reaching it from a grammar action body means
+/// either a `lattice-syntax` dependency in `lattice-mode` or a new field on
+/// `ActionContext`, which is a large edge for one character. A path with no
+/// extension, or none at all, gets markdown's — the more common table
+/// spelling, and the one org accepts too.
+fn rule_fallback(path: Option<&std::path::Path>) -> char {
+    let is_org = path
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("org"));
+    if is_org { '+' } else { '|' }
 }

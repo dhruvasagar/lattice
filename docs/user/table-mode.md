@@ -22,7 +22,7 @@ have to hand-space. It is on in **markdown and org buffers** and nowhere else.
 
 | Keystroke | Meaning |
 |---|---|
-| `<Tab>` | Next cell — realigning the table on the way |
+| `<Tab>` | Next cell — realigning the table on the way. At the last cell, adds a row |
 | `<S-Tab>` | Previous cell |
 | `<leader>t\|` | Align this table |
 | `<leader>tK` / `<leader>tJ` | Move this row up / down |
@@ -31,8 +31,59 @@ have to hand-space. It is on in **markdown and org buffers** and nowhere else.
 | `<leader>tc` | Insert a column to the right |
 | `<leader>tdr` | Delete this row |
 | `<leader>tdc` | Delete this column |
+| `<leader>t-` | Insert a horizontal rule below |
+| `<leader>ts` / `<leader>tS` | Sort this section by the column at the cursor, ascending / descending |
+| `<leader>tb` | Blank this cell |
+| `<leader>ty` | Copy this cell down, incrementing a trailing number |
+| `<leader>tT` | Transpose the table |
 
 `<leader>` is `<Space>` unless you have changed it.
+
+---
+
+## Building a table
+
+Type the first row, press `<Tab>` at the end of it, and you get a new row to
+type into. That is the whole loop — `<Tab>` walks cells and adds a row when it
+runs out of them.
+
+`<leader>ty` fills a column downwards. It copies the cell you are on into the
+row below and **increments a trailing number**, so `Q3` becomes `Q4` and `07`
+becomes `08` with its width kept. A cell that does not end in digits copies
+unchanged. If there is no row below, it makes one.
+
+`<leader>t-` puts a horizontal rule below the current row — the line that
+separates a header from the body.
+
+---
+
+## Sorting
+
+`<leader>ts` sorts by the column your cursor is in; `<leader>tS` sorts it the
+other way.
+
+Three things it does that are worth knowing:
+
+- **It sorts only the section you are in** — the run of rows between rules. A
+  header above a rule stays where it is.
+- **It picks numeric or alphabetic from the data.** If every value in the
+  column is a number they sort as numbers, so `10` comes after `9` rather than
+  before it. Otherwise they sort as text, ignoring case.
+- **Empty cells go last either way.** An empty cell is a missing value, not a
+  small one, so sorting descending does not float the blanks to the top.
+
+Your cursor follows its row, so you can see where the row you were looking at
+ended up.
+
+---
+
+## Transposing
+
+`<leader>tT` swaps rows and columns.
+
+Horizontal rules do not survive it, and cannot: a rule separates groups of
+rows, and after the swap those groups are columns — there is no horizontal
+line left that means what it meant. Emacs does the same.
 
 ---
 
@@ -52,6 +103,10 @@ Markdown's alignment markers are honoured and kept:
 
 A table with no rule at all — which most org tables are — is still a table.
 Nothing is inserted that you did not write.
+
+When you add a rule with `<leader>t-`, it copies the style of a rule the table
+already has. If the table has none, the file decides: `.org` files get
+`|---+---|`, everything else gets `|---|---|`.
 
 Indentation is kept too, so a table nested under a headline stays where you
 put it.

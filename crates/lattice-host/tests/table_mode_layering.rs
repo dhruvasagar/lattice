@@ -37,12 +37,24 @@ fn boot_with(text: &str) -> Editor {
 /// fails here rather than being quietly skipped — which is the failure mode
 /// an unresolvable keymap name has.
 fn run(name: &str, text: &str, line: u32, byte: u32) -> Effect {
+    run_in(name, text, line, byte, None)
+}
+
+/// [`run`], for a document backed by `path` — which is what `<leader>t-`
+/// reads to pick a rule style when the table has none to copy.
+fn run_in(name: &str, text: &str, line: u32, byte: u32, path: Option<&str>) -> Effect {
     let editor = boot_with("scratch\n");
     let registry = editor.registry.load();
     let id = registry
         .id_by_name(name)
         .unwrap_or_else(|| panic!("`{name}` must be registered at boot"));
-    let mut doc = CoreDocument::from_text(text);
+    let mut doc = match path {
+        Some(p) => lattice_core::DocumentBuilder::default()
+            .with_path(p)
+            .with_text(text)
+            .build(),
+        None => CoreDocument::from_text(text),
+    };
     lattice_grammar::execute(
         &registry,
         &mut doc,
@@ -325,4 +337,147 @@ fn a_table_elsewhere_in_the_buffer_is_not_reached() {
         0,
         0
     )));
+}
+
+// ── TB.3 ────────────────────────────────────────────────────────────────
+
+fn replaced(e: &Effect) -> String {
+    match e {
+        Effect::ApplyEdit { edit, .. } => {
+            let lattice_protocol::edit::EditKind::Replace { text } = &edit.kind;
+            text.clone()
+        }
+        other => panic!("expected ApplyEdit, got {other:?}"),
+    }
+}
+
+/// Emacs' behaviour, and how people actually build a table: type a row, Tab,
+/// type the next. `<Tab>` at the last cell has to ADD a row rather than
+/// declining — declining there would hand the key to org's headline cycle
+/// from inside a table, which is the wrong answer twice over.
+#[test]
+fn tab_at_the_last_cell_adds_a_row() {
+    let out = replaced(&run("action:table-next-cell", "| a | b |\n", 0, 6));
+    assert_eq!(out.lines().count(), 2, "a row was added: {out:?}");
+    assert_eq!(
+        out.lines().nth(1).unwrap().matches('|').count(),
+        3,
+        "and it is as wide as the table: {out:?}"
+    );
+}
+
+/// The one place the dialect is not in the buffer: a table with no rule to
+/// copy. The file's extension answers, because the thing that decides
+/// whether `|---+---|` is idiomatic IS whether this is an org file.
+#[test]
+fn a_rule_inserted_into_a_ruleless_table_follows_the_file_type() {
+    let org = replaced(&run_in(
+        "action:table-insert-rule",
+        "| a | b |\n",
+        0,
+        2,
+        Some("/tmp/notes.org"),
+    ));
+    assert!(
+        org.lines().any(|l| l.contains('+')),
+        "org gets `+`: {org:?}"
+    );
+
+    let md = replaced(&run_in(
+        "action:table-insert-rule",
+        "| a | b |\n",
+        0,
+        2,
+        Some("/tmp/notes.md"),
+    ));
+    assert!(
+        md.lines()
+            .filter(|l| l.contains("---"))
+            .all(|l| !l.contains('+')),
+        "markdown gets pipes: {md:?}"
+    );
+}
+
+/// …and when the table HAS a rule, that wins over the file type. Otherwise a
+/// `+`-joined table pasted into a `.md` file would grow a mismatched second
+/// rule, which is the disagreement design §2 exists to prevent.
+#[test]
+fn an_existing_rule_beats_the_file_type() {
+    let out = replaced(&run_in(
+        "action:table-insert-rule",
+        "| a | b |\n|--+--|\n| c | d |\n",
+        2,
+        2,
+        Some("/tmp/notes.md"),
+    ));
+    let rules: Vec<&str> = out.lines().filter(|l| l.contains("--")).collect();
+    assert_eq!(rules.len(), 2, "{out:?}");
+    assert!(
+        rules.iter().all(|l| l.contains('+')),
+        "the table's own style won: {out:?}"
+    );
+}
+
+/// Numbers sort as numbers. `10` after `9` is the single most noticeable way
+/// a sort can be wrong, and it is what lexicographic order gets backwards.
+#[test]
+fn sort_picks_its_comparator_from_the_data() {
+    let out = replaced(&run("action:table-sort", "| 9 |\n| 10 |\n| 2 |\n", 0, 2));
+    let values: Vec<String> = out
+        .lines()
+        .map(|l| l.trim_matches(['|', ' ']).to_string())
+        .collect();
+    assert_eq!(values, vec!["2", "9", "10"], "{out:?}");
+}
+
+/// A sort must not drag the header row into the body.
+#[test]
+fn sort_stays_inside_the_section_the_cursor_is_in() {
+    let out = replaced(&run(
+        "action:table-sort",
+        "| header |\n|---|\n| b |\n| a |\n",
+        2,
+        2,
+    ));
+    assert!(
+        out.lines().next().unwrap().contains("header"),
+        "the header stayed above the rule: {out:?}"
+    );
+}
+
+#[test]
+fn copy_down_fills_a_series() {
+    let out = replaced(&run("action:table-copy-down", "| Q3 |\n| |\n", 0, 2));
+    assert!(out.lines().nth(1).unwrap().contains("Q4"), "{out:?}");
+}
+
+#[test]
+fn transpose_swaps_the_axes() {
+    let out = replaced(&run(
+        "action:table-transpose",
+        "| a | b | c |\n| 1 | 2 | 3 |\n",
+        0,
+        2,
+    ));
+    assert_eq!(out.lines().count(), 3, "{out:?}");
+}
+
+/// Every TB.3 chord is behind `<leader>t`, so like its TB.1 peers it
+/// CONSUMES outside a table rather than declining — a decline would re-run
+/// its trailing key alone, and `<leader>tS` would fire `S` (substitute-line).
+#[test]
+fn the_new_chords_also_consume_outside_a_table() {
+    for name in [
+        "action:table-insert-rule",
+        "action:table-sort",
+        "action:table-sort-descending",
+        "action:table-blank-cell",
+        "action:table-copy-down",
+        "action:table-transpose",
+    ] {
+        assert!(
+            is_none(&run(name, "just prose\n", 0, 0)),
+            "{name} must consume, not decline"
+        );
+    }
 }

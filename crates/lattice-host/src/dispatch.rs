@@ -452,24 +452,53 @@ impl Editor {
         // Capture pre-dispatch state. We compare AFTER `handle_action`
         // returns to detect cursor motion attributable to this
         // dispatch.
+        // **"Not focused" is `!popup_focused`, not a `BufferKind` guess.**
+        // This read `active_buffer == Document` as its State-A test, on the
+        // reasoning that a FOCUSED popup makes `active_buffer` Help. True
+        // until a minibuffer opens: the `*search-line*`, `*command-line*` and
+        // prompt buffers are synthetic **Documents**, so focusing one from
+        // inside a focused popup flips `active_buffer` back to `Document`
+        // with `popup_focused` still true — and this test then called a
+        // focused popup State A.
+        //
+        // What followed was the reported wedge: every character typed into
+        // the search line moved `self.cursor` (the *search line's* cursor),
+        // the motion check below fired, and `dismiss_popup` tore down the
+        // popup mid-search — restoring `prev_pane_for_popup` over a pane the
+        // minibuffer currently owned. `<Esc>` then restored
+        // `prior_active_buffer` (`Help`) with `popup_buffer` already `None`,
+        // leaving an inactive document that answered no keys until the user
+        // switched pane.
+        //
+        // `popup_focused` is the field that means what this needs to ask.
         let popup_in_state_a = self.popup_buffer.is_some()
-            && self.active_buffer == BufferKind::Document
+            && !self.popup_focused
             && self
                 .popup_buffer
                 .and_then(|id| self.active_modes.get(&id))
                 .map(|m| m.minors().contains(&lattice_mode::HoverMode::mode_id()))
                 .unwrap_or(false);
         let pre_cursor = self.cursor;
+        // Whose cursor `pre_cursor` is. A minibuffer focused across this
+        // dispatch means the motion measured below happened in IT, not in the
+        // document the popup is anchored to — and a popup must not be
+        // dismissed by a caret moving in a different buffer.
+        let pre_minibuffer = self.minibuffer_focus.is_some();
 
         let mut out = DispatchOutcome::default();
         handle_action(self, action, &mut out);
 
         // Auto-dismiss check. Requires:
-        //   - popup was in State A pre-dispatch
+        //   - popup was in State A pre-dispatch (shown, never focused)
+        //   - no minibuffer involved, before or after — the cursor that moved
+        //     has to be the DOCUMENT's for the staleness argument ("the popup
+        //     is anchored to the prior symbol") to hold at all
         //   - active buffer still Document (didn't switch into
         //     the popup via K-K focus chain — that's state B)
         //   - cursor moved
         if popup_in_state_a
+            && !pre_minibuffer
+            && self.minibuffer_focus.is_none()
             && self.active_buffer == BufferKind::Document
             && self.cursor != pre_cursor
         {

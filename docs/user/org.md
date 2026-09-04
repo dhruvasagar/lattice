@@ -40,7 +40,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 |---|---|
 | **Outline** | headline folding, promotion and demotion, structure motions, tree-sitter highlighting |
 | **TODO workflow** | your own keyword sequences with fast-select keys and `(@)` / `(!)` logging, per-keyword colours |
-| **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands and a clock report |
+| **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands, a clock report, and `l` for what you finished |
 | **Capture** | `<leader>oc` — templates that file a note without leaving what you were doing |
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
 | **Roam** | a Zettelkasten layer: id links, backlinks, dailies |

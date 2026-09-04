@@ -50,7 +50,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.14c | ~~Typed configuration~~ — **graduated** to its own plan, see below | ⛔ |
 | OA.14d | `pre-plugin-loaded`, so config can reach a load-time option | ✅ |
 | OA.15a | A guest can refresh its own view — `refresh-view` **(cross-repo)** | ✅ |
-| OA.15b | `org-agenda-log-mode` **(plugin)** | 🚧 |
+| OA.15b | `org-agenda-log-mode` **(plugin)** | ✅ |
 | OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
 | OA.17 | `org-agenda-timeline-mode` | 📝 |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
@@ -1011,7 +1011,7 @@ in a tick collapse, distinct ones do not. Gate: 1410 green in `lattice-host`,
 No bench: the drain is an empty `try_recv` on virtually every tick, and the
 work it triggers is a provider re-scan already covered by phase 0's numbers.
 
-### OA.15b — `org-agenda-log-mode` **(plugin)** 🚧
+### OA.15b — `org-agenda-log-mode` **(plugin)** ✅
 
 Design: [`org-agenda.md`](../../architecture/org-agenda.md) §3a–§3b.
 
@@ -1027,16 +1027,55 @@ interleaves log items into the day block; ours get a block of their own,
 because our unit is the user-configurable section and a user's set need not
 contain a date-grouped block at all).
 
-Built and green: `agenda_log.rs` (the three log-line parsers — reusing
-`history::state_change` and `clock_scan::closed_span` rather than second copies,
-so org's `%-12s` padding and the running-clock refusal are inherited),
-`org.agenda-log-mode-items` (emacs' default, `closed clock`), three theme
-elements, the `log=` view argument with its backward window, and the scan-side
-emission. 522 guest tests green.
+`agenda_log.rs` holds the three log-line parsers, and two of the three are
+**reused rather than re-written** — `history::state_change` and
+`clock_scan::closed_span` were widened to return what they had been discarding.
+A second copy would have had to re-earn org's `%-12s` padding tolerance, the
+`\\` note continuation, the optional drawer, the running-clock refusal and the
+inverted-span refusal, in a module where nobody would think to test any of them.
 
-Remaining: declare the minor, move the toggle onto its `minor-activated` /
-`minor-deactivated` handler over OA.15a's seam, and bind `l` on
-`org-agenda-mode` (not on the mode it toggles — `cr`'s split, design §3b).
+The rest: `org.agenda-log-mode-items` (emacs' default, `closed clock`), three
+theme elements, the `log=` view argument with its backward window, the
+scan-side emission, and the tag filter reaching log rows (which needed the walk
+widened to `admit_tag_only`, since a log row's headline is usually DONE and
+therefore not a row at all — a filter that silently stopped applying to half
+the view is the worse failure).
+
+**The mode owns the argument, and `l` writes neither.** `l` returns
+`Effect::ToggleMode` and nothing else; the `minor-activated` /
+`minor-deactivated` handler derives `log=` and calls OA.15a's `refresh-view`.
+Two writers of one fact is the disagreement OA.16's mode-as-switch shape
+exists to prevent, and it would have drifted invisibly — both states look right
+in isolation. `l` binds on `org-agenda-mode`, not on the mode it toggles
+(`cr`'s split, design §3b).
+
+**Three things the end-to-end run taught, none of which the unit tests could
+have.** This was the first time the whole chain ran, and it failed twice
+before it passed:
+
+1. **`Effect::ToggleMode` is renderer-applied.** `handle_effect` puts it in the
+   no-op band on purpose — the TUI's effect tail routes it to
+   `toggle_mode_by_name`. A host-level test that drops the returned `Action`
+   presses `l` and sees nothing, indistinguishable from a missing binding. The
+   test now runs the real peel and stands in for that one line, reading the
+   mode name out of the effect rather than hardcoding it.
+2. **The test manifest's `provides` decides which seams exist.**
+   `org_agenda.rs`'s copy omits `events`, so log mode's entire body would never
+   have been delivered to. Same symptom again: `l` does nothing.
+3. **`theme` in that list fails the whole component** in this harness, which
+   wires no theme registry. Not log mode's problem — the existing agenda tests
+   omit it for the same reason — and the annotation's spans degrade exactly as
+   the seam documents (unknown slot → the row's own foreground).
+
+Tests: `tests/org_agenda_log_mode.rs`, two — the full chain (`l` → ToggleMode →
+activation → `minor-activated` → `refresh-view` → drain → re-scan → log rows,
+then off again), and `:org-agenda-log-mode` reaching the same switch. The
+corpus's DONE headline is the load-bearing half: `agenda.rs` refuses it by
+construction, so if it appears at all, log mode is what put it there. **No key
+is pressed after the toggle** — the rows arrive because the request woke the
+actor, and a test that pressed anything would pass on a build with no wake.
+
+Gate: 754 green across the org plugin (16 suites), fmt clean, clippy clean.
 
 ### OA.16 — `scan-view-clockreport-mode` + `cr` ✅
 

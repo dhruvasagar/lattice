@@ -1,8 +1,13 @@
 # The focused surface — slice plan
 
-> **Status: Active.** Opened 2026-09-04. Implements
-> [`focused-surface.md`](../../architecture/focused-surface.md), which extends
-> [`popup-unification.md`](../../architecture/popup-unification.md) §3, §8, §9.
+> **Status: Complete, archived 2026-09-04.** All seven slices landed. The
+> open work this initiative surfaced did NOT come with it — it lives in
+> [`focused-surface.md`](../../../architecture/focused-surface.md) §7, so
+> archiving this plan does not bury it.
+>
+> Opened 2026-09-04. Implements
+> [`focused-surface.md`](../../../architecture/focused-surface.md), which extends
+> [`popup-unification.md`](../../../architecture/popup-unification.md) §3, §8, §9.
 
 Design owns *what* and *why*; this file owns *when* and *in what order*.
 
@@ -73,7 +78,7 @@ Gate: 1420 green in `lattice-host`, fmt clean, zero warnings.
 
 ## FS.1b — Focus REPLACES as well as nests ✅
 
-Design: [`focused-surface.md`](../../architecture/focused-surface.md) §2.1,
+Design: [`focused-surface.md`](../../../architecture/focused-surface.md) §2.1,
 added by this slice. Landed after FS.5.
 
 **FS.1 removed one wrong guard and left the opposite assumption behind it.**
@@ -333,14 +338,9 @@ pre-existing completion failures, re-proven on clean HEAD by stashing); 37 in
 
 ## Follow-ups this plan surfaced but did not take
 
-- **`:saveas`.** `:w {file}` no longer adopts the path (fixed separately);
-  renaming an already-named buffer now has no spelling. Needs a new `Effect`
-  variant — WIT ABI plus both renderer classifiers — for a rare verb.
-- **Anchored-popup scroll differs between peers.** The TUI resolves a
-  cursor-anchored popup against the pane's LIVE scroll; GPUI freezes it at
-  `doc_scroll_at_anchor`. Both are defensible and neither is the reported
-  bug: with the doc scrolling under a State-A popup, the TUI's follows the
-  anchor line and GPUI's stays put.
-- **Two pre-existing `lattice-ui-tui` failures** (command-line completion no
-  longer extending `descr` to `describe-`), red on clean HEAD since before
-  this plan opened.
+Moved to [`focused-surface.md`](../../../architecture/focused-surface.md) §7
+when this plan was archived — `:saveas` having no spelling, the
+anchored-popup scroll divergence between the renderer peers, and the two
+pre-existing `lattice-ui-tui` completion failures that set that crate's green
+baseline. They are open; the design fragment is not archived, so that is
+where they stay visible.

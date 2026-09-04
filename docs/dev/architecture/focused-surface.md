@@ -5,8 +5,11 @@ Authoritative design for **which buffer an interaction acts on**. Extends
 registry buffer and §8–§9 recorded two bugs from asking "which buffer is
 this" twice. This fragment removes the question.
 
-Sequencing lives in
-[`docs/dev/operations/slice-plans/focused-surface.md`](../operations/slice-plans/focused-surface.md).
+Sequencing lived in
+[`docs/dev/operations/slice-plans/archive/focused-surface.md`](../operations/slice-plans/archive/focused-surface.md),
+archived 2026-09-04 with all seven slices complete. The open work that
+initiative surfaced is §7 below, which is why it is recorded here rather than
+in the archived plan.
 
 ## 1. The defect, stated once
 
@@ -175,3 +178,29 @@ buffer that is — rather than a growing list of verbs taught to ask.
 **Everything is a buffer.** §3 of `popup-unification.md` said popup
 content is a registry buffer. This is that sentence applied to input:
 if it is a buffer, focusing it focuses a buffer.
+
+## 7. Known gaps this initiative surfaced but did not close
+
+Recorded here rather than in the slice plan because the plan is archived and
+these are still open. None of them blocks the model above.
+
+- **`:saveas` has no spelling.** `:w {file}` used to adopt the path; it now
+  writes a copy and keeps the buffer's identity, which is vim (fixed under
+  FS.4, separately from it). Renaming an already-named buffer is the verb
+  that went missing in the correction. It needs a new `Effect` variant —
+  WIT ABI plus both renderer classifiers — for a rare verb, which is why it
+  was not taken inline.
+- **A cursor-anchored popup scrolls differently in each renderer.** The TUI
+  resolves the anchor against the pane's LIVE scroll; GPUI freezes it at
+  `doc_scroll_at_anchor`. With the document scrolling under a State-A popup,
+  the TUI's popup follows the anchor line and GPUI's stays put. Both are
+  defensible and neither is the bug this initiative was opened for, so the
+  divergence was left standing rather than picked arbitrarily. Cross-renderer
+  parity says it should be picked deliberately, once.
+- **Two `lattice-ui-tui` tests are red on clean HEAD** —
+  `typing_after_popup_open_live_refilters_candidates` and
+  `backspace_after_popup_open_live_refilters`. Command-line completion stopped
+  extending `descr` to `describe-`. Predates this initiative (re-proven by
+  stashing, 2026-09-04) and is unrelated to focus, but it means "2 failures"
+  is that crate's green baseline until someone fixes it — a baseline nobody
+  should have to rediscover.

@@ -4483,15 +4483,31 @@ impl Render for EditorView {
             // the content snapshot (the element's windowed `text` can't
             // recover an arbitrary cursor line — same contract as
             // `paint_pane`).
+            //
+            // …and NOT the editor's modal shape when a minibuffer owns the
+            // caret. `ad.modal` is global, so opening `/` over a focused
+            // popup turned this caret into the Bar `ModalState::Search`
+            // implies — a read-only popup rendered as though it had entered
+            // Insert, which is what the report described. The popup's own
+            // state is Normal while a readline surface has input, so it keeps
+            // the Block that says "here is where you are". The TUI peer
+            // resolves the same question by declining to place the single
+            // hardware caret at all; that divergence is the substrate's (one
+            // caret vs. painted elements), not a behavioural one.
             let cursor = if popup_focused {
                 let line_text = content_snap
                     .as_ref()
                     .and_then(|s| s.buffer.line(ad.cursor.line))
                     .unwrap_or_default();
+                let shape = if lattice_host::cursor_shape::minibuffer_owns_caret(ad.modal) {
+                    CursorShape::Block
+                } else {
+                    CursorShape::for_mode(ad.modal)
+                };
                 Some(crate::editor_element::CursorState {
                     line: ad.cursor.line,
                     byte: ad.cursor.byte,
-                    shape: CursorShape::for_mode(ad.modal),
+                    shape,
                     line_text,
                 })
             } else {

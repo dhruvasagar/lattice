@@ -2532,7 +2532,18 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // wrap + the nonu gutter), so it replaces the bespoke
     // `wrap_aware_cursor_offset` that tracked the deleted
     // `manually_wrap_lines`.
+    // …unless a minibuffer owns the caret. The `:` / `/` / prompt lines each
+    // draw their own at their own buffer's cursor, and the terminal has ONE
+    // hardware caret — so without this guard the last writer won and the caret
+    // stayed parked in the popup, merely changing shape to the Bar that
+    // `ModalState::Search` implies. Reported in use as "the cursor changes
+    // from block to an insert-mode line cursor" inside a read-only popup.
+    //
+    // The pane path below has always asked this question (its local
+    // `prompt_owns_cursor`); the popup path never did. It is one question, so
+    // it now has one answer, in `lattice_host::cursor_shape`.
     if popup_focused
+        && !lattice_host::cursor_shape::minibuffer_owns_caret(app.ad().modal)
         && inner.height > 0
         && inner.width > 0
         && let Some((screen_x, screen_y)) = cursor_screen_position_at(
@@ -2725,8 +2736,24 @@ fn position_help_popup(
     //   per the comment above) but is defensively included in
     //   the fallback since the function may be called from
     //   future paths.
+    // …and NOT `ad()` while a minibuffer holds focus. The `*search-line*`,
+    // `*command-line*` and prompt buffers are Documents, so the `Document`
+    // arm below would take the MINIBUFFER's cursor — (0, 0) on a fresh
+    // search line — and anchor the popup to the top of the pane. Reported in
+    // use: "hitting `/` jumps the popup up near the top".
+    //
+    // The pane's stashed cursor / scroll is the document's own: focusing a
+    // minibuffer calls `snapshot_active_pane()` before it swaps, precisely so
+    // the unfocused path reads live state (`focus_editing_buffer`). That is
+    // the same source the non-Document arm already uses.
+    //
+    // Third instance of one mistake — `BufferKind::Document` standing in for
+    // a question about focus. See `popup-unification.md` §9.
+    let minibuffer_focused = lattice_host::cursor_shape::minibuffer_owns_caret(app.ad().modal);
     let (cursor, scroll) = match app.ad().buffer_kind {
-        crate::buffers::BufferKind::Document => (app.ad().cursor, app.ad().scroll),
+        crate::buffers::BufferKind::Document if !minibuffer_focused => {
+            (app.ad().cursor, app.ad().scroll)
+        }
         _ => {
             // Slice 3c.final.B (group 1): pane via `app.panes()`.
             // `active()` returns `&PaneState` borrowing from the
@@ -2736,6 +2763,27 @@ fn position_help_popup(
             (pane.cursor, pane.scroll)
         }
     };
+    // A cursor-anchored popup is anchored to where the caret WAS when it
+    // opened, which is what `popup().anchor` records — the live caret is only
+    // a fallback for popups that never captured one. Preferring the anchor
+    // keeps the popup still while the caret moves inside a focused popup, and
+    // is what "cursor-anchored" already claimed to mean.
+    let cursor = app.popup().anchor.unwrap_or(cursor);
+    // …and the anchor has to be mapped to a screen row through the DOCUMENT's
+    // own snapshot. `snap` is the *active* document's, which a focused
+    // minibuffer replaces with a one-line `*search-line*` — mapping a
+    // document line through that lands the popup somewhere unrelated, which is
+    // the other half of "hitting `/` jumps the popup". The pane's buffer is
+    // the document either way, so resolve from it when the two differ.
+    let pane_snap = if minibuffer_focused {
+        app.buffers()
+            .registry
+            .document_handle(app.panes().tree.active().buffer_id)
+            .map(|h| h.snapshot())
+    } else {
+        None
+    };
+    let snap: &DocumentSnapshot = pane_snap.as_deref().unwrap_or(snap);
     let view = FrameView::from_app(app);
     let Some((cx, cy)) = cursor_screen_position_at(
         &view,
@@ -3961,11 +4009,17 @@ fn draw_pane_document(
     if !is_active {
         return;
     }
-    // Place the buffer-area cursor only when the prompt isn't claiming it.
-    // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
-    // in the bottom prompt row -- handled by `draw_command_or_echo`.
+    // Place the buffer-area cursor only when a minibuffer isn't claiming it.
+    // In Command (`:`), Search (`/`, `?`) and Prompt the caret lives in the
+    // bottom row -- handled by `draw_command_or_echo`.
+    //
+    // Shared with the popup path above through
+    // `lattice_host::cursor_shape::minibuffer_owns_caret`, which also adds
+    // `Prompt` — the local copy this replaces listed only two of the three
+    // readline surfaces, so a prompt and the pane both placed the caret and
+    // whichever drew last won.
     let ad = app.ad();
-    let prompt_owns_cursor = matches!(ad.modal, ModalState::Command | ModalState::Search(_));
+    let prompt_owns_cursor = lattice_host::cursor_shape::minibuffer_owns_caret(ad.modal);
     if !prompt_owns_cursor
         && let Some((screen_x, screen_y)) = cursor_screen_position_at(
             &view,
@@ -13186,5 +13240,120 @@ mod transient_palette_tests {
                  standing in for several roles cannot distinguish them.",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod searching_from_a_focused_popup_tests {
+    //! The reported sequence, at the pixel level: focus a cursor-anchored
+    //! popup, press `/`, and the popup must neither move nor take the caret.
+    //!
+    //! These assert on a rendered frame rather than on state, because both
+    //! symptoms ARE the frame: "the popup jumps up near the top" is its
+    //! `Rect`, and "the cursor changes shape" is which surface owns the
+    //! terminal's one caret. A state-level test would have passed on both.
+
+    use super::*;
+    use crate::app::App;
+    use lattice_core::Document;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// A document long enough that "anchored at the caret" and "anchored at
+    /// the top" are different rows — with the caret on line 0 the bug is
+    /// invisible.
+    fn app_with_popup_at_line(line: u32) -> App {
+        let text = (0..20)
+            .map(|n| format!("line {n} of the document\n"))
+            .collect::<String>();
+        let mut a = App::new(Document::from_text(&text));
+        a.set_viewport_height(20);
+        a.mutate_editor(move |e| {
+            e.cursor.line = line;
+            let content = lattice_help::parse_help_lines(
+                "hover",
+                vec!["fn thing() -> u32".to_string(), "the docs".to_string()],
+            );
+            let _ = e.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+            e.focus_help_popup();
+            e.publish_render_state();
+        });
+        a
+    }
+
+    fn popup_rect(a: &App, w: u16, h: u16) -> Rect {
+        let snap = a.ad().snapshot.clone();
+        // The same area the frame gives the buffer region: everything above
+        // the one-row minibuffer.
+        let buffer_area = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h.saturating_sub(1),
+        };
+        position_help_popup(a, &snap, buffer_area, 30, 4)
+    }
+
+    /// `/` must not move the popup. Before the fix the anchor came from
+    /// `ad()`, which a focused search line replaces — cursor `(0, 0)` — so
+    /// the popup jumped to the top of the pane.
+    #[test]
+    fn opening_the_search_line_does_not_move_a_focused_popup() {
+        let (w, h) = (80u16, 24u16);
+        let mut a = app_with_popup_at_line(10);
+        let before = popup_rect(&a, w, h);
+        assert!(
+            before.y > 4,
+            "the fixture must anchor the popup well down the pane, or this \
+             test cannot tell 'moved to the top' from 'already there': {before:?}"
+        );
+
+        a.mutate_editor(|e| {
+            e.open_search_line(lattice_grammar::SearchDirection::Forward);
+            e.publish_render_state();
+        });
+        assert_eq!(
+            popup_rect(&a, w, h),
+            before,
+            "the popup is anchored where it was opened; opening a search line \
+             is not the document's caret moving"
+        );
+    }
+
+    /// …and the caret belongs to the search line, not the popup.
+    ///
+    /// Asserted through the rendered frame's cursor position: the terminal
+    /// has ONE hardware caret, so "the popup kept it and merely changed
+    /// shape" and "the search line has it" are the same question.
+    #[test]
+    fn the_search_line_owns_the_caret_not_the_popup() {
+        let (w, h) = (80u16, 24u16);
+        let mut a = app_with_popup_at_line(10);
+        a.mutate_editor(|e| {
+            e.open_search_line(lattice_grammar::SearchDirection::Forward);
+            e.publish_render_state();
+        });
+
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        // Read back off the terminal after the draw: `Frame::cursor_position`
+        // is private, and the backend is where the placement actually lands.
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let y = terminal
+            .get_cursor_position()
+            .expect("something places the caret")
+            .y;
+        assert_eq!(
+            y,
+            h - 1,
+            "the caret sits on the minibuffer row, where `/` is drawn — if it \
+             is anywhere else the popup claimed it, and wearing the Bar shape \
+             `ModalState::Search` implies it reads as a read-only popup that \
+             entered Insert"
+        );
     }
 }

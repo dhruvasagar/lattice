@@ -147,24 +147,17 @@ impl App {
         // host-side; until then the seam is correct, not debt. The
         // gpui peer renderer implements its own version of these arms
         // against its own LSP runtime / window-open / picker UI.
-        // 5.5.G.23: snapshot pre-dispatch state BEFORE `editor.dispatch`
-        // so the State-A hover-auto-dismiss hook below sees the true
-        // pre-motion cursor. Before the keystone slice this snapshot
-        // could safely sit after `dispatch` because the migrated arms
-        // didn't move the doc cursor; with `Action::Invoke` now host-
-        // handled (motions resolve inside `editor.run_invocation`),
-        // capturing after dispatch would compare the cursor to itself
-        // and never trigger the dismiss.
+        // Pre-dispatch state the tail below still reads (the
+        // ensure-cursor-visible skip on popup close).
+        //
+        // The hover auto-dismiss used to capture `pre_cursor` and
+        // `pre_popup` here too. It does not any more: that state machine is
+        // the host's, in `Editor::dispatch`, where its own pre-dispatch
+        // capture also supplies the guard this comment used to describe — a
+        // popup opened BY this action was not there before it, so it cannot
+        // be dismissed by its own opening cycle.
         let pre_active = self.ad().buffer_kind;
         let pre_popup_focused = self.ad().popup_focused;
-        let pre_cursor = self.cursor();
-        // State-A hover-auto-dismiss guard: whether a popup was ALREADY
-        // showing before this action. A popup opened *by* this action
-        // (e.g. `:hover` submitted from the command line, whose submit
-        // legitimately moves the cursor off the `*command-line*` buffer)
-        // must not be dismissed by its own opening cycle — only a
-        // pre-existing hover is stale when the doc cursor then moves.
-        let pre_popup = self.popup().buffer_id;
         // Slice 3c.final.E.5d: pre-clone `action` so the closure
         // can own its copy (needed for `Send + 'static`) while
         // the outer `match action {}` at the tail still has access.
@@ -277,18 +270,6 @@ impl App {
         // two-step chain stays atomic because both reads come off
         // the same RS snapshot (RenderState publishes are atomic
         // via ArcSwap).
-        let popup_has_hover_mode = self
-            .popup()
-            .buffer_id
-            .and_then(|id| {
-                let modes = self.modes();
-                modes
-                    .map
-                    .get(&id)
-                    .map(|m| m.minors().contains(&crate::modes::HoverMode::mode_id()))
-            })
-            .unwrap_or(false);
-        let popup_in_state_a = popup_has_hover_mode && pre_active == BufferKind::Document;
         match action {
             // SN.3c.2b: a fall-through binding resolves to a sequence
             // (mode action, then native). Apply each sub-action through
@@ -726,17 +707,18 @@ impl App {
             self.ensure_cursor_visible();
         }
         self.maybe_reparse_syntax();
-        // State-A hover-auto-dismiss: popup was shown, focus
-        // never moved into it (so `prev_pane_for_popup` is None),
-        // and the doc cursor moved. Drop the popup -- it's
-        // anchored to the prior symbol and is now stale.
-        if popup_in_state_a
-            && pre_popup.is_some()
-            && self.ad().buffer_kind == BufferKind::Document
-            && self.cursor() != pre_cursor
-        {
-            self.dismiss_popup();
-        }
+        // The State-A hover auto-dismiss lived HERE as well as in
+        // `Editor::dispatch`, and the duplicate is deleted rather than
+        // fixed. Two copies of one state machine is the defect: the host's
+        // comment says this behaviour was hoisted "so the GPUI peer gets the
+        // same behaviour without duplicating the state machine", and this
+        // copy stayed behind — so a fix to the host's ran in every host test
+        // and in neither renderer.
+        //
+        // Both made the same mistake, which is how it was found: they read
+        // `buffer_kind == Document` as "the popup is unfocused", and the
+        // minibuffers ARE Documents (popup-unification.md §9). `/` inside a
+        // focused popup therefore dismissed it on the first character typed.
         let _ = pre_active;
         // Slice 8.f: re-stack Insert-mode minor-mode layers in
         // lockstep with overlay state changes. Cheap when

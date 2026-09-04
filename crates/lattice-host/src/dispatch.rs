@@ -7186,11 +7186,9 @@ impl Editor {
     /// In State A (passive hover) the popup check is skipped — document
     /// keeps focus.
     pub fn active_text(&self) -> lattice_core::Buffer {
-        if self.popup_focused
-            && let Some(content) = self.popup_buffer_content()
-        {
-            return content;
-        }
+        // FS.5: no popup branch. A focused popup IS the active document
+        // (FS.2), so the `Help` arm below returns its buffer — which is what
+        // the deleted early return did the long way round.
         match self.active_buffer {
             BufferKind::Document
             | BufferKind::Messages
@@ -7227,10 +7225,9 @@ impl Editor {
                 })
                 .flatten()
                 .unwrap_or_default(),
-            // PU refactor: `BufferKind::Help` is kept here as a
-            // fallback during the transition; the `popup_help()`
-            // check above handles the popup-focus case, so this
-            // arm is only reached when no popup is active.
+            // FS.5: no longer "a fallback during the transition" — this is
+            // the arm a focused popup takes, and `self.document` is the
+            // popup. In-pane help reaches it the same way.
             BufferKind::Help => self.document.snapshot().buffer.clone(),
         }
     }
@@ -7246,9 +7243,9 @@ impl Editor {
     /// terminal, help, and any synthetic document (whose path slot is a name,
     /// not a location).
     pub fn active_document_path(&self) -> Option<std::sync::Arc<std::path::PathBuf>> {
-        if self.popup_focused && self.popup_buffer_content().is_some() {
-            return None;
-        }
+        // FS.5: no popup branch — `BufferKind::Help` answers `None` below,
+        // and a focused popup is a Help buffer whose path slot is empty.
+        // Two ways to say `None` was one way too many.
         match self.active_buffer {
             BufferKind::Document
             | BufferKind::Messages
@@ -7273,9 +7270,9 @@ impl Editor {
     /// State B — `open_popup_buffer(Steal)` copies `popup_cursor` into
     /// `self.cursor`, then motions update it). State A skips this.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
-        if self.popup_focused {
-            return self.cursor;
-        }
+        // FS.5: no popup branch. Every arm below returns `self.cursor`
+        // already — the popup's cursor IS the hot-path cursor once the popup
+        // is the active document.
         match self.active_buffer {
             BufferKind::Document
             | BufferKind::Messages
@@ -7290,7 +7287,8 @@ impl Editor {
             // introduce scrollback-view position; until then,
             // return self.cursor so motion code has a sane value.
             BufferKind::Terminal => self.cursor,
-            // PU refactor: fallback during transition (see active_text).
+            // FS.5: the arm a focused popup takes, not a transitional
+            // fallback.
             BufferKind::Help => self.cursor,
         }
     }
@@ -28375,11 +28373,36 @@ impl Editor {
                 self.popup_doc_scroll_at_anchor = self.scroll;
                 self.popup_buffer = Some(buffer);
                 self.popup_placement = placement;
-                // Adopt the caller-stashed initial view; flip focus into
-                // the buffer. Focus-steal is a Normal-mode surface (see
-                // `PrevPaneState::modal`).
-                self.cursor = self.popup_cursor;
-                self.scroll = self.popup_scroll;
+                // FS.2/FS.5: adopt the caller-stashed initial view by making
+                // the popup the ACTIVE DOCUMENT, through the same seam
+                // `focus_help_popup` uses.
+                //
+                // **This is the second way a popup takes focus**, and FS.2
+                // only converted the first. The two were the same half-swap
+                // written twice — set `cursor` / `scroll` / `active_buffer`,
+                // leave `self.document` on the file — so `:describe-*`,
+                // `:help` and every other Steal popup kept the split that the
+                // hover popup had just lost. FS.5's deletions are what
+                // surfaced it: nine help-motion and help-search tests failed
+                // the moment `active_text` stopped compensating.
+                //
+                // A popup already focused does NOT push a second frame — a
+                // help→help open (`<CR>` on a link) replaces the content of
+                // the surface that already has focus, and stacking there
+                // would need two dismisses to leave one popup.
+                if self.popup_focused {
+                    self.document_buffer_id = buffer;
+                    if let Some(handle) = self.buffers.document_handle(buffer) {
+                        self.document = lattice_runtime::ActiveDocument::from_arc(handle);
+                        self.snapshot_cache = self.document.snapshot_cache();
+                    }
+                    self.cursor = self.popup_cursor;
+                    self.scroll = self.popup_scroll;
+                } else {
+                    let (c, s) = (self.popup_cursor, self.popup_scroll);
+                    self.focus_editing_buffer_at(buffer, c, s);
+                    self.popup_focus_depth = Some(self.focus_stack.len());
+                }
                 self.active_buffer = self.buffers.kind_of(buffer).unwrap_or(BufferKind::Help);
                 self.popup_focused = true;
                 self.modal = ModalState::Normal;
@@ -36550,6 +36573,26 @@ impl Editor {
             // introduces a scrollback-cursor model that may
             // need its own stash here.
             BufferKind::Terminal => {}
+        }
+        // FS.5: only stash into the pane when `self.cursor` / `self.scroll`
+        // are ACTUALLY the pane's buffer's.
+        //
+        // This tail was unconditional, and the match above only decided
+        // *extra* stashing — so every kind fell through to write the hot-path
+        // cursor into the active pane whether or not it described that pane.
+        // With a popup focused it described the POPUP, and the pane the file
+        // renders from got the popup's (0, 0).
+        //
+        // That is the reported "the underlying buffer scrolls to the top when
+        // I press `/` in a hover popup, and the popup jumps a bit as a
+        // result": an unfocused pane paints from this stash, and the popup's
+        // own anchor is resolved through it, so one bad write moved both.
+        //
+        // Fifth instance of one question — *is this state about the pane's
+        // buffer or about the focused surface* — and the first found on the
+        // WRITE side. See `focused-surface.md`; the reads are §3's list.
+        if self.document_buffer_id != self.pane_tree.active().buffer_id {
+            return;
         }
         let active = self.pane_tree.active_mut();
         active.cursor = cursor;

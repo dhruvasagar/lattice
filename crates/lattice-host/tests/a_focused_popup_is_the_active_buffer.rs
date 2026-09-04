@@ -278,3 +278,70 @@ fn a_hover_request_inside_a_popup_does_not_ask_about_the_file() {
         "and no request went out for a buffer that has no URI"
     );
 }
+
+/// Opening `/` from a focused popup must not move the file behind it.
+///
+/// > the focus is within the popup so no jumps, no motions, nothing should
+/// > happen outside of the popup
+///
+/// The pane's stashed cursor / scroll is what the renderer paints an
+/// unfocused pane from, so "the background jumped to the top" is that stash
+/// being clobbered. It is asserted here rather than in the renderer because
+/// the stash is host state — a render test would only see the consequence.
+#[test]
+fn opening_a_search_from_a_popup_does_not_move_the_file_behind_it() {
+    let mut editor = Editor::boot(CoreDocument::from_text(
+        &(0..200).map(|n| format!("line {n}\n")).collect::<String>(),
+    ));
+    editor.cursor.line = 120;
+    editor.scroll = 100;
+
+    let content = lattice_help::parse_help_lines("hover", vec!["the docs".to_string()]);
+    let _ =
+        editor.open_floating_popup(content, lattice_host::popup::PopupPlacement::CursorAnchored);
+    editor.focus_help_popup();
+
+    let pane_before = {
+        let p = editor.pane_tree.active();
+        (p.cursor, p.scroll)
+    };
+    assert_eq!(
+        pane_before,
+        (
+            lattice_protocol::position::Position { line: 120, byte: 0 },
+            100
+        ),
+        "focusing the popup stashed the file where the user left it"
+    );
+
+    // Two moments, because the report distinguishes them: "the jump happens
+    // at the instant I type `/`". Opening the line is one write
+    // (`focus_editing_buffer` stashes the pane); typing is another (incsearch
+    // previewing a match). Asserting only after both would not say which.
+    editor.open_search_line(lattice_grammar::SearchDirection::Forward);
+    let pane_at_slash = {
+        let p = editor.pane_tree.active();
+        (p.cursor, p.scroll)
+    };
+    assert_eq!(
+        pane_at_slash, pane_before,
+        "pressing `/` alone must not touch the file — this is the instant the \
+         report names"
+    );
+
+    for c in ["l", "i", "n"] {
+        let _ = editor.dispatch(lattice_host::action::Action::Insert(c.to_string()));
+    }
+
+    let pane_after = {
+        let p = editor.pane_tree.active();
+        (p.cursor, p.scroll)
+    };
+    assert_eq!(
+        pane_after, pane_before,
+        "…and neither must typing into it: incsearch previews inside the \
+         POPUP now, so the file's own cursor and scroll stay exactly where \
+         they were. The unfocused pane renders from this stash, so clobbering \
+         it IS the background jumping to the top"
+    );
+}

@@ -1334,10 +1334,28 @@ mod tests {
         // actions so a stray Action::Insert while help is active
         // doesn't fall through onto the document.
         let mut a = app_with("xx", 10);
-        let original = a.editor.document.text();
+        // FS.2: read the FILE through its own id. `editor.document` is the
+        // popup while one is focused, so `document.text()` would compare the
+        // popup against the file and fail for a reason that has nothing to do
+        // with the read-only guard this test is about.
+        let file = a.editor.document_buffer_id;
+        let file_text = |a: &App| {
+            a.editor
+                .buffers
+                .document_handle(file)
+                .map(|h| h.snapshot().buffer.as_string())
+                .expect("the file is still registered")
+        };
+        let original = file_text(&a);
         install_help(&mut a, HelpContent::from_lines("ro", vec!["abc".into()]));
         a.apply(Action::Insert("PWNED".into()));
-        assert_eq!(a.editor.document.text(), original);
+        assert_eq!(file_text(&a), original, "nothing fell through to the file");
+        assert_eq!(
+            a.editor.document.text(),
+            "abc",
+            "…and the popup itself is unchanged, which is what the read-only \
+             guard is actually for"
+        );
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("read-only"), "got: {msg:?}");
     }

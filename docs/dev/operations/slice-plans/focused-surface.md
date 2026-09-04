@@ -18,7 +18,7 @@ combined run times out `settle_mode`.
 | FS.2 | A focused popup rides the focus seam | ✅ |
 | FS.3 | `/` in a popup searches the popup — **absorbed by FS.2** | ✅ |
 | FS.4 | The verbs that must NOT follow focus — **they all follow it** | ✅ |
-| FS.5 | Delete the `popup_focused` reads that were compensating | 📝 |
+| FS.5 | Delete the `popup_focused` reads that were compensating | ✅ |
 
 FS.1 blocks FS.2 (nesting a search line inside a focused popup needs the
 stack). FS.2 blocks FS.3 and FS.4. FS.5 is cleanup and lands last, when the
@@ -177,23 +177,74 @@ Gate: 1430 green in `lattice-host`.
 
 ---
 
-## FS.5 — Delete the `popup_focused` reads that were compensating 📝
+## FS.5 — Delete the `popup_focused` reads that were compensating ✅
 
-28 sites read `popup_focused` in `dispatch.rs`. After FS.2 they fall into
-three groups, and this slice sorts them:
+Three identity reads deleted, one identity WRITE fixed, and two more
+hand-rolled copies of the focus swap found by the deletions.
 
-- **Geometry — keep.** `ensure_cursor_visible`'s viewport clamp and
-  `scroll_wrap_width`'s width substitution: a popup's viewport genuinely
-  differs from its pane's. Identity is fixed; geometry is not.
-- **Presentation — keep.** Border, dimming, which surface the renderer
-  paints as active.
-- **Identity — delete.** Anything that reads elsewhere for content, line
-  count, folds or syntax because the popup was not the active document.
-  These are the ones the defect created.
+**Deleted** — each provably redundant once a focused popup is the active
+document: `active_text`'s popup branch (the `Help` arm returns the same
+buffer, and called itself "a fallback during the transition"),
+`active_document_path`'s (the `Help` arm already answers `None`), and
+`active_cursor`'s (every arm returns `self.cursor`).
 
-`prev_pane_for_popup` retires here if the stack frame proves sufficient for
-modal restoration too.
+**Kept, and now labelled** — `ensure_cursor_visible`'s viewport clamp and
+`scroll_wrap_width`'s width substitution are GEOMETRY (a popup's viewport
+really does differ from its pane's), and the renderer's reads are
+PRESENTATION. Identity is fixed; neither of those is.
 
-**Deletion is the deliverable and the risk**, so it lands last, behind FS.2–4's
-tests. A `popup_focused` read that survives this slice should carry a comment
-saying which group it is in — the next reader should not have to re-derive it.
+**The write was the user-visible one.** `snapshot_active_pane`'s tail was
+unconditional — the `match` above it only chose *extra* stashing, so every
+kind fell through to write the hot-path cursor into the active pane whether
+or not it described that pane. With a popup focused it described the POPUP,
+so pressing `/` stashed `(0, 0)` into the pane the FILE renders from:
+
+> the underlying buffer still scrolls to the top and the popup also jumps a
+> bit as a result […] the jump happens at the instant I type `/`
+
+Both renderers read that stash for a non-focused pane — GPUI's own comment
+records the READ side of this being fixed there once already ("without this
+guard, opening `:describe-buffer` scrolled the background document to line
+0"). So the defect was the host writing a value neither renderer should have
+been handed, and the fix reaches both by construction. The test asserts the
+two moments separately, because the report distinguishes them: pressing `/`,
+and then typing into it.
+
+**Two more copies of the focus swap surfaced**, which is what the deletions
+are for — they stop compensating, and every place the invariant does not
+hold fails loudly:
+
+- `open_popup_buffer`'s `Steal` arm, the second way a popup takes focus and
+  the one FS.2 missed. Nine help-motion and help-search tests failed the
+  instant `active_text` stopped covering for it. Now on the same seam, with
+  a popup-already-focused branch so a help→help link follow replaces content
+  instead of stacking a frame that would need two dismisses.
+- `install_help`, the TUI test helper — a third copy, hand-setting six
+  fields. Its own comments record two earlier rounds of the same drift. It
+  calls the production path now, which is what stops there being a fourth.
+
+Two TUI tests read the FILE through `editor.document` and needed correcting
+rather than fixing: that expression means the popup while one is focused,
+which is the whole point of the initiative. They name the buffer they mean
+now, and the read-only one gained the assertion it was missing (the POPUP is
+unchanged too, not just the file).
+
+Gate: 1435 green in `lattice-host`; 1741 in `lattice-ui-tui` (the two
+pre-existing completion failures); 37 in `lattice-ui-gpui`; fmt clean, no new
+clippy.
+
+---
+
+## Follow-ups this plan surfaced but did not take
+
+- **`:saveas`.** `:w {file}` no longer adopts the path (fixed separately);
+  renaming an already-named buffer now has no spelling. Needs a new `Effect`
+  variant — WIT ABI plus both renderer classifiers — for a rare verb.
+- **Anchored-popup scroll differs between peers.** The TUI resolves a
+  cursor-anchored popup against the pane's LIVE scroll; GPUI freezes it at
+  `doc_scroll_at_anchor`. Both are defensible and neither is the reported
+  bug: with the doc scrolling under a State-A popup, the TUI's follows the
+  anchor line and GPUI's stays put.
+- **Two pre-existing `lattice-ui-tui` failures** (command-line completion no
+  longer extending `descr` to `describe-`), red on clean HEAD since before
+  this plan opened.

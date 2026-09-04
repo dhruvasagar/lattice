@@ -153,36 +153,28 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
             ephemeral: false,
         },
     );
-    a.editor.popup_buffer = Some(id);
-    // PU-A.1a: mirror open_popup's pre-flip capture. Production captures
-    // `prev_pane_for_popup` from the underlying pane BEFORE overwriting
-    // cursor/scroll and flipping `active_buffer` to Help, so dismiss can
-    // restore the buffer the user came from. Without it this helper left
-    // `active_buffer == Help` with `prev == None` — a state production
-    // never produces — which the old `dismiss` masked by hardcoding
-    // Document.
-    let (prev_buf, prev_id) = {
-        let active = a.editor.pane_tree.active();
-        (active.buffer, active.buffer_id)
-    };
-    a.editor.prev_pane_for_popup = Some(lattice_host::state::PrevPaneState {
-        buffer: prev_buf,
-        buffer_id: prev_id,
-        cursor: a.editor.cursor,
-        scroll: a.editor.scroll,
-        modal: a.editor.modal,
-    });
+    // FS.5: go through the PRODUCTION focus path instead of hand-setting
+    // the fields it sets.
+    //
+    // This helper used to mock a focused popup by assigning `popup_buffer`,
+    // `prev_pane_for_popup`, `cursor`, `scroll`, `active_buffer` and
+    // `popup_focused` itself — a third hand-rolled copy of the focus swap
+    // beside `focus_help_popup` and `open_popup_buffer`'s `Steal` arm. It
+    // drifted the moment the real one changed: FS.2 made a focused popup the
+    // ACTIVE DOCUMENT, and nine help-motion and help-search tests then
+    // asserted against a state production no longer produces.
+    //
+    // Its own comments record two earlier rounds of the same drift ("without
+    // it motions read the underlying document", "without this … falls through
+    // to `run_document_invocation`"). Each was a field the mock had to learn
+    // about. Calling the seam is what stops there being a fourth.
     a.editor.popup_scroll = 0;
     a.editor.popup_cursor = lattice_protocol::position::Position::ZERO;
-    a.editor.cursor = lattice_protocol::position::Position::ZERO;
-    a.editor.scroll = 0;
-    a.editor.active_buffer = BufferKind::Help;
-    // 2026-07-22 (`9183b8d7`): `active_text()` / popup content routing is
-    // now gated on `popup_focused`. Production's popup-open path sets it
-    // when the popup takes focus (State B, dispatch.rs); this helper mocks
-    // a focused help popup, so mirror that — without it motions read the
-    // underlying document instead of the popup buffer and clamp to line 0.
-    a.editor.popup_focused = true;
+    let _ = a.editor.open_popup_buffer(
+        id,
+        lattice_host::popup::PopupPlacement::Centered,
+        lattice_host::popup::PopupFocus::Steal,
+    );
     // 2026-05-26: mirror production's `open_popup` mode activation.
     // Without this, `Editor::run_invocation`'s active-mode runner
     // lookup finds no `help-mode` minor on the popup buffer and

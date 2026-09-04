@@ -96,11 +96,17 @@ does not, because the computed content does not belong in excerpts at all:
 |---|---|---|
 | Headline rows | Excerpt | the agenda provider |
 | Section / date headers | Virtual row | the agenda provider |
-| Timeline strip | Virtual row | `org-agenda-timeline-mode` |
 | Clock report | Virtual row | `scan-view-clockreport-mode` |
 | Log entries | **Excerpt** | `org-agenda-log-mode` — see §3a |
 
-A timeline strip and a clock summary have no source range and nothing to jump
+This table listed a third row, a *timeline strip* owned by
+`org-agenda-timeline-mode`. It is gone: org removed `org-timeline` in 9.1, and
+its replacement — restrict the agenda to a file, walk it by day — is what `<`
+and `gDd` / `f` / `b` already are here. The live feature it is confused with is
+the **time grid** (`G`), which this section's mechanism does NOT reach; §9
+records why and what it would cost.
+
+A clock summary has no source range and nothing to jump
 to. `VirtualRow` already models exactly that, and models it far more richly
 than its two current uses suggest: multi-line (`height > 1`), per-cell
 foreground and background, per-column font scale, and an `Annotation` anchor
@@ -197,14 +203,19 @@ with the mode.
 
 ## 4. Layering, and why these are modes rather than options
 
-Log mode, clock report and the time grid are *modes* in emacs, toggled from one
+Log mode and the clock report are *modes* in emacs, toggled from one
 dispatch menu, and they are modes here for the same reason the standing rules
 would demand anyway: each owns a keymap entry, a toggle, a lifecycle and a body
 of content, and "shared behaviour is a minor mode, never a copied keymap".
+(Emacs' third, the time grid, is not built — §9.)
 
-Each is `ActivationPolicy::Manual`, activated on the agenda view, and each
-registers its virtual-row provider and any fold source in `on_activate` — the
-magit-status pattern. `org-agenda-mode` remains the base: it owns the view's
+Each is `ActivationPolicy::Manual`, activated on the agenda view. A **native**
+one registers its virtual-row provider and any fold source in `on_activate` —
+the magit-status pattern, and `scan-view-clockreport-mode` is the worked
+example. A **plugin** one cannot: the host builds a guest's declaration into a
+`PluginMode` whose `on_activate` is a no-op, so its body is a
+`minor-activated` / `minor-deactivated` handler calling `refresh-view`
+(§3b, OA.15a). `org-agenda-mode` remains the base: it owns the view's
 identity, `foldlevel=0`, fold cycling (§6) and the TODO/priority chords it
 already has.
 
@@ -213,7 +224,7 @@ keys the way `evil-collection-magit` is for magit's:
 
 | Chord | Effect |
 |---|---|
-| `gD` | view-mode dispatch transient (log, clock report, time grid, span) |
+| `gD` | view-mode dispatch transient (span, log, clock report) |
 | `cr` | toggle `org-agenda-clockreport-mode` directly |
 | `gr` / `gR` | refresh |
 
@@ -434,14 +445,28 @@ established.
 
 ## 9. Deferred, with the cost recorded
 
-- **Actionable computed rows.** Timeline and clock-report lines are virtual and
+- **Actionable computed rows.** Clock-report lines are virtual and
   therefore inert. Making them actionable needs excerpts over a synthetic
   pathless source: natively that is `add_source` with a `Document::from_text`,
   but the guest seam has no arm for it — `multibuffer-view-excerpt` carries a
   `path` and the host drops rows whose file it cannot read. A `text` arm plus
   routing in `plugin_view.rs` is the smallest version.
+- **The time grid (`G`), and the seam it needs.** A grid line interleaves among
+  rows drawn from many files, and neither side can place one today: the host
+  has no time data (`entry` carries an opaque `sort-key`; org's `Dated` drops
+  the stamp's time), and a guest cannot know where its row lands once the sort
+  has interleaved every other file's. The shape that works is a **computed
+  row** on the scan result — `group`, `sort-key`, `text`, `spans`, no source
+  range — which the host sorts *with* the entries and dedups on
+  `(group, sort-key, text)`, so N files emitting one `10:00` line collapse to
+  one and the union of emitters reproduces emacs' `require-timed` for free. Two
+  traps are worth naming: widening `entry.annotation` to a list is the obvious
+  cheap route and is wrong (an annotation hangs off its own file's row and
+  duplicates under interleaving), and the rows must come from the same provider
+  as the group headers, since `VirtualRowProviderRegistry::snapshot` documents
+  "order is unspecified". Deferred at that price; see the dropped OA.17.
 - **Per-section fold rules.** `FoldGrouping` is one enum fixed at view
-  creation, so a timeline section and a headline section cannot fold by
+  creation, so a computed section and a headline section cannot fold by
   different rules. Plugin-owned views additionally hardcode
   `FoldGrouping::SourceFile`, so a plugin cannot even request the grouping the
   agenda needs.

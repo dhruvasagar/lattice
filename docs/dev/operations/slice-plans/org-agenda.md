@@ -52,7 +52,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.15a | A guest can refresh its own view — `refresh-view` **(cross-repo)** | ✅ |
 | OA.15b | `org-agenda-log-mode` **(plugin)** | ✅ |
 | OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
-| OA.17 | `org-agenda-timeline-mode` | 📝 |
+| OA.17 | ~~`org-agenda-timeline-mode`~~ — **dropped**, org removed it in 9.1 | ⛔ |
 | OA.18 | The `gD` view-mode dispatch transient | 📝 |
 | **Phase 6 — the agenda is navigable** | | |
 | OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
@@ -951,19 +951,54 @@ rule: immediate config for what exists, `PrePluginLoaded` for a plugin's
 options, `PluginLoaded` for what needs it fully loaded (`enable-mode` above
 all — the mode is not registered at pre-load time).
 
-### OA.17 — `org-agenda-timeline-mode` 📝
+### OA.17 — ~~`org-agenda-timeline-mode`~~ — **dropped** ⛔
 
-A manual minor activated on the agenda view, owning its keymap, its toggle and
-one virtual-row provider registered in `on_activate`. OA.16 below is the worked
-example.
+Not deferred: **removed, and it will not come back in this form.** Three
+findings, recorded so nobody re-plans it blind.
 
-Display-only by design (design §3) — the cursor cannot rest on its rows. If
-that proves intolerable in use, the deferred synthetic-source work in design §9
-is the escape, and it is a WIT seam, not a tweak.
+**1. Org removed the feature in 9.1, and its replacement already ships here.**
+`org-timeline` was a single file's dated entries laid out day by day; org's own
+answer when it went is "restrict the agenda to the file and walk it by day".
+That is `<` (OA.26) plus `gDd` / `f` / `b` (OA.20), both green. Building it
+would have re-added upstream's deleted view beside the two slices that replaced
+it.
 
-**OA.15 no longer shares this shape**, and the plan said it did ("one shape,
-twice"). A timeline strip is a computed aggregate with no source range; a log
-entry is a line in a file. See OA.15a/b.
+**2. The shape this plan specified was never buildable.** "One virtual-row
+provider registered in `on_activate`" is a NATIVE mode's shape. A plugin mode
+is data — the host builds it into a `PluginMode` whose `on_activate` is a
+no-op — which is the whole finding OA.15a was carved for. An
+`org-`-prefixed mode cannot register a provider, and this line was written
+before that was known.
+
+**3. Nobody can place a computed row today, and that is the seam, not a
+detail.** The live emacs feature next to this one is the **time grid**
+(`G` / `org-agenda-time-grid`), a ruler interleaved into a day block. Its lines
+interleave among rows drawn from many files, and neither side can place them:
+the host has no time data (`entry` carries an opaque `sort-key`, and org's
+`Dated` drops the stamp's time), and a guest "cannot know where its row lands
+once every other file's rows are interleaved by the sort" — the scan WIT's own
+words about `entry.spans`.
+
+So a time grid costs a real seam: a **computed-row** channel on the scan result
+(`group`, `sort-key`, `text`, `spans`, no source range), host-side placement
+that sorts those rows *with* the entries, dedup on `(group, sort-key, text)` so
+N files emitting the same `10:00` line collapse to one — which incidentally
+buys emacs' `require-timed` semantics as a union of emitters — plus a plugin
+change so timed rows sort by time within a day (emacs' `time-up`), or the ruler
+reads as nonsense. Two smaller traps sit under it: `entry.annotation` widened
+to a list is the obvious cheap route and is **wrong**, because an annotation
+hangs off its own file's row and duplicates once the sort interleaves; and the
+grid rows must be emitted by the SAME provider as the group headers, since
+`VirtualRowProviderRegistry::snapshot` documents "order is unspecified" and a
+separate provider's `8:00` line would sometimes paint above `Monday 25 August`.
+
+That is a large slice to buy a ruler, nothing else in phase 5 needs the seam,
+and the view it was named for is gone. Recorded in design §9 as deferred with
+the cost attached rather than left as "a mode someone can add".
+
+**OA.18's transient drops the time-grid row because of this.** Offering a
+toggle for a mode that does not exist is the silent-chord class this repo keeps
+paying for.
 
 ### OA.15a — A guest can refresh its own view **(cross-repo)** ✅
 

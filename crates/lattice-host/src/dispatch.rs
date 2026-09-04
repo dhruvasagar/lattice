@@ -26985,9 +26985,40 @@ impl Editor {
         // write — see the method's doc.
         self.format_before_write_blocking();
         let result: Result<String, lattice_runtime::RuntimeError> = match path {
-            Some(p) => self
-                .save_as_blocking(p.clone())
-                .map(|()| p.display().to_string()),
+            // `:w {file}` writes a COPY and leaves this buffer's identity
+            // alone — vim's rule, and the one this used to break by calling
+            // `save_as` (which adopts the path) for every `:w {file}`.
+            //
+            // What that cost is worth naming, because it is shaped like data
+            // loss rather than like a wrong message: you are editing `a.rs`,
+            // you type `:w /tmp/backup.rs` to snapshot it, and your buffer
+            // silently BECOMES `/tmp/backup.rs`. Every later `:w` writes
+            // there and `a.rs` never sees another edit.
+            //
+            // **One deliberate divergence from vim** (`focused-surface.md`
+            // §4, decided in review): an unnamed WRITABLE buffer adopts the
+            // path. Vim leaves it `[No Name]` and makes the next `:w` fail,
+            // which is a wart people work around rather than want; this is
+            // the "UX is the higher court, within reason" case, and the
+            // divergence is one condition wide.
+            //
+            // `!read_only` is what keeps a POPUP out of it. A hover popup is
+            // unnamed too, and letting it adopt would leave an ephemeral help
+            // buffer claiming to be the user's file — conditioned on the
+            // read-only PROPERTY rather than on `BufferKind`, so any
+            // read-only buffer is covered and no kind list can go stale.
+            Some(p) => {
+                let unnamed = self.document.snapshot().path.is_none();
+                let writable =
+                    !*self.resolved_option::<lattice_config::ReadOnly>(self.document_buffer_id);
+                if unnamed && writable {
+                    self.save_as_blocking(p.clone())
+                        .map(|()| p.display().to_string())
+                } else {
+                    self.write_copy_blocking(&p)
+                        .map(|()| p.display().to_string())
+                }
+            }
             None => self.save_blocking().map(|p| p.display().to_string()),
         };
         match result {
@@ -27052,6 +27083,29 @@ impl Editor {
 
     /// `:w <path>` -- save the active document under a new path.
     /// Phase 5.8.AD.3: hoisted from TUI App.
+    /// Write the active document's text to `path` **without adopting it**.
+    ///
+    /// Vim's `:w {file}`: a copy comes out, the buffer keeps its own name,
+    /// its dirty flag and its undo history. [`Self::save_as_blocking`] is the
+    /// other verb (`:saveas`) and the one this used to be confused with.
+    ///
+    /// **No `BeforeSave` / `DocumentSaved`, deliberately.** Those say "this
+    /// document reached disk", which is what marks it clean and what LSP
+    /// `didSave` reports. Neither is true of a copy — the buffer still has
+    /// unsaved changes against its OWN file, and telling subscribers
+    /// otherwise is how a dirty buffer starts looking saved.
+    ///
+    /// No actor round-trip either: a copy mutates no document state, so the
+    /// snapshot the host already holds is the whole input.
+    pub fn write_copy_blocking(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), lattice_runtime::RuntimeError> {
+        let text = self.document.snapshot().buffer.as_string();
+        std::fs::write(path, text)
+            .map_err(|e| lattice_runtime::RuntimeError::Core(lattice_core::CoreError::Io(e)))
+    }
+
     pub fn save_as_blocking(
         &self,
         path: std::path::PathBuf,

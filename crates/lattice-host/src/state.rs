@@ -82,6 +82,15 @@ pub struct PrevPaneState {
 /// / `repl-input` reuse it unchanged (design §6).
 #[derive(Debug, Clone)]
 pub struct MinibufferFocus {
+    /// FS.1b: the buffer this frame FOCUSED — the surface itself, not what
+    /// it took focus from.
+    ///
+    /// It is what lets a focus tell "I am nesting inside the thing that has
+    /// focus" from "I am REPLACING it". A prompt opening while a prompt is
+    /// focused is the second: two frames would mean two restores, and the
+    /// first `<CR>` would land the user back in the previous prompt instead
+    /// of their file.
+    pub focused_buffer: BufferId,
     /// The document buffer that was focused for editing before the
     /// `:` line took over. Restored (re-fetched from the registry by
     /// id) when the command line closes.

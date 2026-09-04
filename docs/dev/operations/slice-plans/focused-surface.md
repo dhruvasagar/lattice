@@ -15,6 +15,7 @@ combined run times out `settle_mode`.
 | Slice | Title | Status |
 |---|---|---|
 | FS.1 | Focus is a stack, not an `Option` | ✅ |
+| FS.1b | Focus REPLACES as well as nests — a prompt superseding a prompt | ✅ |
 | FS.2 | A focused popup rides the focus seam | ✅ |
 | FS.3 | `/` in a popup searches the popup — **absorbed by FS.2** | ✅ |
 | FS.4 | The verbs that must NOT follow focus — **they all follow it** | ✅ |
@@ -22,7 +23,8 @@ combined run times out `settle_mode`.
 
 FS.1 blocks FS.2 (nesting a search line inside a focused popup needs the
 stack). FS.2 blocks FS.3 and FS.4. FS.5 is cleanup and lands last, when the
-tests that would catch an over-deletion exist.
+tests that would catch an over-deletion exist. FS.1b is a correction to FS.1
+and landed after FS.5, when the org suite caught what FS.1 had broken.
 
 **Known pre-existing red, unrelated:**
 `typing_after_popup_open_live_refilters_candidates` and
@@ -64,6 +66,44 @@ frame exists, and a panic there would take the editor down on a stray
 were verified to fail with the `is_none()` guard restored.
 
 Gate: 1420 green in `lattice-host`, fmt clean, zero warnings.
+
+---
+
+## FS.1b — Focus REPLACES as well as nests ✅
+
+Design: [`focused-surface.md`](../../architecture/focused-surface.md) §2.1,
+added by this slice. Landed after FS.5.
+
+**FS.1 removed one wrong guard and left the opposite assumption behind it.**
+The `is_none()` guard meant a second focus recorded nothing; making the push
+unconditional fixed nesting and broke the case that is not nesting. Org's
+`org-set-property` opens a prompt from a prompt's submit, and as two frames
+the final `<CR>` popped the user back into the prompt they had just answered
+instead of into their file. The org suite caught it — `focus_is_a_stack.rs`
+did not, and that is the more interesting failure.
+
+**Why the test missed it.** The fixtures were two synthetic buffers standing
+in for "surfaces", chosen because "the stack is about frames, not about
+kinds". That is true of the stack and false of the *decision*: whether a
+focus nests or replaces depends entirely on which surfaces they are. The
+file passed while modelling a state the editor never produces — the same
+mistake `install_help` made for three rounds (FS.5). The fixtures are
+production shapes now: a real popup with a real search line for nesting, two
+real prompt lines for replacement.
+
+`MinibufferFocus` gained `focused_buffer` — the surface the frame focused,
+not what it took focus from. That is what lets a focus tell "I am nesting
+inside the focused thing" from "I am replacing it"; without it the two are
+indistinguishable at the push. The popup's frame is exempt via
+`popup_focus_depth`, so a `/` inside a focused popup still nests.
+
+Tests: `focus_is_a_stack.rs`, five — the two nesting tests rewritten onto
+production fixtures, plus `a_prompt_superseding_a_prompt_replaces_its_frame`
+asserting one frame, the origin being the FILE, and one restore landing
+there.
+
+Gate: 1438 green in `lattice-host`, fmt clean, no new clippy; 779 green
+across `lattice-org-plugin`, the suite that caught it.
 
 ---
 

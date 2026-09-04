@@ -8226,17 +8226,50 @@ impl Editor {
             // only true if the stash the unfocused path reads is the live
             // state at the moment focus left.
             self.snapshot_active_pane();
+            // FS.1b: does this focus NEST inside the focused surface, or
+            // REPLACE it?
+            //
+            // Replace, when the buffer being left is itself the top frame's
+            // surface and that frame is not the popup's. A prompt superseding
+            // a prompt is the common case and the one that broke: org's
+            // two-hop `org-set-property` opens a prompt from a prompt's
+            // submit, and as two frames the final `<CR>` popped to the FIRST
+            // PROMPT instead of the file — the user left typing in a
+            // minibuffer they had already answered. FS.1 introduced that by
+            // making the push unconditional; the org suite caught it.
+            //
+            // Nesting is for genuinely different surfaces: a popup, and a `/`
+            // opened inside it. The popup's own frame is identified by
+            // `popup_focus_depth`, so it is never the one replaced.
+            let popup_owns_top = self.popup_focus_depth == Some(self.focus_stack.len());
+            let superseded = (!popup_owns_top)
+                .then(|| self.focus_stack.last())
+                .flatten()
+                .is_some_and(|f| f.focused_buffer == self.document_buffer_id)
+                .then(|| self.focus_stack.pop())
+                .flatten();
             // FS.1: PUSH. This was `= Some(..)` behind an `is_none()` guard,
             // so focusing a second surface recorded nothing and one restore
             // skipped whatever was focused in between.
-            self.focus_stack.push(crate::state::MinibufferFocus {
-                prior_buffer_id: self.document_buffer_id,
-                prior_active_buffer: self.active_buffer,
-                prior_cursor: self.cursor,
-                prior_scroll: self.scroll,
-                prior_leftcol: self.leftcol,
-                prior_modal: self.modal,
-                expanded: false,
+            //
+            // A replacement inherits the SUPERSEDED frame's origin: the user
+            // came from their file, not from the prompt that just closed, and
+            // that is where one restore has to land them.
+            self.focus_stack.push(match superseded {
+                Some(prev) => crate::state::MinibufferFocus {
+                    focused_buffer: id,
+                    ..prev
+                },
+                None => crate::state::MinibufferFocus {
+                    focused_buffer: id,
+                    prior_buffer_id: self.document_buffer_id,
+                    prior_active_buffer: self.active_buffer,
+                    prior_cursor: self.cursor,
+                    prior_scroll: self.scroll,
+                    prior_leftcol: self.leftcol,
+                    prior_modal: self.modal,
+                    expanded: false,
+                },
             });
         }
         if let Some(handle) = self.buffers.document_handle(id) {

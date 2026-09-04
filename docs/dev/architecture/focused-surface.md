@@ -71,6 +71,37 @@ line, the prompt line and a focused popup are four surfaces that take
 focus; the stack is what says which one has it, and `self.document` is
 always the one that does.
 
+### 2.1 Not every focus pushes — a surface can REPLACE the focused one
+
+A stack is the right shape, but "every focus is a push" is not the same
+claim and it is false. Two prompts in sequence are not two nested
+surfaces; the second *supersedes* the first. Org's `org-set-property` is
+the two-hop case: an action opens a prompt, and that prompt's submit
+opens another for the value. As two frames, the final `<CR>` pops one and
+lands the user back in the prompt they already answered.
+
+```
+    []                       editing the file
+    [prompt: "Property: "]   the first hop
+    [prompt: "Value: "]      the second hop REPLACES it — still one frame
+```
+
+The rule: focus **replaces** when the buffer being left is itself the top
+frame's surface, and **nests** otherwise. A popup with `/` open inside it
+nests, because the buffer the search line takes focus from is the popup —
+a different surface, still on the stack. A prompt opening from a prompt's
+submit does not, because the buffer it takes focus from *is* the frame on
+top.
+
+A replacement inherits the superseded frame's **origin**, not its
+surface. The user came from their file, and that is where the one restore
+they expect has to land them.
+
+The popup's frame is exempt: it is identified separately, so a prompt or
+search line opened while a popup holds focus always nests, even though
+the popup is the buffer being left. Dismissing the inner surface must
+land back in the popup, not tear it down.
+
 ## 3. What this deletes
 
 Every `popup_focused` special-case that exists because the popup was not

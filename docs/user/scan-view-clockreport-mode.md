@@ -29,6 +29,7 @@ not a view of the rows.
 |---|---|
 | `cr` | Show / hide the clock report |
 | `:scan-view-clockreport-mode` | The same toggle, by name |
+| `gD r` | The same toggle from the org agenda's view menu |
 
 `c` still means *change* everywhere else — the chord only fires in a scan view.
 

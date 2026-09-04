@@ -53,7 +53,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.15b | `org-agenda-log-mode` **(plugin)** | ✅ |
 | OA.16 | `scan-view-clockreport-mode` + `cr` | ✅ |
 | OA.17 | ~~`org-agenda-timeline-mode`~~ — **dropped**, org removed it in 9.1 | ⛔ |
-| OA.18 | The `gD` view-mode dispatch transient | 📝 |
+| OA.18 | The `gD` view-mode dispatch transient **(plugin)** | ✅ |
 | **Phase 6 — the agenda is navigable** | | |
 | OA.19 | `scan_args` becomes a typed view-argument list **(plugin)** | ✅ |
 | OA.20 | Span walking — `f` / `b` / `.` / `v d w m y` **(plugin)** | ✅ |
@@ -418,7 +418,7 @@ rows still render, just wrongly.
 Nothing emits spans yet, which is OA.6. Empty is the ordinary case and means
 "say nothing about colour": the grammar's own highlighting shows, unchanged.
 
-### OA.6 — Org emits agenda spans **(plugin)** 📝
+### OA.6 — Org emits agenda spans **(plugin)** ✅
 
 Keyword, priority, tags, date. Slots resolve against org's already-registered
 `org.todo.*` theme elements.
@@ -430,7 +430,7 @@ drain at the same rank with a stable sort, so a theme registration that needs
 **Test:** assert resolved styles, not span offsets — a span that lands on the
 right bytes with the wrong slot is the failure mode here.
 
-### OA.7 — Header cells carry the block's own shape 📝
+### OA.7 — Header cells carry the block's own shape ✅
 
 Section headers today are one flat line of cells at `height: 1`. `VirtualRow`
 supports multi-line, per-cell background and per-column font scale. Give the
@@ -1167,10 +1167,68 @@ where a stale colour is impossible to miss.
 Empty renders `No clocked time in range`, a sentence rather than a table with a
 `0:00` total: a sentence reads as an answer, an empty table reads as a bug.
 
-### OA.18 — The `gD` view-mode dispatch transient 📝
+### OA.18 — The `gD` view-mode dispatch transient **(plugin)** ✅
 
-Toggles for OA.15–17 plus span (day/week). Same guest transient constraints as
-OA.12.
+Design: [`org-agenda.md`](../../architecture/org-agenda.md) §4.
+
+Emacs' `org-agenda-view-mode-dispatch` — everything that changes *how* the open
+agenda is shown, behind one key. Span on `d` / `w` / `m` / `y`, log mode on `l`,
+the clock report on `r`, `q` to leave. Emacs' letters exactly, so a hand that
+types `v d` there types `gD d` here.
+
+**`gD` could not be added beside `gDd`; it had to replace it.**
+`KeymapTrie::lookup` answers `Bound` the moment the walk reaches a node
+carrying a binding and never consults its children (`trie.rs`), so binding `gD`
+makes `gDd` / `gDw` / `gDm` / `gDy` unreachable. Unreachable *silently*: the
+trailing letter falls through to the grammar in a read-only view and does
+nothing anybody can see. So the four binds are gone and the menu is the only
+path — **at identical keystrokes**, which is what makes this a change nobody
+has to relearn.
+
+**Third encounter with that same trie rule**, and worth saying so because it
+keeps arriving disguised. OA.20's span keys shipped as `vd` / `vw` / `vm` /
+`vy` and were dead on arrival, because `v` is a terminal `Builtin` binding with
+children. The fix was `gD…`. OA.18 hits the rule from the other side: a node
+cannot be both the menu and the prefix.
+
+**No time-grid row.** OA.17 is dropped, so a `G` row would open a menu entry
+that does nothing — the silent-chord class, in the one surface whose whole job
+is to say what is available. The design fragment's §4 table lost that column
+with it.
+
+**No row shows its own on/off state.** Log mode's state is derivable guest-side
+(`VIEW_ARGS.log`); the clock report's is not — it is a NATIVE mode and the
+guest has no mode-state query at all (`modes.wit` exports `enable-mode` /
+`disable-mode` and nothing that reads). One row reporting state beside one that
+cannot is worse than neither: the silent row reads as "off". Emacs shows no
+state here either.
+
+**The clock-report row names the HOST's toggle**,
+`action:scan-view-clockreport-toggle`, rather than org declaring a second one.
+The report is generic over any scan view that reports clock spans (OA.16), and
+two toggles for one switch is two states that can disagree. The cost is a
+string written twice — the guest compiles to wasm and cannot depend on
+`lattice-multibuffer` — and a test pins the copies equal.
+
+**What the seam does to a bad row is why the tests enumerate keys.**
+`transient_source.rs` DROPS a row whose command does not resolve, with a
+`debug!` nobody reads. A typo does not fail loudly; the menu just opens one row
+shorter and the key does nothing. So the first test lists every key that must
+be offered rather than spot-checking one.
+
+Tests: `tests/org_agenda_view_menu.rs`, four — the menu opens on `gD` with all
+seven keys and no `G`; the report row equals the host's constant; the span rows
+change the span and the headerline says so (month, then day, so it proves a
+change rather than a constant); the `l` row returns the one `ToggleMode` the
+bare `l` does and reaches the view the menu was opened over.
+`org_agenda.rs`'s `the_span_chords_change_the_span_and_the_header_says_so`
+**moved** into that file — its chords no longer exist and its harness declares
+no `transient-source` seam — and a pointer comment sits where it was. Gate: 757
+green across the org plugin (17 suites, 5 ignored), fmt clean, no new clippy
+warnings.
+
+No bench: the menu is one guest call on a keypress, on the same parked-build
+path OA.12's dispatcher already measured.
 
 ---
 

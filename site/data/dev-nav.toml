@@ -127,6 +127,7 @@ docs = [
   "architecture/preview-isolation",
   "architecture/popup-api",
   "architecture/popup-unification",
+  "architecture/focused-surface",
   "architecture/rich-minibuffer",
   "architecture/directory-listing-mode",
   "architecture/terminal-as-document",

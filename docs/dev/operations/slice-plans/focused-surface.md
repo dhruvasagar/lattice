@@ -14,7 +14,7 @@ combined run times out `settle_mode`.
 
 | Slice | Title | Status |
 |---|---|---|
-| FS.1 | Focus is a stack, not an `Option` | 📝 |
+| FS.1 | Focus is a stack, not an `Option` | ✅ |
 | FS.2 | A focused popup rides the focus seam | 📝 |
 | FS.3 | `/` in a popup searches the popup | 📝 |
 | FS.4 | The verbs that must NOT follow focus — save and LSP | 📝 |
@@ -33,7 +33,7 @@ the green baseline for that crate until someone fixes it.
 
 ---
 
-## FS.1 — Focus is a stack, not an `Option` 📝
+## FS.1 — Focus is a stack, not an `Option` ✅
 
 `minibuffer_focus: Option<MinibufferFocus>` becomes a stack.
 `focus_editing_buffer` pushes a frame; `restore_editing_buffer` pops one.
@@ -48,10 +48,22 @@ The accessors stay honest by construction: `command_line_active()` and
 `search_line_active()` ask about the TOP frame, and both are already written
 in terms of `search_line`, which is unaffected.
 
-**Tests:** two frames push and pop in order; one frame behaves exactly as
-today (the regression risk is the single-frame path, which every existing
-minibuffer test covers — those passing IS the assertion); popping an empty
-stack is a no-op rather than a panic.
+`minibuffer_focus: Option<_>` became `focus_stack: Vec<_>`, read through
+`Editor::focused_surface()` so "is anything focused" and "what is focused"
+stay one question — reaching for the field directly is how they drift.
+`focus_editing_buffer_at` landed with it: the minibuffers want the top of
+their one fresh line, a popup wants the view state it was left at, and that
+difference is the whole reason focusing a popup was hand-rolled instead of
+going through this seam (FS.2 uses it).
+
+Tests: `focus_is_a_stack.rs`, four — two frames unwinding one at a time to
+the surface each was entered from; the accessor reading the innermost frame;
+an empty pop being a no-op (several cancel paths call it without proving a
+frame exists, and a panic there would take the editor down on a stray
+`<Esc>`); and the single-frame path behaving exactly as before. The first two
+were verified to fail with the `is_none()` guard restored.
+
+Gate: 1420 green in `lattice-host`, fmt clean, zero warnings.
 
 ---
 

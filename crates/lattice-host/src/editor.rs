@@ -732,10 +732,29 @@ pub struct Editor {
     /// `completion_docs_viewport_width > 0`.
     pub completion_docs_viewport_height: u32,
     pub completion_docs_viewport_width: u32,
-    /// MB.1: `Some(_)` while the `*command-line*` buffer is focused for
-    /// editing (the `:` line is open). Holds the prior editing focus to
-    /// restore on submit / cancel. See [`crate::state::MinibufferFocus`].
-    pub minibuffer_focus: Option<crate::state::MinibufferFocus>,
+    /// FS.1: the focus **stack** — one frame per surface that has taken
+    /// focus away from the pane's own buffer, innermost last.
+    ///
+    /// MB.1 introduced this as a single `Option`, which was right while only
+    /// one surface could hold focus: the `:` line, the `/` line, or a
+    /// prompt. It is wrong the moment focus can nest, and it can — a popup
+    /// holds focus, and `/` inside it takes focus again:
+    ///
+    /// ```text
+    ///     []                       editing the file
+    ///     [popup]                  the popup has focus
+    ///     [popup, search-line]     …and `/` inside it
+    /// ```
+    ///
+    /// As an `Option` the second push recorded nothing (it was guarded on
+    /// `is_none()`) and one restore returned to the FILE, skipping the popup
+    /// — which is how `<Esc>` out of a search left the editor focused
+    /// nowhere. See `focused-surface.md` §2.
+    ///
+    /// [`Editor::focused_surface`] reads the top frame; use it rather than
+    /// indexing, so "is something focused" and "what is focused" stay one
+    /// question.
+    pub focus_stack: Vec<crate::state::MinibufferFocus>,
     /// Most recent transient status / error message,
     /// displayed in the echo area until replaced.
     pub last_message: Option<EchoMessage>,

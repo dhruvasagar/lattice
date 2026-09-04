@@ -483,7 +483,7 @@ impl Editor {
         // dispatch means the motion measured below happened in IT, not in the
         // document the popup is anchored to — and a popup must not be
         // dismissed by a caret moving in a different buffer.
-        let pre_minibuffer = self.minibuffer_focus.is_some();
+        let pre_minibuffer = self.focused_surface().is_some();
 
         let mut out = DispatchOutcome::default();
         handle_action(self, action, &mut out);
@@ -498,7 +498,7 @@ impl Editor {
         //   - cursor moved
         if popup_in_state_a
             && !pre_minibuffer
-            && self.minibuffer_focus.is_none()
+            && self.focused_surface().is_none()
             && self.active_buffer == BufferKind::Document
             && self.cursor != pre_cursor
         {
@@ -7899,13 +7899,23 @@ impl Editor {
         self.modal = ModalState::Normal;
     }
 
+    /// FS.1: the innermost focused surface, or `None` when the pane's own
+    /// buffer has focus.
+    ///
+    /// The one place the stack is read for "is anything focused" and "what
+    /// is". Callers that reached for the field directly are why the two
+    /// questions could drift apart.
+    pub fn focused_surface(&self) -> Option<&crate::state::MinibufferFocus> {
+        self.focus_stack.last()
+    }
+
     /// MB.1: `true` while the `*command-line*` buffer is focused for
-    /// editing (the `:` line is open). The shared `minibuffer_focus` is
+    /// editing (the `:` line is open). The shared focus stack is
     /// `Some` for BOTH prompts, so a prompt is the command line only when
     /// the search line is not active (MB.5a). See
     /// [`Self::focus_editing_buffer`].
     pub fn command_line_active(&self) -> bool {
-        self.minibuffer_focus.is_some() && self.search_line.is_none()
+        self.focused_surface().is_some() && self.search_line.is_none()
     }
 
     /// MB.5a: `true` while the `*search-line*` buffer is focused for
@@ -7939,14 +7949,14 @@ impl Editor {
     /// the mode-line up); the dispatcher reads it to allow real modal
     /// editing on the `*command-line*` buffer.
     pub fn command_line_expanded(&self) -> bool {
-        self.command_line_active() && self.minibuffer_focus.as_ref().is_some_and(|f| f.expanded)
+        self.command_line_active() && self.focused_surface().is_some_and(|f| f.expanded)
     }
 
     /// MB.5c: `true` while the `/`·`?` search line is expanded into the
     /// tier-2 band (its own `<C-x><C-e>`). Same shared `expanded` flag as
     /// the command line, scoped to the search prompt.
     pub fn search_line_expanded(&self) -> bool {
-        self.search_line_active() && self.minibuffer_focus.as_ref().is_some_and(|f| f.expanded)
+        self.search_line_active() && self.focused_surface().is_some_and(|f| f.expanded)
     }
 
     /// MB.2e: the resolved `command-line.expand-height` policy driving
@@ -8006,7 +8016,7 @@ impl Editor {
             return;
         }
         let expanding = !self.command_line_expanded();
-        if let Some(f) = self.minibuffer_focus.as_mut() {
+        if let Some(f) = self.focus_stack.last_mut() {
             f.expanded = expanding;
         }
         // MB.2: switch the buffer's major mode so the expanded band
@@ -8043,7 +8053,7 @@ impl Editor {
             return;
         }
         let expanding = !self.search_line_expanded();
-        if let Some(f) = self.minibuffer_focus.as_mut() {
+        if let Some(f) = self.focus_stack.last_mut() {
             f.expanded = expanding;
         }
         self.modal = if expanding {
@@ -8143,10 +8153,25 @@ impl Editor {
     /// tree — the active pane keeps rendering its own buffer (the renderer
     /// routes it to the registry-keyed path via the published
     /// `command_line_active` flag). Stashes the prior editing focus in
-    /// [`Self::minibuffer_focus`]; restored by
+    /// [`Self::focus_stack`]; restored by
     /// [`Self::restore_editing_buffer`]. No position-history push, no echo.
     pub fn focus_editing_buffer(&mut self, id: BufferId) {
-        if self.minibuffer_focus.is_none() {
+        self.focus_editing_buffer_at(id, lattice_protocol::position::Position::ZERO, 0);
+    }
+
+    /// FS.2: [`Self::focus_editing_buffer`], but landing at a given cursor and
+    /// scroll instead of the top.
+    ///
+    /// The minibuffers want the top — they are one fresh line. A popup wants
+    /// the view state it was last left at, which is the whole reason focusing
+    /// one used to be hand-rolled instead of going through this seam.
+    pub fn focus_editing_buffer_at(
+        &mut self,
+        id: BufferId,
+        cursor: lattice_protocol::position::Position,
+        scroll: u32,
+    ) {
+        {
             // Stash the prior document's hot-path mode-state
             // (syntax/folds); guarded to Document inside.
             self.snapshot_active_document();
@@ -8167,7 +8192,10 @@ impl Editor {
             // only true if the stash the unfocused path reads is the live
             // state at the moment focus left.
             self.snapshot_active_pane();
-            self.minibuffer_focus = Some(crate::state::MinibufferFocus {
+            // FS.1: PUSH. This was `= Some(..)` behind an `is_none()` guard,
+            // so focusing a second surface recorded nothing and one restore
+            // skipped whatever was focused in between.
+            self.focus_stack.push(crate::state::MinibufferFocus {
                 prior_buffer_id: self.document_buffer_id,
                 prior_active_buffer: self.active_buffer,
                 prior_cursor: self.cursor,
@@ -8187,8 +8215,8 @@ impl Editor {
         self.last_parsed_text_version = 0;
         self.last_synced_syntax_version = 0;
         self.folds = Default::default();
-        self.cursor = lattice_protocol::position::Position::ZERO;
-        self.scroll = 0;
+        self.cursor = cursor;
+        self.scroll = scroll;
         self.leftcol = 0;
     }
 
@@ -8197,7 +8225,9 @@ impl Editor {
     /// the registry, restore its syntax/folds/cursor/scroll/modal, and
     /// clear the projection. No-op when no command line is open.
     pub fn restore_editing_buffer(&mut self) {
-        let Some(focus) = self.minibuffer_focus.take() else {
+        // FS.1: POP one frame. `<Esc>` out of a search opened inside a focused
+        // popup lands back in the POPUP, not past it to the file.
+        let Some(focus) = self.focus_stack.pop() else {
             return;
         };
         let id = focus.prior_buffer_id;
@@ -10619,7 +10649,7 @@ impl Editor {
         // is open, `self.document` is the `*command-line*` buffer, so read
         // the target (the buffer being edited, stashed at focus time) and
         // its cursor line for the `CurrentLine` scope.
-        let (buffer, current_line) = match self.minibuffer_focus.as_ref() {
+        let (buffer, current_line) = match self.focused_surface() {
             Some(focus) => {
                 let snap = self
                     .buffers
@@ -24353,9 +24383,9 @@ impl Editor {
         };
         // MB.5a: while the `/`·`?` search line is open, `self.document` is
         // the `*search-line*` buffer. Read the TARGET (the buffer being
-        // searched, stashed at focus time via `minibuffer_focus`) —
+        // searched, stashed at focus time on the focus stack) —
         // mirroring `refresh_substitute_preview`.
-        let buffer = match self.minibuffer_focus.as_ref() {
+        let buffer = match self.focused_surface() {
             Some(focus) => self
                 .buffers
                 .document_handle(focus.prior_buffer_id)

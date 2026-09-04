@@ -20,11 +20,13 @@ combined run times out `settle_mode`.
 | FS.3 | `/` in a popup searches the popup — **absorbed by FS.2** | ✅ |
 | FS.4 | The verbs that must NOT follow focus — **they all follow it** | ✅ |
 | FS.5 | Delete the `popup_focused` reads that were compensating | ✅ |
+| FS.6 | Retire the duplicate restore FS.2 handed FS.5 | ✅ |
 
 FS.1 blocks FS.2 (nesting a search line inside a focused popup needs the
 stack). FS.2 blocks FS.3 and FS.4. FS.5 is cleanup and lands last, when the
 tests that would catch an over-deletion exist. FS.1b is a correction to FS.1
-and landed after FS.5, when the org suite caught what FS.1 had broken.
+and landed after FS.5, when the org suite caught what FS.1 had broken. FS.6
+finishes the job FS.2 scoped and FS.5 did not take.
 
 **Known pre-existing red, unrelated:**
 `typing_after_popup_open_live_refilters_candidates` and
@@ -163,7 +165,7 @@ no new clippy.
 
 ---
 
-## FS.3 — `/` in a popup searches the popup 📝
+## FS.3 — `/` in a popup searches the popup ✅
 
 Falls out of FS.2 rather than being implemented: `execute_search` reads
 `self.document`, which by then IS the popup. What this slice adds is the
@@ -272,6 +274,60 @@ unchanged too, not just the file).
 Gate: 1435 green in `lattice-host`; 1741 in `lattice-ui-tui` (the two
 pre-existing completion failures); 37 in `lattice-ui-gpui`; fmt clean, no new
 clippy.
+
+---
+
+## FS.6 — Retire the duplicate restore FS.2 handed FS.5 ✅
+
+**FS.2 scoped this and FS.5 did not take it**, which the status icons could
+not show: both slices read ✅ while `dismiss_popup` still carried the comment
+"FS.5 retires the older of the two once that is proven rather than assumed."
+Found by checking the source against the plan before archiving, which is the
+whole reason that rule exists.
+
+`dismiss_popup` ran BOTH restores — the focus-stack unwind and the
+`prev_pane_for_popup` stash. They agreed only because a focus-stealing popup
+wrote the stash with the same values the frame stashed, and the stash ran
+SECOND, so on any disagreement it won silently. That is the shape FS.5 exists
+to delete.
+
+**FS.2's "`prev_pane_for_popup` is redundant and goes" was too broad**, which
+is why the deletion needed re-deriving rather than executing. The field has a
+second consumer (`bury_buffer`, for `q` out of a buried buffer) and two
+writers that are not popups at all (`activate_help_in_pane`,
+`Effect::OpenSyntheticBuffer`). Those paths genuinely MOVE the pane and push
+no frame, so the stash is still the only thing that can put it back. The
+field stays; what goes is writing it *in parallel with a frame*.
+
+So: the two focus-stealing popup paths (`focus_help_popup` and
+`open_popup_buffer`'s `Steal` arm) stop writing it, and `dismiss_popup`
+chooses — frame if one exists, stash otherwise. What the frame does not
+restore is `pane.buffer` / `pane.buffer_id`, and it does not need to:
+`focus_editing_buffer_at` never touches the pane tree, so an overlay popup
+leaves the pane on its own buffer throughout and the stash was writing back
+identical values.
+
+**The disagreement was reachable, and that is the new test.** Dropping the
+write alone would have been a bug: `Effect::OpenSyntheticBuffer` sets the
+stash only when empty and documents it as sitting unused "until GC'd by the
+next successful `dismiss_popup`", and a focused popup no longer overwrites
+it — so a leftover from an unrelated in-pane open would be applied on top of
+a correct restore, landing the user at another buffer's cursor. The unwind
+branch drops the stash instead, which is the GC the old overwrite-then-take
+did by accident.
+
+Tests: one added —
+`a_stale_pane_stash_does_not_clobber_the_dismiss_restore`, which seeds
+exactly that leftover and asserts the frame's line, scroll and modal survive
+it. Three existing tests asserted the retired mechanism rather than the
+guarantee (`prev_pane_for_popup.is_some()`, "prev captured for dismiss") and
+were pointed at the frame — same guarantee, one mechanism.
+`state_b_dismiss_restores_prev_pane` was renamed to
+`state_b_dismiss_restores_the_origin_buffer`: it never cared which mechanism.
+
+Gate: 1439 green in `lattice-host`; 1741 in `lattice-ui-tui` (the two
+pre-existing completion failures, re-proven on clean HEAD by stashing); 37 in
+`lattice-ui-gpui`; 779 across `lattice-org-plugin`; fmt clean, no new clippy.
 
 ---
 

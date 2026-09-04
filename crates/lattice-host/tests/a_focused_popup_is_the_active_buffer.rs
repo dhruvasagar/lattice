@@ -345,3 +345,60 @@ fn opening_a_search_from_a_popup_does_not_move_the_file_behind_it() {
          it IS the background jumping to the top"
     );
 }
+
+/// FS.6 — one restore runs on dismiss, and it is the frame's.
+///
+/// `dismiss_popup` used to run BOTH the focus-stack unwind and the
+/// `prev_pane_for_popup` restore. They agreed only because a focus-stealing
+/// popup wrote the stash with the same values the frame stashed, and the
+/// stash ran second — so on any disagreement it won, silently.
+///
+/// The disagreement is reachable. `Effect::OpenSyntheticBuffer` sets the
+/// stash only when empty and documents it as sitting unused "until GC'd by
+/// the next successful `dismiss_popup`". A focused popup no longer overwrites
+/// it, so a leftover from an unrelated in-pane open is exactly what would be
+/// applied on top of a correct restore — landing the user at another buffer's
+/// cursor.
+///
+/// The fixture seeds that leftover deliberately: with both mechanisms live it
+/// is what dismiss would restore.
+#[test]
+fn a_stale_pane_stash_does_not_clobber_the_dismiss_restore() {
+    let (mut editor, file) = editor_with_focused_popup();
+
+    // A leftover from some earlier in-pane open, pointing somewhere else
+    // entirely — a different line, and a scroll the file never had.
+    let active = editor.pane_tree.active();
+    editor.prev_pane_for_popup = Some(lattice_host::state::PrevPaneState {
+        buffer: active.buffer,
+        buffer_id: active.buffer_id,
+        cursor: lattice_protocol::position::Position::ZERO,
+        scroll: 99,
+        modal: lattice_grammar::ModalState::Insert,
+    });
+
+    editor.dismiss_popup();
+
+    assert_eq!(
+        editor.document_buffer_id, file,
+        "dismiss lands back in the file"
+    );
+    assert_eq!(
+        editor.cursor.line, 3,
+        "at the line the FRAME recorded — line 0 is the stale stash winning"
+    );
+    assert_eq!(
+        editor.scroll, 0,
+        "and the frame's scroll, not the stash's 99"
+    );
+    assert_eq!(
+        editor.modal,
+        lattice_grammar::ModalState::Normal,
+        "and the frame's modal — the stash claimed Insert"
+    );
+    assert!(
+        editor.prev_pane_for_popup.is_none(),
+        "the leftover is dropped rather than applied, which is the GC the \
+         old overwrite-then-take did by accident"
+    );
+}

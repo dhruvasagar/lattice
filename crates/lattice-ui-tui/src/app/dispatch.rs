@@ -2694,8 +2694,10 @@ mod tests {
         // First K opens the popup (State A: cursor in doc); second
         // K transfers focus into the popup (State B: cursor in
         // help). The buffer content is the same; only `active_buffer`
-        // and the cursor position change. `prev_pane_for_popup`
-        // captures pre-State-B state so dismiss restores cleanly.
+        // and the cursor position change. FS.6: the pre-State-B origin is
+        // captured as a FOCUS FRAME so dismiss restores cleanly — it used
+        // to be a `prev_pane_for_popup` stash written alongside the frame,
+        // and dismiss ran both.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
         assert!(a.editor.popup_buffer.is_some());
@@ -2713,11 +2715,15 @@ mod tests {
             "popup stays up after focus"
         );
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
-        let stash = a
+        let frame = a
             .editor
-            .prev_pane_for_popup
-            .expect("State B captures stash");
-        assert_eq!(stash.buffer, BufferKind::Document);
+            .focused_surface()
+            .expect("State B captures the origin as a focus frame");
+        assert_eq!(frame.prior_active_buffer, BufferKind::Document);
+        assert!(
+            a.editor.prev_pane_for_popup.is_none(),
+            "and only the frame — the stash is not written in parallel"
+        );
     }
 
     #[test]

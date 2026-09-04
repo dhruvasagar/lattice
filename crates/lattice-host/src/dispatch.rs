@@ -7456,21 +7456,37 @@ impl Editor {
         // focused over a popup that no longer exists is the wedge this whole
         // initiative started from.
         //
-        // Runs BEFORE `prev_pane_for_popup` below, which then re-asserts the
-        // pane's own buffer identity and the modal state (PU-A.1b). The two
-        // overlap on cursor / scroll and agree, because the frame stashed the
-        // same values `prev_pane_for_popup` did — FS.5 retires the older of
-        // the two once that is proven rather than assumed.
+        // FS.6: EXACTLY ONE of these two restores runs, chosen by whether a
+        // frame exists. They used to both run, agreeing only because the
+        // frame stashed the same values the stash did — and the stash ran
+        // second, so on any disagreement it won silently. That is the shape
+        // FS.5 deletes on sight.
+        //
+        // The frame is the newer and the more complete of the two: it also
+        // re-fetches the document handle, its syntax, folds and option cache.
+        // What it does NOT restore is `pane.buffer` / `pane.buffer_id`, and
+        // it does not need to — `focus_editing_buffer_at` never touches the
+        // pane tree, so an overlay popup leaves the pane on its own buffer
+        // the whole time and the stash was writing back identical values.
         if let Some(depth) = self.popup_focus_depth.take() {
             while self.focus_stack.len() >= depth && !self.focus_stack.is_empty() {
                 self.restore_editing_buffer();
             }
             // A search line unwound with the popup leaves no pattern behind.
             self.search_line = None;
+            // DROP any stash rather than applying it. A focus-stealing popup
+            // no longer writes one, so anything here is a leftover from an
+            // in-pane open (`Effect::OpenSyntheticBuffer` sets it only when
+            // empty, and documents itself as sitting unused until a dismiss
+            // GCs it). Applying it would clobber the pane with an unrelated
+            // buffer's cursor. Clearing matches what the old code did by
+            // overwriting-then-taking.
+            self.prev_pane_for_popup = None;
         }
-        // Restore pre-popup state if focus had moved into it
-        // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        if let Some(prev) = self.prev_pane_for_popup.take() {
+        // The in-pane paths — `activate_help_in_pane`, `:lsp-log` and peers —
+        // genuinely MOVE the pane and push no frame, so the stash is still
+        // the only thing that can put it back.
+        else if let Some(prev) = self.prev_pane_for_popup.take() {
             self.cursor = prev.cursor;
             self.scroll = prev.scroll;
             let pane = self.pane_tree.active_mut();
@@ -7897,15 +7913,9 @@ impl Editor {
         };
         let stash_cursor = help.cursor;
         let stash_scroll = help.scroll as u32;
-        // Capture pre-State-B state so dismiss restores cleanly.
-        let active = self.pane_tree.active();
-        self.prev_pane_for_popup = Some(PrevPaneState {
-            buffer: active.buffer,
-            buffer_id: active.buffer_id,
-            cursor: self.cursor,
-            scroll: self.scroll,
-            modal: self.modal,
-        });
+        // FS.6: no `prev_pane_for_popup` write here. The frame pushed below
+        // stashes the same cursor / scroll / modal and more, and `dismiss_popup`
+        // now picks one restore rather than running both.
         // FS.2: the popup becomes the ACTIVE DOCUMENT, through the same seam
         // the minibuffers use.
         //
@@ -28388,19 +28398,11 @@ impl Editor {
                     self.push_position_history(cur, crate::state::PositionSource::AutoJump);
                 }
                 self.snapshot_active_pane();
-                // Snapshot the pane + modal for dismiss to restore. Skip
-                // when popup already focused — a help→help open keeps the
-                // original origin (the reuse branch handles swaps).
-                if !self.popup_focused {
-                    let active = self.pane_tree.active();
-                    self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
-                        buffer: active.buffer,
-                        buffer_id: active.buffer_id,
-                        cursor: self.cursor,
-                        scroll: self.scroll,
-                        modal: self.modal,
-                    });
-                }
+                // FS.6: the pane + modal snapshot that used to live here is
+                // the frame `focus_editing_buffer_at` pushes below. Its
+                // `!self.popup_focused` guard is the same condition as the
+                // else-branch there — a help→help open keeps the original
+                // origin because it pushes no second frame either.
                 // Anchor for CursorAnchored placement (renderer reads this).
                 self.popup_anchor = Some(self.cursor);
                 self.popup_doc_scroll_at_anchor = self.scroll;
@@ -46766,17 +46768,22 @@ mod tests {
         );
     }
 
-    /// PU-A.1a non-regression: State-B dismiss still restores the prior
-    /// buffer from `prev_pane_for_popup` (the rename + dismiss edit did
-    /// not break the focused-popup restore path).
+    /// PU-A.1a non-regression: State-B dismiss still restores the buffer the
+    /// user came from. FS.6 changed WHICH mechanism does it — the focus frame
+    /// rather than the `prev_pane_for_popup` stash — and the point of this
+    /// test is the guarantee, which is unchanged.
     #[test]
-    fn state_b_dismiss_restores_prev_pane() {
+    fn state_b_dismiss_restores_the_origin_buffer() {
         let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
         let doc_buf = editor.document_buffer_id;
         let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
         editor.open_popup(content, crate::popup::PopupPlacement::Centered);
         assert_eq!(editor.active_buffer, BufferKind::Help);
-        assert!(editor.prev_pane_for_popup.is_some());
+        assert!(
+            editor.popup_focus_depth.is_some(),
+            "a focused popup records its frame depth, and that is what \
+             dismiss unwinds to"
+        );
 
         editor.dismiss_popup();
 
@@ -46885,9 +46892,16 @@ mod tests {
             "Steal flips active_buffer to the buffer's kind"
         );
         assert_eq!(editor.modal, ModalState::Normal, "Steal normalizes modal");
+        // FS.6: the origin is captured as a FOCUS FRAME now, not a
+        // `prev_pane_for_popup` stash. Same guarantee, one mechanism.
         assert!(
-            editor.prev_pane_for_popup.is_some(),
-            "prev captured for dismiss"
+            editor.popup_focus_depth.is_some() && !editor.focus_stack.is_empty(),
+            "origin captured for dismiss"
+        );
+        assert!(
+            editor.prev_pane_for_popup.is_none(),
+            "and the retired stash is not also written — two restores that \
+             agree by coincidence is what FS.6 removes"
         );
 
         editor.dismiss_popup();

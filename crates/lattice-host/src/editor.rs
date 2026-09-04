@@ -755,6 +755,11 @@ pub struct Editor {
     /// indexing, so "is something focused" and "what is focused" stay one
     /// question.
     pub focus_stack: Vec<crate::state::MinibufferFocus>,
+    /// FS.2: the [`Self::focus_stack`] depth a focused popup sits at, so
+    /// dismissing it unwinds any surface opened INSIDE it (a `/` line, a
+    /// prompt) rather than leaving that focused over a popup that is gone.
+    /// `None` whenever no popup holds focus.
+    pub popup_focus_depth: Option<usize>,
     /// Most recent transient status / error message,
     /// displayed in the echo area until replaced.
     pub last_message: Option<EchoMessage>,

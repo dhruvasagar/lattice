@@ -7452,6 +7452,24 @@ impl Editor {
         self.popup_anchor = None;
         self.popup_doc_scroll_at_anchor = 0;
         self.popup_focused = false;
+        // FS.2: unwind the focus stack to where it stood before the popup
+        // took focus. `>=` rather than `==` so a surface opened INSIDE the
+        // popup — a `/` line, a prompt — is popped with it; leaving one
+        // focused over a popup that no longer exists is the wedge this whole
+        // initiative started from.
+        //
+        // Runs BEFORE `prev_pane_for_popup` below, which then re-asserts the
+        // pane's own buffer identity and the modal state (PU-A.1b). The two
+        // overlap on cursor / scroll and agree, because the frame stashed the
+        // same values `prev_pane_for_popup` did — FS.5 retires the older of
+        // the two once that is proven rather than assumed.
+        if let Some(depth) = self.popup_focus_depth.take() {
+            while self.focus_stack.len() >= depth && !self.focus_stack.is_empty() {
+                self.restore_editing_buffer();
+            }
+            // A search line unwound with the popup leaves no pattern behind.
+            self.search_line = None;
+        }
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
         if let Some(prev) = self.prev_pane_for_popup.take() {
@@ -7876,6 +7894,9 @@ impl Editor {
         let Some(help) = self.popup_help() else {
             return;
         };
+        let Some(popup_id) = self.popup_buffer else {
+            return;
+        };
         let stash_cursor = help.cursor;
         let stash_scroll = help.scroll as u32;
         // Capture pre-State-B state so dismiss restores cleanly.
@@ -7887,11 +7908,26 @@ impl Editor {
             scroll: self.scroll,
             modal: self.modal,
         });
-        // Sync active pane's cursor / scroll stash *before*
-        // swapping `active_buffer` to Help.
-        self.snapshot_active_pane();
-        self.cursor = stash_cursor;
-        self.scroll = stash_scroll;
+        // FS.2: the popup becomes the ACTIVE DOCUMENT, through the same seam
+        // the minibuffers use.
+        //
+        // The doc comment above has always said the popup "behaves like any
+        // other buffer (vim grammar, `/` search, `:` ex commands operate on
+        // the popup's content)". It did not: this used to set `cursor`,
+        // `scroll` and `active_buffer` and leave `self.document` pointing at
+        // the file behind, so every buffer-scoped verb resolved against the
+        // file. `/` searched it, `j`/`k` were bounded by its line count, and
+        // the caret was painted in the popup at the file's coordinates.
+        //
+        // `focus_editing_buffer_at` also stashes the pane's view state and
+        // the prior buffer's hot-path state, which the hand-rolled version
+        // did by calling `snapshot_active_pane` itself.
+        self.focus_editing_buffer_at(popup_id, stash_cursor, stash_scroll);
+        // The depth to unwind to on dismiss. A search line opened INSIDE the
+        // popup pushes another frame, and dismissing the popup has to take
+        // that with it rather than leaving it focused over a popup that is
+        // gone.
+        self.popup_focus_depth = Some(self.focus_stack.len());
         self.active_buffer = BufferKind::Help;
         self.popup_focused = true;
         // PU-A.1b: promoting a passive float to focus (State A→B) is a

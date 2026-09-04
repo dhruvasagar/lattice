@@ -15,8 +15,8 @@ combined run times out `settle_mode`.
 | Slice | Title | Status |
 |---|---|---|
 | FS.1 | Focus is a stack, not an `Option` | ✅ |
-| FS.2 | A focused popup rides the focus seam | 📝 |
-| FS.3 | `/` in a popup searches the popup | 📝 |
+| FS.2 | A focused popup rides the focus seam | ✅ |
+| FS.3 | `/` in a popup searches the popup — **absorbed by FS.2** | ✅ |
 | FS.4 | The verbs that must NOT follow focus — save and LSP | 📝 |
 | FS.5 | Delete the `popup_focused` reads that were compensating | 📝 |
 
@@ -67,7 +67,7 @@ Gate: 1420 green in `lattice-host`, fmt clean, zero warnings.
 
 ---
 
-## FS.2 — A focused popup rides the focus seam 📝
+## FS.2 — A focused popup rides the focus seam ✅
 
 `focus_help_popup` stops hand-rolling half a focus swap and calls
 `focus_editing_buffer(popup_buffer)`, seeding the popup's own stashed cursor /
@@ -87,6 +87,39 @@ buffer identity, and proving the frame covers both is FS.5's job.
   latent defect this fixes, which no test covers today;
 - dismissing returns the file, its cursor, its scroll and its modal state
   exactly as before (the PU-A.1b guarantee).
+
+**FS.3 came with it rather than after it**, exactly as that slice predicted:
+`execute_search` reads `self.document`, so once the popup IS the active
+document the search targets it with no further change. The slice's value was
+its tests, and those landed here.
+
+**The renderer needed the same generalisation.** `position_help_popup` was
+already taught (a commit earlier) not to read the anchor from `ad()` while a
+MINIBUFFER was focused; FS.2 makes `ad()` diverge from the pane for a second
+reason, so the test regressed in the opposite direction. The predicate is now
+the honest one — `ad().document_buffer_id == ad().active_pane_buffer_id` —
+using the two identities the published state already carries by name, rather
+than inferring one from a `BufferKind`.
+
+`dismiss_popup` unwinds to `popup_focus_depth` with `>=`, so a `/` line
+opened inside the popup is popped WITH it. Leaving a minibuffer focused over
+a popup that no longer exists is the wedge this initiative started from.
+
+Tests: `a_focused_popup_is_the_active_buffer.rs`, seven — the popup is the
+active document and its content is what `self.document` holds; the pane still
+holds the file; `/` finds a word that exists ONLY in the popup and lands the
+caret on the popup's line; the file's caret is untouched by it; `<Esc>`
+returns to the popup rather than past it; dismissing takes a nested search
+line with it; and dismissing restores the modal state (PU-A.1b). Three were
+verified to fail with the half-swap restored.
+
+The fixtures share no words between file and popup and differ in length —
+one where both contain the search term passes whichever buffer the verb
+resolved against, which is how this survived.
+
+Gate: 1427 green in `lattice-host`; 1741 in `lattice-ui-tui` (the two
+pre-existing completion failures above); 37 in `lattice-ui-gpui`; fmt clean,
+no new clippy.
 
 ---
 

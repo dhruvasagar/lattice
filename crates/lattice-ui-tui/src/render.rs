@@ -2749,39 +2749,45 @@ fn position_help_popup(
     //
     // Third instance of one mistake — `BufferKind::Document` standing in for
     // a question about focus. See `popup-unification.md` §9.
-    let minibuffer_focused = lattice_host::cursor_shape::minibuffer_owns_caret(app.ad().modal);
-    let (cursor, scroll) = match app.ad().buffer_kind {
-        crate::buffers::BufferKind::Document if !minibuffer_focused => {
-            (app.ad().cursor, app.ad().scroll)
-        }
-        _ => {
-            // Slice 3c.final.B (group 1): pane via `app.panes()`.
-            // `active()` returns `&PaneState` borrowing from the
-            // Arc; bind the Arc to keep it alive while we copy.
-            let panes = app.panes();
-            let pane = panes.tree.active();
-            (pane.cursor, pane.scroll)
-        }
+    //
+    // FS.2 generalised it: the question is not "is a minibuffer focused" but
+    // **"is the active document the pane's buffer"**. Since a focused popup
+    // became the active document too, `ad()` diverges from the pane for two
+    // reasons now, and an anchor read from `ad()` is wrong for both — it is
+    // the popup's own caret when the popup has focus, and the search line's
+    // (0, 0) when a `/` is open inside it.
+    // The published state carries BOTH identities by name, which is the
+    // distinction this whole initiative is about — use them rather than
+    // inferring one from a `BufferKind`.
+    let pane_buffer = app.ad().active_pane_buffer_id;
+    let active_is_pane = app.ad().document_buffer_id == pane_buffer;
+    let (cursor, scroll) = if active_is_pane {
+        (app.ad().cursor, app.ad().scroll)
+    } else {
+        // The pane's stash IS the document's live state: every path that
+        // takes focus calls `snapshot_active_pane()` before swapping,
+        // precisely so the unfocused reader sees the truth.
+        let panes = app.panes();
+        let pane = panes.tree.active();
+        (pane.cursor, pane.scroll)
     };
     // A cursor-anchored popup is anchored to where the caret WAS when it
     // opened, which is what `popup().anchor` records — the live caret is only
     // a fallback for popups that never captured one. Preferring the anchor
-    // keeps the popup still while the caret moves inside a focused popup, and
-    // is what "cursor-anchored" already claimed to mean.
+    // keeps the popup still while the caret moves inside it.
     let cursor = app.popup().anchor.unwrap_or(cursor);
-    // …and the anchor has to be mapped to a screen row through the DOCUMENT's
-    // own snapshot. `snap` is the *active* document's, which a focused
-    // minibuffer replaces with a one-line `*search-line*` — mapping a
-    // document line through that lands the popup somewhere unrelated, which is
-    // the other half of "hitting `/` jumps the popup". The pane's buffer is
-    // the document either way, so resolve from it when the two differ.
-    let pane_snap = if minibuffer_focused {
+    // …and the anchor is a line in the PANE's buffer, so it has to be mapped
+    // through that buffer's snapshot. `snap` is the ACTIVE document's, which
+    // is the popup itself or a one-line `*search-line*` — mapping a file line
+    // through either lands the popup somewhere unrelated to it. That was the
+    // other half of "hitting `/` jumps the popup".
+    let pane_snap = if active_is_pane {
+        None
+    } else {
         app.buffers()
             .registry
-            .document_handle(app.panes().tree.active().buffer_id)
+            .document_handle(pane_buffer)
             .map(|h| h.snapshot())
-    } else {
-        None
     };
     let snap: &DocumentSnapshot = pane_snap.as_deref().unwrap_or(snap);
     let view = FrameView::from_app(app);

@@ -202,3 +202,79 @@ fn dismissing_restores_the_modal_state() {
         "…and dismissing gives the user their mode back"
     );
 }
+
+// ─────────────────────────────────────────────────────────────
+//  FS.4 — the verbs that DO follow focus, and why that is right
+// ─────────────────────────────────────────────────────────────
+
+/// `:w <path>` writes the POPUP's content.
+///
+/// **The slice plan said the opposite** — that saving must not follow focus,
+/// and that the save path's refusal of a pathless buffer should become
+/// load-bearing. That was wrong, and the correction is worth keeping: being
+/// read-only governs MODIFYING a buffer, not exporting it. `:w somewhere` on
+/// an unnamed read-only buffer is ordinary vim, and refusing it would take
+/// away something the user has an obvious reason to want — the hover text is
+/// often the thing worth keeping.
+///
+/// So this follows focus like every other buffer verb, and needs no special
+/// case at all: `do_write` acts on `self.document`, which after FS.2 is the
+/// popup.
+#[test]
+fn writing_a_focused_popup_saves_the_popups_content() {
+    let (mut editor, _file) = editor_with_focused_popup();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("hover.md");
+
+    editor.do_write(Some(out.clone()));
+
+    let written = std::fs::read_to_string(&out).expect("the file was written");
+    assert!(
+        written.contains("widget"),
+        "the POPUP's content landed on disk: {written:?}"
+    );
+    assert!(
+        !written.contains("the file's first line"),
+        "…and not the file behind it: {written:?}"
+    );
+}
+
+/// `:w` with no path on a popup says what any unnamed buffer says. Not a
+/// popup rule — the generic one, reached because a popup has no path.
+#[test]
+fn writing_a_popup_with_no_path_asks_for_one() {
+    let (mut editor, _file) = editor_with_focused_popup();
+    editor.do_write(None);
+    let msg = editor.last_message.as_ref().map(|m| m.text.clone());
+    assert_eq!(
+        msg.as_deref(),
+        Some("no file name (use :w <path>)"),
+        "the same answer `:w` gives on any buffer with no path"
+    );
+}
+
+/// A hover request from inside a focused popup does not ask the server about
+/// the FILE.
+///
+/// Also predicted to need a special case, and also not needing one: `K` in a
+/// focused popup returns early by design (5.5.LSP.1 — dismiss, reposition,
+/// press K again), and even without that guard a popup buffer has no URI, so
+/// the request bails on the generic "no URI = no LSP for this buffer" path.
+/// Following focus is what makes both true.
+#[test]
+fn a_hover_request_inside_a_popup_does_not_ask_about_the_file() {
+    let (mut editor, _file) = editor_with_focused_popup();
+    let popup = editor.popup_buffer.expect("a popup");
+
+    editor.lsp_hover_request();
+
+    assert_eq!(
+        editor.popup_buffer,
+        Some(popup),
+        "the popup is untouched — no second hover opened over it"
+    );
+    assert!(
+        editor.pending_hover_token.is_none(),
+        "and no request went out for a buffer that has no URI"
+    );
+}

@@ -17,7 +17,7 @@ combined run times out `settle_mode`.
 | FS.1 | Focus is a stack, not an `Option` | ✅ |
 | FS.2 | A focused popup rides the focus seam | ✅ |
 | FS.3 | `/` in a popup searches the popup — **absorbed by FS.2** | ✅ |
-| FS.4 | The verbs that must NOT follow focus — save and LSP | 📝 |
+| FS.4 | The verbs that must NOT follow focus — **they all follow it** | ✅ |
 | FS.5 | Delete the `popup_focused` reads that were compensating | 📝 |
 
 FS.1 blocks FS.2 (nesting a search line inside a focused popup needs the
@@ -143,21 +143,37 @@ dispatching once passes on a broken build. That hole cost two rewrites of
 
 ---
 
-## FS.4 — The verbs that must NOT follow focus 📝
+## FS.4 — The verbs that must NOT follow focus — **they all follow it** ✅
 
-Two paths must keep resolving against the PANE's buffer, and after FS.2 they
-must say so rather than getting it by accident:
+**This slice's premise was wrong, and finding that out was its value.** It
+predicted two verbs that had to opt out of following focus. Neither does.
 
-- **`:w`** with a popup focused must not write the popup. The save path
-  refuses a buffer with no path today; that refusal becomes load-bearing and
-  gets a test naming why.
-- **Position-anchored LSP** (hover, definition, references) must ask the
-  server about the FILE. A hover requested from inside a hover popup asking
-  about the popup's own prose is the failure this prevents.
+- **`:w` follows focus, and should.** The plan said saving must not write the
+  popup and that the save path's refusal of a pathless buffer should become
+  load-bearing. Corrected in review: read-only governs MODIFYING a buffer,
+  not exporting it. `:w somewhere` on an unnamed read-only buffer is ordinary
+  vim, and refusing it would take away something a user has an obvious reason
+  to want — the hover text is often the thing worth keeping. `do_write` acts
+  on `self.document`, so it already writes the popup, and `:w` with no path
+  gives the generic "no file name (use :w <path>)".
+- **LSP follows focus, and degrades correctly.** A popup buffer has no URI, so
+  a position-anchored request from inside one bails on the generic "no URI =
+  no LSP for this buffer" path instead of asking about the file. `K` returns
+  early while a popup is focused anyway, by design since 5.5.LSP.1.
 
-The distinction the design names — *focused surface* versus *pane buffer* —
-gets an accessor each so a future call site picks deliberately instead of
-reaching for whichever is in scope.
+So the slice is four tests and no production code, which is the outcome the
+model predicts: once the focused surface IS the active document, the generic
+answers are right. What survives from the plan is the naming — the published
+state carries `document_buffer_id` and `active_pane_buffer_id` separately, so
+a future call site picks deliberately rather than reaching for whichever is
+in scope.
+
+**A real bug surfaced while testing this and is NOT part of this slice:**
+`:w {file}` calls `save_as`, which adopts the path — that is vim's `:saveas`,
+not vim's `:w {file}` (write a copy, keep your identity). Global, not
+popup-specific. Fixed separately.
+
+Gate: 1430 green in `lattice-host`.
 
 ---
 

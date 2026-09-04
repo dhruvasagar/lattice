@@ -89,18 +89,30 @@ decide which surface is dimmed. That is a *presentation* flag and stays.
 Every path that assumes `self.document` is the user's FILE while a popup
 is focused changes meaning. The ones that matter:
 
-- **Saving.** `:w` with a popup focused must not write the popup. A
-  popup buffer is read-only and unnamed; the save path already refuses
-  buffers with no path, but that refusal becomes load-bearing rather than
-  incidental, and gets a test.
+- **Saving.** ~~`:w` with a popup focused must not write the popup.~~
+  **Wrong, corrected 2026-09-04 in review.** Being read-only governs
+  MODIFYING a buffer, not exporting it: `:w somewhere` on an unnamed
+  read-only buffer is ordinary vim, and refusing it takes away something
+  a user has an obvious reason to want — the hover text is often the
+  thing worth keeping. `:w` follows focus like every other buffer verb,
+  and needs no special case: `do_write` acts on `self.document`.
 - **LSP.** Position-anchored requests (hover, definition, references)
-  read the active document. With a popup focused they would ask the
-  server about the popup's own text. They must resolve against the
-  file — which is the pane's buffer, not the focused surface, and that
-  distinction now has a name.
+  read the active document — and also need no special case, for a
+  reason that only became visible once it was tested. A popup buffer has
+  no URI, so a request from inside one bails on the generic "no URI = no
+  LSP for this buffer" path rather than asking the server about the file.
+  `K` additionally returns early while a popup is focused, by design
+  since 5.5.LSP.1.
 - **Syntax and folds.** Already per-buffer (`buffer_locals`), so they
   follow `document_buffer_id` correctly once it moves.
 - **Undo.** Per-buffer; a popup is read-only, so its history stays empty.
+
+**Both predicted special cases turned out to be unnecessary**, and that
+is the strongest evidence for the model: once the focused surface IS the
+active document, the generic answers are the right ones. The distinction
+worth keeping is not a list of verbs that opt out — it is that the
+published state names both identities (`document_buffer_id` and
+`active_pane_buffer_id`) so a call site picks deliberately.
 
 The risk is regressions in paths nobody thought about, which is why this
 lands as slices with a test per surface rather than as one change.

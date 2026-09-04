@@ -445,17 +445,28 @@ drawer — right for `LAST_REPEAT`, which should not manufacture three
 lines on a plain repeating task, and wrong for a user who typed the
 command.
 
-**One question decides where the drawer goes, and it is not settled in
-this tree.** Org's grammar puts `plan` before `property_drawer` — the
-agenda fragment says so, and `clock.rs` walks `["plan",
-"property_drawer"]` in that order — but `id_drawer_insert` inserts at
-`headline_line + 1` unconditionally, which on a headline carrying
-`SCHEDULED:` puts the drawer *above* the planning line. Either the
-insertion point is wrong (and `:org-roam-id-create` has been writing
-non-canonical drawers on every scheduled headline) or the comment
-claiming the drawer must come first is. The slice resolves it against
-the grammar before generalising the helper, because both callers then
-inherit the answer.
+**Where the drawer goes was an open question, and the answer was a
+defect** (OE.0, resolved 2026-09-04). tree-sitter-org's `section` rule is
+`headline, [plan], [property_drawer], [body], subsection*` — a SEQ, so
+the plan comes first. `id_drawer_insert` inserted at `headline_line + 1`
+unconditionally, which on a headline carrying `SCHEDULED:` put the
+drawer *above* the planning line.
+
+Parsed, that is not merely non-canonical. The `plan` field disappears;
+`SCHEDULED: <2026-09-04 Fri>` becomes a `paragraph` inside `body`, with
+its timestamp not even tokenised as one. `agenda.rs` reads the date from
+`section.child_by_field("plan")` — so **an `:ID:` minted on a scheduled
+TODO moved it out of the dated agenda into the undated block**, and the
+file still read correctly to a human, which is why nothing caught it.
+Both callers now take the insertion point from one helper,
+`roam_index::drawer_line_for`.
+
+A related limitation surfaced while confirming it, worth knowing and not
+worth fixing here: **a plan is one line to this grammar.** `SCHEDULED:`
+on one line and `DEADLINE:` on the next parses only the first as `plan`;
+the second is body prose, so its date is invisible to the agenda. Org
+itself accepts both spellings. That is the pinned grammar's behaviour,
+not lattice's, and it moves when the grammar does.
 
 ## 6. The agenda
 

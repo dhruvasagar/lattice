@@ -12,48 +12,81 @@ Spans two repos. Slices marked **(plugin)** land in
 
 | Slice | Title | Status |
 |---|---|---|
-| OE.0 | Where a `:PROPERTIES:` drawer goes — resolve it against the grammar | 📝 |
+| OE.0 | Where a `:PROPERTIES:` drawer goes — resolve it against the grammar **(plugin)** | ✅ |
 | OE.1 | A property writer that can create a drawer **(plugin)** | 📝 |
 | OE.2 | `org-set-property` **(plugin)** | 📝 |
 | OE.3 | `org-ctrl-c-ctrl-c` — org's own arms **(plugin)** | 📝 |
 | OE.4 | The table arm, on `table-mode`'s own layer **(host)** | 📝 |
 
-OE.0 blocks OE.1 (it decides the helper's insertion point) and nothing else.
+OE.0 blocked OE.1 (it decided the helper's insertion point) and nothing else.
 OE.2 needs OE.1. OE.3 and OE.4 are independent of both and of each other —
 OE.4's decline falls through to whatever org's major has, including nothing, so
 it can land first or last.
 
+OE.1 is smaller than planned: OE.0 shipped the insertion-point fix and
+`drawer_line_for` with it, so what remains is the three-case writer over an
+already-correct answer.
+
 ---
 
-## OE.0 — Where a `:PROPERTIES:` drawer goes 📝
+## OE.0 — Where a `:PROPERTIES:` drawer goes **(plugin)** ✅
 
-**A question before a slice, because two places in this tree disagree and one
-of them is writing to users' files.**
+Design: [`org-mode.md`](../../architecture/org-mode.md) §5.5.
 
-`agenda.rs`'s module header says org's grammar puts `plan` before
-`property_drawer`, so a `SCHEDULED:` line genuinely comes first. `clock.rs`
-walks `["plan", "property_drawer"]` in that order to find where a `LOGBOOK`
-goes. But `roam_index::id_drawer_insert` documents "org requires the drawer to
-be the first thing under its headline" and inserts at `headline_line + 1`
-unconditionally — so `:org-roam-id-create` on a scheduled headline puts the
-drawer *above* the planning line.
+**Planned as a question, landed as a bug fix.** The plan said the answer would
+ride OE.1; it does not, because the answer turned out to be that
+`:org-roam-id-create` has been damaging users' files, and carrying a known
+defect across two slices to keep a sequencing note intact is not a trade worth
+making. The generalisation OE.1 describes now starts from a correct helper.
 
-Both cannot be right. Resolve against **tree-sitter-org's grammar**, which is
-the authority available in-tree, and against what org itself writes: a fixture
-with `SCHEDULED:` and a drawer, parsed, with the node order asserted.
+**The grammar is unambiguous.** tree-sitter-org's `section` rule is a SEQ:
+`headline, [plan], [property_drawer], [body], subsection*`. The plan comes
+first, so `agenda.rs`'s module header and `clock.rs`'s walk order were right
+and `id_drawer_insert`'s "org requires the drawer to be the first thing under
+its headline" was wrong.
 
-- If the drawer belongs after the plan, `id_drawer_insert` has a live bug and
-  OE.1 fixes both callers on one helper. A regression test goes on the roam
-  side naming it, because the symptom is a file that reads fine to a human and
-  parses wrong.
-- If it belongs first, `clock.rs`'s walk order is the thing to re-read, and
-  OE.1 inherits `headline_line + 1`.
+**Confirmed by parsing, not by reading the rule.** The grammar's own corpus has
+no case combining a plan with a drawer, so the fixtures were parsed against the
+pinned grammar directly (`parser.c` built natively, three inputs dumped). What
+they show is worse than a style deviation:
 
-Either way the answer is written into the helper's doc comment with the
-evidence, so the third caller does not re-litigate it.
+| Input | `plan` field | `SCHEDULED:` parses as |
+|---|---|---|
+| plan, then drawer | present | `plan → entry → timestamp` |
+| drawer, then plan | **absent** | a `paragraph` in `body`, no timestamp |
 
-**Not a code slice.** It ends in a finding plus a test fixture; the fix (if
-any) rides OE.1.
+`agenda.rs:419` reads the date from `section.child_by_field("plan")`, so an
+`:ID:` minted on a scheduled TODO **moved it out of the dated agenda into the
+undated block**. The file still reads correctly to a human — which is why the
+defect survived a slice that had tests, a review and a doc comment asserting
+the opposite.
+
+Two further findings from the same fixtures, neither this slice's to fix:
+
+- **A plan is ONE line here.** `SCHEDULED:` on one line and `DEADLINE:` on the
+  next parses only the first; the second is body prose, so its date is
+  invisible to the agenda. Org itself accepts both. That is the pinned
+  grammar's behaviour and moves when the grammar does — recorded in
+  `org-mode.md` §5.5 rather than worked around.
+- **Indentation is not a factor**: an indented plan and drawer parse the same.
+  So the insertion point needs no loop and no whitespace rule — one line past
+  the headline, plus one more if that line is planning.
+
+**The fix.** `roam_index::drawer_line_for` is that answer as a function, public
+because OE.1's writer needs the same one and two derivations of "where does the
+drawer go" would drift silently. `planning::parse` decides what a planning line
+is, reusing its deliberate strictness: a prose line that merely mentions
+`SCHEDULED:` must not push the drawer past it.
+
+**Tests:** four in `roam_index`, and their value is that they were **verified
+to fail with the fix reverted** — the drawer lands below the plan; an existing
+drawer below a plan is found and extended rather than duplicated; an `:ID:`
+below a plan is still recognised (before the fix the walk began on the plan
+line, saw no `:PROPERTIES:`, and would have opened a second drawer on a
+scheduled node); and prose mentioning `SCHEDULED:` does not move it.
+
+Gate: 761 green across the org plugin (17 suites), fmt clean, no new clippy
+warnings.
 
 ---
 
@@ -86,6 +119,10 @@ has.
 headline; materialising the file to look at four of them scales the cost with
 the document, which is the shape `headline.rs` already sets and the reason this
 helper is testable without an editor.
+
+**The insertion point is settled** — `roam_index::drawer_line_for`, from OE.0.
+Do not re-derive it here; that is the drift the helper was made public to
+prevent.
 
 **Tests:** the three cases above; a drawer that is never closed (stop at the
 next headline rather than attaching the property to the wrong entry — the trap

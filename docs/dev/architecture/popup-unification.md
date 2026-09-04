@@ -169,3 +169,47 @@ The queued "help into the registry" move (§3, first bullet) removes the
 class rather than this instance — once popup content is an ordinary
 listed buffer in an ordinary pane, there is no second identity left to
 pick the wrong one of.
+
+## 9. …and a third time, on the FOCUS question
+
+Found in use the same day (2026-09-04): focus an LSP hover popup, press
+`/`, and the popup tore itself down as characters were typed — leaving
+an inactive document that answered no keys until the user switched tab
+or split.
+
+The hover auto-dismiss (Issue #20) fires when a State-A popup's anchor
+goes stale, and it decided "State A" — shown but never focused — with
+`active_buffer == BufferKind::Document`. The reasoning was sound and the
+premise was not: **the minibuffers are synthetic Documents.**
+`*search-line*`, `*command-line*` and prompt buffers all are, so
+focusing one from inside a focused popup flips `active_buffer` back to
+`Document` while `popup_focused` stays true, and a focused popup
+answered to a test meant for an unfocused one.
+
+The rest is mechanical. Every keystroke moved `Editor::cursor` — the
+*search line's* — which the motion check read as the document's caret
+leaving the anchored symbol; `dismiss_popup` then restored
+`prev_pane_for_popup` over a pane the minibuffer owned, and `<Esc>`
+restored `prior_active_buffer` (`Help`) with `popup_buffer` already
+`None`. Hence an editor that looked focused nowhere, and recovered on a
+pane switch.
+
+Two rules come out of it, and they generalise past this call site:
+
+- **A focus question is answered by the focus flag.** `popup_focused`
+  says whether a popup has focus; a `BufferKind` says what a buffer *is*
+  and coincides with focus only until some other surface shares the
+  kind. §8 recorded the same shape for identity (`document_buffer_id`
+  standing in for `active_buffer_id()`); this is its focus twin.
+- **Cursor motion belongs to a buffer.** Anything that reacts to
+  `Editor::cursor` moving must first ask whose cursor moved. Across a
+  dispatch where `minibuffer_focus` is set, the answer is "the
+  minibuffer's", and document-anchored state — hover anchors, and any
+  future anchored decoration — must not react to it.
+
+`searching_from_a_focused_popup.rs` is the guard, and it took three
+attempts to write one that could fail: seeding the pattern with
+`set_search_line_text` and then dispatching leaves the caret unmoved
+*within* the dispatch the check spans, and `Action::SearchAppend` is an
+empty arm (MB.5a routes typing through `Action::Insert`). Both earlier
+versions passed against the bug.

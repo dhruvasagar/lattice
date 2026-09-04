@@ -674,3 +674,43 @@ fn the_completion_popup_shadows_the_table_tab_while_it_is_up() {
         other => panic!("expected Bound, got {other:?}"),
     }
 }
+
+// ── OE.4: `C-c C-c` on a table ──────────────────────────────────────────
+
+/// Emacs' `C-c C-c` realigns the table at the cursor, and `table-mode` is
+/// where that arm belongs: it owns pipe tables for markdown AND org, and org
+/// cannot reach `action:table-align` at all — a guest cannot invoke a
+/// registered command (`org-mode.md` §5.4).
+#[test]
+fn ctrl_c_ctrl_c_realigns_the_table_at_the_cursor() {
+    match run("action:table-realign", TABLE, 0, 2) {
+        Effect::ApplyEdit { edit, .. } => {
+            let lattice_protocol::edit::EditKind::Replace { text } = &edit.kind;
+            let widths: Vec<usize> = text.lines().map(str::len).collect();
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "columns line up:\n{text}"
+            );
+        }
+        other => panic!("expected one ApplyEdit, got {other:?}"),
+    }
+}
+
+/// …and OUTSIDE a table it DECLINES, which is the whole reason the chord is
+/// bound to `REALIGN` and not to `ALIGN`.
+///
+/// `table-mode` is active on the entire buffer, not only inside tables. A
+/// consuming action here would swallow `C-c C-c` everywhere and leave org's
+/// dispatcher — the layer below — dead. `Effect::Declined` is what makes the
+/// two compose; the org-side half of this pair lives in the plugin's
+/// `outside_a_table_the_chord_reaches_orgs_dispatcher`.
+#[test]
+fn outside_a_table_ctrl_c_ctrl_c_declines_so_the_layer_below_gets_it() {
+    assert!(
+        matches!(
+            run("action:table-realign", "not a table at all\n", 0, 0),
+            Effect::Declined
+        ),
+        "declining is what lets org's `C-c C-c` arms exist at all"
+    );
+}

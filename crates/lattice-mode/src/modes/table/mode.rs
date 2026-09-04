@@ -131,6 +131,22 @@ fn table_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Next table cell", cmd: Some(NEXT_CELL) },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Previous table cell", cmd: Some(PREV_CELL) },
             keymap_entry! { mode: Normal, chord: "<leader>t|", doc: "Align this table", cmd: Some(ALIGN) },
+            // OE.4 — emacs' `C-c C-c` on a table realigns it, and this mode
+            // is where that arm belongs: `table-mode` owns pipe tables for
+            // markdown AND org, and org cannot reach `action:table-align`
+            // anyway (a guest cannot invoke a registered command — see
+            // `org-mode.md` §5.4).
+            //
+            // `REALIGN`, not `ALIGN`, because the difference between them is
+            // exactly what this chord needs: it DECLINES outside a table, so
+            // the dispatcher re-resolves one layer down and org's
+            // `org-ctrl-c-ctrl-c` gets the chord. `ALIGN` consumes it, which
+            // is right for `<leader>t|` (nothing beneath a leader prefix) and
+            // would make `C-c C-c` dead everywhere but a table.
+            //
+            // Markdown gets the same key for free, which is the point of the
+            // mode being shared.
+            keymap_entry! { mode: Normal, chord: "<C-c><C-c>", doc: "Realign the table at the cursor", cmd: Some(REALIGN) },
             keymap_entry! { mode: Normal, chord: "<leader>tK", doc: "Move table row up", cmd: Some(ROW_UP) },
             keymap_entry! { mode: Normal, chord: "<leader>tJ", doc: "Move table row down", cmd: Some(ROW_DOWN) },
             keymap_entry! { mode: Normal, chord: "<leader>tH", doc: "Move table column left", cmd: Some(COLUMN_LEFT) },

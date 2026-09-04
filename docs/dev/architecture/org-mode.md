@@ -378,6 +378,85 @@ chord is involved in any of those. This is paramount goal #3 working as
 designed: the grammar is the public API, and a plugin extends the
 vocabulary rather than bolting a parallel command set beside it.
 
+### 5.4 `C-c C-c`, and why its arms are not one function
+
+Emacs' `org-ctrl-c-ctrl-c` is the key an org user presses when they want
+*this thing here* acted on. It reads the cursor's context and dispatches:
+a headline sets tags, a checkbox toggles, a table realigns, a `#+`
+keyword line re-reads setup, a dynamic block updates, a source block
+evaluates. It is the most-pressed key in org and lattice does not have
+it.
+
+Every *individual* verb it reaches is already here — `<C-c><C-q>` tags,
+`<C-Space>` checkbox, `<leader>t|` align — so what is missing is the
+dispatch, not the work. Sequencing is in
+[`org-entry-editing.md`](../operations/slice-plans/org-entry-editing.md).
+
+**The arms do not all belong to org, and that is the design.** A guest
+cannot invoke a registered command: there is no `Effect::Invoke`, and the
+only action names a guest may hand the host (`confirm.yes-action`,
+`open-prompt.on-submit-action`) require a user interaction to reach. So
+an org-side dispatcher could not call `action:table-align` even though
+that action exists and org buffers already have it — org would have to
+re-implement table alignment, which is precisely what `table-mode`
+(TB.1, shared with markdown) exists to prevent.
+
+The answer is the layer stack rather than a bigger seam. **`C-c C-c` is a
+shared chord, so each mode that has something to do with it binds it and
+declines when it does not apply.** `table-mode` binds it to align and
+returns `Effect::Declined` outside a table; org's major binds it to its
+own dispatcher, one layer below; `org-capture-mode` binds it to finalize,
+one layer above, and never declines. The dispatcher peels one layer per
+decline and preserves the prefix, so the chain composes — the case its
+own comment cites is `table-mode`'s `<Tab>` falling through to org's fold
+cycle, which is this shape exactly.
+
+This keeps every arm's body with the mode that owns the buffer it acts
+on, which is the standing rule, and it means adding an arm later (a
+future babel block, a clocktable) is a binding on the mode that owns
+*that*, not an edit to a growing `match` in org.
+
+**The fallback is a message, not silence.** A context with no arm echoes
+what it saw — emacs answers `C-c C-c can do nothing useful at this
+location`, and the alternative here is the failure this codebase keeps
+paying for: a key that does nothing, indistinguishable from a missing
+binding.
+
+**What has no arm, and why**, so the list is a record rather than an
+omission: `#+` keyword lines (org's setup comes from lattice's typed
+config, not from in-file keywords — there is nothing to re-read), dynamic
+blocks (no clocktable *writer*; the agenda's clock report is a virtual
+row, OA.16), source blocks (no babel), footnotes (no footnote support).
+Each becomes an arm when its feature lands, on the mode that lands it.
+
+### 5.5 Properties are a drawer, and writing one is not `set_property`
+
+`:PROPERTIES:` is read in three places already — the agenda's `Row`
+carries a headline's drawer, `complete.rs` reads `:KEY:` for repeaters,
+roam reads `:ID:` — and written in exactly one: `roam_index`'s
+`id_drawer_insert`, which finds or creates a drawer to put an `:ID:` in.
+
+`org-set-property` (emacs' `C-c C-x p`) is that writer generalised, with
+two differences that are not cosmetic. A key that is already present must
+be **replaced**, where the `:ID:` case refuses (a second `:ID:` is a file
+org cannot read; a second `:CATEGORY:` is just a stale line). And
+`complete.rs`'s private `set_property` deliberately does **not** create a
+drawer — right for `LAST_REPEAT`, which should not manufacture three
+lines on a plain repeating task, and wrong for a user who typed the
+command.
+
+**One question decides where the drawer goes, and it is not settled in
+this tree.** Org's grammar puts `plan` before `property_drawer` — the
+agenda fragment says so, and `clock.rs` walks `["plan",
+"property_drawer"]` in that order — but `id_drawer_insert` inserts at
+`headline_line + 1` unconditionally, which on a headline carrying
+`SCHEDULED:` puts the drawer *above* the planning line. Either the
+insertion point is wrong (and `:org-roam-id-create` has been writing
+non-canonical drawers on every scheduled headline) or the comment
+claiming the drawer must come first is. The slice resolves it against
+the grammar before generalising the helper, because both callers then
+inherit the answer.
+
 ## 6. The agenda
 
 > **The agenda as a dashboard has its own fragment.**

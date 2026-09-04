@@ -7114,6 +7114,36 @@ becoming a ~1.5 ms window rebuild. Both are in
 
 ---
 
+### `C-c C-c` and entry properties (OE) — 📝 planned
+
+Emacs' most-pressed org key, and the property writer it needs. Every verb
+`org-ctrl-c-ctrl-c` reaches already exists here (`<C-c><C-q>` tags,
+`<C-Space>` checkbox, `<leader>t|` align); what is missing is the dispatch —
+and `org-set-property`, which nothing covers at all.
+
+The design turns on one constraint: **a guest cannot invoke a registered
+command.** There is no `Effect::Invoke`, and the action names a guest may hand
+the host (`confirm.yes-action`, `open-prompt.on-submit-action`) all need a user
+interaction to reach. So an org-side dispatcher could not call
+`action:table-align` even though org buffers have it — and re-implementing
+alignment in org is what `table-mode` exists to prevent. The answer is the
+layer stack: each mode binds `<C-c><C-c>` and DECLINES when it does not apply,
+which is what `Effect::Declined` composes for now that it preserves the prefix
+and peels one layer per decline.
+
+One slice is a question rather than code. `roam_index::id_drawer_insert` puts a
+`:PROPERTIES:` drawer at `headline_line + 1` unconditionally, while `agenda.rs`
+and `clock.rs` both say org's grammar puts `plan` first — so either
+`:org-roam-id-create` has been writing non-canonical drawers on scheduled
+headlines or the comment is wrong, and both callers inherit whichever answer
+the grammar gives.
+
+Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §5.4–§5.5.
+Slice plan:
+[`slice-plans/org-entry-editing.md`](slice-plans/org-entry-editing.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

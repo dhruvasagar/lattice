@@ -477,3 +477,54 @@ fn a_popup_does_not_reserve_the_background_panes_context_rows() {
          so the window ends exactly at the last line"
     );
 }
+
+/// `:` must open the command line while a popup has focus.
+///
+/// > When popup is open, I am not able to use command line
+///
+/// `command_line_active()` asked "is SOMETHING focused, and is it not a search
+/// line" — equivalent to "the `:` line is open" only while the minibuffers
+/// were the only focusable surfaces. FS.2 put a focused popup on the same
+/// stack and broke the equivalence: with a popup up the predicate answered
+/// true with no command line in existence, so `Action::EnterCommandLine`'s
+/// "you are already in it" guard returned immediately and `:` did nothing.
+///
+/// Driven as a KEYPRESS, and with the deferred follow-ups drained. `:` under
+/// a focused popup resolves to the registered `action:enter-command-line`
+/// command, which arrives as an `AppEffect` on `next_actions` rather than as
+/// a direct action — a test that dispatched `Action::EnterCommandLine` itself
+/// would skip the whole resolution path this bug lives on, and one that
+/// dropped `next_actions` would see nothing happen for the wrong reason.
+///
+/// Asserted on `modal`, not on `command_line_active()`: the predicate was
+/// what was broken, so trusting it here would pass on the broken build.
+#[test]
+fn colon_opens_the_command_line_from_a_focused_popup() {
+    fn open_colon(editor: &mut Editor) {
+        let mut partial = Vec::new();
+        let action = editor.dispatch_chord(lattice_host::chord::KeyChord::char(':'), &mut partial);
+        let mut outcome = editor.dispatch(action);
+        let mut queue: Vec<_> = std::mem::take(&mut outcome.next_actions);
+        while let Some(a) = queue.pop() {
+            let mut o = editor.dispatch(a);
+            queue.extend(std::mem::take(&mut o.next_actions));
+        }
+    }
+
+    // Baseline, so a failure says "popups" rather than "`:` is broken".
+    let mut editor = Editor::boot(CoreDocument::from_text(FILE));
+    open_colon(&mut editor);
+    assert!(
+        matches!(editor.modal, lattice_grammar::ModalState::Command),
+        "baseline: `:` enters Command mode in a plain document"
+    );
+
+    let (mut editor, _file) = editor_with_focused_popup();
+    open_colon(&mut editor);
+    assert!(
+        matches!(editor.modal, lattice_grammar::ModalState::Command),
+        "`:` from a focused popup must enter Command mode too — Normal here \
+         means the line never opened and every key you type next goes to the \
+         popup instead"
+    );
+}

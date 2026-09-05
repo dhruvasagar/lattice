@@ -7985,7 +7985,33 @@ impl Editor {
     /// the search line is not active (MB.5a). See
     /// [`Self::focus_editing_buffer`].
     pub fn command_line_active(&self) -> bool {
-        self.focused_surface().is_some() && self.search_line.is_none()
+        // Ask whether the focused surface IS the `*command-line*` buffer.
+        //
+        // This was `focused_surface().is_some() && search_line.is_none()` —
+        // "something is focused and it is not a search line" — which was
+        // equivalent while the ONLY focusable surfaces were the minibuffers.
+        // FS.2 put a focused popup on the same stack, and the equivalence
+        // died with it: with a popup up this answered `true` while no command
+        // line existed at all.
+        //
+        // `Action::EnterCommandLine` opens with
+        // `if command_line_active() { return; }` — "you are already in it" —
+        // so `:` from a focused popup returned immediately and did nothing.
+        // That is the "can't use the command line when a popup is open"
+        // report, and every other reader of this predicate was wrong in the
+        // same state.
+        //
+        // FS.1b's `focused_buffer` is what makes the honest question cheap:
+        // the frame records which buffer it focused, so this compares
+        // identities instead of counting frames.
+        let Some(focus) = self.focused_surface() else {
+            return false;
+        };
+        self.search_line.is_none()
+            && self
+                .buffers
+                .by_name(crate::command_line_mode::COMMAND_LINE_BUFFER_NAME)
+                .is_some_and(|id| id == focus.focused_buffer)
     }
 
     /// MB.5a: `true` while the `*search-line*` buffer is focused for

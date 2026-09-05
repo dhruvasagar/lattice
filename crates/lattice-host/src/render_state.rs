@@ -3916,6 +3916,62 @@ mod tests {
         assert!(rs2.cells.load().panes.iter().all(|p| p.last_edit.is_none()));
     }
 
+    /// CHARACTERIZATION (PC.1): a focused popup does not re-anchor the pane
+    /// behind it.
+    ///
+    /// **This passed before the PC.1 clamp fix and is not a regression test
+    /// for it** — it is pinned because the property is load-bearing and holds
+    /// only INCIDENTALLY. `owns_live_view` excludes prompts from taking the
+    /// live cursor but says nothing about popups; what actually saves the pane
+    /// is `active_doc_active`, which omits `BufferKind::Help`, so a focused
+    /// popup drops `is_active_pane` to false and the leaf keeps its own
+    /// scroll and context anchor.
+    ///
+    /// Add Help to that list for some unrelated reason and the pane behind
+    /// would silently start resolving its sticky-context strip from wherever
+    /// the popup is scrolled to — the file's strip wearing the popup's
+    /// coordinates. Asserted on `scroll`, which `owns_live_view` gates jointly
+    /// with the context anchor and which the published entry carries; the
+    /// anchor itself is consumed inside the resolve and never surfaces.
+    #[test]
+    fn a_focused_popup_does_not_re_anchor_the_pane_behind_it() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text(
+            "l0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n",
+        ));
+        editor.viewport_height = 6;
+        // The FILE is parked partway down; this is the anchor its own strip
+        // must keep using.
+        editor.cursor.line = 8;
+        editor.scroll = 6;
+        let pane_id = editor.pane_tree.active().id;
+
+        let content = lattice_help::parse_help_lines(
+            "hover",
+            (0..40).map(|i| format!("popup {i}")).collect(),
+        );
+        let _ = editor.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        editor.focus_help_popup();
+        editor.popup_viewport_height = 8;
+
+        // Scroll the POPUP a long way from where the file sits.
+        editor.cursor.line = 33;
+        editor.scroll = 30;
+
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+        let rsc = rs.cells.load();
+        let pane = rsc
+            .panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .expect("the document pane is still published behind the popup");
+        assert_eq!(
+            pane.scroll, 6,
+            "the pane behind must keep its OWN view; taking the popup's \
+             scroll (30) would re-anchor its context strip to the popup"
+        );
+    }
+
     // ---- D.4.d.1.c (per-pane matrix lookup) ----
 
     /// D.4.d.1.c: `cells.pane_matrices` carries one entry per

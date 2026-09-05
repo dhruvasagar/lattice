@@ -402,3 +402,78 @@ fn a_stale_pane_stash_does_not_clobber_the_dismiss_restore() {
          old overwrite-then-take did by accident"
     );
 }
+
+/// The popup's scroll budget must not pay for the strip behind it.
+///
+/// > If pressed `G` or scrolled in a popup the cursor goes a few lines
+/// > outside the popup bounds […] I believe this may be the result of
+/// > treesitter context lines showing up in the help buffer as you scroll.
+///
+/// The mechanism, and the reporter's hunch was right about the culprit if not
+/// its location: `ensure_cursor_visible` picks the POPUP's inner height when
+/// one is focused, then subtracted the sticky-context row count of
+/// `pane_tree.active()` — the document pane BEHIND the popup. A popup has no
+/// context strip of its own (`PopupPaneSpec` carries no sticky-context fields;
+/// `resolve_sticky_context_lines` runs only for document panes), so those rows
+/// are pure fiction as far as the popup is concerned, and the scroll settled
+/// exactly that many rows too far down.
+///
+/// Asserted as an INVARIANT — the same scroll with and without the strip —
+/// rather than against a magic number, because the number is whatever the
+/// clamp arithmetic happens to produce and the bug is the difference.
+#[test]
+fn a_popup_does_not_reserve_the_background_panes_context_rows() {
+    fn scroll_after_g(context_rows: usize) -> (u32, u32) {
+        let mut editor = Editor::boot(CoreDocument::from_text(FILE));
+        editor.viewport_height = 16;
+        editor.cursor.line = 3;
+        let body: Vec<String> = (0..30).map(|i| format!("popup row {i:02}")).collect();
+        let content = lattice_help::parse_help_lines("hover", body);
+        let _ = editor
+            .open_floating_popup(content, lattice_host::popup::PopupPlacement::CursorAnchored);
+        editor.focus_help_popup();
+        editor.popup_viewport_height = 8;
+
+        if context_rows > 0 {
+            let pane = editor.pane_tree.active().id;
+            let cell = editor.sticky_context_for(pane);
+            let mut ctx = lattice_host::sticky_context::StickyContext::empty();
+            ctx.rows = (0..context_rows)
+                .map(|i| lattice_host::sticky_context::StickyContextRow {
+                    source_line: i as u32,
+                    cells: std::sync::Arc::from([] as [lattice_cells::Cell; 0]),
+                })
+                .collect();
+            cell.store(std::sync::Arc::new(ctx));
+        }
+
+        // `G`: the caret lands on the last line of the FOCUSED buffer — the
+        // popup, since FS.2 — and the clamp then chooses a scroll.
+        let last = editor
+            .document
+            .snapshot()
+            .buffer
+            .content_line_count()
+            .saturating_sub(1);
+        editor.cursor.line = last;
+        editor.ensure_cursor_visible();
+        (editor.scroll, last)
+    }
+
+    let (plain, last) = scroll_after_g(0);
+    let (with_context, _) = scroll_after_g(3);
+    assert_eq!(
+        with_context,
+        plain,
+        "a context strip on the buffer BEHIND the popup must not move the \
+         popup's scroll; it moved by {} rows, which is what puts the caret \
+         outside the popup",
+        with_context as i64 - plain as i64
+    );
+    assert_eq!(
+        plain + 8,
+        last + 1,
+        "and the sanity check on the baseline: `G` bottom-anchors the popup, \
+         so the window ends exactly at the last line"
+    );
+}

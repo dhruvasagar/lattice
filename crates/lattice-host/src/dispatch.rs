@@ -6515,10 +6515,28 @@ impl Editor {
         // strip that the post-clamp scroll may not produce. The publish path
         // stays authoritative: it resolves once and both the worker and the
         // renderers read that one list.
-        let context_count = self
-            .sticky_context_for(self.pane_tree.active().id)
-            .load()
-            .len() as u32;
+        //
+        // **The strip must describe the same surface as `height`.** `height`
+        // above is the POPUP's inner window when one is focused; this read was
+        // keyed on the document pane BEHIND it, so the popup's budget paid for
+        // the file's context strip. That over-scrolls the popup by exactly the
+        // number of context lines on the buffer behind it — the "`G` in a
+        // popup puts the caret a few lines outside the bounds" report.
+        //
+        // Keyed by SURFACE rather than gated to zero: `PaneId::POPUP` is the
+        // popup's own sentinel pane, and its cell is empty until PC.2
+        // populates it, so a popup reserves nothing today and reserves its own
+        // strip the moment it has one. A hardcoded zero would have had to be
+        // found and undone; this slot just fills.
+        //
+        // `vrows` needs no such care — it is keyed by `active_buffer_id()`,
+        // which is already the popup's buffer while one is focused.
+        let context_pane = if self.popup_focused && self.popup_viewport_height > 0 {
+            lattice_core::ui::pane::PaneId::POPUP
+        } else {
+            self.pane_tree.active().id
+        };
+        let context_count = self.sticky_context_for(context_pane).load().len() as u32;
         let sticky_count = vrows.sticky_rows().count() as u32 + context_count;
         let effective_height = height.saturating_sub(sticky_count).max(1);
         // 2026-08-16 diagnostic: the scroll clamp's inputs, captured on entry.

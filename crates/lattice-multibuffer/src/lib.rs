@@ -365,11 +365,35 @@ impl Drop for MultibufferInner {
 /// forwarder task doesn't need to re-walk the row translation
 /// (which may have shifted by the time the task runs).
 #[derive(Debug)]
+/// What the forwarder needs to announce a source change it just made.
+///
+/// Carried in the message rather than held by the forwarder task, because the
+/// task is spawned inside `new()` — before `Self` exists — while the sender
+/// (`apply_edit_batch_sync`) has `&self` and can hand over both the bus and a
+/// `Weak` back to the view.
+struct AnnounceSource {
+    /// The source's buffer id, for the self-origin record below.
+    source_id: BufferId,
+    /// Weak so a dropped view lets the forwarder fall through to a no-op
+    /// rather than keeping the whole multibuffer alive.
+    inner: std::sync::Weak<MultibufferInner>,
+    bus: Arc<lattice_runtime::EventBus>,
+}
+
 enum SourceForwardMsg {
     /// Propagate a composed-coordinate edit to its source actor.
+    ///
+    /// `announce` is how the source's change gets ANNOUNCED. Applying it here
+    /// used to be the end of the story: the source actor was mutated and
+    /// nothing published, so nothing downstream — this view's own syntax
+    /// reparse, a second view on the same file, the diff subsystem, a plugin
+    /// watching `DocumentChanged` — ever learned the file had changed. A
+    /// buffer that changes without an event is one every subscriber has
+    /// stale.
     Edit {
         source_handle: Arc<dyn Document>,
         source_edit: Edit,
+        announce: Option<AnnounceSource>,
     },
     /// OA.23b: an edit written straight at a source, in SOURCE
     /// coordinates, for a line the view does not contain.
@@ -423,6 +447,21 @@ struct MultibufferState {
     /// stale — there is no file to conflict with.
     /// See `docs/dev/architecture/multibuffer-stale-sources.md`.
     source_fingerprints: HashMap<BufferId, lattice_core::on_disk::OnDiskFingerprint>,
+    /// The newest source `text_version` this view itself produced, per source.
+    ///
+    /// The view forwards its composed edits to the sources, and those now
+    /// announce themselves on the bus — which means this view's own
+    /// subscription hears its own edit come back. That echo must not be
+    /// treated as an outside change: `slide_anchors_for_source` would shift
+    /// excerpts for an edit the composed edit already accounted for, moving
+    /// every row below the one you just typed on.
+    ///
+    /// Matching on the VERSION rather than adding a field to
+    /// `Event::DocumentChanged`: the version is already carried, is already
+    /// unique per mutation, and keeps the provenance question inside the one
+    /// crate that has it. An event field would put it in the protocol for
+    /// every subscriber that does not care.
+    self_forwarded_versions: HashMap<BufferId, u64>,
     excerpts: Vec<Excerpt>,
     /// K.4.7 (2026-06-07): per-source SyntaxHandle for excerpt
     /// highlighting. Populated by `add_source` when `lang_registry`
@@ -653,8 +692,40 @@ impl MultibufferDocumentHandle {
                     SourceForwardMsg::Edit {
                         source_handle,
                         source_edit,
+                        announce,
                     } => {
-                        let _ = source_handle.apply_edit(source_edit).await;
+                        let applied = source_handle.apply_edit(source_edit).await;
+                        // Announce the source change. Only on SUCCESS: a
+                        // failed apply left the source untouched, and telling
+                        // the world it changed would make every subscriber
+                        // recompute against content that never existed.
+                        if let (Ok(applied), Some(announce)) = (applied, announce) {
+                            let snap = source_handle.snapshot();
+                            // Record BEFORE publishing: the subscription runs
+                            // on another task and the publish is what wakes
+                            // it, so writing the version afterwards is a race
+                            // this view would lose by sliding its own anchors.
+                            if let Some(inner) = announce.inner.upgrade()
+                                && let Ok(mut state) = inner.state.lock()
+                            {
+                                state
+                                    .self_forwarded_versions
+                                    .insert(announce.source_id, snap.text_version);
+                            }
+                            announce
+                                .bus
+                                .publish(lattice_protocol::Event::DocumentChanged {
+                                    id: snap.id,
+                                    path: snap.path().map(|p| p.to_path_buf()),
+                                    version: snap.version,
+                                    edits: vec![lattice_protocol::event::AppliedEdit {
+                                        original_range: applied.original_range,
+                                        inserted_range: applied.inserted_range,
+                                        replaced_text: applied.replaced_text.clone(),
+                                        inserted_text: applied.inserted_text.clone(),
+                                    }],
+                                });
+                        }
                     }
                     // Same await, but the result goes back: this one has
                     // a caller that reports failure.
@@ -685,6 +756,7 @@ impl MultibufferDocumentHandle {
                         .iter()
                         .filter_map(|(id, src)| fingerprint_source(src).map(|fp| (*id, fp)))
                         .collect(),
+                    self_forwarded_versions: HashMap::new(),
                     sources,
                     excerpts,
                     source_syntax: HashMap::new(),
@@ -852,9 +924,11 @@ impl MultibufferDocumentHandle {
                     };
                     let target = resolve_edit_target(&state, edit.range.start)?;
                     let source_edit = build_source_edit(&target, &edit);
+                    let announce = self.announce_for(target.source_id);
                     Some(SourceForwardMsg::Edit {
                         source_handle: target.source_handle.clone(),
                         source_edit,
+                        announce,
                     })
                 })
                 .collect()
@@ -1324,6 +1398,26 @@ impl MultibufferDocumentHandle {
         }
     }
 
+    /// The payload the forwarder needs to announce a source change, or `None`
+    /// before `attach_event_subscriptions` has handed this view a bus.
+    ///
+    /// `None` is the correct quiet case, not a failure: with no bus there is
+    /// no subscriber to tell, and a view that has not been attached yet is not
+    /// on screen.
+    fn announce_for(&self, source_id: BufferId) -> Option<AnnounceSource> {
+        let bus = self
+            .inner
+            .subscriptions
+            .lock()
+            .ok()
+            .and_then(|b| b.bus.clone())?;
+        Some(AnnounceSource {
+            source_id,
+            inner: Arc::downgrade(&self.inner),
+            bus,
+        })
+    }
+
     /// Build a source's `SyntaxHandle` with its reparse WAKE already wired.
     ///
     /// The one constructor both creation sites use, because the wake is the
@@ -1521,8 +1615,16 @@ impl MultibufferDocumentHandle {
                     break;
                 };
                 match event {
-                    lattice_protocol::Event::DocumentChanged { id, edits, .. } => {
+                    lattice_protocol::Event::DocumentChanged {
+                        id, edits, version, ..
+                    } => {
                         if let Some(source_id) = source_buffer_for_document_id(&inner, id) {
+                            // Is this our OWN edit coming back? The composed
+                            // edit already moved the rope and the anchors, so
+                            // treating the echo as an outside change would
+                            // slide every excerpt below the edited row a
+                            // second time.
+                            let echo = take_self_forwarded(&inner, source_id, version);
                             // M.4.1: slide excerpts whose start
                             // row sits strictly below the edit's
                             // original end. Edits that overlap
@@ -1530,14 +1632,16 @@ impl MultibufferDocumentHandle {
                             // it, leave excerpts alone — the
                             // recompose picks up the new
                             // content for in-excerpt edits.
-                            slide_anchors_for_source(&inner, source_id, &edits);
-                            recompose_inner(&inner);
-                            // The composed TEXT is current now; the source's
-                            // spans are not. Without this the view renders
-                            // new text under old colours — a task toggled to
-                            // DONE keeps TODO's highlight — and it never
-                            // self-heals, because nothing else ever reparses
-                            // a source handle.
+                            if !echo {
+                                slide_anchors_for_source(&inner, source_id, &edits);
+                                recompose_inner(&inner);
+                            }
+                            // Reparse on BOTH paths. The echo is the case that
+                            // matters most — an edit made THROUGH the view is
+                            // how a task gets toggled to DONE — and it is the
+                            // one where the composed text is already right, so
+                            // skipping the reparse here is precisely the "new
+                            // text, old colours" bug.
                             reparse_source_syntax(&inner, source_id);
                             // PD.7c: the view has recomposed correctly;
                             // what may now be wrong is whatever the
@@ -1637,6 +1741,31 @@ fn slide_anchors_for_source(
                 excerpt.end_line = new_end as u32;
             }
         }
+    }
+}
+
+/// Was this `DocumentChanged` the view's OWN forwarded edit coming back?
+///
+/// Consumes the record when it matches, so the answer is true exactly once per
+/// forwarded edit: a later outside change at a higher version is a genuine
+/// outside change and must slide anchors normally.
+///
+/// Compares `>=` rather than `==` because several composed edits can be in
+/// flight at once (`apply_edit_batch`), and the newest recorded version is the
+/// tip of what this view produced. A stale record below the incoming version
+/// cannot be an echo of it.
+fn take_self_forwarded(inner: &Arc<MultibufferInner>, source_id: BufferId, version: u64) -> bool {
+    let Ok(mut state) = inner.state.lock() else {
+        return false;
+    };
+    match state.self_forwarded_versions.get(&source_id).copied() {
+        Some(recorded) if recorded >= version => {
+            if recorded == version {
+                state.self_forwarded_versions.remove(&source_id);
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1744,6 +1873,7 @@ impl Document for MultibufferDocumentHandle {
             SourceForwardMsg::Edit {
                 source_handle: target.source_handle.clone(),
                 source_edit,
+                announce: self.announce_for(target.source_id),
             }
         });
         drop(state);
@@ -2113,6 +2243,7 @@ impl MultibufferDocumentHandle {
                 SourceForwardMsg::Edit {
                     source_handle: target.source_handle.clone(),
                     source_edit,
+                    announce: self.announce_for(target.source_id),
                 }
             });
             drop(state);
@@ -4501,6 +4632,86 @@ mod tests {
             "the source's syntax must reparse and bump the version the cells \
              worker invalidates on; frozen at {before} means the view keeps \
              painting the old spans forever"
+        );
+    }
+
+    /// An edit made THROUGH the view must reparse its source too.
+    ///
+    /// This is the path an agenda `DONE` toggle takes: org's `rewrite_headline`
+    /// reads composed rows and targets the VIEW, so the edit lands in the
+    /// composed rope and is forwarded to the source. That forward used to
+    /// apply the edit and publish nothing — "the multibuffer's local
+    /// composed_doc is already authoritative" — so the source changed
+    /// silently and NOTHING downstream learned of it: not this view's syntax,
+    /// not a second view on the same file, not the diff subsystem.
+    ///
+    /// The sibling test above drives the same repair from an OUTSIDE change
+    /// (a synthetic `DocumentChanged`). It passes with the forwarder still
+    /// silent, which is exactly why this one has to exist.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_through_the_view_reparses_its_source() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lattice-mb-through-{unique}.rs"));
+        let text = "fn main() { let x = 1; }\nfn other() {}\n";
+        std::fs::write(&path, text).unwrap();
+
+        let id = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text(text)
+            .with_path(path.clone())
+            .build();
+        let source: Arc<dyn Document> = Arc::new(spawn_document(id, doc, empty_registry()));
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, source);
+        let excerpts = vec![Excerpt::new(id, 0, 1)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        let Ok(live) = lattice_syntax::registry::live() else {
+            eprintln!("skipping: no live language registry in this process");
+            return;
+        };
+        mb.set_lang_registry(live);
+        if mb.excerpt_highlights().is_empty() {
+            eprintln!("skipping: no grammar registered for .rs in this process");
+            return;
+        }
+        let before_syntax = mb.excerpt_syntax_version();
+        let before_rows = mb.snapshot().buffer.as_string();
+
+        // Through the VIEW, at composed coordinates — no synthetic event.
+        mb.apply_edit(Edit::insert(Position::new(0, 0), "//"))
+            .await
+            .expect("composed edit applies");
+
+        // Nothing else is dispatched: the forwarder's announce is the only
+        // thing that can carry this to the source's syntax.
+        let mut moved = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if mb.excerpt_syntax_version() != before_syntax {
+                moved = true;
+                break;
+            }
+        }
+        assert!(
+            moved,
+            "an edit through the view must reach the source's syntax; frozen \
+             at {before_syntax} is the DONE-painted-as-TODO bug"
+        );
+
+        // …and the echo must not be mistaken for an outside change. Sliding
+        // anchors for an edit the composed rope already accounted for would
+        // move every row below the edited one.
+        assert_eq!(
+            mb.snapshot().buffer.as_string(),
+            format!("//{before_rows}"),
+            "the composed rows must be the edit and nothing else — a second \
+             anchor slide shows up here as duplicated or dropped rows"
         );
     }
 

@@ -62,6 +62,13 @@ Two halves, and both are required:
    version the cached tree is actually at, and a delta applied to the wrong
    baseline corrupts the tree silently — the same "wrong until something
    forces a full parse" failure, one layer down.
+
+   **The trigger is only as good as what reaches it.** A `DocumentChanged`
+   arrives for a source edited from *outside* the view. An edit made
+   *through* the view — the composed path an agenda `DONE` toggle takes, since
+   org's `rewrite_headline` targets the view at composed coordinates — used to
+   reach the source through the forwarder, which applied it and published
+   nothing. See "Announcing a source change" below.
 2. **A wake.** `seed_source_syntax` passes an `on_publish` that bumps
    `excerpt_syntax_gen` *and* publishes `MultibufferExcerptsReady`. The bump is
    what the cells worker invalidates on; the event is what `install`'s
@@ -72,6 +79,38 @@ Two halves, and both are required:
 This mirrors how the host wires a regular document's handle
 (`seeded_with_runtime` plus a wake that fires `async_landed` and an
 invalidation event) rather than being a second mechanism.
+
+### Announcing a source change (2026-09-05)
+
+**A source that changes without an event is one every subscriber has stale.**
+The source-forwarder applied composed edits to their sources and published
+nothing — "the multibuffer's local composed_doc is already authoritative",
+which is true of the *composed rope* and says nothing about everyone else.
+Nothing learned the file had changed: not this view's syntax, not a second
+view on the same source, not `lattice-diff`, not a plugin subscribed to
+`DocumentChanged`.
+
+The forwarder now publishes `Event::DocumentChanged` after a successful
+apply — on success only, since a failed apply left the source untouched and
+announcing it would have every subscriber recompute against content that never
+existed. `DirectEdit` deliberately does NOT publish: its caller is the host's
+`apply_edit_to_multibuffer_source`, which already does, and two publishes for
+one edit is worse than none.
+
+**The view then hears its own edit come back**, and must not treat the echo as
+an outside change: `slide_anchors_for_source` would shift every excerpt below
+the edited row a second time, for an edit the composed edit already accounted
+for. `self_forwarded_versions` records the source `text_version` the forwarder
+produced, written BEFORE the publish (the subscription runs on another task,
+and the publish is what wakes it — recording afterwards is a race the view
+loses by sliding its own anchors). On an echo the view skips slide + recompose
+and still reparses; the reparse is the whole point, and the echo is the case
+that carries it.
+
+Matching on the version rather than adding a provenance field to
+`Event::DocumentChanged`: the version is already carried, already unique per
+mutation, and keeps the question inside the crate that has it instead of in
+the protocol for every subscriber that does not care.
 
 ### Data model
 

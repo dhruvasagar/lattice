@@ -20306,6 +20306,30 @@ impl Editor {
         // `self` borrow before we mutably borrow
         // `self.pending_syntax_edits` below.
         let syntax = self.document_syntax_for(self.document_buffer_id).cloned();
+        // Diagnostic for "the edited line stays uncoloured until `<C-l>`".
+        //
+        // The sync cells path rebuilds the edited line at DEFAULT fg on
+        // purpose and relies on the async reparse to recolour it, so when the
+        // recolour does not arrive there is nothing on screen that says which
+        // link broke. This fires once per real text change (the `tv ==
+        // last_parsed` guard above already returned for motions), not per
+        // keystroke, so it does not join the per-render log storm the cells
+        // worker's summary exists to avoid.
+        //
+        // `syntax = false` here means the buffer has no grammar handle and no
+        // reparse will EVER be requested — a different bug from one that is
+        // requested and never lands. Pair it with `syntax_reparse_published`
+        // from the worker: request without publish is the worker; publish
+        // without recolour is the cells layer.
+        tracing::debug!(
+            target: "lattice_host::syntax",
+            buffer = ?self.document_buffer_id,
+            text_version = tv,
+            from_version = self.last_synced_syntax_version,
+            edits = self.pending_syntax_edits.len(),
+            syntax = syntax.is_some(),
+            "syntax_reparse_requested"
+        );
         if let Some(syntax) = syntax {
             let edits = std::mem::take(&mut self.pending_syntax_edits);
             let buffer = self.document.snapshot().buffer.clone();

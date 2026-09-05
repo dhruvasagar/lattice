@@ -412,6 +412,19 @@ async fn worker_main(
         };
         snapshot.store(Arc::new(next.snapshot_owned()));
         syntax = next;
+        // The far end of `syntax_reparse_requested`. A request logged with no
+        // publish logged after it means the parse never completed — the
+        // blocking task panicked and the `return` above took the worker down
+        // with it, after which every later request sends into a channel with
+        // no receiver and the snapshot is frozen for good. That is a
+        // never-self-heals shape, and it is indistinguishable on screen from
+        // a stale display matrix; these two lines together are what tell them
+        // apart. One line per reparse, not per frame.
+        tracing::debug!(
+            target: "lattice_host::syntax",
+            text_version = snapshot.load().text_version(),
+            "syntax_reparse_published"
+        );
         // 2026-06-03 (slice B.1): wake the host so the editor actor
         // re-publishes render state now that fresh syntax is
         // available — without this, an idle reparse (no keystroke in

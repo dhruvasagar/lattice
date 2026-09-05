@@ -14671,10 +14671,15 @@ impl Editor {
         };
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
-        self.current_match = None;
-        self.all_matches.clear();
         self.search_line = None;
-        self.last_search = None;
+        // `last_search` deliberately survives: it is vim's `/` register,
+        // and the `/` register is session state, not buffer state.
+        // Clearing it here meant `n` after `:e other-file` answered
+        // `E35: no previous regular expression` — and, because nothing
+        // ever put the pattern back, kept answering that in every
+        // buffer from then on. The resolved match ranges are the part
+        // that is per-buffer; they are re-derived below, once the pane
+        // points at the new document.
         self.last_find = None;
         self.last_change = None;
         self.last_visual = None;
@@ -14697,6 +14702,11 @@ impl Editor {
         // `:bd`. POSITION_HISTORY_CAP bounds growth.
         self.pane_tree.active_mut().buffer = lattice_core::BufferKind::Document;
         self.pane_tree.active_mut().buffer_id = new_id;
+        // The freshly-opened file resolves the session's search pattern
+        // for itself: matches if it has any, nothing if it does not.
+        // `do_edit` hand-swaps the document rather than going through
+        // `load_active_pane`, so it needs its own call to the seam.
+        self.resync_hlsearch_to_active_buffer();
         let signals = self.activate_buffer_state();
         tracing::info!(
             path = %target.display(),
@@ -25018,6 +25028,53 @@ impl Editor {
             &lattice_runtime::CancellationToken::never(),
         )
         .unwrap_or_default();
+    }
+
+    /// Re-resolve the hlsearch overlay against whatever buffer just
+    /// became active. Called from every path that swaps the document
+    /// under the active pane.
+    ///
+    /// Search state splits into two halves that are owned differently,
+    /// and conflating them produced two user-visible bugs at once:
+    ///
+    /// * `last_search` — the PATTERN — is vim's `/` register: session
+    ///   state. It survives `:e`, `:bn`, a tab switch, everything. The
+    ///   fresh-open path used to null it, so `n` in a just-opened file
+    ///   reported `E35: no previous regular expression` and kept doing
+    ///   so in every buffer thereafter.
+    /// * `all_matches` / `current_match` — the resolved BYTE RANGES —
+    ///   are inherently per-buffer. Carrying them across a swap paints
+    ///   one file's offsets onto another file's text ("hlsearch bleeds
+    ///   across tabs"), and clearing them without recomputing silently
+    ///   drops the highlight in a buffer that does have matches.
+    ///
+    /// So: keep the pattern, re-derive the ranges. Vim's hlsearch is on
+    /// in every window — each one highlights its own occurrences of the
+    /// one pattern — and that is what this reproduces.
+    ///
+    /// `current_match` (the primary highlight, vim's `CurSearch`) is the
+    /// match the cursor sits on. It belongs to the buffer being left, so
+    /// it clears; `n` in the new buffer repopulates it.
+    ///
+    /// Lives on the swap seam rather than at each call site on purpose:
+    /// three swap paths (`do_edit`, `activate_document`,
+    /// `sync_active_document_to_pane`) each hand-maintained this state
+    /// and each got it wrong in a different way. `load_active_pane` is
+    /// the tail of the pane / tab / close paths *and* of
+    /// `activate_document`, so one call there plus one in `do_edit`
+    /// covers the set.
+    pub fn resync_hlsearch_to_active_buffer(&mut self) {
+        self.current_match = None;
+        // While the `/`·`?` line is open the overlay is owned by
+        // `preview_search`, which resolves against the SEARCH TARGET
+        // rather than the active document (the active document is the
+        // `*search-line*` synthetic buffer). Recomputing here would
+        // clobber the live preview with matches from the minibuffer.
+        if self.search_line_active() {
+            return;
+        }
+        self.all_matches.clear();
+        self.refresh_hlsearch_from_last();
     }
 
     /// `*` / `#` -- extract the word at the cursor, store as
@@ -36854,6 +36911,12 @@ impl Editor {
             self.popup_buffer = Some(pane.buffer_id);
         }
         self.sync_active_document_to_pane();
+        // AFTER the document swap, so `active_text()` is the buffer the
+        // pane now shows. Every pane / tab / close switch funnels here,
+        // and so does `activate_document`'s tail — see
+        // [`Self::resync_hlsearch_to_active_buffer`] for why the seam is
+        // here rather than at each call site.
+        self.resync_hlsearch_to_active_buffer();
     }
 
     /// 5.5.F.4.2: push a tagged entry onto the position-history
@@ -37176,8 +37239,10 @@ impl Editor {
             pane.scroll = 0;
             pane.leftcol = 0;
         }
-        self.current_match = None;
-        self.all_matches.clear();
+        // hlsearch is NOT cleared by hand here: `load_active_pane`'s
+        // tail re-resolves it against the destination buffer, so a
+        // buffer that contains the pattern keeps its highlight and one
+        // that does not shows none.
         self.search_line = None;
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;

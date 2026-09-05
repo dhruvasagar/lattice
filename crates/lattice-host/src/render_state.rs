@@ -4019,6 +4019,81 @@ mod tests {
         );
     }
 
+    /// `G` in a popup leaves the last line behind the bottom border.
+    ///
+    /// > the cursor is landing on the correct last line, but the line is just
+    /// > behind the bottom border and not visible […] if I manually scroll
+    /// > with `j` it is good
+    ///
+    /// `j` being fine is the clue that rules out a constant off-by-one: the
+    /// clamp reserves the strip count from the LAST PUBLISH, which is correct
+    /// while scrolling a line at a time and stale across a jump. Near the top
+    /// no heading has scrolled off, so it reserves 0 and picks a scroll that
+    /// fills the whole window; the jump then scrolls a heading off, the strip
+    /// takes a row, and the row it takes is the one the caret was on.
+    ///
+    /// Same arithmetic on a document pane, so this is not popup-specific —
+    /// the popup is just where a one-row loss is impossible to miss.
+    #[test]
+    fn a_jump_reserves_the_strip_the_jump_itself_creates() {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        use lattice_cells::context::ContextScope;
+
+        let mut editor = Editor::boot(lattice_core::Document::from_text("a\nb\n"));
+        editor.viewport_height = 12;
+        let content = lattice_help::parse_help_lines(
+            "org",
+            (0..30).map(|i| format!("help line {i:02}")).collect(),
+        );
+        let _ = editor.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        editor.focus_help_popup();
+        let popup_id = editor.popup_buffer.expect("a popup");
+        editor.popup_viewport_width = 40;
+        editor.popup_viewport_height = 8;
+
+        // One heading at line 5 enclosing the rest of the document — the
+        // shape `:h org` has. At the top it is on screen and pins nothing;
+        // after a jump to the end it has scrolled off and takes a row.
+        editor.wasm_context.cache.insert_for(
+            popup_id,
+            crate::wasm_context::ContextScopeCache {
+                parse_version: 0,
+                scopes: vec![ContextScope {
+                    scope_start: 5,
+                    scope_end: 29,
+                    header_start: 5,
+                    header_end: 5,
+                }],
+            },
+        );
+
+        // At the top: nothing scrolled off, so the published strip is empty —
+        // which is the state `G` is pressed from.
+        editor.scroll = 0;
+        editor.cursor.line = 0;
+        editor.publish_render_state();
+
+        // `G`.
+        editor.cursor.line = 29;
+        editor.ensure_cursor_visible();
+
+        // What the strip will actually be once this scroll is published.
+        let strip = editor
+            .resolve_sticky_context_lines(popup_id, editor.cursor.line, editor.scroll, 8)
+            .len() as u32;
+        let content_rows = 8 - strip;
+        assert!(
+            editor.cursor.line < editor.scroll + content_rows,
+            "the caret must be inside the CONTENT rows: scroll={} strip={} \
+             content_rows={} cursor={} — one short means the last line is \
+             behind the bottom border, which is the report",
+            editor.scroll,
+            strip,
+            content_rows,
+            editor.cursor.line
+        );
+    }
+
     // ---- D.4.d.1.c (per-pane matrix lookup) ----
 
     /// D.4.d.1.c: `cells.pane_matrices` carries one entry per

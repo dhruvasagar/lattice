@@ -6545,7 +6545,8 @@ impl Editor {
             self.pane_tree.active().id
         };
         let context_count = self.sticky_context_for(context_pane).load().len() as u32;
-        let sticky_count = vrows.sticky_rows().count() as u32 + context_count;
+        let vrow_sticky = vrows.sticky_rows().count() as u32;
+        let sticky_count = vrow_sticky + context_count;
         let effective_height = height.saturating_sub(sticky_count).max(1);
         // 2026-08-16 diagnostic: the scroll clamp's inputs, captured on entry.
         // This runs on the KEYSTROKE path only — the actor's `async_landed`
@@ -6590,6 +6591,51 @@ impl Editor {
         let min_scroll = self.bottom_anchored_scroll(bottom_target, effective_height);
         if self.scroll < min_scroll {
             self.scroll = min_scroll;
+        }
+
+        // CONVERGE on the strip the resulting scroll actually produces.
+        //
+        // The count above comes from the last PUBLISH, which is right while
+        // scrolling a line at a time and stale across a jump — and a jump is
+        // exactly when the strip changes. `G` from the top of `:h org`
+        // reserves 0 (nothing has scrolled off yet), picks a scroll that
+        // fills the whole window, and only then scrolls the heading off; the
+        // strip takes its row from the top and the caret's row falls off the
+        // bottom. Reported as "`G` leaves the last line behind the bottom
+        // border, but `j` is fine" — `j` being fine is the tell, because a
+        // constant off-by-one would break both.
+        //
+        // Resolving AFTER the clamp is what the published-count comment
+        // warned against doing BEFORE it: predicting from the pre-clamp
+        // scroll is guesswork, but asking what THIS scroll yields is just
+        // reading the answer. The publish path stays authoritative — this
+        // only decides how many rows to keep clear.
+        //
+        // Bounded and monotonic: more reserved rows can only push the scroll
+        // further down, which can only scroll more headers off, so the count
+        // never shrinks and the loop cannot oscillate. Two extra rounds is
+        // slack over the one a jump needs; `resolve_context` is a filter over
+        // cached scopes, so the cost is a few comparisons on a keystroke that
+        // already rebuilt the world.
+        let mut reserved = context_count;
+        for _ in 0..2 {
+            let actual = self
+                .resolve_sticky_context_lines(buffer_id, self.cursor.line, self.scroll, height)
+                .len() as u32;
+            if actual <= reserved {
+                break;
+            }
+            reserved = actual;
+            let effective = height.saturating_sub(vrow_sticky + reserved).max(1);
+            let off = self
+                .option_cache
+                .scrolloff
+                .min(effective.saturating_sub(1) / 2);
+            let target = self.cursor.line.saturating_add(off).min(last);
+            let min_scroll = self.bottom_anchored_scroll(target, effective);
+            if self.scroll < min_scroll {
+                self.scroll = min_scroll;
+            }
         }
         // Horizontal axis: keep the cursor's column on-screen when
         // `wrap` is off (no-op under wrap). Same call-site coverage

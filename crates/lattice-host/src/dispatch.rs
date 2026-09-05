@@ -4354,13 +4354,18 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
 /// [`Editor::synthetic_popup_panes`] and registers each under its reserved
 /// sentinel [`lattice_core::ui::pane::PaneId`]. All fields are consumed by
 /// the shared `build_one_pane_cells_input` with `is_active_buffer = false`.
-struct PopupPaneSpec {
-    pane_id: lattice_core::ui::pane::PaneId,
-    buffer_id: lattice_core::BufferId,
+pub(crate) struct PopupPaneSpec {
+    pub(crate) pane_id: lattice_core::ui::pane::PaneId,
+    #[allow(dead_code)]
+    pub(crate) buffer_id: lattice_core::BufferId,
     /// View scroll (top source line). Floating popup: focus-dependent
     /// (State B → live `self.scroll`, State A → `popup_scroll`).
     /// Completion docs: the doc popup's own scroll.
-    scroll: u32,
+    pub(crate) scroll: u32,
+    /// PC.2: the context anchor, focus-dependent like `scroll`. A popup
+    /// resolves a sticky-context strip from its OWN buffer, so it needs its
+    /// own cursor for the same reason a document pane does.
+    pub(crate) cursor_line: u32,
     viewport_height: u32,
     viewport_width: u32,
     wrap: bool,
@@ -6524,10 +6529,13 @@ impl Editor {
         // popup puts the caret a few lines outside the bounds" report.
         //
         // Keyed by SURFACE rather than gated to zero: `PaneId::POPUP` is the
-        // popup's own sentinel pane, and its cell is empty until PC.2
-        // populates it, so a popup reserves nothing today and reserves its own
-        // strip the moment it has one. A hardcoded zero would have had to be
-        // found and undone; this slot just fills.
+        // popup's own sentinel pane, and — corrected in PC.2 — that cell is
+        // NOT empty. A popup already carries a real context strip: it goes
+        // through the same `build_one_pane_cells_input` as every leaf, so its
+        // scopes are resolved, published and painted by the shared paths. So
+        // this reserves the popup's OWN strip, which is both why the caret
+        // now lands inside and why the strip stays. A hardcoded zero would
+        // have reserved nothing and put the caret under the strip instead.
         //
         // `vrows` needs no such care — it is keyed by `active_buffer_id()`,
         // which is already the popup's buffer while one is focused.
@@ -15362,6 +15370,14 @@ impl Editor {
     /// renderer having fed back its inner geometry (`viewport_width > 0`) —
     /// until then the renderer's plain-text fallback paints the one un-sized
     /// frame. Order is irrelevant (each keys a distinct sentinel pane id).
+    /// Test-only view of [`Self::synthetic_popup_panes`]. The specs are an
+    /// internal shape; this exposes them so a test can assert the popup's
+    /// context anchor without standing up a context plugin.
+    #[cfg(test)]
+    pub(crate) fn synthetic_popup_panes_for_test(&self) -> Vec<PopupPaneSpec> {
+        self.synthetic_popup_panes()
+    }
+
     fn synthetic_popup_panes(&self) -> Vec<PopupPaneSpec> {
         use lattice_core::ui::pane::PaneId;
         let mut specs = Vec::new();
@@ -15377,10 +15393,19 @@ impl Editor {
                 } else {
                     self.popup_scroll
                 };
+                // Same focus split as `scroll`: while the popup has focus the
+                // live cursor IS the popup's (FS.2), and State A keeps its
+                // stashed one.
+                let cursor_line = if popup_is_focused {
+                    self.cursor.line
+                } else {
+                    self.popup_cursor.line
+                };
                 specs.push(PopupPaneSpec {
                     pane_id: PaneId::POPUP,
                     buffer_id: popup_id,
                     scroll,
+                    cursor_line,
                     viewport_height: self.popup_viewport_height,
                     viewport_width: self.popup_viewport_width,
                     // The floating help popup always wraps (help-mode's
@@ -15407,6 +15432,10 @@ impl Editor {
                 pane_id: PaneId::COMPLETION_DOCS,
                 buffer_id: docs_id,
                 scroll,
+                // The docs popup has no caret of its own — it is paged, never
+                // navigated — so its scroll top IS its anchor. Unlike the
+                // floating popup, where that was a false economy.
+                cursor_line: scroll,
                 viewport_height: self.completion_docs_viewport_height,
                 viewport_width: self.completion_docs_viewport_width,
                 wrap: true,
@@ -15729,11 +15758,22 @@ impl Editor {
                 // Floating popups have no gutter — their fed inner
                 // width is already the text width, so reserve nothing.
                 false,
-                // A popup never pins context: it is an overlay with its own
-                // content, not a view into a scrolled document. Anchoring at
-                // its scroll top costs nothing since no scopes are ever
-                // cached for a popup buffer.
-                spec.scroll,
+                // PC.2: the popup's OWN cursor is the context anchor.
+                //
+                // This passed `spec.scroll` and justified it with "no scopes
+                // are ever cached for a popup buffer", which is false: the
+                // refresh pump keys on `document_buffer_id`, and since FS.2
+                // that IS the popup's buffer while one is focused. A help
+                // popup carries a markdown `SyntaxHandle` (`help.md` ⇒
+                // `Lang::Markdown`, seeded by `seed_help_metadata_locals`), so
+                // its scopes are markdown headings and the strip pins the
+                // enclosing heading as you scroll — which is the whole point
+                // of the feature and works only because the popup goes through
+                // this same builder.
+                //
+                // Anchoring at the scroll top made the popup the ONE surface
+                // that ignored `context.anchor`, whose default is `cursor`.
+                spec.cursor_line,
             ));
         }
         Arc::from(entries.into_boxed_slice())

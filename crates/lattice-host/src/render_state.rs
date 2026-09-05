@@ -3972,6 +3972,53 @@ mod tests {
         );
     }
 
+    /// PC.2: the popup's context anchor is its own cursor, not its scroll top.
+    ///
+    /// **A consistency pin, not a behaviour test — and the distinction is the
+    /// point.** The popup pane already resolves a sticky-context strip from
+    /// its own buffer: it goes through the same `build_one_pane_cells_input`
+    /// as every leaf, so a help popup (markdown `SyntaxHandle` via
+    /// `seed_help_metadata_locals`) pins its enclosing heading. What it did
+    /// NOT do was honour `context.anchor`: it hardcoded the scroll top,
+    /// justified by "no scopes are ever cached for a popup buffer" — false,
+    /// since the refresh pump keys on `document_buffer_id`, which IS the
+    /// popup's buffer while one is focused.
+    ///
+    /// The two anchors happen to agree in practice, which is why this asserts
+    /// the plumbing rather than a resolved strip. `resolve_context` keeps only
+    /// scopes with `header_end < viewport_top`, and any such scope containing
+    /// the cursor also contains the viewport top (the cursor is at or below
+    /// it) — so no fixture can make the two disagree without contradicting
+    /// itself. An earlier draft of this test asserted resolved rows and could
+    /// not be made to fail; that is what this comment records.
+    #[test]
+    fn a_focused_popups_context_anchor_is_its_own_cursor() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("a\nb\nc\n"));
+        editor.viewport_height = 6;
+        let content = lattice_help::parse_help_lines(
+            "hover",
+            (0..40).map(|i| format!("popup {i}")).collect(),
+        );
+        let _ = editor.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        editor.focus_help_popup();
+        editor.popup_viewport_width = 40;
+        editor.popup_viewport_height = 8;
+        editor.scroll = 20;
+        editor.cursor.line = 27;
+
+        let specs = editor.synthetic_popup_panes_for_test();
+        let popup = specs
+            .iter()
+            .find(|s| s.pane_id == lattice_core::ui::pane::PaneId::POPUP)
+            .expect("a focused floating popup publishes a synthetic pane");
+        assert_eq!(popup.scroll, 20, "the popup's own scroll");
+        assert_eq!(
+            popup.cursor_line, 27,
+            "…and its own CURSOR, carried so the resolver is asked the same \
+             question a document pane is asked"
+        );
+    }
+
     // ---- D.4.d.1.c (per-pane matrix lookup) ----
 
     /// D.4.d.1.c: `cells.pane_matrices` carries one entry per

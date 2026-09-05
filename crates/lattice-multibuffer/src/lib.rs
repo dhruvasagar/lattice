@@ -1243,7 +1243,7 @@ impl MultibufferDocumentHandle {
                         let snap = source.snapshot();
                         let text = snap.buffer.as_string();
                         syntax.parse(&text);
-                        let handle = SyntaxHandle::seeded(syntax);
+                        let handle = self.seed_source_syntax(syntax);
                         state.source_syntax.insert(id, Arc::new(handle));
                         self.inner
                             .excerpt_syntax_gen
@@ -1312,7 +1312,7 @@ impl MultibufferDocumentHandle {
                 let snap = source.snapshot();
                 let text = snap.buffer.as_string();
                 syntax.parse(&text);
-                let handle = SyntaxHandle::seeded(syntax);
+                let handle = self.seed_source_syntax(syntax);
                 state.source_syntax.insert(id, Arc::new(handle));
                 added += 1;
             }
@@ -1322,6 +1322,55 @@ impl MultibufferDocumentHandle {
                 .excerpt_syntax_gen
                 .fetch_add(added, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// Build a source's `SyntaxHandle` with its reparse WAKE already wired.
+    ///
+    /// The one constructor both creation sites use, because the wake is the
+    /// part that gets forgotten. `SyntaxHandle::seeded` passes
+    /// `on_publish: None`, so a handle built with it parses exactly once and
+    /// its snapshot is frozen for the life of the view. That is what made a
+    /// task toggled to DONE keep painting in TODO's colour: the composed text
+    /// updated (the `DocumentChanged` arm recomposes), the spans did not, and
+    /// re-rendering — including `<C-l>` — re-read the same frozen snapshot, so
+    /// the one escape hatch a user has did not work either.
+    ///
+    /// `on_publish` does the two things a fresh parse needs:
+    ///
+    /// 1. **Bump `excerpt_syntax_gen`.** It is folded into
+    ///    `MatrixVersion::syntax`, so without it the cells worker sees an
+    ///    unchanged version and returns `CacheHit` — a correct new snapshot
+    ///    nobody reads.
+    /// 2. **Publish `MultibufferExcerptsReady`.** `install`'s
+    ///    `wake_on_event` turns it into `async_landed`, which is what makes an
+    ///    async result reach the screen with no keypress in flight. A reparse
+    ///    that lands while the user is reading their agenda has no next
+    ///    keystroke to hide behind.
+    ///
+    /// Mirrors how the host wires a regular document's handle
+    /// (`seeded_with_runtime` + a wake that fires `async_landed` and an
+    /// invalidation event) rather than inventing a second mechanism.
+    fn seed_source_syntax(&self, syntax: Syntax) -> SyntaxHandle {
+        let weak = Arc::downgrade(&self.inner);
+        let view = self.inner.buffer_id;
+        SyntaxHandle::seeded_with_runtime(
+            syntax,
+            lattice_runtime::shared_runtime(),
+            Some(Arc::new(move || {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                inner
+                    .excerpt_syntax_gen
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // The bus is stashed by `attach_event_subscriptions`; before
+                // that there is no one to wake and nothing on screen yet.
+                let bus = inner.subscriptions.lock().ok().and_then(|b| b.bus.clone());
+                if let Some(bus) = bus {
+                    bus.publish_typed(crate::events::MultibufferExcerptsReady { view });
+                }
+            })),
+        )
     }
 
     /// K.4.7 (2026-06-08): monotonic version that increments whenever
@@ -1483,6 +1532,13 @@ impl MultibufferDocumentHandle {
                             // content for in-excerpt edits.
                             slide_anchors_for_source(&inner, source_id, &edits);
                             recompose_inner(&inner);
+                            // The composed TEXT is current now; the source's
+                            // spans are not. Without this the view renders
+                            // new text under old colours — a task toggled to
+                            // DONE keeps TODO's highlight — and it never
+                            // self-heals, because nothing else ever reparses
+                            // a source handle.
+                            reparse_source_syntax(&inner, source_id);
                             // PD.7c: the view has recomposed correctly;
                             // what may now be wrong is whatever the
                             // PROVIDER derived from this source's
@@ -1582,6 +1638,40 @@ fn slide_anchors_for_source(
             }
         }
     }
+}
+
+/// Ask a source's `SyntaxHandle` to reparse, after that source's text changed.
+///
+/// Peer of [`recompose_inner`], and called beside it for the same reason: a
+/// `DocumentChanged` makes BOTH the composed text and the source's spans
+/// stale, and recomposing only the first is what leaves new text under old
+/// colours.
+///
+/// **Full reparse — `edits` is empty on purpose.** The worker reads empty
+/// edits as "reparse from scratch", which is always correct. The incremental
+/// path would need the event's `AppliedEdit`s translated into tree-sitter
+/// deltas against the version the handle's cached tree is actually at, and a
+/// delta applied to the wrong baseline corrupts the tree silently — colours
+/// that are wrong until something forces a full parse, which is the bug class
+/// this function exists to close, reintroduced one layer down. Sources are
+/// agenda-sized files and the parse runs on the handle's own blocking pool,
+/// off both the UI thread and this event task; if it ever shows up in a
+/// profile the deltas can be threaded through then, with a test that pins the
+/// baseline.
+fn reparse_source_syntax(inner: &Arc<MultibufferInner>, source_id: BufferId) {
+    let Ok(state) = inner.state.lock() else {
+        return;
+    };
+    let (Some(handle), Some(source)) = (
+        state.source_syntax.get(&source_id).cloned(),
+        state.sources.get(&source_id).cloned(),
+    ) else {
+        return;
+    };
+    drop(state);
+    let snap = source.snapshot();
+    let from = handle.with_snapshot(|s| s.text_version());
+    handle.request_reparse(from, snap.text_version, snap.buffer.clone(), Vec::new());
 }
 
 /// Recompose an Inner — same shape as `MultibufferDocumentHandle::recompose`
@@ -4331,6 +4421,87 @@ mod tests {
             }
         }
         assert_eq!(mb.snapshot().buffer.as_string(), "<alpha\nbeta\n");
+    }
+
+    /// A source edit must reparse that source's syntax, not just recompose.
+    ///
+    /// The reported bug: a task toggled to DONE in the agenda kept painting in
+    /// TODO's colour, and `<C-l>` did not fix it either. `add_source` built
+    /// handles with `SyntaxHandle::seeded` (`on_publish: None`), and nothing
+    /// anywhere called `request_reparse` on one — so a source handle parsed
+    /// once at creation and its snapshot was frozen for the life of the view.
+    /// The `DocumentChanged` arm recomposed the TEXT beside it, which is
+    /// exactly why the symptom reads as "new text, old colours" rather than
+    /// "nothing updates".
+    ///
+    /// Asserted through `excerpt_syntax_version`, because that is the value
+    /// the host folds into `MatrixVersion::syntax`: a reparse the cells worker
+    /// cannot see is a reparse that changes nothing on screen.
+    ///
+    /// **No second edit, no keypress.** The wake is the other half of the fix
+    /// and a test that nudged the view first would pass on the frozen build.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_edit_reparses_that_sources_syntax() {
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lattice-mb-reparse-{unique}.rs"));
+        let text = "fn main() { let x = 1; }\n";
+        std::fs::write(&path, text).unwrap();
+
+        let id = BufferId::next();
+        let doc = lattice_core::DocumentBuilder::default()
+            .with_text(text)
+            .with_path(path.clone())
+            .build();
+        let source_handle = spawn_document(id, doc, empty_registry());
+        let source: Arc<dyn Document> = Arc::new(source_handle.clone());
+        let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
+        sources.insert(id, source);
+        let excerpts = vec![Excerpt::new(id, 0, 0)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        mb.attach_event_subscriptions(&bus);
+
+        // Highlighting is only wired once a language registry exists; without
+        // it there is no handle and this test would pass vacuously.
+        let Ok(live) = lattice_syntax::registry::live() else {
+            eprintln!("skipping: no live language registry in this process");
+            return;
+        };
+        mb.set_lang_registry(live);
+        if mb.excerpt_highlights().is_empty() {
+            eprintln!("skipping: no grammar registered for .rs in this process");
+            return;
+        }
+        let before = mb.excerpt_syntax_version();
+
+        source_handle
+            .apply_edit(Edit::insert(Position::new(0, 0), "//"))
+            .await
+            .unwrap();
+        bus.publish(lattice_protocol::Event::DocumentChanged {
+            id: source_handle.id(),
+            path: Some(path.clone()),
+            version: source_handle.version(),
+            edits: Vec::new(),
+        });
+
+        let mut moved = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if mb.excerpt_syntax_version() != before {
+                moved = true;
+                break;
+            }
+        }
+        assert!(
+            moved,
+            "the source's syntax must reparse and bump the version the cells \
+             worker invalidates on; frozen at {before} means the view keeps \
+             painting the old spans forever"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

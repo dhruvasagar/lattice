@@ -1,6 +1,6 @@
 # Multibuffer Per-Excerpt Syntax Highlighting (K.4.7)
 
-**Status:** implemented (2026-06-08)  
+**Status:** implemented (2026-06-08); source reparse + wake corrected 2026-09-05  
 **Slice plan:** `docs/dev/operations/slice-plans/archive/multibuffer-is-a-regular-buffer.md`, slice K.4.7
 
 ## Problem
@@ -35,10 +35,43 @@ gets its own `SyntaxHandle`. Handles are created eagerly:
   common production path: `new(sources, …)` is called first, then the host calls
   `set_lang_registry` after `create_multibuffer_view`).
 
-`SyntaxHandle::seeded(syntax)` is used so the constructor degrades gracefully in
-synchronous test contexts (initial parse snapshot kept; incremental-reparse worker
-absent but not required for the test assertion). In production, `Handle::try_current()`
-inside `seeded` succeeds and the worker runs.
+Handles are built by `MultibufferDocumentHandle::seed_source_syntax` — one
+constructor, used by both creation sites, because what gets forgotten is the
+wake rather than the parse.
+
+### Staying current (corrected 2026-09-05)
+
+**A handle that is only ever created is frozen.** The original wiring used
+`SyntaxHandle::seeded`, which passes `on_publish: None`, and nothing anywhere
+called `request_reparse` on a source handle — so each source parsed once at
+creation and its snapshot never moved again. The section below used to claim
+that "a per-source background reparse invalidates the cells cache"; no such
+reparse existed. The user-visible result was a task toggled to `DONE` in the
+agenda still painting in `TODO`'s colour, forever: the `DocumentChanged` arm
+recomposed the *text* beside it, so the symptom read as "new text, old
+colours" rather than "nothing updates", and `<C-l>` did not help either
+because re-rendering re-read the same frozen snapshot.
+
+Two halves, and both are required:
+
+1. **A trigger.** `reparse_source_syntax` runs in the `DocumentChanged` arm,
+   beside `recompose_inner` — a source edit makes the composed text *and* the
+   source's spans stale, and recomposing only the first is the bug. It passes
+   empty `edits`, i.e. a full reparse: the incremental path would need the
+   event's `AppliedEdit`s translated into tree-sitter deltas against the
+   version the cached tree is actually at, and a delta applied to the wrong
+   baseline corrupts the tree silently — the same "wrong until something
+   forces a full parse" failure, one layer down.
+2. **A wake.** `seed_source_syntax` passes an `on_publish` that bumps
+   `excerpt_syntax_gen` *and* publishes `MultibufferExcerptsReady`. The bump is
+   what the cells worker invalidates on; the event is what `install`'s
+   `wake_on_event` turns into `async_landed`, so a reparse landing while the
+   user reads their agenda reaches the screen with no keypress to hide behind.
+   Without (1) nothing reparses; without (2) a correct new snapshot sits unread.
+
+This mirrors how the host wires a regular document's handle
+(`seeded_with_runtime` plus a wake that fires `async_landed` and an
+invalidation event) rather than being a second mechanism.
 
 ### Data model
 
@@ -68,8 +101,14 @@ let excerpt_syntax: Arc<[ExcerptSyntax]> = services
     .unwrap_or_else(|| Arc::from([]));
 ```
 
-The `syntax` axis of `MatrixVersion` folds in all excerpt handle versions (XOR) so
-a per-source background reparse invalidates the cells cache and triggers a rebuild.
+The `syntax` axis of `MatrixVersion` folds in `excerpt_syntax_version()` — the
+monotonic `excerpt_syntax_gen` counter — so a per-source reparse invalidates the
+cells cache and triggers a rebuild.
+
+**Not an XOR of the handles' versions**, which is what this said until
+2026-09-05 and what the code briefly did: N handles all at version 1 XOR to 0
+for even N, colliding with the initial zero and producing a false cache hit
+that freezes highlighting. A monotonic counter cannot collide with itself.
 
 ### Worker highlight path
 

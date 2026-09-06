@@ -123,10 +123,10 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.11a | `${field}` — written and wired | ✅ |
 | OR.11b | the capture buffer — roam's draft, `%^{…}` and `C-c C-k` | ✅ |
 | OR.12 | docs — the user page is `doc/org-roam.md`, its own topic | ✅ |
-| OR.13 | the stub create OPENS its draft **(plugin)** | 📝 |
-| OR.14 | `body-file` — a template body sourced from a file **(plugin)** | 📝 |
-| OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | 📝 |
-| OR.16 | an async picker accept stops dropping renderer effects **(host)** | 📝 |
+| OR.13 | the stub create OPENS its draft **(plugin)** | ✅ |
+| OR.14 | `body-file` — a template body sourced from a file **(plugin)** | ✅ |
+| OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | ✅ |
+| OR.16 | an async picker accept stops dropping renderer effects **(host)** | ✅ |
 
 ### OR.13–OR.15 — opened 2026-09-06, from a bug report
 

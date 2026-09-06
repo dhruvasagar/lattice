@@ -155,6 +155,45 @@ mod tests {
         }
     }
 
+    /// OS.1 guard, not driver. `DISAMBIGUATE_ESCAPE_CODES` changes how Esc and
+    /// the C0 controls ARRIVE — crossterm starts reporting `Kind::Press`
+    /// explicitly and may carry state bits — so the risk of pushing the flags
+    /// is that an existing chord decodes differently afterwards. The adapter
+    /// must ignore both fields; this pins that it does.
+    #[test]
+    fn disambiguated_events_decode_to_the_same_chords() {
+        for (code, mods) in [
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Tab, KeyModifiers::SHIFT),
+        ] {
+            let plain = KeyEvent::new(code, mods);
+            let disambiguated = KeyEvent {
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+                ..plain
+            };
+            assert_eq!(
+                from_event(&plain),
+                from_event(&disambiguated),
+                "{code:?}+{mods:?} must decode identically under disambiguation"
+            );
+        }
+    }
+
+    /// The adapter has ALWAYS been able to express this; it is the terminal
+    /// that could not send it. So this passes before OS.1 and after — it is
+    /// here to prove the chord OS.1 makes reachable is a distinct one, i.e.
+    /// that pushing the flags actually buys something.
+    #[test]
+    fn shift_enter_is_a_distinct_chord_from_enter() {
+        let enter = from_event(&ev(KeyCode::Enter, KeyModifiers::NONE));
+        let s_enter = from_event(&ev(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_ne!(enter, s_enter);
+        assert_eq!(s_enter.unwrap().to_string(), "<S-CR>");
+    }
+
     /// **A modified space must promote to `SpecialKey::Space`.**
     ///
     /// This is the half of the round trip that decides whether a binding can

@@ -170,6 +170,27 @@ lattice_config::options! {
     #[name("ui.nerd_fonts")]
     pub UiNerdFonts: bool = false;
 
+    /// Whether to request the terminal's keyboard-enhancement protocol
+    /// (the "kitty protocol") when the terminal reports support for it.
+    ///
+    /// `true` (default) -- push `DISAMBIGUATE_ESCAPE_CODES` when
+    /// `supports_keyboard_enhancement()` says yes. This is what makes
+    /// `<S-CR>`, `<C-CR>` and `<M-S-CR>` distinguishable from a bare
+    /// `<CR>`; without it every terminal sends the same `\r` for all
+    /// four, so those chords are unreachable however they are bound.
+    /// `lattice-protocol` has always spelled them and the GPUI peer has
+    /// always delivered them -- this closes a renderer asymmetry rather
+    /// than adding a capability.
+    ///
+    /// `false` -- never push it. Set this if a terminal answers the
+    /// support probe wrongly and keys start arriving mangled; recovering
+    /// from that should not need a rebuild.
+    ///
+    /// TUI-only. The GPUI peer gets these chords from the windowing
+    /// system and ignores this option.
+    #[name("ui.keyboard_enhancement")]
+    pub UiKeyboardEnhancement: bool = true;
+
     /// Whether to enable OpenType ligatures in the GPUI renderer.
     ///
     /// `true` (default) -- shaper defaults apply (`calt`/`liga` active).

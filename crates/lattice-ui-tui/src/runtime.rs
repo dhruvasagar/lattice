@@ -14,11 +14,12 @@ use anyhow::{Context, Result};
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event,
+    Event, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use lattice_grammar::ModalState;
 use ratatui::Terminal;
@@ -98,6 +99,15 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     let workspace_root = lattice_core::project::root_from_cwd();
     app.load_persistent_config(workspace_root.as_deref());
     app.apply_per_language_toml_overrides();
+    // OS.1: only now is `ui.keyboard_enhancement` real -- `setup()` ran before
+    // the TOML was read, so asking there would always answer the default.
+    let keyboard_enhanced = push_keyboard_enhancement(
+        app.options()
+            .config
+            .get_typed::<lattice_host::ui::theme_options::UiKeyboardEnhancement>()
+            .map(|v| *v)
+            .unwrap_or(true),
+    );
     // built-ins 2026-06-13: load embedded + user snippet packs once
     // at startup (after config so `snippet_dirs` overrides apply).
     // Quiet — logs, no echo.
@@ -115,7 +125,7 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
     // the LSP `initialize` round-trip -- paramount goal #4
     // (asynchronicity).
     let result = main_loop(&mut terminal, app);
-    teardown(&mut terminal).context("teardown terminal")?;
+    teardown(&mut terminal, keyboard_enhanced).context("teardown terminal")?;
     result
 }
 
@@ -154,6 +164,51 @@ fn setup() -> Result<Terminal<TermBackend>> {
     Terminal::new(backend).context("create terminal")
 }
 
+/// OS.1: should the keyboard-enhancement protocol be pushed?
+///
+/// Both conditions, extracted so the decision is testable without a tty —
+/// which is the only part of this slice a test can reach.
+fn should_push_enhancement(option: bool, supported: bool) -> bool {
+    option && supported
+}
+
+/// OS.1: ask the terminal to disambiguate `<S-CR>` / `<C-CR>` / `<M-S-CR>`
+/// from a bare `<CR>`.
+///
+/// Without this a terminal sends the same `\r` for all four, so those chords
+/// are unreachable however they are bound. `lattice-protocol` has always
+/// spelled them and the GPUI peer has always delivered them; this closes the
+/// renderer asymmetry rather than adding a capability.
+///
+/// `DISAMBIGUATE_ESCAPE_CODES` only. `REPORT_ALL_KEYS_AS_ESCAPE_CODES` would
+/// route ordinary text input through the escape path, which is not wanted.
+///
+/// **Called after the persistent config loads, not from [`setup`].** `setup`
+/// runs before `load_persistent_config`, so an option read there would always
+/// see the compiled-in default and `:set ui.keyboard_enhancement=off` in a
+/// user's TOML would be silently ignored. Nothing reads a key between the two
+/// points, so pushing here costs nothing.
+///
+/// Returns whether the push actually happened, so teardown pops exactly what
+/// was pushed. A terminal that advertises support and then refuses must not
+/// fail startup: log and carry on unenhanced.
+fn push_keyboard_enhancement(option: bool) -> bool {
+    if !should_push_enhancement(option, supports_keyboard_enhancement().unwrap_or(false)) {
+        return false;
+    }
+    let mut stdout = std::io::stdout();
+    match execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    ) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(error = %e, "terminal refused the keyboard-enhancement push");
+            false
+        }
+    }
+}
+
 /// MO.1: turn terminal mouse reporting on or off, following `ui.mouse`.
 ///
 /// Kept out of [`setup`] because it is the one terminal capability the
@@ -181,7 +236,7 @@ fn set_mouse_capture(on: bool) {
     }
 }
 
-fn teardown(terminal: &mut Terminal<TermBackend>) -> Result<()> {
+fn teardown(terminal: &mut Terminal<TermBackend>, keyboard_enhanced: bool) -> Result<()> {
     // Unconditional, and harmless when capture was never enabled: the
     // sequence is a no-op for a terminal that is not reporting. Leaving
     // a terminal in reporting mode after exit is the failure worth
@@ -195,6 +250,15 @@ fn teardown(terminal: &mut Terminal<TermBackend>) -> Result<()> {
     // editor was rendering.
     execute!(terminal.backend_mut(), SetCursorStyle::DefaultUserShape)
         .context("restore cursor style")?;
+    // OS.1: pop exactly what was pushed, and before raw mode goes away. A
+    // terminal left in enhancement mode hands the user's shell disambiguated
+    // key encodings, which is a worse failure than the one the push fixes --
+    // so this is best-effort-logged rather than `?`, like the mouse restore
+    // above: one refused sequence must not skip the restores below it.
+    if keyboard_enhanced {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)
+            .unwrap_or_else(|e| tracing::debug!(error = %e, "pop keyboard enhancement"));
+    }
     execute!(terminal.backend_mut(), DisableBracketedPaste).context("disable bracketed paste")?;
     disable_raw_mode().context("disable raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen).context("leave alt screen")?;
@@ -1150,5 +1214,32 @@ mod tests {
             cursor_style_for(ModalState::Normal, false),
             SetCursorStyle::SteadyBlock
         ));
+    }
+}
+
+/// OS.1: the keyboard-enhancement gate.
+///
+/// The push itself needs a tty and cannot be tested here; the DECISION can,
+/// which is why it is a separate function. Both conditions must hold, and the
+/// two failure directions are different bugs: pushing when the user turned it
+/// off ignores their config, and pushing when the terminal does not support it
+/// sends an escape sequence into a terminal that will render it as garbage.
+#[cfg(test)]
+mod os1_tests {
+    use super::should_push_enhancement;
+
+    #[test]
+    fn the_option_off_means_no_push_even_when_supported() {
+        assert!(!should_push_enhancement(false, true));
+    }
+
+    #[test]
+    fn an_unsupporting_terminal_is_not_pushed_to() {
+        assert!(!should_push_enhancement(true, false));
+    }
+
+    #[test]
+    fn a_supporting_terminal_with_the_option_on_is_pushed_to() {
+        assert!(should_push_enhancement(true, true));
     }
 }

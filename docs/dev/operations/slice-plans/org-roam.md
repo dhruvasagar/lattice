@@ -127,7 +127,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.14 | `body-file` — a template body sourced from a file **(plugin)** | ✅ |
 | OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | ✅ |
 | OR.16 | an async picker accept stops dropping renderer effects **(host)** | ✅ |
-| OR.17 | `%^{…}` is asked one question at a time, not as a form **(plugin)** | 📝 |
+| OR.17 | `%^{…}` is asked one question at a time, not as a form **(plugin)** | ✅ |
 
 ### OR.17 — `%^{…}` is asked one question at a time **(plugin)** 📝
 

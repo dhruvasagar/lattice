@@ -161,7 +161,8 @@ In `crates/lattice-host/tests/plugin_insert_mode_chords.rs` (OS.0):
 
 | Slice | Title | Status |
 |---|---|---|
-| OS.0 | An Insert-mode plugin chord reaches a grammar action — pin it **(host)** | 📝 |
+| OS.0 | An Insert-mode plugin chord reaches a grammar action — pin it **(host)** | ✅ |
+| OS.0b | An ALT-bearing chord can be bound at all **(host)** — *carved from OS.0's finding* | 📝 |
 | OS.1 | The keyboard protocol, so Shift+Enter exists at all **(host)** | 📝 |
 | OS.2 | A Visual-mode plugin action can see its region **(host)** | 📝 |
 | OS.3 | `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** | 📝 |
@@ -179,10 +180,13 @@ In `crates/lattice-host/tests/plugin_insert_mode_chords.rs` (OS.0):
 **OS.3 is the gate for everything in the plugin.** Nothing below it can be
 written against a list the plugin cannot see.
 
-- **OS.0 blocks OS.4 and OS.8** — both bind in Insert, and if an Insert-mode
-  plugin chord does not reach a grammar action, both are dead bindings that
-  test green through direct dispatch. It is a test slice that may become a
-  fix; find out before writing eight of them.
+- **OS.0 blocked OS.4 and OS.8 and has now answered.** ✅ Declines in Insert
+  DO fall through, so **OS.8 is unblocked**. ALT-bearing Insert chords do
+  **not** dispatch, so **OS.4 and OS.5 are blocked on OS.0b** — `<M-CR>` and
+  `<M-S-CR>` cannot fire until it lands. This is the slice working: it cost
+  one test file to learn, instead of eight dead bindings.
+- **OS.0b blocks OS.4 and OS.5.** Nothing else — OS.6/OS.7 bind in Normal
+  (a different dispatch path), OS.8 uses CTRL, which was never stripped.
 - **OS.2 blocks OS.10** and nothing else.
 - **OS.1 blocks nothing.** `<M-S-CR>` is unreachable in the TUI without it,
   reachable in GPUI and through `<leader>o…` either way, so OS.5 lands green
@@ -327,6 +331,135 @@ git commit
 
 Message says what was pinned and why it was in doubt — that this class has
 silently failed twice, and that eight bindings are about to depend on it.
+
+## OS.0b — An ALT-bearing chord can be bound at all **(host)** 📝
+
+**Carved from OS.0's finding, 2026-09-06.** Not in the original plan; OS.0
+exists to surface exactly this class and did.
+
+`normalize_for_insert_lookup` (`keymap_insert.rs:594-609`) strips ALT and
+SUPER off every incoming chord **before any lookup**, so an ALT-bearing
+binding registers correctly into the trie and can never fire. Its stated
+rationale — *"no Insert binding (base or overlay) uses them"* — was true of
+the BUILTINS and was falsified by the `modes` WIT seam, which lets a plugin
+declare `binding-mode: insert`. A seam that accepts a registration and then
+silently drops every keystroke is the failure
+`plugin-gates-hand-guests-throwaway-contexts` names.
+
+**Wider than Insert.** `dispatch_insert` also serves `ModalState::Command`,
+`Search` and `Prompt` (`input.rs:378`, `:400`, `:411`, `:435`), and
+`keymap_select.rs:285` reuses the same normalize. Five modal states, every
+consumer, both renderers — this is not an org bug.
+
+**Files**
+- Modify: `crates/lattice-host/src/keymap_insert.rs` — `dispatch_insert`'s
+  **three** lookup sites: the partial-chord branch (~line 481), the
+  single-chord lookup (~line 492), and `resolve_native_action`'s
+  fall-through re-resolve (~line 556)
+- Modify: `crates/lattice-host/src/keymap_select.rs` — the peer at ~line 285
+- Modify: `crates/lattice-host/tests/plugin_insert_mode_chords.rs` — **remove
+  the `#[ignore]`**; that test passing is this slice's acceptance criterion
+- Test: `keymap_insert.rs`'s own `#[cfg(test)]` module
+
+**Interfaces**
+- Produces: no signature changes. `normalize_for_insert_lookup` stays exactly
+  as it is and keeps its callers; what changes is that it is now a *fallback*
+  rather than a precondition.
+
+- [ ] **Step 1: Un-ignore OS.0's test and watch it fail**
+
+```bash
+cargo test -p lattice-host --test plugin_insert_mode_chords -- --include-ignored
+```
+
+Expected: `an_insert_mode_plugin_chord_reaches_its_guest_action` FAILS with
+`last_message` showing the echo `i` left behind rather than the fixture's.
+This is the driver; do not weaken it.
+
+- [ ] **Step 2: Write the regression tests for what must NOT change**
+
+These are the point of choosing raw-then-fallback over deleting the strip.
+Each asserts a behaviour that exists today:
+
+```rust
+#[test]
+fn alt_enter_still_reaches_the_builtin_newline_when_nothing_binds_it() {
+    // <M-CR> unbound anywhere -> falls back to normalized <CR> -> Builtin.
+}
+
+#[test]
+fn alt_x_still_types_a_literal_x() {
+    // Unbound either way; `literal_text_fallback` inserts "x".
+}
+
+#[test]
+fn shift_tab_is_unaffected() {
+    // SHIFT was never stripped; raw lookup finds it on the first try.
+}
+
+#[test]
+fn the_ctrl_x_ctrl_o_two_chord_still_resolves() {
+    // The partial-chord branch must get the same treatment as the
+    // single-chord one, or a multi-key ALT chord dies at its prefix.
+}
+```
+
+- [ ] **Step 3: Implement raw-then-fallback at every lookup site**
+
+```rust
+// Look the chord up AS IT ARRIVED first, so a layer that deliberately
+// bound an ALT chord is reachable. Fall back to the normalized form
+// only when the raw lookup found nothing AND normalizing would
+// actually change the chord -- so a chord carrying neither ALT nor
+// SUPER costs exactly one lookup, as it always did.
+//
+// `Partial` counts as a hit: an ALT-bearing PREFIX is a deliberate
+// registration, and falling back mid-sequence would strand its
+// continuation.
+let looked = normalize_for_insert_lookup(*chord);
+let raw = handle.lookup_with_context(BindingMode::Insert, &[*chord], active_minor_modes);
+let result = match raw {
+    LookupResult::Bound { .. } | LookupResult::Partial => raw,
+    _ if looked != *chord => {
+        handle.lookup_with_context(BindingMode::Insert, &[looked], active_minor_modes)
+    }
+    other => other,
+};
+```
+
+Apply the same shape at all three sites in `keymap_insert.rs` and at
+`keymap_select.rs:285`. Factor it into one helper rather than pasting it four
+times — four copies of a lookup rule is how one of them drifts.
+
+- [ ] **Step 4: Correct the module docstring**
+
+The file's own header states the stripped-modifier rule as by-design. Update
+it to say what is now true: builtins use neither ALT nor SUPER, so the
+normalized form remains the fallback, but a mode or plugin layer may bind
+them and the raw chord is tried first. Leaving a docstring that contradicts
+the code is how the next reader re-introduces this.
+
+- [ ] **Step 5: Run everything, including the five modal states**
+
+```bash
+cargo test -p lattice-host --test plugin_insert_mode_chords -- --include-ignored
+cargo test -p lattice-host keymap_insert
+cargo test -p lattice-host keymap_select
+scripts/precommit.sh lattice-host
+```
+
+`dispatch_insert` serves Command, Search and Prompt as well as Insert, so a
+regression there will surface as a command-line or prompt test failing.
+Treat any such failure as this slice's, not as flake.
+
+- [ ] **Step 6: Commit**
+
+Stage `crates/lattice-host/src/keymap_insert.rs`,
+`crates/lattice-host/src/keymap_select.rs`, and
+`crates/lattice-host/tests/plugin_insert_mode_chords.rs`. The message records
+that the stripped-modifier rule was a true statement about builtins that the
+`modes` seam falsified, and that the symptom was a binding which registers
+and then silently never fires.
 
 ## OS.1 — The keyboard protocol, so Shift+Enter exists at all **(host)** 📝
 

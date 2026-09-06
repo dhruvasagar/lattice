@@ -164,62 +164,99 @@ their target moved.
 template like a vocabulary entry can exist at all: it is not one line of typed
 text, it is several named fields.
 
-**The template's questions become FIELDS on a menu**, not a run of prompts.
-`<leader>oc` opens the template chooser; the key picks a template; a template
-that asks questions then opens its own fields menu — a row per question, a row
-for the body, and a row that captures.
+**OR.17 reversed this section's decision.** Every question is asked
+sequentially now — one `Effect::OpenPrompt` per `%^{…}`, in template order,
+answered through a real prompt each time — which is emacs's own order and
+mechanism. Before OR.17 this section shipped, and argued for, a FIELDS MENU
+instead: `<leader>oc` opened the template chooser, the key picked a template,
+and a template that asked questions opened its own form — a row per question,
+a row for the body, and a row that captured. That menu is gone. The template
+*chooser* is not: picking a template by key is still a transient menu, unaffected
+by any of this — see §6.
 
-The mechanism is the host's and magit already uses it: pressing a field's key
-parks the whole menu, a one-line prompt takes the value, it lands in
-`TransientState`, and the menu comes back. `<Esc>` cancels the value with the
-menu untouched. See `plugin-transients.md` §7 for the seam half (TR.3b).
+### Why the fields menu was chosen, and why that reasoning expired
 
-**Rejected: sequential prompts carrying their answers in
-`open-prompt-payload.buffer-name`.** That channel is real and documented, and
-magit's blame / diff / revision modes use it — but for buffer *identity*, not
-multi-step input. Accumulating answers through it would have been a second
-spelling of a mechanism the editor already has, with a bespoke codec on top.
+The menu's one real advantage over sequential prompts was re-editability: the
+menu stayed the surface throughout, so a typo in an early answer could be fixed
+before anything was written, whereas "a questionnaire has already moved on by
+the time you notice the typo." That was true when this section was written,
+because the menu's fire row **wrote the capture file directly**. Diverging
+from emacs's own sequential order was accepted as a real muscle-memory cost in
+exchange for that.
 
-The visible difference is that the menu stays the surface throughout, so an
-answer can be re-edited before anything is written; a questionnaire has already
-moved on by the time you notice the typo. It diverges from emacs org-capture,
-which asks sequentially — a real muscle-memory cost, accepted because the
-mechanism is one the editor already has and the form is the better surface.
+**OC.7 gave capture a draft buffer**, and nobody re-examined the menu decision
+once it landed. Since OC.7, nothing is written until `C-c C-c` — every answer,
+however it was collected, lands in an editable buffer first. The draft *is*
+the re-edit surface. The moment that shipped, the fields menu's one advantage
+over plain sequential prompts was already gone; it just took a user actually
+running the roam create flow end to end and reporting the menu as "rather
+awkward" for anyone to notice. This is heuristic #1's failure mode by name:
+kept by inertia, not merit, because "it works" is not "it is still the better
+design once the thing that justified it changed."
 
-**A template with no questions skips the fields menu.** Nothing to ask, so the
-capture buffer (§8) opens straight away. Before OC.7 this said "keeps the
-direct prompt", which was the same decision about a surface that no longer
-exists.
+The original rejection of sequential prompts was also weaker than it read.
+It argued that carrying answers through `open-prompt-payload.buffer-name`
+would be "a second spelling of a mechanism the editor already has, with a
+bespoke codec on top" — but no codec was ever required. The plugin already
+carries cross-hop state guest-side in a thread-local (`CAPTURE_ORIGIN`, and
+the destination `PENDING_CAPTURE` holds between the draft opening and
+`C-c C-c`); an in-progress question flow's answers belong in exactly that kind
+of slot, not smuggled through a host-visible payload field. `buffer-name`
+stays reserved for what it is documented for — buffer *identity* — and
+sequential capture never touches it.
 
-**The fields menu survived OC.7 unchanged**, and the order it produces is
-emacs's: answers first, then the buffer. What changed is only what happens
-after the last answer — the menu used to write the file, and now it opens the
-capture buffer with the answers already substituted. Its body row seeds the
-`%?` point rather than being the final word, so an answer typed into the menu
-is a draft you keep editing.
+### The mechanism
 
-### Two submit actions, not one that guesses
+One shared action, `org-capture-question-submit`, fires on every question's
+submit — capture's and roam-create's alike. Nothing to sniff: every hop hands
+it the same shape, `[text]`. What happens next is decided by guest-side state,
+not by the argument:
 
-The prompt hop hands its action `[text, buffer-name]`; the fields hop hands its
-action `[key, answer…]`. A single action would have to sniff which shape it
-got, so they are named separately (`org-capture-submit`,
-`org-capture-fields-submit`) and each one's arguments are a fact rather than an
-inference.
+- A `PENDING_QUESTIONS` thread-local holds the flow in progress: which kind it
+  is (an org-capture template's key, or a roam-create's title/key/minted id),
+  the questions in template order (captured once, at the first prompt), and
+  the answers collected so far.
+- Starting a template's question flow opens the first `Effect::OpenPrompt` and
+  populates `PENDING_QUESTIONS`.
+- Each submit appends the typed text to the answers. Short of the last
+  question, it opens the NEXT prompt. On the last, it re-resolves the
+  destination (the template is re-read from the option, roam-create's node is
+  re-derived) — the same "a `:set` between hops takes effect" property every
+  other two-hop action here already has — and opens the capture buffer (§8)
+  exactly as a zero-question template does. There is no longer an extra
+  "body" question standing in for `%?`: the draft buffer is where `%?` is
+  typed, the same as the zero-question path.
 
-OC.7 adds a third, `org-capture-finalize`, which takes no arguments at all —
-its input is the buffer. The same reasoning applies: the surfaces differ, so
-the actions do.
+**A template with no questions is unchanged**: nothing to ask, so the capture
+buffer opens straight away.
 
-### Field names are positional
+### `<Esc>` must not poison the next capture
 
-`q0`, `q1`, … rather than the question text. A template may legitimately ask
-the same question twice — `%^{Line}` in a list template plainly means two
-different lines — and two rows sharing a state key would overwrite each other.
+`Effect::OpenPrompt`'s own contract is that Escape "dispatches nothing at
+all" — so an abandoned flow never tells the guest it was abandoned, and
+`PENDING_QUESTIONS` is left holding whatever the flow had collected so far.
+The defence is not "remember to clear it on every exit path" — that is
+exactly the kind of guest-side state this repo's standing rules warn is easy
+to leave stale. It is the same defence `CAPTURE_ORIGIN` already uses:
+**starting a NEW flow overwrites `PENDING_QUESTIONS` unconditionally**,
+including the case where the last one was abandoned mid-question. A capture
+or roam-create beginning to ask its questions is the one moment that is
+guaranteed to run, so it is the one moment the reset is hung off. Tested
+directly: `<Esc>` at question 2 of 3 leaves no note and no draft, and a
+following capture is asserted to start with an empty accumulator rather than
+inheriting the first one's answer.
 
-Expansion consumes the answers positionally too, which is why a question that
-was never asked (an empty `%^{}`) consumes none: shifting the sequence would
-substitute every later answer one slot early, and the result would look
-plausible while being wrong.
+### Answers stay positional
+
+There is no field name to key an answer by any more — a flow's answers are a
+plain list, in the order `capture_flow::questions` returned them, which is
+template order. This still matters for the same reason it did when the menu
+gave each question a row key (`q0`, `q1`, …): a template may legitimately ask
+the same question twice (`%^{Line}` in a list template plainly means two
+different lines), and `capture::expand_with` consumes answers positionally so
+a question that was never asked (an empty `%^{}`) consumes none — shifting the
+sequence would substitute every later answer one slot early, and the result
+would look plausible while being wrong.
 
 ### Two host bugs this uncovered
 
@@ -354,8 +391,9 @@ Scoping to a minor activated on exactly one buffer is also what makes `<C-c>`
 safe to bind at all, since it is vim's interrupt.
 
 **Org-roam capture reuses this unchanged** (OR.11b): same buffer, same chords,
-same handlers, one fields-menu row-builder. Only the order of what is asked
-before the buffer opens differs — roam picks the title first, then the template.
+same handlers, one question-flow mechanism (§5, OR.17). Only the order of what
+is asked before the buffer opens differs — roam picks the title first, then
+the template.
 
 Sharing it took one narrowing. The state finalize recovers its target from held
 a whole `Template`, and finalize read `target` and `clock_in` from it and

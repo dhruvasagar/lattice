@@ -468,6 +468,281 @@ the second is body prose, so its date is invisible to the agenda. Org
 itself accepts both spellings. That is the pinned grammar's behaviour,
 not lattice's, and it moves when the grammar does.
 
+### 5.6 Structure editing, and the two seams it needed
+
+Everything above acts on a *headline*. Promote, demote, move a subtree,
+insert a sibling, archive, refile — the outline half of org is here and
+has been since OM.3.
+
+The other half is not. **A plain list item is invisible to this plugin.**
+`checkbox::parse_item` requires a literal `[ ]`, and `strip_bullet` is
+private to it, so `- milk` is a line of prose to every action org
+registers. There is no insert-item, no indent-item, no move-item, no
+bullet cycling, no ordered-list renumbering. `org-meta-return` is
+headline-only, where emacs' `M-RET` has always dispatched on what is
+under the cursor. And the whole insert family beyond a bare sibling —
+emacs' `M-S-RET`, its subheading and TODO variants — is absent.
+
+That is the gap. Filling it turned out to be less about org than about
+two things the editor could not express, which is why this section is
+mostly about them.
+
+#### 5.6.1 The chord vocabulary is a portability question, not a taste one
+
+Org's structure UI is built on a two-bit modifier space: **Meta means
+"structural"**, and **Shift means "the bigger version"** — with the
+subtree, or the TODO variant. `M-RET` / `M-S-RET`, `M-<arrows>` /
+`M-S-<arrows>`. It is the most transferable muscle memory org has, and
+§5.1's rule says lead with convention on a user-facing surface.
+
+`lattice-protocol`'s chord types express every one of them —
+`KeyMods` carries `ALT`, and `SpecialKey::Enter` takes modifiers like
+any other special (`chord.rs:83-101`). GPUI's adapter passes all of it
+through untouched (`gpui_chord.rs:134`). So the *protocol* was never the
+constraint.
+
+The TUI was. `runtime.rs` enables raw mode, the alternate screen,
+bracketed paste and mouse capture, and **never pushes
+`KeyboardEnhancementFlags`**. Without the kitty keyboard protocol a
+terminal has no way to say "Shift and Enter" — it sends a bare `\r`, the
+same byte Enter alone sends. The split is sharp and worth recording,
+because it is not the one intuition predicts:
+
+| Family | Wire form | TUI today | TUI + H1 | GPUI |
+|---|---|---|---|---|
+| `<M-Up/Down/Left/Right>` | `CSI 1;3 X` | ✅ | ✅ | ✅ |
+| `<M-S-Up/Down/Left/Right>` | `CSI 1;4 X` | ✅ | ✅ | ✅ |
+| `<M-CR>` | `ESC` prefix | ✅ where Option=Meta | ✅ | ✅ |
+| `<S-CR>` `<C-CR>` `<M-S-CR>` | — | ✗ bare `\r` | ✅ | ✅ |
+| `<C-t>` `<C-d>` | C0 | ✅ | ✅ | ✅ |
+
+**The arrow half transplants verbatim.** Modified arrows are ordinary
+CSI sequences every terminal has sent since xterm, so the indent/move
+half of emacs' vocabulary needed nothing. Only the Enter-with-Shift half
+is unreachable, and only that half motivates **H1**: push
+`DISAMBIGUATE_ESCAPE_CODES` behind crossterm's
+`supports_keyboard_enhancement()` probe, with a `ui.keyboard-enhancement`
+option to force it off and a pop on teardown.
+
+Two guards on H1, both because the failure mode is a terminal left in a
+state the user cannot type out of. The probe is not trusted blindly — the
+option exists so a terminal that lies about support is recoverable
+without editing source. And the pop must survive a panic, not only a
+clean exit, on the same reasoning that put the alternate-screen restore
+where it is.
+
+**Nothing is reachable only through a modifier.** Every chord below is a
+second spelling of an ActionId that also has a `<leader>o…` form. A user
+on Terminal.app loses keystrokes, never verbs — which is what makes H1 an
+improvement rather than a dependency.
+
+#### 5.6.2 Insert, Normal and Visual, and what decides which
+
+`<leader>` cannot be typed in Insert mode, and the majority of these
+verbs are ones you want *while composing* — you are three words into a
+list item when you discover it should be nested. So the binding mode is
+part of the design here in a way it has not been for any previous org
+slice.
+
+The line is **what the verb needs from you**:
+
+- **Insert** — verbs invoked while composing. Create the next thing;
+  fix the level of the thing you are typing. You are mid-line and cannot
+  leave.
+- **Normal** — verbs that restructure what already exists. You navigate
+  to a thing and act on it: promote, move, change kind, cycle bullet.
+- **Visual** — the Normal verbs, applied to every item in the region.
+
+```
+INSERT   <M-CR> <M-S-CR>              create
+         <C-t> <C-d>                  indent / outdent this item
+
+NORMAL   <M-Left> <M-Right>           promote/demote  |  outdent/indent item
+         <M-S-Left> <M-S-Right>       ...with subtree / sub-items
+         <M-Up> <M-Down>              move past a sibling
+         <leader>o-   <C-c>-          cycle bullet type
+         <leader>o_                   toggle line <-> list item
+         <leader>o*   <C-c>*          toggle line <-> headline
+         <leader>oh ol oH oL oK oJ    (existing, kept)
+
+VISUAL   the Normal verbs, over every item in the region
+```
+
+Insert is deliberately the **smallest** of the three. The restructuring
+verbs are all reachable one `<Esc>` away, and an Insert-mode keymap that
+grows to mirror Normal is how a filetype stops feeling like the editor it
+is in.
+
+**`<C-t>` / `<C-d>` are the Insert spelling of indent/outdent, not
+`<M-Left>` / `<M-Right>`.** Those two are vim's own Insert-mode indent
+pair (`keymap_entry.rs:473-474`), so an org buffer teaching them to
+understand a list bullet is the smaller surprise — and it is a genuine
+improvement over the builtin, which shifts by `shiftwidth` and knows
+nothing about renumbering or sub-items. Which is also exactly why they
+must `Effect::Declined` off a list item: they are *shared* chords with a
+real meaning underneath, the same argument that made `<C-a>` / `<C-x>`
+the only declining actions in this plugin (§OM.9). `<M-Left>` and its
+peers have nothing underneath and so consume.
+
+`<C-c>-` and `<C-c>*` are safe for the reason every `<C-c>` chord here is
+safe: `<C-c>` is a **prefix**, never a terminal binding. `<C-c><C-c>` is
+the one exception and must stay the only one — a terminal node kills
+every longer chord grown beneath it, because `KeymapTrie::lookup` answers
+`Bound` at the first binding and never consults children.
+
+#### 5.6.3 The list model, and why `Checkboxes` is rebuilt on it
+
+`list.rs` is a `Lists` navigator shaped exactly like `headline.rs`'s
+`Headlines` and `checkbox.rs`'s `Checkboxes`: tree-first over the
+grammar's `list` / `listitem` / `bullet` nodes, indent-based fallback
+when the buffer has no parse.
+
+```
+Bullet   ::= Dash | Plus | Star | Ordered { n, Dot | Paren }
+Item     { line, indent, bullet, checkbox: Option<Check>, content_byte }
+Lists    { item_at, enclosing_item, item_end, siblings, children, list_span }
+```
+
+**`Checkboxes` is rebuilt on top of it rather than kept beside it.**
+`Checkboxes::item_at` is, once `Lists` exists, `Lists::item_at()` filtered
+to items that carry a box — and leaving two independent list walkers in
+one plugin is the silent-drift failure that
+`prefer-minor-modes-over-duplication` names. The two would agree on the
+day they were written and diverge on the first grammar bump, in a way
+that shows up as a cookie that stops updating rather than as a test
+failure. The rewrite is real work and it is the right shape (heuristic
+#1); the tally and cookie logic above it does not move.
+
+**Ordered lists renumber as part of the same edit.** Insert, move, indent
+and outdent all change what `1.` should say, and renumbering in a second
+edit would leave a `u` that restores the numbers but not the structure.
+This is the rule the cookie roll-up already follows and for the same
+reason: a list showing `[2/3]` above one ticked box is a worse state to
+be left in than either end.
+
+#### 5.6.4 One gesture, several meanings — and the arms call the bodies
+
+`<M-CR>` and the Meta-arrows dispatch on what is under the cursor, the
+way §5.4's `C-c C-c` does:
+
+| At point | `<M-CR>` | `<M-S-CR>` |
+|---|---|---|
+| checkbox item | new checkbox item, same indent | new *plain* item |
+| plain list item | new plain item | new **checkbox** item |
+| headline | new sibling, after the subtree | new sibling with the first TODO keyword |
+| table row | declines — `table-mode` owns it | — |
+| preamble / prose | `Effect::None` | — |
+
+The Meta-arrows dispatch the same way: on a headline `<M-Right>` demotes,
+on a list item it indents.
+
+**The arms call the bodies the dedicated chords call.** `<M-Right>`'s
+headline arm invokes the same function `<leader>ol` does; its list arm
+invokes the same one `<C-d>` does. Two spellings of one verb that could
+drift is what §5.4 already refused, and the gesture-named ActionIds
+(`org-meta-right`, `org-shift-meta-left`, …) exist *because* they
+dispatch — naming them for a context they only sometimes have would be
+the lie. `org-promote-headline` and its peers stay as the unambiguous
+headline-only actions behind `<leader>oh` / `ol` / `oH` / `oL`.
+
+**The table arm declines rather than implementing anything**, for §5.4's
+reason exactly: a guest cannot invoke a registered command, and org
+re-implementing row insertion is what `table-mode` exists to prevent.
+`table-mode` binds `<CR>` in Insert already (TB.4); `<M-CR>` joins it
+there, and org's decline falls through one layer to reach it.
+
+**`<CR>` does not auto-continue a list**, and that is a decision rather
+than an omission. VSCode, Zed, Obsidian and Logseq all do it; emacs org
+and vim do not. Shadowing `<CR>` in Insert across every org buffer to
+gain it would make the most-pressed key in the editor context-dependent
+inside one filetype, for a gesture `<M-CR>` already spells explicitly.
+Revisit if asked for; do not default it on.
+
+#### 5.6.5 What the Visual verbs needed, and why the fix is small
+
+Applying a verb to a region looked like it needed a new seam. It did not
+— it needed a field that already exists one layer over.
+
+None of the three guest entry points can see both a region and the text:
+`apply-action` gets a cursor plus `doc` and `tree` but no range;
+`apply-operator` gets a range and **no document at all**; the
+`ex-command-context` range mirror was deliberately never landed (the
+grammar `Range` is recursive and carries a plugin `RangeId`, which a WIT
+record cannot express).
+
+But `lattice-mode`'s `ActionContext` has carried
+`selection: Option<Range>` since **MG.18e**, added so magit could stage a
+selected part of a hunk, and the dispatcher's `Range::Selection` resolver
+already handles linewise, charwise and blockwise correctly
+(`dispatcher.rs:756`). What is missing is only that
+`lattice-grammar`'s `ActionContext` — the one a *plugin* action arrives
+through — never gained the field, so the WIT mirror had nothing to copy.
+
+**H2** is that field and its mirror: `selection` on the grammar
+`ActionContext`, populated from the existing resolver; `selection:
+option<range>` on the WIT record; three lines in
+`project_action_context`. The precedent is exact — **OC.10** added
+`cursor` and `buffer-id` to `ex-command-context` for the identical
+reason, stated in the WIT itself: *a command reached that way was seeing
+strictly less than the same command reached by a chord.* A Visual-mode
+plugin action is in precisely that position today.
+
+**Not `apply-operator`.** Giving the operator seam a document is the
+larger and arguably better fix — it would make text-transforming plugin
+operators possible at all, which today they are not, and `<leader>o-ap`
+would come free from grammar composition. It is recorded here as a known
+gap with an owner-shaped description, and it is not this work: none of
+the verbs in this section need it, and taking it on would put a WIT
+change and its host wiring in front of every one of them.
+
+**Not a `selection` field on actions instead of range args, either.**
+That reading — actions quietly become range-aware — is the one that
+*would* violate paramount goal #3, because operator composition over
+`Range::Selection` is how this editor is supposed to express "apply to
+the region". H2 does not introduce that: it reports the selection that
+the dispatcher has already resolved, to a seam that natively sees it.
+
+#### 5.6.6 Refusals
+
+Every verb refuses rather than guessing, and every refusal says so:
+
+- **A level-1 subtree does not promote** — shifting only the children
+  that could move turns a child into a sibling of its own parent. The
+  existing `restar` rule, unchanged.
+- **A move stops at its parent.** `<M-Up>` swaps with the previous
+  *sibling* and does nothing at either end of the chain, rather than
+  splicing an item into another list's children.
+- **An outdent at column zero is refused**, not silently converted into a
+  headline. `<leader>o*` is how a list item becomes a headline, and it is
+  a different gesture on purpose.
+- **`<M-CR>` in a file's preamble answers `Effect::None`** — with no
+  enclosing headline there is no level to inherit, and guessing level 1
+  would make the key mean something different depending on where the
+  cursor happened to be.
+
+The fallback everywhere else is a message. A key that does nothing is
+indistinguishable from one that is unbound, which is the failure class
+this codebase keeps paying for.
+
+#### 5.6.7 Performance, stated rather than skipped
+
+Heuristic #5 asks for bench coverage alongside a design change. The
+plugin ships no bench harness, and this section does not invent one.
+
+The honest accounting: the cost added per keystroke is one `Lists` walk,
+bounded by the enclosing list's own edges exactly as `Headlines` is
+bounded by the subtree's — it reads lines outward until the list ends,
+not to the ends of the file. The boundary cost is the same
+`apply-action` round trip every existing org chord already pays, and that
+*is* ratcheted, by CI's grammar-extension budget of **< 5µs p99**.
+Building a plugin-local criterion harness to measure a bounded string
+walk underneath a budget that already fires would be ceremony, not
+coverage. If the round-trip ratchet moves when this lands, that is the
+signal, and it is already wired.
+
+Sequencing is in
+[`org-structure-editing.md`](../operations/slice-plans/org-structure-editing.md).
+
 ## 6. The agenda
 
 > **The agenda as a dashboard has its own fragment.**

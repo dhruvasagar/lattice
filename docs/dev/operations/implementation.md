@@ -7144,6 +7144,48 @@ Slice plan:
 
 ---
 
+### Org structure editing — headlines, lists, checkboxes (OS) — 📝 planned
+
+The outline half of org's structure editing has been here since OM.3 —
+promote, demote, move a subtree, insert a sibling. The list half does not
+exist at all: `checkbox::parse_item` requires a literal `[ ]`, so a plain
+`- milk` is prose to every action org registers. No insert-item, no
+indent-item, no move-item, no bullet cycling, no ordered-list renumbering.
+`org-meta-return` is headline-only where emacs' `M-RET` has always dispatched
+on what is under the cursor.
+
+**Two host gaps surfaced, and both are older and wider than org.**
+
+- **The TUI cannot express Shift+Enter.** `runtime.rs` never pushes
+  `KeyboardEnhancementFlags`, so `<S-CR>` / `<C-CR>` / `<M-S-CR>` arrive as a
+  bare `\r` — unreachable for every consumer, though `lattice-protocol` has
+  always been able to spell them and GPUI has always delivered them. The
+  *arrow* half of emacs' vocabulary (`<M-Left>`, `<M-S-Up>`, …) needs nothing:
+  modified arrows are ordinary CSI sequences.
+- **A Visual-mode plugin action cannot see its region.** `lattice-mode`'s
+  `ActionContext` has carried `selection` since MG.18e; `lattice-grammar`'s —
+  the one a plugin arrives through — never gained it, so the WIT mirror has
+  nothing to copy. Verbatim the position OC.10 fixed for `ex-command-context`:
+  *a command reached that way was seeing strictly less than the same command
+  reached by a chord.*
+
+The binding mode is part of the design here for the first time, because
+`<leader>` cannot be typed in Insert and most of these verbs are wanted while
+composing. The split is **what the verb needs from you**: Insert gets creation
+and level-while-typing only; Normal gets everything that restructures what
+already exists; Visual gets the Normal verbs over a region.
+
+**Explicitly not taken on:** giving `apply-operator` a `document`. It is the
+better long-term shape — no plugin can contribute a text-transforming operator
+today — but no verb in this plan needs it, and it is recorded as a known gap
+in the design rather than put in front of eleven slices.
+
+Design: [`../architecture/org-mode.md`](../architecture/org-mode.md) §5.6.
+Slice plan:
+[`slice-plans/org-structure-editing.md`](slice-plans/org-structure-editing.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

@@ -206,6 +206,17 @@ impl Guest for Component {
             30,
             31,
         );
+        // OS.0: an action bound only in Insert mode (via
+        // `multiseam-insert-mode` below), so a host test can tell "an
+        // Insert-mode plugin chord reached apply-action" from "the chord did
+        // nothing" — an echoed constant is loud in a way a silent success
+        // is not.
+        grammar::register_action(
+            "multiseam-insert-fires",
+            "echo a marker proving an Insert-mode chord reached apply-action (OS.0)",
+            &spec(),
+            40,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -243,6 +254,33 @@ impl Guest for Component {
             }],
             target_language: None,
             // MO.1: this mode sets no options for its buffers.
+            options: vec![],
+        });
+        // OS.0: a THIRD mode, owning Insert-mode bindings — the shape eight
+        // later org bindings depend on. `<M-CR>` binds to an action that
+        // fires (proves an Insert-mode plugin chord reaches apply-action);
+        // `<C-t>` binds to the SAME declining action `multiseam-mode` uses
+        // in Normal, but here in Insert, where a decline must fall through
+        // to the builtin `<C-t>` (indent by shiftwidth) rather than the
+        // builtin Normal `x`.
+        modes::register_mode(&ModeDeclaration {
+            id: "multiseam-insert-mode".to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Global,
+            capabilities: ModeCapabilities::empty(),
+            keymap: vec![
+                ModeKeymapBinding {
+                    binding_mode: BindingMode::Insert,
+                    chord: "<M-CR>".to_string(),
+                    command: "multiseam-insert-fires".to_string(),
+                },
+                ModeKeymapBinding {
+                    binding_mode: BindingMode::Insert,
+                    chord: "<C-t>".to_string(),
+                    command: "multiseam-declines".to_string(),
+                },
+            ],
+            target_language: None,
             options: vec![],
         });
     }
@@ -490,6 +528,13 @@ impl GrammarCallbacks for Component {
                     text: format!("{}:{}", root.kind(), root.named_child_count()),
                 })])
             }
+            // OS.0: bound only in Insert mode (`multiseam-insert-mode`). A
+            // fixed marker, not a computed value — the point is only "did
+            // apply-action run at all".
+            40 => Ok(vec![Effect::Echo(EchoPayload {
+                level: EchoLevel::Info,
+                text: "multiseam-insert-fired".to_string(),
+            })]),
             other => Err(format!("multiseam: unknown action callback {other}")),
         }
     }

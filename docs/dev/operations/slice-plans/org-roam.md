@@ -127,6 +127,76 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.14 | `body-file` — a template body sourced from a file **(plugin)** | ✅ |
 | OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | ✅ |
 | OR.16 | an async picker accept stops dropping renderer effects **(host)** | ✅ |
+| OR.17 | `%^{…}` is asked one question at a time, not as a form **(plugin)** | 📝 |
+
+### OR.17 — `%^{…}` is asked one question at a time **(plugin)** 📝
+
+**Opened 2026-09-06 from use.** Dhruva ran the roam create flow end to end:
+*"the roam capture asked the questions for all fields using a single transient
+menu, the user experience was rather awkward even though it worked."*
+
+**This reverses a decision the design took deliberately, and the design said
+so.** [`org-capture.md`](../../architecture/org-capture.md) §5 chose a fields
+menu over sequential prompts and recorded the cost: *"It diverges from emacs
+org-capture, which asks sequentially — a real muscle-memory cost, accepted
+because the mechanism is one the editor already has and the form is the better
+surface."*
+
+**Why the justification expired.** The menu was chosen because *"an answer can
+be re-edited before anything is written; a questionnaire has already moved on
+by the time you notice the typo."* That was true when the fields menu wrote
+the file. **OC.7 changed it**: the answers now land in a capture *draft
+buffer*, fully substituted, and nothing is written until `C-c C-c`. The draft
+IS the re-edit surface, so the menu's one advantage over sequential prompting
+disappeared — and nobody re-examined the choice when the thing that justified
+it went away. Heuristic #1: kept by inertia, not merit.
+
+The rejection of sequential prompts is also weaker than it read. §5 rejected
+carrying answers through `open-prompt-payload.buffer-name` as *"a bespoke
+codec"* — but that field's own WIT doc says *"Callers that need to smuggle
+state through a multi-step flow encode it here"*, and in any case **no codec
+is needed**: the plugin already carries cross-hop state guest-side in the
+`PENDING_CAPTURE` thread-local, which is where accumulated answers belong.
+
+**Scope: the FIELDS menu only.** The template *chooser* stays — picking `c`
+for "concept (PKOS)" from a keyed menu is emacs' own `org-capture` behaviour
+and is not what was awkward. Only the per-question form goes.
+
+**Both surfaces**, capture and roam: they share one row-builder today, and
+leaving two different question-asking UXs for one `%^{}` syntax is the next
+thing to annoy.
+
+#### What to build
+
+- Ask each `%^{Question}` in template order via `Effect::OpenPrompt`, chaining
+  through `on-submit-action`; accumulate answers guest-side. After the last,
+  open the draft exactly as today.
+- A template with **no** questions is unchanged — straight to the draft.
+- **`<Esc>` mid-flow abandons the whole capture**, emacs' `C-g`. It must leave
+  no note, no half-filled draft, and **no stale accumulator** — a subsequent
+  capture must not inherit answers from an abandoned one. That is the failure
+  mode guest-side state invites and it needs its own test.
+- Delete `fields_menu_spec` and the now-unused `*-fields-submit` actions.
+  A conversion that leaves its old helper behind is not finished, and
+  `dead_code` is a real warning under this repo's gate. The transient seam
+  itself stays — magit is its original consumer and the template chooser still
+  uses it.
+
+#### Tests
+
+- N questions asked in template ORDER, answered through real prompt submits,
+  landing in a draft with every `${…}` and `%^{…}` substituted.
+- A `body-file` template's questions too — OR.14 already proved that path is
+  separately breakable.
+- `<Esc>` at question 2 of 3: no note, no draft, and a *following* capture
+  starts clean.
+- A zero-question template still opens its draft directly.
+
+#### Docs
+
+`org-capture.md` §5 is rewritten — the decision reverses, so say what changed
+and why the original reasoning expired rather than quietly editing it to
+match. `doc/org.md`'s capture section and `doc/roam.md`'s template page follow.
 
 ### OR.13–OR.15 — opened 2026-09-06, from a bug report
 

@@ -126,6 +126,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.13 | the stub create OPENS its draft **(plugin)** | 📝 |
 | OR.14 | `body-file` — a template body sourced from a file **(plugin)** | 📝 |
 | OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | 📝 |
+| OR.16 | an async picker accept stops dropping renderer effects **(host)** | 📝 |
 
 ### OR.13–OR.15 — opened 2026-09-06, from a bug report
 
@@ -234,6 +235,46 @@ path is the same shape).
 - **Docs**: `doc/org-roam.md`'s template page gains `body-file`, and the
   `architecture/org-roam.md` §6.3 fragment gains the mutual-exclusion and
   skip-on-unreadable rules.
+
+### OR.16 — an async picker accept stops dropping renderer effects **(host)** 📝
+
+**Deps:** none. **Blocks OR.13 being user-visible.**
+
+Found by OR.13: the plugin fix is correct and lands nothing, because
+`drain_pending_picker_accept`'s effect loop (`dispatch.rs` ~13436) is an
+**allowlist**. It forwards `Effect::OpenTransient` and drops every other
+effect to `tracing::debug!`.
+
+`Effect::OpenBufferAt` is renderer-applied — verified: it is **not** in
+`handle_effect`; only `OpenBufferAtColumn` is (`:4301`). So OR.13's
+`Many([WriteToFile, OpenBufferAt])` writes the note and discards the open,
+which is the original bug with one more step in front of it.
+
+**The allowlist is the defect, not its contents.** Its own comment reads
+*"Named rather than swallowed: the next effect to land here should be a log
+line, not another silent feature."* That was written when `OpenTransient` was
+added — after `WriteToFile` had already been mis-diagnosed here once. It has
+now silently killed a second feature. An enumeration that must be extended
+for every new effect, on a path no test exercises, will keep failing this way.
+
+**Two fixes, and this slice does both:**
+
+1. **Narrow, now:** handle `Effect::OpenBufferAt` so OR.13 works. Reuse the
+   host helper the sync path uses (`do_edit`) rather than reimplementing an
+   open, the way `OpenTransient` reuses `open_named_transient`.
+2. **Structural, same slice:** the sync path (`do_picker_accept`) returns
+   effects to the renderer; the async path cannot, because it returns
+   `Vec<RendererSignal>`. Close that asymmetry so the two paths cannot
+   diverge again — the async drain should apply effects through the *same*
+   host-side path the sync accept's renderer-owned effects take. If closing it
+   fully needs a signature change with a large blast radius, do the narrow fix,
+   and record what the structural fix would be with the exact call sites — do
+   not leave the allowlist undocumented a third time.
+
+**Test.** The regression must go through the **async plugin-accept** path, not
+the sync one — that asymmetry is the bug. OR.13 left
+`creating_a_note_opens_a_draft_with_an_id_and_title` `#[ignore]`d naming this
+slice; removing that ignore and having it pass is the acceptance criterion.
 
 ### OR.15 — the picker's `(loading)` echo is cleared when it seats **(host)** 📝
 

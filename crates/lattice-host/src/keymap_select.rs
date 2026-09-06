@@ -282,17 +282,19 @@ fn minor_select_action(
     // Minor bindings are keyed like Insert's (keep CTRL + SHIFT) so
     // `<S-Tab>` stays distinct from `<Tab>`; the base-Select normalize
     // strips SHIFT and would collapse the two.
-    let looked_up = crate::keymap_insert::normalize_for_insert_lookup(*chord);
-    let path: Vec<KeyChord> = if partial_chord.is_empty() {
-        vec![looked_up]
-    } else {
-        let mut p = partial_chord.to_vec();
-        p.push(looked_up);
-        p
-    };
-    let LookupResult::Bound { command, captured } =
-        handle.lookup_with_context(BindingMode::Select, &path, active_minor_modes)
-    else {
+    //
+    // OS.0b: raw-then-fallback, same as `dispatch_insert` — try the
+    // chord AS PRESSED first so a mode that deliberately binds an
+    // ALT/SUPER-bearing chord in Select is reachable, falling back to
+    // the normalized form only when the raw lookup finds nothing.
+    let lookup = crate::keymap_insert::lookup_insert_chord(
+        handle,
+        BindingMode::Select,
+        partial_chord,
+        *chord,
+        active_minor_modes,
+    );
+    let LookupResult::Bound { command, captured } = lookup.result else {
         return None;
     };
     // Only a minor-layer winner is mode-owned; a base-table `Bound`

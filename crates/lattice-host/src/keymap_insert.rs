@@ -72,8 +72,9 @@
 //! `<Esc>` / `<BS>` / `<CR>` / `<Tab>` (modifiers ignored), and
 //! short-circuited only `CONTROL` on the `Char(c)` arm. The trie
 //! is precise: `(Esc, NONE)` and `(Esc, CONTROL)` are distinct
-//! chords. To bridge, [`dispatch_insert`] runs a
-//! mode-specific normalisation pass before lookup:
+//! chords. To bridge, [`dispatch_insert`] normalizes per the table
+//! below -- but see OS.0b just after it before assuming this strip
+//! is unconditional:
 //!
 //! | chord shape                | normalisation                |
 //! |----------------------------|------------------------------|
@@ -87,6 +88,22 @@
 //! is preserved on bare letters too (the chord normalisation in
 //! [`KeyChord::from_event`] already strips redundant SHIFT for
 //! bare ASCII letters where case carries the bit).
+//!
+//! **OS.0b (2026-09-06): the strip is a fallback, not a precondition.**
+//! No BUILTIN Insert binding (base or overlay) uses ALT or SUPER, so
+//! this table's normalized form is exactly what every builtin chord
+//! still resolves to. But the `modes` WIT seam makes no such promise to
+//! a plugin or host mode registering its OWN Insert-mode binding
+//! (`binding-mode: insert`), and nothing in registration rejects an
+//! ALT/SUPER-bearing Insert chord -- so a mode or plugin CAN bind one.
+//! Stripping the modifiers before every lookup, unconditionally, used
+//! to mean such a binding registered correctly and then could never
+//! fire: real keypresses were normalized away before reaching it. Every
+//! lookup site now tries the chord AS PRESSED first
+//! ([`lookup_insert_chord`]) and falls back to this table's normalized
+//! form only when the raw lookup finds nothing -- so a deliberately
+//! ALT/SUPER-bearing binding is reachable, and a chord that was never
+//! going to match either way still costs exactly one lookup.
 //!
 //! Three documented drift cases vs. legacy (acceptable per the
 //! drift test's allow-list -- terminals don't emit these in
@@ -477,23 +494,36 @@ pub fn dispatch_insert(
     // keystroke absorbed a prefix into `App::partial_chord`.
     // This drives the `<C-x>` family (`<C-x><C-o>` /
     // `<C-x><C-s>`) and any future Insert-mode multi-key chord.
+    //
+    // OS.0b: every lookup below goes through `lookup_insert_chord`,
+    // which tries the chord AS PRESSED first and only falls back to the
+    // normalized form when the raw lookup found nothing. See that
+    // function's docs for why raw must go first.
     if !partial_chord.is_empty() {
-        let chord = normalize_for_insert_lookup(*chord);
-        let mut path: Vec<KeyChord> = partial_chord.to_vec();
-        path.push(chord);
-        return match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
-            LookupResult::Bound { command, captured } => {
-                bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
-            }
+        let lookup = lookup_insert_chord(
+            handle,
+            BindingMode::Insert,
+            partial_chord,
+            *chord,
+            active_minor_modes,
+        );
+        return match lookup.result {
+            LookupResult::Bound { command, captured } => bound_or_fall_through(
+                handle,
+                partial_chord,
+                *chord,
+                active_minor_modes,
+                &command,
+                &captured,
+            ),
             _ => Action::None,
         };
     }
 
-    let chord = normalize_for_insert_lookup(*chord);
-    let path = [chord];
-    match handle.lookup_with_context(BindingMode::Insert, &path, active_minor_modes) {
+    let lookup = lookup_insert_chord(handle, BindingMode::Insert, &[], *chord, active_minor_modes);
+    match lookup.result {
         LookupResult::Bound { command, captured } => {
-            bound_or_fall_through(handle, &path, active_minor_modes, &command, &captured)
+            bound_or_fall_through(handle, &[], *chord, active_minor_modes, &command, &captured)
         }
         LookupResult::Partial => {
             // Slice 8.i.4.b: every trie `Partial` in Insert mode
@@ -501,10 +531,75 @@ pub fn dispatch_insert(
             // `App::partial_chord` via `AbsorbPartialChord`. The
             // next keystroke runs with this stack as prefix and
             // hits the trie's resolved `[<C-x>, <C-o>]` /
-            // `[<C-x>, <C-s>]` binding.
-            Action::AbsorbPartialChord(chord)
+            // `[<C-x>, <C-s>]` binding. `lookup.resolved` is whichever
+            // form (raw or normalized) actually matched the `Partial`
+            // node, so the next keystroke's prefix is the one the trie
+            // will recognize.
+            Action::AbsorbPartialChord(lookup.resolved)
         }
-        LookupResult::Unbound => literal_text_fallback(&chord),
+        LookupResult::Unbound => literal_text_fallback(chord),
+    }
+}
+
+/// OS.0b: the outcome of [`lookup_insert_chord`] — the `LookupResult`
+/// plus which form of the incoming chord (as pressed, or with
+/// ALT/SUPER stripped) actually produced it. A caller that continues a
+/// multi-key sequence or re-resolves a fall-through continuation must
+/// follow up against the SAME form; silently switching to the other one
+/// would look up a chord the trie was never asked about.
+pub(crate) struct InsertLookup {
+    pub(crate) result: LookupResult,
+    pub(crate) resolved: KeyChord,
+}
+
+/// OS.0b: look a chord up **as it arrived** first, so a mode or plugin
+/// layer that deliberately binds an ALT/SUPER-bearing chord is
+/// reachable — the `modes` WIT seam makes no promise against it, unlike
+/// the BUILTIN catalog this module's normalize table was designed for
+/// (see the module docstring). Fall back to the normalized form only
+/// when the raw lookup found nothing AND normalizing would actually
+/// change the chord, so a chord carrying neither ALT nor SUPER costs
+/// exactly one lookup, as it always did.
+///
+/// `Partial` counts as a raw hit: an ALT/SUPER-bearing PREFIX is a
+/// deliberate registration, and falling back mid-sequence would strand
+/// its continuation.
+///
+/// Shared by `dispatch_insert`'s three lookup sites (the partial-chord
+/// branch, the fresh-chord branch, and `resolve_native_action`'s
+/// fall-through re-resolve) and by `keymap_select::minor_select_action`
+/// (SN.3d.4), which keys its minor bindings the same way and needs the
+/// same raw-first rule.
+pub(crate) fn lookup_insert_chord(
+    handle: &KeymapHandle,
+    mode: BindingMode,
+    prefix: &[KeyChord],
+    chord: KeyChord,
+    active_minor_modes: &[ModeId],
+) -> InsertLookup {
+    let mut raw_path: Vec<KeyChord> = prefix.to_vec();
+    raw_path.push(chord);
+    let raw = handle.lookup_with_context(mode, &raw_path, active_minor_modes);
+    if matches!(raw, LookupResult::Bound { .. } | LookupResult::Partial) {
+        return InsertLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let normalized = normalize_for_insert_lookup(chord);
+    if normalized == chord {
+        // Nothing to fall back to -- the raw result (Unbound, since the
+        // Bound/Partial case returned above) IS the answer.
+        return InsertLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let mut normalized_path: Vec<KeyChord> = prefix.to_vec();
+    normalized_path.push(normalized);
+    InsertLookup {
+        result: handle.lookup_with_context(mode, &normalized_path, active_minor_modes),
+        resolved: normalized,
     }
 }
 
@@ -515,9 +610,16 @@ pub fn dispatch_insert(
 /// binding's action after it. Bounded: each hop removes a layer, so the
 /// recursion terminates at `Builtin` — it cannot loop the way vim's
 /// `:map` can.
+///
+/// OS.0b: takes the ORIGINAL incoming `chord` (not a pre-resolved path)
+/// so the fall-through re-resolve can independently try raw-then-
+/// normalized against the peeled active set — the layer that bound the
+/// ALT-bearing chord may be gone, but a lower layer's NORMALIZED
+/// binding (e.g. Builtin's plain `<CR>`) should still be reachable.
 fn bound_or_fall_through(
     handle: &KeymapHandle,
-    path: &[KeyChord],
+    prefix: &[KeyChord],
+    chord: KeyChord,
     active_minor_modes: &[ModeId],
     command: &Arc<BoundCommand>,
     captured: &[char],
@@ -539,7 +641,10 @@ fn bound_or_fall_through(
         // fall_through only on mode layers).
         _ => return action,
     };
-    chain_actions(action, resolve_native_action(handle, path, &peeled))
+    chain_actions(
+        action,
+        resolve_native_action(handle, prefix, chord, &peeled),
+    )
 }
 
 /// SN.3c.2b: re-resolve a chord for a fall-through continuation,
@@ -550,13 +655,26 @@ fn bound_or_fall_through(
 /// here, which would type the chord's character).
 fn resolve_native_action(
     handle: &KeymapHandle,
-    path: &[KeyChord],
+    prefix: &[KeyChord],
+    chord: KeyChord,
     active_minor_modes: &[ModeId],
 ) -> Action {
-    match handle.lookup_with_context(BindingMode::Insert, path, active_minor_modes) {
-        LookupResult::Bound { command, captured } => {
-            bound_or_fall_through(handle, path, active_minor_modes, &command, &captured)
-        }
+    let lookup = lookup_insert_chord(
+        handle,
+        BindingMode::Insert,
+        prefix,
+        chord,
+        active_minor_modes,
+    );
+    match lookup.result {
+        LookupResult::Bound { command, captured } => bound_or_fall_through(
+            handle,
+            prefix,
+            chord,
+            active_minor_modes,
+            &command,
+            &captured,
+        ),
         _ => Action::None,
     }
 }
@@ -707,4 +825,154 @@ fn bind_invocation_with_string(
         .with_args(lattice_grammar::Args::String(payload.to_string()));
     let bound = Arc::new(BoundCommand::from_invocation(inv, source(), layer));
     trie.insert(path, bound);
+}
+
+/// OS.0b regression tests: `dispatch_insert`'s raw-then-fallback fix
+/// must not change any of the behaviour that worked before it. Each
+/// test below pins one fact the fix is not allowed to break; see
+/// `.superpowers/sdd/org-structure-editing/os0b-brief.md` for why these
+/// four were chosen. `crates/lattice-host/tests/plugin_insert_mode_chords.rs`
+/// covers the fix's actual acceptance criterion (an ALT-bearing plugin
+/// binding reaching apply-action end to end); these are host-local unit
+/// tests of the dispatch function itself.
+#[cfg(test)]
+mod os0b_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    fn shared_actions() -> &'static ActionIds {
+        use std::sync::OnceLock;
+        static A: OnceLock<ActionIds> = OnceLock::new();
+        A.get_or_init(|| {
+            let mut r = lattice_grammar::CommandRegistry::new();
+            let b = lattice_grammar::builtins::populate(&mut r);
+            let _ = lattice_grammar::ex_commands::populate(&mut r);
+            crate::actions::populate(&mut r, &b)
+        })
+    }
+
+    /// A handle carrying only the Builtin Insert catalog — no minor
+    /// modes. Enough to test the raw-then-fallback strip against the
+    /// bindings that motivated it in the first place.
+    fn builtin_handle() -> KeymapHandle {
+        let h = KeymapHandle::new();
+        register_insert_bindings(&h, shared_actions());
+        h
+    }
+
+    fn alt(key: KeyKind) -> KeyChord {
+        KeyChord::new(key, KeyMods::ALT)
+    }
+
+    fn invoked_command(action: &Action) -> CommandId {
+        match action {
+            Action::Invoke(inv) => inv.command,
+            other => panic!("expected Action::Invoke, got {other:?}"),
+        }
+    }
+
+    /// `<M-CR>` unbound anywhere (no mode claims it) must still fall
+    /// back to the normalized `<CR>` and reach the Builtin newline —
+    /// exactly what worked before OS.0b, now reached via the fallback
+    /// arm of `lookup_insert_chord` rather than unconditional stripping.
+    #[test]
+    fn alt_enter_still_reaches_the_builtin_newline_when_nothing_binds_it() {
+        let h = builtin_handle();
+        let chord = alt(KeyKind::Special(SpecialKey::Enter));
+        let action = dispatch_insert(&h, &chord, &[], &[]);
+        assert_eq!(
+            invoked_command(&action),
+            shared_actions().insert_newline,
+            "<M-CR> with nothing bound to it must still fall back to <CR>'s builtin newline"
+        );
+    }
+
+    /// `<M-x>` is unbound both raw and normalized, so it must still hit
+    /// the literal-text fallback and type a plain `x` — the raw lookup
+    /// trying first must not swallow the printable-fallback path.
+    #[test]
+    fn alt_x_still_types_a_literal_x() {
+        let h = builtin_handle();
+        let chord = alt(KeyKind::Char('x'));
+        match dispatch_insert(&h, &chord, &[], &[]) {
+            Action::Insert(s) => assert_eq!(s, "x"),
+            other => panic!("expected a literal 'x' insert, got {other:?}"),
+        }
+    }
+
+    /// SHIFT was never stripped by `normalize_for_insert_lookup`, so
+    /// `<S-Tab>` and `<Tab>` must keep resolving to DIFFERENT bindings
+    /// via the raw lookup's first try — the fix must not collapse them
+    /// the way stripping ALT/SUPER-only would be a no-op here.
+    #[test]
+    fn shift_tab_is_unaffected() {
+        let h = builtin_handle();
+        let mode_id = ModeId::new("os0b-shift-tab-mode");
+        let shift_tab_command = CommandId::new(u64::MAX - 1);
+        h.bind(
+            KeymapLayer::MinorMode(mode_id),
+            BindingMode::Insert,
+            &[lit(KeyChord::new(
+                KeyKind::Special(SpecialKey::Tab),
+                KeyMods::SHIFT,
+            ))],
+            CommandInvocation::of(shift_tab_command),
+            source(),
+        );
+
+        let shift_tab = KeyChord::new(KeyKind::Special(SpecialKey::Tab), KeyMods::SHIFT);
+        let action = dispatch_insert(&h, &shift_tab, &[], &[mode_id]);
+        assert_eq!(
+            invoked_command(&action),
+            shift_tab_command,
+            "<S-Tab> must resolve to the minor binding on its own, not fall through to <Tab>"
+        );
+
+        let plain_tab = KeyChord::special(SpecialKey::Tab);
+        let action = dispatch_insert(&h, &plain_tab, &[], &[mode_id]);
+        assert_eq!(
+            invoked_command(&action),
+            shared_actions().insert_tab,
+            "plain <Tab> must stay on the Builtin binding, unaffected by the <S-Tab> minor entry"
+        );
+    }
+
+    /// The partial-chord branch (a previously-absorbed `<C-x>` prefix)
+    /// must get the SAME raw-then-fallback treatment as the fresh-chord
+    /// branch. Before OS.0b, the second chord of a multi-key sequence
+    /// was normalized (ALT stripped) before ever being appended to the
+    /// lookup path, so an ALT-bearing two-chord binding died at its own
+    /// prefix even though it registered correctly.
+    #[test]
+    fn the_ctrl_x_ctrl_o_two_chord_still_resolves() {
+        let h = builtin_handle();
+        let mode_id = ModeId::new("os0b-two-chord-mode");
+        let two_chord_command = CommandId::new(u64::MAX - 2);
+        h.bind(
+            KeymapLayer::MinorMode(mode_id),
+            BindingMode::Insert,
+            &[lit(KeyChord::ctrl('x')), lit(alt(KeyKind::Char('o')))],
+            CommandInvocation::of(two_chord_command),
+            source(),
+        );
+
+        // First key: <C-x> absorbs as a partial prefix. It carries no
+        // ALT/SUPER, so raw == normalized here and this costs one
+        // lookup, same as before OS.0b.
+        let ctrl_x = KeyChord::ctrl('x');
+        let absorbed = match dispatch_insert(&h, &ctrl_x, &[], &[mode_id]) {
+            Action::AbsorbPartialChord(c) => c,
+            other => panic!("expected <C-x> to absorb as a partial prefix, got {other:?}"),
+        };
+
+        // Second key: <M-o> completes the sequence via the
+        // partial-chord branch.
+        let alt_o = alt(KeyKind::Char('o'));
+        let action = dispatch_insert(&h, &alt_o, &[absorbed], &[mode_id]);
+        assert_eq!(
+            invoked_command(&action),
+            two_chord_command,
+            "the two-chord <C-x><M-o> binding must resolve through the partial-chord branch"
+        );
+    }
 }

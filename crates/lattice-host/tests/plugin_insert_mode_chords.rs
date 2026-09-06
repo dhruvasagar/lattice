@@ -198,33 +198,35 @@ fn buffer_text(editor: &Editor) -> String {
 /// `last_message` stays whatever it was before — `None` on a fresh editor —
 /// and the assertion fails loudly rather than passing on an absent effect.
 ///
-/// **`#[ignore]`: OS.0 CONFIRMED this fails, and named why.** The chord does
-/// nothing — `last_message` stays `"-- INSERT --"` (the echo `i` itself
-/// leaves behind), never `"multiseam-insert-fired"`.
+/// **OS.0 CONFIRMED this failed, and named why; OS.0b fixed it.** Before
+/// OS.0b the chord did nothing — `last_message` stayed `"-- INSERT --"`
+/// (the echo `i` itself leaves behind), never `"multiseam-insert-fired"`.
 ///
 /// Root cause, confirmed by a throwaway diagnostic (not committed) that
 /// called `KeymapHandle::lookup_with_context` directly with the mode active:
 /// the RAW `<M-CR>` chord (ALT preserved) resolves `Bound` against
 /// `multiseam-insert-mode`'s layer — so the binding registered correctly and
 /// sits in the trie exactly where it should. But `dispatch_insert`'s
-/// `normalize_for_insert_lookup` (`crates/lattice-host/src/keymap_insert.rs:594-609`)
-/// unconditionally strips ALT and SUPER off EVERY incoming Insert-mode chord
-/// before ANY lookup — Builtin, MinorMode, and MajorMode alike — so the real
-/// per-keystroke dispatch path looks up plain `<CR>` instead, which resolves
-/// to the Builtin binding (`keymap_insert.rs:669`, insert newline) with no
-/// route back to the mode's layer at all. The doc comment at the top of that
-/// file states this as by-design ("no Insert binding (base or overlay) uses
-/// [ALT/SUPER]") — true of every BUILTIN binding, but the `modes` WIT seam
-/// (`wit/modes.wit`'s `binding-mode: insert`) makes no such promise to
-/// plugins, and a plugin that declares an ALT-bearing Insert chord (the org
-/// design's `<M-CR>` shape) registers successfully and then can never fire.
+/// `normalize_for_insert_lookup` unconditionally stripped ALT and SUPER off
+/// EVERY incoming Insert-mode chord before ANY lookup — Builtin, MinorMode,
+/// and MajorMode alike — so the real per-keystroke dispatch path looked up
+/// plain `<CR>` instead, which resolved to the Builtin binding (insert
+/// newline) with no route back to the mode's layer at all. The doc comment
+/// at the top of that file stated this as by-design ("no Insert binding
+/// (base or overlay) uses [ALT/SUPER]") — true of every BUILTIN binding, but
+/// the `modes` WIT seam (`wit/modes.wit`'s `binding-mode: insert`) makes no
+/// such promise to plugins, and a plugin that declares an ALT-bearing Insert
+/// chord (the org design's `<M-CR>` shape) registered successfully and then
+/// could never fire.
 ///
-/// This is a real, structural gap in generic Insert-mode dispatch — not an
-/// org-shaped bug — so the fix belongs there, out of this slice's scope.
-/// OS.4 / OS.8 (the eight Insert-mode bindings this slice exists to gate)
-/// must either avoid ALT-bearing chords or wait on that fix.
+/// **OS.0b (`crates/lattice-host/src/keymap_insert.rs`'s
+/// `lookup_insert_chord`)** made the lookup try the chord AS PRESSED first,
+/// falling back to the normalized form only when the raw lookup finds
+/// nothing — so a deliberately ALT/SUPER-bearing binding is reachable and a
+/// chord that never carried either modifier still costs exactly one lookup.
+/// This test is the acceptance criterion for that fix: it must PASS,
+/// unmodified, now that the fix has landed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "CONFIRMED defect: dispatch_insert's normalize_for_insert_lookup strips ALT/SUPER before every Insert-mode lookup (keymap_insert.rs:594-609), so no plugin Insert binding using ALT can ever fire even though it registers correctly. Fix belongs in generic Insert-mode dispatch, out of OS.0's scope."]
 async fn an_insert_mode_plugin_chord_reaches_its_guest_action() {
     let Some(mut editor) = boot_sealed_editor_with_fixture().await else {
         eprintln!("skipping: multiseam-guest wasm not built (no wasm32-wasip2 target)");

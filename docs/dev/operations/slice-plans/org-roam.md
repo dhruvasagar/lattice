@@ -123,6 +123,139 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.11a | `${field}` — written and wired | ✅ |
 | OR.11b | the capture buffer — roam's draft, `%^{…}` and `C-c C-k` | ✅ |
 | OR.12 | docs — the user page is `doc/org-roam.md`, its own topic | ✅ |
+| OR.13 | the stub create OPENS its draft **(plugin)** | 📝 |
+| OR.14 | `body-file` — a template body sourced from a file **(plugin)** | 📝 |
+| OR.15 | the picker's `(loading)` echo is cleared when it seats **(host)** | 📝 |
+
+### OR.13–OR.15 — opened 2026-09-06, from a bug report
+
+Dhruva: `<leader>onf` → type a title → pick `Create note: …` → **nothing
+happens**, status line still reading `picker: org-roam-node... (loading)`.
+
+Root cause, reproduced with boundary instrumentation rather than inferred: the
+whole async chain **succeeds**. A well-formed draft `Document` (title, fresh
+`:ID:`) lands in the buffer registry — and nothing ever puts it in a pane.
+`draft_id=BufferId(3)` while `active_pane_buffer_id` stayed `BufferId(1)`.
+
+`Effect::WriteToFile` **must not steal focus**, and that is load-bearing
+rather than incidental: archive, refile and capture-relocation all move text
+into a file the user is *not* looking at
+([`cross-file-writes.md`](../../architecture/cross-file-writes.md) §2, and the
+rule stated at line 235). The stub-create path used it to *open* a new note,
+which is the wrong tool. The plugin's **templated** create path is already
+correct — it uses `Effect::OpenSyntheticBuffer`, which activates.
+
+The stub path was built to match
+[`org-roam.md`](../../architecture/org-roam.md) §… line 339, which asserts
+"`WriteToFile` … opens it". That sentence contradicts the effect's real
+contract and is what made the wrong tool look like the right one.
+
+**Why no test caught it.** `creating_a_note_opens_a_draft_with_an_id_and_title`
+asserts through the buffer **registry**, so it proves the `Document` exists —
+not that anything shows it. Its own docstring records four rounds of hunting
+this same symptom, which is the cost of that gap.
+
+**Why it looked mute rather than loud** is a second, independent bug: the
+`(loading)` echo set at picker-open (`dispatch.rs:13349`) is never cleared by
+`drain_pending_picker_init`'s success arm (`:13384`), so the status line reads
+identically whether a create succeeded or failed. OR.15.
+
+**Not shipping a built-in default template set**, though it was considered and
+initially recommended. Dhruva's own org-roam config declines a default
+deliberately — *"a node created outside the taxonomy (no `:TYPE:`/`:STATUS:`)
+is invisible to PKOS queries"* — so a built-in default would manufacture
+exactly the untyped nodes his taxonomy exists to prevent. The `roam_templates`
+module header already argues the same way from the other side. The gap that
+remains is real but is a *configuration* gap, and OR.14 is what makes filling
+it pleasant.
+
+### OR.13 — the stub create OPENS its draft **(plugin)** 📝
+
+**Deps:** none.
+
+`src/lib.rs:6749-6795` (the `ROAM_CREATE_NODE` arm taken when
+`roam_templates::read()` is empty) returns a lone `Effect::WriteToFile`.
+It must also focus what it wrote:
+
+```rust
+Effect::Many(vec![
+    Effect::WriteToFile(WriteToFilePayload { path: path.clone(), … }),
+    Effect::OpenBufferAt(OpenBufferAtPayload {
+        path: Some(path),
+        position: Position { line: 0, byte: 0 },
+        force: false,
+    }),
+])
+```
+
+**This composition is well-defined, and the doc's warning about `open-buffer-at`
+does not apply.** `cross-file-writes.md` §1 warns that `open-buffer-at` "does
+not compose with a follow-on **edit**… nothing says the next effect applies to
+the buffer the previous one opened" — the hazard is an effect *implicitly*
+targeting whatever was just opened. Here the order is the reverse and the
+target is explicit: `WriteToFile` is applied inline by `handle_effect`
+(`dispatch.rs:4232`), so the file exists before `OpenBufferAt` names it **by
+path**. Nothing is inferred.
+
+**Tests.** Extend `creating_a_note_opens_a_draft_with_an_id_and_title` to
+assert `active_pane_buffer_id()` is the draft — not merely that the draft is
+in the registry. That single assertion is what four rounds of investigation
+lacked. Keep the registry assertion too; they answer different questions.
+
+**Docs.** Correct `architecture/org-roam.md:336-339`: `WriteToFile` writes and
+resolves a path to a buffer, it does **not** open or focus one — say which
+effect does, so the next reader does not repeat this.
+
+### OR.14 — `body-file` — a template body sourced from a file **(plugin)** 📝
+
+**Deps:** none. Independent of OR.13.
+
+Emacs org-roam templates name their body as `(file "…/pkos-concept.org")`, and
+every one of Dhruva's ten does. `RawRoamTemplate` takes only an inline
+`body: Option<String>`, so today the same templates would have to exist twice —
+once as org files for emacs, once inlined in `init.rs` — and drift the moment
+either is edited.
+
+Add `body_file: Option<String>` beside `body`, with `${…}` expansion on the
+PATH as well (org-roam interpolates its target paths, and a per-node template
+path is the same shape).
+
+- **`body` and `body_file` are mutually exclusive.** Both set is a
+  configuration error the user must see: skip the template and name it in the
+  menu footer, which is what `RoamTemplateSet::skipped` already exists for.
+- **A missing or unreadable file is a skipped template, never a trap** — same
+  channel. A template that silently produced an empty note would be worse than
+  one that says why it is absent.
+- **Read goes through the fs capability.** The manifest currently grants
+  `fs:write:~/src/dhruvasagar/org-files`; confirm whether a read of a path
+  under it is covered or whether an `fs:read:` grant must be added, and if the
+  latter, add it to `plugin.toml` and say so in the user docs — a capability
+  the user must grant is not a detail to discover from a failure.
+- **Docs**: `doc/org-roam.md`'s template page gains `body-file`, and the
+  `architecture/org-roam.md` §6.3 fragment gains the mutual-exclusion and
+  skip-on-unreadable rules.
+
+### OR.15 — the picker's `(loading)` echo is cleared when it seats **(host)** 📝
+
+**Deps:** none. Independent of both above.
+
+`dispatch.rs:13349` sets `picker: {source}... (loading)` when a non-live async
+source parks. `drain_pending_picker_init`'s **error** arm clears the loading
+flag and replaces the message; its **success** arm (`:13384`) seats the picker
+and leaves the echo standing. So the status line reads `(loading)` for the rest
+of the session — after success, after a subsequent accept, after anything.
+
+Not cosmetic: it is why OR.13's failure presented as a *mute* one. A stale
+progress message that outlives the operation it described makes every later
+outcome unreadable, and it sent this investigation looking for a swallowed
+error that never existed.
+
+Clear the message on the success path when the message still belongs to this
+source (do not clobber a message some later action set — check before
+clearing). Test: a non-live async source seats, and `last_message` no longer
+reads `(loading)`.
+
+**Renderer parity:** none — this is host state both peers read.
 
 ### OR.1 — a plugin can persist something ✅
 

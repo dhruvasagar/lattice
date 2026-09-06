@@ -344,11 +344,20 @@ One edit per invocation, not one per item — a partially-indented region is a
 worse state to be left in than either end, and `u` has to take the whole thing
 back.
 
-Tests: a region spanning several items at one level; a region spanning
-*mixed* levels (each item moves relative to its own parent, or the verb
-refuses — decide and pin it); a region spanning a headline and a list; a
-region with a `None` selection (Normal-mode firing) falling back to the
-point-scoped behaviour rather than erroring.
+**A mixed-level region shifts every item by one, preserving relative
+structure** — it does not flatten the region to a common level. Indenting a
+selection that contains a parent and its child must leave the child a child.
+And the edit is **all-or-nothing**: if *any* item in the region would hit a
+refusal (a level-1 promote, an outdent at column zero), the whole invocation
+refuses and says which item stopped it. A region verb that silently applied to
+the two-thirds of a selection that could move is the class of surprise §5.6.6
+exists to prevent.
+
+Tests: a region spanning several items at one level; a mixed-level region
+preserving relative structure; a mixed-level region containing one item that
+must refuse, refusing whole and naming it; a region spanning a headline and a
+list; a region with a `None` selection (Normal-mode firing) falling back to
+the point-scoped behaviour rather than erroring.
 
 ## OS.11 — `:help org` — the Lists section, and the site **(plugin + host)** 📝
 

@@ -560,6 +560,7 @@ INSERT   <M-CR> <M-S-CR>              create
 NORMAL   <M-Left> <M-Right>           promote/demote  |  outdent/indent item
          <M-S-Left> <M-S-Right>       ...with subtree / sub-items
          <M-Up> <M-Down>              move past a sibling
+         <leader>oi                   insert a subheading (a child, not a sibling)
          <leader>o-   <C-c>-          cycle bullet type
          <leader>o_                   toggle line <-> list item
          <leader>o*   <C-c>*          toggle line <-> headline
@@ -567,6 +568,14 @@ NORMAL   <M-Left> <M-Right>           promote/demote  |  outdent/indent item
 
 VISUAL   the Normal verbs, over every item in the region
 ```
+
+`<leader>oi` is the one new *letter*, and it is the letter OA.27 left
+deliberately free — that slice moved the clock family under `<leader>ox…`
+and recorded that `i`, "the natural prefix for inserting things", was
+being left open rather than filled to justify the reorganisation. This is
+the insert group it was left open for. Subheading has no modifier chord
+because emacs gives it none either: it is a command you invoke, not a
+gesture.
 
 Insert is deliberately the **smallest** of the three. The restructuring
 verbs are all reachable one `<Esc>` away, and an Insert-mode keymap that

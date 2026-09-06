@@ -521,8 +521,10 @@ CSI sequences every terminal has sent since xterm, so the indent/move
 half of emacs' vocabulary needed nothing. Only the Enter-with-Shift half
 is unreachable, and only that half motivates **H1**: push
 `DISAMBIGUATE_ESCAPE_CODES` behind crossterm's
-`supports_keyboard_enhancement()` probe, with a `ui.keyboard-enhancement`
-option to force it off and a pop on teardown.
+`supports_keyboard_enhancement()` probe, with a `ui.keyboard_enhancement`
+option to force it off and a pop on teardown. (Underscore within the
+namespace, matching `ui.nerd_fonts`; a bool plus the probe *is* the
+auto-or-off tri-state, so it needs no enum.)
 
 Two guards on H1, both because the failure mode is a terminal left in a
 state the user cannot type out of. The probe is not trusted blindly — the

@@ -333,14 +333,23 @@ the real answers.
 
 ### 5.2 Creating a node
 
-Create takes the query as the title, expands a roam capture template, writes
-`YYYYMMDDHHMMSS-<slug>.org` into `org.roam-directory`, and opens it.
+Create takes the query as the title and names
+`YYYYMMDDHHMMSS-<slug>.org` inside `org.roam-directory`. What happens next
+splits on whether a template is configured (§6.3): with one, creation goes
+through the capture menu and the note is a synthetic draft the user finalizes;
+with none, the stub path (also §6.3) writes the file directly.
 
-The file is written through `Effect::WriteToFile`, which resolves the path to a
-buffer — so a new node exists as an **unsaved buffer** until the user saves it.
-That is not a gap; it is org-roam-capture's own model, where a capture is a
-draft you finalize. The watcher indexes it when it lands on disk, which means an
-abandoned draft never enters the index, which is the correct outcome.
+**`Effect::WriteToFile` resolves a path to a buffer — it does not open or
+focus one.** That contract is load-bearing: archive, refile and
+capture-relocation all move text into a file the user is *not* looking at
+(`cross-file-writes.md` §2), and none of them may steal focus to do it. A new
+node exists as an **unsaved buffer** the instant `WriteToFile` runs, but a
+buffer sitting unseen in the registry is not a node the user sees — the stub
+path pairs it with `Effect::OpenBufferAt`, named explicitly by the same path,
+to actually show it (§6.3). That is not a gap in `WriteToFile`; it is
+org-roam-capture's own model, where a capture is a draft you finalize. The
+watcher indexes a node when it lands on disk, which means an abandoned draft
+never enters the index, which is the correct outcome.
 
 **Ids are minted by the host.** `host-services.new-uuid() -> result<string,
 string>`, uppercase.
@@ -501,11 +510,14 @@ The file is written on finalize, so an abort has nothing to undo, including the
 minted id. That is the property §5.2's write-on-create could not have.
 
 **The stub path stays a direct write.** With no templates configured there is no
-menu and no draft: `WriteToFile` opens the note at its real path with the cursor
-at the end. A stub has no `%?` and no questions, so a draft would add a
-finalize keystroke to the one flow whose whole point is that it costs nothing —
-and §7's "an org user who has never heard of templates pays nothing" is the same
-argument one level up.
+menu and no draft: `Effect::WriteToFile` writes the note at its real path, and
+`Effect::OpenBufferAt` focuses it there with the cursor at the end —
+`WriteToFile` itself only resolves the path to a buffer (§5.2) and does not
+focus anything, so the stub path returns both, in that order, rather than
+relying on the write to show the user what it wrote. A stub has no `%?` and no
+questions, so a draft would add a finalize keystroke to the one flow whose
+whole point is that it costs nothing — and §7's "an org user who has never
+heard of templates pays nothing" is the same argument one level up.
 
 **Keyword parsing is case-insensitive.** The corpus contains `#+TITLE:`,
 `#+title:`, `#+Filetags:` and `#+filetags:`, all written by org itself at

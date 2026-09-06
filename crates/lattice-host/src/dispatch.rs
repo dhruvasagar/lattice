@@ -13346,7 +13346,11 @@ impl Editor {
                     // Non-live async source: keep the parked behavior —
                     // it has no query to show and no live re-fetch, so a
                     // brief status echo is the right affordance.
-                    self.set_message(EchoLevel::Info, format!("picker: {source}... (loading)"));
+                    // OR.15: through the shared helper, so the arm that
+                    // RETIRES this message cannot drift from the one that
+                    // sets it.
+                    let parked = Self::picker_loading_message(&source);
+                    self.set_message(EchoLevel::Info, parked);
                     Vec::new()
                 }
             }
@@ -13381,7 +13385,24 @@ impl Editor {
         };
         let pending = self.pending_picker_init.take().expect("guarded above");
         match result {
-            Ok(pairs) => self.seat_picker_from_pairs(pending.source_id, pairs),
+            Ok(pairs) => {
+                // OR.15: retire the `(loading)` echo this source parked with.
+                //
+                // The failure arm below has always replaced that message; the
+                // success arm never did, so `picker: <source>... (loading)`
+                // stayed on the status line for the rest of the session — after
+                // the picker seated, after an accept, after anything. A
+                // progress message that outlives the operation it describes
+                // makes every later outcome unreadable, and it did: org-roam's
+                // create row was reported as doing nothing at all, and this
+                // stale line is what made a silent success look like one.
+                //
+                // Cleared only when the message is still the one THIS source
+                // parked. Anything else on the line was set by something that
+                // happened afterwards and is not ours to discard.
+                self.retire_picker_loading_message(&pending.source_id);
+                self.seat_picker_from_pairs(pending.source_id, pairs)
+            }
             Err(e) => {
                 // Clear the in-flight indicator so a failed grep stops
                 // showing `searching…` (the empty picker stays open).
@@ -13391,6 +13412,34 @@ impl Editor {
                 self.set_message(EchoLevel::Error, format!("picker: {e}"));
                 Vec::new()
             }
+        }
+    }
+
+    /// The status text a non-live async picker source parks with while its
+    /// results are in flight.
+    ///
+    /// One function rather than two `format!`s, because the set site and the
+    /// clear site have to agree exactly — a divergence would leave the message
+    /// standing and be invisible until someone read the status line closely.
+    fn picker_loading_message(source: &str) -> String {
+        format!("picker: {source}... (loading)")
+    }
+
+    /// Retire the `(loading)` echo `source` parked, if it is still standing.
+    ///
+    /// **Guarded rather than unconditional.** Anything else on the status line
+    /// was put there by something that happened after this source parked, and
+    /// clearing it would trade a stale message for a lost one. A picker that
+    /// seats behind a write's "wrote 3 lines" must not swallow it.
+    ///
+    /// `pub` so the lifecycle is testable without standing up a real async
+    /// plugin source — the message contract is what this guards, and a test
+    /// that had to boot a WASM picker to check it would be testing something
+    /// else as well.
+    pub fn retire_picker_loading_message(&mut self, source: &str) {
+        let parked = Self::picker_loading_message(source);
+        if self.last_message.as_ref().is_some_and(|m| m.text == parked) {
+            self.last_message = None;
         }
     }
 

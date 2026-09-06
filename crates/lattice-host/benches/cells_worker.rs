@@ -299,6 +299,7 @@ fn bench_incremental_build(c: &mut Criterion) {
             start_line: (line_count / 2) as u32,
             lines_removed: 0,
             lines_added: 0,
+            ..Default::default()
         };
 
         group.bench_with_input(
@@ -426,6 +427,7 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
             start_line: (line_count / 2) as u32,
             lines_removed: 1,
             lines_added: 1,
+            ..Default::default()
         };
 
         group.bench_with_input(
@@ -570,6 +572,7 @@ fn bench_display_edit_path(c: &mut Criterion) {
             start_line: (line_count / 2) as u32,
             lines_removed: 1,
             lines_added: 1,
+            ..Default::default()
         };
 
         group.bench_with_input(

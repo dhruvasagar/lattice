@@ -57,6 +57,7 @@ fn keystroke_publish_stays_within_one_frame_ceiling() {
             start_line: editor.cursor.line,
             lines_removed: 0,
             lines_added: 0,
+            ..Default::default()
         });
         let t = Instant::now();
         editor.publish_render_state();

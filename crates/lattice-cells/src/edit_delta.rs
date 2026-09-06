@@ -25,7 +25,7 @@
 ///
 /// `Copy` so the publisher can stamp it onto each
 /// `CellsRenderState` without an `Arc` bump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EditDelta {
     /// First source line the edit touches in the pre-edit document
     /// (also: first line in the post-edit document where the
@@ -37,6 +37,26 @@ pub struct EditDelta {
     /// Number of *full* source lines added. A single-line insert
     /// without a newline yields `0`.
     pub lines_added: u32,
+    /// Whether the edit's OLD (pre-edit) range ends at column
+    /// (byte) `0` of its last line — i.e. a genuine line boundary
+    /// (BOL of the line one past [`Self::pre_edit_end_line`]) —
+    /// rather than partway into (or at the very end of) that line.
+    ///
+    /// This is the bit `lines_removed`/`lines_added` cannot carry:
+    /// they are a tree-sitter-shaped *row delta* (`old_end_position.line
+    /// - start_line`), which counts the same for "range ends at BOL of
+    /// the following line" (the line at `pre_edit_end_line` is
+    /// genuinely untouched) and "range ends at EOL of its own last
+    /// line" (that line's content WAS the edit). Only this flag
+    /// disambiguates the two. See [`Self::suffix_start_line`].
+    ///
+    /// Defaults to `false` (the conservative reading: treat the
+    /// boundary line as edited rather than risk reusing a wrongly
+    /// stale row) so construction sites that don't care about this
+    /// axis — most tests, most benches — can use
+    /// `..Default::default()` without silently opting into the
+    /// unsafe reuse.
+    pub old_end_at_bol: bool,
 }
 
 impl EditDelta {
@@ -47,9 +67,18 @@ impl EditDelta {
         self.lines_added as i32 - self.lines_removed as i32
     }
 
-    /// First source line past the edit's pre-edit affected range
-    /// (exclusive). Lines `>=` this value were untouched by the
-    /// edit and can shift wholesale by [`Self::net_delta`].
+    /// First source line past the edit's pre-edit affected range,
+    /// counting only *full* lines removed
+    /// (`start_line + lines_removed`).
+    ///
+    /// This does NOT by itself mean "lines `>=` this value were
+    /// untouched" — that claim only holds when
+    /// [`Self::old_end_at_bol`] is `true` (the old range ended
+    /// exactly at BOL of this line). When it's `false`, the edit's
+    /// old range ended partway into (or at the very end of) THIS
+    /// line, so this line's content was itself part of the edit.
+    /// Callers that need the actual safe shift boundary want
+    /// [`Self::suffix_start_line`], not this method directly.
     pub fn pre_edit_end_line(&self) -> u32 {
         self.start_line.saturating_add(self.lines_removed)
     }
@@ -60,6 +89,46 @@ impl EditDelta {
     /// pre-edit document.
     pub fn post_edit_end_line(&self) -> u32 {
         self.start_line.saturating_add(self.lines_added)
+    }
+
+    /// First source line that is safe to treat as an untouched
+    /// SUFFIX of the edit — i.e. every line `>=` this value can be
+    /// reused verbatim from the pre-edit cache and shifted
+    /// wholesale by [`Self::net_delta`]. This is the value
+    /// `pre_edit_end_line`'s doc comment used to (incorrectly)
+    /// claim for itself; this method is the one that actually
+    /// honours that contract.
+    ///
+    /// Three shapes, in order:
+    ///
+    /// - **Pure insert** (`lines_removed == 0`): `pre_edit_end_line()
+    ///   == start_line`, which would misclassify the very line the
+    ///   edit lands on (typed into, or split by a newline) as an
+    ///   untouched suffix. The safe boundary is one line later,
+    ///   `start_line + 1`.
+    /// - **Boundary line partially or wholly replaced**
+    ///   (`lines_removed > 0` and `old_end_at_bol == false`):
+    ///   `pre_edit_end_line()` lands ON the line the edit's old
+    ///   range actually ends inside — that line's content changed,
+    ///   so it is NOT a safe suffix start either. The safe boundary
+    ///   is one line later, `pre_edit_end_line() + 1`. Table-mode's
+    ///   `rewrite()` and org's `replace_lines` both build edits
+    ///   shaped exactly this way (range end = EOL of the last
+    ///   affected line, never BOL of the line after) on every
+    ///   invocation.
+    /// - **Clean line-boundary replace** (`lines_removed > 0` and
+    ///   `old_end_at_bol == true`): the old range ended exactly at
+    ///   BOL of `pre_edit_end_line()`, so that line is genuinely
+    ///   untouched and safe to shift wholesale — `pre_edit_end_line()`
+    ///   itself is the answer.
+    pub fn suffix_start_line(&self) -> u32 {
+        if self.lines_removed == 0 {
+            self.start_line.saturating_add(1)
+        } else if self.old_end_at_bol {
+            self.pre_edit_end_line()
+        } else {
+            self.pre_edit_end_line().saturating_add(1)
+        }
     }
 }
 
@@ -73,6 +142,7 @@ mod tests {
             start_line: 5,
             lines_removed: 0,
             lines_added: 3,
+            ..Default::default()
         };
         assert_eq!(insert.net_delta(), 3);
         assert_eq!(insert.pre_edit_end_line(), 5);
@@ -82,6 +152,7 @@ mod tests {
             start_line: 10,
             lines_removed: 4,
             lines_added: 0,
+            ..Default::default()
         };
         assert_eq!(delete.net_delta(), -4);
         assert_eq!(delete.pre_edit_end_line(), 14);
@@ -91,6 +162,7 @@ mod tests {
             start_line: 2,
             lines_removed: 2,
             lines_added: 5,
+            ..Default::default()
         };
         assert_eq!(replace.net_delta(), 3);
         assert_eq!(replace.pre_edit_end_line(), 4);
@@ -107,7 +179,61 @@ mod tests {
             start_line: u32::MAX - 1,
             lines_removed: 10,
             lines_added: 0,
+            ..Default::default()
         };
         assert_eq!(e.pre_edit_end_line(), u32::MAX);
+    }
+
+    #[test]
+    fn default_old_end_at_bol_is_conservative_false() {
+        // The conservative default causes one EXTRA row to be
+        // rebuilt (safe, just wasted work) rather than one row to
+        // be WRONGLY reused (the table-align bug this field fixes).
+        assert!(!EditDelta::default().old_end_at_bol);
+    }
+
+    #[test]
+    fn suffix_start_line_pure_insert_skips_the_edited_line() {
+        // `lines_removed == 0`: the start line itself was typed
+        // into or split, regardless of `old_end_at_bol` — the safe
+        // suffix boundary is one line later.
+        let e = EditDelta {
+            start_line: 3,
+            lines_removed: 0,
+            lines_added: 1,
+            old_end_at_bol: true,
+        };
+        assert_eq!(e.suffix_start_line(), 4);
+    }
+
+    #[test]
+    fn suffix_start_line_clean_line_boundary_reuses_pre_edit_end_line() {
+        // Old range ends exactly at BOL of the following line (e.g.
+        // `dd`-style whole-line deletion including trailing
+        // newlines) — that line is genuinely untouched.
+        let e = EditDelta {
+            start_line: 3,
+            lines_removed: 2,
+            lines_added: 0,
+            old_end_at_bol: true,
+        };
+        assert_eq!(e.suffix_start_line(), e.pre_edit_end_line());
+        assert_eq!(e.suffix_start_line(), 5);
+    }
+
+    #[test]
+    fn suffix_start_line_mid_line_boundary_extends_by_one() {
+        // Old range ends partway into (or at the EOL of) its last
+        // line — table-mode's `rewrite()` / org's `replace_lines`
+        // shape. `pre_edit_end_line()` lands ON the changed line, so
+        // the safe suffix boundary is one line past it.
+        let e = EditDelta {
+            start_line: 3,
+            lines_removed: 2,
+            lines_added: 2,
+            old_end_at_bol: false,
+        };
+        assert_eq!(e.suffix_start_line(), e.pre_edit_end_line() + 1);
+        assert_eq!(e.suffix_start_line(), 6);
     }
 }

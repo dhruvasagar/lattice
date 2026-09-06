@@ -3887,6 +3887,7 @@ mod tests {
             start_line: 0,
             lines_removed: 0,
             lines_added: 1,
+            ..Default::default()
         });
         editor.publish_render_state();
         let rs = editor.render_state.load_full();

@@ -2744,44 +2744,54 @@ fn try_incremental_display_build(
 
     let edit_lo = edit.start_line;
     // B2.3 intra-line staleness fix (2026-06-05) + open-line dup fix
-    // (2026-07-03): the row-reuse partition treats lines
-    // `>= pre_edit_end_line()` as the unchanged SUFFIX (reused, shifted by
-    // `net`). But `EditDelta` counts only FULL lines added/removed, so a
-    // **pure insert** (`lines_removed == 0`) reports
-    // `pre_edit_end_line() == start_line`, which would reuse-and-shift the
-    // START line itself. That is wrong for EVERY pure insert:
+    // (2026-07-03) + boundary-mid-line-replace fix (2026-09-06): the
+    // row-reuse partition treats lines `>= suffix_lo` as the unchanged
+    // SUFFIX (reused, shifted by `net`). But `EditDelta` counts only FULL
+    // lines added/removed, so raw `pre_edit_end_line()` cannot by itself
+    // tell three shapes apart:
     //
-    // - **Intra-line insert** (the COMMON typing case, `added == 0`): the
-    //   edited line is reused stale while the matrix version is stamped
-    //   current, so the typed glyph lags the cursor by a frame
-    //   (`|word` → `w|ord` → ` |word`; felt as "one key behind").
-    // - **Line-opening / mid-line-split insert** (`added > 0`, e.g. vim
-    //   `o`/`O`): `\n` inserted at EOL leaves the start line's content
-    //   unchanged but creates a new blank line after it. Reusing the start
-    //   row and shifting it into the new line's slot DUPLICATES the start
-    //   line's content (the "`o` duplicates the line" bug). The async
-    //   worker's full rebuild fixes it a frame later, so it read as an
-    //   occasional flicker.
+    // - **Intra-line insert** (the COMMON typing case, `removed == added
+    //   == 0`): `pre_edit_end_line() == start_line`, which would
+    //   reuse-and-shift the START line itself. The edited line is reused
+    //   stale while the matrix version is stamped current, so the typed
+    //   glyph lags the cursor by a frame (`|word` → `w|ord` → ` |word`;
+    //   felt as "one key behind").
+    // - **Line-opening / mid-line-split insert** (`removed == 0, added >
+    //   0`, e.g. vim `o`/`O`): `\n` inserted at EOL leaves the start
+    //   line's content unchanged but creates a new blank line after it.
+    //   Reusing the start row and shifting it into the new line's slot
+    //   DUPLICATES the start line's content (the "`o` duplicates the
+    //   line" bug).
+    // - **Boundary line partially or wholly replaced** (`removed > 0`
+    //   and the edit's OLD range ends partway into its last affected
+    //   line rather than at BOL of the line after —
+    //   `old_end_at_bol == false`): `pre_edit_end_line()` lands ON the
+    //   line the edit's old range actually ends inside, so that line's
+    //   content changed and is NOT a safe suffix start.
+    //   Table-mode's `rewrite()` and org's `replace_lines` both build
+    //   edits shaped exactly this way on EVERY invocation (range end =
+    //   EOL of the last affected line, never BOL of the line after) —
+    //   this was previously dismissed here as "rarer, self-healing"; it
+    //   is neither. It reproduces on every table `<Tab>` align, and the
+    //   reused row is stamped with the CURRENT `MatrixVersion`, so
+    //   nothing revisits it without a full (`<C-l>`-forced) rebuild.
     //
-    // A pure insert always modifies or splits the start line and/or creates
-    // new lines at/after it, so the start line MUST be rebuilt and only
-    // strictly-later pre-edit lines may shift — the reusable suffix starts
-    // one past `start_line`. Rebuilding `[start_line, added]` from the new
-    // snapshot is correct regardless of the insert column, so this also
-    // covers mid-line splits.
+    // A pure insert always modifies or splits the start line and/or
+    // creates new lines at/after it, so the start line MUST be rebuilt —
+    // the reusable suffix starts one past `start_line`, covering
+    // mid-line splits too regardless of insert column. A partially- or
+    // wholly-replaced boundary line MUST also be rebuilt, for the same
+    // reason. Only a genuinely clean line-boundary edit (`removed > 0`
+    // and `old_end_at_bol == true`, e.g. `dd`-style whole-line deletion
+    // including trailing newlines) leaves `pre_edit_end_line()` itself
+    // untouched and safe to shift wholesale (preserving its syntax
+    // colour — extending the boundary needlessly would recolour it, a
+    // flicker the async worker would have to repaint —
+    // feedback_decorations_update_in_place).
     //
-    // Gated to `removed == 0`: for an edit that removes lines
-    // (`lines_removed > 0`) `pre_edit_end_line()` is a genuinely-unchanged
-    // line that only SHIFTS — reusing its row (and its syntax colour) is
-    // correct, and extending the boundary there would needlessly recolour it
-    // (a flicker the async worker would have to repaint —
-    // feedback_decorations_update_in_place). Boundary-line CONTENT changes
-    // from mid-line joins / deletions remain a rarer, self-healing follow-up.
-    let suffix_lo = if edit.lines_removed == 0 {
-        edit.start_line.saturating_add(1)
-    } else {
-        edit.pre_edit_end_line()
-    };
+    // `EditDelta::suffix_start_line()` centralises this three-way
+    // decision; see its doc comment for the exact boundary math.
+    let suffix_lo = edit.suffix_start_line();
     let net = edit.net_delta();
 
     let (default_fg, default_flags) = resolve_style(ct, lattice_syntax::Style::Default);
@@ -5398,11 +5408,38 @@ mod tests {
 
     // ---- S2.4.b — incremental rebuild ----
 
+    /// `old_end_at_bol: true` — every existing caller of this helper
+    /// models a CLEAN line-boundary edit (whole-line insert/delete/
+    /// replace where the old range, when `removed > 0`, ends exactly
+    /// at BOL of the line after, e.g. `dd`-style deletion including
+    /// trailing newlines). Table-mode's / org's mid-line-boundary
+    /// shape (`old_end_at_bol: false`) is exercised by
+    /// [`edit_delta_mid_line_boundary`], which the last-row rebuild
+    /// regression tests use.
     fn edit_delta(start: u32, removed: u32, added: u32) -> lattice_cells::EditDelta {
         lattice_cells::EditDelta {
             start_line: start,
             lines_removed: removed,
             lines_added: added,
+            old_end_at_bol: true,
+        }
+    }
+
+    /// Sibling of [`edit_delta`] for edits whose OLD range ends
+    /// partway into (or at the EOL of) its last affected line —
+    /// table-mode's `rewrite()` and org's `replace_lines` shape. This
+    /// is the shape that under-counted `suffix_lo` by one row and
+    /// left the last replaced row stale until a forced redraw.
+    fn edit_delta_mid_line_boundary(
+        start: u32,
+        removed: u32,
+        added: u32,
+    ) -> lattice_cells::EditDelta {
+        lattice_cells::EditDelta {
+            start_line: start,
+            lines_removed: removed,
+            lines_added: added,
+            old_end_at_bol: false,
         }
     }
 
@@ -5630,6 +5667,158 @@ mod tests {
             &*d2.row_at_source_line(3).unwrap().text,
             "cc",
             "old line 2 (cc) shifts to source line 3"
+        );
+    }
+
+    /// 2026-09-06 REGRESSION (table-align last-row stale-until-`<C-l>`).
+    /// Table-mode's `<Tab>` align (and org's `replace_lines`, used by
+    /// every promote/demote/move) issue a whole-line-count-preserving
+    /// `Replace` whose OLD range ends at EOL of its own last line — NOT
+    /// at BOL of the line after. For a 3-line whole-doc table that's
+    /// `EditDelta {start: 0, removed: 2, added: 2, old_end_at_bol:
+    /// false}`. Before the fix, `suffix_lo` was computed as
+    /// `pre_edit_end_line() == 2` — the table's LAST row — so the
+    /// incremental rebuild classified it as an untouched suffix, reused
+    /// its PRE-edit `DisplayLine` verbatim, and stamped the matrix
+    /// version current. The stale row then never repainted until a full
+    /// (`<C-l>`-forced) rebuild. Asserts on the produced `DisplayMatrix`
+    /// row text — a buffer-text assertion would pass on the broken
+    /// product, since the alignment itself was always correct.
+    #[test]
+    fn whole_doc_incremental_rebuilds_last_row_of_mid_line_boundary_replace() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let snap1 = snap_of_versioned("r0\nr1\nr2", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // whole-doc
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+
+        // Table-align's shape: same row count, every row's content
+        // changes, OLD range ends at EOL of the last row (r2), not BOL
+        // of a following line.
+        let snap2 = snap_of_versioned("R0\nR1\nR2", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta_mid_line_boundary(0, 2, 2);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let d2 = dm_cell.load_full();
+        assert_eq!(&*d2.row_at_source_line(0).unwrap().text, "R0");
+        assert_eq!(&*d2.row_at_source_line(1).unwrap().text, "R1");
+        assert_eq!(
+            &*d2.row_at_source_line(2).unwrap().text,
+            "R2",
+            "the LAST row of a whole-line multi-line replace must rebuild from \
+             the new snapshot, not reuse the stale pre-edit row — this is the \
+             table-align 'last row does not repaint until <C-l>' bug"
+        );
+    }
+
+    /// General-case sibling of the table-align regression above: the
+    /// mid-line-boundary replace need not span the WHOLE document.
+    /// Org's `replace_lines` helper (used by every promote/demote/move)
+    /// produces this exact shape on an interior range of a larger
+    /// buffer, leaving genuine untouched lines both before and after
+    /// it. Confirms: (1) the boundary line at the end of the replaced
+    /// range still rebuilds (not just in the whole-doc-with-no-suffix
+    /// case above); (2) a genuinely untouched prefix line and a
+    /// genuinely untouched suffix line both still reuse their prior
+    /// `DisplayLine` `Arc` — the fix must not regress into rebuilding
+    /// everything.
+    #[test]
+    fn whole_doc_incremental_rebuilds_mid_line_boundary_replace_with_real_suffix() {
+        let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
+
+        let snap1 = snap_of_versioned("top\nr0\nr1\nr2\nbottom", 1);
+        let v1 = MatrixVersion {
+            text: 1,
+            syntax: 1,
+            ..MatrixVersion::ZERO
+        };
+        let rs1 = rs_with_everything(
+            Some(snap1),
+            v1,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            None,
+            5, // whole-doc
+        );
+        assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
+        let dm_cell = display_cell_for(&matrix_cell);
+        let d1 = dm_cell.load_full();
+        let top_pre = Arc::clone(&d1.row_at_source_line(0).unwrap().text);
+        let bottom_pre = Arc::clone(&d1.row_at_source_line(4).unwrap().text);
+
+        // Replace the interior 3-line range [1, 3] (r0, r1, r2) with
+        // R0/R1/R2. OLD range ends at EOL of line 3 (r2), not BOL of
+        // line 4 (bottom) — the mid-line-boundary shape.
+        let snap2 = snap_of_versioned("top\nR0\nR1\nR2\nbottom", 2);
+        let v2 = MatrixVersion {
+            text: 2,
+            syntax: 2,
+            ..MatrixVersion::ZERO
+        };
+        let edit = edit_delta_mid_line_boundary(1, 2, 2);
+        let rs2 = rs_with_everything(
+            Some(snap2),
+            v2,
+            matrix_cell.clone(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            true,
+            Some(edit),
+            5,
+        );
+        assert_eq!(recompute(&rs2), WorkerDecision::RecomputedIncremental);
+        let d2 = dm_cell.load_full();
+        assert!(
+            Arc::ptr_eq(&top_pre, &d2.row_at_source_line(0).unwrap().text),
+            "genuinely untouched prefix line must still reuse its prior Arc"
+        );
+        assert_eq!(&*d2.row_at_source_line(1).unwrap().text, "R0");
+        assert_eq!(&*d2.row_at_source_line(2).unwrap().text, "R1");
+        assert_eq!(
+            &*d2.row_at_source_line(3).unwrap().text,
+            "R2",
+            "the last row of the replaced range must rebuild from the new \
+             snapshot, not reuse the stale pre-edit row"
+        );
+        assert!(
+            Arc::ptr_eq(&bottom_pre, &d2.row_at_source_line(4).unwrap().text),
+            "genuinely untouched suffix line must still reuse its prior Arc \
+             (the fix must not regress into rebuilding everything)"
         );
     }
 
@@ -6853,6 +7042,7 @@ mod tests {
                     start_line: 1,
                     lines_removed: 0,
                     lines_added: 1,
+                    ..Default::default()
                 }),
             );
             timeout(Duration::from_secs(2), paint_request.notified())

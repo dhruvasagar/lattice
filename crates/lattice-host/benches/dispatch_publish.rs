@@ -150,6 +150,7 @@ fn keystroke_publish(c: &mut Criterion) {
                     start_line: edit_line,
                     lines_removed: 0,
                     lines_added: 0,
+                    ..Default::default()
                 });
                 editor.publish_render_state();
                 black_box(editor.render_state.load_full());

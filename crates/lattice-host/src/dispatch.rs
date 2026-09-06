@@ -41169,10 +41169,19 @@ fn cells_edit_delta_from_applied(
     let start_line = d.start_position.line;
     let lines_removed = d.old_end_position.line.saturating_sub(start_line);
     let lines_added = d.new_end_position.line.saturating_sub(start_line);
+    // The table-align "last row stays stale" bug: `lines_removed` alone
+    // can't tell "old range ends at BOL of the untouched line after"
+    // (safe to shift wholesale) from "old range ends partway into (or at
+    // the EOL of) its own last line" (that line's content WAS the edit —
+    // table-mode's `rewrite()` and org's `replace_lines` both build
+    // edits shaped this way on every call). `byte == 0` is exactly that
+    // distinction — see `EditDelta::suffix_start_line`.
+    let old_end_at_bol = d.old_end_position.byte == 0;
     lattice_cells::EditDelta {
         start_line,
         lines_removed,
         lines_added,
+        old_end_at_bol,
     }
 }
 

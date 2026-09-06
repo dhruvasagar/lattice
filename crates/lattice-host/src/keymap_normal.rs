@@ -59,8 +59,13 @@
 //!
 //! ## Modifier transparency
 //!
-//! `dispatch_normal`'s `lookup_normal` strips `ALT` and `SUPER`
-//! before lookup; `CTRL` and `SHIFT` are preserved.
+//! `dispatch_normal`'s `lookup_normal` tries the chord AS PRESSED
+//! first and only falls back to a form with `ALT` and `SUPER`
+//! stripped (OS.0c, `lookup_normal_chord`); `CTRL` and `SHIFT` are
+//! preserved either way. It stripped unconditionally until OS.0c,
+//! which made an ALT-bearing Normal binding — legal over the
+//! `modes` WIT seam, and what org's `<M-CR>` and meta-arrows need —
+//! impossible to fire.
 //! `KeyChord::from_event` already strips redundant SHIFT on
 //! bare letters, so `(Char('H'), NONE)` is the canonical chord
 //! for both `H` and `<S-h>` -- the trie only needs one entry
@@ -1922,8 +1927,9 @@ pub fn lookup_normal(
     chord: &KeyChord,
     active_minor_modes: &[lattice_mode::ModeId],
 ) -> Option<Action> {
-    let chord = normalize_for_normal_lookup(*chord);
-    match handle.lookup_with_context(BindingMode::Normal, &[chord], active_minor_modes) {
+    let found = lookup_normal_chord(handle, BindingMode::Normal, &[], *chord, active_minor_modes);
+    let chord = found.resolved;
+    match found.result {
         LookupResult::Bound { command, captured } => {
             Some(action_from_bound_with_capture(&command, &captured))
         }
@@ -1986,10 +1992,7 @@ pub fn binding_layer_mode(
     chord: &KeyChord,
     layers: &[lattice_mode::ModeId],
 ) -> Option<lattice_mode::ModeId> {
-    let chord = normalize_for_normal_lookup(*chord);
-    let mut path: Vec<KeyChord> = prefix.to_vec();
-    path.push(chord);
-    match handle.lookup_with_context(mode, &path, layers) {
+    match lookup_normal_chord(handle, mode, prefix, *chord, layers).result {
         LookupResult::Bound { command, .. } => match command.layer {
             KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => Some(id),
             // Builtin / User / anything else is always-on: there is no layer
@@ -2006,10 +2009,15 @@ pub fn lookup_normal_with_prefix(
     chord: &KeyChord,
     active_minor_modes: &[lattice_mode::ModeId],
 ) -> Action {
-    let chord = normalize_for_normal_lookup(*chord);
-    let mut path: Vec<KeyChord> = prefix.to_vec();
-    path.push(chord);
-    match handle.lookup_with_context(BindingMode::Normal, &path, active_minor_modes) {
+    let found = lookup_normal_chord(
+        handle,
+        BindingMode::Normal,
+        prefix,
+        *chord,
+        active_minor_modes,
+    );
+    let chord = found.resolved;
+    match found.result {
         LookupResult::Bound { command, captured } => {
             action_from_bound_with_capture(&command, &captured)
         }
@@ -2226,6 +2234,67 @@ pub fn expand_plugin_mode_grammar_rows(
         }
     }
     added
+}
+
+/// What [`lookup_normal_chord`] matched with, and the chord that produced it.
+///
+/// The chord matters as much as the result: a `Partial` is absorbed into
+/// `App::partial_chord`, and absorbing a form the next lookup will not
+/// reproduce strands the rest of the sequence.
+pub(crate) struct NormalLookup {
+    pub result: LookupResult,
+    pub resolved: KeyChord,
+}
+
+/// Look `prefix + chord` up RAW first, falling back to the normalized form.
+///
+/// OS.0c, and the exact shape OS.0b gave the Insert path — see
+/// [`crate::keymap_insert::lookup_insert_chord`], whose rationale this
+/// mirrors. `normalize_for_normal_lookup` strips ALT and SUPER off every
+/// incoming chord, which was a true statement about the BUILTIN catalog and
+/// was falsified by the `modes` WIT seam: a plugin or host mode may declare
+/// `binding-mode: normal` on an ALT-bearing chord, register it correctly, and
+/// then never fire, because the keypress was normalized away before the trie
+/// ever saw it. Found by OS.4, whose `<M-CR>` bound cleanly in Normal and did
+/// nothing; it equally blocked OS.6's and OS.7's meta-arrows.
+///
+/// The fallback runs only when the raw lookup found nothing AND normalizing
+/// would actually change the chord, so a chord carrying neither ALT nor SUPER
+/// costs exactly one lookup, as it always did.
+///
+/// `Partial` counts as a raw hit: an ALT/SUPER-bearing PREFIX is a deliberate
+/// registration, and falling back mid-sequence would strand its continuation.
+pub(crate) fn lookup_normal_chord(
+    handle: &KeymapHandle,
+    mode: BindingMode,
+    prefix: &[KeyChord],
+    chord: KeyChord,
+    active_minor_modes: &[lattice_mode::ModeId],
+) -> NormalLookup {
+    let mut raw_path: Vec<KeyChord> = prefix.to_vec();
+    raw_path.push(chord);
+    let raw = handle.lookup_with_context(mode, &raw_path, active_minor_modes);
+    if matches!(raw, LookupResult::Bound { .. } | LookupResult::Partial) {
+        return NormalLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let normalized = normalize_for_normal_lookup(chord);
+    if normalized == chord {
+        // Nothing to fall back to -- the raw result (Unbound, since
+        // Bound/Partial returned above) IS the answer.
+        return NormalLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let mut normalized_path: Vec<KeyChord> = prefix.to_vec();
+    normalized_path.push(normalized);
+    NormalLookup {
+        result: handle.lookup_with_context(mode, &normalized_path, active_minor_modes),
+        resolved: normalized,
+    }
 }
 
 fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
@@ -2573,5 +2642,144 @@ mod syntax_motion_tests {
             }
             other => panic!("]f must be BOUND in Visual, got {other:?}"),
         }
+    }
+}
+
+/// OS.0c regression tests: `lookup_normal`'s raw-then-fallback fix must reach
+/// an ALT-bearing Normal binding, and must not change any behaviour that
+/// worked before it.
+///
+/// The sibling of `keymap_insert::os0b_tests`. OS.0b fixed the Insert path and
+/// `keymap_select`'s reuse of it; `normalize_for_normal_lookup` was a separate
+/// copy of the same defect and survived, which is why OS.4's `<M-CR>` bound
+/// cleanly in Normal and did nothing at all.
+#[cfg(test)]
+mod os0c_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::keymap_trie::{ChordPattern, KeymapLayer};
+    use lattice_mode::ModeId;
+    use lattice_protocol::ids::CommandId;
+
+    fn source() -> SourceLocation {
+        SourceLocation::builtin_file(file!(), line!())
+    }
+
+    fn lit(chord: KeyChord) -> ChordPattern {
+        ChordPattern::Literal(chord)
+    }
+
+    fn alt(key: KeyKind) -> KeyChord {
+        KeyChord::new(key, KeyMods::ALT)
+    }
+
+    fn bound_command(result: &LookupResult) -> CommandId {
+        match result {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("expected Bound, got {other:?}"),
+        }
+    }
+
+    /// The acceptance criterion: a mode declaring an ALT-bearing Normal chord
+    /// must have it reach the trie AS PRESSED. This is org's `<M-CR>`, and the
+    /// same shape as every meta-arrow OS.6 and OS.7 add.
+    #[test]
+    fn an_alt_bearing_normal_binding_is_reachable() {
+        let h = KeymapHandle::new();
+        let mode_id = ModeId::new("os0c-alt-mode");
+        let command = CommandId::new(u64::MAX - 11);
+        let chord = alt(KeyKind::Special(SpecialKey::Enter));
+        h.bind(
+            KeymapLayer::MajorMode(mode_id),
+            BindingMode::Normal,
+            &[lit(chord)],
+            CommandInvocation::of(command),
+            source(),
+        );
+
+        let found = lookup_normal_chord(&h, BindingMode::Normal, &[], chord, &[mode_id]);
+        assert_eq!(
+            bound_command(&found.result),
+            command,
+            "<M-CR> must reach the binding that claims it, not be stripped to <CR> first"
+        );
+        assert_eq!(
+            found.resolved, chord,
+            "the raw chord won, so that is what a Partial would absorb"
+        );
+    }
+
+    /// The other half: with NOTHING claiming the ALT form, the fallback must
+    /// still find the normalized binding. This is what worked before OS.0c and
+    /// must keep working — it is the reason the strip existed at all.
+    #[test]
+    fn an_unclaimed_alt_chord_still_falls_back_to_the_plain_binding() {
+        let h = KeymapHandle::new();
+        let mode_id = ModeId::new("os0c-plain-mode");
+        let command = CommandId::new(u64::MAX - 12);
+        let plain = KeyChord::special(SpecialKey::Enter);
+        h.bind(
+            KeymapLayer::MajorMode(mode_id),
+            BindingMode::Normal,
+            &[lit(plain)],
+            CommandInvocation::of(command),
+            source(),
+        );
+
+        let found = lookup_normal_chord(
+            &h,
+            BindingMode::Normal,
+            &[],
+            alt(KeyKind::Special(SpecialKey::Enter)),
+            &[mode_id],
+        );
+        assert_eq!(
+            bound_command(&found.result),
+            command,
+            "<M-CR> with nothing claiming it must still fall back to <CR>"
+        );
+        assert_eq!(
+            found.resolved, plain,
+            "the NORMALIZED chord won, and that is the form a Partial must absorb"
+        );
+    }
+
+    /// A chord carrying neither ALT nor SUPER must not pay for the fallback:
+    /// raw == normalized, so the first lookup is the only lookup and its
+    /// answer is returned unchanged.
+    #[test]
+    fn a_plain_chord_resolves_to_itself() {
+        let h = KeymapHandle::new();
+        let chord = KeyChord::new(KeyKind::Char('d'), KeyMods::NONE);
+        let found = lookup_normal_chord(&h, BindingMode::Normal, &[], chord, &[]);
+        assert!(matches!(found.result, LookupResult::Unbound));
+        assert_eq!(found.resolved, chord);
+    }
+
+    /// An ALT-bearing chord as the SECOND key of a sequence must reach its
+    /// binding too. Before the fix the continuation was normalized before ever
+    /// being appended to the path, so a two-chord ALT binding died at its own
+    /// prefix even though it registered correctly.
+    #[test]
+    fn an_alt_bearing_continuation_resolves_under_its_prefix() {
+        let h = KeymapHandle::new();
+        let mode_id = ModeId::new("os0c-two-chord-mode");
+        let command = CommandId::new(u64::MAX - 13);
+        let g = KeyChord::new(KeyKind::Char('g'), KeyMods::NONE);
+        let alt_o = alt(KeyKind::Char('o'));
+        h.bind(
+            KeymapLayer::MajorMode(mode_id),
+            BindingMode::Normal,
+            &[lit(g), lit(alt_o)],
+            CommandInvocation::of(command),
+            source(),
+        );
+
+        let found = lookup_normal_chord(&h, BindingMode::Normal, &[g], alt_o, &[mode_id]);
+        assert_eq!(
+            bound_command(&found.result),
+            command,
+            "the ALT-bearing second chord must resolve under its prefix"
+        );
     }
 }

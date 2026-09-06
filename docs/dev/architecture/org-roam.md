@@ -509,6 +509,55 @@ the draft is not the `:ID:` the note is filed with.
 The file is written on finalize, so an abort has nothing to undo, including the
 minted id. That is the property §5.2's write-on-create could not have.
 
+**OR.14 — a template's body can be a FILE instead of an inline string**,
+emacs org-roam's `(file "…/template.org")`. Ten of Dhruva's own templates are
+declared exactly that way (`~/dotfiles/emacs/ds/init-org.el`), each naming an
+org file he edits directly — `body_file: Option<String>` beside `body` is what
+lets the same file serve both editors without a second, inlined copy that
+drifts the moment either is edited.
+
+`body` and `body_file` are mutually exclusive. Both set is a configuration
+error: the template is skipped and named in `RoamTemplateSet::skipped`, the
+same channel a duplicate key or a missing `body` already uses — resolving the
+conflict silently in either direction would guess wrong for someone half the
+time. Blank counts as absent for both, matching `file`'s existing rule.
+
+`${…}` expands on the `body_file` PATH, not just the body text — the same
+shape `file` (the note's own filename) already has, and for the same reason:
+org-roam interpolates its target paths, so a per-node template path is
+possible even though none of the reference templates use it.
+
+**The read happens at draft time, not at the config read.** `body_file`'s path
+may depend on the node (`${slug}`, `${title}`, `${id}`), and the node does not
+exist until a create is underway — `roam_templates::read()` only validates the
+declared shape; `roam_templates::resolve_body` does the actual read, called
+once per hop that needs the body (both `roam_draft`, which decides whether the
+note asks `%^{…}` questions, and `roam_fields_menu`, which lists one row per
+question — an earlier version of this feature resolved the file in the first
+and not the second, which showed zero question rows for a file whose questions
+`roam_draft` had just decided to ask).
+
+**A missing or unreadable file is a skip, never a trap.** Same failure
+philosophy as everywhere else in this design (§8): a template that silently
+produced an empty or half-written note would be worse than one that names the
+path and says it could not be read. The warn names the template's key and the
+resolved path, through the same `roam_warn` channel `roam_draft` already uses
+for "no template `{key}`" and "a new note needs a title" — never a panic, and
+the plugin is not quarantined.
+
+**No new capability grant.** `body_file` is read with `host-services.read-file`
+— the same host call §6.2's dailies existence-check uses — and `read-file` is
+gated on the plugin's `fs:` grant, which
+treats `fs:write:<prefix>` as *also* permitting reads under `<prefix>` (the
+host does not maintain a separate read-only preopen when a write one already
+covers the path). Dhruva's templates live under
+`~/src/dhruvasagar/org-files/roam/templates/`, inside the `fs:write` grant
+`plugin.toml` already declares over `~/src/dhruvasagar/org-files` for archive,
+refile and capture — so no `fs:read:` grant is needed for this reach. A setup
+whose template files live OUTSIDE every granted prefix gets the same
+missing/unreadable skip a deleted file would, since the host denies the read
+before it reaches the filesystem at all.
+
 **The stub path stays a direct write.** With no templates configured there is no
 menu and no draft: `Effect::WriteToFile` writes the note at its real path, and
 `Effect::OpenBufferAt` focuses it there with the cursor at the end —

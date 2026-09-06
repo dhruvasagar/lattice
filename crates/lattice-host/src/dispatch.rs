@@ -13437,18 +13437,70 @@ impl Editor {
                 // renderer peers share it, and nothing on this path called it.
                 // A picker accept that opens a menu therefore did nothing at
                 // all — which is org-roam's create-from-template flow.
+                //
+                // OR.16: `Effect::OpenBufferAt` is the second — renderer-
+                // coupled per its own doc comment (`effect.rs`), applied by
+                // the TUI/GPUI peers' `apply_effect_app_arms` via `do_edit`
+                // then `land_cursor_at`. Both of those are plain `Editor`
+                // methods (no renderer state needed), so the arm below can
+                // call them directly, same as `jump_to_lsp_location` already
+                // does for the same pair. This is the NARROW fix; see the
+                // `other` arm below for why the full structural fix (closing
+                // the asymmetry for every current and future effect, not
+                // just these two) is not done here.
                 for effect in out.effects {
                     match effect {
                         Effect::OpenTransient { source, args } => {
                             signals.extend(self.open_named_transient(source, args));
                         }
-                        // Named rather than swallowed: the next effect to land
-                        // here should be a log line, not another silent
-                        // feature. `debug!` because an accept is a keystroke
-                        // path and most effects here are already applied.
-                        other => tracing::debug!(
+                        Effect::OpenBufferAt {
+                            path,
+                            position,
+                            force,
+                        } => {
+                            let edit_signals = match self.do_edit(path, force) {
+                                DoEditOutcome::Opened(s)
+                                | DoEditOutcome::Activated(s)
+                                | DoEditOutcome::Reloaded(s) => s,
+                                DoEditOutcome::Directory(_)
+                                | DoEditOutcome::Failed
+                                | DoEditOutcome::NoFileName => Vec::new(),
+                            };
+                            signals.extend(edit_signals);
+                            self.land_cursor_at(position);
+                        }
+                        // Named rather than swallowed — but `debug!` is what
+                        // let `OpenBufferAt` above sit here silently dropped
+                        // through two real features (OR.11b's own comment
+                        // predicted "the next effect ... should be a log
+                        // line", and the next effect was a second dropped
+                        // feature instead). `warn!` because this fires only
+                        // when a picker accept actually produced an effect
+                        // this arm doesn't know how to apply — not a per-
+                        // keystroke/per-frame path — so it is exactly the
+                        // "one-shot, user-actionable" case that earns
+                        // visibility above `debug!`.
+                        //
+                        // This match is still an allowlist, and allowlists
+                        // in this codebase have now silently killed a
+                        // feature twice (`OpenTransient`'s own comment
+                        // records the first). See OR.16's report
+                        // (`.superpowers/sdd/org-structure-editing/or16-report.md`)
+                        // for why a full structural fix — the async drain
+                        // returning `Effect`s so callers apply them through
+                        // the renderer's own `apply_effect_app_arms`, the
+                        // same path `do_picker_accept`'s sync return already
+                        // takes — was scoped out of this slice: it requires
+                        // threading a `Vec<Effect>` through
+                        // `Editor::run_tick_pending`'s `Vec<RendererSignal>`
+                        // return, which ~15 production and test call sites
+                        // across `lattice-host`, `lattice-ui-tui` and
+                        // `lattice-ui-gpui` depend on, including the editor
+                        // actor's cross-thread `Tick` message.
+                        other => tracing::warn!(
                             effect = ?std::mem::discriminant(&other),
-                            "picker accept: an effect reached the async drain with no handler"
+                            "picker accept: an effect reached the async drain with no handler \
+                             (see OR.16's report for the structural fix this allowlist still needs)"
                         ),
                     }
                 }

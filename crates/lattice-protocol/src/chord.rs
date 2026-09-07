@@ -277,14 +277,35 @@ pub enum ChordPattern {
 
 impl fmt::Display for KeyChord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Plain printable chars with no modifiers render bare,
-        // except `<` which escapes as `<lt>` so the parser can
-        // round-trip without ambiguity.
+        // Plain printable chars with no modifiers render bare, except the two
+        // that cannot survive it: `<` escapes as `<lt>` so the parser can
+        // round-trip without ambiguity, and a literal space escapes as
+        // `<Space>` for the same reason plus a second one.
+        //
+        // The parser round-trip alone does hold for a bare `" "` —
+        // `parse_chord_sequence(" ")` reads it back as `Char(' ')`. What does
+        // NOT hold is every context that delimits on whitespace or asks a
+        // human to read the result:
+        //
+        // - the `:` line. `:describe-key` captures chords by appending
+        //   `Display` tokens to the command line, so a captured space
+        //   appended `" "` and the ex-parser split the argument on it — the
+        //   user pressed Space and got `describe-key` with no argument.
+        // - every listing. `:map`, `:keymap`, which-key and describe-key's own
+        //   "… is not bound" line rendered the leader as an INVISIBLE column.
+        //   `<Space>ff` reads; ` ff` does not.
+        //
+        // The chord itself is unchanged — `Char(' ')`, what both decoders
+        // produce for an unmodified space (see `parse_angle_body`). This is
+        // only how it is spelled back out.
         if self.mods.is_empty()
             && let KeyKind::Char(c) = self.key
         {
             if c == '<' {
                 return f.write_str("<lt>");
+            }
+            if c == ' ' {
+                return f.write_str("<Space>");
             }
             return write!(f, "{c}");
         }
@@ -668,10 +689,17 @@ mod tests {
         }
     }
 
-    /// `<Space>` must survive a Display→parse round trip. Display renders the
-    /// literal char as a bare `" "` token rather than `<Space>`, and the
-    /// sequence parser has to read that back as the same chord — otherwise a
-    /// keymap listing (`:map`) would print bindings it cannot re-parse.
+    /// `<Space>` must survive a Display→parse round trip, and must survive it
+    /// as a **visible, non-splitting** token.
+    ///
+    /// Display used to render the literal char as a bare `" "`. That
+    /// round-tripped through `parse_chord_sequence` and through nothing else:
+    /// the `:` line delimits arguments on whitespace, so `:describe-key`'s
+    /// chord capture appended a space and submitted an empty argument; and a
+    /// keymap listing rendered the leader as an invisible column.
+    ///
+    /// So the assertion is two-part on purpose. Round-tripping alone is what
+    /// the old spelling already satisfied, which is why it survived.
     #[test]
     fn a_space_chord_round_trips_through_display() {
         let parsed = parse_chord_sequence("<Space>oa").unwrap();
@@ -681,6 +709,23 @@ mod tests {
             parsed,
             "rendered as {rendered:?}"
         );
+        assert_eq!(
+            rendered, "<Space>oa",
+            "the leader must render as a token a human can see and a \
+             whitespace-delimited parser will not split"
+        );
+        assert!(
+            !rendered.contains(' '),
+            "no rendered chord sequence may contain a raw space: {rendered:?}"
+        );
+    }
+
+    /// A MODIFIED space keeps rendering through the modifier path, which
+    /// already spelled it `<C-Space>`. The new escape must not double up.
+    #[test]
+    fn a_modified_space_still_renders_once() {
+        let seq = parse_chord_sequence("<C-Space>").unwrap();
+        assert_eq!(seq[0].to_string(), "<C-Space>");
     }
 
     #[test]

@@ -1852,6 +1852,51 @@ subscribed to `Event::DocumentOpened`:
 O(major-modes), on open only, declarative, async — the `auto-mode-alist`
 shape, and the one place a scan legitimately survives. Nothing per-keystroke.
 
+**Major mode, second trigger — `LanguagesRegistered` (2026-09-07).** The
+resolver above runs on open *only*, and plugin majors do not exist at open
+time: plugin discovery is spawned **off the boot thread** (paramount #4, and
+deliberately — compiling and instantiating WASM components before the first
+frame would trade a blank startup for it). A file passed on argv is therefore
+resolved against a catalog that does not yet contain its language, and the
+answer is never revisited: `lattice todo.org` opened with no org major, so no
+org keymaps, no org syntax, no org folds — while `:e todo.org` on the same
+file, moments later, worked.
+
+The catalog changing is a **first-class trigger**, not an exception each plugin
+compensates for. The same ordered resolver re-runs for open buffers when the
+mode/language catalog changes, and everything downstream — syntax, folds,
+minors via `MajorEntered`, LSP attach — follows from activation exactly as it
+does on a normal open. Nothing "reopens": cursor, scroll, undo history and
+dirty state are untouched, because activation is not a document event.
+
+Cost is O(major-modes × open buffers) on plugin load / reload — rarer than
+buffer open, which §7.4 already admits a scan on. Nothing per-keystroke.
+
+Sequencing:
+[`slice-plans/late-language-activation.md`](../operations/slice-plans/late-language-activation.md).
+
+**Only a buffer still on the FALLBACK major is re-resolved.** A major the user
+set explicitly (`:org-mode`, a modeline directive) outranks a late-arriving
+matcher: overriding a deliberate choice is a worse failure than a late attach,
+and it is the one this trigger must not introduce.
+
+Rejected — **each plugin attaches itself to existing buffers.** It reads like
+mode ownership but is not: a mode owns its keymaps, handlers and *policy*, not
+a private copy of the host's dispatch loop. Every plugin author would
+re-implement retroactive attach, and one that omits it is silently broken with
+no diagnostic — the duplication failure mode §13 and the standing rules already
+name, where "a gap in a copied set does not announce itself".
+
+Rejected — **the host re-opens open documents** on plugin load. Correct
+vocabulary for the wrong event: a catalog change is a *mode-resolution* event,
+not a document one. "Reopen" drags in the whole open path (cursor, scroll,
+jumplist, on-disk reload over unsaved changes) and would grow a list of things
+not to disturb.
+
+Rejected — **load plugins before boot.** Removes the trigger entirely, at the
+cost of blocking the first frame on WASM compile + instantiate (~200 ms
+observed, seconds when a grammar rebuilds). Paramount #1 and #4 both refuse it.
+
 **Minor mode — a single host resolver over `MajorEntered` (decision B,
 2026-06-12).** Each minor declares a default `ActivationPolicy`
 (`Mode::activation_policy()`, §5.1) — `Manual` (the default: opt-in only),

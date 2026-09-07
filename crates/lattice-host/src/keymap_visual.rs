@@ -273,6 +273,51 @@ fn source() -> SourceLocation {
 /// Replace mode -- legacy `translate_visual` matched on `event.code`
 /// alone after the CONTROL guard, so non-CONTROL modifiers are
 /// transparent.
+/// What [`lookup_visual_chord`] matched with, and the chord that produced it.
+struct VisualLookup {
+    result: LookupResult,
+    resolved: KeyChord,
+}
+
+/// Look `path` up RAW first, falling back to the normalized form.
+///
+/// OS.0d, and the third and last copy of the defect OS.0b found in Insert and
+/// OS.0c found in Normal. `normalize_for_visual_lookup` strips ALT and SUPER —
+/// and, unlike its two siblings, SHIFT as well — off every incoming chord
+/// before any lookup, so a mode declaring `binding-mode: visual` on
+/// `<M-Right>` or `<M-S-Right>` registers correctly and can never fire.
+///
+/// The extra SHIFT strip is why this needed its own helper rather than reusing
+/// Normal's: `<M-S-Right>` differs from `<M-Right>` only in SHIFT, so a
+/// normalize-first lookup collapses the two org verbs onto one. Raw-first
+/// separates them and the fallback still answers for every bare-chord binding
+/// the Visual catalog has always relied on — `V` then `d` is unaffected,
+/// because raw and normalized are the same chord there.
+fn lookup_visual_chord(handle: &KeymapHandle, path: &[KeyChord], chord: KeyChord) -> VisualLookup {
+    let mut raw_path: Vec<KeyChord> = path.to_vec();
+    raw_path.push(chord);
+    let raw = handle.lookup(BindingMode::Visual, &raw_path);
+    if matches!(raw, LookupResult::Bound { .. } | LookupResult::Partial) {
+        return VisualLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let normalized = normalize_for_visual_lookup(chord);
+    if normalized == chord {
+        return VisualLookup {
+            result: raw,
+            resolved: chord,
+        };
+    }
+    let mut normalized_path: Vec<KeyChord> = path.to_vec();
+    normalized_path.push(normalized);
+    VisualLookup {
+        result: handle.lookup(BindingMode::Visual, &normalized_path),
+        resolved: normalized,
+    }
+}
+
 fn normalize_for_visual_lookup(chord: KeyChord) -> KeyChord {
     KeyChord {
         key: chord.key,
@@ -342,14 +387,12 @@ pub fn dispatch_visual(
     // Resolve the full path; the blockwise `I` / `A` overlay does not
     // apply here (it is a fresh-chord-only shortcut).
     if !partial_chord.is_empty() {
-        let chord = normalize_for_visual_lookup(*chord);
-        let mut path: Vec<KeyChord> = partial_chord.to_vec();
-        path.push(chord);
-        return match handle.lookup(BindingMode::Visual, &path) {
+        let found = lookup_visual_chord(handle, partial_chord, *chord);
+        return match found.result {
             LookupResult::Bound { command, captured } => {
                 crate::keymap_normal::action_from_bound_with_capture(&command, &captured)
             }
-            LookupResult::Partial => Action::AbsorbPartialChord(chord),
+            LookupResult::Partial => Action::AbsorbPartialChord(found.resolved),
             LookupResult::Unbound => Action::None,
         };
     }
@@ -361,8 +404,9 @@ pub fn dispatch_visual(
             _ => {}
         }
     }
-    let chord = normalize_for_visual_lookup(*chord);
-    match handle.lookup(BindingMode::Visual, &[chord]) {
+    let found = lookup_visual_chord(handle, &[], *chord);
+    let chord = found.resolved;
+    match found.result {
         LookupResult::Bound { command, captured } => {
             crate::keymap_normal::action_from_bound_with_capture(&command, &captured)
         }
@@ -372,5 +416,113 @@ pub fn dispatch_visual(
         // `Action::None`.)
         LookupResult::Partial => Action::AbsorbPartialChord(chord),
         LookupResult::Unbound => Action::None,
+    }
+}
+
+/// OS.0d regression tests: the Visual peer of `keymap_insert::os0b_tests` and
+/// `keymap_normal::os0c_tests`.
+///
+/// Visual's normalize strips SHIFT as well as ALT and SUPER, which is why it
+/// needed its own helper: `<M-S-Right>` differs from `<M-Right>` only in SHIFT,
+/// so normalizing first collapses two distinct org verbs onto one binding.
+#[cfg(test)]
+mod os0d_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::chord::{KeyKind, SpecialKey};
+    use crate::keymap_trie::{ChordPattern, KeymapLayer};
+    use lattice_grammar::SourceLocation;
+    use lattice_grammar::command::CommandInvocation;
+    use lattice_mode::ModeId;
+    use lattice_protocol::ids::CommandId;
+
+    fn source() -> SourceLocation {
+        SourceLocation::builtin_file(file!(), line!())
+    }
+
+    fn lit(chord: KeyChord) -> ChordPattern {
+        ChordPattern::Literal(chord)
+    }
+
+    fn bound_command(result: &LookupResult) -> CommandId {
+        match result {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("expected Bound, got {other:?}"),
+        }
+    }
+
+    fn bind_visual(h: &KeymapHandle, mode: ModeId, chord: KeyChord, id: CommandId) {
+        h.bind(
+            KeymapLayer::MajorMode(mode),
+            BindingMode::Visual,
+            &[lit(chord)],
+            CommandInvocation::of(id),
+            source(),
+        );
+    }
+
+    /// An ALT-bearing Visual binding must reach the trie as pressed.
+    #[test]
+    fn an_alt_bearing_visual_binding_is_reachable() {
+        let h = KeymapHandle::new();
+        let mode = ModeId::new("os0d-alt-mode");
+        let id = CommandId::new(u64::MAX - 21);
+        let chord = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::ALT);
+        bind_visual(&h, mode, chord, id);
+
+        let found = lookup_visual_chord(&h, &[], chord);
+        assert_eq!(bound_command(&found.result), id);
+        assert_eq!(found.resolved, chord);
+    }
+
+    /// **The reason this needed its own helper.** `<M-S-Right>` and `<M-Right>`
+    /// differ only in SHIFT, which Visual's normalize strips — so a
+    /// normalize-first lookup would collapse OS.6's two verbs onto one.
+    #[test]
+    fn shift_alt_and_alt_are_different_bindings() {
+        let h = KeymapHandle::new();
+        let mode = ModeId::new("os0d-shift-mode");
+        let plain = CommandId::new(u64::MAX - 22);
+        let shifted = CommandId::new(u64::MAX - 23);
+        let alt_right = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::ALT);
+        let shift_alt_right = KeyChord::new(
+            KeyKind::Special(SpecialKey::Right),
+            KeyMods::ALT | KeyMods::SHIFT,
+        );
+        bind_visual(&h, mode, alt_right, plain);
+        bind_visual(&h, mode, shift_alt_right, shifted);
+
+        assert_eq!(
+            bound_command(&lookup_visual_chord(&h, &[], alt_right).result),
+            plain
+        );
+        assert_eq!(
+            bound_command(&lookup_visual_chord(&h, &[], shift_alt_right).result),
+            shifted,
+            "<M-S-Right> must not collapse onto <M-Right>"
+        );
+    }
+
+    /// What must NOT change: the Visual catalog binds bare chords, and an
+    /// incoming SHIFT-bearing chord still falls back to the bare binding.
+    #[test]
+    fn a_bare_binding_is_still_reached_through_the_fallback() {
+        let h = KeymapHandle::new();
+        let mode = ModeId::new("os0d-bare-mode");
+        let id = CommandId::new(u64::MAX - 24);
+        let bare = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::NONE);
+        bind_visual(&h, mode, bare, id);
+
+        let shifted = KeyChord::new(KeyKind::Special(SpecialKey::Right), KeyMods::SHIFT);
+        let found = lookup_visual_chord(&h, &[], shifted);
+        assert_eq!(
+            bound_command(&found.result),
+            id,
+            "<S-Right> with nothing claiming it still falls back to <Right>"
+        );
+        assert_eq!(
+            found.resolved, bare,
+            "and that is the form a Partial absorbs"
+        );
     }
 }

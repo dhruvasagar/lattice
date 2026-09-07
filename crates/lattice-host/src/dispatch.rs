@@ -6305,24 +6305,50 @@ impl Editor {
                 text_version = version,
                 "syntax_reattached_after_language_registration"
             );
-            if id == self.document_buffer_id {
-                // THE ACTIVE DOCUMENT READS `self.syntax`, NOT the per-buffer
-                // slot — see `document_syntax_for`, which short-circuits for the
-                // active id. Writing only `buffer_locals` here installed a
-                // handle nothing would ever read, which is the failure this
-                // test caught: every link reported success and the buffer still
-                // had no syntax.
-                self.syntax = handle.clone();
-                // The Editor-level mirrors of the per-buffer version slots, or
-                // the active buffer keeps asking for reparses `from` a version
-                // the new handle never saw.
-                self.last_parsed_text_version = version;
-                self.last_synced_syntax_version = version;
-            }
-            let locals = self.buffer_locals.entry(id).or_default();
-            locals.insert(crate::modes::DocumentSyntax(handle));
-            locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
-            locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+            self.install_document_syntax(id, handle, version);
+        }
+    }
+
+    /// Install a freshly-built syntax handle for `id`, in every place that
+    /// reads one.
+    ///
+    /// Extracted because the ACTIVE document does not read the per-buffer
+    /// `DocumentSyntax` slot — `document_syntax_for` short-circuits to
+    /// `self.syntax` for the active id — so writing only the slot installs a
+    /// handle nothing will ever read. That is a silent failure (the buffer just
+    /// has no highlighting), and it is the mistake this helper exists to stop
+    /// each new install site making independently.
+    ///
+    /// Folds are recomputed here too. They are derived from the same tree, and
+    /// a handle arriving without a refold is how a buffer ends up correctly
+    /// highlighted with no fold structure.
+    fn install_document_syntax(
+        &mut self,
+        id: BufferId,
+        handle: Option<lattice_syntax::SyntaxHandle>,
+        version: u64,
+    ) {
+        let is_active = id == self.document_buffer_id;
+        if is_active {
+            self.syntax = handle.clone();
+            // The Editor-level mirrors of the per-buffer version slots, or the
+            // active buffer keeps asking for reparses `from` a version the new
+            // handle never saw.
+            self.last_parsed_text_version = version;
+            self.last_synced_syntax_version = version;
+        }
+        let locals = self.buffer_locals.entry(id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(handle));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+        if is_active {
+            // Drop the fold stamp BEFORE recomputing: `recompute_folds` stamps
+            // it, and `maybe_refold_after_async_population` compares against
+            // that stamp. Leaving a stamp that matches the unchanged text
+            // version is exactly why a re-attached buffer highlighted but never
+            // folded.
+            self.last_folded_text_version = None;
+            self.recompute_folds();
         }
     }
 
@@ -6358,10 +6384,7 @@ impl Editor {
                 }
                 _ => None,
             };
-        let locals = self.buffer_locals.entry(id).or_default();
-        locals.insert(crate::modes::DocumentSyntax(handle));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+        self.install_document_syntax(id, handle, version);
     }
 
     /// I4 (Claude Code IDE peer, `openDiff`): open an interactive side-by-side
@@ -50824,6 +50847,18 @@ mod tests {
                 .is_some(),
             "the buffer opened from argv must pick up the language its plugin \
              registered after boot"
+        );
+
+        // FOLDS FOLLOW THE TREE. Boot computed folds with no grammar and
+        // stamped them against the text version; re-attaching syntax does not
+        // change that version, so a stamp left in place means
+        // `maybe_refold_after_async_population` sees a match and never refolds.
+        // The buffer then highlights correctly and has no fold structure —
+        // which is exactly what was reported after the highlighting fix landed.
+        assert!(
+            editor.last_folded_text_version.is_some(),
+            "the re-attach must leave folds recomputed against the new tree, \
+             not stamped from the grammarless boot pass"
         );
 
         lattice_syntax::plugin_lang::unregister_plugin(PROV);

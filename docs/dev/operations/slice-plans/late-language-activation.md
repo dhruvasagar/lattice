@@ -49,7 +49,7 @@ plan and stay.
 
 | Slice | Title | Status |
 |---|---|---|
-| LA.1 | `LanguagesRegistered` — the event, published once per load | 📝 |
+| LA.1 | `LanguagesRegistered` — the event, published once per load | ✅ |
 | LA.2 | Re-resolve the major for fallback-major buffers | 📝 |
 | LA.3 | Delete the three patches this replaces | 📝 |
 | LA.4 | End-to-end: an org file on argv gets org's keymaps | 📝 |
@@ -62,21 +62,23 @@ proxy for it.
 
 ---
 
-## LA.1 — `LanguagesRegistered` — the event **(loader + host)** 📝
+## LA.1 — `LanguagesRegistered` — the event **(loader)** ✅
 
 **Files**
-- Modify: `crates/lattice-plugin-loader/src/install.rs` — publish after a
-  plugin's declarations drain
-- Create/modify: the event type beside its peers (`SyntaxReparsed` lives in
-  `lattice-host/src/events.rs`; this one must be visible to the loader, so it
-  belongs where both can see it)
+- Created: `crates/lattice-plugin-loader/src/events.rs` — the event type, in
+  the crate that *produces* it (the `lattice-plugin-host::PluginTracePushed`
+  precedent; `lattice-host` depends on the loader, so a host subscriber sees
+  it)
+- Modified: `crates/lattice-plugin-loader/src/lib.rs` — publish at the
+  end of `load`, beside `Event::PluginLoaded`
+- Created: `crates/lattice-plugin-loader/tests/languages_registered_event.rs`
 
 **Interfaces**
 - Produces: `LanguagesRegistered { plugin: PluginId }`, published **once per
   plugin load**, after its languages *and* majors have registered — not once
   per language, or the resolver runs against a half-installed catalog.
 
-- [ ] **Step 1: Find where the loader already publishes typed events**
+- [x] **Step 1: Find where the loader already publishes typed events**
 
 `install.rs` has `boot.event_bus()` and publishes `PluginTracePushed`. Follow
 that shape exactly rather than inventing a second path.
@@ -87,14 +89,27 @@ that shape exactly rather than inventing a second path.
 > `install.rs` holds `boot.event_bus()`. The polling exists only because of
 > that mistake and LA.3 removes it.
 
-- [ ] **Step 2: Publish after the drain completes, once**
+- [x] **Step 2: Publish after the drain completes, once**
 
-- [ ] **Step 3: Test that a load publishes exactly one**
+Landed at the *end* of `PluginLoader::load` — after `apply_default_mode_gate`,
+not merely after the seam loop, so a subscriber resolving against the catalog
+sees it settled: registered by the drain **and** enabled/disabled by the gate.
 
-Against a fixture plugin; assert the count, because "once per language" is the
-plausible wrong answer and it makes LA.2 run against a partial catalog.
+Gated on the manifest declaring `language` or `modes`. Declared-seam gated
+rather than registered-count gated: the wasted re-resolution when every
+language was rejected costs one scan that finds nothing, where deriving the
+gate from what actually registered would need every drain to report a count
+upward — and a drain that forgot to would fail silently, which is the failure
+mode this whole area keeps producing.
 
-- [ ] **Step 4: Gate and commit**
+- [x] **Step 3: Test that a load publishes exactly one**
+
+`language-guest` declares FOUR languages of which three are rejected, so a
+per-language publish reads as 1-vs-4 rather than a coincidence. A second test
+pins the negative: a help-only plugin publishes nothing, which is what keeps
+LA.2's O(major-modes × open buffers) off every auto-pair-shaped plugin.
+
+- [x] **Step 4: Gate and commit**
 
 ---
 

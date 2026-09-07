@@ -66,6 +66,7 @@
 
 pub mod build;
 pub mod discovery;
+pub mod events;
 mod ex_commands;
 pub mod install;
 pub mod pipeline;
@@ -81,6 +82,7 @@ pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
     default_source_cache_dir, discover, discover_one,
 };
+pub use events::LanguagesRegistered;
 pub use install::{autoload_enabled, disable_autoload, enable_autoload, install};
 pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
@@ -1032,6 +1034,21 @@ impl PluginLoader {
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
         self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
+        // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
+        // above because the subscriber is different and much more expensive —
+        // it re-resolves the major mode of every open buffer
+        // (`mode-architecture.md` §7.4). Published last, after the default-mode
+        // gate, so a subscriber resolving against the catalog sees it settled:
+        // registered by the drain AND enabled/disabled by the gate.
+        if manifest.provides.iter().any(|s| {
+            matches!(
+                s,
+                lattice_plugin_host::PluginSeam::Language | lattice_plugin_host::PluginSeam::Modes
+            )
+        }) && let Some(bus) = &self.env.bus
+        {
+            bus.publish_typed(crate::events::LanguagesRegistered { plugin: id });
+        }
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)

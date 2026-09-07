@@ -5812,6 +5812,7 @@ dependencies = [
  "lattice-syntax",
  "lattice-theme",
  "lattice-wit",
+ "linkme",
  "notify",
  "tempfile",
  "thiserror 2.0.18",

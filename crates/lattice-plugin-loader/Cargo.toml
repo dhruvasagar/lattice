@@ -116,6 +116,11 @@ lattice-multibuffer = { path = "../lattice-multibuffer" }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }
 # OC.2: the `Sleeper` trait returns a `BoxFuture`, so the impl names it.
 futures = { workspace = true }
+# LA.1: `events::LanguagesRegistered` is declared via
+# `lattice_protocol::register_event!`, whose expansion registers an
+# `#[linkme::distributed_slice]` descriptor — so the invoking crate needs linkme
+# in scope (the `lattice-plugin-host` `PluginTracePushed` precedent).
+linkme = { workspace = true }
 # Cross-platform plugins-dir resolution (`<data>/lattice/plugins/`, XDG on
 # Linux / Application Support on macOS / LocalAppData on Windows).
 dirs = { workspace = true }

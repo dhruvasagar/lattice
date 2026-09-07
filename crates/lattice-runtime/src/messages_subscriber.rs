@@ -89,11 +89,10 @@ where
 
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
-        let text = visitor.message;
-        // Skip events with no `message` field. Most `tracing`
-        // macros set one (the implicit format string), but
-        // structured-only events without a message body would
-        // produce empty entries -- not useful in `*messages*`.
+        let text = visitor.finish();
+        // Skip events with NOTHING to show. Most `tracing` macros set the
+        // implicit `message` field, but a structured-only event would
+        // otherwise produce an empty entry.
         if text.is_empty() {
             return;
         }
@@ -106,28 +105,90 @@ where
     }
 }
 
-/// Visitor that extracts the implicit `message` field from a
-/// `tracing::Event`. Falls back to `record_debug` which
-/// produces the rendered `format_args!` output (no quotes for
-/// `info!("..")`-style calls).
+/// Visitor that renders an event's implicit `message` field **and its
+/// structured fields** into one line.
+///
+/// ## The fields were being thrown away
+///
+/// This used to keep `message` and discard every other field, so a
+/// diagnostic written as
+///
+/// ```ignore
+/// debug!(?axes, want_syntax, have_syntax, "cells_matrix_invalidated");
+/// ```
+///
+/// reached `*messages*` as the bare string `cells_matrix_invalidated`.
+/// The message name is the least informative part of such an event —
+/// the whole point of that line is *which axis differed and by how
+/// much* — so the instrumentation was answering a question nobody
+/// could read the answer to.
+///
+/// That is not hypothetical. The stale-highlight investigation added
+/// exactly that event to name the invalidation axis behind a wrong-colour
+/// render, then read a `*messages*` capture that could not show it, and
+/// stalled. `*messages*` is documented as "the canonical surface" for
+/// inspecting events without leaving the editor; it has to carry what the
+/// events actually say.
+///
+/// ## Cost
+///
+/// Formatting is proportional to field count and happens on the thread
+/// that logged. That is acceptable because the events carrying many
+/// fields are `debug!` / `trace!`, which the level filter drops before
+/// this layer sees them unless the user opted in (`--log-level debug`).
+/// At the default level the common case is an `info!` with no extra
+/// fields, which costs one `is_empty` check.
 #[derive(Default)]
 struct MessageVisitor {
     message: String,
+    fields: String,
+}
+
+impl MessageVisitor {
+    /// `message field=value field2=value2` — `tracing`'s own fmt layout,
+    /// so a `*messages*` line and a stderr line read the same way.
+    fn finish(self) -> String {
+        if self.fields.is_empty() {
+            return self.message;
+        }
+        if self.message.is_empty() {
+            return self.fields;
+        }
+        format!("{} {}", self.message, self.fields)
+    }
+
+    fn push_field(&mut self, name: &str, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        if !self.fields.is_empty() {
+            self.fields.push(' ');
+        }
+        // `write!` to a String is infallible; the result is ignored rather
+        // than unwrapped so a logging path can never panic.
+        let _ = write!(self.fields, "{name}={value:?}");
+    }
 }
 
 impl Visit for MessageVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             self.message = value.to_string();
+        } else {
+            // Strings render bare — `path=/tmp/x.org`, not `path="/tmp/x.org"`
+            // — because the quotes are noise in a transcript a human reads.
+            self.push_field(field.name(), &format_args!("{value}"));
         }
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" && self.message.is_empty() {
-            // `format_args!` Debug-formats to the rendered
-            // output without quotes (its Debug impl is
-            // identical to its Display).
-            self.message = format!("{value:?}");
+        if field.name() == "message" {
+            if self.message.is_empty() {
+                // `format_args!` Debug-formats to the rendered
+                // output without quotes (its Debug impl is
+                // identical to its Display).
+                self.message = format!("{value:?}");
+            }
+        } else {
+            self.push_field(field.name(), value);
         }
     }
 }
@@ -358,6 +419,81 @@ mod tests {
         assert_eq!(evt.record.level, lattice_grammar::EchoLevel::Info);
     }
 
+    /// A structured event's FIELDS reach `*messages*`, not just its name.
+    ///
+    /// They used to be discarded. A diagnostic written to name *which*
+    /// invalidation axis moved arrived as the bare string
+    /// `cells_matrix_invalidated`, which is the least informative part of
+    /// it — and `*messages*` is the surface the docs point at for reading
+    /// events without leaving the editor, so the answer existed and could
+    /// not be read. The stale-highlight investigation stalled on exactly
+    /// that.
+    #[test]
+    fn layer_renders_structured_fields_beside_the_message() {
+        let ring = Arc::new(Mutex::new(MessagesRing::default()));
+        let bus = Arc::new(EventBus::new());
+        let layer = MessagesLayer::new(ring.clone(), bus);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                want_syntax = 7u64,
+                have_syntax = 6u64,
+                "cells_matrix_invalidated"
+            );
+        });
+        let ring_records = ring.lock().unwrap();
+        let r = ring_records.records().front().unwrap();
+        assert!(
+            r.text.contains("want_syntax=7") && r.text.contains("have_syntax=6"),
+            "the fields are the whole diagnostic; got {:?}",
+            r.text
+        );
+        assert!(
+            r.text.starts_with("cells_matrix_invalidated"),
+            "the message still leads the line: {:?}",
+            r.text
+        );
+    }
+
+    /// A `&str` field renders bare. Quotes are noise in a transcript, and
+    /// paths are the common case (`path=/tmp/notes.org`).
+    #[test]
+    fn string_fields_render_without_quotes() {
+        let ring = Arc::new(Mutex::new(MessagesRing::default()));
+        let bus = Arc::new(EventBus::new());
+        let layer = MessagesLayer::new(ring.clone(), bus);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(lang = "org", "attached");
+        });
+        let ring_records = ring.lock().unwrap();
+        let r = ring_records.records().front().unwrap();
+        assert_eq!(r.text, "attached lang=org");
+    }
+
+    /// An event with fields and NO message still lands, carrying its
+    /// fields.
+    ///
+    /// Supersedes `layer_drops_messageless_events`, which asserted the
+    /// opposite. Its stated reason was "don't pollute `*messages*` with
+    /// EMPTY rows" — a consequence of fields being discarded, not an
+    /// independent requirement. Now that fields render, the row is
+    /// `buffer_id=7` rather than blank, so the reason no longer holds and
+    /// dropping the event would be throwing away the only thing it said.
+    #[test]
+    fn a_field_only_event_is_not_dropped() {
+        let ring = Arc::new(Mutex::new(MessagesRing::default()));
+        let bus = Arc::new(EventBus::new());
+        let layer = MessagesLayer::new(ring.clone(), bus);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(axis = "syntax");
+        });
+        let ring_records = ring.lock().unwrap();
+        assert_eq!(ring_records.len(), 1, "a field-only event must not vanish");
+        assert_eq!(ring_records.records().front().unwrap().text, "axis=syntax");
+    }
+
     /// `*messages*` captures EVERY level the `EnvFilter` admits.
     ///
     /// This is a product requirement, not an implementation detail:
@@ -414,20 +550,5 @@ mod tests {
         });
         let ring = ring.lock().unwrap();
         assert_eq!(ring.records().front().unwrap().text, "opened 42 buffers");
-    }
-
-    /// Events with no message body are dropped (don't pollute
-    /// `*messages*` with empty rows).
-    #[test]
-    fn layer_drops_messageless_events() {
-        let ring = Arc::new(Mutex::new(MessagesRing::default()));
-        let bus = Arc::new(EventBus::new());
-        let layer = MessagesLayer::new(ring.clone(), bus);
-        let subscriber = tracing_subscriber::registry().with(layer);
-        tracing::subscriber::with_default(subscriber, || {
-            // Structured-only event -- no implicit `message` arg.
-            tracing::info!(buffer_id = 7);
-        });
-        assert_eq!(ring.lock().unwrap().len(), 0);
     }
 }

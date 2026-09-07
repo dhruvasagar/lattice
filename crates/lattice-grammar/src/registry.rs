@@ -332,6 +332,21 @@ pub struct GrammarEnv<'a> {
     /// source and reindents nothing -- the same graceful-degradation
     /// contract every other env field carries.
     pub indent_resolver: Option<&'a dyn IndentResolver>,
+    /// OS.2: the **active region** — the Visual/Select selection extent,
+    /// normalised so `start <= end`. `None` in Normal mode and on every
+    /// non-chord firing path.
+    ///
+    /// Injected by the host from the SAME resolver that fills
+    /// `lattice_mode::ActionContext::selection` (MG.18e), rather than
+    /// re-derived here from the document's selections. That is deliberate: two
+    /// answers to "what is the region" is precisely the drift OS.3 spent a fix
+    /// round removing from `Checkboxes`, and a plugin action seeing a different
+    /// region than a native mode handler reached the same way is the same bug
+    /// wearing a boundary.
+    ///
+    /// `None` (the default) means no region, so the ~40 call sites that build a
+    /// `default()` env keep behaving exactly as they did.
+    pub selection: Option<lattice_protocol::position::Range>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -587,6 +602,20 @@ pub struct ActionContext {
     /// Layering: a `lattice-core` type, so `lattice-grammar` needs no
     /// `lattice-runtime` dependency (the snapshot is built host-side).
     pub buffer: Buffer,
+    /// OS.2: the active region — the Visual/Select selection extent, normalised
+    /// so `start <= end`. `None` in Normal mode and on every non-chord firing
+    /// path (prompt submit, transient item, a `Confirm` yes-action).
+    ///
+    /// The peer of `lattice_mode::ActionContext::selection` (MG.18e), which
+    /// native mode handlers have had since magit needed to stage part of a
+    /// hunk. A plugin action reached the same way saw strictly less — the
+    /// position OC.10 fixed for `ex-command-context`. Carried in from
+    /// [`GrammarEnv::selection`] so both contexts quote one resolver.
+    ///
+    /// **Carries no visual kind**, matching the field it mirrors: every
+    /// consumer so far reads the row span, and inventing a charwise/blockwise
+    /// contract before something holds it would be inventing a promise.
+    pub selection: Option<lattice_protocol::position::Range>,
     /// TS.1: a point-in-time tree-sitter snapshot for the buffer the action
     /// fired in, **type-erased** as `Arc<dyn Any>` so `lattice-grammar` keeps
     /// its `protocol`+`core`-only dep set (the same reason `buffer` is a

@@ -266,6 +266,7 @@ impl DocumentActor {
                     syntax: env.syntax.as_ref(),
                     indent: env.indent,
                     indent_resolver,
+                    selection: env.selection,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

@@ -170,6 +170,11 @@ pub fn project_action_context(ctx: &NativeActionContext) -> Result<WitActionCont
         count: ctx.count.get(),
         cursor: ctx.cursor.to_wit()?,
         buffer_id: ctx.buffer_id.0,
+        // OS.2: `transpose` so a range that fails to project fails the whole
+        // context rather than silently arriving as `none` — a guest cannot tell
+        // "no region" from "a region we could not encode", and the second is a
+        // bug it would act on.
+        selection: ctx.selection.map(|r| r.to_wit()).transpose()?,
     })
 }
 
@@ -334,6 +339,7 @@ mod tests {
             buffer_id: BufferId(7),
             buffer: Buffer::from_text("hello\nworld\n"),
             syntax: None,
+            selection: None,
             cancel: CancellationToken::never(),
             path: None,
         };
@@ -344,5 +350,46 @@ mod tests {
         assert_eq!(wit.cursor.line, 4);
         assert_eq!(wit.cursor.byte, 2);
         assert_eq!(wit.buffer_id, 7);
+    }
+
+    fn action_ctx() -> NativeActionContext {
+        NativeActionContext {
+            args: Args::None,
+            register: Register::Unnamed,
+            count: Count(1),
+            cursor: pos(0, 0),
+            buffer_id: BufferId(1),
+            buffer: Buffer::from_text("one\ntwo\nthree\nfour\nfive\n"),
+            syntax: None,
+            selection: None,
+            cancel: CancellationToken::never(),
+            path: None,
+        }
+    }
+
+    /// OS.2: a Visual action's region must reach the guest. Before it, the WIT
+    /// mirror had nothing to copy and a plugin action saw strictly less than
+    /// the same action reached natively — the position OC.10 fixed for
+    /// `ex-command-context`.
+    #[test]
+    fn a_visual_selection_is_mirrored_to_the_guest() {
+        let mut ctx = action_ctx();
+        ctx.selection = Some(Range::new(pos(2, 0), pos(4, 7)));
+        let wit = project_action_context(&ctx).unwrap();
+        let sel = wit.selection.expect("selection mirrored");
+        assert_eq!((sel.start.line, sel.start.byte), (2, 0));
+        assert_eq!((sel.end.line, sel.end.byte), (4, 7));
+    }
+
+    /// The other half of the contract, and the one a guest relies on to tell
+    /// "act on the region" from "act at the cursor".
+    #[test]
+    fn no_selection_projects_as_none() {
+        assert!(
+            project_action_context(&action_ctx())
+                .unwrap()
+                .selection
+                .is_none()
+        );
     }
 }

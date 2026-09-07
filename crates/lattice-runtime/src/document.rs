@@ -110,6 +110,16 @@ pub struct DispatchEnv {
     /// structural source, and `=` reindents nothing rather than
     /// guessing.
     pub indent_resolver: Option<IndentResolverHandle>,
+    /// OS.2: the active region — the Visual/Select selection extent, or `None`
+    /// outside Visual/Select.
+    ///
+    /// Carried here for the reason `syntax` above had to be: an action reached
+    /// through the ACTOR path builds its `ActionContext` from this env, so a
+    /// hard `None` would make a plugin's Visual action see no region on every
+    /// real keystroke while every test that hand-built a `GrammarEnv` passed.
+    /// That is the OT.4 failure verbatim, and it is cheaper to carry the field
+    /// than to rediscover it.
+    pub selection: Option<lattice_protocol::position::Range>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

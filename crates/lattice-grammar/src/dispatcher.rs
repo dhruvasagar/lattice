@@ -136,6 +136,9 @@ fn execute_action(
         // agreement). Native actions ignore it; `None` when the buffer has no
         // parse.
         syntax: env.syntax.map(std::sync::Arc::clone),
+        // OS.2: the host resolved this once, for both this context and the
+        // mode one. Carried, never re-derived.
+        selection: env.selection,
         cancel: cancel.clone(),
         // OM.6b: an Arc bump, so an action that never asks pays nothing but
         // the refcount.
@@ -1112,5 +1115,77 @@ mod tests {
             }
             other => panic!("expected CursorMove, got {other:?}"),
         }
+    }
+}
+
+/// OS.2: the region reaches an action's context, and only when there is one.
+///
+/// Asserted through `execute_with_env` rather than by building an
+/// `ActionContext` by hand — a hand-built context proves the struct has a
+/// field, not that the dispatch path fills it, and "the seam exists but nothing
+/// populates it" is the failure this whole plan keeps rediscovering (OT.4 on
+/// `syntax`, OC.10 on `ex-command-context`).
+#[cfg(test)]
+mod os2_tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::CancellationToken;
+    use crate::app_effect::AppEffect;
+    use crate::registry::ActionSpec;
+    use lattice_protocol::position::Range;
+
+    /// Register a probe action that records the selection its context carried.
+    fn seen_selection(env: crate::registry::GrammarEnv<'_>) -> Option<Range> {
+        let seen: Arc<Mutex<Option<Option<Range>>>> = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        let mut registry = CommandRegistry::new();
+        let id = registry.register_action(
+            "test:os2-probe",
+            "records ActionContext::selection",
+            ActionSpec {
+                apply: Arc::new(move |ctx| {
+                    *sink.lock().unwrap() = Some(ctx.selection);
+                    Ok(Effect::AppAction(AppEffect::Quit))
+                }),
+                args_schema: vec![],
+            },
+        );
+        let mut doc = lattice_core::Document::from_text("one\ntwo\nthree\nfour\nfive\n");
+        execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            CommandInvocation::of(id),
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap();
+        let out = seen.lock().unwrap().expect("probe action ran");
+        out
+    }
+
+    /// Normal mode: no region. A guest must be able to tell "act on the
+    /// selection" from "act at the cursor", so a collapsed caret reported as a
+    /// region would make every Normal action look like it had one.
+    #[test]
+    fn a_normal_mode_action_sees_no_selection() {
+        assert!(seen_selection(crate::registry::GrammarEnv::default()).is_none());
+    }
+
+    /// Visual: whatever the host resolved arrives intact, both endpoints.
+    #[test]
+    fn a_visual_action_sees_the_region_the_host_resolved() {
+        let region = Range::new(Position::new(1, 0), Position::new(3, 5));
+        let env = crate::registry::GrammarEnv {
+            selection: Some(region),
+            ..Default::default()
+        };
+        let seen = seen_selection(env).expect("region carried to the action");
+        assert_eq!((seen.start.line, seen.start.byte), (1, 0));
+        assert_eq!((seen.end.line, seen.end.byte), (3, 5));
     }
 }

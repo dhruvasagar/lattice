@@ -1587,6 +1587,15 @@ interface types {
         /// The active buffer's id (AP.2) — the `target` a plugin action names in
         /// an `apply-edit` effect. Mirrors `motion-context.buffer-id`.
         buffer-id: u32,
+        /// OS.2: the active region when the action fired from a Visual/Select
+        /// chord; `none` in Normal and on every non-chord firing path. Carries
+        /// no visual kind — the row span is what every consumer reads.
+        ///
+        /// The `ex-command-context` precedent (OC.10): a command reached one
+        /// way must not see less than the same command reached another. The
+        /// native peer is `lattice_mode::ActionContext::selection` (MG.18e),
+        /// and both are filled from ONE host resolver.
+        selection: option<range>,
     }
 
     /// Mirrors `lattice_grammar::registry::MotionSpec` (metadata; `apply` is a

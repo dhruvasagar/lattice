@@ -2422,6 +2422,13 @@ impl MultibufferDocumentHandle {
                 // N.1.5 built for text objects. Deferred; `=` is a
                 // no-op there rather than wrong.
                 indent_resolver: None,
+                // OS.2: a composed view's region would need the same
+                // composed->source mapping the resolver above is deferred for
+                // -- a selection in composed coordinates handed to an action
+                // that edits SOURCE lines would be wrong, not merely absent.
+                // `None` is the honest answer, and matches the `syntax` and
+                // `indent_resolver` deferrals either side of it.
+                selection: None,
             },
         )
         .map_err(RuntimeError::Grammar);

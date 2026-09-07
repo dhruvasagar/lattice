@@ -19754,6 +19754,12 @@ impl Editor {
             lattice_runtime::DispatchEnv {
                 scope_resolver,
                 comment_syntax,
+                // OS.2: the same `active_region()` the Action gate quotes, so an
+                // action reached through the actor path sees the same region as
+                // one reached through the gate. The alternative -- `None` here
+                // "because actions go through the gate" -- is the OT.4 mistake
+                // this file already records one field down.
+                selection: self.active_region(),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -40557,6 +40563,10 @@ impl Editor {
                 });
             let env = lattice_grammar::GrammarEnv {
                 syntax: syntax_any.as_ref(),
+                // OS.2: the SAME resolver that fills
+                // `lattice_mode::ActionContext::selection` (MG.18e). One answer
+                // to "what is the region", quoted twice, never re-derived.
+                selection: self.active_region(),
                 ..Default::default()
             };
             match lattice_grammar::execute_with_env(

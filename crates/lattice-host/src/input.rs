@@ -53,10 +53,12 @@ pub struct TranslateContext<'a> {
     pub completion_open: bool,
     /// True when the cmdline cursor sits on an `ArgKind::Chord`
     /// arg slot. In this mode every key event renders to a chord
-    /// token and gets appended; the only edits are `<BS>` (delete
-    /// last chord token), `<CR>` (submit), `<Esc>` (cancel). Lookup
-    /// of multi-stroke sequences (`gg`, `<C-w>j`) is supported by
-    /// pressing each chord in turn.
+    /// token and gets appended — **no key is reserved**, so `<CR>`,
+    /// `<Esc>` and `<BS>` describe themselves rather than acting as
+    /// submit / cancel / delete (DK.2). Multi-stroke sequences
+    /// (`gg`, `<C-w>j`) work by pressing each chord in turn; the
+    /// keymap trie decides when the sequence is finished, so there
+    /// is no terminator to press.
     pub chord_capture: bool,
     /// True when a picker (`Picker` overlay) is open. Picker
     /// claims every key before the modal handlers see it: char
@@ -236,8 +238,12 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
 
     // Chord-capture overlay precedes normal dispatch, because
     // looking up a chord's binding via `:describe-key` is a
-    // legitimate user need. The overlay reserves Esc as the
-    // abort path, so the user is never stuck.
+    // legitimate user need.
+    //
+    // DK.2: the overlay no longer reserves Esc (or CR, or BS) — the trie ends
+    // the sequence instead, so every key is describable. The user is still
+    // never stuck: a trie is finite, so any sequence resolves to Bound or
+    // Unbound within a keystroke or two and submits itself.
     if matches!(ctx.modal, ModalState::Command) && ctx.chord_capture {
         return translate_command_chord_capture(chord);
     }
@@ -475,21 +481,35 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     }
 }
 
-/// Cmdline chord-capture overlay. Reserves the three minimal
-/// edits (Esc/CR/BS); everything else stringifies through
-/// `KeyChord::Display` and becomes one chord token in the cmdline.
+/// Cmdline chord-capture overlay. Reserves **nothing**: every chord
+/// stringifies through `KeyChord::Display` and becomes one chord token in the
+/// cmdline, and the keymap trie decides when the sequence is finished
+/// (`Editor::do_command_line_append_chord`).
+///
+/// ## Why nothing is reserved
+///
+/// This used to reserve `<Esc>` / `<CR>` / `<BS>` as cancel / submit /
+/// delete-token, because a chord ARGUMENT is a sequence — `gg`, `<C-w>v`,
+/// `<leader>fz` — and something has to say when it ends. An earlier design
+/// auto-submitted on the first captured chord and made every multi-key chord
+/// undescribable, which is why the explicit terminator was introduced.
+///
+/// The cost was that those three keys could not be described at all. The doc
+/// comment here claimed the missing-arg prompt path was an escape hatch; it is
+/// not, because that path opens the same command line and sets the same
+/// `chord_capture` flag, so it landed in this same branch. `:describe-key` had
+/// no way to answer "what does Enter do".
+///
+/// The trie already knows when a sequence is complete — it is the same
+/// `Partial` / `Bound` / `Unbound` question the dispatch loop asks on every
+/// keystroke. Asking it here removes the need for a terminator, so no key has
+/// to be reserved and the emacs `C-h k` behaviour falls out: press the key, get
+/// its description, including for keys that would otherwise be controls.
+///
+/// The trade this accepts: there is no mid-sequence abort. In practice the
+/// sequence ends within a keystroke or two of whatever the user pressed, and
+/// dismissing an unwanted description costs one `q`.
 fn translate_command_chord_capture(chord: KeyChord) -> Action {
-    // Reserved keys -- these never become chord tokens because
-    // they're how the user finishes / aborts / corrects. To look
-    // up `<Esc>` / `<CR>` themselves, use the missing-arg prompt
-    // path (`:describe-key<CR>` with no arg) which captures the
-    // very next event.
-    match chord.key {
-        KeyKind::Special(SpecialKey::Esc) => return Action::CommandLineCancel,
-        KeyKind::Special(SpecialKey::Enter) => return Action::CommandLineSubmit,
-        KeyKind::Special(SpecialKey::Backspace) => return Action::CommandLineDeleteChord,
-        _ => {}
-    }
     Action::CommandLineAppendChord(chord.to_string())
 }
 

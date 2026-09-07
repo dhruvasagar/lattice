@@ -823,7 +823,27 @@ pub struct Editor {
     /// kept for backward compat across the renderer / context
     /// boundaries; behavior is "chord-capture mode active,"
     /// no longer "auto-submit on chord."
+    ///
+    /// DK.2 (2026-09-07): the explicit `<CR>` is gone again, but not by
+    /// reinstating auto-submit-on-first-chord. The trie decides —
+    /// see [`Self::chord_capture_seq`].
     pub auto_submit_after_chord: bool,
+    /// DK.2: the chords captured so far in the current chord-capture session.
+    ///
+    /// Capture has to accumulate a SEQUENCE (`gg`, `<C-w>v`, `<leader>fz`), so
+    /// it cannot submit on the first keystroke; but making the user terminate
+    /// with `<CR>` meant `<CR>` — and the `<Esc>` and `<BS>` reserved beside it
+    /// — could never themselves be described. The keymap trie already
+    /// distinguishes "waiting for more" (`Partial`) from "this is the answer"
+    /// (`Bound` / `Unbound`) on every ordinary keystroke, so capture asks it
+    /// instead of asking the user, and no key needs reserving.
+    ///
+    /// Parallel to the command line's TEXT rather than derived from it: the
+    /// line also holds the command word and any earlier args, and re-parsing a
+    /// chord argument back out of it would mean re-deriving the arg span on
+    /// every keystroke to answer a question this vector answers directly.
+    /// Cleared when a prompt arms, and on submit / dismiss.
+    pub chord_capture_seq: Vec<lattice_protocol::chord::KeyChord>,
     /// Tree-sitter language registry. Services the document
     /// buffer's `Syntax` and every `HelpBuffer` constructed
     /// by `:describe-*` / `:apropos` / `:keymap` (help

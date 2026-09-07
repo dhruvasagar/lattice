@@ -554,9 +554,6 @@ pub enum Action {
     /// the cmdline. Translation from the raw `KeyEvent` happens
     /// in `input::translate_command_chord_capture`.
     CommandLineAppendChord(String),
-    /// Chord-capture overlay: backspace deletes one full chord
-    /// token (`<C-c>` is one unit, not 5 chars), not a single byte.
-    CommandLineDeleteChord,
 
     // ---- Completion popup (DESIGN.md §5.11.3) ----
     /// `<Tab>` -- open completion popup if closed; advance the

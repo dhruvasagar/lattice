@@ -4004,31 +4004,27 @@ mod tests {
         }
     }
 
+    /// DK.2: capture reserves NOTHING. `<CR>` / `<Esc>` / `<BS>` used to mean
+    /// submit / cancel / delete-token, which is exactly why they were the
+    /// three keys `:describe-key` could never answer for. The keymap trie ends
+    /// the sequence now, so each of them appends its own token like any other
+    /// key.
     #[test]
-    fn chord_capture_reserves_esc_for_cancel() {
+    fn chord_capture_reserves_nothing() {
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_chord_capture(&b), key(KeyCode::Esc)),
-            Action::CommandLineCancel
-        ));
-    }
-
-    #[test]
-    fn chord_capture_reserves_enter_for_submit() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_chord_capture(&b), key(KeyCode::Enter)),
-            Action::CommandLineSubmit
-        ));
-    }
-
-    #[test]
-    fn chord_capture_reserves_backspace_for_delete_chord() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx_chord_capture(&b), key(KeyCode::Backspace)),
-            Action::CommandLineDeleteChord
-        ));
+        for (code, expected) in [
+            (KeyCode::Enter, "<CR>"),
+            (KeyCode::Esc, "<Esc>"),
+            (KeyCode::Backspace, "<BS>"),
+        ] {
+            match translate(ctx_chord_capture(&b), key(code)) {
+                Action::CommandLineAppendChord(s) => assert_eq!(
+                    s, expected,
+                    "{code:?} must be captured as a chord, not obeyed as a control"
+                ),
+                other => panic!("{code:?} was reserved: {other:?}"),
+            }
+        }
     }
 
     #[test]

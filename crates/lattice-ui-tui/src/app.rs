@@ -3587,20 +3587,34 @@ mod tests {
     }
 
     #[test]
+    /// DK.2: a token whose sequence is still a PREFIX stays on the line.
+    ///
+    /// `<C-w>` is the prefix here on purpose. A token that COMPLETES a
+    /// sequence now submits immediately (the trie ends capture, not `<CR>`),
+    /// so asserting on the command line after a bound chord would race the
+    /// cmdline closing — which is what this test used to do with `<C-c>`.
     fn append_chord_concatenates_token() {
         let mut a = app_in_command_mode("describe-key ");
-        a.apply(Action::CommandLineAppendChord("<C-c>".into()));
-        assert_eq!(a.editor.command_line(), "describe-key <C-c>");
+        a.apply(Action::CommandLineAppendChord("<C-w>".into()));
+        assert_eq!(a.editor.command_line(), "describe-key <C-w>");
     }
 
+    /// Multi-stroke chords (`<C-w>j`) still accumulate token by token; only
+    /// the token that completes the sequence ends capture.
     #[test]
     fn append_chord_supports_multi_token_sequences() {
-        // gg / <C-w>j -- multi-stroke chords. Each press appends
-        // its own token.
         let mut a = app_in_command_mode("describe-key ");
-        a.apply(Action::CommandLineAppendChord("g".into()));
-        a.apply(Action::CommandLineAppendChord("g".into()));
-        assert_eq!(a.editor.command_line(), "describe-key gg");
+        a.apply(Action::CommandLineAppendChord("<C-w>".into()));
+        assert_eq!(
+            a.editor.command_line(),
+            "describe-key <C-w>",
+            "the prefix alone must not submit"
+        );
+        a.apply(Action::CommandLineAppendChord("j".into()));
+        assert!(
+            matches!(a.editor.modal, ModalState::Normal),
+            "`<C-w>j` is a complete sequence, so capture submits it"
+        );
     }
 
     #[test]

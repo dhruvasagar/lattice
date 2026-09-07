@@ -295,7 +295,6 @@ impl App {
             | Action::CommandLineCancel
             | Action::CommandLineToggleExpand
             | Action::SelectRegister(_)
-            | Action::CommandLineDeleteChord
             | Action::CommandLineDismissCompletion
             | Action::EnterSearch(_)
             // 5.5.G.1: pure-editor fold / macro / snippet arms.
@@ -2557,35 +2556,35 @@ mod tests {
         assert_eq!(second, 1);
     }
 
+    /// DK.2 (2026-09-07): chord arguments are still SEQUENCES, but the KEYMAP
+    /// TRIE ends them, not an explicit `<CR>`.
+    ///
+    /// K.3.5.fix required the user to press `<CR>`, which meant capture had to
+    /// reserve `<CR>` — and `<Esc>` and `<BS>` beside it — so those three keys
+    /// could never be described. The trie already knows the difference between
+    /// "waiting for more" and "this is the answer", so it decides instead.
+    ///
+    /// This test previously asserted the opposite ("no submit fired") and is
+    /// the pin for the reversal: `g` alone is a prefix and must NOT submit;
+    /// the second `g` completes `gg` and must.
     #[test]
-    fn chord_capture_appends_without_submitting() {
-        // K.3.5.fix (2026-06-03): chord arguments are SEQUENCES,
-        // not single chords. The user types the full chord text
-        // (any number of chord tokens) and submits with `<CR>`.
-        // Single-key chord (`j`) and multi-key chord (`gg`)
-        // share the same flow.
+    fn chord_capture_submits_when_the_trie_says_the_sequence_is_done() {
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
-        // Prompt armed: chord-capture overlay active, cmdline
-        // pre-filled, but no auto-submit on next chord.
+        // Prompt armed: chord-capture overlay active, cmdline pre-filled.
         assert!(a.editor.auto_submit_after_chord);
         assert_eq!(a.editor.command_line(), "describe-key ");
-        // Single chord token gets appended; we stay in Command
-        // mode awaiting more chord tokens or `<CR>`.
+        // `g` is a PREFIX — capture must keep reading rather than describe it.
         a.apply(Action::CommandLineAppendChord("g".into()));
         assert!(matches!(a.editor.modal, ModalState::Command));
         assert_eq!(a.editor.command_line(), "describe-key g");
-        // Multi-key chord: second token appends, still in
-        // Command mode, no submit fired.
+        // The second `g` completes `gg`, so capture submits itself — no `<CR>`.
         a.apply(Action::CommandLineAppendChord("g".into()));
-        assert!(matches!(a.editor.modal, ModalState::Command));
-        assert_eq!(a.editor.command_line(), "describe-key gg");
-        // Explicit `<CR>` submits.
-        a.apply(Action::CommandLineSubmit);
-        assert!(matches!(a.editor.modal, ModalState::Normal));
-        // The submitted line was `describe-key gg`, which opens
-        // a help buffer for the `gg` chord. Smoke check.
-        assert!(a.editor.popup_buffer.is_some());
+        assert!(
+            matches!(a.editor.modal, ModalState::Normal),
+            "a completed sequence submits without a terminator keystroke"
+        );
+        assert!(a.editor.popup_buffer.is_some(), "the help buffer opened");
     }
 
     #[test]

@@ -1075,6 +1075,36 @@ impl KeymapHandle {
             .collect()
     }
 
+    /// Is `chords` still an INCOMPLETE prefix in at least one binding mode?
+    ///
+    /// This is the question that lets `:describe-key`'s chord capture end a
+    /// sequence without reserving a terminator key. A chord argument is a
+    /// sequence (`gg`, `<C-w>v`, `<leader>fz`), so capture cannot submit on the
+    /// first keystroke; but the trie already distinguishes "waiting for more"
+    /// from "this is the answer" on every keystroke of ordinary dispatch, and
+    /// that is exactly the distinction capture needs. Asking here is what frees
+    /// `<CR>` / `<Esc>` / `<BS>` to be describable keys rather than controls.
+    ///
+    /// **Any mode, not the current one.** `:describe-key` reports across every
+    /// mode (`resolve_trace_all_modes`), so capture must keep reading while any
+    /// mode could still extend the sequence — otherwise an Insert-mode-only
+    /// prefix would submit early while the user was still typing it.
+    ///
+    /// `Unbound` deliberately terminates. "This key does nothing" is a first-
+    /// class answer — it is the one a user asking why `<M-k>` did nothing
+    /// needs — and treating it as "keep waiting" would hang capture on exactly
+    /// the query that motivated it.
+    ///
+    /// Telemetry path; not on the keystroke hot path.
+    pub fn any_mode_expects_more(&self, chords: &[KeyChord], active_modes: &[ModeId]) -> bool {
+        BindingMode::all().iter().any(|&mode| {
+            matches!(
+                self.lookup_with_context(mode, chords, active_modes),
+                LookupResult::Partial
+            )
+        })
+    }
+
     /// Human-readable label for a `KeymapLayer`, derived from the layer's
     /// registered label string (set at `push_layer` / `bind` time). Falls
     /// back to `default_label` when the layer hasn't been explicitly named.

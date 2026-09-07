@@ -2003,6 +2003,65 @@ pub fn resolve_trace_all_modes(
 Both are telemetry paths; they take the `inner` mutex to walk the
 full layer list and are never called on the keystroke hot path.
 
+### 13.2.a Chord capture — the trie says when a sequence ends (DK.2, 2026-09-07) ✅ landed
+
+`:describe-key` has two entry points and they are **complementary, not
+redundant**. This is the vim/emacs split, and lattice keeps both because each
+answers a question the other cannot:
+
+- **String form** — `:describe-key <chord>`, typed as text. Vim's `:map <key>`.
+  Answers for chords the user cannot press right now, and for **bare
+  prefixes**: `:describe-key <Space>` reports the leader itself, which no
+  interactive capture can, because pressing it only starts a sequence.
+- **Interactive capture** — the `<C-h> k` prompt. Emacs's `C-h k`. Answers "I
+  pressed *this* — what happened?", including for keys whose spelling the user
+  does not know, and for keys that turn out to be **unbound**, which is the
+  most common reason to reach for it.
+
+A chord ARGUMENT is a sequence (`gg`, `<C-w>v`, `<leader>fz`), so capture cannot
+submit on the first keystroke. It used to end on an explicit `<CR>`, with
+`<Esc>` (abort) and `<BS>` (correct) reserved beside it. That terminator cost
+those three keys entirely: they could never be *described*, only obeyed. A
+comment in `input.rs` claimed the missing-arg prompt was an escape hatch; it was
+not — that path opens the same command line and sets the same `chord_capture`
+flag, so it reached the same reserved branch.
+
+Both problems come from asking the **user** to say when a sequence ends. The
+trie already knows: `Partial` versus `Bound`/`Unbound` is the same question the
+dispatch loop answers on every keystroke.
+
+	KeymapHandle::any_mode_expects_more(chords, active_modes) -> bool
+	    // true  => at least one BindingMode returns Partial; keep reading
+	    // false => Bound or Unbound everywhere; submit now
+
+So capture reserves **nothing**. `g` waits; `gg` submits; `j` submits on one
+key; `<CR>` describes Enter; `<M-k>` in a buffer that does not bind it submits
+immediately and says "not bound in any mode".
+
+Two properties that are deliberate rather than incidental:
+
+- **`Unbound` terminates.** "This key does nothing" is a first-class answer —
+  the one a user asking why a key did nothing came for — so treating it as
+  "keep waiting" would hang capture on exactly the query that motivated it.
+- **Any mode, not the current one.** `:describe-key` reports across every
+  binding mode, so capture keeps reading while *any* mode could extend the
+  sequence; otherwise an Insert-only prefix would submit early mid-sequence.
+
+The trade accepted: there is no mid-sequence abort. The sequence ends within a
+keystroke or two regardless, and dismissing an unwanted description costs one
+`q`. Emacs makes the same trade (`C-h k C-g` describes `C-g`).
+
+Not benched. The lookup runs once per keystroke *while a chord prompt is open*
+— never on the editing hot path — and is the same `lookup_with_context` call
+dispatch already makes per keystroke.
+
+**Chord rendering.** `Display for KeyChord` escapes a literal space as
+`<Space>`, the rule already applied to `<` as `<lt>` and for a superset of the
+reason. A bare `" "` round-tripped through `parse_chord_sequence` and through
+nothing else: the `:` line delimits arguments on whitespace, so a captured space
+submitted an *empty* argument; and `:map` / `:keymap` / which-key rendered the
+leader as an invisible column.
+
 ### 13.3 K.1.c — per-buffer minor-mode context filter ✅ landed
 
 The dispatch loop passes the active buffer's `MinorMode` ids into

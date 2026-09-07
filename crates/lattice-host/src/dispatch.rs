@@ -2165,6 +2165,7 @@ impl Editor {
         self.command_history_cursor = None;
         self.command_history_pending = None;
         self.auto_submit_after_chord = false;
+        self.chord_capture_seq.clear();
         self.substitute_preview = None;
         self.command_line_decorations = None;
         self.restore_editing_buffer();
@@ -2618,22 +2619,6 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::SelectRegister(reg) => {
             editor.pending_register = Some(reg);
-        }
-        Action::CommandLineDeleteChord => {
-            if editor.ensure_command_line_focus() {
-                let line = editor.command_line();
-                let n = crate::chord::last_chord_token_byte_len(&line);
-                if n == 0 {
-                    // Empty buffer + delete -> cancel the chord-capture
-                    // prompt (matching plain `<BS>`-on-empty).
-                    editor.completion_state = None;
-                    editor.restore_editing_buffer();
-                } else {
-                    let new_len = line.len() - n;
-                    let truncated = line[..new_len].to_string();
-                    editor.set_command_line_text(&truncated);
-                }
-            }
         }
         Action::CommandLineDismissCompletion => {
             // Phase 5.8.AF.6: LCP-extended cmdlines (issue-3
@@ -9344,6 +9329,7 @@ impl Editor {
         // Reset chord auto-submit flag on every submit so a prior
         // arming (from an earlier missing-arg prompt) doesn't leak.
         self.auto_submit_after_chord = false;
+        self.chord_capture_seq.clear();
         self.substitute_preview = None;
         self.command_line_decorations = None;
         self.completion_state = None;
@@ -9426,12 +9412,37 @@ impl Editor {
         self.refresh_command_line_decorations();
     }
 
-    /// 5.5.G.23.cmdline: append a chord token to the command line.
-    /// Chord capture suppresses the completion popup (no useful
-    /// candidates for chord input). When the cmdline was armed by a
-    /// missing-arg prompt, the very next chord token also fires
-    /// submit (one-shot auto-submit).
-    pub fn do_command_line_append_chord(&mut self, token: String, _out: &mut DispatchOutcome) {
+    /// 5.5.G.23.cmdline: append a chord token to the command line, and submit
+    /// as soon as the accumulated sequence is one the trie has finished
+    /// reading. Chord capture suppresses the completion popup (no useful
+    /// candidates for chord input).
+    ///
+    /// ## The terminator, and why it is gone
+    ///
+    /// K.3.5 auto-submitted on the FIRST captured chord, so `<C-h>k j` was one
+    /// keypress. That made every multi-key chord undescribable — `gg`,
+    /// `<C-w>v`, `]e`, `<leader>fz` all submit after the first key — so
+    /// K.3.5.fix required an explicit `<CR>` instead.
+    ///
+    /// The `<CR>` in turn had to be reserved by the capture translator, along
+    /// with `<Esc>` (abort) and `<BS>` (correct), which is why those three keys
+    /// could not themselves be described. The comment claiming the missing-arg
+    /// prompt was an escape hatch was wrong: that path sets the same
+    /// `chord_capture` flag and hits the same reserved branch.
+    ///
+    /// Both problems come from asking the USER to say when a sequence ends.
+    /// The trie already knows — it is the `Partial` vs `Bound`/`Unbound`
+    /// question the dispatch loop answers on every keystroke — so capture asks
+    /// it instead. `gg` reads two chords because `g` is `Partial`; `j` submits
+    /// on one because it is `Bound`; `<M-k>` in a buffer that does not bind it
+    /// submits on one because it is `Unbound`, which is the answer the user
+    /// asking "why did that key do nothing" came for. This is emacs `C-h k`.
+    ///
+    /// A bare PREFIX (`<Space>`, `g`) still cannot be captured on its own —
+    /// capture waits, correctly, for the rest. The string form
+    /// (`:describe-key <Space>`) covers that, so the two entry points are
+    /// complementary rather than redundant.
+    pub fn do_command_line_append_chord(&mut self, token: String, out: &mut DispatchOutcome) {
         if !self.ensure_command_line_focus() {
             return;
         }
@@ -9440,21 +9451,35 @@ impl Editor {
         line.push_str(&token);
         self.set_command_line_text(&line);
         self.completion_state = None;
-        // K.3.5.fix (2026-06-03): auto-submit-after-chord dropped.
-        // The original K.3.5 design auto-submitted on the first
-        // captured chord token so `<C-h>k j` was one keypress
-        // for the user. But chord arguments are SEQUENCES, not
-        // single chords: vim's grammar binds multi-key chords
-        // (`gg`, `<C-w>v`, `]e`, `<leader>fz`, ...) and the
-        // user can't describe any of them when the cmdline
-        // submits after the first `g`. The chord-capture overlay
-        // (translation of plain letters to chord tokens, drawn
-        // hint in the cmdline) STAYS — driven by
-        // `auto_submit_after_chord` via the `chord_capture` ctx
-        // flag and the renderer's `auto_submit_hint` read — but
-        // the explicit `<CR>` is now required to submit. Single-
-        // key chord case is still one chord-keystroke + `<CR>`;
-        // multi-key chord case works identically.
+
+        // Accumulate the typed chord alongside the rendered token. Parsed back
+        // from the token rather than threaded through `Action` so the action
+        // stays a plain `String` — one chord, one parse, off the hot path.
+        //
+        // An unparseable token means `Display` and the parser disagree about
+        // some chord, which is a bug in one of them; capture then behaves as it
+        // did before this change (wait for the user), rather than submitting a
+        // command line it cannot reason about.
+        match crate::chord::parse_chord_sequence(&token) {
+            Ok(mut chords) => self.chord_capture_seq.append(&mut chords),
+            Err(err) => {
+                tracing::debug!(%token, %err, "captured chord token does not parse back");
+                return;
+            }
+        }
+
+        let active_modes: Vec<lattice_mode::mode::ModeId> = self
+            .active_modes
+            .get(&self.active_buffer_id())
+            .map(|m| m.keymap_gated_ids())
+            .unwrap_or_default();
+        if self
+            .keymap
+            .any_mode_expects_more(&self.chord_capture_seq, &active_modes)
+        {
+            return;
+        }
+        self.do_command_line_submit(out);
     }
 
     /// 5.5.G.23.cmdline: `<Tab>` — open the popup if closed, advance
@@ -10571,6 +10596,10 @@ impl Editor {
             self.open_command_line(&info.prefill);
         }
         self.auto_submit_after_chord = is_chord;
+        // A fresh prompt starts a fresh sequence — a leftover from an
+        // abandoned capture would make the trie see a sequence the user
+        // never typed and submit on the wrong keystroke.
+        self.chord_capture_seq.clear();
         self.set_message(EchoLevel::Info, info.prompt);
     }
 
@@ -49121,6 +49150,131 @@ mod tests {
         assert!(
             editor.auto_submit_after_chord,
             "ArgKind::Chord must arm auto_submit_after_chord"
+        );
+    }
+
+    // ── DK.2: the trie terminates chord capture, so nothing is reserved ──
+    //
+    // Every test here presses REAL chords through `dispatch_chord`. Calling
+    // `do_command_line_append_chord` directly would pass against a translator
+    // that still reserved the key, which is the whole bug.
+
+    /// Press one chord into an armed `:describe-key` capture and return the
+    /// help content it displayed (`None` while capture is still reading).
+    ///
+    /// Reads the DISPLAYED buffer out of the dispatch outcome rather than any
+    /// editor field — `:describe-key` renders through a `DisplayBuffer`
+    /// renderer signal, so a test that only inspected editor state would see
+    /// nothing whether or not the command ran
+    /// (`dropped-renderer-effects-look-like-dead-features`).
+    fn capture_content(editor: &mut Editor, keys: &str) -> Option<lattice_help::HelpContent> {
+        let expanded = editor.keymap.expand_leader(keys);
+        let seq = lattice_protocol::parse_chord_sequence(&expanded).expect("parses");
+        let mut partial = Vec::new();
+        let mut found = None;
+        for c in seq {
+            let (_action, outcome) = editor.dispatch_chord_with_outcome(c, &mut partial);
+            for signal in outcome.renderer_signals {
+                if let RendererSignal::DisplayBuffer(req) = signal {
+                    found = Some(req.content);
+                }
+            }
+        }
+        found
+    }
+
+    /// [`capture_content`]'s title only — what most of these assertions need.
+    fn capture(editor: &mut Editor, keys: &str) -> Option<String> {
+        capture_content(editor, keys).map(|c| c.buffer.title.clone())
+    }
+
+    fn armed_describe_key() -> Editor {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        assert!(editor.arm_missing_arg_prompt("describe-key"));
+        editor
+    }
+
+    /// The three keys that could not be described at all, because capture
+    /// reserved them as submit / cancel / delete.
+    ///
+    /// `<CR>` is the sharpest of them: it was the terminator, so pressing it
+    /// submitted an EMPTY argument. The user asking "what does Enter do" got
+    /// the parse error for the empty string.
+    #[test]
+    fn capture_describes_the_keys_it_used_to_reserve() {
+        for key in ["<CR>", "<Esc>", "<BS>"] {
+            let mut editor = armed_describe_key();
+            let title = capture(&mut editor, key);
+            assert_eq!(
+                title.as_deref(),
+                Some(format!("describe-key {key}").as_str()),
+                "{key} must describe itself rather than terminate capture"
+            );
+        }
+    }
+
+    /// A multi-key chord still reads to completion — the property the explicit
+    /// `<CR>` terminator was introduced to protect, and the one a naive
+    /// "submit on the first chord" fix would break again.
+    #[test]
+    fn capture_keeps_reading_while_the_sequence_is_a_prefix() {
+        let mut editor = armed_describe_key();
+        assert_eq!(
+            capture(&mut editor, "g"),
+            None,
+            "`g` is a prefix — capture must wait rather than describe `g`"
+        );
+        assert_eq!(
+            capture(&mut editor, "g"),
+            Some("describe-key gg".to_string()),
+            "the second `g` completes the sequence and submits it"
+        );
+    }
+
+    /// An UNBOUND chord terminates immediately. This is the query that
+    /// motivated the change — "why did `<M-k>` do nothing" — so treating
+    /// unbound as "keep waiting" would hang capture on exactly the question it
+    /// exists to answer.
+    #[test]
+    fn capture_submits_an_unbound_chord_rather_than_waiting() {
+        let mut editor = armed_describe_key();
+        let content = capture_content(&mut editor, "<M-k>").expect("capture submitted");
+        assert_eq!(content.buffer.title, "describe-key <M-k>");
+        let text = content.buffer.content.as_string();
+        assert!(
+            text.contains("not bound"),
+            "an unbound chord must say so, not render an empty description: {text}"
+        );
+    }
+
+    /// A single bound chord submits on one keystroke — no terminator to press.
+    #[test]
+    fn capture_submits_a_bound_single_chord_immediately() {
+        let mut editor = armed_describe_key();
+        assert_eq!(
+            capture(&mut editor, "j"),
+            Some("describe-key j".to_string())
+        );
+    }
+
+    /// DK.1 through the real capture path: pressing Space must append a
+    /// `<Space>` TOKEN, not a raw space.
+    ///
+    /// The title is the assertion because it carries the argument the
+    /// ex-parser actually received. A raw space splits the argument, so the
+    /// old behaviour submitted `describe-key` with NOTHING after it — pressing
+    /// Space in a chord prompt did nothing at all, which is the reported
+    /// failure.
+    #[test]
+    fn capturing_space_appends_a_token_not_whitespace() {
+        let mut editor = armed_describe_key();
+        assert_eq!(
+            capture(&mut editor, "<Space>"),
+            Some("describe-key <Space>".to_string()),
+            "the captured token must survive a whitespace-delimited ex-command \
+             argument"
         );
     }
 

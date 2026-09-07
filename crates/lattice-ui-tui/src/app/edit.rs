@@ -1270,31 +1270,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_chord_pops_one_full_token() {
-        let mut a = app_in_command_mode("describe-key <C-c>");
-        a.apply(Action::CommandLineDeleteChord);
-        // The whole `<C-c>` token (5 bytes) gets removed in one
-        // delete -- not a single byte.
-        assert_eq!(a.editor.command_line(), "describe-key ");
-    }
-
-    #[test]
-    fn delete_chord_on_plain_char_pops_one_char() {
-        let mut a = app_in_command_mode("describe-key gg");
-        a.apply(Action::CommandLineDeleteChord);
-        assert_eq!(a.editor.command_line(), "describe-key g");
-    }
-
-    #[test]
-    fn delete_chord_on_empty_cmdline_exits_command_mode() {
-        let mut a = app_with("xx", 10);
-        a.editor.modal = ModalState::Command;
-        a.editor.set_command_line_text("");
-        a.apply(Action::CommandLineDeleteChord);
-        assert!(matches!(a.editor.modal, ModalState::Normal));
-    }
-
-    #[test]
     fn insert_completion_trigger_outside_insert_is_noop() {
         let mut a = app_with("foo bar baz", 10);
         // Normal mode by default -- trigger should no-op.

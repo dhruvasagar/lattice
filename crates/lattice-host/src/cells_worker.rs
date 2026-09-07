@@ -724,6 +724,39 @@ pub fn recompute_pane(
     // the window on every `j` — a 47 ns hit becoming ~1.5 ms. Compared here
     // instead, and a difference takes the two-row incremental path below
     // rather than a full rebuild.
+    // Stale-render instrumentation. The report is always the same shape — an
+    // edit renders with the wrong colours until `<C-l>` — and the question it
+    // asks is which INVALIDATION AXIS failed to move. `MatrixVersion` carries
+    // one per input (text / syntax / folds / theme / …), so naming the axes
+    // that differ says immediately whether the reparse reached this layer at
+    // all.
+    //
+    // Read it against `syntax_reparse_published`. The expected sequence for one
+    // edit is: a rebuild with axes `["text"]` (the sync edit path builds
+    // UNCOLOURED on purpose — see `sync_rebuild_pane_on_edit` — so the glyphs
+    // land in the same frame as the keystroke), then `syntax_reparse_published`,
+    // then a second rebuild with axes `["syntax"]` that puts the colour on.
+    //
+    // A missing SECOND rebuild is the bug: the reparse landed and this layer
+    // never noticed, which is exactly the state `<C-l>` clears by dropping the
+    // published matrix entirely. A second rebuild that IS logged and still
+    // renders stale moves the question on to the renderer.
+    //
+    // One line per pane per rebuild — the same cadence as
+    // `syntax_reparse_requested`, not per frame; the cache-hit path (every
+    // idle tick) logs nothing.
+    let axes = pane.version.differing_axes(&existing.version);
+    if !axes.is_empty() {
+        debug!(
+            target: "lattice_host::cells_worker",
+            ?axes,
+            want_text = pane.version.text,
+            have_text = existing.version.text,
+            want_syntax = pane.version.syntax,
+            have_syntax = existing.version.syntax,
+            "cells_matrix_invalidated"
+        );
+    }
     if !pane.version.differs_from(&existing.version)
         && existing.wrap_width == effective_wrap
         && existing.reveal_line == pane.conceal_reveal_line
@@ -909,6 +942,24 @@ pub fn sync_rebuild_pane_on_edit(
         return false;
     }
     publish_indent_guides(pane, snapshot.as_ref(), &matrix);
+    // The UNCOLOURED half of the pair. This path runs on the edit-critical
+    // actor thread and deliberately builds with `allow_highlight: false`, so
+    // the typed glyph lands in the same frame and the colour follows when the
+    // reparse does. Logging it gives the stale-render sequence a beginning:
+    //
+    //   cells_sync_rebuild_uncoloured  text=N     <- the keystroke's frame
+    //   syntax_reparse_published       version=N  <- the tree caught up
+    //   cells_matrix_invalidated       axes=[syntax]  <- the colour arrives
+    //
+    // If the third line never appears for that text version, the reparse never
+    // reached this layer and the buffer stays at default colours until `<C-l>`
+    // drops the published matrix — which is the reported bug.
+    debug!(
+        target: "lattice_host::cells_worker",
+        text = matrix.version.text,
+        syntax = matrix.version.syntax,
+        "cells_sync_rebuild_uncoloured"
+    );
     pane.display_matrix.store(Arc::new(matrix));
     true
 }

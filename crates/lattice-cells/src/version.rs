@@ -103,6 +103,31 @@ impl MatrixVersion {
     pub fn differs_from(&self, other: &Self) -> bool {
         self != other
     }
+
+    /// The names of the axes that differ, for logging.
+    ///
+    /// A stale-render report is always the same question — the matrix did not
+    /// rebuild, so WHICH invalidation axis failed to move? Answering it from
+    /// two opaque version structs means eyeballing seven `u64`s in a log line;
+    /// answering it from `["syntax"]` is immediate. Allocates, so it is only
+    /// ever called from a `debug!` argument that a disabled level never
+    /// evaluates.
+    pub fn differing_axes(&self, other: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        for (name, a, b) in [
+            ("text", self.text, other.text),
+            ("syntax", self.syntax, other.syntax),
+            ("inlay_hints", self.inlay_hints, other.inlay_hints),
+            ("folds", self.folds, other.folds),
+            ("theme", self.theme, other.theme),
+            ("whitespace", self.whitespace, other.whitespace),
+        ] {
+            if a != b {
+                out.push(name);
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]

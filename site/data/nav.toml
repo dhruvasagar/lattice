@@ -144,6 +144,7 @@ docs = [
   "options",
   "init",
   "emacs-keys-mode",
+  "troubleshooting-keys",
   "plugins",
   "core-plugins",
   "org",
@@ -362,6 +363,7 @@ docs = [
 "claude-code-mode"     = "Claude Code"
 "opencode-mode"        = "opencode"
 "emacs-keys-mode"      = "The <C-x> leader"
+"troubleshooting-keys" = "When a key does nothing"
 "init"                 = "init.rs"
 "buffers"              = "Buffers & panes"
 "picker"               = "Picker & marginalia"

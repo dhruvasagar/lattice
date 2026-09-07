@@ -113,6 +113,7 @@ same surface).
 |   — while expanding        | [`active-snippet-mode`](help:active-snippet-mode) | ✅      |
 | Picker & marginalia        | [`picker`](help:picker)                  | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
+| When a key does nothing    | [`troubleshooting-keys`](help:troubleshooting-keys) | ✅      |
 | LSP                        | [`lsp`](help:lsp)                        | ✅      |
 | `lsp-mode`                 | [`lsp-mode`](help:lsp-mode)              | ✅      |
 |   — subsystem log          | [`lsp-log-mode`](help:lsp-log-mode) | ✅      |

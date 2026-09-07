@@ -2898,7 +2898,27 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // row's key, so every multi-key row was unreachable by
                 // keypress: it rendered, `<C-n>` reached it and `<CR>`
                 // fired it, but its own keys did nothing.
-                let typed = format!("{}{c}", picker.transient_prefix);
+                //
+                // 2026-09-07: rendered through `KeyChord`, not pushed as a raw
+                // `char`, so the typed key is spelled the way a spec spells
+                // it. A space is `<Space>` everywhere else in lattice — the
+                // parser accepts it, `Display` emits it, the keymap indexes it
+                // — and a transient row keyed `<Space>` (org's agenda menu)
+                // could never fire, because the raw char produced `" "` and
+                // nothing matched. Same for `<` → `<lt>`.
+                //
+                // The comparison stays a plain string match rather than a
+                // chord-sequence parse: transient keys are sequences of
+                // single chords typed one at a time, and `resolve_key`'s
+                // prefix logic (`starts_with`) works on the canonical
+                // spellings directly. Parsing both sides would also make a
+                // spec with an unparseable key silently unreachable, which is
+                // the failure mode this whole area keeps producing.
+                let typed = format!(
+                    "{}{}",
+                    picker.transient_prefix,
+                    crate::chord::KeyChord::char(c)
+                );
                 match spec.resolve_key(&typed) {
                     lattice_picker::KeyResolution::Fire(item) => {
                         // Clone before dispatch: `do_transient_trigger`

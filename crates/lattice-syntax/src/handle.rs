@@ -280,7 +280,11 @@ impl lattice_cells::ExcerptHighlighter for SyntaxHandle {
     }
 
     fn highlight_version(&self) -> u64 {
-        self.snapshot().text_version()
+        // `render_version`, NOT `text_version`: one edit publishes twice
+        // (byte-shifted intermediate, then completed reparse) and both carry
+        // the same `text_version`, so a cache keyed on it never rebuilds with
+        // colour. See `SyntaxSnapshot::render_version`.
+        self.snapshot().render_version()
     }
 }
 

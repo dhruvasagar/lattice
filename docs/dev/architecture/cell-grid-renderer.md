@@ -204,7 +204,7 @@ No conditional branches on buffer state, no version checks, no shape calls. Ever
 | Source | Triggers | Worker action |
 |---|---|---|
 | Edit | text version bump + Δ range | rebuild intersecting chunks; shift `start_source_line` on downstream chunks (no rebuild) |
-| Syntax recompute | syntax version bump + affected range | rebuild chunks intersecting range |
+| Syntax recompute | syntax version bump + affected range | rebuild chunks intersecting range (see below — ONE edit bumps this axis TWICE) |
 | Diagnostic update | overlays.diagnostics swap | none — overlay layer only |
 | Doc highlight | overlays.doc_highlights swap | none — overlay layer only |
 | Inlay hint arrival | inlay_hints version bump + range | rebuild chunks intersecting range (changes layout) |
@@ -214,6 +214,36 @@ No conditional branches on buffer state, no version checks, no shape calls. Ever
 | `display.whitespace.*` / `:set list` | whitespace version bump | rebuild all chunks (markers are baked into `Cell.ch` at emission) |
 
 The cell-builder worker computes "smallest rebuild set" by intersecting the changed range against chunk ranges. For pure typing (single-line edits), this is one chunk worth of rebuild per keystroke.
+
+### The syntax axis is stamped from `render_version`, and this is load-bearing
+
+One edit publishes **twice** from the syntax worker (`SyntaxHandle`, slice C.2):
+
+1. an **intermediate** — every node's byte range shifted to track the edit, `source` and `text_version` updated, tree *shape* still pre-parse. Published immediately so unchanged content keeps painting at correct positions;
+2. the **completed reparse** a moment later.
+
+**Both carry the same `text_version`.** So an invalidation axis stamped from
+`snapshot().text_version()` cannot tell "shifted, not yet coloured" from
+"parsed, colours ready". It moved on the intermediate — rebuilding
+*uncoloured*, which is correct and deliberate on the edit path
+(`sync_rebuild_pane_on_edit` builds with `allow_highlight: false` so the glyph
+lands in the keystroke's own frame) — and then stood still for the parse that
+actually had the colour. The buffer held default colours until something
+dropped the matrix outright (`<C-l>`), which is how it was reported, twice.
+
+The axis is therefore stamped from
+[`SyntaxSnapshot::render_version`](../../../crates/lattice-syntax/src/syntax.rs)
+— `text_version + parsed_text_version` — which changes on **both** publishes.
+Neither half alone works: `text_version` misses the completed parse (the bug
+above), and `parsed_text_version` misses the intermediate, whose whole purpose
+is the byte-aligned repaint.
+
+`parsed_text_version` and its predicate `tree_reflects()` already existed for
+exactly this distinction, and their doc already recorded two earlier callers
+that asked `text_version` / `reparsed_from_version` instead (`=` silently
+reindenting nothing; predictive indent falling to the lexical bridge). The
+cells axis was the third. **When the question is "has the tree changed", never
+ask `text_version`.**
 
 ### The renderer-side half: don't paint a matrix built under different inputs
 

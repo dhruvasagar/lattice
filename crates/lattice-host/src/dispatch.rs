@@ -1517,6 +1517,15 @@ impl Editor {
                 },
                 version: lattice_cells::MatrixVersion {
                     text: self.document.text_version(),
+                    // 2026-09-07: `render_version`, not `text_version`. One
+                    // edit publishes TWICE from the syntax worker — a
+                    // byte-shifted intermediate, then the completed reparse —
+                    // and both carry the same `text_version`, so this axis
+                    // moved on the intermediate (rebuild, no colour) and then
+                    // stood still for the parse that had the colour. That is
+                    // the stale-highlight bug: default colours until `<C-l>`
+                    // dropped the matrix. See `SyntaxSnapshot::render_version`.
+                    //
                     // 2026-06-03: the syntax axis tracks the SYNTAX
                     // SNAPSHOT's version, not the document version.
                     // The async reparse can lag the edit; when the
@@ -1535,7 +1544,7 @@ impl Editor {
                     syntax: self
                         .syntax
                         .as_ref()
-                        .map(|h| h.snapshot().text_version())
+                        .map(|h| h.snapshot().render_version())
                         .unwrap_or_else(|| self.document.text_version()),
                     inlay_hints: inlay_version_val,
                     // S2.3.c (2026-05-26): the cells fold axis also
@@ -16337,11 +16346,16 @@ impl Editor {
 
         let version = lattice_cells::MatrixVersion {
             text: text_version,
+            // 2026-09-07: `render_version` — see the long comment in
+            // `build_render_state`. `text_version` is the same for the
+            // byte-shifted intermediate publish and the completed reparse, so
+            // keying on it meant the rebuild that carries the colour never
+            // fired.
+            //
             // 2026-06-03: syntax axis = this pane's syntax-snapshot
             // version (not the doc version), so a reparse that lands
             // after the edit invalidates the cache and the cells
-            // rebuild with fresh colours. See the matching comment
-            // in `build_render_state`. Falls back to the doc version
+            // rebuild with fresh colours. Falls back to the doc version
             // when the buffer has no syntax handle.
             // K.4.7: for multibuffer panes fold in a XOR of all
             // excerpt handle versions so a per-source reparse also
@@ -16349,7 +16363,7 @@ impl Editor {
             syntax: {
                 let base = syntax_handle
                     .as_ref()
-                    .map(|h| h.snapshot().text_version())
+                    .map(|h| h.snapshot().render_version())
                     .unwrap_or(text_version);
                 // K.4.7: use wrapping_add, not XOR. XOR cancels when N
                 // sources all share the same text_version (e.g. all=1
@@ -45879,13 +45893,23 @@ mod tests {
 
     /// Part 1 of the markdown-highlight-recovery fix (2026-06-03):
     /// the published cells `version.syntax` axis must track the
-    /// SYNTAX SNAPSHOT's version, not the document version. Otherwise
+    /// SYNTAX SNAPSHOT, not the document version. Otherwise
     /// an async reparse that lands after the edit can never invalidate
     /// the (colourless) cached matrix — the cells worker sees an
     /// unchanged syntax axis and short-circuits, so highlighting never
     /// comes back. Here the syntax snapshot sits at a distinctive
     /// version (99) decoupled from the document version; the stamped
     /// axis must follow the snapshot.
+    ///
+    /// 2026-09-07: the stamp is `render_version`, not `text_version`, so the
+    /// literal it used to assert (99) no longer holds — a completed parse of
+    /// v99 renders as 99+99. The PROPERTY is unchanged and is what this now
+    /// asserts, because the literal was only ever a proxy for it. The reason
+    /// for the stamp change is the sibling half of this same bug:
+    /// `text_version` is identical for the byte-shifted intermediate publish
+    /// and the completed reparse, so tracking the snapshot was necessary but
+    /// not sufficient — see
+    /// `the_cells_syntax_axis_moves_when_a_reparse_completes`.
     #[tokio::test]
     async fn cells_version_syntax_axis_tracks_syntax_snapshot_not_doc() {
         let mut editor = crate::editor::Editor::boot(doc_with_lines(3));
@@ -45911,10 +45935,19 @@ mod tests {
             .iter()
             .find(|p| p.buffer_id == editor.document_buffer_id)
             .expect("active document pane present");
+        let want = editor
+            .syntax
+            .as_ref()
+            .map(|h| h.snapshot().render_version())
+            .expect("handle present");
         assert_eq!(
-            active.version.syntax, 99,
-            "cells version.syntax must track the syntax snapshot version (99), \
-             not the document version ({doc_v})"
+            active.version.syntax, want,
+            "cells version.syntax must track the syntax snapshot's render \
+             version, not the document version ({doc_v})"
+        );
+        assert_ne!(
+            active.version.syntax, doc_v,
+            "and must not collapse onto the document version"
         );
     }
 
@@ -49284,6 +49317,84 @@ mod tests {
             Some("describe-key <Space>".to_string()),
             "the captured token must survive a whitespace-delimited ex-command \
              argument"
+        );
+    }
+
+    /// The stale-highlight root cause, at the layer that consumed it.
+    ///
+    /// One edit publishes TWICE from the syntax worker: a byte-shifted
+    /// intermediate (tree shape pre-parse) and then the completed reparse.
+    /// Both carry the same `text_version`. The cells matrix keyed its
+    /// `syntax` invalidation axis on `text_version`, so it invalidated on the
+    /// intermediate — rebuilding with no highlights, which is deliberate on
+    /// the edit path — and then did not move for the parse that had the
+    /// colour. The buffer sat at default colours until `<C-l>` dropped the
+    /// matrix outright, which is exactly how it was reported.
+    ///
+    /// Asserted through `build_render_state`'s real axis rather than through
+    /// `render_version` directly, because the bug was never in the snapshot —
+    /// `parsed_text_version` and `tree_reflects` already existed and were
+    /// already documented as "the signal that answers the question". The bug
+    /// was this call site asking the wrong one, so this is the assertion that
+    /// would have caught it.
+    #[test]
+    fn the_cells_syntax_axis_moves_when_a_reparse_completes() {
+        use lattice_protocol::edit::EditDelta;
+        use lattice_protocol::position::Position;
+
+        const V1: &str = "fn f() {\n    x();\n}\n";
+        const V2: &str = "fn f() {\n        x();\n}\n";
+        let edit = EditDelta {
+            start_byte: 9,
+            old_end_byte: 9,
+            new_end_byte: 13,
+            start_position: Position::new(1, 0),
+            old_end_position: Position::new(1, 0),
+            new_end_position: Position::new(1, 4),
+        };
+
+        // Three `Syntax` values, each driven to one of the three stages the
+        // worker passes through for a single edit. Replaying the stages is
+        // what makes the live timing race deterministic.
+        let staged = |stage: u8| {
+            let mut s = lattice_syntax::Syntax::for_language(lattice_syntax::Lang::Rust)
+                .unwrap()
+                .unwrap();
+            s.parse_at(V1, 1);
+            if stage >= 1 {
+                s.try_apply_intermediate(V2, 2, 1, &[edit]).unwrap();
+            }
+            if stage >= 2 {
+                s.reparse_with_cached_tree(1);
+            }
+            s
+        };
+
+        let mut editor = rust_editor(V1);
+        // The axis exactly as `build_render_state` computes it.
+        let axis_of = |editor: &mut Editor, s: lattice_syntax::Syntax| {
+            editor.syntax = Some(lattice_syntax::SyntaxHandle::seeded(s));
+            editor
+                .syntax
+                .as_ref()
+                .map(|h| h.snapshot().render_version())
+                .expect("handle present")
+        };
+
+        let at_v1 = axis_of(&mut editor, staged(0));
+        let at_intermediate = axis_of(&mut editor, staged(1));
+        let at_completed = axis_of(&mut editor, staged(2));
+
+        assert_ne!(
+            at_v1, at_intermediate,
+            "the intermediate must invalidate: byte-aligned spans are what \
+             keep unchanged content painting at the right positions"
+        );
+        assert_ne!(
+            at_intermediate, at_completed,
+            "and the COMPLETED parse must invalidate again — this is the \
+             rebuild that puts the colour on, and it is the one that never \
+             fired"
         );
     }
 

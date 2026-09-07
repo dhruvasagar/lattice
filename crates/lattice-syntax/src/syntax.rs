@@ -614,6 +614,33 @@ impl SyntaxSnapshot {
         self.parsed_text_version
     }
 
+    /// The stamp a **render cache** should key on: it changes when either
+    /// the text or the tree behind this snapshot changes.
+    ///
+    /// `text_version` alone is not it, and that is not a subtlety — it is the
+    /// stale-highlight bug. One edit produces TWO publishes from the syntax
+    /// worker (slice C.2): an intermediate whose byte ranges are shifted to
+    /// track the edit but whose tree shape is pre-parse, then the completed
+    /// reparse. **Both carry the same `text_version`.** A cache keyed on
+    /// `text_version` therefore cannot tell "shifted, not yet coloured" from
+    /// "parsed, colours ready": it invalidates on the intermediate, rebuilds
+    /// without highlights, and the completed parse moves nothing — so the
+    /// buffer stays at default colours until something drops the cache
+    /// entirely (`<C-l>`).
+    ///
+    /// `parsed_text_version` alone is not it either: it does not move on the
+    /// intermediate, and the intermediate is what makes unchanged content
+    /// paint at correct positions immediately. Both publishes must invalidate.
+    ///
+    /// Summing them gives a value that is strictly increasing across
+    /// `intermediate → parsed → next intermediate → …` and changes on every
+    /// publish. It is a cache key, not a version anyone should compare for
+    /// ordering — ask [`Self::tree_reflects`] when the question is "can I
+    /// trust this tree".
+    pub fn render_version(&self) -> u64 {
+        self.text_version.wrapping_add(self.parsed_text_version)
+    }
+
     /// Whether this snapshot's tree is a completed parse of `text_version`.
     ///
     /// The question every consumer that wants to *trust the tree's structure*
@@ -1602,6 +1629,57 @@ mod tests {
         assert!(
             !snap.tree_reflects(2),
             "but no parse has run against it yet"
+        );
+    }
+
+    /// The collision that caused the stale-highlight bug, stated directly:
+    /// the intermediate publish and the completed reparse carry the SAME
+    /// `text_version`, so a render cache keyed on it cannot tell them apart
+    /// and never rebuilds with colour.
+    ///
+    /// `render_version` is the stamp that does move, on both publishes.
+    #[test]
+    fn render_version_separates_the_intermediate_from_the_completed_parse() {
+        use lattice_protocol::edit::EditDelta;
+        use lattice_protocol::position::Position;
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn f() {\n    x();\n}\n", 1);
+        let at_v1 = s.snapshot_owned().render_version();
+
+        let edit = EditDelta {
+            start_byte: 9,
+            old_end_byte: 9,
+            new_end_byte: 13,
+            start_position: Position::new(1, 0),
+            old_end_position: Position::new(1, 0),
+            new_end_position: Position::new(1, 4),
+        };
+        s.try_apply_intermediate("fn f() {\n        x();\n}\n", 2, 1, &[edit])
+            .unwrap();
+        let intermediate = s.snapshot_owned();
+
+        s.reparse_with_cached_tree(1);
+        let completed = s.snapshot_owned();
+
+        // The trap: text_version cannot separate them.
+        assert_eq!(
+            intermediate.text_version(),
+            completed.text_version(),
+            "sanity: this is exactly why text_version cannot be the cache key"
+        );
+
+        // render_version separates all three states.
+        assert_ne!(
+            at_v1,
+            intermediate.render_version(),
+            "the intermediate must invalidate — it is what makes unchanged \
+             content paint at correct positions immediately"
+        );
+        assert_ne!(
+            intermediate.render_version(),
+            completed.render_version(),
+            "and the completed parse must invalidate again — this is the \
+             rebuild that puts the colour on, and the one that was missing"
         );
     }
 

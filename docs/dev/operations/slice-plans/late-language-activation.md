@@ -20,14 +20,16 @@ contain its language, and §7.4's resolver runs on open only.
 ## What this REPLACES
 
 Three patches landed on 2026-09-07 while the cause was still being narrowed.
-**All are deleted by this plan, not extended** — they are the per-feature
-monkey-patching this design exists to remove.
+The two that *infer* a catalog change are deleted by this plan, not extended —
+they are the per-feature monkey-patching this design exists to remove. The
+third turned out not to be a patch at all but the missing invariant of a shared
+helper, and LA.3 says why it stays.
 
 | Landed | Fate |
 |---|---|
-| `Editor::reattach_plugin_syntax` (`ab512368`) | **delete** — re-resolution covers it |
-| `Editor::last_plugin_langs` field (`ab512368`) | **delete** — the event replaces `Arc::ptr_eq` polling |
-| the refold inside `install_document_syntax` (`f5c2099b`) | **delete** — folds follow activation |
+| `Editor::reattach_plugin_syntax` (`ab512368`) | **deleted** (LA.3) — re-resolution covers it |
+| `Editor::last_plugin_langs` field (`ab512368`) | **deleted** (LA.3) — the event replaces `Arc::ptr_eq` polling |
+| the refold inside `install_document_syntax` (`f5c2099b`) | **KEPT** — see LA.3 step 2; the "folds follow activation" premise fails for a language that claims no major |
 | `install_document_syntax` itself (`f5c2099b`) | **KEEP** — it de-duplicates four install sites and fixes a real trap (the active buffer reads `self.syntax`, not the per-buffer slot) |
 
 `syntax_reparse_panicked` / `_worker_stopped` (`8c360ab0`) and the
@@ -51,7 +53,7 @@ plan and stay.
 |---|---|---|
 | LA.1 | `LanguagesRegistered` — the event, published once per load | ✅ |
 | LA.2 | Re-resolve the major for fallback-major buffers | ✅ |
-| LA.3 | Delete the three patches this replaces | 📝 |
+| LA.3 | Delete the patches this replaces | ✅ |
 | LA.4 | End-to-end: an org file on argv gets org's keymaps | 📝 |
 
 ## Dependencies
@@ -195,18 +197,50 @@ as a rendering bug.
 
 ---
 
-## LA.3 — Delete the patches this replaces **(host)** 📝
+## LA.3 — Delete the patches this replaces **(host)** ✅
 
-- [ ] **Step 1: Delete `reattach_plugin_syntax` and `last_plugin_langs`**
-- [ ] **Step 2: Delete the refold from `install_document_syntax`**, keeping the
-      helper and its active-buffer write
-- [ ] **Step 3: Re-run
+- [x] **Step 1: Delete `reattach_plugin_syntax` and `last_plugin_langs`**
+
+Both gone, and with them the `syntax_reattached_after_language_registration`
+trace. The `Arc::ptr_eq` poll existed only because the loader was wrongly
+believed to have no event bus; LA.1 published the fact instead of inferring it.
+
+Collateral fixed while there: `install_inmemory_syntax`'s doc comment (the I4
+`openDiff` block) had been orphaned onto `reattach_plugin_syntax` when that
+function was inserted above it. It is back on its own function.
+
+- [x] **Step 2: ~~Delete~~ KEEP the refold in `install_document_syntax`**
+
+**The plan was wrong here and the code proves it.** "Folds follow activation"
+holds when a major activates — and a language that claims no major activates
+nothing, so this refold is the only thing that folds such a buffer. That is not
+theory: with the refold removed, the fixture below computes `folds = []` after
+the grammar attaches, and `[start_line: 0, end_line: 2]` with it.
+
+The refold is not the per-feature monkey-patching this plan exists to remove.
+It is the invariant of the helper it lives in: a new tree means new folds, in
+the one place every syntax install goes through.
+
+- [x] **Step 3: Re-run
       `a_language_registered_after_boot_attaches_to_an_already_open_buffer`**
 
-It must still pass, now via activation rather than the patch. If it needs
-weakening to pass, LA.2 is incomplete — say so and stop.
+Passes, now through the `LanguagesRegistered` event rather than the poll — the
+trigger a real plugin load fires. Routing a test through the real trigger is
+not weakening it; the assertions got **stronger** in two ways:
 
-- [ ] **Step 4: Gate and commit**
+- the fold assertion moved from `last_folded_text_version.is_some()` — which
+  boot's own activation already satisfies, so it passed either way — to actual
+  fold ranges;
+- the fixture's braces are at **column zero**. `foldmethod=syntax` falls back to
+  indentation when there is no tree, so an indented body makes the grammarless
+  pass produce exactly the fold the grammar would, and the assertion tests
+  nothing. Two earlier fixtures (`fn main() {…}` and a block comment) both hit
+  that coincidence and passed with the refold deleted.
+
+The test also now asserts the buffer does **not** acquire a major nobody
+claimed, and LA.2's duplicate of it was removed rather than left alongside.
+
+- [x] **Step 4: Gate and commit**
 
 ---
 
@@ -230,5 +264,6 @@ logs; this one should be closed the same way. With `--log-level debug`:
 
 1. `lattice todo.org`
 2. Without touching anything, confirm org syntax, folds, and `<M-Down>`.
-3. Confirm no `syntax_reattached_after_language_registration` (LA.3 deleted it)
-   and exactly one `LanguagesRegistered` per plugin.
+3. Confirm no `syntax_reattached_after_language_registration` (LA.3 deleted it),
+   one `major_reresolved_after_catalog_change` for the org buffer, and exactly
+   one `LanguagesRegistered` per plugin.

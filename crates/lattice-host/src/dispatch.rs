@@ -6198,117 +6198,6 @@ impl Editor {
         id
     }
 
-    /// I4 (openDiff) D-fix.2: give an in-memory diff buffer the same
-    /// tree-sitter syntax setup a real file open gets, so BOTH diff panes
-    /// highlight. Mirrors `do_edit`'s syntax install: detect the language,
-    /// build a `Syntax` for it, run the initial synchronous `parse_at`, and
-    /// wrap it in a `SyntaxHandle` whose reparse callback wakes the render
-    /// loop. The handle is stashed into the buffer's `DocumentSyntax` local
-    /// (overriding the empty one `create_inmemory_document` seeded) so
-    /// `activate_buffer` promotes it into `self.syntax` for the active pane and
-    /// `document_syntax_for` reads it for the inactive pane.
-    ///
-    /// The language is detected from `language_path` — the path the *content*
-    /// came from — NOT the buffer's own registry path, because the baseline
-    /// buffer deliberately has no path (an in-place edit would collide with the
-    /// proposed buffer's path), yet still needs the file's language.
-    ///
-    /// Best-effort: a language with no registered grammar (or a bare
-    /// `LangRegistry`) yields `DocumentSyntax(None)` — no highlighting, no
-    /// panic, exactly as a plain-text open behaves.
-    /// Re-attach syntax to open buffers when the plugin-language registry
-    /// changes.
-    ///
-    /// A plugin RCUs its compiled grammar into the process-wide registry when
-    /// it loads, which is always AFTER boot. A file passed on argv therefore
-    /// resolves its language before any plugin has registered one, gets
-    /// `syntax: None`, and never gets a second chance — highlighting is blank
-    /// for the life of the buffer, and `<C-l>` cannot help because a redraw
-    /// rebuilds from a snapshot nothing is going to update. Opening the same
-    /// file again with `:e` / `:files` worked, which is what made it look like
-    /// a rendering bug rather than a missing parser.
-    ///
-    /// `build_open_syntax` already documents this hazard for the OPEN path and
-    /// reads the live registry to dodge it. Boot could not dodge it that way:
-    /// at `editor_boot`'s syntax resolution the plugin has not loaded at all,
-    /// so a live read finds nothing either. The answer has to be a second look,
-    /// later — which is this.
-    ///
-    /// Detection is an `Arc` pointer comparison against the last snapshot: a
-    /// registry swap is exactly what a `register_*` call produces, and reading
-    /// it is a wait-free `ArcSwap` load. That avoids plumbing an event from
-    /// `lattice-plugin-loader` (which has no event bus) through to the host.
-    ///
-    /// Rebuilds every buffer whose language is PLUGIN-provided, not merely
-    /// those missing a handle, so a `:plugin-reload` that recompiles a grammar
-    /// also re-attaches against the new one instead of leaving open buffers on
-    /// the old. Native languages are untouched — a registry swap cannot affect
-    /// them. Registry swaps happen on load and reload only, so this is not a
-    /// per-tick cost.
-    pub(crate) fn reattach_plugin_syntax(&mut self) {
-        let snapshot = lattice_syntax::plugin_lang::snapshot();
-        if let Some(prev) = &self.last_plugin_langs
-            && std::sync::Arc::ptr_eq(prev, &snapshot)
-        {
-            return;
-        }
-        let first_look = self.last_plugin_langs.is_none();
-        self.last_plugin_langs = Some(snapshot);
-        // The very first look is boot's own state, before any plugin has
-        // registered anything. Nothing to re-attach, and rebuilding every
-        // buffer here would undo the sync parse boot just did.
-        if first_look {
-            return;
-        }
-
-        // Collect first: `build_open_syntax` borrows `self`, and the install
-        // below needs `&mut self`.
-        let targets: Vec<(BufferId, lattice_syntax::Lang, String, u64)> = self
-            .buffers
-            .document_ids_sorted()
-            .into_iter()
-            .filter_map(|id| {
-                let handle = self.buffers.document_handle(id)?;
-                let path = handle.path()?;
-                // Only languages the registry can supply. A `.rs` buffer's
-                // grammar is compiled in and a swap says nothing about it.
-                //
-                // `Lang::Plugin(resolve_extension(..))`, NOT
-                // `detect_from_path`: that function knows the bundled
-                // languages only, so a plugin extension comes back as plain
-                // text and the rebuild below finds no grammar. The open path
-                // resolves plugin languages the same way — see
-                // `lang_for_major`.
-                let ext = path.extension()?.to_str()?;
-                let name = lattice_syntax::plugin_lang::resolve_extension(ext)?;
-                Some((
-                    id,
-                    lattice_syntax::Lang::Plugin(name),
-                    handle.text(),
-                    handle.text_version(),
-                ))
-            })
-            .collect();
-
-        for (id, lang, text, version) in targets {
-            let (handle, _parsed_sync) = self.build_open_syntax(lang, &text, version);
-            if handle.is_none() {
-                // The registry changed but still cannot serve this language —
-                // leave whatever the buffer has rather than replacing a working
-                // handle with nothing.
-                continue;
-            }
-            tracing::debug!(
-                target: "lattice_host::syntax",
-                buffer = ?id,
-                ?lang,
-                text_version = version,
-                "syntax_reattached_after_language_registration"
-            );
-            self.install_document_syntax(id, handle, version);
-        }
-    }
-
     /// Install a freshly-built syntax handle for `id`, in every place that
     /// reads one.
     ///
@@ -6347,6 +6236,14 @@ impl Editor {
             // that stamp. Leaving a stamp that matches the unchanged text
             // version is exactly why a re-attached buffer highlighted but never
             // folded.
+            //
+            // LA.3 was specified to DELETE this on the reasoning that "folds
+            // follow activation". They do when a major activates — and a
+            // language that claims no major activates nothing, so this is the
+            // only thing that folds such a buffer. Removing it fails
+            // `a_language_registered_after_boot_attaches_to_an_already_open_buffer`
+            // on its fold assertion, which is the whole reason that assertion
+            // was strengthened from a version stamp to actual fold ranges.
             self.last_folded_text_version = None;
             self.recompute_folds();
         }
@@ -6468,6 +6365,24 @@ impl Editor {
         }
     }
 
+    /// I4 (openDiff) D-fix.2: give an in-memory diff buffer the same
+    /// tree-sitter syntax setup a real file open gets, so BOTH diff panes
+    /// highlight. Mirrors `do_edit`'s syntax install: detect the language,
+    /// build a `Syntax` for it, run the initial synchronous `parse_at`, and
+    /// wrap it in a `SyntaxHandle` whose reparse callback wakes the render
+    /// loop. The handle is stashed into the buffer's `DocumentSyntax` local
+    /// (overriding the empty one `create_inmemory_document` seeded) so
+    /// `activate_buffer` promotes it into `self.syntax` for the active pane and
+    /// `document_syntax_for` reads it for the inactive pane.
+    ///
+    /// The language is detected from `language_path` — the path the *content*
+    /// came from — NOT the buffer's own registry path, because the baseline
+    /// buffer deliberately has no path (an in-place edit would collide with the
+    /// proposed buffer's path), yet still needs the file's language.
+    ///
+    /// Best-effort: a language with no registered grammar (or a bare
+    /// `LangRegistry`) yields `DocumentSyntax(None)` — no highlighting, no
+    /// panic, exactly as a plain-text open behaves.
     pub(crate) fn install_inmemory_syntax(
         &mut self,
         id: BufferId,
@@ -17500,15 +17415,12 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
-        // A plugin's languages land after boot, so a buffer opened from argv
-        // resolved its language before the grammar existed. This is where it
-        // gets the second look. Cheap: one `ArcSwap` load and a pointer
-        // comparison unless the registry actually swapped.
-        self.reattach_plugin_syntax();
-        // LA.2: a plugin load changed the mode/language catalog. Gated on the
-        // event, so an idle tick costs one `try_recv` on an empty channel and
-        // nothing else — the O(major-modes × open buffers) walk runs on plugin
-        // load / reload only.
+        // LA.2: a plugin load changed the mode/language catalog, so a buffer
+        // opened from argv — which resolved its language and its major before
+        // the plugin existed — gets its second look here. Gated on the event,
+        // so an idle tick costs one `try_recv` on an empty channel and nothing
+        // else; the O(major-modes × open buffers) walk runs on plugin load /
+        // reload only.
         self.drain_catalog_changes();
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
@@ -50920,6 +50832,20 @@ mod tests {
     /// runs off-keystroke — because the fix is worthless if it only happens on
     /// the next keypress. That is the same trap the reparse wake was written to
     /// avoid.
+    ///
+    /// LA.3: the plugin now announces itself with `LanguagesRegistered` rather
+    /// than being *detected* by an `Arc::ptr_eq` poll on the registry. That is
+    /// the trigger a real load fires, so this test goes through it — the poll
+    /// existed only because the loader was wrongly believed to have no event
+    /// bus.
+    ///
+    /// The language here claims NO major, which is a shape the mode resolver
+    /// explicitly blesses (`modes.rs`:
+    /// `a_plugin_language_with_no_claimed_major_still_falls_back_to_text_mode`).
+    /// It is therefore also the case that "syntax follows from activation" does
+    /// not cover: re-resolution answers `text-mode` again and nothing
+    /// activates, so this passes only because the language half is re-derived
+    /// independently of the major.
     #[test]
     fn a_language_registered_after_boot_attaches_to_an_already_open_buffer() {
         const PROV: u64 = 0xA11C_E0F5;
@@ -50928,30 +50854,41 @@ mod tests {
         let mut editor = Editor::boot(
             lattice_core::DocumentBuilder::default()
                 .with_path(format!("argv.{ext}"))
-                .with_text("fn main() {}\n")
+                // Braces at column ZERO, deliberately. `foldmethod=syntax`
+                // falls back to indentation when there is no tree, and an
+                // indented body makes it produce the same fold the grammar
+                // would — so the fold assertion at the end would pass whether
+                // or not the late tree was ever folded against. With no
+                // indentation the grammarless pass yields NOTHING, and the
+                // assertion is about the grammar.
+                .with_text("fn a()\n{\n}\n")
                 .build(),
         );
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        // Folds are what makes the assertion at the end about fold RANGES
+        // rather than about a version stamp boot already set; `manual` (the
+        // default) computes none at all.
+        let _ = editor.do_set("foldmethod=syntax");
         // Boot's world: nothing provides this extension, so the buffer has no
         // syntax — exactly the state a `.org` file is in before org loads.
         assert!(
-            editor
-                .document_syntax_for(editor.document_buffer_id)
-                .is_none(),
+            editor.document_syntax_for(id).is_none(),
             "sanity: the extension is unclaimed at boot"
         );
-        // The first look only records boot's registry; it must not rebuild.
+        // No catalog change announced yet; a tick must change nothing.
         editor.run_tick_pending();
         assert!(
-            editor
-                .document_syntax_for(editor.document_buffer_id)
-                .is_none(),
-            "no registry swap yet, so nothing to re-attach"
+            editor.document_syntax_for(id).is_none(),
+            "no catalog change announced yet, so nothing to re-attach"
         );
 
         let spec = lattice_syntax::registry::GrammarSpec {
             grammar: tree_sitter_rust::LANGUAGE.into(),
             highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
-            folds: None,
+            // A REAL folds query, so the fold assertion below is about fold
+            // ranges rather than about a version stamp that boot already set.
+            folds: Some("[(function_item)] @fold".to_string()),
             injections: None,
             indents: None,
             textobjects: None,
@@ -50961,13 +50898,17 @@ mod tests {
             .expect("the test language registers");
 
         // The plugin has now loaded. One tick — no keypress — must attach it.
+        publish_catalog_change(&editor);
         editor.run_tick_pending();
         assert!(
-            editor
-                .document_syntax_for(editor.document_buffer_id)
-                .is_some(),
+            editor.document_syntax_for(id).is_some(),
             "the buffer opened from argv must pick up the language its plugin \
              registered after boot"
+        );
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::TextMode::mode_id()),
+            "and must not invent a major nobody claimed"
         );
 
         // FOLDS FOLLOW THE TREE. Boot computed folds with no grammar and
@@ -50977,7 +50918,7 @@ mod tests {
         // The buffer then highlights correctly and has no fold structure —
         // which is exactly what was reported after the highlighting fix landed.
         assert!(
-            editor.last_folded_text_version.is_some(),
+            !editor.folds.is_empty(),
             "the re-attach must leave folds recomputed against the new tree, \
              not stamped from the grammarless boot pass"
         );
@@ -51087,11 +51028,17 @@ mod tests {
         let mut editor = Editor::boot(
             lattice_core::DocumentBuilder::default()
                 .with_path(format!("argv.{ext}"))
-                .with_text("fn main() {}\n")
+                // Column-zero braces, for the reason spelled out in
+                // `a_language_registered_after_boot_attaches_to_an_already_open_buffer`:
+                // an indented body lets the grammarless fold pass produce the
+                // same answer the grammar does, and the fold assertion stops
+                // testing anything.
+                .with_text("fn a()\n{\n}\n")
                 .build(),
         );
         let id = editor.document_buffer_id;
         let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        let _ = editor.do_set("foldmethod=syntax");
         assert_eq!(
             editor.active_modes.get(&id).and_then(|m| m.major()),
             Some(lattice_mode::TextMode::mode_id()),
@@ -51105,7 +51052,7 @@ mod tests {
         let spec = lattice_syntax::registry::GrammarSpec {
             grammar: tree_sitter_rust::LANGUAGE.into(),
             highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
-            folds: None,
+            folds: Some("[(function_item)] @fold".to_string()),
             injections: None,
             indents: None,
             textobjects: None,
@@ -51135,64 +51082,9 @@ mod tests {
             "and its grammar, which activation of a language major implies"
         );
         assert!(
-            editor.last_folded_text_version.is_some(),
+            !editor.folds.is_empty(),
             "folds must be recomputed against the new tree, not left stamped \
              from the grammarless boot pass"
-        );
-
-        lattice_syntax::plugin_lang::unregister_plugin(PROV);
-    }
-
-    /// A plugin that ships a grammar and NO major is a documented shape
-    /// (`modes.rs`: `a_plugin_language_with_no_claimed_major_still_falls_back_
-    /// to_text_mode`). Its already-open buffers must still get highlighting.
-    ///
-    /// This is the case the design fragment's "syntax follows from activation"
-    /// does not cover: the re-resolution answers `text-mode` again, so nothing
-    /// activates and — if the language half were not re-derived independently —
-    /// nothing would attach.
-    #[test]
-    fn a_catalog_change_attaches_a_language_that_claims_no_major() {
-        const PROV: u64 = 0xA11C_E0F7;
-        let ext = "tlangnomajor";
-
-        let mut editor = Editor::boot(
-            lattice_core::DocumentBuilder::default()
-                .with_path(format!("argv.{ext}"))
-                .with_text("fn main() {}\n")
-                .build(),
-        );
-        let id = editor.document_buffer_id;
-        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
-        assert!(
-            editor.document_syntax_for(id).is_none(),
-            "sanity: the extension is unclaimed at boot"
-        );
-        editor.run_tick_pending();
-
-        let spec = lattice_syntax::registry::GrammarSpec {
-            grammar: tree_sitter_rust::LANGUAGE.into(),
-            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
-            folds: None,
-            injections: None,
-            indents: None,
-            textobjects: None,
-            conceal_rules: Vec::new(),
-        };
-        lattice_syntax::plugin_lang::register_with_grammar(ext, &[ext], &spec, PROV)
-            .expect("the test language registers");
-
-        publish_catalog_change(&editor);
-        editor.run_tick_pending();
-
-        assert!(
-            editor.document_syntax_for(id).is_some(),
-            "a language-only plugin must still reach an already-open buffer"
-        );
-        assert_eq!(
-            editor.active_modes.get(&id).and_then(|m| m.major()),
-            Some(lattice_mode::TextMode::mode_id()),
-            "and must not invent a major nobody claimed"
         );
 
         lattice_syntax::plugin_lang::unregister_plugin(PROV);

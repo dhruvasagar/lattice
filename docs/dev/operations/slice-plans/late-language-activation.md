@@ -50,7 +50,7 @@ plan and stay.
 | Slice | Title | Status |
 |---|---|---|
 | LA.1 | `LanguagesRegistered` — the event, published once per load | ✅ |
-| LA.2 | Re-resolve the major for fallback-major buffers | 📝 |
+| LA.2 | Re-resolve the major for fallback-major buffers | ✅ |
 | LA.3 | Delete the three patches this replaces | 📝 |
 | LA.4 | End-to-end: an org file on argv gets org's keymaps | 📝 |
 
@@ -113,12 +113,15 @@ LA.2's O(major-modes × open buffers) off every auto-pair-shaped plugin.
 
 ---
 
-## LA.2 — Re-resolve the major for fallback-major buffers **(host)** 📝
+## LA.2 — Re-resolve the major for fallback-major buffers **(host)** ✅
 
 **Files**
-- Modify: `crates/lattice-host/src/editor_boot.rs` — subscribe, bridge to the
+- Modified: `crates/lattice-host/src/editor_boot.rs` — subscribe, bridge to the
   actor the way the `SyntaxReparsed` → `cells_wake` forwarder does
-- Modify: `crates/lattice-host/src/dispatch.rs` — the re-resolution itself
+- Modified: `crates/lattice-host/src/editor.rs` — the drain channel
+- Modified: `crates/lattice-host/src/dispatch.rs` — the re-resolution itself
+- Modified: `docs/dev/architecture/mode-architecture.md` §7.4 — the
+  design correction below
 
 **Interfaces**
 - `Editor::reresolve_majors_after_catalog_change()`: for every open
@@ -128,24 +131,67 @@ LA.2's O(major-modes × open buffers) off every auto-pair-shaped plugin.
   must contain **no** syntax, fold or keymap logic. If it does, the design was
   not implemented.
 
-- [ ] **Step 1: Write the failing test — an explicit major is NOT overridden**
+> **Design correction, agreed with the user before implementing.** The
+> interface above is *not* sufficient, and the sufficiency claim was the
+> design's, not the plan's. Syntax follows from activation only when the late
+> plugin ships a **major bound to its language** — org does; a plugin shipping
+> only a grammar does not, and that shape is one `modes.rs` already pins
+> (`a_plugin_language_with_no_claimed_major_still_falls_back_to_text_mode`).
+> Such a buffer re-resolves to the same fallback, nothing activates, and
+> nothing attaches. `reattach_plugin_syntax` covers it today because it keys on
+> the *language*; LA.3 deletes that, so LA.2 has to carry it or the slice ships
+> a silent regression.
+>
+> So the function re-derives **both** facts the catalog decides, in the order
+> the open path derives them: the buffer's LANGUAGE via `detect_from_path`
+> (which reads the live plugin registry), then its MAJOR via the ordered
+> resolver. Language first is load-bearing — `activate_mode_by_id` recomputes
+> folds and *then* rebuilds syntax, so major-first folds against the
+> grammarless tree and stamps the fold version, which is the
+> highlighted-but-unfolded bug reported the last time this was fixed one layer
+> at a time.
+>
+> The "no syntax logic" rule still holds where it was aimed: the **major**
+> branch contains none. What LA.2 adds is step 1 of the open path, not a
+> per-feature patch. `mode-architecture.md` §7.4 carries the correction.
 
-Write this one FIRST. It is the only way the fix can do damage, and a
-re-resolution that silently replaces a user's `:org-mode` is worse than the bug
-being fixed.
+- [x] **Step 1: Write the failing test — an explicit major is NOT overridden**
 
-- [ ] **Step 2: Write the failing test — a fallback-major buffer IS re-resolved**
+`a_catalog_change_does_not_override_an_explicitly_chosen_major`.
+`:markdown-mode` on a `.rs` buffer is the sharpest form: the user's choice
+disagrees with the path in BOTH halves, so a re-resolution that ignored intent
+would put the buffer back on `rust-mode` *and* swap its grammar back to Rust.
+The FALLBACK gate is what makes both survive.
 
-Through `run_tick_pending` with no keypress, per
-`async-results-must-reach-the-screen-without-a-keypress`.
+- [x] **Step 2: Write the failing test — a fallback-major buffer IS re-resolved**
 
-- [ ] **Step 3: Implement**
+`a_catalog_change_re_resolves_a_fallback_major_buffer`, through
+`run_tick_pending` with no keypress. Verified to FAIL without the drain call
+(`Some(text-mode)` vs `Some(tlangreresolve-mode)`), which is the assertion the
+user actually reached for — the major is what carries the keymaps.
 
-- [ ] **Step 4: Confirm nothing per-keystroke**
+Plus `a_catalog_change_attaches_a_language_that_claims_no_major`, the
+language-only shape the correction above exists for. It passes today via
+`reattach_plugin_syntax` too; LA.3's deletion is what makes it cover the new
+path, which is exactly why LA.3 must not weaken it.
 
-The resolver must be reached only from the event, never from a dispatch tail.
+- [x] **Step 3: Implement**
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 4: Confirm nothing per-keystroke**
+
+The resolver's only caller is `drain_catalog_changes`, gated on the
+`LanguagesRegistered` channel. An idle tick costs one `try_recv` on an empty
+channel. The drain coalesces — booting a config with six language plugins
+publishes six events and re-resolves once, against the same final catalog six
+passes would have seen.
+
+Two bus subscriptions, the ML.3 modeline-element shape: one channel the Editor
+drains, one whose only job is to fire `async_landed`. Without the second the
+re-resolution would sit until the next keypress — the failure
+`boot-composition.md` §3 exists to design out, and the one whose symptom reads
+as a rendering bug.
+
+- [x] **Step 5: Gate and commit**
 
 ---
 

@@ -1612,6 +1612,33 @@ impl Editor {
             });
         }
 
+        // LA.2: `LanguagesRegistered` — a plugin load changed the mode/language
+        // catalog, so buffers opened against the old one need their major mode
+        // and language re-resolved (`mode-architecture.md` §7.4).
+        //
+        // TWO subscriptions on purpose, the shape the modeline-element (ML.3)
+        // and LSP-refresh forwarders already use: one channel the Editor drains
+        // in `run_tick_pending`, and one whose only job is to fire
+        // `async_landed`. Without the second, the re-resolution would sit
+        // untouched until the user happened to press a key — the symptom reads
+        // as a rendering bug and is exactly the failure mode
+        // `boot-composition.md` §3 exists to design out.
+        let catalog_change_rx = {
+            use tokio::sync::mpsc;
+            let (tx, rx) = mpsc::unbounded_channel::<lattice_plugin_loader::LanguagesRegistered>();
+            event_bus.subscribe_typed::<lattice_plugin_loader::LanguagesRegistered>(tx);
+            let (wake_tx, mut wake_rx) =
+                mpsc::unbounded_channel::<lattice_plugin_loader::LanguagesRegistered>();
+            event_bus.subscribe_typed::<lattice_plugin_loader::LanguagesRegistered>(wake_tx);
+            let al = async_landed.clone();
+            runtime_handle.spawn(async move {
+                while wake_rx.recv().await.is_some() {
+                    al.notify_one();
+                }
+            });
+            rx
+        };
+
         // D.3.a.1 (2026-05-29): bind the diff subsystem to the
         // event bus. The drainer task subscribes to
         // DocumentChanged + DocumentClosed and routes through
@@ -2002,6 +2029,7 @@ impl Editor {
             messages: messages_ring.clone(),
             pending_message_event_rx: Some(message_event_rx),
             option_change_rx: Some(option_change_rx),
+            pending_catalog_change_rx: Some(catalog_change_rx),
             lang_registry: lang_registry.clone(),
             syntax,
             last_parsed_text_version,

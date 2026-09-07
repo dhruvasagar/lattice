@@ -1872,6 +1872,34 @@ dirty state are untouched, because activation is not a document event.
 Cost is O(major-modes × open buffers) on plugin load / reload — rarer than
 buffer open, which §7.4 already admits a scan on. Nothing per-keystroke.
 
+**Two facts go stale, not one (correction, 2026-09-07).** The paragraph above
+said syntax "follows from activation", and it does — *when the late plugin ships
+a major mode bound to its language*, which org does. A plugin that ships only a
+**grammar** does not: `resolve_major_mode`'s language index finds no claimant,
+the buffer re-resolves to the same fallback, nothing activates, and nothing
+attaches. That is not a corner case but a shape this document already blesses
+elsewhere ("the `language` seam can load without the `modes` seam ... a
+highlighted org buffer with no org-mode is a perfectly good outcome").
+
+So the trigger re-derives **both** facts the catalog decides, in the order the
+open path derives them:
+
+	1. the buffer's LANGUAGE, from `Lang::detect_from_path` --
+	   which reads the live plugin registry and so answers for
+	   extensions the `Lang` enum has never heard of;
+	2. the buffer's MAJOR, through the ordered resolver above.
+
+Language first is load-bearing, not cosmetic: activation recomputes folds and
+*then* rebuilds syntax, so resolving the major first folds against the
+grammarless tree and stamps the fold version — leaving the buffer correctly
+highlighted with no fold structure, which is what was reported the last time
+this was fixed one layer at a time.
+
+The FALLBACK gate covers both halves. An explicitly-chosen major carries its own
+language (`lang_for_major`), so re-deriving one from the path would clobber it —
+`:markdown-mode` on a `.rs` buffer must survive a plugin load with both its mode
+*and* its grammar intact.
+
 Sequencing:
 [`slice-plans/late-language-activation.md`](../operations/slice-plans/late-language-activation.md).
 

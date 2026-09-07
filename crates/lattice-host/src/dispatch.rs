@@ -6352,6 +6352,122 @@ impl Editor {
         }
     }
 
+    /// LA.2 — the mode/language catalog changed, so every buffer that was
+    /// resolved against the OLD catalog gets a second look.
+    ///
+    /// Plugin discovery runs off the boot thread on purpose (paramount #4), so
+    /// a file passed on argv resolves its language and its major mode against a
+    /// catalog that does not yet contain either — and, until this existed, the
+    /// answer was never revisited. `lattice todo.org` opened with no org major,
+    /// no org keymaps, no org syntax and no org folds, while `:e todo.org` on
+    /// the same file moments later worked. `mode-architecture.md` §7.4, "Major
+    /// mode, second trigger".
+    ///
+    /// **Only a buffer still on the FALLBACK major is touched.** A major the
+    /// user set explicitly (`:org-mode`, `:markdown-mode` on a `.rs` file)
+    /// outranks a late-arriving matcher: silently replacing a deliberate choice
+    /// is a worse failure than a late attach, and it is the one this trigger
+    /// must not introduce. That gate covers the syntax half too — an explicit
+    /// major carries its own language (`lang_for_major`), and re-deriving one
+    /// from the path would clobber it.
+    ///
+    /// **Two facts go stale, not one.** The design fragment says syntax
+    /// "follows from activation", and it does — when the late plugin ships a
+    /// major mode bound to its language, which org does. A plugin that ships
+    /// only a *grammar* (no major) re-resolves to the same fallback, so nothing
+    /// activates and nothing would attach. So the buffer's language is
+    /// re-derived first and independently, exactly as the open path does it:
+    /// `detect_from_path` reads the live registry and answers for plugin
+    /// extensions the `Lang` enum has never heard of.
+    ///
+    /// Language BEFORE major, deliberately. `activate_mode_by_id` recomputes
+    /// folds and then rebuilds syntax, so activating first would fold against
+    /// the grammarless tree and stamp the fold version — leaving the buffer
+    /// correctly highlighted with no fold structure, which is precisely what
+    /// was reported the last time this was fixed one layer at a time.
+    ///
+    /// Cost is O(major-modes × open document buffers), on plugin load / reload
+    /// only. Nothing per-keystroke: the only caller is the
+    /// `LanguagesRegistered` drain.
+    /// LA.2: drain the `LanguagesRegistered` channel and, if anything arrived,
+    /// re-resolve once.
+    ///
+    /// Coalescing is the point of draining to empty first: booting with a
+    /// config that loads six language plugins publishes six events, and the
+    /// walk is O(major-modes × open buffers) each time. One re-resolution sees
+    /// the same final catalog as six would.
+    fn drain_catalog_changes(&mut self) {
+        let Some(rx) = self.pending_catalog_change_rx.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        while rx.try_recv().is_ok() {
+            changed = true;
+        }
+        if changed {
+            self.reresolve_majors_after_catalog_change();
+        }
+    }
+
+    pub(crate) fn reresolve_majors_after_catalog_change(&mut self) {
+        // Collect first: the loop below needs `&mut self`, and both
+        // `document_handle` and `mode_registry.load()` borrow it.
+        let ids = self.buffers.document_ids_sorted();
+        for id in ids {
+            let current = self.active_modes.get(&id).and_then(|m| m.major());
+            // `None` counts as fallback: a buffer whose major never activated
+            // has no user intent to preserve either.
+            if current.is_some_and(|m| m != lattice_mode::TextMode::mode_id()) {
+                continue;
+            }
+            let Some(handle) = self.buffers.document_handle(id) else {
+                continue;
+            };
+            let path = handle.path();
+            let lang = lattice_syntax::Lang::detect_from_path(path.as_deref());
+
+            // ── 1. the language, as the open path derives it ──────────────
+            if self.document_syntax_for(id).map(|h| h.lang()) != Some(lang) {
+                let text = handle.text();
+                let version = handle.text_version();
+                let (syntax, _parsed_sync) = self.build_open_syntax(lang, &text, version);
+                // The catalog changed but still cannot serve this language —
+                // leave whatever the buffer has rather than replacing a working
+                // handle with nothing.
+                if syntax.is_some() {
+                    tracing::debug!(
+                        target: "lattice_host::syntax",
+                        buffer = ?id,
+                        ?lang,
+                        text_version = version,
+                        "catalog_change_reattached_syntax"
+                    );
+                    self.install_document_syntax(id, syntax, version);
+                }
+            }
+
+            // ── 2. the major, through §7.4's ordered resolver ─────────────
+            //
+            // No syntax, fold, keymap or LSP logic here on purpose: activation
+            // emits `MajorEntered`, and minors, keymaps, folds and LSP attach
+            // all follow the ordinary open path from it. If this branch ever
+            // grows one of those, the design was not implemented.
+            let winner = crate::modes::resolve_major_mode(
+                &self.mode_registry.load(),
+                lattice_core::BufferKind::Document,
+                lang,
+            );
+            if Some(winner) != current {
+                tracing::debug!(
+                    buffer = ?id,
+                    major = %winner,
+                    "major_reresolved_after_catalog_change"
+                );
+                let _signals = self.activate_mode_by_id(id, winner);
+            }
+        }
+    }
+
     pub(crate) fn install_inmemory_syntax(
         &mut self,
         id: BufferId,
@@ -17389,6 +17505,11 @@ impl Editor {
         // gets the second look. Cheap: one `ArcSwap` load and a pointer
         // comparison unless the registry actually swapped.
         self.reattach_plugin_syntax();
+        // LA.2: a plugin load changed the mode/language catalog. Gated on the
+        // event, so an idle tick costs one `try_recv` on an empty channel and
+        // nothing else — the O(major-modes × open buffers) walk runs on plugin
+        // load / reload only.
+        self.drain_catalog_changes();
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
         // filled in without anyone typing.
@@ -50859,6 +50980,219 @@ mod tests {
             editor.last_folded_text_version.is_some(),
             "the re-attach must leave folds recomputed against the new tree, \
              not stamped from the grammarless boot pass"
+        );
+
+        lattice_syntax::plugin_lang::unregister_plugin(PROV);
+    }
+
+    // ── LA.2: a catalog change re-resolves the major ──────────────────────
+
+    /// A stand-in for the major a plugin declares through the `modes` seam.
+    /// Nothing here is org-specific except the name it claims — the same shim
+    /// `modes.rs`'s resolver tests use.
+    #[derive(Debug)]
+    struct PluginLangMajor {
+        id: &'static str,
+        lang: &'static str,
+    }
+
+    impl lattice_mode::Mode for PluginLangMajor {
+        type Guard = ();
+        fn id(&self) -> lattice_mode::ModeId {
+            lattice_mode::ModeId::new(self.id)
+        }
+        fn kind(&self) -> lattice_mode::ModeKind {
+            lattice_mode::ModeKind::Major
+        }
+        fn target_language(&self) -> Option<&str> {
+            Some(self.lang)
+        }
+        fn on_activate(
+            &self,
+            _ctx: lattice_mode::ModeContext,
+        ) -> lattice_mode::LifecycleFuture<'_, Self::Guard> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// RCU a mode into a booted editor's registry, the way the loader's
+    /// `drain_mode` does.
+    fn register_major_at_runtime(editor: &Editor, mode: PluginLangMajor) {
+        let mut next = (**editor.mode_registry.load()).clone();
+        next.register(mode).expect("the test major registers");
+        editor.mode_registry.store(std::sync::Arc::new(next));
+    }
+
+    fn publish_catalog_change(editor: &Editor) {
+        editor
+            .event_bus
+            .publish_typed(lattice_plugin_loader::LanguagesRegistered {
+                plugin: lattice_plugin_host::PluginId(7),
+            });
+    }
+
+    /// **Write this one first.** It is the only way the fix can do damage: a
+    /// re-resolution that silently replaces a major the user chose is worse
+    /// than the bug being fixed.
+    ///
+    /// `:markdown-mode` on a `.rs` buffer is the sharpest form of it — the
+    /// user's choice disagrees with the path in BOTH halves, so a
+    /// re-resolution that ignored intent would put the buffer back on
+    /// `rust-mode` AND swap its grammar back to Rust.
+    #[test]
+    fn a_catalog_change_does_not_override_an_explicitly_chosen_major() {
+        let mut editor = rust_editor("fn main() {}\n");
+        let id = editor.document_buffer_id;
+        let markdown = lattice_syntax::MarkdownMode::mode_id();
+        let _ = editor.activate_mode_by_id(id, markdown);
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(markdown),
+            "sanity: the explicit major took"
+        );
+        assert_eq!(
+            editor.document_syntax_for(id).map(|h| h.lang()),
+            Some(lattice_syntax::Lang::Markdown),
+            "sanity: the explicit major brought its language with it"
+        );
+
+        publish_catalog_change(&editor);
+        editor.run_tick_pending();
+
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(markdown),
+            "a late-arriving catalog must not take a deliberate `:markdown-mode` \
+             away from the user"
+        );
+        assert_eq!(
+            editor.document_syntax_for(id).map(|h| h.lang()),
+            Some(lattice_syntax::Lang::Markdown),
+            "nor re-derive the language from the path behind it"
+        );
+    }
+
+    /// The headline: a buffer opened before its plugin loaded ends up on the
+    /// plugin's major — keymaps, minors and folds all follow from that
+    /// activation — without reopening and **without a keypress**.
+    ///
+    /// Driven through `run_tick_pending`, which is what the actor's
+    /// `async_landed` arm runs off-keystroke. A test that pressed a key first
+    /// would pass on the broken version too.
+    #[test]
+    fn a_catalog_change_re_resolves_a_fallback_major_buffer() {
+        const PROV: u64 = 0xA11C_E0F6;
+        let ext = "tlangreresolve";
+
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(format!("argv.{ext}"))
+                .with_text("fn main() {}\n")
+                .build(),
+        );
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::TextMode::mode_id()),
+            "sanity: nothing claims this extension at boot, so the buffer is on \
+             the fallback major"
+        );
+        // The first tick is boot's own state; it must change nothing.
+        editor.run_tick_pending();
+
+        // The plugin loads: a grammar and the major that claims its language.
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(ext, &[ext], &spec, PROV)
+            .expect("the test language registers");
+        register_major_at_runtime(
+            &editor,
+            PluginLangMajor {
+                id: "tlangreresolve-mode",
+                lang: ext,
+            },
+        );
+
+        publish_catalog_change(&editor);
+        editor.run_tick_pending();
+
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::ModeId::new("tlangreresolve-mode")),
+            "the buffer opened from argv must land on the plugin's major once \
+             the plugin registers it — that is what carries its keymaps"
+        );
+        assert!(
+            editor.document_syntax_for(id).is_some(),
+            "and its grammar, which activation of a language major implies"
+        );
+        assert!(
+            editor.last_folded_text_version.is_some(),
+            "folds must be recomputed against the new tree, not left stamped \
+             from the grammarless boot pass"
+        );
+
+        lattice_syntax::plugin_lang::unregister_plugin(PROV);
+    }
+
+    /// A plugin that ships a grammar and NO major is a documented shape
+    /// (`modes.rs`: `a_plugin_language_with_no_claimed_major_still_falls_back_
+    /// to_text_mode`). Its already-open buffers must still get highlighting.
+    ///
+    /// This is the case the design fragment's "syntax follows from activation"
+    /// does not cover: the re-resolution answers `text-mode` again, so nothing
+    /// activates and — if the language half were not re-derived independently —
+    /// nothing would attach.
+    #[test]
+    fn a_catalog_change_attaches_a_language_that_claims_no_major() {
+        const PROV: u64 = 0xA11C_E0F7;
+        let ext = "tlangnomajor";
+
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(format!("argv.{ext}"))
+                .with_text("fn main() {}\n")
+                .build(),
+        );
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        assert!(
+            editor.document_syntax_for(id).is_none(),
+            "sanity: the extension is unclaimed at boot"
+        );
+        editor.run_tick_pending();
+
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(ext, &[ext], &spec, PROV)
+            .expect("the test language registers");
+
+        publish_catalog_change(&editor);
+        editor.run_tick_pending();
+
+        assert!(
+            editor.document_syntax_for(id).is_some(),
+            "a language-only plugin must still reach an already-open buffer"
+        );
+        assert_eq!(
+            editor.active_modes.get(&id).and_then(|m| m.major()),
+            Some(lattice_mode::TextMode::mode_id()),
+            "and must not invent a major nobody claimed"
         );
 
         lattice_syntax::plugin_lang::unregister_plugin(PROV);

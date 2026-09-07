@@ -869,6 +869,21 @@ pub struct Editor {
     /// Comparing this `Arc` by pointer detects the swap wait-free, with no new
     /// plumbing between the loader and the host. `None` until the first check.
     pub last_plugin_langs: Option<std::sync::Arc<lattice_syntax::plugin_lang::PluginLanguages>>,
+    /// LA.2: the `LanguagesRegistered` drain — a plugin whose load changed the
+    /// mode/language catalog lands here, and `run_tick_pending` re-resolves the
+    /// majors and languages of buffers that were opened against the old one.
+    ///
+    /// A channel rather than a flag, and drained here rather than acted on in
+    /// the subscription, because the re-resolution needs `&mut Editor` and the
+    /// bus forwarder runs on the runtime. `EventBus::publish_typed` calls the
+    /// forwarder synchronously, so a publish is visible to the very next tick —
+    /// the paired wake forwarder in `editor_boot` is what makes that tick
+    /// happen without a keypress.
+    ///
+    /// `None` when nothing subscribed it (bare `Editor::default()` in tests);
+    /// the drain is then a no-op.
+    pub pending_catalog_change_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_plugin_loader::LanguagesRegistered>>,
     /// Pane tree (DESIGN.md §5.9). Always represents the
     /// ACTIVE tab's panes — when switching tabs we
     /// `mem::swap` between this field and `tabs[target].panes`.

@@ -284,6 +284,16 @@ impl lattice_cells::ExcerptHighlighter for SyntaxHandle {
     }
 }
 
+/// Test-only: make the next parse inside the worker panic.
+///
+/// A tree-sitter panic cannot be induced on demand from outside, and the
+/// property it guards — the worker SURVIVES one and keeps serving later
+/// requests — is the difference between one stale frame and a buffer whose
+/// highlighting is dead until it is reopened. That is worth a hook.
+#[cfg(test)]
+pub(crate) static PANIC_NEXT_PARSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Worker loop. Owns the `Syntax` exclusively; processes
 /// reparse requests in FIFO order, coalescing newer requests on
 /// top of older ones before running each parse on a blocking
@@ -346,6 +356,11 @@ async fn worker_main(
         } = req;
         let snapshot_for_intermediate = snapshot.clone();
         let parsed = tokio::task::spawn_blocking(move || {
+            // The parse is wrapped so a panic inside tree-sitter cannot take
+            // `syntax` with it: the closure hands ownership back either way and
+            // the caller decides what to do. See the `Err` arm below for why
+            // that matters more than it looks.
+            let mut panicked = false;
             // Slice B.5: materialize the source bytes on the
             // worker thread, not the input thread. `as_string`
             // is O(n) for the rope but happens here on the
@@ -383,33 +398,76 @@ async fn worker_main(
             // byte-length mismatch), Stage 1 returns Err, and we
             // fall through to a full reparse with a single
             // publish.
-            let intermediate_ok = !edits.is_empty()
-                && syntax
-                    .try_apply_intermediate(&text, text_version, from_version, &edits)
-                    .is_ok();
-            if intermediate_ok {
-                snapshot_for_intermediate.store(Arc::new(syntax.snapshot_owned()));
-                syntax.reparse_with_cached_tree(from_version);
-            } else {
-                syntax.parse_at(&text, text_version);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if PANIC_NEXT_PARSE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    panic!("injected parse panic");
+                }
+                let intermediate_ok = !edits.is_empty()
+                    && syntax
+                        .try_apply_intermediate(&text, text_version, from_version, &edits)
+                        .is_ok();
+                if intermediate_ok {
+                    snapshot_for_intermediate.store(Arc::new(syntax.snapshot_owned()));
+                    syntax.reparse_with_cached_tree(from_version);
+                } else {
+                    syntax.parse_at(&text, text_version);
+                }
+            }));
+            if outcome.is_err() {
+                panicked = true;
             }
-            syntax
+            (syntax, panicked)
         })
         .await;
-        let next = match parsed {
-            Ok(s) => s,
-            Err(_) => {
-                // The blocking task panicked. The worker
-                // exits; the snapshot stays at the last
-                // successful parse; future requests fail (the
-                // sender's future Sends queue but nobody drains
-                // them -- they just leak until the handle is
-                // dropped). The App treats stale snapshots
-                // gracefully (highlights for the previous
-                // version stay visible).
+        let (next, panicked) = match parsed {
+            Ok(pair) => pair,
+            Err(join_err) => {
+                // The task could not be joined at all — cancelled, or the
+                // runtime is shutting down. Nothing left to own, so the worker
+                // does have to stop here; but it says so first, because the
+                // symptom on screen (highlighting frozen forever, redraw does
+                // not help, reopening the file fixes it) says nothing about
+                // which layer died.
+                tracing::error!(
+                    target: "lattice_host::syntax",
+                    error = %join_err,
+                    text_version,
+                    "syntax_reparse_worker_stopped"
+                );
                 return;
             }
         };
+        if panicked {
+            // A PANIC IN THE PARSE IS NO LONGER FATAL TO THE WORKER.
+            //
+            // It used to be: the panic destroyed `syntax`, the worker
+            // `return`ed, and every later request went into a channel with no
+            // receiver. The snapshot froze at the last good parse for the life
+            // of that buffer — `<C-l>` cannot help, because a redraw rebuilds
+            // from a snapshot that is never going to change again, and only
+            // reopening the file (a NEW handle, a NEW worker) recovered.
+            //
+            // It also died SILENTLY, which is why the pair of
+            // `syntax_reparse_requested` / `syntax_reparse_published` lines
+            // pointed at the worker and then stopped: nothing recorded the
+            // reason. Now the panic is caught inside the closure, `syntax`
+            // comes back, and the worker keeps serving the next request — so a
+            // parse that fails while a grammar is mid-rebuild costs one stale
+            // frame instead of a permanently dead buffer.
+            //
+            // Skipping the publish is deliberate: the tree is in whatever state
+            // the panic left it, and painting from it would be worse than
+            // painting from the last known-good snapshot.
+            tracing::error!(
+                target: "lattice_host::syntax",
+                from_version,
+                text_version,
+                "syntax_reparse_panicked"
+            );
+            syntax = next;
+            continue;
+        }
         snapshot.store(Arc::new(next.snapshot_owned()));
         syntax = next;
         // The far end of `syntax_reparse_requested`. A request logged with no
@@ -446,13 +504,85 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Notify;
 
+    /// Serialise the worker tests: [`PANIC_NEXT_PARSE`] is PROCESS-GLOBAL.
+    ///
+    /// Run concurrently, one test's armed panic is consumed by the other's
+    /// parse — the panic lands in the wrong worker and both fail, which is
+    /// exactly what happened the first time this test was written. A global
+    /// injection point needs a global lock; making the tests look independent
+    /// when they share a static is how a suite earns a reputation for
+    /// flakiness. `tokio::sync::Mutex` because the critical section spans
+    /// `.await`.
+    static WORKER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Slice B.1 (2026-06-03): a reparse publish must fire the
     /// `on_publish` wake so the editor actor can re-publish render
     /// state on idle reparse completion. Without this, an idle reparse
     /// (no keystroke in flight) never repaints — the markdown
     /// "highlighting never comes back" symptom's idle half.
+
+    /// A panicking parse must NOT kill the worker.
+    ///
+    /// It used to: the panic destroyed the `Syntax`, the worker returned, and
+    /// every later request went into a channel with no receiver. The snapshot
+    /// froze at the last good parse for the life of that buffer — `<C-l>` could
+    /// not help, because a redraw rebuilds from a snapshot that will never
+    /// change again, and only reopening the file recovered.
+    ///
+    /// It died silently too, which is why a debug log showed
+    /// `syntax_reparse_requested` lines with no `syntax_reparse_published`
+    /// after them and nothing saying why.
+    ///
+    /// The second request is the whole test: one bad parse costs a stale frame,
+    /// not the buffer.
+    #[tokio::test]
+    async fn a_panicking_parse_does_not_kill_the_worker() {
+        let _serialised = WORKER_TESTS.lock().await;
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse_at("fn main() {}\n", 1);
+        let wake = Arc::new(Notify::new());
+        let wake_cb = wake.clone();
+        let handle = SyntaxHandle::seeded_with_runtime(
+            s,
+            &tokio::runtime::Handle::current(),
+            Some(Arc::new(move || wake_cb.notify_one())),
+        );
+
+        // Arm the panic, then ask for a reparse. It must publish nothing.
+        PANIC_NEXT_PARSE.store(true, std::sync::atomic::Ordering::SeqCst);
+        handle.request_reparse(
+            1,
+            2,
+            Buffer::from_text("fn main() {}\n// two\n"),
+            Vec::<EditDelta>::new(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), wake.notified())
+                .await
+                .is_err(),
+            "a panicking parse must not publish a half-built tree"
+        );
+
+        // The worker is still alive: the NEXT request publishes normally.
+        handle.request_reparse(
+            1,
+            3,
+            Buffer::from_text("fn main() {}\n// three\n"),
+            Vec::<EditDelta>::new(),
+        );
+        tokio::time::timeout(Duration::from_secs(2), wake.notified())
+            .await
+            .expect("the worker survived the panic and published the next parse");
+        assert_eq!(
+            handle.snapshot().text_version(),
+            3,
+            "and the snapshot advanced to the version that parsed cleanly"
+        );
+    }
+
     #[tokio::test]
     async fn reparse_publish_fires_on_publish_wake() {
+        let _serialised = WORKER_TESTS.lock().await;
         let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
         s.parse_at("fn main() {}\n", 1);
         let wake = Arc::new(Notify::new());

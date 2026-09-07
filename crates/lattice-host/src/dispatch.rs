@@ -10462,11 +10462,34 @@ impl Editor {
     /// programmatic caller funnel into the same `translate` +
     /// `handle_action` pipeline; `dispatch_chord` is the
     /// affordance for the programmatic case.
+    /// Dispatch a chord and RUN it, discarding the effects it produced.
+    ///
+    /// Kept as the common spelling because almost every caller wants only the
+    /// resolved `Action`. When you need the effects too — a renderer, or a test
+    /// that must apply them — use [`Self::dispatch_chord_with_outcome`] rather
+    /// than re-dispatching the returned action: the action has ALREADY run, and
+    /// running it again applies the edit twice.
     pub fn dispatch_chord(
         &mut self,
         chord: crate::chord::KeyChord,
         partial_chord: &mut Vec<crate::chord::KeyChord>,
     ) -> Action {
+        self.dispatch_chord_with_outcome(chord, partial_chord).0
+    }
+
+    /// [`Self::dispatch_chord`] plus the [`DispatchOutcome`] it produced.
+    ///
+    /// The outcome was always built here and then dropped, which left callers
+    /// that needed the effects only one option: re-dispatch the returned
+    /// `Action`. That RE-RUNS it. Org's test harness did exactly that and every
+    /// editing chord applied twice — one `<leader><CR>` inserting two items —
+    /// under a comment asserting it did not. The effects are handed back
+    /// instead.
+    pub fn dispatch_chord_with_outcome(
+        &mut self,
+        chord: crate::chord::KeyChord,
+        partial_chord: &mut Vec<crate::chord::KeyChord>,
+    ) -> (Action, DispatchOutcome) {
         let active_buffer_id = self.active_buffer_id();
         // The keymap lookup gates BOTH major- and minor-mode layers
         // by the active-mode slice, so include the active major
@@ -10659,10 +10682,10 @@ impl Editor {
                 }
             }
             out.declined = false;
-            return last;
+            return (last, out);
         }
 
-        action
+        (action, out)
     }
 
     /// 5.5.G.23.cmdline: true when the cmdline cursor sits on an

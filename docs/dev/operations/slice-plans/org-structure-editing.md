@@ -1,6 +1,6 @@
 # Org structure editing — headlines, lists and checkboxes — slice plan
 
-> **Status: Active.** Opened 2026-09-06. Implements
+> **Status: COMPLETE.** Opened 2026-09-06, landed 2026-09-07. Implements
 > [`org-mode.md`](../../architecture/org-mode.md) §5.6.
 
 > **For agentic workers:** REQUIRED SUB-SKILL — use
@@ -130,7 +130,7 @@ parallel set.** In `lattice-org-plugin/tests/org_structure.rs`:
 | `org_plugin_wasm() -> Option<Vec<u8>>` | **exists** (~line 46) — `None` when the component was not built, which is how every test in this file skips |
 | `loader_over_editor(&Editor, &Path)` | **exists** (~line 55) |
 | `press(&mut Editor, &str)` | **exists** (~line 219) — expands `<leader>`, dispatches each chord. Does **not** apply renderer effects |
-| `press_chord(&mut Editor, &str)` | **exists** (~line 321) — `press` plus `apply_renderer_effects`. Use this for anything that edits |
+| `press_chord(&mut Editor, &str)` | **exists** (~line 321) — ⚠️ **DO NOT use for a plugin action.** It DOUBLE-APPLIES one: `dispatch_chord` already runs the action, and it then re-dispatches the resolved `Action::Invoke` (its own comment claims it avoids this; it does not). Measured in OS.4 — `<leader><CR>` inserts ONE item via `press`, TWO via `press_chord`. This row previously read "use this for anything that edits", which is wrong for every org verb. Use `press`; the host applies `Effect::ApplyEdit` on the dispatch path |
 | `chord(&str) -> KeyChord` | **exists** (~line 209) |
 | `org_editor(text) -> Option<Editor>` | **write it** — boot + load org + open a buffer holding `text` with `org-mode` active. Every existing test does this inline; factor it out in OS.3 and reuse it. Returns `None` when `org_plugin_wasm()` does, so callers keep the `let Some(..) else { return }` skip |
 | `org_editor_with_keywords(text, kw)` | **write it (OS.5)** — as above, plus `:set org.todo-keywords=…` before the buffer opens |
@@ -145,7 +145,7 @@ In `list.rs`'s own test module (OS.3):
 | Helper | Status |
 |---|---|
 | `lists_over(text) -> Lists<'_>` | **write it** — build a `Lists` over `text` with **`tree: None`**, exercising the indent fallback |
-| `lists_over_parsed(text)` | **write it** — the same fixture with a real `TreeSnapshot`. Every structural test runs through **both**; the fallback is the half that silently rots, and a tree-only test would never notice |
+| ~~`lists_over_parsed(text)`~~ | **WITHDRAWN 2026-09-06 — impossible, see the ruling below.** A `TreeSnapshot` is a host WIT *resource*: it has no guest-side constructor, and off `wasm32` wit-bindgen compiles every method to `unreachable!()` (which is the only reason the host-target test build links at all). `cargo test --lib` can therefore neither obtain one nor call it |
 
 In `crates/lattice-host/tests/plugin_insert_mode_chords.rs` (OS.0):
 
@@ -162,18 +162,20 @@ In `crates/lattice-host/tests/plugin_insert_mode_chords.rs` (OS.0):
 | Slice | Title | Status |
 |---|---|---|
 | OS.0 | An Insert-mode plugin chord reaches a grammar action — pin it **(host)** | ✅ |
-| OS.0b | An ALT-bearing chord can be bound at all **(host)** — *carved from OS.0's finding* | 📝 |
-| OS.1 | The keyboard protocol, so Shift+Enter exists at all **(host)** | 📝 |
-| OS.2 | A Visual-mode plugin action can see its region **(host)** | 📝 |
-| OS.3 | `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** | 📝 |
-| OS.4 | `<M-CR>` — meta-return dispatches on what is at point **(plugin)** | 📝 |
-| OS.5 | `<M-S-CR>` — the variant, and the headline insert family **(plugin)** | 📝 |
-| OS.6 | The Meta-arrows: promote/demote *is* indent/outdent **(plugin)** | 📝 |
-| OS.7 | `<M-Up>` / `<M-Down>` — move an item or a subtree **(plugin)** | 📝 |
-| OS.8 | `<C-t>` / `<C-d>` in Insert, declining off a list **(plugin)** | 📝 |
-| OS.9 | Bullet cycling, and line ↔ item ↔ headline **(plugin)** | 📝 |
-| OS.10 | The Visual peers **(plugin)** | 📝 |
-| OS.11 | `:help org` — the Lists section, and the site **(plugin + host)** | 📝 |
+| OS.0b | An ALT-bearing chord can be bound at all — **Insert** **(host)** — *carved from OS.0's finding* | ✅ |
+| OS.0c | The same defect in **Normal** **(host)** — *carved from OS.4's finding* | ✅ |
+| OS.0d | The same defect in **Visual** **(host)** — *carved from OS.0c, resolved for OS.10* | ✅ |
+| OS.1 | The keyboard protocol, so Shift+Enter exists at all **(host)** | ✅ |
+| OS.2 | A Visual-mode plugin action can see its region **(host)** | ✅ |
+| OS.3 | `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** | ✅ |
+| OS.4 | `<M-CR>` — meta-return dispatches on what is at point **(plugin)** | ✅ |
+| OS.5 | `<M-S-CR>` — the variant, and the headline insert family **(plugin)** | ✅ |
+| OS.6 | The Meta-arrows: promote/demote *is* indent/outdent **(plugin)** | ✅ |
+| OS.7 | `<M-Up>` / `<M-Down>` — move an item or a subtree **(plugin)** | ✅ |
+| OS.8 | `<C-t>` / `<C-d>` in Insert, declining off a list **(plugin)** | ✅ |
+| OS.9 | Bullet cycling, and line ↔ item ↔ headline **(plugin)** | ✅ |
+| OS.10 | The Visual peers **(plugin)** | ✅ |
+| OS.11 | `:help org` — the Lists section, and the site **(plugin + host)** | ✅ |
 
 ## Dependencies
 
@@ -187,6 +189,19 @@ written against a list the plugin cannot see.
   one test file to learn, instead of eight dead bindings.
 - **OS.0b blocks OS.4 and OS.5.** Nothing else — OS.6/OS.7 bind in Normal
   (a different dispatch path), OS.8 uses CTRL, which was never stripped.
+- **OS.0c — carved 2026-09-06, and this bullet above was WRONG.** "A different
+  dispatch path" was true and was not a reason to relax: `keymap_normal.rs`'s
+  `normalize_for_normal_lookup` was a SEPARATE COPY of the same ALT-stripping
+  defect OS.0b fixed for Insert, so Normal ALT chords were equally unreachable.
+  OS.4 found it by binding `<M-CR>` in both modes and watching only the Insert
+  half fire. **OS.0c therefore blocked OS.4, OS.5, OS.6 and OS.7** — every
+  meta-arrow binds in Normal. Landed at `ffebf6a9`.
+  **Visual was the remaining sibling and is now OS.0d** (`73c78d74`). The
+  decision it needed: Visual's normalize strips SHIFT too, so `<M-S-Right>` and
+  `<M-Right>` — which differ only in SHIFT — both normalize to `<Right>` and a
+  normalize-first lookup collapses OS.6's two verbs onto one binding.
+  Raw-first separates them; the fallback still answers for every bare-chord
+  binding the Visual catalog relies on. **OS.0d blocks OS.10.**
 - **OS.2 blocks OS.10** and nothing else.
 - **OS.1 blocks nothing.** `<M-S-CR>` is unreachable in the TUI without it,
   reachable in GPUI and through `<leader>o…` either way, so OS.5 lands green
@@ -239,7 +254,7 @@ rather than the part this feature happens to touch.
 
 ---
 
-## OS.0 — An Insert-mode plugin chord reaches a grammar action **(host)** 📝
+## OS.0 — An Insert-mode plugin chord reaches a grammar action **(host)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.2.
 
@@ -332,7 +347,7 @@ git commit
 Message says what was pinned and why it was in doubt — that this class has
 silently failed twice, and that eight bindings are about to depend on it.
 
-## OS.0b — An ALT-bearing chord can be bound at all **(host)** 📝
+## OS.0b — An ALT-bearing chord can be bound at all **(host)** ✅
 
 **Carved from OS.0's finding, 2026-09-06.** Not in the original plan; OS.0
 exists to surface exactly this class and did.
@@ -461,7 +476,7 @@ that the stripped-modifier rule was a true statement about builtins that the
 `modes` seam falsified, and that the symptom was a binding which registers
 and then silently never fires.
 
-## OS.1 — The keyboard protocol, so Shift+Enter exists at all **(host)** 📝
+## OS.1 — The keyboard protocol, so Shift+Enter exists at all **(host)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.1.
 
@@ -652,7 +667,7 @@ git commit
 terminal setup; GPUI has always delivered these chords, and closing that
 asymmetry is the whole slice.
 
-## OS.2 — A Visual-mode plugin action can see its region **(host)** 📝
+## OS.2 — A Visual-mode plugin action can see its region **(host)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.5.
 
@@ -834,7 +849,7 @@ operators possible at all — and §5.6.5 records it as a known gap. No verb in
 this plan needs it. Say so in the message so the omission is a decision on the
 record rather than an oversight.
 
-## OS.3 — `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** 📝
+## OS.3 — `Lists` — the model, and `Checkboxes` rebuilt on it **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.3.
 
@@ -989,12 +1004,35 @@ parse an ordered marker. Keep its `*`-at-column-0 rule exactly.
 
 - [ ] **Step 4: Write the failing structure tests**
 
-**Each of these runs twice** — once through `lists_over` (no tree, indent
-fallback) and once through `lists_over_parsed` (a real `TreeSnapshot`) — and
-both must give the same answer. The fallback is what runs on an unparsed
-buffer and is the half that silently rots, so a tree-only test would never
-notice it diverging. Write them as one `#[test]` per behaviour taking a
-constructor, or a small macro; do not write sixteen near-identical tests.
+> **Ruling, 2026-09-06 (Dhruva).** This step originally mandated that each
+> test run **twice** — once through `lists_over` and once through
+> `lists_over_parsed` (a real `TreeSnapshot`). **That mandate was impossible
+> and is withdrawn.** A `TreeSnapshot` is a host WIT resource with no
+> guest-side constructor; off `wasm32` every method is an `unreachable!()`
+> stub. The plugin's own precedent already says so in three places —
+> `checkbox.rs:581-585` verbatim: *"The tree half cannot be unit-tested here
+> (a `TreeSnapshot` is a host resource), so it is covered by dispatch through
+> a real editor in `tests/org_structure.rs`."* `headline.rs` is the same, and
+> `grep TreeSnapshot tests/` returns nothing.
+>
+> Rejected: a trait seam abstracting the structure source so a fake tree could
+> be injected. It would make both halves unit-testable forever, but it changes
+> the `Lists::new` signature OS.4–OS.10 are pinned to and would want
+> generalising to `Checkboxes` and `Headline` to be coherent — a cross-module
+> refactor mid-slice, for testability, against a documented precedent.
+> Heuristic #1's second failure mode (abstracting without a concrete merit
+> win) rather than its first.
+>
+> **What this costs, named honestly.** The original rationale feared a
+> *tree-only* test letting the fallback rot. What we get instead is
+> *fallback-only*, so the exposure is inverted: the tree half is what runs on
+> a parsed buffer, i.e. in production. It is not uncovered, but it is
+> unevenly covered — see the coverage ledger in Step 8.
+
+Write them through `lists_over` as one `#[test]` per behaviour **taking a
+constructor** — not inlining `lists_over` in each body. The parameterised
+shape is what lets a second source be added later without touching a single
+assertion. Do not write sixteen near-identical tests.
 
 ```rust
 const NESTED: &str = "\
@@ -1086,6 +1124,36 @@ changing to accommodate the rewrite, that is a behaviour change — stop, and
 report which test and what changed. Absorbing it silently is how a cookie
 regression ships.
 
+**This step is also OS.3's tree-half coverage**, not merely a regression
+check. Once `Checkboxes` sits on `Lists`, the existing checkbox integration
+tests in `tests/org_structure.rs` drive the **tree** branch of `item_at`,
+`enclosing_item` and `children` through a real editor — the same route
+`checkbox.rs:583` names. Record the split in `list.rs`'s test module the way
+`checkbox.rs` does, naming both halves:
+
+> **Corrected 2026-09-06, after OS.3 landed.** The table first written here
+> credited `enclosing_item` and `children` with tree coverage. **That was
+> wrong.** Step 7 deliberately leaves `ancestors` and `child_item_lines` on
+> `Checkboxes` rather than moving them onto `Lists`, so no integration path
+> routes to those two. The implementer caught it and recorded the true split
+> in `list.rs` instead of copying this table; the reviewer independently
+> traced every entry into the model crate-wide and confirmed there is exactly
+> **one** — `checkbox.rs:248`, `self.lists().item_at(n)?.checkbox?`. Both were
+> right and the plan was wrong.
+
+| Method | Fallback (unit) | Tree (integration) |
+|---|---|---|
+| `item_at` | ✅ this module | ✅ via existing checkbox tests — the ONLY entry point |
+| `enclosing_item`, `children`, `item_end`, `siblings`, `list_span`, `renumber`, `Bullet::cycled` | ✅ this module | ❌ **no caller until OS.4+** |
+
+The second row is the real debt this ruling incurs: those **seven** have no
+chord to press in OS.3, so nothing exercises their tree branch. **OS.4 and
+OS.6 must each add at least one integration test that reaches them through a
+parsed buffer** — that is where the debt is paid, and it is a requirement of
+those slices, not a nice-to-have. Note the count: seven, not five. `OS.4` owes
+`enclosing_item` / `children` coverage that the original table wrongly assumed
+was already free.
+
 - [ ] **Step 9: Commit**
 
 ```bash
@@ -1097,7 +1165,7 @@ Message: the model, and why `Checkboxes` was rebuilt rather than left beside
 it — two walkers agree the day they are written and diverge on the first
 grammar bump, surfacing as a cookie that quietly stops updating.
 
-## OS.4 — `<M-CR>` — meta-return dispatches on what is at point **(plugin)** 📝
+## OS.4 — `<M-CR>` — meta-return dispatches on what is at point **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4.
 Needs OS.0, OS.3.
@@ -1234,7 +1302,7 @@ git add src/lib.rs tests/org_structure.rs
 git commit
 ```
 
-## OS.5 — `<M-S-CR>` — the variant, and the headline insert family **(plugin)** 📝
+## OS.5 — `<M-S-CR>` — the variant, and the headline insert family **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4.
 Needs OS.4. Reads better after OS.1, does not need it.
@@ -1314,7 +1382,7 @@ cargo fmt --all && cargo clippy --all-targets
 git add src/lib.rs tests/org_structure.rs && git commit
 ```
 
-## OS.6 — The Meta-arrows: promote/demote *is* indent/outdent **(plugin)** 📝
+## OS.6 — The Meta-arrows: promote/demote *is* indent/outdent **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4, §5.6.6.
 Needs OS.3.
@@ -1428,7 +1496,7 @@ why one gesture carries two verbs: the arms call the bodies `<leader>oh` /
 `ol` / `oH` / `oL` already call, so there is exactly one promote
 implementation and nothing to drift.
 
-## OS.7 — `<M-Up>` / `<M-Down>` — move an item or a subtree **(plugin)** 📝
+## OS.7 — `<M-Up>` / `<M-Down>` — move an item or a subtree **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.4, §5.6.6.
 Needs OS.3.
@@ -1517,7 +1585,7 @@ Stage `src/list.rs`, `src/lib.rs`, `tests/org_structure.rs`. The message
 records the refusal that matters: a move stops at its parent rather than
 splicing an item into a neighbouring list.
 
-## OS.8 — `<C-t>` / `<C-d>` in Insert, declining off a list **(plugin)** 📝
+## OS.8 — `<C-t>` / `<C-d>` in Insert, declining off a list **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.2.
 Needs OS.0, OS.6.
@@ -1562,8 +1630,27 @@ async fn ctrl_t_on_prose_still_runs_vims_indent() {
 
 - [ ] **Step 3: Implement — a thin arm over OS.6's bodies**
 
-On a list item, call the same body `<M-Right>` / `<M-Left>` call. Off one,
-return `vec![Effect::Declined]`. No new indent logic.
+On a list item, call the same body `<M-Right>` / `<M-Left>` call. **On a
+HEADLINE LINE, call `shift`** — see the correction below. Off both, return
+`vec![Effect::Declined]`. No new indent logic.
+
+> **Corrected 2026-09-07 (Dhruva), during execution.** This step originally
+> said to decline on anything that is not a list item, headlines included.
+> **That was a bug, not a neutral choice.** A headline's level is its leading
+> stars and its indentation means nothing (`org-indent-mode` aligns headlines
+> visually without touching the text) — but a headline must begin at column 0,
+> so letting vim's indent run turns `* One` into `    * One`, which is no
+> longer a headline and which org's OWN parser reads as a `Star` LIST ITEM.
+> One keystroke silently converted an outline node into a list item. Measured:
+> a probe produced `"    * One"`, and the test meant to cover it asserted only
+> that the line did not start with `**` — which that string satisfies — so the
+> corruption passed green.
+>
+> **Scope the headline arm to the headline LINE.** `at_point` answers
+> `Headline` for anything inside a subtree, which is right for `<leader>oh`
+> ("promote the headline I am under") and wrong here: it would make `<C-t>` in
+> a paragraph demote the heading above instead of indenting the paragraph.
+> Body prose is prose and still declines.
 
 - [ ] **Step 4: Bind, Insert only**
 
@@ -1581,7 +1668,7 @@ Stage `src/lib.rs`, `tests/org_structure.rs`. The message says why these two
 decline where every other org chord consumes: they are shared chords with
 vim's own indent underneath, the `<C-a>` / `<C-x>` argument moved into Insert.
 
-## OS.9 — Bullet cycling, and line ↔ item ↔ headline **(plugin)** 📝
+## OS.9 — Bullet cycling, and line ↔ item ↔ headline **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.
 Needs OS.3.
@@ -1676,7 +1763,7 @@ Stage `src/list.rs`, `src/lib.rs`, `tests/org_structure.rs`. The message says
 why cycling acts on the whole list rather than one item — a list with mixed
 bullets is not something org produces, and cycling one item would create one.
 
-## OS.10 — The Visual peers **(plugin)** 📝
+## OS.10 — The Visual peers **(plugin)** ✅
 
 Design: [`org-mode.md`](../../architecture/org-mode.md) §5.6.5.
 Needs OS.2, and the verb slices whose ActionIds it binds (OS.6, OS.7, OS.9).
@@ -1786,7 +1873,7 @@ this slice pins: a mixed-level region shifts by one and keeps its shape, and
 the edit is all-or-nothing so a partially-applied region is not a state the
 user can be left in.
 
-## OS.11 — `:help org` — the Lists section, and the site **(plugin + host)** 📝
+## OS.11 — `:help org` — the Lists section, and the site **(plugin + host)** ✅
 
 Three artefacts, one slice, because they describe one surface.
 

@@ -39,6 +39,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | | |
 |---|---|
 | **Outline** | headline folding, promotion and demotion, structure motions, tree-sitter highlighting |
+| **Lists** | insert, indent, move and cycle list items and checkboxes — under org's own meta-arrows, over a Visual region, and while typing |
 | **TODO workflow** | your own keyword sequences with fast-select keys and `(@)` / `(!)` logging, per-keyword colours |
 | **Agenda** | `:org-agenda` — every dated headline across your files in one editable view, with filters, custom commands, a clock report, and `l` for what you finished |
 | **Capture** | `<leader>oc` — templates that file a note without leaving what you were doing |

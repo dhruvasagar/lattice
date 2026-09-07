@@ -295,6 +295,9 @@ impl App {
             | Action::CommandLineCancel
             | Action::CommandLineToggleExpand
             | Action::SelectRegister(_)
+            // Host-handled: `consume_transient_key` fires the row, holds the
+            // prefix, or drops it. The App has nothing to add.
+            | Action::TransientKey(_)
             | Action::CommandLineDismissCompletion
             | Action::EnterSearch(_)
             // 5.5.G.1: pure-editor fold / macro / snippet arms.

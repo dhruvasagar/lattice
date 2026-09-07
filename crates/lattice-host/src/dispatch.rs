@@ -2889,61 +2889,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // Accept/Dismiss stay App-side (file-open / SMR / preview).
         Action::PickerAppend(c) => {
             // PICK.1: if in transient mode, route through transient dispatch
-            if let Some(ref picker) = editor.picker
-                && let Some(ref spec) = picker.transient
+            if editor
+                .picker
+                .as_ref()
+                .is_some_and(|p| p.transient.is_some())
             {
-                // Transient keys are STRINGS, not characters — magit
-                // binds `, k` delete, `, r` rename, `= f` set-target.
-                // This used to be `c.to_string()` compared against each
-                // row's key, so every multi-key row was unreachable by
-                // keypress: it rendered, `<C-n>` reached it and `<CR>`
-                // fired it, but its own keys did nothing.
-                //
-                // 2026-09-07: rendered through `KeyChord`, not pushed as a raw
-                // `char`, so the typed key is spelled the way a spec spells
-                // it. A space is `<Space>` everywhere else in lattice — the
-                // parser accepts it, `Display` emits it, the keymap indexes it
-                // — and a transient row keyed `<Space>` (org's agenda menu)
-                // could never fire, because the raw char produced `" "` and
-                // nothing matched. Same for `<` → `<lt>`.
-                //
-                // The comparison stays a plain string match rather than a
-                // chord-sequence parse: transient keys are sequences of
-                // single chords typed one at a time, and `resolve_key`'s
-                // prefix logic (`starts_with`) works on the canonical
-                // spellings directly. Parsing both sides would also make a
-                // spec with an unparseable key silently unreachable, which is
-                // the failure mode this whole area keeps producing.
-                let typed = format!(
-                    "{}{}",
-                    picker.transient_prefix,
-                    crate::chord::KeyChord::char(c)
-                );
-                match spec.resolve_key(&typed) {
-                    lattice_picker::KeyResolution::Fire(item) => {
-                        // Clone before dispatch: `do_transient_trigger`
-                        // dismisses the picker, taking the prefix with
-                        // it, and may re-seat one for a submenu.
-                        let key = item.key.first().cloned().unwrap_or(typed);
-                        if let Some(p) = editor.picker.as_mut() {
-                            p.transient_prefix.clear();
-                        }
-                        editor.do_transient_trigger(key, _out);
-                    }
-                    lattice_picker::KeyResolution::Prefix => {
-                        if let Some(p) = editor.picker.as_mut() {
-                            p.transient_prefix = typed;
-                        }
-                    }
-                    // Nothing here starts with this. Drop what was
-                    // accumulated rather than holding it — a stuck
-                    // prefix would make every later keystroke miss too.
-                    lattice_picker::KeyResolution::NoMatch => {
-                        if let Some(p) = editor.picker.as_mut() {
-                            p.transient_prefix.clear();
-                        }
-                    }
-                }
+                editor.consume_transient_key(crate::chord::KeyChord::char(c).to_string(), _out);
             } else {
                 if let Some(p) = editor.picker.as_mut() {
                     p.append_query(c);
@@ -2953,6 +2904,10 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                     .extend(editor.preview_picker_selection());
             }
         }
+        // A key the showing transient spec claims, already canonically
+        // spelled. `retarget_claimed_transient_key` produced it in place of
+        // the picker action the chord would otherwise have meant.
+        Action::TransientKey(key) => editor.consume_transient_key(key, _out),
         Action::PickerBackspace => {
             // PICK.1: in transient mode, BS pops the stack (back to parent)
             if let Some(ref mut picker) = editor.picker
@@ -6300,6 +6255,126 @@ impl Editor {
     /// Cost is O(major-modes × open document buffers), on plugin load / reload
     /// only. Nothing per-keystroke: the only caller is the
     /// `LanguagesRegistered` drain.
+    /// Resolve one canonically-spelled key against the showing transient and
+    /// act on the outcome: fire the row, hold the prefix, or drop it.
+    ///
+    /// Transient keys are STRINGS, not characters — magit binds `, k` delete,
+    /// `, r` rename, `= f` set-target — so this accumulates a prefix across
+    /// keystrokes. It once compared a bare `char`, which made every multi-key
+    /// row unreachable by keypress: the row rendered, `<C-n>` reached it and
+    /// `<CR>` fired it, and its own keys did nothing.
+    ///
+    /// **Canonical spelling, not the raw character.** A space is `<Space>`
+    /// everywhere else in lattice — the chord parser accepts it, `Display`
+    /// emits it, the keymap indexes it — so a row keyed `<Space>` (org's
+    /// agenda menu) could never fire while this pushed `" "`. Same for `<` →
+    /// `<lt>`, and it is what lets `<CR>` / `<Tab>` rows resolve at all.
+    ///
+    /// The comparison stays a plain string match rather than a chord-sequence
+    /// parse: transient keys are single chords typed one at a time, and
+    /// `resolve_key`'s `starts_with` prefix logic works on the canonical
+    /// spellings directly. Parsing both sides would make a spec with an
+    /// unparseable key silently unreachable, which is the failure mode this
+    /// whole area keeps producing.
+    fn consume_transient_key(&mut self, key: String, out: &mut DispatchOutcome) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let Some(spec) = picker.transient.clone() else {
+            return;
+        };
+        let typed = format!("{}{key}", picker.transient_prefix);
+        match spec.resolve_key(&typed) {
+            lattice_picker::KeyResolution::Fire(item) => {
+                // Clone before dispatch: `do_transient_trigger` dismisses the
+                // picker, taking the prefix with it, and may re-seat one for a
+                // submenu.
+                let fired = item.key.first().cloned().unwrap_or(typed);
+                if let Some(p) = self.picker.as_mut() {
+                    p.transient_prefix.clear();
+                }
+                self.do_transient_trigger(fired, out);
+            }
+            lattice_picker::KeyResolution::Prefix => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.transient_prefix = typed;
+                }
+            }
+            // Nothing here starts with this. Drop what was accumulated rather
+            // than holding it — a stuck prefix would make every later
+            // keystroke miss too.
+            lattice_picker::KeyResolution::NoMatch => {
+                if let Some(p) = self.picker.as_mut() {
+                    p.transient_prefix.clear();
+                }
+            }
+        }
+    }
+
+    /// Let a transient row claim a key the picker would otherwise spend on its
+    /// own navigation — `<CR>`, `<Tab>`, `<S-Tab>`, function keys.
+    ///
+    /// Without this a spec could bind `<CR>` and watch it do something else:
+    /// `translate_picker` turns `<CR>` into `PickerAccept` (fire the SELECTED
+    /// row) long before any spec is consulted, so the row rendered and was
+    /// unreachable by its own key — the same silent shape as the `<Space>`
+    /// bug, and the reason this is decided here rather than in `translate`.
+    /// This is the one seam holding both the pressed chord and the live spec:
+    /// `<Tab>`, `<Down>` and `<C-n>` all reach the dispatch arms as
+    /// `PickerSelectNext`, by which point the spelling is gone.
+    ///
+    /// **Three groups are never overridable**, because a spec that claimed
+    /// them could make its own menu impossible to leave or to move around in,
+    /// and a menu you cannot escape is a worse failure than a key you cannot
+    /// bind:
+    ///
+    /// - `<Esc>` and `<C-c>` — the way out (`<Esc>` unwinds one submenu level,
+    ///   `<C-c>` closes the chain).
+    /// - `<Up>` / `<Down>` / `<C-n>` / `<C-p>` — the way around. Note `<Tab>`
+    ///   is NOT in this set: it is a convenience alias for select-next, and
+    ///   arrows still navigate when a spec takes it.
+    /// - `<BS>` — pops a half-typed prefix, then the submenu stack.
+    ///
+    /// Plain characters are left alone: they already reach
+    /// [`Self::consume_transient_key`] through `PickerAppend`, and rewriting
+    /// them here would double-resolve.
+    fn retarget_claimed_transient_key(
+        &self,
+        chord: crate::chord::KeyChord,
+        action: Action,
+    ) -> Action {
+        use crate::chord::{KeyKind, SpecialKey};
+        let Some(picker) = self.picker.as_ref() else {
+            return action;
+        };
+        let Some(spec) = picker.transient.as_ref() else {
+            return action;
+        };
+        // Already routed through `PickerAppend` → `consume_transient_key`.
+        if matches!(action, Action::PickerAppend(_)) {
+            return action;
+        }
+        let reserved = matches!(
+            chord.key,
+            KeyKind::Special(
+                SpecialKey::Esc | SpecialKey::Up | SpecialKey::Down | SpecialKey::Backspace
+            )
+        ) || (chord.mods.ctrl()
+            && matches!(chord.key, KeyKind::Char('n' | 'p' | 'c')));
+        if reserved {
+            return action;
+        }
+        let typed = format!("{}{chord}", picker.transient_prefix);
+        match spec.resolve_key(&typed) {
+            // `Prefix` counts as claimed: a spec binding `<Tab>x` must get the
+            // `<Tab>` too, or the sequence can never be completed.
+            lattice_picker::KeyResolution::Fire(_) | lattice_picker::KeyResolution::Prefix => {
+                Action::TransientKey(chord.to_string())
+            }
+            lattice_picker::KeyResolution::NoMatch => action,
+        }
+    }
+
     /// LA.2: drain the `LanguagesRegistered` channel and, if anything arrived,
     /// re-resolve once.
     ///
@@ -10760,6 +10835,14 @@ impl Editor {
         };
 
         let action = crate::input::translate(ctx, chord);
+        // A transient row may claim a key the picker would otherwise spend on
+        // its own navigation. Decided HERE rather than in `translate` because
+        // this is the only seam holding both the pressed chord and the live
+        // spec: `translate` sees the chord but not the menu, and the dispatch
+        // arms see the menu but not the chord — `<Tab>`, `<Down>` and `<C-n>`
+        // all arrive as `PickerSelectNext`, so by then the spelling a spec
+        // would have to match is gone.
+        let action = self.retarget_claimed_transient_key(chord, action);
 
         // Partial-chord lifecycle (mirrors App.apply at
         // crates/lattice-ui-tui/src/input.rs:1652-1653): push on

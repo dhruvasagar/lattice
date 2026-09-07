@@ -554,6 +554,12 @@ pub enum Action {
     /// the cmdline. Translation from the raw `KeyEvent` happens
     /// in `input::translate_command_chord_capture`.
     CommandLineAppendChord(String),
+    /// A transient menu row's key, already in canonical chord spelling
+    /// (`<CR>`, `<Tab>`, `<Space>`, `g`). Emitted by
+    /// `Editor::retarget_claimed_transient_key` when the showing spec claims
+    /// a key the picker would otherwise spend on its own navigation, so a
+    /// menu can bind `<CR>` without losing it to "accept the selected row".
+    TransientKey(String),
 
     // ---- Completion popup (DESIGN.md §5.11.3) ----
     /// `<Tab>` -- open completion popup if closed; advance the

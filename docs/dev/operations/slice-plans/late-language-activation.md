@@ -1,6 +1,10 @@
 # Late-language activation — a catalog change re-resolves the major — slice plan
 
-> **Status: Active.** Opened 2026-09-07. Implements
+> **Status: Active — all four slices landed 2026-09-07; the by-hand
+> verification below is still outstanding.** It stays active until that runs:
+> the bug was reported from a real terminal, every automated fix before this
+> one passed while the terminal stayed broken, and archiving on green tests
+> alone would be repeating exactly that mistake. Implements
 > [`mode-architecture.md`](../../architecture/mode-architecture.md) §7.4,
 > "Major mode, second trigger — `LanguagesRegistered`".
 
@@ -54,7 +58,7 @@ plan and stay.
 | LA.1 | `LanguagesRegistered` — the event, published once per load | ✅ |
 | LA.2 | Re-resolve the major for fallback-major buffers | ✅ |
 | LA.3 | Delete the patches this replaces | ✅ |
-| LA.4 | End-to-end: an org file on argv gets org's keymaps | 📝 |
+| LA.4 | End-to-end: an org file on argv gets org's keymaps | ✅ |
 
 ## Dependencies
 
@@ -244,16 +248,35 @@ claimed, and LA.2's duplicate of it was removed rather than left alongside.
 
 ---
 
-## LA.4 — End-to-end: argv + org **(host)** 📝
+## LA.4 — End-to-end: argv + a plugin major **(host)** ✅
 
-- [ ] **Step 1: The acceptance test**
+- [x] **Step 1: The acceptance test**
 
-Boot with a `.org` document, load the org fixture plugin, tick once, and assert
-**an org chord fires** — not that syntax is attached. Every previous fix here
-passed a proxy assertion and left the reported symptom (`<M-Down>` doing
-nothing) in place; the keymap is the thing the user actually reached for.
+`crates/lattice-host/tests/late_language_activation.rs`. Boot with a document
+on argv whose extension nothing claims, load the plugin, tick once, and assert
+**a chord fires** — not that syntax is attached. Every previous fix here passed
+a proxy assertion and left the reported symptom (`<M-Down>` doing nothing) in
+place; the keymap is the thing the user actually reached for.
 
-- [ ] **Step 2: Gate and commit**
+**No org fixture, and none minted.** `modes-guest` already declares
+`fixture-lang-mode`: a MAJOR with `target_language = "fixturelang"` binding
+Normal `<C-y>` to `ex:write`, described in the fixture's own source as "the org
+shape — a plugin that contributes a language contributes its major too". The
+language identity is registered beside it (`modes-guest` has no `language`
+seam), and the plugin's real load is what publishes `LanguagesRegistered`.
+
+Two choices make the assertion hard to pass by accident:
+
+- the chord is `<C-y>`, which **already has a Builtin Normal binding** (scroll
+  up one line). So the plugin's `MajorMode` layer has to win, not merely exist.
+- the assertion is that `ex:write`'s **file appears on disk** — the document's
+  source file is deleted after boot so the check cannot pass on the file it was
+  opened from. An echo-based assertion would pass if some other command echoed.
+
+Verified to FAIL with the drain disabled (`Some(text-mode)` vs
+`Some(fixture-lang-mode)`), so it tests the fix rather than the fixture.
+
+- [x] **Step 2: Gate and commit**
 
 ---
 

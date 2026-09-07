@@ -858,6 +858,17 @@ pub struct Editor {
     /// `text_version` exceeds this, the host did not issue the edit
     /// and should adopt the document's primary selection head.
     pub last_seen_text_version: HashMap<BufferId, u64>,
+    /// The plugin-language registry snapshot syntax was last attached against.
+    ///
+    /// A plugin RCUs its compiled grammar into the process-wide registry when
+    /// it loads, which is always AFTER boot — so a file passed on argv resolves
+    /// its language before any plugin has registered one, gets no syntax
+    /// handle, and never gets a second chance. Highlighting is blank forever
+    /// and `<C-l>` cannot help, because there is nothing to reparse.
+    ///
+    /// Comparing this `Arc` by pointer detects the swap wait-free, with no new
+    /// plumbing between the loader and the host. `None` until the first check.
+    pub last_plugin_langs: Option<std::sync::Arc<lattice_syntax::plugin_lang::PluginLanguages>>,
     /// Pane tree (DESIGN.md §5.9). Always represents the
     /// ACTIVE tab's panes — when switching tabs we
     /// `mem::swap` between this field and `tabs[target].panes`.

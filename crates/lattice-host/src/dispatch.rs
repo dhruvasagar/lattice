@@ -6216,6 +6216,116 @@ impl Editor {
     /// Best-effort: a language with no registered grammar (or a bare
     /// `LangRegistry`) yields `DocumentSyntax(None)` — no highlighting, no
     /// panic, exactly as a plain-text open behaves.
+    /// Re-attach syntax to open buffers when the plugin-language registry
+    /// changes.
+    ///
+    /// A plugin RCUs its compiled grammar into the process-wide registry when
+    /// it loads, which is always AFTER boot. A file passed on argv therefore
+    /// resolves its language before any plugin has registered one, gets
+    /// `syntax: None`, and never gets a second chance — highlighting is blank
+    /// for the life of the buffer, and `<C-l>` cannot help because a redraw
+    /// rebuilds from a snapshot nothing is going to update. Opening the same
+    /// file again with `:e` / `:files` worked, which is what made it look like
+    /// a rendering bug rather than a missing parser.
+    ///
+    /// `build_open_syntax` already documents this hazard for the OPEN path and
+    /// reads the live registry to dodge it. Boot could not dodge it that way:
+    /// at `editor_boot`'s syntax resolution the plugin has not loaded at all,
+    /// so a live read finds nothing either. The answer has to be a second look,
+    /// later — which is this.
+    ///
+    /// Detection is an `Arc` pointer comparison against the last snapshot: a
+    /// registry swap is exactly what a `register_*` call produces, and reading
+    /// it is a wait-free `ArcSwap` load. That avoids plumbing an event from
+    /// `lattice-plugin-loader` (which has no event bus) through to the host.
+    ///
+    /// Rebuilds every buffer whose language is PLUGIN-provided, not merely
+    /// those missing a handle, so a `:plugin-reload` that recompiles a grammar
+    /// also re-attaches against the new one instead of leaving open buffers on
+    /// the old. Native languages are untouched — a registry swap cannot affect
+    /// them. Registry swaps happen on load and reload only, so this is not a
+    /// per-tick cost.
+    pub(crate) fn reattach_plugin_syntax(&mut self) {
+        let snapshot = lattice_syntax::plugin_lang::snapshot();
+        if let Some(prev) = &self.last_plugin_langs
+            && std::sync::Arc::ptr_eq(prev, &snapshot)
+        {
+            return;
+        }
+        let first_look = self.last_plugin_langs.is_none();
+        self.last_plugin_langs = Some(snapshot);
+        // The very first look is boot's own state, before any plugin has
+        // registered anything. Nothing to re-attach, and rebuilding every
+        // buffer here would undo the sync parse boot just did.
+        if first_look {
+            return;
+        }
+
+        // Collect first: `build_open_syntax` borrows `self`, and the install
+        // below needs `&mut self`.
+        let targets: Vec<(BufferId, lattice_syntax::Lang, String, u64)> = self
+            .buffers
+            .document_ids_sorted()
+            .into_iter()
+            .filter_map(|id| {
+                let handle = self.buffers.document_handle(id)?;
+                let path = handle.path()?;
+                // Only languages the registry can supply. A `.rs` buffer's
+                // grammar is compiled in and a swap says nothing about it.
+                //
+                // `Lang::Plugin(resolve_extension(..))`, NOT
+                // `detect_from_path`: that function knows the bundled
+                // languages only, so a plugin extension comes back as plain
+                // text and the rebuild below finds no grammar. The open path
+                // resolves plugin languages the same way — see
+                // `lang_for_major`.
+                let ext = path.extension()?.to_str()?;
+                let name = lattice_syntax::plugin_lang::resolve_extension(ext)?;
+                Some((
+                    id,
+                    lattice_syntax::Lang::Plugin(name),
+                    handle.text(),
+                    handle.text_version(),
+                ))
+            })
+            .collect();
+
+        for (id, lang, text, version) in targets {
+            let (handle, _parsed_sync) = self.build_open_syntax(lang, &text, version);
+            if handle.is_none() {
+                // The registry changed but still cannot serve this language —
+                // leave whatever the buffer has rather than replacing a working
+                // handle with nothing.
+                continue;
+            }
+            tracing::debug!(
+                target: "lattice_host::syntax",
+                buffer = ?id,
+                ?lang,
+                text_version = version,
+                "syntax_reattached_after_language_registration"
+            );
+            if id == self.document_buffer_id {
+                // THE ACTIVE DOCUMENT READS `self.syntax`, NOT the per-buffer
+                // slot — see `document_syntax_for`, which short-circuits for the
+                // active id. Writing only `buffer_locals` here installed a
+                // handle nothing would ever read, which is the failure this
+                // test caught: every link reported success and the buffer still
+                // had no syntax.
+                self.syntax = handle.clone();
+                // The Editor-level mirrors of the per-buffer version slots, or
+                // the active buffer keeps asking for reparses `from` a version
+                // the new handle never saw.
+                self.last_parsed_text_version = version;
+                self.last_synced_syntax_version = version;
+            }
+            let locals = self.buffer_locals.entry(id).or_default();
+            locals.insert(crate::modes::DocumentSyntax(handle));
+            locals.insert(crate::modes::DocumentLastParsedTextVersion(version));
+            locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(version));
+        }
+    }
+
     pub(crate) fn install_inmemory_syntax(
         &mut self,
         id: BufferId,
@@ -17251,6 +17361,11 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
+        // A plugin's languages land after boot, so a buffer opened from argv
+        // resolved its language before the grammar existed. This is where it
+        // gets the second look. Cheap: one `ArcSwap` load and a pointer
+        // comparison unless the registry actually swapped.
+        self.reattach_plugin_syntax();
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
         // filled in without anyone typing.
@@ -50643,6 +50758,75 @@ mod tests {
             editor.option_cache.show_line_numbers,
             editor.option_cache.sign_column,
         )
+    }
+
+    /// A buffer opened from argv must get syntax once the plugin that provides
+    /// its language finishes loading.
+    ///
+    /// The plugin RCUs its grammar into the process-wide registry when it
+    /// loads, which is ALWAYS after boot — so `editor_boot` resolves the
+    /// language of a file passed on the command line before any plugin has
+    /// registered one, the buffer gets `syntax: None`, and nothing ever looks
+    /// again. Highlighting is blank for the life of that buffer and `<C-l>`
+    /// cannot help, because a redraw rebuilds from a snapshot nothing is going
+    /// to update. Reopening the same file with `:e` worked, which is precisely
+    /// what made it look like a rendering bug rather than a missing parser.
+    ///
+    /// Asserts through `run_tick_pending` — the drain the editor actor already
+    /// runs off-keystroke — because the fix is worthless if it only happens on
+    /// the next keypress. That is the same trap the reparse wake was written to
+    /// avoid.
+    #[test]
+    fn a_language_registered_after_boot_attaches_to_an_already_open_buffer() {
+        const PROV: u64 = 0xA11C_E0F5;
+        let ext = "tlangreattach";
+
+        let mut editor = Editor::boot(
+            lattice_core::DocumentBuilder::default()
+                .with_path(format!("argv.{ext}"))
+                .with_text("fn main() {}\n")
+                .build(),
+        );
+        // Boot's world: nothing provides this extension, so the buffer has no
+        // syntax — exactly the state a `.org` file is in before org loads.
+        assert!(
+            editor
+                .document_syntax_for(editor.document_buffer_id)
+                .is_none(),
+            "sanity: the extension is unclaimed at boot"
+        );
+        // The first look only records boot's registry; it must not rebuild.
+        editor.run_tick_pending();
+        assert!(
+            editor
+                .document_syntax_for(editor.document_buffer_id)
+                .is_none(),
+            "no registry swap yet, so nothing to re-attach"
+        );
+
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(ext, &[ext], &spec, PROV)
+            .expect("the test language registers");
+
+        // The plugin has now loaded. One tick — no keypress — must attach it.
+        editor.run_tick_pending();
+        assert!(
+            editor
+                .document_syntax_for(editor.document_buffer_id)
+                .is_some(),
+            "the buffer opened from argv must pick up the language its plugin \
+             registered after boot"
+        );
+
+        lattice_syntax::plugin_lang::unregister_plugin(PROV);
     }
 
     fn rust_editor(text: &str) -> Editor {

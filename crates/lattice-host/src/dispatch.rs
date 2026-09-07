@@ -36467,8 +36467,17 @@ impl Editor {
     pub fn build_describe_key_content(&self, chord: &str) -> lattice_help::HelpContent {
         let (mode_filter, chord_str) = lattice_keymap::parse_describe_key_arg(chord);
 
+        // DK.3: `<leader>` is substituted at BIND time, so a binding registered
+        // as `<leader>ff` lives in the trie under the resolved leader chord and
+        // a literal `<leader>` reaches the parser as an unknown special name.
+        // Every other caller that turns a chord string into chords expands
+        // first (`press` in the tests, the bind path itself); this one did not,
+        // so the exact spelling a user reads in their own keymap was the one
+        // spelling `:describe-key` could not answer for.
+        let expanded = self.keymap.expand_leader(chord_str);
+
         // Parse the chord. If parsing fails, show an error line.
-        let parsed = match crate::chord::parse_chord_sequence(chord_str) {
+        let parsed = match crate::chord::parse_chord_sequence(&expanded) {
             Ok(p) if !p.is_empty() => p,
             _ => {
                 let lines = vec![format!("`{chord_str}` — cannot parse chord string.")];
@@ -49275,6 +49284,20 @@ mod tests {
             Some("describe-key <Space>".to_string()),
             "the captured token must survive a whitespace-delimited ex-command \
              argument"
+        );
+    }
+
+    /// DK.3: `<leader>` is substituted at BIND time, so the spelling a user
+    /// reads in their own keymap has to be expanded before it is parsed.
+    #[test]
+    fn describe_key_expands_leader_in_the_string_form() {
+        let editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        let content = editor.build_describe_key_content("<leader>");
+        let text = content.buffer.content.as_string();
+        assert!(
+            !text.contains("cannot parse"),
+            "`<leader>` must expand before parsing, not reach the parser as an \
+             unknown special name: {text}"
         );
     }
 

@@ -75,13 +75,20 @@
 - [ ] magit-status under unmerged / recent commits, it would be nice to show how old the commit is in a human readable form (3 hours ago, 2 days ago, etc.)
 - [ ] project detection should work from synthetic buffers too like oil, file-tree, magit, etc.
 - [ ] in-built agent harness tooling that can be used to build agents for specific use cases (could be similar to gptel)
+- [ ] multicursor
 
 * Plugins
 - [X] plugin manager
 - [ ] project.el
 - [X] Claude Code IDE
 - [ ] Org Mode
-    - [ ] org todo colors should be overridable as I do in ~/dotfiles/emacs/ds/init-org.el
+    - [X] org agenda views
+    - [X] org clocking
+    - [X] org todo colors should be overridable as I do in ~/dotfiles/emacs/ds/init-org.el
+    - [X] table mode
+    - [X] headline creation, movement, M-Enter or S-Enter
+    - [X] lists (with or without checkbox) creation, M-Enter or S-Enter
+    - [ ] edits like checkbox toggle, todo state, etc. don't render with proper syntax highlighting until a forced redraw
 - [X] treesitter context
 - [ ] lsp breadcrumbs
 - [ ] which key

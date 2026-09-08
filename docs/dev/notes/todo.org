@@ -89,6 +89,11 @@
     - [X] headline creation, movement, M-Enter or S-Enter
     - [X] lists (with or without checkbox) creation, M-Enter or S-Enter
     - [ ] edits like checkbox toggle, todo state, etc. don't render with proper syntax highlighting until a forced redraw
+    - [X] today's section in agenda should be most prominant and highlight the time of day when tasks are scheduled / due clearly
+    - [X] org node insert should be an explicit C-c n i with it's own dedicated picker, the insert completion is too noisy to be efficient for this purpose
+    - [X] capture should save the target file
+      - [X] When a todo is captured, refreshing the agenda should now show it if applicable
+      - [X] C-c C-c | C-c C-k should also be available in insert mode in capture buffer
 - [X] treesitter context
 - [ ] lsp breadcrumbs
 - [ ] which key
@@ -223,6 +228,8 @@
 - [ ] % matcher does not seem to be very accurate especially with inline comments, strings, etc. I would prefer more semantic matching maybe leveraging tree-sitter for precision
 - [ ] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
 - [ ] hlsearch bleeds across tabs
+      - [ ] It still bleeds when I open a synthetic buffer like magit, the hlsearch highlight remains and highlights the exact spot where it did in the previous buffer
+- [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position 
 
 * Documentation
 - [X] lattice-tutor

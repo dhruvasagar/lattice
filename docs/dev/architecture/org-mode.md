@@ -631,6 +631,72 @@ This is the rule the cookie roll-up already follows and for the same
 reason: a list showing `[2/3]` above one ticked box is a worse state to
 be left in than either end.
 
+#### 5.6.3a A parent's checkbox is derived, not stored (OX.1)
+
+A statistics cookie was the only thing that rolled up. An item's own box
+never moved, so `Check::Partial` — `[-]` — was parsed and rendered and
+**nothing ever produced it**: the only references in the crate were the
+parser, the formatter, and two unit tests.
+
+Org's model is that a parent's box is a *function of its direct
+children*, computed by `org-list-struct-fix-box`:
+
+| children | parent |
+|---|---|
+| some `[ ]` **and** some `[X]` | `[-]` |
+| any `[-]` | `[-]` |
+| any `[X]` | `[X]` |
+| any `[ ]` | `[ ]` |
+| no boxed children | left alone |
+
+The last row is not the same as `[ ]` and collapsing the two would blank
+the box of any item whose sub-items happen to carry none.
+
+**Deepest-first, and the toggled line is included.** A parent's new box
+is an input to its own parent's box *and* to the grandparent's cookie, so
+the passes run from the deepest line outward — org sorts `parent-list` by
+decreasing indentation for the same reason. The lines the user just
+toggled are recomputed too, not only their ancestors, because org
+recomputes every parent in the list.
+
+That inclusion is what makes **a parent's box read-only**: you toggle it,
+and it is immediately recomputed from children that did not move. This
+is not a restriction added on top of the model, it *is* the model, and
+org behaves identically. It has one consequence worth stating plainly —
+without another way in, a long list could only ever be completed one
+leaf at a time. §5.6.3b is that way in.
+
+Two implementation notes that were each a bug first:
+
+- **The last rewrite of a line wins.** A line is written twice in one
+  pass — once by the toggle, once by the derivation that overrules it —
+  and taking the first is exactly the read-only rule failing to hold.
+- **Box and cookie are computed into one string.** A line can carry both
+  (`- [-] parent [1/2]`); computing them separately has the second
+  discard the first.
+
+#### 5.6.3b `C-c C-x C-b` — the other verb (OX.2)
+
+Org has two checkbox keys and they mean different things. Lattice's
+`<C-Space>` is the toggle, and OS.10 deliberately made it flip each box
+in a region from *its own* state. Org's `org-toggle-checkbox` drives
+every box it reaches to *one* state, taken from the first box it finds.
+
+| | `<C-Space>` | `<C-c><C-x><C-b>` |
+|---|---|---|
+| one item | toggles it | toggles it |
+| a region | flips each from its own state | drives all to one |
+| a headline | nothing | drives the whole subtree to one |
+
+Keeping them as separate verbs rather than overloading one key is what
+OS.10 already argued: "forcing a mixed region to all-ticked would be a
+different verb wearing the same key". §5.6.3a is what makes the second
+verb necessary rather than merely convenient.
+
+Neither key adds a checkbox to an item that has none — org does that
+only under `C-u`, and putting a box on every bullet in a subtree because
+the user wanted to tick three is a far larger edit than the key implies.
+
 #### 5.6.4 One gesture, several meanings — and the arms call the bodies
 
 `<M-CR>` and the Meta-arrows dispatch on what is under the cursor, the

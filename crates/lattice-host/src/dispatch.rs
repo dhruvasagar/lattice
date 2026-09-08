@@ -13903,6 +13903,31 @@ impl Editor {
                             signals.extend(edit_signals);
                             self.land_cursor_at(position);
                         }
+                        // OR.7c: the insert picker's whole payload — a link
+                        // resolved by the picker and applied at the caret.
+                        //
+                        // **The third feature this allowlist would have
+                        // killed**, and it fails the same silent way as the
+                        // first two: the picker accepts, the row disappears,
+                        // and nothing lands. Caught only because OR.7c's test
+                        // drove a real accept rather than the ex-command
+                        // underneath it.
+                        //
+                        // Applied INLINE rather than deferred onto
+                        // `next_actions` the way `handle_effect` does it:
+                        // nothing re-dispatches this outcome's actions on the
+                        // async path, which is the whole reason the allowlist
+                        // exists here at all.
+                        Effect::ApplyEdit {
+                            target,
+                            edit,
+                            cursor,
+                        } => {
+                            // Reports its own failure (an echo) rather than
+                            // returning one — the same helper the sync path
+                            // and the org test harness both use.
+                            self.apply_edit_effect_inline(target, edit, cursor);
+                        }
                         // Named rather than swallowed — but `debug!` is what
                         // let `OpenBufferAt` above sit here silently dropped
                         // through two real features (OR.11b's own comment

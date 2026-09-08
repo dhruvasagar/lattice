@@ -466,11 +466,13 @@ pub fn completion_popup_layer_bindings(actions: &ActionIds) -> HashMap<BindingMo
 ///    this module's docstring; look up `[chord]`.
 ///    - `Bound` -> the bound action. Wildcard captures fill the
 ///      char placeholder in `CompletionAcceptThenInsert`.
-///    - `Partial` -> the only multi-key prefix in Insert today
-///      is `<C-x>`; emit `SetPending(AfterCtrlX)` for that
-///      specific chord. Any other partial path is defensive
-///      `Action::None` (no caller can produce one with the
-///      current catalog).
+///    - `Partial` -> absorb into `App::partial_chord`, and keep
+///      absorbing while the walk stays partial (OR.7c). Insert
+///      chords are therefore any depth, as in Normal; they used
+///      to be capped at two because a CONTINUING partial fell
+///      through to `Action::None`, which no builtin could hit
+///      (`<C-x><C-o>` is depth two) and a plugin's `<C-c>ni`
+///      could.
 ///    - `Unbound` -> private `literal_text_fallback` for printable
 ///      chars without CONTROL; otherwise `Action::None`.
 pub fn dispatch_insert(
@@ -516,7 +518,30 @@ pub fn dispatch_insert(
                 &command,
                 &captured,
             ),
-            _ => Action::None,
+            // OR.7c: a chord that CONTINUES the prefix absorbs, exactly as the
+            // first one did.
+            //
+            // This arm used to fall into the `_ => Action::None` below, which
+            // silently capped Insert-mode chords at depth TWO: the first key
+            // absorbed, and the second had to be terminal or the walk died and
+            // the partial was dropped. `<C-x><C-o>` is depth two, so nothing
+            // in the builtin catalog ever noticed — this module's own doc said
+            // as much ("no caller can produce one with the current catalog").
+            //
+            // A plugin can. `org-global-mode` binds `<C-c>ni`, and it resolved
+            // `Bound` in the trie while being unreachable by typing, which is
+            // the worst shape a keymap bug takes: `:describe-key` agrees with
+            // you and the key does nothing.
+            //
+            // Normal mode has always absorbed continuations this way; this
+            // makes Insert agree rather than teaching plugins a depth limit
+            // that exists for no reason.
+            LookupResult::Partial => Action::AbsorbPartialChord(lookup.resolved),
+            // An unbound continuation drops the prefix and does nothing —
+            // deliberately NOT `literal_text_fallback`. Typing `<C-c>nx` must
+            // not leave an `x` in the buffer: the user was reaching for a
+            // chord, and a stray character is worse than silence.
+            LookupResult::Unbound => Action::None,
         };
     }
 

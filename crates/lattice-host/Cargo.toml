@@ -209,6 +209,11 @@ criterion = { workspace = true }
 # the loader (`spawn_mode_plugin` awaits wasmtime `instantiate_async`), so it
 # needs the multi-thread runtime (`rt-multi-thread`), mirroring `mode_drain.rs`.
 tokio = { workspace = true, features = ["test-util", "macros", "rt", "rt-multi-thread"] }
+# OC.11a: `config_diagnostics_are_durable.rs` installs a per-test
+# `MessagesLayer` with `tracing::subscriber::with_default`, so it can assert
+# that every config-load diagnostic reaches `*messages*`. Dev-only — the host
+# does not install a subscriber itself; `lattice-cli` does.
+tracing-subscriber = { workspace = true }
 # AH.1 (2026-08-31): `grep_highlight`'s post-boot-registration test needs a real
 # tree-sitter `Language` to register under a test name, so it can assert that a
 # grammar arriving AFTER the highlighter was built reaches previews. Any grammar

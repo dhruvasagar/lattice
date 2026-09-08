@@ -34857,6 +34857,41 @@ impl Editor {
         self.lsp_config_tree
             .store(std::sync::Arc::new(outcome.raw_tree));
         self.apply_persistent_lsp_editor_options();
+        // OC.11a: **every** diagnostic, durably, before the summary echo.
+        //
+        // The echo below shows ONE message and a count, and then the whole
+        // vector is dropped — so `config: 3 issues (first: …)` was the only
+        // trace three refused options ever left, and it is a status line that
+        // the next keystroke overwrites. At boot it is gone before the user
+        // has done anything, which is exactly when a config error matters and
+        // exactly when it is least likely to be read.
+        //
+        // Logging each one puts it in `*messages*` via `MessagesLayer`, so
+        // `:messages` answers "what did it refuse, and where" for the rest of
+        // the session. That is what emacs does with init errors (`*Messages*`
+        // plus `*Warnings*`) and what vim's `:messages` is for; neither editor
+        // makes you catch a diagnostic as it goes past.
+        //
+        // `warn!` / `error!` rather than `debug!`, and this is the case the
+        // logging rule carves out rather than an exception to it: one-shot,
+        // user-actionable, bounded by the size of a config file. It is not a
+        // per-keystroke or per-frame path — `load_persistent_config` runs at
+        // boot and on an explicit reload.
+        //
+        // The SOURCE is included on every line. A user with both a user and a
+        // project config gets issues from two files, and "which file" is half
+        // of what makes the message actionable.
+        for message in &outcome.messages {
+            let source = message.source.display();
+            match message.level {
+                lattice_config::LoadMessageLevel::Error => {
+                    tracing::error!(target: "lattice::config", "config {source}: {}", message.body);
+                }
+                lattice_config::LoadMessageLevel::Warning => {
+                    tracing::warn!(target: "lattice::config", "config {source}: {}", message.body);
+                }
+            }
+        }
         // Emit a single echo summarising loader diagnostics.
         if !outcome.messages.is_empty() {
             let max_level = outcome
@@ -34874,11 +34909,15 @@ impl Editor {
             };
             let count = outcome.messages.len();
             let first = &outcome.messages[0];
+            // OC.11a: the multi-issue form NAMES where the rest are. The
+            // count told the user that two more existed and gave them no way
+            // to read either; `:messages` now has all of them, and a summary
+            // that does not say so leaves the durable record undiscoverable.
             let body = if count == 1 {
                 format!("config: {}: {}", first.source.display(), first.body)
             } else {
                 format!(
-                    "config: {count} issues (first: {}: {})",
+                    "config: {count} issues (`:messages` for all; first: {}: {})",
                     first.source.display(),
                     first.body,
                 )

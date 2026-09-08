@@ -915,6 +915,37 @@ index could not see it either.
 second caller: two commands naming the same note differently would produce two
 files for one title, and neither call site would look wrong alone.
 
+**`C-c n i` is INSERT-mode only, and `<leader>oni` does not exist.** The first
+cut bound both in Normal, matching `<C-c>nf` / `<leader>onf` for symmetry. That
+was wrong: inserting a link is a mid-sentence act, and in Normal the caret sits
+ON a glyph rather than between two, so "insert at the cursor" has no answer a
+user would predict. Binding it in Normal would also reintroduce exactly the
+friction the picker exists to remove — OR.7 chose completion over a picker in
+the first place because "a normal-mode chord makes you leave Insert, pick, and
+come back". `:org-roam-insert-node` stays reachable from `:` regardless; an
+ex-command is not a modal surface.
+
+**Two host bugs sat under this, and only an end-to-end test found them.** Both
+were silent, and both made the feature look implemented while doing nothing:
+
+- **Insert chords were capped at depth two.** `dispatch_insert`'s partial
+  branch sent a CONTINUING `Partial` to `Action::None`, so the second key had
+  to be terminal. `<C-x><C-o>` is depth two, so no builtin ever noticed — the
+  module's doc said "no caller can produce one with the current catalog". A
+  three-key `<C-c>ni` resolved `Bound` in the trie and was unreachable by
+  typing, which is the worst shape a keymap bug takes: `:describe-key` agrees
+  with you and the key does nothing.
+- **`drain_pending_picker_accept` dropped `Effect::ApplyEdit`.** The async
+  accept path applies effects from an allowlist, and an edit was not on it — so
+  the picker accepted, the row vanished, and no link landed. Its own comment
+  records the allowlist having "silently killed a feature twice"; this was the
+  third. The structural fix OR.16 scoped out is still the right one and still
+  outstanding.
+
+The lesson worth keeping: the ex-command underneath was correct all along, and
+a test that exercised it directly would have passed while the feature was
+unusable. The test drives the CHORD and the ACCEPT.
+
 ### OR.8 — `id:` resolves ✅
 
 **Deps:** OR.4, OL.1.

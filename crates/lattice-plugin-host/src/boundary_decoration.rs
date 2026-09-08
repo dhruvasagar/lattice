@@ -307,6 +307,7 @@ mod tests {
                 fallback: "●".into(),
                 theme_element: format!("{name}.element"),
                 priority: *priority,
+                column: lattice_mode::SIGN_COLUMN_MARK.to_string(),
             });
         }
         r

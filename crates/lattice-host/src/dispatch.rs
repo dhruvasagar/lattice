@@ -34829,6 +34829,54 @@ impl Editor {
             terminal_esc_exits: *self.resolved_option::<TerminalEscExits>(buffer),
             scrollbind: *self.resolved_option::<Scrollbind>(buffer),
         };
+        self.refresh_builtin_sign_glyphs();
+    }
+
+    /// SG.4a — re-register the built-in diagnostic signs against the current
+    /// `ui.diagnostic-*-glyph` values.
+    ///
+    /// The glyphs are live options: before the unification the renderers read
+    /// them per frame, so `:set ui.diagnostic-error-glyph=X` took effect on the
+    /// next paint. A definition is static by design — that is what keeps the
+    /// render path free of per-line option reads — so the option has to write
+    /// THROUGH the registry instead, and this is where.
+    ///
+    /// Redefinition keeps the id (SG.1), which is the property that makes this
+    /// safe: placements already in flight keep resolving and simply start
+    /// painting the new glyph. That property was built before anything needed
+    /// it; this is the thing that needed it.
+    ///
+    /// Cheap enough to run on every `:set`: four `chars().next()` reads, and a
+    /// registry write only when one of them actually moved. Skipping the write
+    /// matters more than it looks — the registry is read on the render path, so
+    /// an unconditional `store` would hand the renderer a fresh `Arc` on every
+    /// option change of any kind.
+    pub(crate) fn refresh_builtin_sign_glyphs(&mut self) {
+        let Some(registry) = self.services.get::<lattice_mode::SignRegistryHandle>() else {
+            return;
+        };
+        let glyphs = crate::editor_boot::diagnostic_glyphs_from(&self.config);
+        let current = registry.load();
+        let unchanged = |id: lattice_mode::SignId, want: char| {
+            current
+                .get(id)
+                .is_some_and(|d| d.text.chars().next() == Some(want))
+        };
+        let ids = self.builtin_sign_ids;
+        if unchanged(ids.diagnostic_error, glyphs.error)
+            && unchanged(ids.diagnostic_warning, glyphs.warning)
+            && unchanged(ids.diagnostic_info, glyphs.info)
+            && unchanged(ids.diagnostic_hint, glyphs.hint)
+        {
+            return;
+        }
+        drop(current);
+        let mut next: lattice_mode::SignRegistry = (**registry.load()).clone();
+        // Ids are stable across a redefinition, so the returned set matches the
+        // one captured at boot; re-storing it keeps that an assertion the type
+        // system makes rather than a comment.
+        self.builtin_sign_ids = lattice_mode::register_builtin_signs(&mut next, glyphs);
+        registry.store(std::sync::Arc::new(next));
     }
 
     /// Recompute the resolved-options cache for `buffer` by

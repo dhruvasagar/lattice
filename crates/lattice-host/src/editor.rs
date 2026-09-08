@@ -1164,6 +1164,11 @@ pub struct Editor {
     /// Mode registry (M.1). Owns the catalogue of registered
     /// modes; activation / deactivation routes through here.
     pub mode_registry: lattice_mode::ModeRegistryHandle,
+    /// SG.4a: the interned ids of the built-in signs (diagnostics + diff),
+    /// registered into the sign registry at boot. The `builtin_element_ids`
+    /// shape — a producer emitting a mark per visible line reads a field
+    /// rather than hashing a name per line.
+    pub builtin_sign_ids: lattice_mode::BuiltinSignIds,
     /// 2026-05-26: per-mode invocation runner table. Boot
     /// registers a runner function under each mode-id whose
     /// [`lattice_mode::Mode::invocation_runner`] returns

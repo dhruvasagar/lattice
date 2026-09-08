@@ -54,6 +54,20 @@ interface signs {
         /// only for something that genuinely outranks an error — a debugger
         /// stopped on this very line.
         priority: s32,
+        /// SG.4a: which gutter column this sign paints in.
+        ///
+        /// `"mark"` is the leftmost column — vim's `signcolumn`, shared with
+        /// diagnostics — and is what an empty string means. `"diff"` is the
+        /// git-diff column. Columns exist because contention is only
+        /// meaningful between marks that answer the same question: a single
+        /// contended cell would drop the git gutter on exactly the lines a
+        /// diagnostic touches, which are the lines a user is most likely to
+        /// be looking at.
+        ///
+        /// A column the host does not paint falls back to the leftmost one
+        /// rather than vanishing — the same principle as the `gutter.sign`
+        /// theme fallback.
+        column: string,
     }
 
     /// Declare a sign.

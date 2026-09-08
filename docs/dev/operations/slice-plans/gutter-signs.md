@@ -15,7 +15,8 @@ sign *means*.
 | SG.2b | The mark cell paints a placed sign — service wiring, published `SignsRenderState`, contention with diagnostics, both renderers | ✅ |
 | SG.3a | WIT: a plugin **defines** signs (`signs` interface, `sign-plugin` world, drain + teardown) | ✅ |
 | SG.3b | WIT: a plugin **places** signs (`gutter-sign` variant arm, name→id resolution at the boundary) | ✅ |
-| SG.4 | Signs subsume the severity and diff columns | 📝 |
+| SG.4a | The built-in signs — `SignDefinition.column`, diagnostics + diff registered at boot, ids interned | ✅ |
+| SG.4b | Producers emit `Sign`; renderers paint columns generically; `GutterDecoration::{Diff,Severity}` deleted | 🚧 |
 
 ## SG.1 — the model ✅
 
@@ -140,11 +141,56 @@ through a real component rather than only through `None` answers, and the
 existing unwired-harness test pins that a producer with no registry loses its
 own sign marks and nothing else.
 
-## SG.4 — signs subsume severity and diff 📝
+## SG.4a — the built-in signs ✅
 
-Severity and diff marks become built-in sign definitions placed through the
-registry; the host paints generic sign columns and owns no hardcoded gutter
-semantics. Design §3 argues this is the right end state (closest to the
-Helix/Zed gutter-as-a-list shape) and why SG.2b is its first increment rather
-than a detour. Deferred because it rewrites two well-covered paint paths in
-both renderers, and that risk wants its own slice.
+Diagnostics and diff marks become definitions in the same registry a plugin
+writes: `diagnostic.{error,warning,info,hint}` and
+`diff.{add,change,remove,conflict}`, registered at boot, with their ids
+interned into `BuiltinSignIds` (the `BuiltinElementIds` shape — a producer
+emitting a mark per visible line reads a field rather than hashing a name per
+line).
+
+**`SignDefinition.column` is the forcing change, and it is not optional.**
+Severity and diff occupy separate cells today. Collapsing them into one
+contended cell would drop the git gutter on exactly the lines a diagnostic
+touches — the lines a user is most likely to be looking at — so the
+unification only works if a sign says which column it belongs to. Vim's single
+`signcolumn` accepts that trade; Helix and Zed do not, and the UX rule (no
+regression in service of architecture) does not permit it here either. A column
+the host does not paint falls back to the leftmost one rather than vanishing,
+on the same principle as the `gutter.sign` theme fallback.
+
+**Priorities carry the severity order.** `max()` on `GutterSeverityLevel` was
+the old `Severity` arm's semantics and it has to survive: hint 10, info 20,
+warning 30, error 40. `10` is vim's default sign priority and the floor.
+Outranking an error now means exceeding `DIAGNOSTIC_ERROR_PRIORITY` — a real
+change from SG.2b, where any priority above 10 did it, and the stricter reading
+is the right one.
+
+**The glyph options write through the registry.** `ui.diagnostic-*-glyph` are
+live options the renderers used to read per frame. A definition is static by
+design — that is what keeps the render path free of per-line option reads — so
+`rebuild_option_cache` re-registers the built-ins when a glyph moves.
+Redefinition keeps the id (SG.1), which is what makes that safe with placements
+already in flight; the property was built before anything needed it and this is
+the thing that needed it. The write is skipped when no glyph actually changed,
+because the registry is read on the render path and an unconditional `store`
+would hand the renderer a fresh `Arc` on every `:set` of any kind.
+
+`BuiltinSignIds::default()` is every id `SignId(u32::MAX)`, which resolves to
+nothing — so a fixture that never registered the built-ins paints no marks
+rather than whatever sits at id 0, which would be some plugin's sign, silently.
+
+The WIT `sign-spec` gains `column`; an empty string means the mark column, so a
+guest that does not care lands where every sign landed before columns existed.
+
+## SG.4b — the switch 🚧
+
+Producers emit `Sign` placements; the renderers paint an ordered list of
+columns generically; `GutterDecoration::{Diff,Severity}` are deleted. The WIT
+keeps its `diff` / `severity` arms as sugar the boundary maps to built-in sign
+names, so no plugin ABI breaks.
+
+Atomic by necessity: deleting the two variants forces every producer, both
+renderers and the boundary at once, and any smaller step leaves the
+half-migration shape the mode-ownership rule exists to prevent.

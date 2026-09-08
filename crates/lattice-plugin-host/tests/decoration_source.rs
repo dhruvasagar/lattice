@@ -68,6 +68,7 @@ fn fixture_signs() -> lattice_mode::SignRegistryHandle {
         fallback: "●".into(),
         theme_element: "fixture.mark".into(),
         priority: 5,
+        column: lattice_mode::SIGN_COLUMN_MARK.into(),
     });
     std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(r))
 }

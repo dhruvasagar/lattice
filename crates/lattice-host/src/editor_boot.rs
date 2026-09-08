@@ -1752,6 +1752,12 @@ impl Editor {
         // in the `theme_registry` field. See theme-system.md §3.5 / §7.
         let builtin_element_ids =
             lattice_theme::BuiltinElementIds::capture(theme_registry.as_ref());
+        // SG.4a: assigned where the built-in signs are registered, below.
+        // Declared without an initialiser on purpose — definite-assignment
+        // then makes it a compile error to add a path that registers the
+        // signs but forgets their ids, which a `Default::default()` seed would
+        // have turned into a silently empty gutter.
+        let builtin_sign_ids: lattice_mode::BuiltinSignIds;
 
         // ML.0b-2: one ModelineService instance, shared three ways —
         // registered into `services` (modes reach it via
@@ -2002,10 +2008,23 @@ impl Editor {
         // read by the publish path; nothing about it belongs to the
         // dispatcher. Empty until a producer defines one, which is
         // what a mechanism with no built-in meanings looks like at
-        // rest.
-        boot.register_service::<lattice_mode::SignRegistryHandle>(std::sync::Arc::new(
-            arc_swap::ArcSwap::from_pointee(lattice_mode::SignRegistry::new()),
-        ));
+        // rest — except for the built-ins below, which are the mechanism
+        // being used by the host itself rather than a special case in it.
+        //
+        // SG.4a: diagnostics and diff marks are signs now. They are
+        // registered here, into the same registry a plugin writes, so the
+        // host has no privileged gutter path left: what used to be two
+        // hardcoded columns is two producers naming what they mean.
+        let sign_registry: lattice_mode::SignRegistryHandle = {
+            let mut registry = lattice_mode::SignRegistry::new();
+            let ids = lattice_mode::register_builtin_signs(
+                &mut registry,
+                diagnostic_glyphs_from(&config),
+            );
+            builtin_sign_ids = ids;
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(registry))
+        };
+        boot.register_service::<lattice_mode::SignRegistryHandle>(sign_registry);
         // never a failed boot — see `lattice_plugin_loader::install`.
         lattice_plugin_loader::install(&mut boot);
         // (BC.3b: the `ClaudeCodeServerHandle` service is registered by
@@ -2095,6 +2114,9 @@ impl Editor {
             // theme registry, which is registered into `services` for
             // the renderer snapshot + mode lookups.
             builtin_element_ids,
+            // SG.4a: interned once at boot so a producer emitting a mark per
+            // visible line reads a field instead of hashing a name per line.
+            builtin_sign_ids,
             // Perf plan B.4: wrap the seeded HashMap so the
             // buffer_locals sub-state cache can detect when no
             // mutation has fired between publishes.
@@ -2566,5 +2588,37 @@ impl Editor {
             Editor::run_read_only_motion,
         );
         editor
+    }
+}
+
+/// SG.4a — the four `ui.diagnostic-*-glyph` values as chars, for the built-in
+/// diagnostic sign definitions.
+///
+/// Read here rather than in `lattice-mode` so that crate keeps no typed-options
+/// dependency. The glyphs are live options, so this is called again whenever one
+/// changes and the definitions are re-registered — redefinition keeps the id
+/// (SG.1), which is what makes that safe with placements already in flight.
+pub(crate) fn diagnostic_glyphs_from(config: &ConfigRegistry) -> lattice_mode::DiagnosticGlyphs {
+    let d = lattice_mode::DiagnosticGlyphs::default();
+    let ch = |s: Option<std::sync::Arc<String>>, dflt: char| {
+        s.and_then(|v| v.chars().next()).unwrap_or(dflt)
+    };
+    lattice_mode::DiagnosticGlyphs {
+        error: ch(
+            config.get_typed::<crate::ui::theme_options::UiDiagnosticErrorGlyph>(),
+            d.error,
+        ),
+        warning: ch(
+            config.get_typed::<crate::ui::theme_options::UiDiagnosticWarningGlyph>(),
+            d.warning,
+        ),
+        info: ch(
+            config.get_typed::<crate::ui::theme_options::UiDiagnosticInfoGlyph>(),
+            d.info,
+        ),
+        hint: ch(
+            config.get_typed::<crate::ui::theme_options::UiDiagnosticHintGlyph>(),
+            d.hint,
+        ),
     }
 }

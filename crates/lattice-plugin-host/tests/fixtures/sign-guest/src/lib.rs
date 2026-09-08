@@ -33,6 +33,7 @@ impl Guest for Component {
                 fallback: "●".to_string(),
                 theme_element: "sign-guest.breakpoint".to_string(),
                 priority: 20,
+                column: String::new(),
             },
         );
         let _ = define_sign(
@@ -42,6 +43,7 @@ impl Guest for Component {
                 fallback: "▶".to_string(),
                 theme_element: "sign-guest.current-line".to_string(),
                 priority: 30,
+                column: String::new(),
             },
         );
         // Level with a diagnostic, which must LOSE the cell — the comparison
@@ -53,6 +55,7 @@ impl Guest for Component {
                 fallback: "◆".to_string(),
                 theme_element: "sign-guest.note".to_string(),
                 priority: 10,
+                column: String::new(),
             },
         );
         // A redefinition, which must keep the id rather than mint a new one.
@@ -63,6 +66,7 @@ impl Guest for Component {
                 fallback: "◉".to_string(),
                 theme_element: "sign-guest.breakpoint".to_string(),
                 priority: 20,
+                column: String::new(),
             },
         );
     }

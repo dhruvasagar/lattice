@@ -12357,6 +12357,7 @@ mod tests {
             fallback: glyph.to_string(),
             theme_element: format!("gutter.sign.{name}"),
             priority,
+            column: lattice_mode::SIGN_COLUMN_MARK.to_string(),
         });
         handle.store(std::sync::Arc::new(reg));
         id
@@ -12481,6 +12482,7 @@ mod tests {
                 fallback: "■".into(),
                 theme_element: "gutter.sign.successor".into(),
                 priority: 5,
+                column: lattice_mode::SIGN_COLUMN_MARK.into(),
             });
             handle.store(std::sync::Arc::new(reg));
         }

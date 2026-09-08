@@ -55,6 +55,14 @@ pub fn sign_definition_from_wit(name: String, spec: wit::SignSpec) -> SignDefini
         fallback: spec.fallback,
         theme_element: spec.theme_element,
         priority: spec.priority,
+        // An empty column means the default rather than a column named "",
+        // so a guest that does not care can leave the field alone and land
+        // where every sign landed before columns existed.
+        column: if spec.column.is_empty() {
+            lattice_mode::SIGN_COLUMN_MARK.to_string()
+        } else {
+            spec.column
+        },
     }
 }
 
@@ -140,6 +148,7 @@ mod tests {
             fallback: fallback.to_string(),
             theme_element: "debugger.breakpoint".to_string(),
             priority,
+            column: String::new(),
         }
     }
 

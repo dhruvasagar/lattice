@@ -929,6 +929,70 @@ mod tests {
     }
 
     #[test]
+    fn boot_registers_the_builtin_signs() {
+        // SG.4a: diagnostics and diff marks are signs in the same registry a
+        // plugin writes. If this is empty, the host still has privileged
+        // gutter paths and the unification did not happen.
+        let a = app_with("hello", 10);
+        let registry = a
+            .editor
+            .services
+            .get::<lattice_mode::SignRegistryHandle>()
+            .expect("the sign registry is a boot service");
+        let snapshot = registry.load();
+        for name in [
+            "diagnostic.error",
+            "diagnostic.warning",
+            "diagnostic.info",
+            "diagnostic.hint",
+            "diff.add",
+            "diff.change",
+            "diff.remove",
+            "diff.conflict",
+        ] {
+            assert!(
+                snapshot.id_of(name).is_some(),
+                "`{name}` must be a registered sign"
+            );
+        }
+        // And the interned ids on the Editor resolve to them, so a producer
+        // reads a field instead of hashing a name per visible line.
+        let ids = a.editor.builtin_sign_ids;
+        assert_eq!(
+            snapshot.id_of("diagnostic.error"),
+            Some(ids.diagnostic_error)
+        );
+        assert_eq!(snapshot.id_of("diff.add"), Some(ids.diff_add));
+    }
+
+    #[test]
+    fn setting_a_diagnostic_glyph_rewrites_its_sign_without_moving_the_id() {
+        // The glyph is a live option: before SG.4 the renderers read it per
+        // frame, so `:set` took effect on the next paint. A definition is
+        // static by design, so the option writes THROUGH the registry now —
+        // and it must keep the id, or every placement in flight would resolve
+        // to nothing and the marks would blink out on an option change.
+        let mut a = app_with("hello", 10);
+        let registry = a
+            .editor
+            .services
+            .get::<lattice_mode::SignRegistryHandle>()
+            .expect("the sign registry is a boot service");
+        let before = a.editor.builtin_sign_ids.diagnostic_error;
+        assert_eq!(registry.load().get(before).unwrap().glyph_char(false), '■');
+
+        submit_ex(&mut a, "set ui.diagnostic-error-glyph=X");
+
+        let after = a.editor.builtin_sign_ids.diagnostic_error;
+        assert_eq!(before, after, "the id must survive the redefinition");
+        assert_eq!(
+            registry.load().get(after).unwrap().glyph_char(false),
+            'X',
+            "and the new glyph must be what the registry now answers"
+        );
+    }
+
+    #[test]
     fn read_only_option_is_marked_internal() {
         use lattice_config::OptionDecl;
         assert!(

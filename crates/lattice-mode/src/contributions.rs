@@ -176,14 +176,49 @@ pub struct SignDefinition {
     /// registry, so a user or a theme retunes a plugin's signs without either
     /// knowing about the other.
     pub theme_element: String,
-    /// Which sign wins when two land on one line. Higher wins; ties break on
-    /// name so the answer is stable rather than incidental to hash order.
+    /// Which sign wins when two land on one line **of the same column**.
+    /// Higher wins; ties break on name so the answer is stable rather than
+    /// incidental to hash order.
     ///
-    /// One cell, one sign: a column that stacked them would either grow
+    /// One cell, one sign: a cell that stacked them would either grow
     /// unpredictably or silently drop one, and vim's answer — priority — is the
     /// one users already know.
     pub priority: i32,
+    /// SG.4a — which gutter column this sign paints in.
+    ///
+    /// Columns exist because contention is only meaningful between marks that
+    /// mean comparable things. A diagnostic and a git-diff mark are both
+    /// "something is true of this line", but they answer different questions,
+    /// and a single contended cell would drop the git gutter on exactly the
+    /// lines a diagnostic touches — the lines a user is most likely to be
+    /// looking at. Vim's single `signcolumn` accepts that trade; Helix and Zed
+    /// do not, and neither does this.
+    ///
+    /// A name the host does not paint falls back to the FIRST column rather
+    /// than vanishing, on the same principle as the `gutter.sign` theme
+    /// fallback: a sign was placed to say something, and the failure mode that
+    /// loses the information entirely is the worst one available.
+    ///
+    /// Use [`SIGN_COLUMN_MARK`] / [`SIGN_COLUMN_DIFF`] for the built-ins.
+    pub column: String,
 }
+
+/// SG.4a — the leftmost gutter column: diagnostics, compilation severity, and
+/// any sign that does not name a column of its own. Vim's `signcolumn`.
+pub const SIGN_COLUMN_MARK: &str = "mark";
+
+/// SG.4a — the git-diff column, between the mark column and the line numbers.
+/// Separate from [`SIGN_COLUMN_MARK`] so a diagnostic cannot hide a hunk mark.
+pub const SIGN_COLUMN_DIFF: &str = "diff";
+
+/// SG.4a — the built-in gutter columns, left to right.
+///
+/// The host owns the ORDER (a gutter whose columns moved per buffer would be
+/// unreadable) but nothing about what goes in each one — that is entirely the
+/// registry's answer. Making this list user-configurable is the obvious next
+/// step and is deliberately not taken here: it changes the gutter's WIDTH,
+/// which every scroll, wrap and cursor-column calculation reads.
+pub const BUILTIN_SIGN_COLUMNS: [&str; 2] = [SIGN_COLUMN_MARK, SIGN_COLUMN_DIFF];
 
 impl SignDefinition {
     /// The glyph for the current palette. Not a theme question — the theme
@@ -343,6 +378,205 @@ pub type SignRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<SignRegistry>>;
 /// carries in.
 pub const SEVERITY_SIGN_PRIORITY: i32 = 10;
 
+// ── SG.4a: the built-in signs ───────────────────────────────────────────────
+//
+// Diagnostics and diff marks are signs like any other. Nothing about them is
+// privileged in the host any more: they are definitions in the same registry a
+// plugin writes, painted through the same theme elements, contended by the
+// same priority rule. What used to be two hardcoded gutter paths is now two
+// producers naming what they mean.
+//
+// Their priorities span the diagnostic severity order, because "most severe
+// wins" was the semantics the old `Severity` arm's `max()` gave and it has to
+// survive the unification. `10` is vim's default sign priority and the floor:
+// a plugin sign shipping the vim default ties with a HINT (broken by name) and
+// loses to everything above it. Outranking an ERROR now means exceeding
+// `DIAGNOSTIC_ERROR_PRIORITY`, which is a real change from SG.2b — where any
+// priority above 10 did it — and the stricter reading is the right one. A
+// sign that displaces a compiler error had better mean it.
+
+/// The lowest diagnostic, level with vim's default sign priority.
+pub const DIAGNOSTIC_HINT_PRIORITY: i32 = 10;
+pub const DIAGNOSTIC_INFO_PRIORITY: i32 = 20;
+pub const DIAGNOSTIC_WARNING_PRIORITY: i32 = 30;
+/// The highest built-in. A sign must EXCEED this to take the cell from an
+/// error.
+pub const DIAGNOSTIC_ERROR_PRIORITY: i32 = 40;
+
+/// Diff marks never contend with each other — a line belongs to at most one
+/// hunk — so they share one priority, and it is the vim default because
+/// nothing about a hunk mark argues for out-ranking a plugin's sign in a
+/// column plugins do not normally use.
+pub const DIFF_SIGN_PRIORITY: i32 = 10;
+
+/// SG.4a — the interned ids of the built-in signs.
+///
+/// The `BuiltinElementIds` shape, for the same reason: a producer emitting a
+/// mark per visible line must not hash a string per line to say which mark it
+/// is. Interned once at registration, published, and read as a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinSignIds {
+    pub diagnostic_error: SignId,
+    pub diagnostic_warning: SignId,
+    pub diagnostic_info: SignId,
+    pub diagnostic_hint: SignId,
+    pub diff_add: SignId,
+    pub diff_change: SignId,
+    pub diff_remove: SignId,
+    pub diff_conflict: SignId,
+}
+
+impl Default for BuiltinSignIds {
+    /// Every id `SignId(u32::MAX)`, which resolves to nothing.
+    ///
+    /// A test fixture or a stripped host that never registered the built-ins
+    /// then paints NO marks, rather than painting whatever happens to sit at
+    /// id 0 — which would be some plugin's sign, silently, and only in the
+    /// configurations nobody looks at.
+    fn default() -> Self {
+        let none = SignId(u32::MAX);
+        Self {
+            diagnostic_error: none,
+            diagnostic_warning: none,
+            diagnostic_info: none,
+            diagnostic_hint: none,
+            diff_add: none,
+            diff_change: none,
+            diff_remove: none,
+            diff_conflict: none,
+        }
+    }
+}
+
+impl BuiltinSignIds {
+    /// The id for a severity level — what an LSP or compilation producer calls
+    /// instead of building a `Severity` decoration.
+    pub fn for_severity(&self, level: GutterSeverityLevel) -> SignId {
+        match level {
+            GutterSeverityLevel::Error => self.diagnostic_error,
+            GutterSeverityLevel::Warning => self.diagnostic_warning,
+            GutterSeverityLevel::Info => self.diagnostic_info,
+            GutterSeverityLevel::Hint => self.diagnostic_hint,
+        }
+    }
+
+    /// The id for a diff kind — what the diff mode calls instead of building a
+    /// `Diff` decoration.
+    pub fn for_diff(&self, kind: GutterDiffKind) -> SignId {
+        match kind {
+            GutterDiffKind::Add => self.diff_add,
+            GutterDiffKind::Change => self.diff_change,
+            GutterDiffKind::Remove => self.diff_remove,
+            GutterDiffKind::Conflict => self.diff_conflict,
+        }
+    }
+}
+
+/// SG.4a — register the built-in signs into `registry` and return their ids.
+///
+/// `glyphs` supplies the four diagnostic glyphs, which are live typed options
+/// (`ui.diagnostic-*-glyph`) rather than constants — so this is called again
+/// when one changes. Redefinition KEEPS the id (SG.1), which is what makes
+/// re-registering safe with placements already in flight: they simply start
+/// painting the new glyph. That property was built before anything needed it;
+/// this is the thing that needed it.
+///
+/// Diff glyphs stay `+ ~ - ?` — cross-editor convention, and no option has
+/// ever exposed them.
+pub fn register_builtin_signs(
+    registry: &mut SignRegistry,
+    glyphs: DiagnosticGlyphs,
+) -> BuiltinSignIds {
+    let mut sev = |name: &str, glyph: char, element: &str, priority: i32| {
+        let g = glyph.to_string();
+        registry.define(SignDefinition {
+            name: name.to_string(),
+            // The SAME glyph for both palettes: these are the user's own
+            // configured characters, and silently substituting a different one
+            // when `ui.nerd_fonts` flips would be a surprise no option asked
+            // for. A user wanting a Nerd Font diagnostic glyph sets the option
+            // to one.
+            text: g.clone(),
+            fallback: g,
+            theme_element: element.to_string(),
+            priority,
+            column: SIGN_COLUMN_MARK.to_string(),
+        })
+    };
+    let diagnostic_error = sev(
+        "diagnostic.error",
+        glyphs.error,
+        "diagnostic.error",
+        DIAGNOSTIC_ERROR_PRIORITY,
+    );
+    let diagnostic_warning = sev(
+        "diagnostic.warning",
+        glyphs.warning,
+        "diagnostic.warning",
+        DIAGNOSTIC_WARNING_PRIORITY,
+    );
+    let diagnostic_info = sev(
+        "diagnostic.info",
+        glyphs.info,
+        "diagnostic.info",
+        DIAGNOSTIC_INFO_PRIORITY,
+    );
+    let diagnostic_hint = sev(
+        "diagnostic.hint",
+        glyphs.hint,
+        "diagnostic.hint",
+        DIAGNOSTIC_HINT_PRIORITY,
+    );
+    let mut diff = |name: &str, glyph: char, element: &str| {
+        let g = glyph.to_string();
+        registry.define(SignDefinition {
+            name: name.to_string(),
+            text: g.clone(),
+            fallback: g,
+            theme_element: element.to_string(),
+            priority: DIFF_SIGN_PRIORITY,
+            column: SIGN_COLUMN_DIFF.to_string(),
+        })
+    };
+    let diff_add = diff("diff.add", '+', "diff.add.sign");
+    let diff_change = diff("diff.change", '~', "diff.change.sign");
+    let diff_remove = diff("diff.remove", '-', "diff.remove.sign");
+    let diff_conflict = diff("diff.conflict", '?', "diff.conflict.sign");
+    BuiltinSignIds {
+        diagnostic_error,
+        diagnostic_warning,
+        diagnostic_info,
+        diagnostic_hint,
+        diff_add,
+        diff_change,
+        diff_remove,
+        diff_conflict,
+    }
+}
+
+/// The four `ui.diagnostic-*-glyph` values, read once by the caller so
+/// `lattice-mode` needs no typed-options dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticGlyphs {
+    pub error: char,
+    pub warning: char,
+    pub info: char,
+    pub hint: char,
+}
+
+impl Default for DiagnosticGlyphs {
+    /// The same defaults the renderers carried before the unification, so a
+    /// host that reads no options still paints what it used to.
+    fn default() -> Self {
+        Self {
+            error: '■',
+            warning: '▲',
+            info: '●',
+            hint: '·',
+        }
+    }
+}
+
 /// SG.2b — may this sign take the mark cell from a diagnostic on the same
 /// line?
 ///
@@ -391,6 +625,7 @@ mod sign_tests {
             fallback: "\u{25cf}".to_string(),
             theme_element: format!("gutter.sign.{name}"),
             priority,
+            column: SIGN_COLUMN_MARK.to_string(),
         }
     }
 
@@ -521,6 +756,88 @@ mod sign_tests {
             "above",
             SEVERITY_SIGN_PRIORITY + 1
         )));
+    }
+
+    /// SG.4a: the built-ins are signs like any other — same registry, same
+    /// theme resolution, same priority rule. Nothing about them is privileged.
+    #[test]
+    fn the_builtins_register_as_ordinary_signs() {
+        let mut r = SignRegistry::new();
+        let ids = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
+        assert_eq!(r.len(), 8, "four diagnostics + four diff kinds");
+        assert_eq!(r.id_of("diagnostic.error"), Some(ids.diagnostic_error));
+        assert_eq!(r.id_of("diff.add"), Some(ids.diff_add));
+        // Each lands in the column its meaning belongs to. A diagnostic and a
+        // hunk mark answer different questions, so they must not contend.
+        assert_eq!(
+            r.get(ids.diagnostic_error).unwrap().column,
+            SIGN_COLUMN_MARK
+        );
+        assert_eq!(r.get(ids.diff_add).unwrap().column, SIGN_COLUMN_DIFF);
+    }
+
+    /// "Most severe wins" was the semantics the retired `Severity` arm's
+    /// `max()` gave, and it has to survive the unification — now expressed as
+    /// priority, like every other sign's.
+    #[test]
+    fn diagnostic_priorities_preserve_the_severity_order() {
+        let mut r = SignRegistry::new();
+        let ids = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
+        let p = |id: SignId| r.get(id).unwrap().priority;
+        assert!(p(ids.diagnostic_error) > p(ids.diagnostic_warning));
+        assert!(p(ids.diagnostic_warning) > p(ids.diagnostic_info));
+        assert!(p(ids.diagnostic_hint) < p(ids.diagnostic_info));
+        // And an error is what a sign must EXCEED to take the cell — a
+        // stricter bar than SG.2b's, where any priority above 10 did it.
+        assert_eq!(p(ids.diagnostic_error), DIAGNOSTIC_ERROR_PRIORITY);
+        for (a, b) in [
+            (ids.diagnostic_error, ids.diagnostic_warning),
+            (ids.diagnostic_warning, ids.diagnostic_info),
+            (ids.diagnostic_info, ids.diagnostic_hint),
+        ] {
+            let (a, b) = (r.get(a).unwrap(), r.get(b).unwrap());
+            assert_eq!(
+                winning_sign(a, b).name,
+                a.name,
+                "the more severe diagnostic takes the cell"
+            );
+        }
+    }
+
+    /// Re-registering with new glyphs is what a `:set ui.diagnostic-*-glyph`
+    /// does. The ids must NOT move, or every placement already in flight would
+    /// resolve to nothing and the marks would blink out on an option change.
+    #[test]
+    fn re_registering_with_new_glyphs_keeps_every_id() {
+        let mut r = SignRegistry::new();
+        let first = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
+        let second = register_builtin_signs(
+            &mut r,
+            DiagnosticGlyphs {
+                error: 'E',
+                warning: 'W',
+                info: 'I',
+                hint: 'H',
+            },
+        );
+        assert_eq!(first, second, "ids are stable across a redefinition");
+        assert_eq!(r.len(), 8, "and no duplicates were minted");
+        assert_eq!(
+            r.get(first.diagnostic_error).unwrap().glyph_char(false),
+            'E'
+        );
+    }
+
+    /// A host that never registered the built-ins must paint NOTHING for them,
+    /// not whatever happens to sit at id 0 — which would be some plugin's
+    /// sign, silently, in exactly the configurations nobody looks at.
+    #[test]
+    fn unregistered_builtin_ids_resolve_to_nothing() {
+        let mut r = SignRegistry::new();
+        r.define(def("a-plugins-sign", 1));
+        let ids = BuiltinSignIds::default();
+        assert!(r.get(ids.diagnostic_error).is_none());
+        assert!(r.get(ids.diff_add).is_none());
     }
 
     /// The publish path pre-resolves one theme element per DEFINITION, so it

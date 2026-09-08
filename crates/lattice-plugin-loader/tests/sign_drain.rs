@@ -245,6 +245,7 @@ async fn unloading_a_sign_plugin_withdraws_its_signs() {
         fallback: "◆".into(),
         theme_element: "gutter.sign".into(),
         priority: 5,
+        column: lattice_mode::SIGN_COLUMN_MARK.into(),
     });
     assert_ne!(
         fresh,

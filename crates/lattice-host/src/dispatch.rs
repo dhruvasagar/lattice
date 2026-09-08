@@ -38042,6 +38042,31 @@ impl Editor {
                 self.virtual_rows_wake.0.notify_one();
             }
         }
+        // OC.10: leave Insert BEFORE the buffer goes.
+        //
+        // `modal` is one field on the Editor, not per-buffer, so deleting the
+        // buffer you were typing in leaves the state machine in Insert and
+        // the SUCCESSOR receives your keystrokes as text. Nothing about that
+        // is capture-specific — it is reachable from any mode that binds a
+        // buffer-closing chord in Insert, which org-capture's `<C-c><C-c>`
+        // now is — so it is fixed here rather than worked around by each
+        // mode remembering to emit an `EnterMode` first.
+        //
+        // Past every guard above, so a refused delete (only buffer, dirty
+        // without `!`) does not silently drop the user out of Insert; and
+        // through `enter_mode` rather than assigning the field, so the insert
+        // session is torn down properly — the undo group closed, the pending
+        // auto-indent stripped, `last_insert` recorded for `.` — all of it
+        // against the document that is still alive to receive it. Assigning
+        // `self.modal` directly would leak an open undo group on a document
+        // about to be dropped.
+        //
+        // `enter_mode(Normal)`'s cursor-back-one therefore lands on the
+        // buffer being deleted, which is why it is harmless here and would
+        // not have been if this ran after the switch.
+        if matches!(self.modal, ModalState::Insert | ModalState::Replace) {
+            self.enter_mode(ModalState::Normal);
+        }
         // Successor preference: another *listed* buffer if any,
         // else any other buffer (including unlisted synthetics).
         let mut successor = listed.iter().copied().find(|id| *id != to_remove);

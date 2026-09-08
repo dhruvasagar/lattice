@@ -163,9 +163,28 @@ decoration path, not just signs.
 - **#4 (asynchronicity).** Plugin producers run off the render path; the
   renderer reads a host-written cache and never enters WASM on the tick.
 
-## 7. Open
+## 7. A plugin's signs (SG.3a)
 
-- **SG.3** — the WIT spelling. A guest cannot yet define or place signs;
+`wit/signs.wit` — a `signs` interface with `define-sign`, and a `sign-plugin`
+world exporting `register-signs` that the host drives once at load. The shape
+is `theme.wit`'s, because the problem is the same one: a plugin that passed
+literal glyphs and colours per placement would put the palette in the plugin
+(so `:colorscheme` could not touch it) and re-cross the same glyph and theme
+key for every marked line of every refresh.
+
+Names are **auto-namespaced by plugin id**, so a plugin can neither collide
+with another nor shadow a native producer's sign. Unload reverses the
+declaration, and because ids retire (§1) a placement still in flight from an
+unloaded plugin paints nothing rather than inheriting a later sign's glyph.
+
+The seam drains at rank 2, after `theme`, so a plugin that registers the
+element its signs name has already done so and its signs paint in their own
+colours on the first frame. That is a nicety, not a requirement — the
+`gutter.sign` fallback is what makes it safe either way.
+
+## 8. Open
+
+- **SG.3b** — a guest can define signs but cannot yet *place* them.
   `boundary_decoration.rs` returns an explicit `Err` for the host→guest
   direction rather than dropping a placement it cannot spell.
 - **Subsuming severity and diff** (§3) stays open, and is the direction this

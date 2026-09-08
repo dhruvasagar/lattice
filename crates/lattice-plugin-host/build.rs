@@ -77,6 +77,14 @@ fn main() {
         "theme-guest",
         "THEME_GUEST_WASM",
     );
+    // SG.3a: the sign-declaration fixture. Redefines one of its signs, which is
+    // what pins "a reload keeps the id" through the real boundary rather than
+    // only in the host-side unit test.
+    build_guest(
+        &fixtures.join("sign-guest"),
+        "sign-guest",
+        "SIGN_GUEST_WASM",
+    );
     // TR.2b: the keyed-menu fixture. Builds its rows from the passed `ctx`, so
     // it exercises the live-guest half of the seam rather than a static menu.
     build_guest(

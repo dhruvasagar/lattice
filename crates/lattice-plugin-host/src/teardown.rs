@@ -122,6 +122,17 @@ pub struct PluginTeardown {
     /// `ThemeRegistry::unregister_element` so an unloaded plugin's elements stop
     /// appearing in `:customize` and stop resolving.
     pub theme_elements: Vec<String>,
+    /// SG.3a: namespaced sign names the plugin declared. Reversed by
+    /// `SignRegistry::undefine` so an unloaded plugin's signs stop painting.
+    ///
+    /// A NAME list rather than the namespace prefix, even though
+    /// `undefine_prefix` exists for the latter — because the seam's store is
+    /// dropped when `register-signs` returns, so a plugin cannot declare a
+    /// sign later in its life the way a modeline segment can. The list is
+    /// therefore complete by construction, and it gives the report an exact
+    /// count instead of a boolean. `undefine_prefix` is what to switch to if
+    /// that ever stops being true.
+    pub signs: Vec<String>,
     /// OC.3 / ML.6: the plugin's element **namespace** — its manifest id — not
     /// a list of the ids it registered.
     ///
@@ -154,6 +165,7 @@ impl PluginTeardown {
             context_sources: Vec::new(),
             transient_sources: Vec::new(),
             theme_elements: Vec::new(),
+            signs: Vec::new(),
             modeline_namespace: None,
         }
     }
@@ -277,6 +289,22 @@ impl PluginTeardown {
                 report.theme_elements += 1;
             }
         }
+        // SG.3a: signs. Copy-on-write against the `ArcSwap` once for the whole
+        // list rather than per name — the render path reads this handle, and
+        // storing N times would make N intermediate snapshots visible, each
+        // with a different subset of the plugin's signs still painting.
+        if !self.signs.is_empty()
+            && let Some(registry) = reg.signs
+        {
+            let mut next: lattice_mode::SignRegistry = (**registry.load()).clone();
+            for name in &self.signs {
+                if next.id_of(name).is_some() {
+                    next.undefine(name);
+                    report.signs += 1;
+                }
+            }
+            registry.store(std::sync::Arc::new(next));
+        }
         // OC.3: modeline elements. BOTH halves, and the second is easy to miss:
         // `remove` drops the descriptor (which is what stops it rendering), but
         // the pushed content stays in the store keyed by an id nothing names —
@@ -351,6 +379,14 @@ pub struct TeardownRegistries<'a> {
     pub contexts: &'a mut ContextSourceRegistry,
     /// TC.4: the theme registry (`unregister_element` by namespaced name).
     pub theme: &'a dyn lattice_theme::ThemeRegistry,
+    /// SG.3a: the sign registry (`undefine` by namespaced name).
+    ///
+    /// `Option`, like `modeline` and for the same reason: the loader gates the
+    /// whole reversal on one all-or-nothing tuple of handles, so making this
+    /// required would turn every unload in a harness that has not wired a sign
+    /// registry into a silent no-op — options, commands and all. A sign
+    /// registry is not a precondition for reversing a config option.
+    pub signs: Option<&'a lattice_mode::SignRegistryHandle>,
     /// OC.3 / ML.6: the modeline element registry (`clear` + `remove` by
     /// namespaced id). A handle, not a `&mut` — `ModelineService` is
     /// `ArcSwap`-backed interior-mutable, like `theme` above.
@@ -392,6 +428,8 @@ pub struct TeardownReport {
     pub context_sources: usize,
     /// TC.4: theme elements unregistered.
     pub theme_elements: usize,
+    /// SG.3a: signs undefined.
+    pub signs: usize,
     /// OC.3: modeline elements unregistered.
     pub modeline_elements: usize,
     /// TR.2b: transient menus unregistered.
@@ -533,6 +571,7 @@ mod tests {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &theme_reg,
+                signs: None,
                 modeline: Some(&modeline),
                 parsers: &parsers,
             };
@@ -557,6 +596,7 @@ mod tests {
                 agenda_sources: 0,
                 context_sources: 0,
                 theme_elements: 0,
+                signs: 0,
                 modeline_elements: 0,
                 parser_factories: 0,
                 transient_sources: 0,
@@ -599,6 +639,7 @@ mod tests {
             decorations: &mut decorations,
             contexts: &mut contexts,
             theme: &theme_reg,
+            signs: None,
             modeline: Some(&modeline),
             parsers: &parsers,
         };

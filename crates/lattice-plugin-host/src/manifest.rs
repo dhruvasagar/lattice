@@ -165,6 +165,10 @@ pub enum PluginSeam {
     /// TC.4 — theme-element declaration (`theme-plugin` world). The plugin's
     /// elements land in the SAME registry builtins use.
     Theme,
+    /// SG.3a — sign declaration (`sign-plugin` world). The plugin's signs land
+    /// in the SAME registry native producers use, styled through the ordinary
+    /// theme registry.
+    Signs,
     Keymap,
     /// The `wasi:logging`-shaped guest→host logging import (PO.5, Layer 2). Not a
     /// native trait seam — the guest's own narrative, host-captured into the same
@@ -263,7 +267,12 @@ impl PluginSeam {
         match self {
             PluginSeam::Config | PluginSeam::Logging => 0,
             PluginSeam::Theme => 1,
-            PluginSeam::Language => 2,
+            // After `theme`, because a sign names the element it is painted
+            // in and a plugin normally registers that element itself. Not a
+            // correctness requirement — an unregistered element falls back to
+            // `gutter.sign` rather than to invisibility — but a plugin whose
+            // signs paint in its OWN colours on the first frame is the point.
+            PluginSeam::Signs | PluginSeam::Language => 2,
             PluginSeam::Grammar => 3,
             PluginSeam::Modes => 4,
             PluginSeam::Keymap => 5,
@@ -301,6 +310,7 @@ impl PluginSeam {
             PluginSeam::Media => "media",
             PluginSeam::Context => "context",
             PluginSeam::Theme => "theme",
+            PluginSeam::Signs => "signs",
             PluginSeam::Keymap => "keymap",
             PluginSeam::Logging => "logging",
             PluginSeam::PluginManager => "plugin-manager",
@@ -336,6 +346,7 @@ impl FromStr for PluginSeam {
             "media" => PluginSeam::Media,
             "context" => PluginSeam::Context,
             "theme" => PluginSeam::Theme,
+            "signs" => PluginSeam::Signs,
             "keymap" => PluginSeam::Keymap,
             "logging" => PluginSeam::Logging,
             "plugin-manager" => PluginSeam::PluginManager,
@@ -778,6 +789,7 @@ mod tests {
             // rather than adding a twelfth to a list that lies.
             PluginSeam::Context,
             PluginSeam::Theme,
+            PluginSeam::Signs,
             PluginSeam::PluginManager,
             PluginSeam::ErrorParser,
             PluginSeam::Help,

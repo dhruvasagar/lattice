@@ -278,6 +278,7 @@ fn unload(
         decorations: &mut decorations,
         contexts: &mut contexts,
         theme: &theme_reg,
+        signs: None,
         modeline: Some(modeline),
         parsers: &parsers,
     };

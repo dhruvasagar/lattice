@@ -120,6 +120,7 @@ pub mod transient_source;
 pub mod transient_task;
 // TC.4 — the `theme` element-registration seam. Guest imports `register-element`
 // and the host inserts into the SAME registry builtins live in.
+pub mod sign_host;
 pub mod theme_host;
 pub mod trace;
 pub mod trampoline;
@@ -1044,6 +1045,13 @@ struct PluginState {
     /// TC.4: namespaced element names this plugin registered — the teardown
     /// tokens, mirroring `config_contributions`.
     theme_contributions: Vec<String>,
+    /// SG.3a: the sign registry a `signs` plugin's `define-sign` writes into.
+    /// Wired before `register-signs` runs; `None` for every other world (the
+    /// call then logs and defines nothing).
+    sign_registry: Option<lattice_mode::SignRegistryHandle>,
+    /// SG.3a: namespaced sign names this plugin declared — the teardown
+    /// tokens, mirroring `theme_contributions`.
+    sign_contributions: Vec<String>,
     /// CR.4: section specs this plugin declared through
     /// `dashboard.register-section`, drained by `spawn_dashboard_sections`
     /// after the export returns. The host then instantiates one live guest
@@ -2466,6 +2474,41 @@ impl crate::theme_host::bindings::lattice::plugin_host::theme::Host for PluginSt
     }
 }
 
+/// SG.3a: the `signs` seam's single host func.
+///
+/// Namespacing and the copy-on-write registry write live in [`sign_host`] as
+/// free functions so they are unit-testable without a `Store` (the
+/// `theme_host` precedent). This body is the thin part: derive the namespace
+/// from the manifest id the HOST holds — never from anything the guest passed
+/// — and record the teardown token.
+impl crate::sign_host::bindings::lattice::plugin_host::signs::Host for PluginState {
+    fn define_sign(
+        &mut self,
+        name: String,
+        spec: crate::sign_host::bindings::lattice::plugin_host::signs::SignSpec,
+    ) -> Result<(), String> {
+        let Some(registry) = self.sign_registry.clone() else {
+            // Graceful, not a trap: a harness with no sign registry wired is a
+            // test shape, not a plugin error. The sign simply does not exist,
+            // and a placement naming it paints nothing rather than something
+            // wrong.
+            tracing::warn!(
+                sign = %name,
+                "define-sign ignored: plugin has no sign registry wired"
+            );
+            return Ok(());
+        };
+        // Auto-namespaced by manifest id, exactly like `register-element`, so a
+        // plugin cannot squat a bare name or shadow a native producer's sign.
+        let Some(plugin_id) = self.plugin_name.clone() else {
+            return Err("define-sign requires a plugin identity".to_string());
+        };
+        let full = crate::sign_host::define_plugin_sign(&registry, &plugin_id, &name, spec);
+        self.sign_contributions.push(full);
+        Ok(())
+    }
+}
+
 /// CR.3: the `help` seam's single host func.
 ///
 /// Validation and namespacing live in [`help_host`] as free functions so they
@@ -3187,6 +3230,16 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // SG.3a: the `signs` guest→host sign-declaration seam. Sync host func
+        // (`define-sign` only writes the sign registry), inert for worlds that
+        // don't import `signs` — but wired UNCONDITIONALLY, because an
+        // unwired import fails instantiation of the WHOLE component, not just
+        // the call.
+        crate::sign_host::bindings::lattice::plugin_host::signs::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // CR.3: the `help` guest→host topic-registration seam. Sync host func
         // (`register-topic` only records into `PluginState`), inert for worlds
         // that don't import `help`.
@@ -3847,6 +3900,8 @@ impl PluginHost {
             config_contributions: Vec::new(),
             theme_registry: None,
             theme_contributions: Vec::new(),
+            sign_registry: None,
+            sign_contributions: Vec::new(),
             help_contributions: Vec::new(),
             language_contributions: Vec::new(),
             dashboard_contributions: Vec::new(),

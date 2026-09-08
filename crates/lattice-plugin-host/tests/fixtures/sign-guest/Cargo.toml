@@ -1,0 +1,26 @@
+# SG.3a sign fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `sign-plugin` world. Its `register-signs` export declares three signs
+# exercising the shapes that can go wrong at the boundary: a two-palette sign
+# (where dropping the fallback would render tofu for every user without a
+# patched font), a sign that outranks a diagnostic (where the strictly-greater
+# comparison is the whole contention rule), and a redefinition of the first
+# (where keeping the id is what stops a reload orphaning placements).
+# Built to a component by the host crate's build.rs. Standalone workspace so it
+# targets wasm32-wasip2 without inheriting the host toolchain's lints/target.
+[package]
+name = "sign-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

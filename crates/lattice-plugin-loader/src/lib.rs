@@ -338,6 +338,11 @@ pub struct LoaderServices {
     /// SAME one builtins use, so a plugin element is themeable and
     /// `:customize`-able like any other.
     pub theme_registry: Option<lattice_theme::ThemeRegistryHandle>,
+    /// SG.3a: the sign registry a `signs` plugin's definitions land in — the
+    /// SAME one native producers use, so a plugin's sign is styled through the
+    /// ordinary theme registry and contends for the mark cell by the same
+    /// priority rule, with no host kind-branch.
+    pub sign_registry: Option<lattice_mode::SignRegistryHandle>,
     /// OC.3 / ML.6: the modeline element registry a plugin's `ui.register-segment`
     /// declares into — the SAME one built-ins and native modes use, so a plugin
     /// segment lays out, orders and hides exactly like `lsp` or `claude-code`
@@ -385,6 +390,8 @@ pub struct WiredSeams {
     pub decoration_registry: bool,
     pub context_registry: bool,
     pub theme_registry: bool,
+    /// SG.3a: the sign registry.
+    pub sign_registry: bool,
     /// OC.3 / ML.6: the modeline element registry.
     pub modeline: bool,
     /// CM.6b: the compilation parser-factory registry.
@@ -449,6 +456,7 @@ impl WiredSeams {
             && self.decoration_registry
             && self.context_registry
             && self.theme_registry
+            && self.sign_registry
             && self.modeline
             && self.parser_factories
             && self.help_topics
@@ -680,6 +688,7 @@ impl PluginLoader {
             decoration_registry: self.env.decoration_registry.is_some(),
             context_registry: self.env.context_registry.is_some(),
             theme_registry: self.env.theme_registry.is_some(),
+            sign_registry: self.env.sign_registry.is_some(),
             modeline: self.env.modeline.is_some(),
             parser_factories: self.env.parser_factories.is_some(),
             help_topics: self.env.help_topics.is_some(),
@@ -919,6 +928,12 @@ impl PluginLoader {
                     PluginSeam::Theme => {
                         let id = self
                             .drain_theme(&component, manifest, tier, &mut record)
+                            .await?;
+                        seam_ids.push(id);
+                    }
+                    PluginSeam::Signs => {
+                        let id = self
+                            .drain_signs(&component, manifest, tier, &mut record)
                             .await?;
                         seam_ids.push(id);
                     }
@@ -1835,6 +1850,12 @@ impl PluginLoader {
                 decorations: &mut decorations,
                 contexts: &mut contexts,
                 theme: &**theme_h,
+                // SG.3a: NOT part of the guard tuple above, for the same
+                // reason as `modeline` below — a sign registry is not a
+                // precondition for reversing a config option, and making it
+                // one would turn every unload in a harness without one into a
+                // silent no-op.
+                signs: self.env.sign_registry.as_ref(),
                 // OC.3: NOT part of the guard tuple above. That tuple is
                 // all-or-nothing — a missing handle skips the ENTIRE unload —
                 // and a modeline is not a precondition for reversing a config
@@ -2793,6 +2814,42 @@ impl PluginLoader {
             "theme plugin registered its elements"
         );
         record.teardown.theme_elements = elements;
+        Ok(id)
+    }
+
+    /// SG.3a — drain the sign seam: instantiate the component, drive its
+    /// `register-signs` export once, and record the namespaced sign names for
+    /// teardown. No actor and no registry RCU beyond the declaration itself:
+    /// signs are declared synchronously into the shared registry, like theme
+    /// elements and config options.
+    ///
+    /// Drains at rank 2, after `theme`, so a plugin that registers the element
+    /// its signs name has already done so — its signs then paint in their own
+    /// colours on the first frame rather than falling back to `gutter.sign`
+    /// until something republishes.
+    async fn drain_signs(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .sign_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("signs"))?;
+        let (id, signs) = self
+            .host
+            .spawn_sign_plugin(component, manifest, tier, PluginBudget::default(), registry)
+            .await?;
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            signs = signs.len(),
+            "sign plugin declared its signs"
+        );
+        record.teardown.signs = signs;
         Ok(id)
     }
 

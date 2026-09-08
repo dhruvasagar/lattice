@@ -236,6 +236,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         theme_registry: boot
             .service::<lattice_theme::ThemeRegistryHandle>()
             .map(|h| (*h).clone()),
+        // SG.3a: registered by `editor_boot` beside the theme registry, and
+        // for the same reason it must be captured HERE — the loader captures
+        // its drain services at install time, so a `signs` plugin's
+        // definitions have nowhere to land if the service is registered after
+        // this line. `plugin_loader_captures_every_drain_service` is the boot
+        // pin that catches it.
+        sign_registry: boot
+            .service::<lattice_mode::SignRegistryHandle>()
+            .map(|h| (*h).clone()),
         // OC.3 / ML.6: registered by `editor_boot` in Phase A, alongside the
         // built-in element registration — well before this line.
         modeline: boot

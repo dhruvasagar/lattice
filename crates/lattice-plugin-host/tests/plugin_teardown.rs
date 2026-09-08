@@ -135,6 +135,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
             decorations: &mut decorations,
             contexts: &mut contexts,
             theme: &theme_reg,
+            signs: None,
             modeline: Some(&modeline),
             parsers: &parsers,
         };

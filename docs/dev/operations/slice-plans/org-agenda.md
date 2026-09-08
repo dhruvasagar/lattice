@@ -66,7 +66,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.25 | Schedule + deadline, in files AND the agenda **(plugin)** | ✅ |
 | OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | ✅ |
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
-| OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | 🚧 |
+| OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | ✅ |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1539,7 +1539,7 @@ move that leaves them working is two ways to clock in, one undocumented).
 
 ---
 
-### OA.28 — `view-args`, so a chord can read its own view **(cross-repo)** 🚧
+### OA.28 — `view-args`, so a chord can read its own view **(cross-repo)** ✅
 
 Design: `docs/dev/architecture/plugin-multibuffer-views.md` §9.
 

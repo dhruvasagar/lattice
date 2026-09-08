@@ -1039,6 +1039,22 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("overlay"),
         "`▾` fold marker on an open (expanded) foldable head row.",
     );
+    // SG.2b: the FALLBACK tone for a generic sign whose definition names a
+    // theme element nobody registered — a plugin that shipped a sign without a
+    // matching element, or one whose theme has not been reloaded yet. A sign
+    // with nowhere to get its colour still has to be visible: it was placed to
+    // tell the user something, and painting it invisibly is the one answer that
+    // loses the information entirely.
+    //
+    // `text` rather than a muted tone, unlike the fold markers: a fold marker is
+    // always-present chrome and a sign is placed deliberately, so it earns
+    // ordinary foreground presence. A definition naming a real element
+    // overrides this completely.
+    reg_one(
+        "gutter.sign",
+        spec().fg("text"),
+        "Fallback colour for a gutter sign whose own theme element is unregistered.",
+    );
     reg_one(
         "gutter.fold.closed",
         spec().fg("subtext"),
@@ -1440,6 +1456,8 @@ pub struct BuiltinElementIds {
     // because it signals hidden content; the `⋯ N lines` summary carries
     // the rest of that signal. Both renderers read these ids so the TUI
     // and GPUI gutters stay in lockstep and themes can retune the tone.
+    /// SG.2b: the fallback tone for a sign whose named element is missing.
+    pub gutter_sign: ElementId,
     pub gutter_fold_open: ElementId,
     pub gutter_fold_closed: ElementId,
     /// The ` ⋯ N lines` summary trailing a collapsed head row. Both
@@ -1604,6 +1622,7 @@ impl Default for BuiltinElementIds {
             transient_description: ElementId::INVALID,
             transient_value: ElementId::INVALID,
             transient_border: ElementId::INVALID,
+            gutter_sign: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
             gutter_fold_summary: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
@@ -1809,6 +1828,7 @@ impl BuiltinElementIds {
             transient_description: id("transient.description"),
             transient_value: id("transient.value"),
             transient_border: id("transient.border"),
+            gutter_sign: id("gutter.sign"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
             gutter_fold_summary: id("gutter.fold.summary"),

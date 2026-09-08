@@ -11359,7 +11359,35 @@ impl Editor {
                     let line = self.command_line();
                     let slot_prefix_len = line.len().saturating_sub(state.replace_start);
                     let slot_prefix = line[state.replace_start..].to_string();
-                    let lcp = longest_common_text_prefix(&state.candidates);
+                    // DAM.1 again, now for the LCP: on the command-name
+                    // slot a literal prefix beats a fuzzy subsequence.
+                    // Every action id is invocable as `action:<id>`, and
+                    // those names are long enough that one of them
+                    // fuzzily matches almost any short prefix --
+                    // `action:search-word-under-cursor-backward`
+                    // contains `d,e,s,c,r` in order, so it joins the
+                    // `descr` candidate set. One such match drags the
+                    // whole-set LCP to `""` and the `starts_with` guard
+                    // below then silently skips the rewrite: `:descr`
+                    // + `<Tab>` stops extending to `describe-` and the
+                    // user sees nothing happen. Narrowing to the
+                    // prefix pool makes the extension depend only on
+                    // the commands the user could have meant, so adding
+                    // an action id can never disturb it.
+                    let prefixed: Vec<&str> = state
+                        .candidates
+                        .iter()
+                        .map(|c| c.raw.text.as_str())
+                        .filter(|t| t.starts_with(&slot_prefix))
+                        .collect();
+                    let lcp = if state.replace_start == 0
+                        && !slot_prefix.is_empty()
+                        && prefixed.len() >= 2
+                    {
+                        longest_common_prefix_of(prefixed.into_iter())
+                    } else {
+                        longest_common_text_prefix(&state.candidates)
+                    };
                     if lcp.len() > slot_prefix_len && lcp.starts_with(&slot_prefix) {
                         let mut line = line;
                         line.replace_range(state.replace_start..line.len(), &lcp);
@@ -39940,17 +39968,25 @@ const COMMAND_HISTORY_CAP: usize = 100;
 /// user's typed prefix could be deterministically extended without
 /// committing to any single candidate.
 fn longest_common_text_prefix(candidates: &[lattice_completion::RenderedCandidate]) -> String {
-    let mut iter = candidates.iter();
+    longest_common_prefix_of(candidates.iter().map(|c| c.raw.text.as_str()))
+}
+
+/// The same computation over an arbitrary set of texts, so a caller
+/// that has already narrowed the candidate set (DAM.1's prefix pool
+/// on the command-name slot) can share it without materialising a
+/// `Vec<RenderedCandidate>` clone on the completion path.
+fn longest_common_prefix_of<'a>(texts: impl Iterator<Item = &'a str>) -> String {
+    let mut iter = texts;
     let Some(first) = iter.next() else {
         return String::new();
     };
-    let first_text = first.raw.text.as_bytes();
-    let mut common_len = first_text.len();
-    for c in iter {
-        let bytes = c.raw.text.as_bytes();
+    let first_bytes = first.as_bytes();
+    let mut common_len = first_bytes.len();
+    for text in iter {
+        let bytes = text.as_bytes();
         let cap = common_len.min(bytes.len());
         let mut i = 0;
-        while i < cap && first_text[i] == bytes[i] {
+        while i < cap && first_bytes[i] == bytes[i] {
             i += 1;
         }
         common_len = i;
@@ -39961,10 +39997,10 @@ fn longest_common_text_prefix(candidates: &[lattice_completion::RenderedCandidat
     // Truncate at the last UTF-8 char boundary so a partial multi-
     // byte sequence never makes it into command_line. ASCII-only
     // candidates fast-path through this loop in one step.
-    while common_len > 0 && !first.raw.text.is_char_boundary(common_len) {
+    while common_len > 0 && !first.is_char_boundary(common_len) {
         common_len -= 1;
     }
-    first.raw.text[..common_len].to_string()
+    first[..common_len].to_string()
 }
 
 /// 5.5.G.23.cmdline: `<C-w>` — strip trailing whitespace from `s`,
@@ -42718,6 +42754,30 @@ mod tests {
     fn lcp_empty_when_first_bytes_differ() {
         let cs = vec![rendered("alpha"), rendered("beta")];
         assert_eq!(longest_common_text_prefix(&cs), "");
+    }
+
+    #[test]
+    fn lcp_over_the_prefix_pool_ignores_a_fuzzy_outlier() {
+        // The whole-set LCP collapses to "" as soon as one fuzzy
+        // subsequence match joins the set -- which on the
+        // command-name slot happens for almost any short prefix,
+        // because every action id is a `:`-invocable command and
+        // `action:search-word-under-cursor-backward` contains
+        // `d,e,s,c,r` in order. `open_completion_popup` therefore
+        // computes the LCP over the prefix pool on that slot, so the
+        // extension depends only on the commands the user could have
+        // meant.
+        let cs = vec![
+            rendered("describe-key"),
+            rendered("describe-mode"),
+            rendered("action:search-word-under-cursor-backward"),
+        ];
+        assert_eq!(longest_common_text_prefix(&cs), "");
+        let pool = cs
+            .iter()
+            .map(|c| c.raw.text.as_str())
+            .filter(|t| t.starts_with("descr"));
+        assert_eq!(longest_common_prefix_of(pool), "describe-");
     }
 
     #[test]

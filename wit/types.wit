@@ -1850,11 +1850,31 @@ interface types {
         level: gutter-severity-level,
     }
 
+    /// SG.3b: `GutterDecoration::Sign { line, sign }` payload — vim's
+    /// `:sign place`.
+    ///
+    /// Carries the definition's NAME, not an id. A guest has no id to carry:
+    /// ids are interned by the host and the resolution happens ONCE, at this
+    /// boundary, off the render path — which is exactly what keeps the native
+    /// placement `Copy` and free of a per-line `String`.
+    ///
+    /// `name` is the plugin's own namespaced name as `define-sign` returned it
+    /// (`debugger.breakpoint`). A name nothing has defined resolves to nothing
+    /// and the placement is SKIPPED — the same answer the native path gives an
+    /// unknown id, because a definition that has not registered yet is
+    /// recoverable and failing the whole batch would take the plugin's other
+    /// marks down with it.
+    record gutter-sign {
+        line: u32,
+        name: string,
+    }
+
     /// Mirrors `lattice_mode::GutterDecoration` — one per-line gutter cell a
     /// provider contributes. Each arm maps to one physical gutter column.
     variant gutter-decoration {
         diff(gutter-diff),
         severity(gutter-severity),
+        sign(gutter-sign),
     }
 
     /// The owned projection of `lattice_mode::DecorationCtx` (host→guest). The

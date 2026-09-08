@@ -35,6 +35,7 @@ use crate::lattice::plugin_host::types::{
     DecorationContext as WitDecorationContext, GutterDecoration as WitGutterDecoration,
     GutterDiff as WitGutterDiff, GutterDiffKind as WitGutterDiffKind,
     GutterSeverity as WitGutterSeverity, GutterSeverityLevel as WitGutterSeverityLevel,
+    GutterSign as WitGutterSign,
 };
 use lattice_mode::{
     GutterDecoration as NativeGutterDecoration, GutterDiffKind as NativeGutterDiffKind,
@@ -103,17 +104,19 @@ impl WitBoundary for NativeGutterDecoration {
                     level: level.to_wit()?,
                 })
             }
-            // SG.1: a sign placement has no WIT spelling until SG.3 adds one.
+            // SG.3b: a placement carries a NAME on the wire and an interned id
+            // natively, and turning the id back into a name needs the
+            // registry — which this context-free conversion does not have. Use
+            // [`decoration_to_wit`], which takes one.
             //
-            // An explicit `Err` rather than a silent drop, because this
-            // direction is host→guest and the only thing that could produce a
-            // native sign to send is host code that has no business sending it.
-            // The boundary's contract is that a new arm forces a decision here;
-            // "not expressible yet" is a decision, and one worth being told
-            // about rather than discovering as a missing glyph.
+            // An explicit `Err` rather than a silent drop: the boundary's
+            // contract is that a new arm forces a decision here, and "needs a
+            // registry" is a decision worth being told about rather than
+            // discovering as a missing glyph.
             NativeGutterDecoration::Sign { .. } => {
                 return Err(
-                    "gutter sign placements do not cross the plugin boundary yet (SG.3)"
+                    "a gutter sign placement needs the sign registry to name it — \
+                     use `decoration_to_wit`"
                         .to_string(),
                 );
             }
@@ -130,7 +133,83 @@ impl WitBoundary for NativeGutterDecoration {
                 line: s.line,
                 level: NativeGutterSeverityLevel::from_wit(s.level)?,
             },
+            // SG.3b: the mirror of `to_wit`'s arm — resolving the name to an
+            // interned `SignId` needs the registry. Use
+            // [`decoration_from_wit`], which takes one and which is what the
+            // producer call site actually calls.
+            WitGutterDecoration::Sign(_) => {
+                return Err(
+                    "a gutter sign placement needs the sign registry to resolve its name — \
+                     use `decoration_from_wit`"
+                        .to_string(),
+                );
+            }
         })
+    }
+}
+
+/// SG.3b — the registry-aware guest→host conversion, and the one the producer
+/// call site uses.
+///
+/// `Ok(None)` means the placement is SKIPPED, which happens for exactly one
+/// reason: the guest named a sign nothing has defined. That is the same answer
+/// the native render path gives an unknown id — paint nothing — and it is
+/// deliberately not an `Err`, because an `Err` fails the whole batch and would
+/// take the plugin's diff and severity marks down with it over one unregistered
+/// name. A definition that has not registered yet is recoverable; a malformed
+/// record is not, and those still fail.
+///
+/// The resolution happens HERE, at the boundary, off the render path — which is
+/// the whole reason a native placement can stay `Copy` and carry no per-line
+/// `String`.
+pub fn decoration_from_wit(
+    wit: WitGutterDecoration,
+    registry: &lattice_mode::SignRegistry,
+) -> Result<Option<NativeGutterDecoration>, String> {
+    match wit {
+        WitGutterDecoration::Sign(s) => {
+            let Some(sign) = registry.id_of(&s.name) else {
+                // `debug!`, not `warn!`: a decoration producer runs on every
+                // refresh, so a guest with one bad name would flood the log at
+                // keystroke rate and bury everything else.
+                tracing::debug!(
+                    sign = %s.name,
+                    line = s.line,
+                    "gutter sign placement skipped: no such sign is defined"
+                );
+                return Ok(None);
+            };
+            Ok(Some(NativeGutterDecoration::Sign { line: s.line, sign }))
+        }
+        other => NativeGutterDecoration::from_wit(other).map(Some),
+    }
+}
+
+/// SG.3b — the registry-aware host→guest conversion.
+///
+/// The mirror of [`decoration_from_wit`], for the direction that has no
+/// consumer yet: nothing in the host sends native decorations to a guest. It
+/// exists so the round trip is testable as a round trip — a name that survives
+/// out and back is the property that matters, and testing only one direction
+/// would not catch an id/name mapping that silently disagreed with itself.
+///
+/// A retired id has no name to send, so it converts to `None` rather than an
+/// error, matching the inbound direction's treatment of an unknown name.
+pub fn decoration_to_wit(
+    deco: &NativeGutterDecoration,
+    registry: &lattice_mode::SignRegistry,
+) -> Result<Option<WitGutterDecoration>, String> {
+    match deco {
+        NativeGutterDecoration::Sign { line, sign } => {
+            let Some(def) = registry.get(*sign) else {
+                return Ok(None);
+            };
+            Ok(Some(WitGutterDecoration::Sign(WitGutterSign {
+                line: *line,
+                name: def.name.clone(),
+            })))
+        }
+        other => other.to_wit().map(Some),
     }
 }
 
@@ -217,6 +296,104 @@ mod tests {
                 level: NativeGutterSeverityLevel::Error
             }
         ));
+    }
+
+    fn sign_registry_with(names: &[(&str, i32)]) -> lattice_mode::SignRegistry {
+        let mut r = lattice_mode::SignRegistry::new();
+        for (name, priority) in names {
+            r.define(lattice_mode::SignDefinition {
+                name: (*name).to_string(),
+                text: "\u{f111}".into(),
+                fallback: "●".into(),
+                theme_element: format!("{name}.element"),
+                priority: *priority,
+            });
+        }
+        r
+    }
+
+    /// SG.3b: the whole point of the wire format is that a NAME survives out
+    /// and back as the SAME interned id. Testing one direction would not catch
+    /// an id↔name mapping that silently disagreed with itself.
+    #[test]
+    fn a_sign_placement_round_trips_through_its_name() {
+        let registry = sign_registry_with(&[("debugger.breakpoint", 20)]);
+        let id = registry.id_of("debugger.breakpoint").unwrap();
+        let native = NativeGutterDecoration::Sign { line: 7, sign: id };
+
+        let wit = decoration_to_wit(&native, &registry)
+            .unwrap()
+            .expect("a live id has a name to send");
+        match &wit {
+            WitGutterDecoration::Sign(s) => {
+                assert_eq!(s.line, 7);
+                assert_eq!(
+                    s.name, "debugger.breakpoint",
+                    "the NAME crosses, not the id"
+                );
+            }
+            other => panic!("expected a sign arm, got {other:?}"),
+        }
+
+        let back = decoration_from_wit(wit, &registry)
+            .unwrap()
+            .expect("a defined name resolves");
+        assert_eq!(back, native, "and it resolves to the SAME interned id");
+    }
+
+    /// A name nothing has defined is SKIPPED, not an error — because an error
+    /// fails the whole batch and would take the plugin's diff and severity
+    /// marks down with it over one unregistered name.
+    #[test]
+    fn an_unknown_sign_name_is_skipped_and_the_batch_survives() {
+        let registry = sign_registry_with(&[("debugger.breakpoint", 20)]);
+        let unknown = WitGutterDecoration::Sign(WitGutterSign {
+            line: 3,
+            name: "debugger.nope".to_string(),
+        });
+        assert!(decoration_from_wit(unknown, &registry).unwrap().is_none());
+
+        // The neighbour in the same batch still crosses — this is the half
+        // that would be lost if the unknown name had been an `Err`.
+        let diff = WitGutterDecoration::Diff(WitGutterDiff {
+            line: 4,
+            kind: WitGutterDiffKind::Add,
+        });
+        assert!(decoration_from_wit(diff, &registry).unwrap().is_some());
+    }
+
+    /// A retired id has no name to send. `None` rather than an error, matching
+    /// how the inbound direction treats an unknown name — and matching the
+    /// render path, where a retired id paints nothing.
+    #[test]
+    fn a_retired_id_has_no_name_to_send() {
+        let mut registry = sign_registry_with(&[("debugger.breakpoint", 20)]);
+        let id = registry.id_of("debugger.breakpoint").unwrap();
+        registry.undefine("debugger.breakpoint");
+        let native = NativeGutterDecoration::Sign { line: 1, sign: id };
+        assert!(decoration_to_wit(&native, &registry).unwrap().is_none());
+    }
+
+    /// The context-free `WitBoundary` conversions cannot spell a sign, and say
+    /// so by name rather than dropping it. The boundary's contract is that a
+    /// new arm forces a decision at every site; "needs the registry" is a
+    /// decision worth being told about rather than discovering as a missing
+    /// glyph.
+    #[test]
+    fn the_registry_free_conversions_refuse_a_sign_by_name() {
+        let registry = sign_registry_with(&[("p.mark", 5)]);
+        let id = registry.id_of("p.mark").unwrap();
+        let err = NativeGutterDecoration::Sign { line: 0, sign: id }
+            .to_wit()
+            .expect_err("no registry, no name");
+        assert!(err.contains("decoration_to_wit"), "{err}");
+
+        let err = NativeGutterDecoration::from_wit(WitGutterDecoration::Sign(WitGutterSign {
+            line: 0,
+            name: "p.mark".to_string(),
+        }))
+        .expect_err("no registry, no id");
+        assert!(err.contains("decoration_from_wit"), "{err}");
     }
 
     #[test]

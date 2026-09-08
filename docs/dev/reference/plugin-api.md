@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-Derived from the canonical `wit/` package — 30 seam(s).
+Derived from the canonical `wit/` package — 31 seam(s).
 
 ## buffer  (guest calls into the host through it, capability: none (pure data / dispatch))
 
@@ -72,11 +72,14 @@ component-model language (Go, JS, Zig, Python, ...) calls these directly. The
 Rust `lattice-plugin-sdk` `#[derive(PluginOption)]` (PH7.10b) is optional
 ergonomics that expands to these same calls; it adds no capability not here.
 
-### Functions (3)
+### Functions (6)
 
 - `get-option` — Read an option's current value, formatted as a string (the `OptionType`
+- `get-option-value` — Read an option's current value as a tree. `none` if no option by that
 - `register-option` — Declare a plugin option into the editor's `ConfigRegistry`. `default` is
+- `register-structured-option` — Declare an option whose value has structure. The schema-taking peer of
 - `set-option` — Set (override) an EXISTING option's value (CI.7) — the init.rs config
+- `set-option-value` — Set an option from a tree. Validated against the option's declared
 
 ## context  (guest implements this interface, capability: none (pure data / dispatch))
 
@@ -360,19 +363,23 @@ picker. The `net:http` / `proc:spawn` / tree-sitter seams follow (design.md
 streaming-result question) lands when a real streaming consumer (live-grep)
 does — a bounded `walk` covers the fuzzy-finder.
 
-### Functions (13)
+### Functions (17)
 
 - `emit-event` — Publish a plugin-defined event on the editor's event bus (PH7.8b). `name`
+- `excerpt-source` — OA.23: where a line of a MULTIBUFFER came from.
 - `local-utc-offset-seconds` — The host's offset from UTC, in seconds, **at this instant** (OC.4).
 - `new-uuid` — A fresh random (v4) UUID, uppercase, in the canonical
 - `read-file` — Read a UTF-8 file, capability-gated the same way `walk` is.
+- `refresh-decorations` — OA.30: say that this plugin's gutter decorations have changed, though
 - `register-event` — Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
+- `source-line` — OA.23b: one line of a source document, without its trailing newline.
 - `store-delete` — Forget `key`. Deleting a key that is not there is `ok` — a retraction
 - `store-generation` — Bumped on every successful mutation, never on a read. A reader compares
 - `store-get` — The bytes stored under `key`, or `none` when nothing is stored there.
 - `store-keys` — Keys carrying `prefix`, sorted. `""` lists everything.
 - `store-put` — ---------------------------------------------------------------------
 - `unwatch` — Stop watching `path`. Unwatching a path that is not watched is `ok` — a
+- `view-args` — OA.27: the scan arguments the provider view in `buffer` is showing.
 - `walk` — Recursively enumerate files under `root`, returning absolute UTF-8 paths.
 - `watch` — ---------------------------------------------------------------------
 
@@ -547,8 +554,9 @@ contribution seam in the system is "the guest calls a host import to register
 N things", and the one seam shaped "the component IS one source" had to be
 changed the moment a plugin wanted two.
 
-### Functions (1)
+### Functions (2)
 
+- `refresh-view` — OA.15a: re-open one of THIS guest's views with `args`, from somewhere
 - `register-multibuffer-view` — Declare one view. Called from the guest's `register-multibuffer-views`
 
 ## multibuffer-view-source  (guest implements this interface, capability: none (pure data / dispatch))
@@ -729,6 +737,29 @@ agenda — `error-parser`'s rule, because it is the same failure class.
 ### Functions (0)
 
 _(none — a shared type interface)_
+
+## signs  (guest calls into the host through it, capability: none (pure data / dispatch))
+
+Mirrors the sign registry (`lattice_mode::SignRegistry`). A plugin declares
+the signs it places — glyph, fallback glyph, theme element, priority — and
+the host registers each into the SAME registry native producers use, owned
+by the plugin so unload reverses it.
+
+See `docs/dev/architecture/gutter-signs.md`.
+
+**Why a plugin declares signs rather than drawing glyphs.** The alternative
+— a placement that carries its own glyph and colour — puts the palette in
+the plugin (so `:colorscheme` cannot touch it) and re-crosses the same glyph
+and theme key for every marked line of every refresh, to restate something
+that was already true at load. Declaring once and placing by name is the
+only shape where the cost is paid where the information actually changes.
+
+The definition/placement split is `:sign define` / `:sign place`, and it is
+load-bearing rather than historical — see the design doc §1.
+
+### Functions (1)
+
+- `define-sign` — Declare a sign.
 
 ## theme  (guest calls into the host through it, capability: none (pure data / dispatch))
 

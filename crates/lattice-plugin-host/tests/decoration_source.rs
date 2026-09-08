@@ -29,7 +29,14 @@ fn guest_wasm() -> Option<&'static str> {
 }
 
 /// Instantiate the fixture + spawn its actor; returns the host-facing producer.
-async fn source(host: &PluginHost) -> WasmDecorationSource {
+///
+/// `signs` is the registry the SG.3b name→id resolution runs against. `None`
+/// is the unwired-harness shape: sign placements are skipped and everything
+/// else still crosses.
+async fn source_with_signs(
+    host: &PluginHost,
+    signs: Option<lattice_mode::SignRegistryHandle>,
+) -> WasmDecorationSource {
     let component = host
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
         .expect("compile decorations fixture");
@@ -45,7 +52,24 @@ async fn source(host: &PluginHost) -> WasmDecorationSource {
         .await
         .expect("spawn decoration source");
     tokio::spawn(actor.run());
-    WasmDecorationSource::new(client)
+    WasmDecorationSource::new(client, signs)
+}
+
+async fn source(host: &PluginHost) -> WasmDecorationSource {
+    source_with_signs(host, None).await
+}
+
+/// A registry with the one sign the fixture's defined placement names.
+fn fixture_signs() -> lattice_mode::SignRegistryHandle {
+    let mut r = lattice_mode::SignRegistry::new();
+    r.define(lattice_mode::SignDefinition {
+        name: "fixture.mark".into(),
+        text: "\u{f111}".into(),
+        fallback: "●".into(),
+        theme_element: "fixture.mark".into(),
+        priority: 5,
+    });
+    std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(r))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -62,6 +86,10 @@ async fn producer_crosses_context_and_returns_gutter_decorations() {
         .gutter_decorations(7, Some(std::path::Path::new("src/lib.rs")), 5)
         .await
         .expect("producer returns decorations");
+    // Three, not five: this harness wires NO sign registry, so BOTH of the
+    // guest's sign placements are skipped and the rest of the batch is
+    // untouched. That degradation is the point — an unwired seam costs its own
+    // marks and nothing else.
     assert_eq!(decos.len(), 3);
     assert!(matches!(
         decos[0],
@@ -108,5 +136,47 @@ async fn empty_buffer_degrades_gracefully_to_a_guest_err() {
     assert!(
         err.contains("empty buffer"),
         "graceful guest err surfaced, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_guest_places_a_sign_by_name_and_the_host_interns_it() {
+    // SG.3b end-to-end. The guest has no `SignId` to carry — it names the sign
+    // and the host resolves it HERE, at the boundary and off the render path,
+    // which is what lets the native placement stay `Copy` with no per-line
+    // `String`.
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: decorations fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let signs = fixture_signs();
+    let expected = signs.load().id_of("fixture.mark").unwrap();
+    let src = source_with_signs(&host, Some(signs)).await;
+
+    let decos = src
+        .gutter_decorations(7, Some(std::path::Path::new("src/lib.rs")), 5)
+        .await
+        .expect("producer returns decorations");
+
+    // FOUR: the three non-sign marks plus the one sign whose name resolves.
+    // The guest's second placement names a sign nothing defined and is
+    // skipped — and crucially the three around it still crossed, which is what
+    // would be lost if an unknown name failed the batch.
+    assert_eq!(decos.len(), 4, "got {decos:?}");
+    assert_eq!(
+        decos[3],
+        GutterDecoration::Sign {
+            line: 2,
+            sign: expected
+        },
+        "the name interned to the id the registry had already issued"
+    );
+    assert!(
+        !decos
+            .iter()
+            .any(|d| matches!(d, GutterDecoration::Sign { line: 3, .. })),
+        "the undefined name is skipped, not invented: {decos:?}"
     );
 }

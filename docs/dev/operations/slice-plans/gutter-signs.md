@@ -14,7 +14,7 @@ sign *means*.
 | SG.2a | `GutterDecoration::Sign { line, sign }` — placements, interned; explicit arms in both renderers and at the plugin boundary | ✅ `023b88a9` |
 | SG.2b | The mark cell paints a placed sign — service wiring, published `SignsRenderState`, contention with diagnostics, both renderers | ✅ |
 | SG.3a | WIT: a plugin **defines** signs (`signs` interface, `sign-plugin` world, drain + teardown) | ✅ |
-| SG.3b | WIT: a plugin **places** signs (`gutter-sign` variant arm, name→id resolution at the boundary) | 📝 |
+| SG.3b | WIT: a plugin **places** signs (`gutter-sign` variant arm, name→id resolution at the boundary) | ✅ |
 | SG.4 | Signs subsume the severity and diff columns | 📝 |
 
 ## SG.1 — the model ✅
@@ -106,19 +106,39 @@ the point of asserting the report COUNT rather than only the absence.
 Without this slice SG.3b would be inert — a guest could only place a name
 nothing had defined.
 
-## SG.3b — a plugin places signs 📝
+## SG.3b — a plugin places signs ✅
 
 `record gutter-sign { line: u32, name: string }` and a `sign(gutter-sign)` arm
-on the `gutter-decoration` variant.
+on the `gutter-decoration` variant. A guest has no `SignId` to carry — ids are
+interned by the host — so the wire carries the NAME and the resolution happens
+once, at the boundary and off the render path, which is what lets the native
+placement stay `Copy` with no per-line `String`.
 
-The name→id resolution needs the registry, which context-free
-`WitBoundary::from_wit` does not have — so it happens at the
-`DecorationSource::gutter_decorations` call site, off the render path, which is
-where the design says placements are produced. An unresolvable name skips that
-placement and logs at `debug!` (per-refresh producer ⇒ not `info!`), matching
-the native path's "an unknown id paints nothing" rather than failing the whole
-batch: a definition that has not registered yet is recoverable, a malformed
-record is not.
+- Context-free `WitBoundary::to_wit` / `from_wit` cannot spell a sign, and say
+  so by naming `decoration_to_wit` / `decoration_from_wit` rather than dropping
+  it. The boundary's contract is that a new arm forces a decision at every
+  site; "needs the registry" is a decision worth being told about.
+- The registry-aware pair returns `Ok(None)` for an unresolvable name — a skip,
+  not an error. An `Err` fails the whole batch and would take the plugin's diff
+  and severity marks down with it over one unregistered name. A definition that
+  has not registered yet is recoverable; a malformed record is not, and those
+  still fail. Logged at `debug!`, because a decoration producer runs on every
+  refresh and one bad name at `warn!` would flood at keystroke rate.
+- `WasmDecorationSource` holds the registry HANDLE and loads per call. A
+  snapshot captured at construction would keep answering from the registry as
+  it was when the source was built, so every later plugin's signs would
+  silently skip.
+- `decoration_to_wit` exists for a direction with no consumer yet, so the round
+  trip is testable AS a round trip. Testing one direction would not catch an
+  id↔name mapping that silently disagreed with itself.
+
+Tests: the boundary round trip, the unknown name skipping while its batch
+neighbour survives, a retired id having no name to send, and the registry-free
+conversions refusing by name. End-to-end, the `decorations-guest` fixture now
+emits two sign placements — one defined, one not — so the positive path runs
+through a real component rather than only through `None` answers, and the
+existing unwired-harness test pins that a producer with no registry loses its
+own sign marks and nothing else.
 
 ## SG.4 — signs subsume severity and diff 📝
 

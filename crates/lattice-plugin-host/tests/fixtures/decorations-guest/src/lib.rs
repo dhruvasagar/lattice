@@ -9,7 +9,11 @@
 //!     one proves `line_count` crossed in and the decorations cross back;
 //!   - an empty buffer (`line_count == 0`) returns the WIT typed `err`,
 //!     exercising the graceful "no decorations for this trigger" path (§8), which
-//!     the host maps to keeping the buffer's prior cached snapshot (no flicker).
+//!     the host maps to keeping the buffer's prior cached snapshot (no flicker);
+//!   - SG.3b: a `Sign` placement on line 2 naming a DEFINED sign and another on
+//!     line 3 naming one that does not exist. The pair is the point — the
+//!     defined one must intern to a `SignId`, the undefined one must be skipped
+//!     WITHOUT taking the rest of the batch with it.
 
 wit_bindgen::generate!({
     world: "decorations-plugin",
@@ -19,7 +23,7 @@ wit_bindgen::generate!({
 use exports::lattice::plugin_host::decorations::Guest;
 use lattice::plugin_host::types::{
     DecorationContext, GutterDecoration, GutterDiff, GutterDiffKind, GutterSeverity,
-    GutterSeverityLevel,
+    GutterSeverityLevel, GutterSign,
 };
 
 struct Component;
@@ -43,6 +47,21 @@ impl Guest for Component {
             GutterDecoration::Diff(GutterDiff {
                 line: ctx.line_count - 1,
                 kind: GutterDiffKind::Add,
+            }),
+            // SG.3b: a sign placement, by NAME. The host interns the name to a
+            // `SignId` at the boundary — a guest has no id to carry, which is
+            // exactly what lets the native placement stay `Copy`.
+            GutterDecoration::Sign(GutterSign {
+                line: 2,
+                name: "fixture.mark".to_string(),
+            }),
+            // A name nothing defined. It must be SKIPPED while everything
+            // around it still crosses — if this failed the batch, one
+            // unregistered sign would take the plugin's diff and severity
+            // marks down with it.
+            GutterDecoration::Sign(GutterSign {
+                line: 3,
+                name: "fixture.undefined".to_string(),
             }),
         ])
     }

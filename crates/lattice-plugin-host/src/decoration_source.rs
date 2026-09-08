@@ -13,7 +13,6 @@
 
 use lattice_mode::GutterDecoration;
 
-use crate::WitBoundary;
 use crate::boundary_decoration::project_decoration_context;
 use crate::{DecorationClient, PluginId};
 
@@ -23,6 +22,18 @@ use crate::{DecorationClient, PluginId};
 #[derive(Clone, Debug)]
 pub struct WasmDecorationSource {
     client: DecorationClient,
+    /// SG.3b: the sign registry, for resolving a placement's NAME to the
+    /// interned id the native placement carries.
+    ///
+    /// The HANDLE, not a loaded snapshot — a plugin loading later stores a new
+    /// inner `Arc`, and a captured snapshot would keep answering from the
+    /// registry as it was when this source was built, so every later plugin's
+    /// signs would silently skip.
+    ///
+    /// `Option` for harnesses that wire no registry: sign placements are then
+    /// skipped (logged) while diff and severity marks still cross, which is
+    /// the same degradation every other unwired seam here takes.
+    signs: Option<lattice_mode::SignRegistryHandle>,
 }
 
 /// PL8.E: expose the WASM producer as the native
@@ -52,8 +63,8 @@ impl WasmDecorationSource {
     /// Build the adapter over a client bridge. (No `connect`/`spec` round-trip
     /// like completion — a decoration provider has no id/doc metadata; it is a
     /// pure producer keyed by the mode that owns it.)
-    pub fn new(client: DecorationClient) -> Self {
-        Self { client }
+    pub fn new(client: DecorationClient, signs: Option<lattice_mode::SignRegistryHandle>) -> Self {
+        Self { client, signs }
     }
 
     /// The host-issued id of the plugin behind this source.
@@ -84,6 +95,31 @@ impl WasmDecorationSource {
             Ok(inner) => inner?,
             Err(host_err) => return Err(format!("decoration plugin: {host_err}")),
         };
-        wit.into_iter().map(GutterDecoration::from_wit).collect()
+        // SG.3b: resolve sign NAMES to interned ids here, at the boundary and
+        // off the render path — which is what lets a native placement stay
+        // `Copy` with no per-line `String`. A name nothing has defined yields
+        // `None` and is skipped rather than failing the batch, so one
+        // unregistered sign does not take the plugin's diff and severity marks
+        // down with it.
+        //
+        // Loaded per call, not captured at construction: a plugin loading
+        // later stores a NEW inner `Arc`, and a snapshot taken when this
+        // source was built would silently skip every sign defined after it.
+        let registry = self.signs.as_ref().map(|h| h.load_full());
+        let empty;
+        let registry = match registry.as_deref() {
+            Some(r) => r,
+            None => {
+                empty = lattice_mode::SignRegistry::new();
+                &empty
+            }
+        };
+        let mut out = Vec::with_capacity(wit.len());
+        for w in wit {
+            if let Some(deco) = crate::boundary_decoration::decoration_from_wit(w, registry)? {
+                out.push(deco);
+            }
+        }
+        Ok(out)
     }
 }

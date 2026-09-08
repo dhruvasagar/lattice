@@ -175,6 +175,12 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     // call from a keystroke is a paramount-#1 violation. Annotating this
     // `None` would contradict the decision that WIT already records.
     ("project", Capability::Fs),
+    // SG.3a. `None`: declaring a sign is pure data in one direction — the
+    // guest names a glyph, a fallback glyph, a theme element and a priority,
+    // and the host writes its OWN registry. No filesystem, no network, and the
+    // name is namespaced host-side so a guest cannot reach another plugin's
+    // signs or a native producer's.
+    ("signs", Capability::None),
     ("theme", Capability::None),
     // TR.2b. `None`: a keyed menu is pure data in both directions — the host
     // projects where the menu was opened from, the guest answers rows naming

@@ -434,7 +434,7 @@ async fn decoration_produce_stays_within_ceiling() {
         .await
         .unwrap();
     tokio::spawn(actor.run());
-    let src = WasmDecorationSource::new(client);
+    let src = WasmDecorationSource::new(client, None);
 
     // Warm, then measure the median produce round-trip (project ctx → guest
     // producer → convert; no walk).

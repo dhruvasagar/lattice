@@ -3373,7 +3373,10 @@ impl PluginLoader {
         // guest call (a no-op when unwired).
         let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());
-        let source = WasmDecorationSource::new(client);
+        // SG.3b: hand the producer the sign registry so a placement naming
+        // one of the plugin's own signs resolves. The HANDLE, so a plugin
+        // loading after this one still has its signs seen.
+        let source = WasmDecorationSource::new(client, self.env.sign_registry.clone());
         let id = source.plugin_id();
 
         // Copy-on-write RCU into the wait-free registry (load → clone → register

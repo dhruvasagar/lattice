@@ -182,10 +182,21 @@ element its signs name has already done so and its signs paint in their own
 colours on the first frame. That is a nicety, not a requirement — the
 `gutter.sign` fallback is what makes it safe either way.
 
+A guest **places** signs by name too (SG.3b): `gutter-decoration` carries a
+`sign(gutter-sign)` arm whose payload is `(line, name)`. A guest has no id to
+carry, so the host interns the name at the boundary — off the render path,
+which is the whole reason a native placement stays `Copy` with no per-line
+`String`.
+
+A name nothing has defined is **skipped**, not an error. An error fails the
+producer's whole batch and would take the plugin's diff and severity marks down
+with it over one unregistered name; a definition that has not registered yet is
+recoverable, and the skip matches what the render path already does with an
+unknown id. The context-free `WitBoundary` conversions cannot spell a sign at
+all and refuse by naming the registry-aware pair, so a new arm still forces a
+decision at every site rather than being dropped silently.
+
 ## 8. Open
 
-- **SG.3b** — a guest can define signs but cannot yet *place* them.
-  `boundary_decoration.rs` returns an explicit `Err` for the host→guest
-  direction rather than dropping a placement it cannot spell.
 - **Subsuming severity and diff** (§3) stays open, and is the direction this
   mechanism is pointed at.

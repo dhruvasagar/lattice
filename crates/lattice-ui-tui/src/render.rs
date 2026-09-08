@@ -4687,9 +4687,10 @@ pub(crate) fn compose_pane_lines(
     // contributions into per-line maps. Replaces per-line RenderState
     // reads from render_diff_sign_cell / render_diagnostic_severity_cell
     // — both now read the maps, not the render-state directly.
-    let (diff_gutter, severity_gutter) = {
+    let (diff_gutter, severity_gutter, sign_gutter) = {
         use lattice_mode::{
             DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel, ServiceRegistry,
+            SignId,
         };
         let mut services = ServiceRegistry::new();
         let rs_deco = app.render_state.load();
@@ -4725,6 +4726,36 @@ pub(crate) fn compose_pane_lines(
         let modes_rs = rs_deco.modes.clone();
         let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
         let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
+        // SG.2b: one cell holds one sign, so contention is resolved HERE,
+        // as placements arrive, rather than by whoever paints last.
+        // `winning_sign` breaks equal priorities on name, so the glyph a
+        // line shows does not depend on which producer the mode walk
+        // reached first — or on a `HashMap` reseeding between runs.
+        let signs_rs = rs_deco.signs.clone();
+        let mut sign_map: std::collections::HashMap<u32, SignId> = Default::default();
+        fn place_sign(
+            registry: &lattice_mode::SignRegistry,
+            map: &mut std::collections::HashMap<u32, SignId>,
+            line: u32,
+            sign: SignId,
+        ) {
+            // A retired id resolves to nothing and must not displace a live
+            // sign on the same line — SG.1 retires rather than reuses
+            // precisely so a stale placement paints nothing.
+            let Some(incoming) = registry.get(sign) else {
+                return;
+            };
+            let held = map.get(&line).and_then(|id| registry.get(*id));
+            let takes_it = match held {
+                Some(held) => {
+                    std::sync::Arc::ptr_eq(lattice_mode::winning_sign(held, incoming), incoming)
+                }
+                None => true,
+            };
+            if takes_it {
+                map.insert(line, sign);
+            }
+        }
         if let Some(active) = modes_rs.map.get(&ctx.buffer_id) {
             let registry = &modes_rs.mode_registry;
             let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
@@ -4749,11 +4780,9 @@ pub(crate) fn compose_pane_lines(
                                     })
                                     .or_insert(level);
                             }
-                            // SG.2b paints these. Enumerated rather than left
-                            // to a `_` so the next variant still forces a
-                            // decision here — aligned by fallback, not by
-                            // silence.
-                            GutterDecoration::Sign { .. } => {}
+                            GutterDecoration::Sign { line, sign } => {
+                                place_sign(&signs_rs.registry, &mut sign_map, line, sign);
+                            }
                         }
                     }
                 }
@@ -4782,13 +4811,14 @@ pub(crate) fn compose_pane_lines(
                                 })
                                 .or_insert(*level);
                         }
-                        // SG.2b paints these — see the native walk above.
-                        GutterDecoration::Sign { .. } => {}
+                        GutterDecoration::Sign { line, sign } => {
+                            place_sign(&signs_rs.registry, &mut sign_map, *line, *sign);
+                        }
                     }
                 }
             }
         }
-        (diff_map, sev_map)
+        (diff_map, sev_map, sign_map)
     };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     // Sticky pre-pass: render fixed-top rows before the scrollable content.
@@ -5572,8 +5602,11 @@ pub(crate) fn compose_pane_lines(
         // `ctx.buffer_id` so an inactive pane shows ITS buffer's
         // severity glyph (was a blank cell pre-merge). Active pane's
         // id is the active doc → byte-identical.
-        let severity_cell =
-            render_diagnostic_severity_cell(severity_gutter.get(&line_idx).copied(), view);
+        let severity_cell = render_mark_cell(
+            severity_gutter.get(&line_idx).copied(),
+            sign_gutter.get(&line_idx).copied(),
+            view,
+        );
         // D.3.d.1: diff sign cell sits LEFT of line numbers
         // (between severity and gutter) — matches the editor
         // convention used by Vim signcolumn, Helix, Zed,
@@ -6599,15 +6632,32 @@ fn render_diff_sign_cell(
     Span::styled(glyph.to_string(), style)
 }
 
-/// Build the severity-column cell. MO.4.a: `level` is the
-/// pre-computed `GutterSeverityLevel` for this line from the mode-walk
-/// decoration pre-loop; `None` → blank cell.
-fn render_diagnostic_severity_cell(
+/// Build the gutter's **mark cell**. MO.4.a: `level` is the pre-computed
+/// `GutterSeverityLevel` for this line from the mode-walk decoration
+/// pre-loop. SG.2b: `sign` is that loop's winning `SignId` for the line.
+/// Neither → blank cell.
+///
+/// One cell, shared. A diagnostic and a sign both mark a line, and giving
+/// signs their own column would cost every buffer a column of content
+/// forever for a mechanism most buffers never use — while making a plugin's
+/// sign a second-class occupant of a gutter it should share with the
+/// built-ins. `SignDefinition::priority` is what resolves the contention,
+/// which is the same answer vim gives and the one users arrive with.
+fn render_mark_cell(
     level: Option<lattice_mode::GutterSeverityLevel>,
+    sign: Option<lattice_mode::SignId>,
     view: &FrameView<'_>,
 ) -> Span<'static> {
     use lattice_mode::GutterSeverityLevel;
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
+    // SG.2b: the sign takes the cell when there is no diagnostic to
+    // displace, or when it outranks one. `sign_beats_severity` is
+    // strictly-greater, so a tie leaves the error visible.
+    if let Some(sign) = sign
+        && let Some(cell) = render_sign_cell(sign, level.is_none(), view)
+    {
+        return cell;
+    }
     let Some(level) = level else {
         return blank;
     };
@@ -6622,6 +6672,50 @@ fn render_diagnostic_severity_cell(
         GutterSeverityLevel::Hint => (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style),
     };
     Span::styled(glyph.to_string(), style)
+}
+
+/// SG.2b — the mark cell for a placed sign, or `None` when it does not get
+/// the cell.
+///
+/// `cell_is_free` says no diagnostic wants it. When one does, only a sign
+/// that outranks [`lattice_mode::SEVERITY_SIGN_PRIORITY`] takes it.
+///
+/// Returns `None` for a retired id too: SG.1 retires ids rather than
+/// reusing them so that a placement produced before an `undefine` paints
+/// NOTHING, where a reused slot would have painted some later sign's glyph.
+/// A blank cell is a visible absence; the wrong glyph is a lie.
+fn render_sign_cell(
+    sign: lattice_mode::SignId,
+    cell_is_free: bool,
+    view: &FrameView<'_>,
+) -> Option<Span<'static>> {
+    let signs = &view.app.render_state.load().signs;
+    let def = signs.registry.get(sign)?;
+    if !cell_is_free && !lattice_mode::sign_beats_severity(def) {
+        return None;
+    }
+    // The theme decides the COLOUR, the font capability decides the GLYPH.
+    // Both palettes are the same cell width by the icon-degradation rule, so
+    // toggling `ui.nerd_fonts` cannot shift the gutter's geometry.
+    let glyph = def.glyph_char(view.app.theme.nerd_fonts).to_string();
+    let rs = view.app.render_state.load();
+    // An unregistered element falls back to `gutter.sign` rather than to no
+    // style: a sign was placed to tell the user something, and painting it
+    // invisibly is the one outcome that loses the information entirely
+    // rather than merely showing it in the wrong tone.
+    let element = signs
+        .elements
+        .get(&sign)
+        .copied()
+        .unwrap_or(rs.theme_ids.gutter_sign);
+    let style = rs
+        .resolved_theme
+        .get(element)
+        .fg
+        .map(crate::theme::host_color_to_ratatui)
+        .map(|c| TuiStyle::default().fg(c))
+        .unwrap_or_default();
+    Some(Span::styled(glyph, style))
 }
 
 /// Diagnostics that overlap `line_idx` of `buffer_id`. Used by the
@@ -12244,6 +12338,187 @@ mod tests {
                 "expected suppressed; got tinted span: {span:?}"
             );
         }
+    }
+
+    /// SG.2b: define a sign and return its id. Goes through the registered
+    /// `SignRegistryHandle` service — the same handle a provider's install
+    /// or a plugin's load writes — so a test that passes here proves the
+    /// boot wiring, not just the paint code.
+    fn define_sign(app: &App, name: &str, glyph: char, priority: i32) -> lattice_mode::SignId {
+        let handle = app
+            .editor
+            .services
+            .get::<lattice_mode::SignRegistryHandle>()
+            .expect("SG.2b: boot registers the sign registry service");
+        let mut reg = (**handle.load()).clone();
+        let id = reg.define(lattice_mode::SignDefinition {
+            name: name.to_string(),
+            text: glyph.to_string(),
+            fallback: glyph.to_string(),
+            theme_element: format!("gutter.sign.{name}"),
+            priority,
+        });
+        handle.store(std::sync::Arc::new(reg));
+        id
+    }
+
+    /// SG.2b: place signs on lines through the WASM decoration cache — the
+    /// path a plugin's producer writes, read wait-free by the renderer.
+    fn place_signs(app: &mut App, placements: &[(u32, lattice_mode::SignId)]) {
+        use lattice_host::per_buffer_cache::PerBufferCacheExt;
+        let buffer_id = app.ad().document_buffer_id;
+        let cache = &app.editor.wasm_decorations.cache;
+        cache.insert_for(
+            buffer_id,
+            lattice_host::wasm_decorations::WasmGutterDecorationCache {
+                document_version: 0,
+                decorations: placements
+                    .iter()
+                    .map(|(line, sign)| lattice_mode::GutterDecoration::Sign {
+                        line: *line,
+                        sign: *sign,
+                    })
+                    .collect(),
+            },
+        );
+        app.editor.publish_render_state();
+    }
+
+    #[test]
+    fn a_placed_sign_paints_in_the_gutter_mark_cell() {
+        let mut app = app_with("fn main() {}\nlet x = 1;\n", 5);
+        let id = define_sign(&app, "test-mark", '◆', 5);
+        place_signs(&mut app, &[(0, id)]);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('◆'), "expected the sign glyph; got {row0:?}");
+        let row1 = line_text(&lines[1]);
+        assert!(
+            !row1.contains('◆'),
+            "an unmarked line must stay clean: {row1:?}"
+        );
+    }
+
+    #[test]
+    fn a_default_priority_sign_yields_the_cell_to_a_diagnostic() {
+        // The two share one cell, so one of them loses it. `sign_beats_severity`
+        // is strictly-greater: a sign at vim's default priority ties with the
+        // diagnostic and the ERROR stays visible, because an error is a state
+        // of the user's code they did not ask for and must not lose.
+        let mut app = app_with("fn main() {}\n", 5);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            7,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom",
+        );
+        let id = define_sign(&app, "tie", '◆', lattice_mode::SEVERITY_SIGN_PRIORITY);
+        place_signs(&mut app, &[(0, id)]);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('■'), "the error must hold the cell: {row0:?}");
+        assert!(!row0.contains('◆'), "the sign must yield: {row0:?}");
+    }
+
+    #[test]
+    fn a_higher_priority_sign_takes_the_cell_from_a_diagnostic() {
+        // The escape hatch for a producer that genuinely outranks an error —
+        // a debugger stopped on this very line. It says so by exceeding
+        // `SEVERITY_SIGN_PRIORITY`, not by being placed later.
+        let mut app = app_with("fn main() {}\n", 5);
+        seed_diagnostic(
+            &mut app,
+            0,
+            0,
+            7,
+            lattice_lsp::DiagnosticSeverity::ERROR,
+            "boom",
+        );
+        let id = define_sign(&app, "stop", '◆', lattice_mode::SEVERITY_SIGN_PRIORITY + 1);
+        place_signs(&mut app, &[(0, id)]);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('◆'), "the sign must hold the cell: {row0:?}");
+        assert!(!row0.contains('■'), "the error must yield: {row0:?}");
+    }
+
+    #[test]
+    fn the_higher_priority_sign_wins_the_cell() {
+        // Two producers, one line. The winner is the higher priority, not
+        // whichever the decoration walk reached last.
+        let mut app = app_with("fn main() {}\n", 5);
+        let low = define_sign(&app, "low", '◆', 1);
+        let high = define_sign(&app, "high", '■', 9);
+        place_signs(&mut app, &[(0, high), (0, low)]);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(row0.contains('■'), "higher priority must win: {row0:?}");
+        assert!(!row0.contains('◆'), "lower priority must lose: {row0:?}");
+    }
+
+    #[test]
+    fn a_retired_sign_id_paints_nothing_rather_than_a_later_sign() {
+        // SG.1 retires ids instead of reusing them so that a placement
+        // produced before an `undefine` paints NOTHING. A reused slot would
+        // paint some later sign's glyph, and a wrong answer in place of the
+        // right one is worse than a blank — it is also the silent one.
+        let mut app = app_with("fn main() {}\n", 5);
+        let doomed = define_sign(&app, "doomed", '◆', 5);
+        {
+            let handle = app
+                .editor
+                .services
+                .get::<lattice_mode::SignRegistryHandle>()
+                .unwrap();
+            let mut reg = (**handle.load()).clone();
+            reg.undefine("doomed");
+            // A later definition must not inherit the retired slot.
+            reg.define(lattice_mode::SignDefinition {
+                name: "successor".into(),
+                text: "■".into(),
+                fallback: "■".into(),
+                theme_element: "gutter.sign.successor".into(),
+                priority: 5,
+            });
+            handle.store(std::sync::Arc::new(reg));
+        }
+        place_signs(&mut app, &[(0, doomed)]);
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            !row0.contains('◆'),
+            "the retired sign must not paint: {row0:?}"
+        );
+        assert!(
+            !row0.contains('■'),
+            "and must not paint its successor's glyph either: {row0:?}"
+        );
+    }
+
+    #[test]
+    fn a_sign_does_not_shift_the_content_column() {
+        // The reason signs share the mark cell rather than getting their own
+        // column: a gutter that widens when a sign arrives is a pixel change
+        // to content the user did not edit. Same row, with and without.
+        let mut app = app_with("fn main() {}\n", 5);
+        let before = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80)[0]);
+        let id = define_sign(&app, "shift", '◆', 5);
+        place_signs(&mut app, &[(0, id)]);
+        let after = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80)[0]);
+        // Compare the CHARACTER column, not the byte offset — the glyph is
+        // multi-byte, and a byte-offset comparison would report a shift the
+        // terminal never renders.
+        let col = |row: &str| {
+            let idx = row.find("fn main").expect("content row");
+            row[..idx].chars().count()
+        };
+        assert_eq!(
+            col(&before),
+            col(&after),
+            "the sign must not move the content: {before:?} vs {after:?}"
+        );
     }
 
     #[test]

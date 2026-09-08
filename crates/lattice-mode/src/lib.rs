@@ -160,7 +160,14 @@ pub use crate::contributions::{
     GutterSeverityLevel,
     Keymap,
     KeymapBinding,
+    SEVERITY_SIGN_PRIORITY,
+    SignDefinition,
+    SignId,
+    SignRegistry,
+    SignRegistryHandle,
     Subscription, // MO.4.c: real RAII type; use in mode Guards
+    sign_beats_severity,
+    winning_sign,
 };
 pub use crate::decoration_source::{
     AsyncGutterDecorationSource, DecorationEpoch, DecorationEpochHandle, DecorationFuture,

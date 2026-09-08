@@ -1927,7 +1927,7 @@ impl EditorView {
         // MO.4.a: gutter-decoration pre-loop. Walk active modes for this
         // pane's buffer once; accumulate GutterDecoration contributions into
         // per-line maps. Replaces per-line render_state reads inside gutter_meta.
-        let (diff_gutter, severity_gutter) = {
+        let (diff_gutter, severity_gutter, sign_gutter, signs_state) = {
             use lattice_mode::{
                 DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
                 ServiceRegistry,
@@ -1963,6 +1963,36 @@ impl EditorView {
             let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
             let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> =
                 Default::default();
+            // SG.2b: one cell holds one sign, so contention is resolved here
+            // as placements arrive rather than by whoever paints last.
+            // `winning_sign` breaks equal priorities on name, so the glyph a
+            // line shows does not depend on which producer the mode walk
+            // reached first. Lockstep with the TUI peer's `place_sign`.
+            let signs_rs = rs_guard.signs.clone();
+            let mut sign_map: std::collections::HashMap<u32, lattice_mode::SignId> =
+                Default::default();
+            fn place_sign(
+                registry: &lattice_mode::SignRegistry,
+                map: &mut std::collections::HashMap<u32, lattice_mode::SignId>,
+                line: u32,
+                sign: lattice_mode::SignId,
+            ) {
+                // A retired id resolves to nothing and must not displace a
+                // live sign on the same line.
+                let Some(incoming) = registry.get(sign) else {
+                    return;
+                };
+                let held = map.get(&line).and_then(|id| registry.get(*id));
+                let takes_it = match held {
+                    Some(held) => {
+                        std::sync::Arc::ptr_eq(lattice_mode::winning_sign(held, incoming), incoming)
+                    }
+                    None => true,
+                };
+                if takes_it {
+                    map.insert(line, sign);
+                }
+            }
             if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
                 let registry = &rs_guard.modes.mode_registry;
                 let mut all_ids: Vec<lattice_mode::ModeId> = Vec::new();
@@ -1987,12 +2017,9 @@ impl EditorView {
                                         })
                                         .or_insert(level);
                                 }
-                                // SG.2b paints these, in the same patch as the
-                                // TUI peer. Enumerated rather than left to a
-                                // `_` so the next variant still forces a
-                                // decision here — aligned by fallback, not by
-                                // silence.
-                                GutterDecoration::Sign { .. } => {}
+                                GutterDecoration::Sign { line, sign } => {
+                                    place_sign(&signs_rs.registry, &mut sign_map, line, sign);
+                                }
                             }
                         }
                     }
@@ -2021,13 +2048,14 @@ impl EditorView {
                                     })
                                     .or_insert(*level);
                             }
-                            // SG.2b paints these — see the native walk above.
-                            GutterDecoration::Sign { .. } => {}
+                            GutterDecoration::Sign { line, sign } => {
+                                place_sign(&signs_rs.registry, &mut sign_map, *line, *sign);
+                            }
                         }
                     }
                 }
             }
-            (diff_map, sev_map)
+            (diff_map, sev_map, sign_map, signs_rs)
         };
         // T.6.t: hoist the four severity glyphs out of the per-line
         // closure — one typed-option read each instead of O(viewport)
@@ -2044,6 +2072,14 @@ impl EditorView {
         let glyph_hint = diagnostic_glyph_option::<
             lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
         >(&config, '·');
+        // SG.2b: hoisted out of the per-line closure — the palette is a
+        // property of the session, not of a row, and re-reading it per
+        // visible line would put a typed-option lookup on the paint path
+        // for a value that cannot change within a frame.
+        let nerd_fonts = config
+            .get_typed::<lattice_host::ui::theme_options::UiNerdFonts>()
+            .map(|v| *v)
+            .unwrap_or(false);
         // Fold-marker colours, resolved once per pane from the theme.
         // Muted by cross-editor convention (open dimmer than closed);
         // the defaults mirror the `overlay` / `subtext` palette tones so
@@ -2091,32 +2127,65 @@ impl EditorView {
                         }
                     }
                 });
+                // SG.2b: the gutter's mark cell is shared — a placed sign
+                // takes it when no diagnostic wants it, or when it outranks
+                // one (`sign_beats_severity` is strictly-greater, so a tie
+                // leaves the error visible). Resolved before the severity
+                // read below so the two peers agree cell-for-cell. A
+                // retired id resolves to `None` and paints nothing rather
+                // than some later sign's glyph.
+                let sign_mark = sign_gutter.get(&(line_idx as u32)).copied().and_then(|id| {
+                    let def = signs_state.registry.get(id)?;
+                    if severity_gutter.contains_key(&(line_idx as u32))
+                        && !lattice_mode::sign_beats_severity(def)
+                    {
+                        return None;
+                    }
+                    // An unregistered element falls back to `gutter.sign`
+                    // rather than to no style: a sign was placed to say
+                    // something, and painting it invisibly loses that
+                    // entirely rather than showing it in the wrong tone.
+                    let element = signs_state
+                        .elements
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(theme_ids.gutter_sign);
+                    let color = resolved_theme
+                        .get(element)
+                        .fg
+                        .map(|c| c.to_rgb_u32(0x9399b2))
+                        .unwrap_or(0x9399b2);
+                    Some((def.glyph_char(nerd_fonts), color))
+                });
                 // MO.4.a: read from pre-built mode-walk map.
-                let severity = severity_gutter
-                    .get(&(line_idx as u32))
-                    .copied()
-                    .map(|level| {
-                        use lattice_mode::GutterSeverityLevel;
-                        // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
-                        // option chars; style from the resolved table.
-                        let (glyph, style) = match level {
-                            GutterSeverityLevel::Error => {
-                                (glyph_error, resolved_theme.get(theme_ids.diagnostic_error))
-                            }
-                            GutterSeverityLevel::Warning => (
-                                glyph_warning,
-                                resolved_theme.get(theme_ids.diagnostic_warning),
-                            ),
-                            GutterSeverityLevel::Info => {
-                                (glyph_info, resolved_theme.get(theme_ids.diagnostic_info))
-                            }
-                            GutterSeverityLevel::Hint => {
-                                (glyph_hint, resolved_theme.get(theme_ids.diagnostic_hint))
-                            }
-                        };
-                        let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
-                        (glyph, color)
-                    });
+                let severity = sign_mark.or_else(|| {
+                    severity_gutter
+                        .get(&(line_idx as u32))
+                        .copied()
+                        .map(|level| {
+                            use lattice_mode::GutterSeverityLevel;
+                            // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
+                            // option chars; style from the resolved table.
+                            let (glyph, style) = match level {
+                                GutterSeverityLevel::Error => {
+                                    (glyph_error, resolved_theme.get(theme_ids.diagnostic_error))
+                                }
+                                GutterSeverityLevel::Warning => (
+                                    glyph_warning,
+                                    resolved_theme.get(theme_ids.diagnostic_warning),
+                                ),
+                                GutterSeverityLevel::Info => {
+                                    (glyph_info, resolved_theme.get(theme_ids.diagnostic_info))
+                                }
+                                GutterSeverityLevel::Hint => {
+                                    (glyph_hint, resolved_theme.get(theme_ids.diagnostic_hint))
+                                }
+                            };
+                            let color =
+                                style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
+                            (glyph, color)
+                        })
+                });
                 let display_line = display_line_numbers_for_meta
                     .as_ref()
                     .and_then(|m| m.get(line_idx).copied())

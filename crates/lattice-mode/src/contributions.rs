@@ -162,7 +162,10 @@ pub struct SignDefinition {
     /// (`org-agenda-mark`), unenforced — last definition wins, as with every
     /// other registry here.
     pub name: String,
-    /// The glyph when `ui.nerd_fonts` is on. One or two cells.
+    /// The glyph when `ui.nerd_fonts` is on. **One cell** — SG.2b put signs
+    /// in the gutter's single shared mark cell, so anything wider would push
+    /// every line of content right. [`Self::glyph_char`] is what the
+    /// renderers paint and it takes the first character.
     pub text: String,
     /// The BMP fallback, used when it is off — **the same cell width**, per the
     /// icon-degradation rule, so toggling the option cannot shift the gutter's
@@ -193,6 +196,20 @@ impl SignDefinition {
             &self.fallback
         }
     }
+
+    /// SG.2b — the single character the renderers paint into the gutter's
+    /// mark cell.
+    ///
+    /// The cell is one column, so this TRUNCATES rather than trusting a
+    /// producer to have obeyed the one-cell rule. A definition that ignores
+    /// it loses its tail; the alternative is a gutter that silently widens
+    /// and pushes every line of content sideways, which is a pixel change to
+    /// content the user did not edit and costs far more than the glyph.
+    /// An empty definition paints a blank, so a producer can place a sign
+    /// that reserves the cell without drawing in it.
+    pub fn glyph_char(&self, nerd_fonts: bool) -> char {
+        self.glyph(nerd_fonts).chars().next().unwrap_or(' ')
+    }
 }
 
 /// SG.1 — a definition's interned handle.
@@ -210,7 +227,11 @@ pub struct SignId(pub u32);
 /// Read on the render path (one lookup per placed line) and written rarely (a
 /// provider registering at load), which is the `ArcSwap` shape every other
 /// contribution registry here uses.
-#[derive(Debug, Default)]
+/// `Clone` because the `ArcSwap` write path is copy-on-write: a producer
+/// defining a sign clones the current snapshot, mutates, and stores. The
+/// clone is `Vec<Option<Arc<_>>>` + the name index — Arc bumps, not glyph
+/// copies — and it happens at registration, never on the render path.
+#[derive(Debug, Default, Clone)]
 pub struct SignRegistry {
     /// Indexed by [`SignId`]. Never shrinks: an id handed out must keep
     /// resolving, or an in-flight placement from a producer that ran before an
@@ -279,6 +300,20 @@ impl SignRegistry {
         self.defs.get(id.0 as usize)?.as_ref()
     }
 
+    /// Every live definition with its id, for a consumer that has to
+    /// pre-resolve something per definition — the publish path turning each
+    /// `theme_element` into an `ElementId` (SG.2b). Skips retired ids, so a
+    /// caller never has to re-check `get`. Order is id order, which is
+    /// definition order; nothing here depends on it, but it is stable rather
+    /// than hash-dependent, which is the property that keeps such a caller's
+    /// tests from reseeding.
+    pub fn iter(&self) -> impl Iterator<Item = (SignId, &std::sync::Arc<SignDefinition>)> {
+        self.defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| d.as_ref().map(|d| (SignId(i as u32), d)))
+    }
+
     /// How many definitions are live. Retired ids do not count.
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -292,6 +327,34 @@ impl SignRegistry {
 /// Register **and** look up with this exact alias (the `ServiceRegistry` TypeId
 /// rule).
 pub type SignRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<SignRegistry>>;
+
+/// SG.2b — the priority at which the built-in diagnostic severity mark holds
+/// the gutter's mark cell.
+///
+/// Signs and diagnostics share ONE cell rather than each getting a column,
+/// because a column costs every buffer a column of content forever whether or
+/// not anything is ever placed in it, and because a diagnostic *is* a mark —
+/// giving plugin signs a segregated column beside it would make them
+/// second-class occupants of a gutter they should share. Contention is what
+/// `priority` is for, and vim resolves exactly this contention the same way.
+///
+/// `10` is vim's default sign priority, so a producer that ships the vim
+/// default lands level with diagnostics, which is the intuition a user
+/// carries in.
+pub const SEVERITY_SIGN_PRIORITY: i32 = 10;
+
+/// SG.2b — may this sign take the mark cell from a diagnostic on the same
+/// line?
+///
+/// **Strictly greater**, so a tie goes to the diagnostic. A diagnostic is a
+/// state of the user's code that they need to see and did not ask for; a sign
+/// is something a producer chose to show. When neither has a claim the
+/// other lacks, hiding the error is the more expensive mistake. A producer
+/// that genuinely outranks an error — a debugger stopped on this very line —
+/// says so by exceeding [`SEVERITY_SIGN_PRIORITY`].
+pub fn sign_beats_severity(def: &SignDefinition) -> bool {
+    def.priority > SEVERITY_SIGN_PRIORITY
+}
 
 /// SG.1 — pick the winner when several signs land on one line.
 ///
@@ -419,5 +482,58 @@ mod sign_tests {
             "both palettes occupy the same cell width, so toggling \
              `ui.nerd_fonts` cannot shift the gutter"
         );
+    }
+
+    /// SG.2b: the mark cell is one column, so a definition that ignores the
+    /// one-cell rule loses its tail rather than widening the gutter and
+    /// pushing every line of content sideways.
+    #[test]
+    fn a_wide_glyph_is_truncated_rather_than_widening_the_gutter() {
+        let mut d = def("wide", 1);
+        d.text = "ab".into();
+        d.fallback = "cd".into();
+        assert_eq!(d.glyph_char(true), 'a');
+        assert_eq!(d.glyph_char(false), 'c');
+    }
+
+    /// An empty definition reserves the cell without drawing in it.
+    #[test]
+    fn an_empty_glyph_paints_a_blank() {
+        let mut d = def("blank", 1);
+        d.text = String::new();
+        d.fallback = String::new();
+        assert_eq!(d.glyph_char(true), ' ');
+        assert_eq!(d.glyph_char(false), ' ');
+    }
+
+    /// SG.2b: signs and diagnostics share one cell, and the tie goes to the
+    /// diagnostic. An error is a state of the user's code they did not ask
+    /// for; when neither has a claim the other lacks, hiding the error is
+    /// the more expensive mistake.
+    #[test]
+    fn a_tie_with_a_diagnostic_leaves_the_error_visible() {
+        assert!(!sign_beats_severity(&def("tie", SEVERITY_SIGN_PRIORITY)));
+        assert!(!sign_beats_severity(&def(
+            "below",
+            SEVERITY_SIGN_PRIORITY - 1
+        )));
+        assert!(sign_beats_severity(&def(
+            "above",
+            SEVERITY_SIGN_PRIORITY + 1
+        )));
+    }
+
+    /// The publish path pre-resolves one theme element per DEFINITION, so it
+    /// needs to walk them — and must not be handed a retired id, which
+    /// resolves to nothing.
+    #[test]
+    fn iter_yields_live_definitions_and_skips_retired_ids() {
+        let mut r = SignRegistry::new();
+        let a = r.define(def("a", 1));
+        let b = r.define(def("b", 2));
+        r.undefine("a");
+        let seen: Vec<SignId> = r.iter().map(|(id, _)| id).collect();
+        assert_eq!(seen, vec![b], "the retired id must not be walked");
+        assert!(r.get(a).is_none());
     }
 }

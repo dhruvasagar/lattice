@@ -95,6 +95,19 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
+**Gutter signs (2026-09-08, SG.1–SG.2b landed).** A generic sign mechanism —
+vim's `:sign define` / `:sign place`, with the host owning what a sign IS and
+no built-in opinion about what any sign MEANS, so a provider's marks, a
+plugin's breakpoints and a future built-in all place through one registry and
+are styled through the ordinary theme registry. A placed sign shares the
+gutter's mark cell with diagnostics and `priority` resolves the contention
+(strictly-greater, so a tie leaves the error visible); giving signs their own
+column would have cost every buffer a column of content forever for a
+mechanism most buffers never use. Design:
+[`../architecture/gutter-signs.md`](../architecture/gutter-signs.md); slice
+plan [`slice-plans/gutter-signs.md`](slice-plans/gutter-signs.md). SG.3 (the
+WIT spelling) and SG.4 (signs subsuming the severity + diff columns) are open.
+
 **Indentation guides (2026-08-16, IG.0–IG.6 landed; branch
 `dhruva/indent-guides`).** A vertical rule down the whitespace at each level
 of indentation, with the block enclosing the cursor drawn brighter, in both

@@ -1254,6 +1254,33 @@ impl Editor {
                 .map(|r| r.resolved())
                 .unwrap_or_default(),
             theme_ids: self.builtin_element_ids,
+            // SG.2b: snapshot the sign definitions and resolve each one's
+            // `theme_element` to an `ElementId` HERE, on the actor thread.
+            // The render path then paints a placement with two array
+            // indexes and no string hashing. An element the theme does not
+            // know is simply absent from the map; the renderer falls back
+            // to `gutter.sign` rather than skipping the glyph, because a
+            // sign that was placed to say something must not be invisible.
+            signs: {
+                let registry = self
+                    .services
+                    .get::<lattice_mode::SignRegistryHandle>()
+                    .map(|r| r.load_full())
+                    .unwrap_or_default();
+                let theme = self.services.get::<crate::ui::theme::ThemeRegistryHandle>();
+                let mut elements = std::collections::HashMap::new();
+                if let Some(theme) = theme.as_ref() {
+                    for (id, def) in registry.iter() {
+                        if let Some(elem) = theme.id(&def.theme_element.clone().into()) {
+                            elements.insert(id, elem);
+                        }
+                    }
+                }
+                std::sync::Arc::new(crate::render_state::SignsRenderState {
+                    registry,
+                    elements: std::sync::Arc::new(elements),
+                })
+            },
             // Slice 3c.final.B.7: messages + modeline reads lifted
             // off `read_editor` round-trips. `Arc::new` per publish
             // keeps each sub-state's clone cheap (Arc bump only);

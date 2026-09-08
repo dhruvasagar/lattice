@@ -1994,6 +1994,18 @@ impl Editor {
         // `plugin_loader_captures_every_drain_service` boot pin is what caught
         // the original ordering.
         boot.register_service::<lattice_theme::ThemeRegistryHandle>(theme_registry);
+        // SG.2b: the sign-definition registry, registered on the same
+        // alias it is looked up on (the ServiceRegistry Arc/TypeId
+        // rule). Registered here rather than beside `mode_registry` on
+        // `Editor` because a sign definition is written by whoever
+        // places signs — a mode, a provider, a plugin's install — and
+        // read by the publish path; nothing about it belongs to the
+        // dispatcher. Empty until a producer defines one, which is
+        // what a mechanism with no built-in meanings looks like at
+        // rest.
+        boot.register_service::<lattice_mode::SignRegistryHandle>(std::sync::Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::SignRegistry::new()),
+        ));
         // never a failed boot — see `lattice_plugin_loader::install`.
         lattice_plugin_loader::install(&mut boot);
         // (BC.3b: the `ClaudeCodeServerHandle` service is registered by

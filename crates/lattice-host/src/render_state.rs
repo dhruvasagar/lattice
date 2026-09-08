@@ -143,6 +143,10 @@ pub struct RenderState {
     /// with [`Self::resolved_theme`] so a read is
     /// `resolved_theme.get(theme_ids.x)`.
     pub theme_ids: crate::ui::theme::BuiltinElementIds,
+    /// SG.2b: sign definitions + their pre-resolved theme elements, so a
+    /// `GutterDecoration::Sign` paints without a name lookup on the render
+    /// path. See [`SignsRenderState`].
+    pub signs: Arc<SignsRenderState>,
     /// S2.1 (2026-05-26): cell-grid renderer substrate state.
     /// Carries the published `CellMatrix` cell + the inputs the
     /// cell-builder worker (S2.2+) reads to rebuild. See
@@ -256,6 +260,7 @@ impl Default for RenderState {
             lifecycle: Arc::new(LifecycleRenderState::default()),
             resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
             theme_ids: crate::ui::theme::BuiltinElementIds::default(),
+            signs: Arc::new(SignsRenderState::default()),
             cells: Arc::new(arc_swap::ArcSwap::from_pointee(CellsRenderState::default())),
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
@@ -2212,6 +2217,41 @@ pub struct ModesRenderState {
     /// publish. Lets the renderer call `mode.status_line_items()`
     /// without an actor round-trip.
     pub mode_registry: std::sync::Arc<lattice_mode::ModeRegistry>,
+}
+
+/// SG.2b — everything a renderer needs to paint a `GutterDecoration::Sign`,
+/// resolved on the actor thread so the render path does neither a string
+/// hash nor a theme lookup by name.
+///
+/// A placement carries a [`lattice_mode::SignId`]; painting it needs the
+/// definition (for the glyph) and a [`crate::ui::theme::ElementId`] (for the
+/// colour). The id is what the theme's `by_name` map answers, and asking it
+/// per placed line per frame would put a `HashMap<String, _>` probe on the
+/// hot path to re-derive something that changes only when a sign is defined
+/// or a theme is loaded. So it is resolved once, here.
+///
+/// **Rebuilt every publish rather than version-cached**, deliberately: the
+/// map is keyed by *definitions*, of which there are single digits (a
+/// provider registers its vocabulary at load), not by placements, of which
+/// there is one per visible marked line. Caching it would need an
+/// invalidation axis folding the sign registry's version AND the theme's,
+/// and a missed bump there paints a stale glyph in the wrong colour — the
+/// failure mode is silent and the saving is a handful of string hashes on
+/// the *publish* path.
+#[derive(Debug, Default, Clone)]
+pub struct SignsRenderState {
+    /// The definition snapshot. `get(id)` answers `None` for a retired id,
+    /// which paints nothing.
+    pub registry: std::sync::Arc<lattice_mode::SignRegistry>,
+    /// `SignId` → the element its `theme_element` names, for the ids whose
+    /// element is actually registered. **Absent means fall back to
+    /// `gutter.sign`** — a plugin that shipped a sign without its element,
+    /// or one whose theme has not been reloaded. That fallback is SG.2b's
+    /// whole point: a sign was placed to say something, and painting it
+    /// invisibly is the one outcome that loses the information entirely.
+    pub elements: std::sync::Arc<
+        std::collections::HashMap<lattice_mode::SignId, crate::ui::theme::ElementId>,
+    >,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the

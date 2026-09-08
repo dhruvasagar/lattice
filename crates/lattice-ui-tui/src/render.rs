@@ -4749,6 +4749,11 @@ pub(crate) fn compose_pane_lines(
                                     })
                                     .or_insert(level);
                             }
+                            // SG.2b paints these. Enumerated rather than left
+                            // to a `_` so the next variant still forces a
+                            // decision here — aligned by fallback, not by
+                            // silence.
+                            GutterDecoration::Sign { .. } => {}
                         }
                     }
                 }
@@ -4777,6 +4782,8 @@ pub(crate) fn compose_pane_lines(
                                 })
                                 .or_insert(*level);
                         }
+                        // SG.2b paints these — see the native walk above.
+                        GutterDecoration::Sign { .. } => {}
                     }
                 }
             }

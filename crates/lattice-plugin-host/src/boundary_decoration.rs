@@ -103,6 +103,20 @@ impl WitBoundary for NativeGutterDecoration {
                     level: level.to_wit()?,
                 })
             }
+            // SG.1: a sign placement has no WIT spelling until SG.3 adds one.
+            //
+            // An explicit `Err` rather than a silent drop, because this
+            // direction is host→guest and the only thing that could produce a
+            // native sign to send is host code that has no business sending it.
+            // The boundary's contract is that a new arm forces a decision here;
+            // "not expressible yet" is a decision, and one worth being told
+            // about rather than discovering as a missing glyph.
+            NativeGutterDecoration::Sign { .. } => {
+                return Err(
+                    "gutter sign placements do not cross the plugin boundary yet (SG.3)"
+                        .to_string(),
+                );
+            }
         })
     }
 

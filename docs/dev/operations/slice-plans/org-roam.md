@@ -16,10 +16,9 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** 🚧 in progress (2026-09-03) — every slice is ✅ except **OR.7c**
-(`:org-roam-insert-node` as a picker), which is ⛔ deferred. The plan stays
-active for it: deferred is open work, and archiving a plan because only the
-deferred rows are left is what buried `ML.4` / `ML.6`.
+**Status:** ✅ complete (2026-09-08). **OR.7c landed**, which was the last
+open row — the condition it was deferred under ("revisit only if completion
+proves insufficient") was met in use, not assumed. Ready to archive.
 
 ---
 
@@ -116,7 +115,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.5b | one component may register N picker sources | ✅ |
 | OR.6 | `:org-roam-find-node` | ✅ |
 | OR.7 | `:org-roam-insert-node` — completion inside `[[…` | ✅ |
-| OR.7c | `:org-roam-insert-node` as a picker | ⛔ |
+| OR.7c | `:org-roam-insert-node` as a picker | ✅ |
 | OR.8 | `id:` resolves — `<CR>` jumps, `:org-roam-id-create` mints | ✅ |
 | OR.9 | the backlinks view | ✅ |
 | OR.10 | dailies | ✅ |
@@ -872,21 +871,49 @@ Source-declared replacement bounds (emacs's capf model, where each function
 returns its own START/END) would remove the caveat and is the honest fix if it
 ever bites; it reshapes a popup-global field and was not worth it here.
 
-### OR.7c — `:org-roam-insert-node` as a picker ⛔
+### OR.7c — `:org-roam-insert-node` as a picker ✅
 
-**Deferred, deliberately.** Superseded by OR.7's completion source for the
-common case. Revisit only if completion proves insufficient for inserting a
-link — not on the assumption that it will.
+**The deferral's condition was met, in use.** It was deferred with a test
+attached — "revisit only if completion proves insufficient for inserting a
+link, not on the assumption that it will" — and completion did prove
+insufficient. The reason is a property of the corpus rather than of the
+implementation: a completion popup offers every node the instant you type
+`[[`, which on the reference corpus is 585 rows ranked against an empty query.
+You then narrow by typing into a surface built for completing a title you
+already know, not for searching one you do not.
 
-**The insert is one edit, not two.** Creating-then-inserting as separate effects
-would mean a failed insert leaves an orphan node with nothing pointing at it,
-and the ordering asymmetry `apply_write_to_file` already reasons about applies
-here for the same reason.
+**Both surfaces stay.** OR.7's completion is right when you know the title and
+are mid-sentence; the picker is right when you do not. `C-c n i` is emacs' own
+`org-roam-node-insert` binding, so no muscle memory is spent.
 
-**Tests:** insert at the cursor mid-line; at end of line; into an empty buffer;
-the description matching the node's title at insert time; create-and-insert
-producing a link that OR.8's `<CR>` then follows (the round-trip, in a real
-editor); cancelling the picker leaving the buffer untouched.
+**The candidate set is `roam_find`'s**, reused rather than duplicated — two
+pickers over one corpus that disagreed about which notes exist would be a bug
+invisible from either. Only the ROUTING differs: find carries a location and
+jumps, insert carries a link and edits.
+
+**The accept routes through an ex-command**, because `picker-accept-outcome`
+has no "insert at the cursor" arm and should not grow one: the picker seam has
+no cursor and no document (`init` gets args and a `picker-context`, not the
+buffer you came from) — the same wall OR.9 hit. `invoke-command` → the grammar
+seam, where there is a cursor and a buffer id. That is OR.5's existing
+mechanism used twice, not a new one.
+
+**Create-and-insert is two effects, and the plan's original note had the
+ordering backwards.** It said "the insert is one edit, not two … a failed
+insert leaves an orphan node with nothing pointing at it". Both orders leave
+something; the question is which. The write runs FIRST, so the failure mode is
+an orphan note rather than a broken link — an orphan is findable by `C-c n f`
+and readable on disk, while a broken `id:` link looks exactly like a working
+one until someone presses `<CR>` on it months later. Visible beats tidy.
+
+It is also the one roam write that passes `save: true` (OC.9). Unlike
+`:org-roam-create-node`, this opens nothing — you stay in the sentence you were
+writing — so an unsaved buffer would be a file nobody is looking at, and the
+index could not see it either.
+
+**`roam_new_note_path` was extracted** rather than copied when this became the
+second caller: two commands naming the same note differently would produce two
+files for one title, and neither call site would look wrong alone.
 
 ### OR.8 — `id:` resolves ✅
 

@@ -589,11 +589,27 @@ is a behaviour change nobody asked for — recorded here rather than made.
   but the guest seam has no arm for it — `multibuffer-view-excerpt` carries a
   `path` and the host drops rows whose file it cannot read. A `text` arm plus
   routing in `plugin_view.rs` is the smallest version.
-- **The time grid (`G`), and the seam it needs.** A grid line interleaves among
-  rows drawn from many files, and neither side can place one today: the host
-  has no time data (`entry` carries an opaque `sort-key`; org's `Dated` drops
-  the stamp's time), and a guest cannot know where its row lands once the sort
-  has interleaved every other file's. The shape that works is a **computed
+- **The FULL time grid (`G`) — empty slots included.** OA.30 delivered the part
+  that matters without the seam below, and the note that follows is kept
+  because its analysis is still right for what remains.
+
+  What OA.30 does instead: a timed row gets its own GROUP, keyed under its day
+  and labelled with the clock. Group headers already exist, already sort with
+  the rows, and already dedup across files — so the grid line and the header
+  turn out to be the same row, and org's `<2026-09-08 Tue 10:00-11:00>` renders
+  under a `10:00-11:00` band with nothing new drawn. (`Dated` now carries
+  `start_minute` / `end_minute`; the sort key packs time between the day and
+  the kind. Ranged stamps also *parse* now — they did not, and the entry
+  silently became undated.)
+
+  What that does NOT give you is emacs' EMPTY grid slots — the `8:00 ……` lines
+  for hours nothing is scheduled in — because those are rows no file
+  contributes. Those still need the computed-row seam described here.
+
+  A grid line interleaves among rows drawn from many files, and neither side
+  can place one today: the host has no time data (`entry` carries an opaque
+  `sort-key`), and a guest cannot know where its row lands once the sort has
+  interleaved every other file's. The shape that works is a **computed
   row** on the scan result — `group`, `sort-key`, `text`, `spans`, no source
   range — which the host sorts *with* the entries and dedups on
   `(group, sort-key, text)`, so N files emitting one `10:00` line collapse to

@@ -6746,8 +6746,22 @@ Both renderer peers' `Effect::OpenTransient` bodies collapsed onto
 `Editor::open_named_transient` on the way, so the async path exists once.
 
 Design: [`../architecture/plugin-transients.md`](../architecture/plugin-transients.md).
-Slice plan: [`slice-plans/archive/org-capture.md`](slice-plans/archive/org-capture.md),
+Slice plan: [`slice-plans/org-capture.md`](slice-plans/org-capture.md),
 which sequences it with the org capture overhaul that motivated it.
+
+**OC.9 / OC.10 (2026-09-08) reopened this plan.** `Effect::WriteToFile` grew
+`save`, and capture is the one org producer that asks for it — until then a
+captured entry lived only in the target BUFFER, so the user was asked about an
+unsaved file they never opened and the agenda (which scans from DISK) could not
+see the capture at all. The `<C-c><C-c>` / `<C-c><C-k>` pair also gained Insert
+peers, which surfaced a host bug fixed alongside: `Editor::modal` is one field,
+so deleting the capture buffer from Insert left the successor receiving
+keystrokes as text. **OC.11 is open (⛔)** — a REJECTED option is
+indistinguishable from an unset one inside a guest, so a malformed
+`org.capture-templates` silently falls back to the legacy pair. See
+[`../architecture/cross-file-writes.md`](../architecture/cross-file-writes.md)
+§7.1, which records the reversal of that section's own "Rejected: a
+`save: bool`" paragraph rather than deleting it.
 
 **Org capture is complete (OC.1–OC.6).** Many keyed templates, `%^{Question}`
 fields, `file` and `file+headline` targets, and the placeholder set
@@ -6883,8 +6897,16 @@ meant to exist.
 | OR.11b | the capture buffer — roam's draft, `%^{…}` and `C-c C-k` | ✅ |
 | OR.12 | docs — `doc/org-roam.md`, its own `:help org.roam` topic | ✅ |
 
+| OR.7c | `:org-roam-insert-node` as a picker — `C-c n i` | ✅ |
+
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
 Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
+
+**OR.7c landed 2026-09-08**, closing the plan. It was deferred with a condition
+attached — "revisit only if completion proves insufficient" — and completion
+did prove insufficient: it offers all 585 corpus nodes the instant you type
+`[[`, ranked against an empty query. Both surfaces stay; the picker reuses
+`roam_find`'s candidate set and differs only in routing.
 
 OR.10 landed two fixes in the editor before the plugin slice, each its own
 commit. `EffectAuthorizer::resolve_for_compare` canonicalized only the

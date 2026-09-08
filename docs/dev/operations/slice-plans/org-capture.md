@@ -11,7 +11,10 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred.
 
-**Status:** ✅ complete (2026-08-27). Every slice landed; nothing deferred.
+**Status:** 🚧 reopened (2026-09-08). Every slice of the original plan
+landed; OC.9 and OC.10 were added afterwards and one gap they exposed is open,
+so the plan is active again rather than archived — a plan with open work is not
+a finished one.
 
 Two host slices fell out of this plan that were not in it: `default_modes`
 (plural), and `host-services.read-file` — the second because a grammar action
@@ -475,3 +478,74 @@ planning them.
   is worse than its absence.
 - **Computed placeholders.** `%(org-id-new)` / `%(format-time-string …)` need
   a named vocabulary of computed values, which is its own design question.
+
+
+---
+
+## OC.9 / OC.10 — capture reaches disk (2026-09-08)
+
+Added after the plan was first closed. Both landed; the gap below did not.
+
+| Slice | Title | Status |
+|---|---|---|
+| OC.9 | `Effect::WriteToFile` grows `save`, and capture asks for it | ✅ |
+| OC.10 | `<C-c><C-c>` / `<C-c><C-k>` work in Insert too | ✅ |
+| OC.11 | A REJECTED option is distinguishable from an unset one | ⛔ |
+
+### OC.9 — capture's target is saved ✅
+
+`C-c C-c` filed the entry into the target BUFFER and left it modified, so a
+captured TODO existed only in memory. Two consequences, the second worse than
+the first: the user is asked about an unsaved buffer at `:q` for a file they
+never opened, and **the agenda cannot see the capture at all** — its scan reads
+files from disk through `host-services.read-file`, so `gr` showed nothing.
+
+`WriteToFilePayload` grows `save: bool`, off by default. Capture is the one
+site in org that sets it; archive and refile deliberately do not, matching
+emacs (`org-refile` and `org-archive-subtree` leave their targets modified,
+`org-capture-finalize` runs `(unless (org-capture-get :no-save) (save-buffer))`).
+
+Host-side detail in `cross-file-writes.md` §7.1, which records the reversal of
+that section's own "Rejected: a `save: bool`" paragraph rather than deleting it.
+
+### OC.10 — the commit chords work in Insert ✅
+
+A capture buffer is one you arrive in already typing: the template seats the
+caret at `%?`. Requiring `<Esc>` before `C-c C-c` made the commit the only key
+in the flow that needed you to leave the mode you were in. `ibind` peers for
+both chords; `<C-c>` is a prefix rather than a terminal in Insert, so nothing
+that already worked is shadowed.
+
+This surfaced a host bug fixed in the same series — `Editor::modal` is one
+field, so deleting the capture buffer from Insert left the SUCCESSOR buffer
+receiving keystrokes as text. Fixed in `do_buffer_delete`, not in org: any mode
+binding a buffer-closing chord in Insert hits it.
+
+### OC.11 — a rejected option is not an unset one ⛔
+
+**Open, and the reason a test changed its name rather than its assertion.**
+
+`:set org.capture-templates=<malformed>` is refused at set time with a clear
+echo, and the option is never stored. From inside the guest
+`capture_templates::read()` then returns `Unset` — identical to "never
+configured" — so capture takes the OM.11 legacy `capture-file` /
+`capture-template` path and files the note there.
+
+That is the outcome
+`a_malformed_template_set_captures_nothing_and_echoes` was written to forbid.
+It passed anyway, for two reasons OC.9 exposed:
+
+1. the echo it asserted was **stale**, emitted by `:set` rather than by capture;
+2. `!notes.exists()` was **vacuous** — before `save`, capture could not create
+   a file whatever it did.
+
+The test is now `a_malformed_template_set_is_refused_at_set_time`: it asserts
+the half that is true (the value is refused where it was typed) and pins the
+fallback as the KNOWN-CURRENT behaviour, so a fix fails there and gets to
+rewrite the story deliberately.
+
+**What closing it needs:** the host must be able to say "this option was set
+and refused", which no seam expresses today — `config` carries values, not
+validation history. Not carved here because it is an option-system design
+question rather than a capture one, and guessing at its shape from capture's
+end is how a seam gets built for one caller.

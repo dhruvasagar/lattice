@@ -1659,3 +1659,60 @@ grep -rn "VirtualRowKind::<NewVariant>" crates/lattice-ui-gpui/ --include="*.rs"
 ```
 
 An empty grep means GPUI was missed.
+
+
+---
+
+## OA.30 / MH.A6 — time of day, and today's band (2026-09-08)
+
+Added after the phases above. Both landed.
+
+| Slice | Title | Status |
+|---|---|---|
+| OA.30 | A timestamp's TIME survives the scan, and groups the row | ✅ |
+| MH.A6 | Today's headers are emphasised (host: `ExcerptHeaderStyle`) | ✅ |
+
+### OA.30 — the agenda learns what time it is ✅
+
+Three defects, found in that order and each hiding the next.
+
+**A ranged stamp did not parse at all.** `parse_inner` split `10:00-11:00` on
+its first `:`, read `"00-11:00"` as the minute, failed, and returned `None`
+for the WHOLE stamp — so `<2026-09-08 Tue 10:00-11:00>` did not lose its time,
+it stopped being a date. The headline became undated and left every dated
+section. `Stamp` grows `time_end`; `render` writes it back for the reason
+`cookies` documents.
+
+**`Dated` threw the time away.** `{ day, kind }` only, so a day sorted by
+(kind, priority) — a 09:00 standup could render below a 17:00 review.
+
+**No row showed a clock anywhere**, because the excerpt is the HEADLINE line
+and the stamp lives on the planning line below it (OA.1).
+
+The fix for the last is a GROUP per time, keyed under the day and labelled with
+the clock. This is emacs' time grid reached from the other end — the grid line
+and the group header are the same row, so nothing new is rendered. The
+alternative, an HB.5 annotation per row, costs a screen line per appointment
+and puts the time below the thing it qualifies.
+
+**The date rides in the label's trailing parenthetical.** A day whose rows are
+all timed has no untimed block to carry the date header, and the guest cannot
+detect that — whether an untimed row exists is a question about every other
+file, after a sort it has not seen. So the date is unconditional rather than
+conditional-and-sometimes-absent, and OA.7's dimming keeps it quiet.
+
+**The sort key was re-packed** (section · day · time · kind · priority) with
+the multipliers named rather than written inline twice — the version with
+`10_000_000_000_000` in two functions is the version where one gets missed.
+Untimed sorts FIRST within its day: an all-day TODO above the day's fixed
+appointments is how emacs reads, and it keeps unscheduled work from being
+buried under meetings. `time_rank`'s `+ 1` is what keeps midnight distinct from
+untimed. Tests pin that no term carries into the one above it.
+
+### MH.A6 — today is the band you look at ✅
+
+Host-side; see [`multibuffer-views.md`] and `org-agenda.md` §5a.1.
+`ExcerptHeaderStyle::Emphasis` plus two theme elements the multibuffer mode
+registers. The guest sets `entry.emphasis` on every row of today — every block,
+not just the first — so the day reads as one band. A log block never sets it:
+it answers "what happened", and the emphasis marks what to act on.

@@ -14,7 +14,7 @@ Sections 1–7 describe how a template is chosen, expanded and targeted, and all
 of that is unchanged. Supersedes the single-template capture that
 shipped with [`org-mode.md`](org-mode.md)'s OM.11. Depends on
 [`plugin-transients.md`](plugin-transients.md) for the menu. Slice plan:
-[`../operations/slice-plans/archive/org-capture.md`](../operations/slice-plans/archive/org-capture.md).
+[`../operations/slice-plans/org-capture.md`](../operations/slice-plans/org-capture.md).
 
 **§4's read mechanism changed during the build** — the guest cannot read a file
 from a grammar action, so the target read goes through `host-services.read-file`

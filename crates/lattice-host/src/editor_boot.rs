@@ -1153,6 +1153,13 @@ impl Editor {
         boot.register_service::<lattice_mode::GutterDecorationSourceRegistryHandle>(
             decoration_registry.clone(),
         );
+        // OA.30: the counter a guest bumps to say its decorations changed
+        // though the document did not. Registered as a service so the plugin
+        // loader can hand it to the host, and cloned onto the `Editor` below so
+        // the refresh pump compares it.
+        let decoration_epoch: lattice_mode::DecorationEpochHandle =
+            Arc::new(lattice_mode::DecorationEpoch::default());
+        boot.register_service::<lattice_mode::DecorationEpochHandle>(decoration_epoch.clone());
 
         // IM.7: the sibling registry for inline-media producers. Same shape and
         // the same reason — RCU-registered by the loader, read wait-free by the
@@ -2040,7 +2047,8 @@ impl Editor {
             // handle via the service registered above.
             wasm_decorations: crate::wasm_decorations::WasmDecorationState::with_registry(
                 decoration_registry.clone(),
-            ),
+            )
+            .with_decoration_epoch(decoration_epoch.clone()),
             wasm_media: crate::wasm_media::WasmMediaState::with_registry(media_registry.clone()),
             wasm_context: crate::wasm_context::WasmContextState::with_registry(
                 context_registry.clone(),

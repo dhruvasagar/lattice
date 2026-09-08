@@ -68,6 +68,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
 | OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | ✅ |
 | OA.29 | Filtering moves to `s`; `/` is search again **(plugin)** | ✅ |
+| OA.30 | `refresh-decorations`, so guest state reaches the gutter **(cross-repo)** | 🚧 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1622,6 +1623,28 @@ the filter.
 **Not done: `<`.** Emacs binds it to `org-agenda-filter-by-category`; lattice
 binds it to "restrict to the row's file". The divergence is live now that
 category filtering exists, and is recorded in §8b rather than changed.
+
+---
+
+### OA.30 — `refresh-decorations`, so a mark can paint **(cross-repo)** 🚧
+
+Design: `docs/dev/architecture/plugin-multibuffer-views.md` §10.
+
+Bulk actions need a mark the user can see, and a guest could not paint one. The
+`decorations` seam exists, but the host re-runs a producer only when the
+registry changes or the buffer's text version moves — and a mark is guest state
+over a read-only view, so neither ever happens. Org could have shipped a
+producer today and its marks would have painted once and then frozen.
+
+The host half: a `DecorationEpoch` counter in `lattice-mode`, bumped through
+`host-services.refresh-decorations`, compared by the refresh pump exactly as the
+registry epoch is. Wired in `install`, pinned by `WiredSeams::view_decoration_epoch`.
+
+Proven red-then-green: with the comparison removed, the new test fails on "the
+producer is asked again", which is the frozen-gutter symptom exactly.
+
+The guest half — the mark set, the `m` / `M` chords and the `x` bulk menu —
+lands in lattice-org-plugin.
 
 ---
 

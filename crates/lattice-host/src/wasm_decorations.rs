@@ -75,6 +75,16 @@ pub struct WasmDecorationState {
     /// immediate refresh (a `:plugin-load`ed producer paints without waiting for
     /// an edit; an unloaded one's marks clear).
     last_registry_epoch: usize,
+    /// OA.30: the guest-driven refresh counter, and the value this pump last
+    /// acted on. A `refresh-decorations` call bumps the counter; a difference
+    /// here forces a refetch exactly as a changed registry does.
+    ///
+    /// Without it a producer whose answer depends on its OWN state — the
+    /// agenda's bulk marks — is asked once and cached forever: the document
+    /// version never moves in a read-only view, and the registry never changes
+    /// while nothing loads.
+    decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
+    last_decoration_epoch: u64,
 }
 
 impl WasmDecorationState {
@@ -86,6 +96,15 @@ impl WasmDecorationState {
             registry: Some(registry),
             ..Default::default()
         }
+    }
+
+    /// OA.30: attach the guest-driven refresh counter. Separate from
+    /// [`with_registry`](Self::with_registry) because a harness may wire one
+    /// without the other, and neither is a precondition for the other working.
+    pub fn with_decoration_epoch(mut self, epoch: lattice_mode::DecorationEpochHandle) -> Self {
+        self.last_decoration_epoch = epoch.get();
+        self.decoration_epoch = Some(epoch);
+        self
     }
 }
 
@@ -113,6 +132,18 @@ impl Editor {
         let snapshot_reg = registry.load_full();
         let epoch = Arc::as_ptr(&snapshot_reg) as usize;
         let registry_changed = epoch != self.wasm_decorations.last_registry_epoch;
+        // OA.30: a guest said its answer changed. Treated exactly as a changed
+        // registry is — force a refetch — because the two mean the same thing
+        // to this pump: "what you cached is no longer what the producer would
+        // say."
+        let guest_epoch = self
+            .wasm_decorations
+            .decoration_epoch
+            .as_ref()
+            .map(|e| e.get())
+            .unwrap_or(0);
+        let guest_asked = guest_epoch != self.wasm_decorations.last_decoration_epoch;
+        let registry_changed = registry_changed || guest_asked;
         let sources = snapshot_reg.sources();
 
         if sources.is_empty() {
@@ -162,6 +193,10 @@ impl Editor {
         }
 
         self.wasm_decorations.last_registry_epoch = epoch;
+        // Recorded only once the refetch is actually being spawned, so a bump
+        // that arrives while an early return is taken is not lost — it forces
+        // the refetch on the next tick instead.
+        self.wasm_decorations.last_decoration_epoch = guest_epoch;
         self.wasm_decorations.pending = Some((buffer_id, version));
 
         let path = self.buffers.document_path(buffer_id);

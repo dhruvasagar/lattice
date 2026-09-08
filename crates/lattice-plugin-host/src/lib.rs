@@ -1096,6 +1096,9 @@ struct PluginState {
     /// OA.27: what a provider view is currently showing. `None` when no view
     /// owner wired one, which answers an empty list rather than pretending.
     view_args: Option<lattice_core::ViewArgsResolverHandle>,
+    /// OA.30: the counter `refresh-decorations` bumps. `None` in a harness that
+    /// wired no editor, where the call is a no-op.
+    decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
     /// CG.4: the foreground-cancel registry, stamped once per store.
     /// `arm_store` takes the lock once per guest call to refresh
     /// [`Self::cancel_token`]; the epoch callback never touches it.
@@ -1262,6 +1265,18 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             .as_ref()
             .and_then(|r| r.view_args(lattice_core::BufferId(buffer as u32)))
             .unwrap_or_default()
+    }
+
+    /// OA.30 `refresh-decorations`: bump the counter the refresh pump compares.
+    ///
+    /// No result and no error. There is nothing a guest could do with either:
+    /// the call is advisory, the work happens on the host's next tick, and an
+    /// unwired counter means this editor runs no decoration producers at all —
+    /// so the guest's marks were never going to paint regardless.
+    fn refresh_decorations(&mut self) {
+        if let Some(epoch) = self.decoration_epoch.as_ref() {
+            epoch.bump();
+        }
     }
 
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
@@ -3031,6 +3046,8 @@ pub struct PluginHost {
     excerpt_source: std::sync::OnceLock<lattice_core::ExcerptSourceResolverHandle>,
     /// OA.27: what a provider view is showing, for the `view-args` seam.
     view_args: std::sync::OnceLock<lattice_core::ViewArgsResolverHandle>,
+    /// OA.30: the decoration-refresh counter, for `refresh-decorations`.
+    decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3451,6 +3468,7 @@ impl PluginHost {
             config: std::sync::OnceLock::new(),
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
+            decoration_epoch: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3615,6 +3633,23 @@ impl PluginHost {
     /// replaces survived.
     pub fn view_args_wired(&self) -> bool {
         self.view_args.get().is_some()
+    }
+
+    /// OA.30: hand the host the counter `refresh-decorations` bumps.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_decoration_epoch(&self, epoch: lattice_mode::DecorationEpochHandle) {
+        let _ = self.decoration_epoch.set(epoch);
+    }
+
+    /// OA.30: whether a counter was ever wired.
+    ///
+    /// Pinned at boot for `view_args_wired`'s reason: unwired, the seam is a
+    /// silent no-op and a guest's marks simply never repaint — no error on any
+    /// path, and the symptom reads as a broken feature rather than a missing
+    /// wire.
+    pub fn decoration_epoch_wired(&self) -> bool {
+        self.decoration_epoch.get().is_some()
     }
 
     /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
@@ -3825,6 +3860,10 @@ impl PluginHost {
             // to reach the GRAMMAR store above all, which is where the chords
             // that read a view's arguments actually run.
             view_args: self.view_args.get().cloned(),
+            // OA.30: stamped for every store on `view_args`' reasoning. It has
+            // to reach the GRAMMAR store above all — a mark is toggled by a
+            // chord, and the chord is what has to say the gutter changed.
+            decoration_epoch: self.decoration_epoch.get().cloned(),
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,

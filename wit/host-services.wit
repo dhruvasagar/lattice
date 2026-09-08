@@ -115,6 +115,28 @@ interface host-services {
     /// a fresh view has.
     view-args: func(buffer: u64) -> list<string>;
 
+    /// OA.30: say that this plugin's gutter decorations have changed, though
+    /// the document has not.
+    ///
+    /// The host re-runs a `decorations` producer on two triggers, and both are
+    /// about things the HOST can see: the producer registry changed, or the
+    /// buffer's text version moved. A producer whose output depends on its own
+    /// view-local state changes neither — so its first answer is cached forever
+    /// and every later change paints nothing. The agenda's bulk marks are the
+    /// case that found this: a mark is guest state over an unchanged read-only
+    /// buffer, which is exactly the blind spot.
+    ///
+    /// Call it after changing whatever the producer reads. The next tick
+    /// refetches; the producer still runs off the render path, and the renderer
+    /// still only ever reads the cache. This says "ask me again", it does not
+    /// run anything itself.
+    ///
+    /// A REQUEST, not an apply — `refresh-view`'s shape, and for its reason: the
+    /// guest cannot reach the editor's tick. Cheap enough to call per keystroke
+    /// (one relaxed increment) and a no-op when nothing wired a counter, which
+    /// is the honest degradation everywhere else on this interface.
+    refresh-decorations: func();
+
     /// Read a UTF-8 file, capability-gated the same way `walk` is.
     ///
     /// **This exists because the guest's own WASI filesystem view cannot serve

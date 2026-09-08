@@ -163,8 +163,8 @@ pub use crate::contributions::{
     Subscription, // MO.4.c: real RAII type; use in mode Guards
 };
 pub use crate::decoration_source::{
-    AsyncGutterDecorationSource, DecorationFuture, GutterDecorationSourceRegistry,
-    GutterDecorationSourceRegistryHandle,
+    AsyncGutterDecorationSource, DecorationEpoch, DecorationEpochHandle, DecorationFuture,
+    GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle,
 };
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;

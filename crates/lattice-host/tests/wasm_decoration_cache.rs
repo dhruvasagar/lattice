@@ -183,3 +183,71 @@ async fn erroring_producer_keeps_the_prior_snapshot_zero_flicker() {
         "an erroring producer keeps the last-good marks — no clear, no flicker"
     );
 }
+
+/// OA.30 — a guest saying "my answer changed" re-runs the producer, though the
+/// document and the producer set are both unchanged.
+///
+/// **The counterpart of the idempotence assertion above, and the reason the
+/// seam exists.** That test pins the good behaviour — an unchanged refresh does
+/// not re-poll — and this pins its cost: a producer whose output depends on its
+/// OWN state was cached forever, because a read-only view's version never moves
+/// and the registry never changes while nothing loads. The agenda's bulk marks
+/// are exactly that shape: a mark is guest state over an unchanged buffer.
+///
+/// Without the epoch this test fails on the second `calls` assertion — the
+/// producer is never asked again and the new marks never paint, with no error
+/// anywhere.
+#[tokio::test]
+async fn a_guest_refresh_request_re_runs_the_producer_at_the_same_version() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\nc\n"));
+    let calls = Arc::new(AtomicU64::new(0));
+    let epoch: lattice_mode::DecorationEpochHandle =
+        Arc::new(lattice_mode::DecorationEpoch::default());
+    editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
+        id: 1,
+        result: Ok(vec![GutterDecoration::Diff {
+            line: 0,
+            kind: GutterDiffKind::Change,
+        }]),
+        calls: calls.clone(),
+    }))
+    .with_decoration_epoch(epoch.clone());
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_decorations();
+    assert!(landed_within(&editor, 2).await, "the first refresh landed");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    // Unchanged: still gated, which is the property the epoch must not break.
+    editor.maybe_refresh_wasm_decorations();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "no bump, no document change — still no re-poll"
+    );
+
+    // The guest toggled something its producer reads.
+    epoch.bump();
+    editor.maybe_refresh_wasm_decorations();
+    assert!(
+        landed_within(&editor, 2).await,
+        "a guest-requested refresh must fire async_landed too — the mark has to \
+         reach the gutter without a keystroke"
+    );
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "the producer is asked again after `refresh-decorations`"
+    );
+
+    // And one bump is one refresh: the pump records the value it acted on, so a
+    // tick with no new bump does not re-poll forever.
+    editor.maybe_refresh_wasm_decorations();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "one bump is one refresh, not a permanent re-poll"
+    );
+}

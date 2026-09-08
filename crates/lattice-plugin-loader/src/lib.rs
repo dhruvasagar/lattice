@@ -425,6 +425,12 @@ pub struct WiredSeams {
     /// error on any path. That is the bug the seam replaces; a boot-ordering
     /// regression would reinstate it unnoticed.
     pub view_args: bool,
+    /// OA.30: whether the HOST carries the decoration-refresh counter.
+    ///
+    /// Reported for `view_args`' reason and it fails the same silent way: a
+    /// guest producer whose state changed can say so, nobody is listening, and
+    /// the gutter simply never updates.
+    pub view_decoration_epoch: bool,
 }
 
 impl WiredSeams {
@@ -451,6 +457,7 @@ impl WiredSeams {
             && self.multibuffer_registry
             && self.excerpt_source
             && self.view_args
+            && self.view_decoration_epoch
     }
 }
 
@@ -683,6 +690,7 @@ impl PluginLoader {
             multibuffer_registry: self.env.multibuffer_registry.is_some(),
             excerpt_source: self.host.excerpt_source_wired(),
             view_args: self.host.view_args_wired(),
+            view_decoration_epoch: self.host.decoration_epoch_wired(),
         }
     }
 

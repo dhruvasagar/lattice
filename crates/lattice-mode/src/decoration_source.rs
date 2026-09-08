@@ -122,3 +122,46 @@ impl GutterDecorationSourceRegistry {
 /// at runtime while the host reads wait-free. Register **and** look up with this
 /// exact alias (the `ServiceRegistry` TypeId rule).
 pub type GutterDecorationSourceRegistryHandle = Arc<ArcSwap<GutterDecorationSourceRegistry>>;
+
+/// OA.30 — the counter a guest bumps to say "my decorations changed, though the
+/// document did not".
+///
+/// ## The hole this fills
+///
+/// `maybe_refresh_wasm_decorations` re-runs producers on exactly two triggers:
+/// the producer registry changed, or this buffer's cached `document_version`
+/// moved. Both are about things the HOST can see. A producer whose output
+/// depends on its own view-local state — the agenda's bulk marks are the case
+/// that found this — changes neither, so its first answer is cached forever and
+/// every later toggle paints nothing.
+///
+/// That is the same shape `refresh-view` (OA.15a) closed one level up: a guest
+/// could compute a new answer and had no way to say so. This is the gutter's
+/// version of it.
+///
+/// ## Why a bare counter, and not a per-buffer map
+///
+/// The refresh pump only ever refetches the ACTIVE buffer, so a bump means "the
+/// next tick should refetch" and nothing finer would be read. A per-buffer key
+/// would be a more precise answer to a question nobody asks, and the cost of
+/// being coarse is one extra producer call — off the actor thread, on a tick,
+/// for a buffer that is on screen anyway.
+#[derive(Debug, Default)]
+pub struct DecorationEpoch(std::sync::atomic::AtomicU64);
+
+impl DecorationEpoch {
+    /// Say that a producer's answer has changed. Cheap enough to call per
+    /// keystroke: one relaxed increment.
+    pub fn bump(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The current value, for the refresh gate to compare against its last.
+    pub fn get(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Register **and** look up with this exact alias (the `ServiceRegistry` TypeId
+/// rule).
+pub type DecorationEpochHandle = Arc<DecorationEpoch>;

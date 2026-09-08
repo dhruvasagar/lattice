@@ -392,3 +392,61 @@ One host call per chord — a `HashMap` lookup and a `Vec<String>` clone behind 
 `RwLock` read, on the dispatch path of a key the user pressed once. The
 per-call WASM overhead budget (`typed call < 500ns p99`) already covers the
 crossing, and there is no per-frame or per-keystroke-burst path here to measure.
+
+## 10. `refresh-decorations` — a guest's own state reaching the gutter (OA.30)
+
+§9 let a guest READ what its view is showing. This is the third piece: letting a
+guest say that what it would DRAW has changed.
+
+```wit
+refresh-decorations: func();
+```
+
+### The hole
+
+`maybe_refresh_wasm_decorations` re-runs a `decorations` producer on exactly two
+triggers, and both are things the **host** can see: the producer registry
+changed, or this buffer's cached `document_version` moved.
+
+A producer whose output depends on its own view-local state changes neither. The
+agenda's bulk marks are the case that found it: a mark is guest state over a
+read-only buffer whose text never moves, in an editor where nothing is loading.
+So the producer is asked once, its first answer is cached forever, and every
+later toggle paints nothing — with no error on any path.
+
+That is the same shape `refresh-view` (OA.15a) closed one level up: a guest could
+compute a new answer and had no way to say so. This is the gutter's version.
+
+### Shape
+
+A bump on a shared counter (`DecorationEpoch`), which the refresh pump compares
+exactly as it compares the registry epoch — the two mean the same thing to it:
+*what you cached is no longer what the producer would say*.
+
+**No buffer parameter**, because the pump only ever refetches the active buffer;
+a finer key would be a more precise answer to a question nobody asks. The cost of
+being coarse is one extra producer call, off the actor thread, on a tick, for a
+buffer that is on screen anyway.
+
+**A request, not an apply.** The guest cannot reach the editor's tick. The
+producer still runs off the render path and the renderer still reads only the
+cache — this says "ask me again", it runs nothing.
+
+### Failure behaviour
+
+A no-op when nothing wired a counter. That degradation is invisible, so the
+wiring is pinned at boot (`WiredSeams::view_decoration_epoch`) rather than
+trusted — an unwired seam means a guest's marks never repaint, which reads as a
+broken feature rather than a missing wire.
+
+One bump is one refresh: the pump records the value it acted on, and records it
+only once the refetch is actually spawned, so a bump arriving while an early
+return is taken forces the refetch on the next tick instead of being lost.
+
+### Why no benchmark
+
+One relaxed atomic increment on the guest side and one comparison per tick on
+the host side. The producer call it schedules is the same call the existing
+triggers schedule, already off the render path and already covered by
+`wasm_decoration_cache.rs`.
+

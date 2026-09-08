@@ -186,6 +186,15 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("view-args seam unwired: no scan-view service");
     }
+    // OA.30: the counter `refresh-decorations` bumps. Without it a guest
+    // decoration producer is asked once and cached forever — its answer never
+    // repaints, with no error anywhere, which reads as a broken feature rather
+    // than a missing wire.
+    if let Some(epoch) = boot.service::<lattice_mode::DecorationEpochHandle>() {
+        host.set_decoration_epoch((*epoch).clone());
+    } else {
+        tracing::debug!("refresh-decorations unwired: no decoration epoch service");
+    }
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.

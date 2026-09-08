@@ -492,7 +492,7 @@ Added after the plan was first closed. Both landed; the gap below did not.
 | OC.10 | `<C-c><C-c>` / `<C-c><C-k>` work in Insert too | ✅ |
 | OC.11a | Config diagnostics survive the moment they happened **(host)** | ✅ |
 | OC.11b | The legacy capture path says which file it filed through | ✅ |
-| OC.11c | A REJECTED option is distinguishable from an unset one | ⛔ |
+| OC.11c | Ask WHY an option is at its default **(host + wit)** | ✅ |
 | OC.11d | The menu substitutes emacs's default row instead of refusing | ✅ |
 
 ### OC.9 — capture's target is saved ✅
@@ -562,6 +562,122 @@ failed `WriteToFile`'s message.
 
 A CONFIGURED set stays silent, which is the half that keeps this from being
 noise.
+
+### OC.11d — an unset set is emacs's default template, not an error ✅
+
+**Found while testing OC.11b.** `<leader>oc` opens OC.3's template menu, and
+the menu did `capture_templates::read().map_err(…)?` — so with no templates it
+refused with *"no capture templates — set `org.capture-templates`"* and never
+reached the OM.11 fallback. A user whose only capture config is
+`org.capture-file` **could not capture from the shipped chord at all**.
+
+It was filed with two readings pointing opposite ways (refusing is safer for
+the mid-migration user; refusing breaks a documented configuration) and
+resolved by the instruction to keep capture close to emacs. Emacs settles it,
+in `org-capture-select-template`:
+
+```elisp
+(let ((org-capture-templates
+       (or (org-contextualize-keys …)
+           '(("t" "Task" entry (file+headline "" "Tasks")
+              "* TODO %?\n  %u\n  %a")))))
+```
+
+With `org-capture-templates` nil emacs **substitutes a built-in row** and opens
+the menu anyway; it never reports "no capture templates". The `""` file in that
+target is `org-default-notes-file`, which is precisely what `org.capture-file`
+is here. So refusing was the divergence, and the menu now shows one row keyed
+`t` labelled `Task` — emacs's own key and description — targeting
+`org.capture-file`.
+
+**a and b are what make d safe.** The user this could hurt is mid-migration: a
+malformed set is refused at `:set`, leaves the option at its empty default, and
+reaches the guest as `Unset` rather than `Malformed`. They now get the rejection
+durably in `*messages*` (a) and an echo naming the file the capture used (b), so
+the fallback announces itself twice instead of being a silent write to the old
+file. Landing d first would have been the bad version of this.
+
+**A malformed or empty set still refuses.** Emacs substitutes only when the
+variable is nil; a value that exists and does not work is a thing to fix, and
+there is no reading under which the user meant the legacy path.
+
+**Still divergent, deliberately:** with no `org.capture-file` either, emacs
+falls back to `~/.notes` and this refuses. `DEFAULT_CAPTURE_FILE`'s reasoning
+stands — a path nobody named scatters notes somewhere they will not think to
+look — and the refusal message already names both options.
+
+Two placement details the tests pin, because both were wrong first:
+
+- **The note goes LAST on the buffer path and FIRST on the filing path.**
+  Opening the draft sets its own `switched to buffer …` chrome, which
+  overwrote a leading note; filing can FAIL and say so, and that must be what
+  is left standing. The rule is the same in both — the last message is the most
+  important thing that happened.
+- **The test harness swallowed `Effect::Echo`** (`_ => {}`), so the note landed
+  in production and was invisible to tests — the same dropped-effect trap each
+  of the other arms in `apply_renderer_effects` was added for.
+
+### OC.11c — ask why an option is at its default ✅
+
+**Filed under a name that was wrong, and the wrongness mattered.** It said "a
+REFUSED option is distinguishable from an unset one". The config system has no
+notion of refusal: every failure is a `ConfigError` — `Parse` (the value did
+not parse as the declared type), `Validation` (it parsed and the option's check
+said no), `NotBoolean`, `UnknownOption`. The option carries no mark and holds
+no status; an **assignment errored**, which is an event. So what is stored is a
+record of that event, and the seam is named for the diagnostic rather than for
+a state the option does not have.
+
+**The scenario was wrong too.** `expected TOML: …` comes from the STRING path
+(`:set`, `Effect::SetOption`), and a real `lattice.toml` never takes it for a
+composite:
+
+- malformed TOML **syntax** loses the WHOLE FILE — every option in it, not one;
+- well-formed TOML of the wrong shape gets `apply_tree_if_composite` reporting
+  with a schema path: `org.capture-templates[2].target.file: expected string,
+  got integer`.
+
+That path is the fix location, which is what makes this worth surfacing at all
+over a bare "it failed". `LoadMessage` grows a structured `option` field — the
+name was always present as `dotted`, being formatted into the body and nowhere
+else. File-level failures keep `option: None`: a syntax error is not one
+option's fault, and attributing it to whichever was nearby is worse than
+silence.
+
+**The state lives on `ConfigRegistry`, not `Editor`.** The first draft put it on
+`Editor` with clear-on-success at each call site — the exact shape
+`mechanism-lives-in-the-subsystem-it-serves` warns about, with the manual clear
+lines as the tell. It also could not have worked: the plugin host holds the
+registry, not the `Editor`. Recorded and retired inside `parse_and_set_command`,
+the chokepoint every `:set` goes through.
+
+Three invalidation rules, each with a failure it prevents:
+
+- **Cleared once per LOAD, not per file** — per-file would have the project
+  config wipe what the user config just recorded.
+- **Rebuilt wholesale, not per message** — an option whose failing line the user
+  DELETED produces no message, so a per-message update would keep complaining
+  forever.
+- **Keyed by CANONICAL name** — `:set ts=999` records against `tabstop`; an
+  alias-keyed record is invisible to the plugin that declared the option.
+
+`UnknownOption` records nothing: there is no option for the diagnostic to be
+about, and keying one under a typo would let `:set tabstpo=4` shadow the real
+`tabstop` a plugin later asks about.
+
+**What it bought, in capture.** `TemplateError` gains `NotLoaded`, and because
+both consumers were written as "`Unset` falls back, everything else refuses",
+the new variant routes itself: `selected_template` refuses instead of taking
+the OM.11 path, and the menu refuses instead of offering OC.11d's default row.
+A user whose templates failed to load HAS configured capture, and sending their
+note to the legacy file is the whole failure this series is about. A genuinely
+unset set still gets emacs's default row — pinned by its own test, so OC.11c
+cannot quietly swallow OC.11d.
+
+**The test that pinned the gap flipped.**
+`a_malformed_template_set_is_refused_at_set_time` recorded the fallback as
+known-current with a note that a future fix should fail there and update the
+story. It did.
 
 ### OC.11d — an unset set is emacs's default template, not an error ✅
 

@@ -244,3 +244,70 @@ fn the_search_line_preview_owns_the_highlight_while_it_is_open() {
         "a resync on the searched buffer is a no-op, not a wipe",
     );
 }
+
+/// **A synthetic buffer is a buffer, and hlsearch must re-resolve against it.**
+///
+/// Reported after the tab/pane fix landed: opening a synthetic buffer — magit,
+/// in the report — leaves the previous buffer's highlight painted at the exact
+/// offsets it had there. Same class as the tab bleed, a different swap path:
+/// the ranges are per-buffer and something reached the active document without
+/// crossing the seam that re-derives them.
+///
+/// The synthetic text deliberately does NOT contain the pattern, so a carried
+/// range and a correctly-empty one are distinguishable. `all_matches` being
+/// non-empty here IS the bleed — those offsets index text that no longer
+/// exists under them.
+#[test]
+fn opening_a_synthetic_buffer_rehighlights_it() {
+    use lattice_core::BufferFlags;
+
+    let mut e = Editor::boot(CoreDocument::from_text("alpha alpha alpha\n"));
+    e.execute_search("alpha", SearchDirection::Forward, Position::ZERO);
+    assert_eq!(e.all_matches.len(), 3, "sanity: the origin buffer matches");
+
+    let synthetic = e.ensure_named_synthetic_document(
+        "*magit-like*",
+        lattice_mode::ModeId::new("text-mode"),
+        BufferFlags::default(),
+    );
+    e.activate_buffer(synthetic);
+
+    assert!(
+        e.all_matches.is_empty(),
+        "the synthetic buffer has no `alpha`, so it must carry no ranges; \
+         these are the previous buffer's offsets painted onto it: {:?}",
+        e.all_matches,
+    );
+    // And the pattern survives, because it is the `/` register.
+    assert!(
+        e.last_search.is_some(),
+        "the pattern is session state and outlives the buffer switch"
+    );
+}
+
+/// The other half: a synthetic buffer that DOES contain the pattern must get
+/// its own highlights, not merely be cleared. Clearing looks safe and silently
+/// drops a highlight the buffer should have — the failure mode the tab fix
+/// called out explicitly.
+#[test]
+fn a_synthetic_buffer_with_matches_gets_its_own_highlights() {
+    use lattice_core::BufferFlags;
+
+    let mut e = Editor::boot(CoreDocument::from_text("alpha\n"));
+    e.execute_search("alpha", SearchDirection::Forward, Position::ZERO);
+
+    let synthetic = e.ensure_named_synthetic_document(
+        "*magit-like-2*",
+        lattice_mode::ModeId::new("text-mode"),
+        BufferFlags::default(),
+    );
+    e.replace_owned_document_text(synthetic, "alpha alpha\n");
+    e.activate_buffer(synthetic);
+
+    assert_eq!(
+        e.all_matches.len(),
+        2,
+        "the synthetic buffer's own occurrences highlight: {:?}",
+        e.all_matches,
+    );
+}

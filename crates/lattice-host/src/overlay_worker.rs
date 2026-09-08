@@ -178,6 +178,7 @@ pub fn recompute(
     let snap_ptr = Arc::as_ptr(&snap) as usize;
     let snap_text_version = snap.text_version();
     let key = VisibleHighlightsKey {
+        buffer_id: rs.active_document.load().document_buffer_id,
         snapshot_ptr: snap_ptr,
         syntax_text_version: snap_text_version,
         scroll: syntax.scroll,
@@ -200,6 +201,27 @@ pub fn recompute(
     // mis-place overlay backgrounds on unchanged-content lines.
     if snap_text_version < syntax.text_version {
         let existing_quads = static_overlay_quads_cell.load_full();
+        // Holding is only ever right for the SAME buffer. Across a switch the
+        // held quads are the previous document's byte offsets, and they paint
+        // onto whatever text now sits under them — the reported "hlsearch
+        // stays at the exact spot it was in the buffer before". A
+        // just-activated buffer has text before its parse lands, so it is
+        // reliably in this branch, and the first hold sticks: it stamps the
+        // NEW key, so every wake afterwards is a cache hit and the stale
+        // bucket never leaves on its own.
+        //
+        // Clearing rather than re-bucketing, because the reason not to
+        // re-bucket is unchanged — stale source-line extents mis-place the
+        // backgrounds. An empty bucket makes the renderer fall back to the
+        // live `all_matches` walk, which is correct for the new buffer; the
+        // next non-stale wake republishes properly.
+        if existing_quads.computed_for_key.buffer_id != key.buffer_id {
+            static_overlay_quads_cell.store(Arc::new(StaticOverlayQuads {
+                quads: Arc::from(Vec::new().into_boxed_slice()),
+                computed_for_key: key,
+            }));
+            return WorkerDecision::Clear;
+        }
         let held_quads = StaticOverlayQuads {
             quads: existing_quads.quads.clone(),
             computed_for_key: key,
@@ -531,6 +553,99 @@ mod tests {
         );
         assert!(matches!(row0[0].layer, OverlayLayer::AllMatches));
         assert_eq!((row0[0].source_byte_start, row0[0].source_byte_end), (3, 7));
+    }
+
+    /// Stamp a `RenderState` with the buffer its active document is. The
+    /// fixture builds an `ActiveDocumentRenderState::default()`, so without
+    /// this every fixture claims the same buffer and a cross-buffer test
+    /// would pass whether or not the code distinguished them.
+    fn set_buffer_id(rs: &ArcSwap<RenderState>, id: lattice_core::BufferId) {
+        let cur = rs.load_full();
+        let ad = cur.active_document.load_full();
+        rs.store(Arc::new(RenderState {
+            active_document: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::render_state::ActiveDocumentRenderState {
+                    document_buffer_id: id,
+                    ..(*ad).clone()
+                },
+            )),
+            ..(*cur).clone()
+        }));
+    }
+
+    /// **A buffer switch must not leave the previous buffer's overlay quads
+    /// published.**
+    ///
+    /// Reported: opening a synthetic buffer (magit) leaves the hlsearch
+    /// highlight painted at the exact offsets it had in the buffer before it.
+    /// The host clears `all_matches` on the swap seam correctly — that was the
+    /// tab/pane fix — but the RENDERER paints from this bucket and only falls
+    /// back to the live walk when the bucket is empty.
+    ///
+    /// The trigger is the stale-snapshot HOLD: a freshly-activated buffer has
+    /// text before its parse lands, so `snap_text_version < text_version`, and
+    /// the hold path re-publishes the PREVIOUS quads stamped with the NEW key.
+    /// Every wake after that is a cache hit, so the stale bucket never leaves.
+    /// `VisibleHighlightsKey` carries no buffer identity, so nothing in the
+    /// key can tell the two apart.
+    #[test]
+    fn a_stale_snapshot_after_a_buffer_switch_does_not_hold_the_old_quads() {
+        // Buffer A: a search match on line 0.
+        let (rs_a, _h_a, overlay_cell) = rs_with_rust(
+            "fn main() {}",
+            0,
+            5,
+            0,
+            1,
+            None,
+            Vec::new(),
+            vec![rng(0, 3, 0, 7)],
+        );
+        set_buffer_id(&rs_a, lattice_core::BufferId(7));
+        assert_eq!(recompute(&rs_a, &overlay_cell), WorkerDecision::Recomputed);
+        assert!(
+            !overlay_cell.load().quads.is_empty(),
+            "sanity: buffer A published quads"
+        );
+        assert_eq!(
+            overlay_cell.load().computed_for_key.buffer_id,
+            lattice_core::BufferId(7),
+            "sanity: the quads are stamped with buffer A's id"
+        );
+
+        // Buffer B: a DIFFERENT document with NO matches, whose parse has not
+        // caught up (`text_version` 9 against a snapshot parsed at 1). This is
+        // exactly the state a just-activated synthetic buffer is in.
+        let (rs_b, _h_b, _unused) = rs_with_rust(
+            "totally different text
+",
+            0,
+            5,
+            0,
+            1,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        set_buffer_id(&rs_b, lattice_core::BufferId(8));
+        {
+            let cur = rs_b.load_full();
+            let mut syntax = (*cur.syntax).clone();
+            syntax.text_version = 9;
+            rs_b.store(Arc::new(RenderState {
+                syntax: Arc::new(syntax),
+                ..(*cur).clone()
+            }));
+        }
+
+        let _ = recompute(&rs_b, &overlay_cell);
+        let after = overlay_cell.load();
+        assert!(
+            after.quads.iter().all(|row| row.is_empty()),
+            "buffer B has no matches, so nothing may be published for it; \
+             these are buffer A's offsets about to be painted onto B: {:?}",
+            after.quads,
+        );
     }
 
     /// Cache-hit short-circuit: a second `recompute` with the same

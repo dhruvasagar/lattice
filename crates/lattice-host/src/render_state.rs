@@ -1675,6 +1675,16 @@ impl Default for CellsRenderState {
 /// hash is recomputed from the same payload).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VisibleHighlightsKey {
+    /// Which buffer these quads were bucketed for.
+    ///
+    /// Without it the key describes a viewport rather than a DOCUMENT, and
+    /// the two are not the same thing the moment the active buffer changes.
+    /// The stale-snapshot hold below re-publishes the previous quads under a
+    /// new key, which is right mid-edit in one buffer and wrong across a
+    /// switch — it painted the buffer you left onto the buffer you opened, at
+    /// the exact offsets it had there. Nothing else in this key could tell the
+    /// two cases apart.
+    pub buffer_id: lattice_core::BufferId,
     pub snapshot_ptr: usize,
     pub syntax_text_version: u64,
     pub scroll: u32,

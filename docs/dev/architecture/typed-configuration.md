@@ -232,6 +232,55 @@ The guest still deserializes. The parse changes *shape* — walk a tree instead 
 parse text — rather than disappearing; the win is that the walk is total and
 mechanical (an SDK derive) where the text parse was bespoke.
 
+### 4.1 What a rejected value leaves behind (OC.11c)
+
+A rejection is a **no-op**. Vim's rule, kept: the option holds whatever it held
+before, and for one never successfully set that is its registered default. So
+the value alone cannot answer *"is this the default because nobody configured
+it, or because what they configured did not parse?"* — both read back
+identically.
+
+That is not a theoretical gap. org-capture declares `capture-templates` with an
+empty-list default and treats empty as "not configured", so a set whose value
+did not fit the schema made capture fall through to a legacy single-template
+path and file the user's note into a file they were migrating away from. The
+`:set` echo said so at the time and had long scrolled away.
+
+`config.option-diagnostic(name)` answers it: the host's own message for the
+last assignment to `name` that failed, `none` if the last one succeeded or
+there never was one. Those two are deliberately not distinguished — the
+caller's question is "can I trust this value", and both answers are yes.
+
+**It is a diagnostic, not a status.** There is no "refused" state on an option
+and this does not add one; an assignment errored, which is an event, and this
+is the record of it. It is dropped the moment a later assignment to the same
+option succeeds. Named accordingly, because the first draft called it
+`option-status { … refused }` and that framing smuggled in a state the system
+does not have.
+
+The record lives on `ConfigRegistry`, written and retired inside
+`parse_and_set_command` — the chokepoint every `:set` goes through — and
+rebuilt wholesale by each config load. Three rules, each preventing a specific
+staleness:
+
+- **cleared once per LOAD, not per file**, or the project config wipes what the
+  user config just recorded;
+- **rebuilt wholesale, not per message**, or an option whose failing line the
+  user deleted is complained about forever — there is no message to update it
+  with;
+- **keyed by the CANONICAL name**, so `:set ts=999` records against `tabstop`;
+  an alias-keyed record is invisible to the plugin that declared the option.
+
+An unknown option records nothing: there is no option for the diagnostic to be
+about, and keying one under a typo would let `:set tabstpo=4` shadow the real
+`tabstop` a plugin later asks about.
+
+`LoadMessage` carries the option name structurally for this — it was always
+there as `dotted`, formatted into the human-readable body and nowhere else. A
+file-level failure (unreadable, or TOML that does not parse) carries **no**
+option: it loses every option in the file, and attributing it to whichever one
+was nearby would be worse than saying nothing.
+
 ## 5. Paramount-goal alignment
 
 **UX (higher court):** nothing user-visible changes until `:customize`; the

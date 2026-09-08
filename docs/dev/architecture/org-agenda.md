@@ -266,6 +266,48 @@ defects and capabilities are host-side, because every provider gets them; org
 semantics stay in org.** The `[untitled]` fix and richer header cells serve
 search, diff and references too. Keyword colour serves nobody but org.
 
+### 5a.1 One header outranks its peers (MH.A6)
+
+`entry.emphasis` marks a row's header as **the one to look at**. The agenda's
+today block is why it exists: a view whose entire purpose is "what am I doing
+now" reads badly when the day you are actually in paints identically to a
+Thursday three weeks out.
+
+It follows §5's division exactly, which is why it is a substrate feature and
+not an org one. The guest says *which* header is emphasised — a date question
+only org can answer — and says nothing about what emphasis looks like. The
+host renders it from `multibuffer.excerpt_header.emphasis[.title]`, two theme
+elements the multibuffer mode registers beside the three it already owns. So
+"prominent" is the colourscheme's decision, and a diagnostics view wanting to
+lift its errors block gets the same mechanism free.
+
+The field is deliberately not called `today`.
+
+Three details that are not obvious and each cost something to get wrong:
+
+- **It is read from the row that STARTS the group**, exactly like `label`. A
+  guest cannot know which of its rows lands first once the sort has
+  interleaved every other file's, so it sets the flag on every row of the
+  group and the host reads whichever wins. Setting it inconsistently is a
+  guest bug that shows as "sometimes emphasised".
+- **It is cached.** `CachedEntry` carries it for the reason `annotation`
+  already documents: a cache hit skips the guest entirely, so a field left out
+  of the cache makes the feature work on a file's first scan and silently stop
+  on every one after — which reads as a broken feature rather than an
+  incomplete cache.
+- **Both elements fall back to the ordinary header's colours**, not to `0`. A
+  colourscheme that does not define them renders an emphasised header exactly
+  like a normal one — undistinguished, never invisible, and never falling
+  through to the renderer's diff-deletion tint (the T.7 bug).
+
+The trailing `(today)` parenthetical takes the emphasis foreground too, rather
+than OA.7's dim: dimming it against the emphasised backdrop would mute the
+half of the header that says *why* it is emphasised.
+
+**At most one per view is a convention, not a rule**, and nothing enforces it
+because nothing could — excerpts arrive from a sort the provider does not
+control. A guest that emphasises every group has emphasised nothing.
+
 ---
 
 ## 5b. Annotations: what hangs *under* a row (HB.5)

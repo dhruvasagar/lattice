@@ -65,6 +65,7 @@ impl ScannedExcerptSource for BenchSource {
                             sort_key: key,
                             spans: Vec::new(),
                             annotation: None,
+                            emphasis: false,
                         })
                     })
                     .collect(),

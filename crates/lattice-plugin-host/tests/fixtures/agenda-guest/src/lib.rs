@@ -140,6 +140,7 @@ impl Guest for Component {
                     // The tree path says nothing about annotations; `none` here
                     // keeps this fixture's two branches distinguishable.
                     annotation: None,
+                    emphasis: false,
                 }],
                 clock,
             });
@@ -198,6 +199,12 @@ impl Guest for Component {
                         slot: "habit".to_string(),
                     }],
                 }),
+                // MH.A6: exactly ONE group emphasised, for `annotation`'s
+                // reason — a fixture that emphasised everything could not
+                // distinguish "the flag crossed" from "the host emphasises
+                // every header". Day 1 is it; every other day must render
+                // with the ordinary backdrop.
+                emphasis: sort_key == 1,
             });
         }
         Ok(ScanResult {

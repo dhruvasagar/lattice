@@ -47,7 +47,7 @@ use lattice_runtime::{Document, EventBus, spawn_document};
 use crate::events::MultibufferExcerptsReady;
 use crate::registry::MultibufferRegistryHandle;
 use crate::view::create_multibuffer_view;
-use crate::{Excerpt, ExcerptHeader, HeaderlineStatus};
+use crate::{Excerpt, ExcerptHeader, ExcerptHeaderStyle, HeaderlineStatus};
 
 /// How many files one `spawn_blocking` hop reads. Big enough that the
 /// blocking-pool round-trip is amortised, small enough that a huge project
@@ -1138,10 +1138,14 @@ fn build_excerpts(rows: &[SortedRow], source_ids: &HashMap<usize, BufferId>) -> 
         } else {
             String::new()
         };
-        out.push(
-            Excerpt::new(source, row.entry.line, row.entry.end_line)
-                .with_header(ExcerptHeader::new(title)),
-        );
+        // MH.A6: read from the row that STARTS the group, like the label —
+        // the producer sets it on every row of the group because it cannot
+        // know which one the sort puts first.
+        let mut header = ExcerptHeader::new(title);
+        if starts_group && row.entry.emphasis {
+            header.style = ExcerptHeaderStyle::Emphasis;
+        }
+        out.push(Excerpt::new(source, row.entry.line, row.entry.end_line).with_header(header));
     }
     out
 }
@@ -2149,6 +2153,7 @@ mod tests {
             sort_key,
             spans: Vec::new(),
             annotation: None,
+            emphasis: false,
         }
     }
 
@@ -2231,6 +2236,63 @@ mod tests {
         let excerpts = build_excerpts(&rows, &ids(1));
         let titles: Vec<&str> = excerpts.iter().map(|e| e.header.title.as_str()).collect();
         assert_eq!(titles, vec!["Monday", "Tuesday", "Monday"]);
+    }
+
+    /// MH.A6: emphasis reaches the header of the group that asked for it, and
+    /// only that one.
+    ///
+    /// The negative half is the assertion that matters. A `build_excerpts`
+    /// that ignored the flag and emphasised nothing would pass a
+    /// today-is-emphasised test written the other way round only if it
+    /// checked the positive; a version that emphasised every header would
+    /// pass the positive too. Both halves together pin it.
+    #[test]
+    fn only_the_group_that_asked_for_it_is_emphasised() {
+        let mut today = entry(2, "tue", "Tuesday (today)", 20);
+        today.emphasis = true;
+        let files = vec![file(
+            "/p/a.org",
+            vec![
+                entry(1, "mon", "Monday", 10),
+                today,
+                entry(3, "wed", "Wednesday", 30),
+            ],
+        )];
+        let rows = sort_rows(&files);
+        let excerpts = build_excerpts(&rows, &ids(1));
+        let styles: Vec<ExcerptHeaderStyle> = excerpts.iter().map(|e| e.header.style).collect();
+        assert_eq!(
+            styles,
+            vec![
+                ExcerptHeaderStyle::Default,
+                ExcerptHeaderStyle::Emphasis,
+                ExcerptHeaderStyle::Default,
+            ]
+        );
+    }
+
+    /// The flag is read from the row that STARTS the group, like the label —
+    /// and a continuation row renders no header at all, so it cannot smuggle
+    /// an emphasis onto a group whose first row did not ask for one.
+    #[test]
+    fn a_continuation_row_cannot_emphasise_its_group() {
+        let mut second = entry(2, "mon", "Monday", 11);
+        second.emphasis = true;
+        let files = vec![
+            file("/p/a.org", vec![entry(1, "mon", "Monday", 10)]),
+            file("/p/b.org", vec![second]),
+        ];
+        let rows = sort_rows(&files);
+        let excerpts = build_excerpts(&rows, &ids(2));
+        assert_eq!(
+            excerpts[0].header.style,
+            ExcerptHeaderStyle::Default,
+            "the group's own first row did not ask to be emphasised"
+        );
+        assert!(
+            excerpts[1].header.title.is_empty(),
+            "and the row that did starts no group, so it renders no header"
+        );
     }
 
     /// Every row of one file points at ONE source document, or an edit made
@@ -2343,6 +2405,7 @@ mod tests {
                                 sort_key: key,
                                 spans: Vec::new(),
                                 annotation: None,
+                                emphasis: false,
                             })
                         })
                         .collect(),

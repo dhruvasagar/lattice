@@ -288,6 +288,11 @@ fn validate(path: &str, e: Entry) -> Option<ScannedExcerpt> {
                 slot: s.slot,
             })
             .collect(),
+        // MH.A6: nothing to validate — a bool has no range to be out of, and
+        // it names no slot that could fail to resolve. The worst a guest can
+        // do with it is emphasise every group, which is a taste failure rather
+        // than a correctness one and not the host's to police.
+        emphasis: e.emphasis,
         // HB.5: same rule as `spans`, one level in. An annotation whose spans
         // are all bad still renders its text, and a row never loses its
         // annotation because a decoration was malformed — the row is the
@@ -363,6 +368,7 @@ mod tests {
             sort_key: 42,
             spans: Vec::new(),
             annotation: None,
+            emphasis: false,
         }
     }
 

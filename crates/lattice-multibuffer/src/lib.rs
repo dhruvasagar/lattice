@@ -148,14 +148,32 @@ impl ExcerptHeader {
     }
 }
 
-/// Style discriminator for excerpt headers. M.2 ships with a
-/// single `Default` variant; future variants distinguish header
-/// presentation (severity-prefixed for diagnostics provider,
-/// hunk-decorated for project-diff provider).
+/// Style discriminator for excerpt headers. M.2 shipped a single
+/// `Default` variant and said future ones would distinguish header
+/// presentation; MH.A6 adds the first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExcerptHeaderStyle {
     #[default]
     Default,
+    /// MH.A6: **this header is the one to look at.** Rendered from its
+    /// own theme elements (`multibuffer.excerpt_header.emphasis[.*]`)
+    /// rather than the shared backdrop / path pair, so a colourscheme
+    /// decides what "prominent" means instead of this enum.
+    ///
+    /// The agenda's today block is the first consumer: a view whose
+    /// whole purpose is "what do I do now" reads badly when the day
+    /// you are actually in paints identically to a Thursday three
+    /// weeks out. Deliberately NOT named `Today` — the mechanism is
+    /// "one header outranks its peers", and a diagnostics view
+    /// wanting to lift its errors block, or a diff view its conflicted
+    /// file, is the same want.
+    ///
+    /// **At most one per view is a convention, not a rule.** Nothing
+    /// here enforces it, because nothing here could: excerpts arrive
+    /// from a sort the provider does not control. A provider that
+    /// emphasises everything has emphasised nothing, and that is its
+    /// bug to avoid.
+    Emphasis,
 }
 
 /// One excerpt of a source document, identified by its source
@@ -2730,6 +2748,19 @@ pub const ELEM_EXCERPT_HEADER_PATH: &str = "multibuffer.excerpt_header.path";
 /// Element name: the excerpt-header match-count foreground.
 pub const ELEM_EXCERPT_HEADER_COUNT: &str = "multibuffer.excerpt_header.count";
 
+// MH.A6: the emphasised header's own backdrop + title foreground.
+//
+// Two elements rather than a "make the normal one brighter" rule,
+// because brightness is not portable: a light colourscheme emphasises
+// by going DARKER, and a theme that expressed prominence as
+// `header_fg + 0x202020` would invert on half the themes people use.
+// Naming the elements hands that decision to the colourscheme, which
+// is the only layer that knows which direction is louder.
+/// Element name: the emphasised excerpt-header row's backdrop.
+pub const ELEM_EXCERPT_HEADER_EMPHASIS: &str = "multibuffer.excerpt_header.emphasis";
+/// Element name: the emphasised excerpt-header's title foreground.
+pub const ELEM_EXCERPT_HEADER_EMPHASIS_TITLE: &str = "multibuffer.excerpt_header.emphasis.title";
+
 // MH.A4 (2026-06-20): view-status headerline foreground elements.
 // The status row (` ⟳ Searching … ` / ` ◆ N hits ` / ` ■ reason `)
 // previously hardcoded its fg as ad-hoc hex (0x999999 / 0x44cc88 /
@@ -2778,6 +2809,32 @@ pub fn register_multibuffer_theme_elements(
         StyleSpec::new().fg(ColorRef::Palette("overlay2".into())),
         "Excerpt header match count.",
     );
+    // MH.A6: the emphasised header — `surface2` behind, `text` in
+    // front, against the ordinary header's `surface0` + palette-blue.
+    //
+    // `surface2` rather than an accent hue (`purple`, `blue`) because
+    // it is the SAME LADDER the normal backdrop sits on, two rungs up:
+    // every shipped palette defines `surface0/1/2` as a lift, so the
+    // emphasis reads as "this band is raised" in a light colourscheme
+    // exactly as it does in a dark one. An accent backdrop would have
+    // to be re-chosen per theme to avoid clashing with whatever that
+    // theme already spends its purple on.
+    //
+    // Both are palette role-keys rather than literal RGB (unlike the
+    // ordinary backdrop above, which predates the palette), so a
+    // `:colorscheme` swap carries the emphasis with it.
+    let emphasis = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_EMPHASIS.to_string()),
+        owner.clone(),
+        StyleSpec::new().bg(ColorRef::Palette("surface2".into())),
+        "Multibuffer emphasised excerpt header backdrop (e.g. the agenda's today block).",
+    );
+    let emphasis_title = reg.register(
+        ElementName::from(ELEM_EXCERPT_HEADER_EMPHASIS_TITLE.to_string()),
+        owner.clone(),
+        StyleSpec::new().fg(ColorRef::Palette("text".into())),
+        "Multibuffer emphasised excerpt header title foreground.",
+    );
     // MH.A4: status-row state colors. `in_progress` maps to the
     // muted `subtext` grey (the old 0x999999), `complete` to `green`
     // (old 0x44cc88), `failed` to `red` (old 0xff4444) — the nearest
@@ -2813,6 +2870,8 @@ pub fn register_multibuffer_theme_elements(
         backdrop,
         path,
         count,
+        emphasis,
+        emphasis_title,
         status_in_progress,
         status_complete,
         status_failed,
@@ -2829,6 +2888,11 @@ pub struct MultibufferHeaderElementIds {
     pub backdrop: ElementId,
     pub path: ElementId,
     pub count: ElementId,
+    /// MH.A6: the emphasised header's backdrop + title, interned with
+    /// the rest so an emphasised row costs the same array-index
+    /// resolve as an ordinary one.
+    pub emphasis: ElementId,
+    pub emphasis_title: ElementId,
     /// MH.A4: view-status row foregrounds, interned alongside the
     /// header elements so the status provider's `collect()` resolves
     /// by array index (never a per-row name lookup).
@@ -2849,6 +2913,8 @@ impl Default for MultibufferHeaderElementIds {
             backdrop: ElementId::INVALID,
             path: ElementId::INVALID,
             count: ElementId::INVALID,
+            emphasis: ElementId::INVALID,
+            emphasis_title: ElementId::INVALID,
             status_in_progress: ElementId::INVALID,
             status_complete: ElementId::INVALID,
             status_failed: ElementId::INVALID,
@@ -3006,16 +3072,56 @@ impl VirtualRowProvider for MultibufferExcerptHeaderProvider {
             .and_then(|r| r.get(self.elements.count).fg)
             .map(|c| c.to_rgb_u32(0))
             .unwrap_or(0);
+        // MH.A6: the emphasised pair, resolved in the same pass. Both
+        // fall back to the ordinary header's colours rather than to
+        // `0`, so a colourscheme that does not define these elements
+        // renders an emphasised header exactly like a normal one —
+        // undistinguished, never invisible.
+        let emphasis_bg: Option<u32> = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.emphasis).bg)
+            .map(|c| c.to_rgb_u32(0))
+            .or(header_bg);
+        let emphasis_fg: u32 = resolved
+            .as_ref()
+            .and_then(|r| r.get(self.elements.emphasis_title).fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(header_fg);
         let nerd_fonts = self.nerd_fonts;
-        compose_header_rows(&self.multibuffer.excerpts(), self.grouping, |excerpt| {
-            header_cells(&excerpt.header, nerd_fonts, header_fg, path_fg, count_fg)
-        })
-        .into_iter()
-        .map(|mut row| {
-            row.bg = header_bg;
-            row
-        })
-        .collect()
+        // The style has to be read TWICE — once for the cells and once
+        // for the row's `bg` — and `compose_header_rows` hands the
+        // closure the excerpt while the `map` below sees only the
+        // finished row. Carried in a parallel vec keyed by position
+        // rather than threaded through `VirtualRow`: the row type is
+        // shared with every other provider and does not want a field
+        // that only headers mean anything by.
+        let mut emphasised: Vec<bool> = Vec::new();
+        let rows = compose_header_rows(&self.multibuffer.excerpts(), self.grouping, |excerpt| {
+            let emph = excerpt.header.style == ExcerptHeaderStyle::Emphasis;
+            emphasised.push(emph);
+            let (fg, path_fg) = if emph {
+                // The title takes the emphasis foreground, and so does
+                // the trailing `(today)` parenthetical — OA.7 dims that
+                // against the normal backdrop, and dimming it against
+                // the emphasised one would undo the emphasis on the
+                // half of the header that says WHY it is emphasised.
+                (emphasis_fg, emphasis_fg)
+            } else {
+                (header_fg, path_fg)
+            };
+            header_cells(&excerpt.header, nerd_fonts, fg, path_fg, count_fg)
+        });
+        rows.into_iter()
+            .enumerate()
+            .map(|(i, mut row)| {
+                row.bg = if emphasised.get(i).copied().unwrap_or(false) {
+                    emphasis_bg
+                } else {
+                    header_bg
+                };
+                row
+            })
+            .collect()
     }
 }
 
@@ -5875,6 +5981,103 @@ mod tests {
         assert!(
             rows[0].cells.iter().any(|c| c.fg == 0x0089_b4fa),
             "dir-path cells carry the resolved path fg (blue)"
+        );
+    }
+
+    /// MH.A6: an emphasised header paints from its OWN elements, and its
+    /// unemphasised neighbour is unchanged.
+    ///
+    /// Both rows in one `collect()` on purpose. The interesting failure is
+    /// not "emphasis does nothing" — it is "emphasis leaked", a `collect()`
+    /// that resolved the emphasis colours once and baked them into every
+    /// header, which a single-row test cannot see.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_emphasised_header_paints_from_its_own_elements() {
+        use lattice_theme::{
+            ElementOwner, InMemoryThemeRegistry, ThemeRegistryHandle, default_palette,
+        };
+
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner = ElementOwner::Mode(
+            crate::MultibufferMode::mode_id()
+                .as_str()
+                .to_string()
+                .into(),
+        );
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+        let theme: ThemeRegistryHandle = registry.clone();
+
+        // Two sources so each excerpt starts its own header run.
+        let (sources, src_ids) = make_sources(&["alpha\n", "beta\n"]);
+        let plain = ExcerptHeader::new("Wednesday");
+        let loud = ExcerptHeader {
+            style: ExcerptHeaderStyle::Emphasis,
+            ..ExcerptHeader::new("Tuesday (today)")
+        };
+        let excerpts = vec![
+            Excerpt::new(src_ids[0], 0, 0).with_header(plain),
+            Excerpt::new(src_ids[1], 0, 0).with_header(loud),
+        ];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        let provider = MultibufferExcerptHeaderProvider::with_theme(mb, theme, ids, false);
+        let rows = provider.collect();
+        assert_eq!(rows.len(), 2, "one header per source: {rows:?}");
+
+        // `mauve` from the default palette, baked.
+        let emphasis_bg = rows[1].bg.expect("the emphasised row has a backdrop");
+        let plain_bg = rows[0].bg.expect("so does the ordinary one");
+        assert_ne!(
+            emphasis_bg, plain_bg,
+            "the emphasised header must not paint on the ordinary backdrop — \
+             that is the whole of what 'prominent' buys"
+        );
+        assert_eq!(
+            plain_bg, 0x0031_3244,
+            "and the ordinary header is untouched by its loud neighbour"
+        );
+
+        // The title AND its trailing parenthetical take the emphasis fg. OA.7
+        // dims `(today)` against the normal backdrop; dimming it here would
+        // mute the half of the header that says why it is emphasised.
+        let text_fg = 0x00cd_d6f4; // palette `text`
+        let loud_title: String = rows[1]
+            .cells
+            .iter()
+            .filter(|c| c.fg == text_fg)
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
+        assert_eq!(loud_title, "Tuesday (today)");
+    }
+
+    /// A colourscheme with no emphasis elements renders an emphasised header
+    /// like an ordinary one — undistinguished, never invisible.
+    ///
+    /// The failure this forbids is a header whose backdrop resolves to `None`
+    /// and falls through to the renderer's diff-deletion tint, which is the
+    /// exact bug the `.emphasis` element's `or(header_bg)` fallback exists to
+    /// prevent and which T.7 already paid for once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emphasis_without_theme_elements_degrades_to_the_ordinary_header() {
+        let (sources, src_ids) = make_sources(&["alpha\n"]);
+        let loud = ExcerptHeader {
+            style: ExcerptHeaderStyle::Emphasis,
+            ..ExcerptHeader::new("Tuesday (today)")
+        };
+        let excerpts = vec![Excerpt::new(src_ids[0], 0, 0).with_header(loud)];
+        let mb = MultibufferDocumentHandle::new(sources, excerpts, empty_registry()).unwrap();
+        // No theme at all — every element id is INVALID.
+        let provider = MultibufferExcerptHeaderProvider::new(mb);
+        let rows = provider.collect();
+
+        assert_eq!(rows.len(), 1);
+        let text: String = rows[0]
+            .cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
+        assert_eq!(
+            text, "Tuesday (today)",
+            "the header still says what it says"
         );
     }
 

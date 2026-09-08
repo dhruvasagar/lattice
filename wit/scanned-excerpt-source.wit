@@ -129,6 +129,30 @@ interface scanned-excerpt-source {
         /// `none` is the ordinary case — an agenda of plain TODOs grows no
         /// second rows.
         annotation: option<annotation>,
+        /// MH.A6: render this row's header EMPHASISED, if it turns out to
+        /// start a group.
+        ///
+        /// Read only from the row that starts the group — the same rule
+        /// [`label`] already lives by, and for the same reason: the guest
+        /// cannot know which of its rows lands first once the sort has
+        /// interleaved every other file's, so it sets this on EVERY row of
+        /// the group and the host reads whichever one wins. Setting it on
+        /// some rows of a group and not others is a guest bug whose symptom
+        /// is "the header is sometimes emphasised".
+        ///
+        /// What emphasis LOOKS like is the colourscheme's business, not the
+        /// guest's: the host renders these headers from
+        /// `multibuffer.excerpt_header.emphasis[.title]` rather than from
+        /// anything named here. A theme that does not define those elements
+        /// renders an emphasised header exactly like an ordinary one —
+        /// undistinguished, never invisible.
+        ///
+        /// **One per view is a convention this cannot enforce.** A guest that
+        /// emphasises every group has emphasised nothing.
+        ///
+        /// `false` is the ordinary case and is byte-identical to the
+        /// behaviour before this field existed.
+        emphasis: bool,
     }
 
     /// HB.5: one line hung below a row, and how it is coloured.

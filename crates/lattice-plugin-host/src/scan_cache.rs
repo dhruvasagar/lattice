@@ -153,6 +153,15 @@ struct CachedEntry {
     /// rows carry no annotation until their file next changes.
     #[serde(default)]
     annotation: Option<CachedAnnotation>,
+    /// MH.A6: cached for `annotation`'s reason, which bites identically here.
+    /// A cache hit skips the guest, so an emphasis left out would make the
+    /// agenda's today block stand out on the first scan of a file and render
+    /// flat on every one after — the same "the feature is broken" symptom.
+    ///
+    /// `serde(default)` so a cache written before this field still loads;
+    /// those rows render unemphasised until their file next changes.
+    #[serde(default)]
+    emphasis: bool,
 }
 
 /// The WIT `annotation`, in a form that survives a round trip to disk.
@@ -202,6 +211,7 @@ impl From<&Entry> for CachedEntry {
                     })
                     .collect(),
             }),
+            emphasis: e.emphasis,
         }
     }
 }
@@ -235,6 +245,7 @@ impl From<&CachedEntry> for Entry {
                     })
                     .collect(),
             }),
+            emphasis: c.emphasis,
         }
     }
 }
@@ -439,6 +450,7 @@ mod tests {
                 slot: "keyword".to_string(),
             }],
             annotation: None,
+            emphasis: false,
         }
     }
 

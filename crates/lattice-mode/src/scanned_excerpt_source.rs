@@ -60,6 +60,19 @@ pub struct ScannedExcerpt {
     ///
     /// `None` is the ordinary case. A scan of plain TODOs grows no second rows.
     pub annotation: Option<RowAnnotation>,
+    /// MH.A6: render this row's header EMPHASISED, when it turns out to start
+    /// a group.
+    ///
+    /// Read only on the row that starts the group — the same rule
+    /// [`label`](Self::label) already lives by, and for the same reason: a
+    /// producer cannot know which of its rows lands first after the sort, so
+    /// it sets the field on every row of the group and the host reads whichever
+    /// one wins. Setting it inconsistently across a group is a producer bug
+    /// that shows as "sometimes emphasised".
+    ///
+    /// `false` is the ordinary case and leaves the header byte-identical to
+    /// before this field existed.
+    pub emphasis: bool,
 }
 
 /// HB.5: one line hung below a row, and how it is coloured.

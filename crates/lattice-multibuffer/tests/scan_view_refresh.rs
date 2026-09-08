@@ -175,6 +175,7 @@ impl ScannedExcerptSource for FakeSource {
                                 text: format!("graph-{key}"),
                                 spans: Vec::new(),
                             }),
+                            emphasis: false,
                         })
                     })
                     .collect(),

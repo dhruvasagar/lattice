@@ -121,6 +121,11 @@ fn label(ev: &Event) -> &'static str {
 /// is what every pre-OR.2 test gets.
 const WATCH_TARGET: &str = "/data/watch-target";
 
+/// PH7.8c: present ⇒ ring our own doorbell from `register-events`. A marker
+/// file rather than an unconditional emit, so only the test that is about this
+/// behaviour pays for it.
+const EMIT_AT_REGISTER: &str = "/data/emit-at-register";
+
 impl Guest for Component {
     /// The host calls this once; the guest subscribes through the imported
     /// `events.subscribe` host function.
@@ -140,6 +145,22 @@ impl Guest for Component {
         // It self-registers into the host's runtime event registry under this
         // plugin's provenance; `on-event` handler 1 emits it on save.
         host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
+        // PH7.8c: ring our OWN doorbell from inside `register-events`.
+        //
+        // The shape a guest reaches for when registration has to kick off its
+        // own work — org's roam index queues a corpus walk and emits the first
+        // batch step exactly here. The subscription above is recorded but not
+        // yet on the bus, so without the host holding this it is published to
+        // everyone except us and the chain never starts. Handler 7 records the
+        // delivery, so a test can tell "arrived" from "dropped".
+        //
+        // Opt-in via a marker file, the `WATCH_TARGET` idiom two arms down: an
+        // unconditional emit here would add a line to every other test's
+        // expected log, coupling all of them to this one behaviour.
+        if std::fs::metadata(EMIT_AT_REGISTER).is_ok() {
+            events::subscribe(&kind_filter(EventKind::Plugin), 7);
+            host_services::emit_event("fixture/registered", b"1");
+        }
         // OC.2: arm a periodic wake from registration. 50 ms is the seam's
         // floor — fast enough that a test does not sit on a real clock, and the
         // guest cancels itself after a few fires so it cannot run away.
@@ -187,6 +208,17 @@ impl Guest for Component {
         }
         if handler == 4 {
             // No-op: pure dispatch, no side effect (perf measurement).
+            return;
+        }
+        // PH7.8c: the doorbell rung from `register-events`. Recording it is the
+        // whole proof — a dropped event leaves this line absent, which is what
+        // the symptom looked like from the outside: nothing, forever.
+        if handler == 7 {
+            if let Event::Plugin(p) = &ev {
+                if p.name == "fixture/registered" {
+                    record("7:registered-event-delivered");
+                }
+            }
             return;
         }
         // OR.2: a watch batch. Record how many paths arrived and their

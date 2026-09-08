@@ -505,6 +505,20 @@ impl PluginHost {
         // Drive subscription registration: the guest calls the imported
         // `events.subscribe(filter, handler)` inside `register-events`, recording
         // each into the Store's `event_subscriptions`.
+        // PH7.8c: hold anything the guest emits from inside `register-events`.
+        //
+        // Its subscriptions are recorded into the Store during the call and
+        // wired onto the bus only AFTER it returns, so an event published in
+        // that window reaches every subscriber except the one that asked for
+        // it. A guest kicking off its own work from registration — org's roam
+        // index rings its own batch doorbell there — then waits forever for a
+        // delivery that was dropped, with nothing logged and nothing to see but
+        // a progress counter frozen at its first value.
+        //
+        // Everything a guest can CALL from here was already wired ahead of the
+        // call (emit ctx, log ctx, config, wake). This closes the last case:
+        // what it can SEND.
+        store.data_mut().deferred_events = Some(Vec::new());
         arm_store(&mut store, budget)?;
         bindings
             .call_register_events(&mut store)
@@ -562,6 +576,29 @@ impl PluginHost {
         // subscriptions) keep the channel open, so the actor ends exactly when
         // the last subscription is unsubscribed/pruned.
         drop(tx);
+
+        // PH7.8c: the subscriptions are live — release what the guest emitted
+        // during registration.
+        //
+        // AFTER the wiring loop and not one line earlier: the whole point is
+        // that these events find this plugin's own sinks. Publishing in
+        // registration order preserves what the guest wrote; a guest that rang
+        // two doorbells meant them in that sequence.
+        //
+        // Closing the window (back to `None`) is what makes every later emit —
+        // from `on-event`, from a wake — publish straight through, which is the
+        // behaviour that was always correct outside this window.
+        let deferred = store.data_mut().deferred_events.take().unwrap_or_default();
+        if !deferred.is_empty() {
+            tracing::debug!(
+                plugin = id.0,
+                count = deferred.len(),
+                "releasing events emitted during register-events"
+            );
+            for (name, payload) in deferred {
+                crate::host_services::emit_plugin_event(bus, name, payload);
+            }
+        }
 
         let actor = EventActor {
             store,

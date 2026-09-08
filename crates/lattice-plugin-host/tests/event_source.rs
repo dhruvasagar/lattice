@@ -367,3 +367,67 @@ async fn first_trap_quarantines_and_emits_one_plugin_crashed() {
         "quarantine is one-shot: the second trap fired no second PluginCrashed"
     );
 }
+
+/// PH7.8c — an event a guest emits from inside `register-events` reaches its
+/// own handler.
+///
+/// **The window this closes was invisible from every side.** A guest's
+/// subscriptions are recorded into its Store during `register-events` and wired
+/// onto the bus only after that call returns, so an event published inside it
+/// went to every subscriber except the one that asked for it — no error, no
+/// warning, nothing logged.
+///
+/// Org's roam index is the shape that found it: registration queues a corpus
+/// walk and rings the first batch doorbell right there. The doorbell was
+/// dropped, the chain never took a step, and the only symptom was a modeline
+/// counter frozen at `⟳ roam 0/706` forever — indistinguishable from a scan
+/// that was merely slow.
+///
+/// Without the deferral this fails on the missing log line, which is exactly
+/// how the bug presented: not a wrong answer, an absent one.
+#[tokio::test]
+async fn an_event_emitted_during_registration_reaches_its_own_handler() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let data_base = dir.path().join("data");
+    // Arm the fixture's registration emit before it is instantiated.
+    let guest_data = data_base.join(PLUGIN_ID).join("data");
+    std::fs::create_dir_all(&guest_data).unwrap();
+    std::fs::write(guest_data.join("emit-at-register"), b"1").unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile events fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+    let bus = Arc::new(EventBus::new());
+
+    let (sub_ids, actor) = host
+        .spawn_event_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::event(),
+            &bus,
+            None,
+        )
+        .await
+        .expect("spawn events plugin");
+
+    // Nothing is published here. The only event in flight is the one the guest
+    // emitted from its own `register-events`, which the host held until the
+    // subscriptions above were live.
+    for id in sub_ids {
+        bus.unsubscribe(id);
+    }
+    actor.run().await;
+
+    let got = recorded(&data_base);
+    assert!(
+        got.iter().any(|l| l == "7:registered-event-delivered"),
+        "the doorbell rung from register-events must come back to the guest \
+         that rang it; got {got:?}"
+    );
+}

@@ -1099,6 +1099,13 @@ struct PluginState {
     /// OA.30: the counter `refresh-decorations` bumps. `None` in a harness that
     /// wired no editor, where the call is a no-op.
     decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
+    /// PH7.8c: events emitted while `register-events` is still running, held
+    /// until this plugin's subscriptions are on the bus.
+    ///
+    /// `Some(_)` only inside that window; `None` — publish straight through —
+    /// everywhere else, including every later `on-event`. See
+    /// [`crate::event_task`]'s flush for why the window exists.
+    deferred_events: Option<Vec<(String, Vec<u8>)>>,
     /// CG.4: the foreground-cancel registry, stamped once per store.
     /// `arm_store` takes the lock once per guest call to refresh
     /// [`Self::cancel_token`]; the epoch callback never touches it.
@@ -1313,6 +1320,14 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// plugin with no emit context wired (not spawned onto a bus) degrades to a
     /// warn + drop — never a panic (the four-artefact graceful-failure clause).
     fn emit_event(&mut self, name: String, payload: Vec<u8>) {
+        // PH7.8c: inside the `register-events` window this plugin has no bus
+        // subscription yet, so publishing now would deliver to everyone EXCEPT
+        // the guest that asked. Hold it; the spawn flushes once the
+        // subscriptions are wired.
+        if let Some(pending) = self.deferred_events.as_mut() {
+            pending.push((name, payload));
+            return;
+        }
         match &self.event_emit {
             Some(ctx) => host_services::emit_plugin_event(&ctx.bus, name, payload),
             None => {
@@ -3864,6 +3879,10 @@ impl PluginHost {
             // to reach the GRAMMAR store above all — a mark is toggled by a
             // chord, and the chord is what has to say the gutter changed.
             decoration_epoch: self.decoration_epoch.get().cloned(),
+            // PH7.8c: opened by `spawn_event_plugin` around `register-events`
+            // and closed by its flush. Every other seam publishes straight
+            // through, which is what `None` means.
+            deferred_events: None,
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,

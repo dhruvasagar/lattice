@@ -8,7 +8,7 @@
 //!
 //! The point of the seam is that a plugin's sign is INDISTINGUISHABLE from a
 //! native producer's, so the assertions here are about the shared surfaces
-//! (`id_of`, `glyph`, `sign_beats_severity`) rather than a plugin-specific side
+//! (`id_of`, `glyph`, `priority`) rather than a plugin-specific side
 //! table — if any of them needed a special case, the seam would have failed at
 //! its purpose.
 
@@ -161,13 +161,17 @@ async fn a_sign_plugins_signs_are_indistinguishable_from_a_native_producers() {
     let note = registry
         .get(registry.id_of("sign-guest.note").unwrap())
         .unwrap();
+    // SG.4b: the contention rule is the ORDINARY one — a diagnostic is a sign
+    // too, so a plugin's priority reads against the built-in severities rather
+    // than against a special "beats a diagnostic" predicate.
     assert!(
-        lattice_mode::sign_beats_severity(current),
-        "priority 30 outranks a diagnostic"
+        current.priority < lattice_mode::DIAGNOSTIC_ERROR_PRIORITY,
+        "the guest's priority crossed intact and sits below an error"
     );
-    assert!(
-        !lattice_mode::sign_beats_severity(note),
-        "priority 10 TIES with a diagnostic, and a tie leaves the error visible"
+    assert_eq!(
+        note.priority,
+        lattice_mode::DIAGNOSTIC_HINT_PRIORITY,
+        "vim's default sign priority is level with the lowest diagnostic"
     );
 }
 

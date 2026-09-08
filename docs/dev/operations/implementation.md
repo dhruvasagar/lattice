@@ -95,7 +95,7 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
-**Gutter signs (2026-09-08, SG.1–SG.3b landed).** A generic sign mechanism —
+**Gutter signs (2026-09-08, SG.1–SG.4b landed).** A generic sign mechanism —
 vim's `:sign define` / `:sign place`, with the host owning what a sign IS and
 no built-in opinion about what any sign MEANS, so a provider's marks, a
 plugin's breakpoints and a future built-in all place through one registry and
@@ -113,9 +113,17 @@ auto-namespaced by plugin id, drained once at load, reversed on unload) and
 boundary — off the render path, which is what lets a placement stay `Copy` with
 no per-line `String`. A name nothing has defined is skipped rather than failing
 the producer's batch, so one unregistered sign cannot take a plugin's diff and
-severity marks down with it. SG.4 — signs subsuming the severity and diff
-columns so the host owns no hardcoded gutter semantics at all — stays open, and
-is the direction the mechanism is pointed at.
+severity marks down with it.
+
+SG.4 completed the unification: diagnostics and diff marks ARE signs, registered
+at boot into the same registry, and `GutterDecoration` has one variant. The host
+owns no hardcoded gutter semantics — neither renderer can tell a diagnostic from
+a hunk mark from a plugin's breakpoint. `SignDefinition.column` is what made it
+safe: collapsing both columns into one contended cell would have dropped the git
+gutter on exactly the lines a diagnostic touches, so contention is per-column
+and the host owns only the column ORDER. A user-configurable column list stays
+open — it changes the gutter's width, which every scroll, wrap and cursor-column
+calculation reads.
 
 **Indentation guides (2026-08-16, IG.0–IG.6 landed; branch
 `dhruva/indent-guides`).** A vertical rule down the whitespace at each level

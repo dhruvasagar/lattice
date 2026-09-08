@@ -33,8 +33,7 @@
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
     DecorationContext as WitDecorationContext, GutterDecoration as WitGutterDecoration,
-    GutterDiff as WitGutterDiff, GutterDiffKind as WitGutterDiffKind,
-    GutterSeverity as WitGutterSeverity, GutterSeverityLevel as WitGutterSeverityLevel,
+    GutterDiffKind as WitGutterDiffKind, GutterSeverityLevel as WitGutterSeverityLevel,
     GutterSign as WitGutterSign,
 };
 use lattice_mode::{
@@ -89,62 +88,38 @@ impl WitBoundary for NativeGutterSeverityLevel {
 impl WitBoundary for NativeGutterDecoration {
     type Wit = WitGutterDecoration;
 
-    /// Compiler-exhaustive: a new `GutterDecoration` arm forces a mapping here.
+    /// SG.4b: every native decoration is a `Sign` now, and a sign carries an
+    /// interned id whose NAME only the registry knows. This context-free
+    /// conversion does not have one, so both directions refuse by naming the
+    /// registry-aware pair rather than dropping the placement.
+    ///
+    /// The impl is kept rather than deleted because it is what makes that
+    /// refusal a compiler-checked total function: a future arm still has to
+    /// decide here, and "needs a registry" is a decision worth being told
+    /// about rather than discovered as a missing glyph.
     fn to_wit(&self) -> Result<WitGutterDecoration, String> {
-        Ok(match self {
-            NativeGutterDecoration::Diff { line, kind } => {
-                WitGutterDecoration::Diff(WitGutterDiff {
-                    line: *line,
-                    kind: kind.to_wit()?,
-                })
-            }
-            NativeGutterDecoration::Severity { line, level } => {
-                WitGutterDecoration::Severity(WitGutterSeverity {
-                    line: *line,
-                    level: level.to_wit()?,
-                })
-            }
-            // SG.3b: a placement carries a NAME on the wire and an interned id
-            // natively, and turning the id back into a name needs the
-            // registry — which this context-free conversion does not have. Use
-            // [`decoration_to_wit`], which takes one.
-            //
-            // An explicit `Err` rather than a silent drop: the boundary's
-            // contract is that a new arm forces a decision here, and "needs a
-            // registry" is a decision worth being told about rather than
-            // discovering as a missing glyph.
-            NativeGutterDecoration::Sign { .. } => {
-                return Err(
-                    "a gutter sign placement needs the sign registry to name it — \
-                     use `decoration_to_wit`"
-                        .to_string(),
-                );
-            }
-        })
+        match self {
+            NativeGutterDecoration::Sign { .. } => Err(
+                "a gutter sign placement needs the sign registry to name it — \
+                 use `decoration_to_wit`"
+                    .to_string(),
+            ),
+        }
     }
 
     fn from_wit(wit: WitGutterDecoration) -> Result<Self, String> {
-        Ok(match wit {
-            WitGutterDecoration::Diff(d) => NativeGutterDecoration::Diff {
-                line: d.line,
-                kind: NativeGutterDiffKind::from_wit(d.kind)?,
-            },
-            WitGutterDecoration::Severity(s) => NativeGutterDecoration::Severity {
-                line: s.line,
-                level: NativeGutterSeverityLevel::from_wit(s.level)?,
-            },
-            // SG.3b: the mirror of `to_wit`'s arm — resolving the name to an
-            // interned `SignId` needs the registry. Use
-            // [`decoration_from_wit`], which takes one and which is what the
-            // producer call site actually calls.
-            WitGutterDecoration::Sign(_) => {
-                return Err(
-                    "a gutter sign placement needs the sign registry to resolve its name — \
-                     use `decoration_from_wit`"
-                        .to_string(),
-                );
+        match wit {
+            // `diff` and `severity` are sugar for a built-in sign's NAME, and
+            // a name needs the registry exactly as much as the `sign` arm
+            // does — so all three refuse identically here.
+            WitGutterDecoration::Diff(_)
+            | WitGutterDecoration::Severity(_)
+            | WitGutterDecoration::Sign(_) => {
+                Err("a gutter decoration needs the sign registry to resolve — \
+                 use `decoration_from_wit`"
+                    .to_string())
             }
-        })
+        }
     }
 }
 
@@ -166,22 +141,57 @@ pub fn decoration_from_wit(
     wit: WitGutterDecoration,
     registry: &lattice_mode::SignRegistry,
 ) -> Result<Option<NativeGutterDecoration>, String> {
-    match wit {
-        WitGutterDecoration::Sign(s) => {
-            let Some(sign) = registry.id_of(&s.name) else {
-                // `debug!`, not `warn!`: a decoration producer runs on every
-                // refresh, so a guest with one bad name would flood the log at
-                // keystroke rate and bury everything else.
-                tracing::debug!(
-                    sign = %s.name,
-                    line = s.line,
-                    "gutter sign placement skipped: no such sign is defined"
-                );
-                return Ok(None);
-            };
-            Ok(Some(NativeGutterDecoration::Sign { line: s.line, sign }))
-        }
-        other => NativeGutterDecoration::from_wit(other).map(Some),
+    // SG.4b: the three arms differ only in how the sign is NAMED — a `sign`
+    // arm names it directly, the other two name a built-in. Past that they are
+    // the same placement, which is the whole point of the unification.
+    let (line, name): (u32, &str) = match &wit {
+        WitGutterDecoration::Diff(d) => (d.line, builtin_sign_name_for_diff(d.kind)),
+        WitGutterDecoration::Severity(s) => (s.line, builtin_sign_name_for_severity(s.level)),
+        WitGutterDecoration::Sign(s) => (s.line, s.name.as_str()),
+    };
+    let Some(sign) = registry.id_of(name) else {
+        // `debug!`, not `warn!`: a decoration producer runs on every refresh,
+        // so a guest with one bad name would flood the log at keystroke rate
+        // and bury everything else.
+        //
+        // A `diff` / `severity` arm reaching here means the host never
+        // registered its built-ins — a stripped harness rather than a guest
+        // bug — and the same skip is the right answer either way: no mark,
+        // rather than a mark resolving to something else.
+        tracing::debug!(
+            sign = %name,
+            line,
+            "gutter sign placement skipped: no such sign is defined"
+        );
+        return Ok(None);
+    };
+    Ok(Some(NativeGutterDecoration::Sign { line, sign }))
+}
+
+/// SG.4b — the built-in sign a WIT `diff` arm names.
+///
+/// The wire keeps `diff` and `severity` as sugar. A guest saying "line 4 is an
+/// addition" should not have to know the host spells that `diff.add`, and
+/// deleting the arms would break every decoration plugin for a change entirely
+/// internal to the host. The mapping lives here, at the boundary, so the native
+/// side has exactly one kind of gutter decoration.
+fn builtin_sign_name_for_diff(kind: WitGutterDiffKind) -> &'static str {
+    match kind {
+        WitGutterDiffKind::Add => "diff.add",
+        WitGutterDiffKind::Remove => "diff.remove",
+        WitGutterDiffKind::Change => "diff.change",
+        WitGutterDiffKind::Conflict => "diff.conflict",
+    }
+}
+
+/// The built-in sign a WIT `severity` arm names. Peer of
+/// [`builtin_sign_name_for_diff`].
+fn builtin_sign_name_for_severity(level: WitGutterSeverityLevel) -> &'static str {
+    match level {
+        WitGutterSeverityLevel::Hint => "diagnostic.hint",
+        WitGutterSeverityLevel::Info => "diagnostic.info",
+        WitGutterSeverityLevel::Warning => "diagnostic.warning",
+        WitGutterSeverityLevel::Error => "diagnostic.error",
     }
 }
 
@@ -204,12 +214,15 @@ pub fn decoration_to_wit(
             let Some(def) = registry.get(*sign) else {
                 return Ok(None);
             };
+            // Always the `sign` arm, even for a built-in: the wire's `diff` /
+            // `severity` arms are inbound sugar, and answering with the name
+            // keeps the round trip exact rather than lossy through a second
+            // spelling of the same thing.
             Ok(Some(WitGutterDecoration::Sign(WitGutterSign {
                 line: *line,
                 name: def.name.clone(),
             })))
         }
-        other => other.to_wit().map(Some),
     }
 }
 
@@ -237,7 +250,12 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::lattice::plugin_host::types::{EchoLevel, UiNotification};
+    // SG.4b: the `diff` / `severity` payload records are only CONSTRUCTED by
+    // tests now — the production path names a built-in sign rather than
+    // building one — so they are imported here rather than at module scope.
+    use crate::lattice::plugin_host::types::{
+        EchoLevel, GutterDiff as WitGutterDiff, GutterSeverity as WitGutterSeverity, UiNotification,
+    };
 
     #[test]
     fn gutter_diff_kind_round_trips_every_arm() {
@@ -269,33 +287,55 @@ mod tests {
         }
     }
 
+    /// SG.4b: the wire keeps its `diff` and `severity` arms, and they resolve
+    /// to the BUILT-IN signs. A guest saying "line 4 is an addition" does not
+    /// have to know the host spells that `diff.add` — which is the whole
+    /// reason the arms were kept as sugar rather than deleted with the native
+    /// variants.
     #[test]
-    fn gutter_decoration_arms_round_trip() {
-        let diff = NativeGutterDecoration::Diff {
-            line: 12,
-            kind: NativeGutterDiffKind::Change,
-        };
-        let back = NativeGutterDecoration::from_wit(diff.to_wit().unwrap()).unwrap();
-        assert!(matches!(
-            back,
-            NativeGutterDecoration::Diff {
-                line: 12,
-                kind: NativeGutterDiffKind::Change
-            }
-        ));
+    fn the_wire_sugar_arms_resolve_to_builtin_signs() {
+        let mut registry = lattice_mode::SignRegistry::new();
+        let ids = lattice_mode::register_builtin_signs(
+            &mut registry,
+            lattice_mode::DiagnosticGlyphs::default(),
+        );
 
-        let sev = NativeGutterDecoration::Severity {
+        let diff = WitGutterDecoration::Diff(WitGutterDiff {
+            line: 12,
+            kind: WitGutterDiffKind::Change,
+        });
+        assert_eq!(
+            decoration_from_wit(diff, &registry).unwrap(),
+            Some(NativeGutterDecoration::Sign {
+                line: 12,
+                sign: ids.diff_change
+            })
+        );
+
+        let sev = WitGutterDecoration::Severity(WitGutterSeverity {
             line: 3,
-            level: NativeGutterSeverityLevel::Error,
-        };
-        let back = NativeGutterDecoration::from_wit(sev.to_wit().unwrap()).unwrap();
-        assert!(matches!(
-            back,
-            NativeGutterDecoration::Severity {
+            level: WitGutterSeverityLevel::Error,
+        });
+        assert_eq!(
+            decoration_from_wit(sev, &registry).unwrap(),
+            Some(NativeGutterDecoration::Sign {
                 line: 3,
-                level: NativeGutterSeverityLevel::Error
-            }
-        ));
+                sign: ids.diagnostic_error
+            })
+        );
+    }
+
+    /// A host that never registered its built-ins skips a sugar arm rather
+    /// than resolving it to something else — a stripped harness, not a guest
+    /// bug, and no mark is the honest answer.
+    #[test]
+    fn a_sugar_arm_without_registered_builtins_is_skipped() {
+        let registry = lattice_mode::SignRegistry::new();
+        let diff = WitGutterDecoration::Diff(WitGutterDiff {
+            line: 1,
+            kind: WitGutterDiffKind::Add,
+        });
+        assert!(decoration_from_wit(diff, &registry).unwrap().is_none());
     }
 
     fn sign_registry_with(names: &[(&str, i32)]) -> lattice_mode::SignRegistry {
@@ -347,7 +387,15 @@ mod tests {
     /// marks down with it over one unregistered name.
     #[test]
     fn an_unknown_sign_name_is_skipped_and_the_batch_survives() {
-        let registry = sign_registry_with(&[("debugger.breakpoint", 20)]);
+        let mut registry = sign_registry_with(&[("debugger.breakpoint", 20)]);
+        // SG.4b: the neighbour below is a `diff` arm, which is SUGAR for a
+        // built-in sign's name — so the built-ins have to be registered for it
+        // to resolve at all. Without them this test would assert "the batch
+        // survives" against a batch where nothing survived.
+        lattice_mode::register_builtin_signs(
+            &mut registry,
+            lattice_mode::DiagnosticGlyphs::default(),
+        );
         let unknown = WitGutterDecoration::Sign(WitGutterSign {
             line: 3,
             name: "debugger.nope".to_string(),

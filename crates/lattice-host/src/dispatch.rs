@@ -1279,6 +1279,7 @@ impl Editor {
                 std::sync::Arc::new(crate::render_state::SignsRenderState {
                     registry,
                     elements: std::sync::Arc::new(elements),
+                    builtin: self.builtin_sign_ids,
                 })
             },
             // Slice 3c.final.B.7: messages + modeline reads lifted

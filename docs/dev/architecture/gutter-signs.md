@@ -72,54 +72,72 @@ Both palettes must occupy the same cell width, per the icon-degradation rule, so
 toggling `ui.nerd_fonts` cannot shift the gutter's geometry.
 
 `glyph_char` truncates to one character rather than trusting a producer to have
-obeyed the one-cell rule — see §3 for why the cell is one column, and why
-widening it is not an acceptable failure mode.
+obeyed the one-cell rule. Widening a cell would push every line of content
+sideways — a pixel change to content the user did not edit, which costs far more
+than the lost tail of a glyph.
 
-## 3. Signs share the gutter's mark cell (SG.2b)
+## 3. Columns, and why the gutter has two of them
 
-The gutter is `[mark][diff][line numbers]`. A placed sign and an LSP/compilation
-diagnostic **share the mark cell**; `priority` resolves the contention.
+The gutter is `[mark][diff][line numbers]`. **Every mark in both columns is a
+sign** (SG.4b): `diagnostic.{error,warning,info,hint}` and
+`diff.{add,change,remove,conflict}` are definitions in the same registry a
+plugin writes, registered at boot, named by their producers. The host owns no
+hardcoded gutter semantics — the renderers cannot tell a diagnostic from a hunk
+mark from a plugin's breakpoint, and do not need to.
 
-`SEVERITY_SIGN_PRIORITY = 10` — vim's default sign priority, so a producer that
-ships the vim default lands level with diagnostics, which is the intuition a
-user arrives with. `sign_beats_severity` is **strictly greater**, so a tie leaves
-the diagnostic visible: an error is a state of the user's code that they need to
-see and did not ask for, while a sign is something a producer chose to show. When
-neither has a claim the other lacks, hiding the error is the more expensive
-mistake. A producer that genuinely outranks an error — a debugger stopped on this
-very line — says so by exceeding the constant.
+`SignDefinition.column` is what makes that possible, and it was forced rather
+than chosen. Collapsing both columns into one contended cell — the obvious
+reading of "signs subsume both" — would drop the git gutter on exactly the lines
+a diagnostic touches, which are the lines a user is most likely to be looking
+at. Vim's single `signcolumn` accepts that trade; Helix and Zed do not, and
+UX-over-architecture does not permit it here. So contention is **per column**,
+the host owns the column ORDER (a gutter whose columns moved per buffer would be
+unreadable) and nothing about what goes in them. A definition naming a column
+the host does not paint falls back to the leftmost rather than vanishing.
 
-### Why not a column of its own
+The column list is not user-configurable yet. That is the obvious next step and
+is deliberately deferred: it changes the gutter's WIDTH, which every scroll,
+wrap and cursor-column calculation reads. `BUILTIN_SIGN_COLUMNS` is the single
+place the count lives, so a third column widens the gutter by construction
+rather than by someone remembering to update a constant.
 
-Three alternatives were weighed:
+### Priorities carry the severity order
 
-- **A third fixed column** (`[mark][diff][sign][number]`). Stable geometry, both
-  glyphs always visible — and every buffer pays a content column forever,
-  whether or not anything is ever placed in it, for a mechanism most buffers
-  never use. It also makes a plugin's sign a second-class occupant of a gutter
-  it should share with the built-ins, which cuts against paramount #2.
-- **Reserve only when placed** (vim's `signcolumn=auto`). Zero cost when unused,
-  but the whole viewport shifts a column sideways the moment a sign lands — a
-  pixel change to content the user did not edit. Lattice already rejected this
-  for the severity column, which is reserved unconditionally.
-- **Signs subsume severity *and* diff.** The best end state: severity and diff
-  marks become built-in sign definitions, the host paints generic sign columns
-  and owns no hardcoded gutter semantics — closest to the Helix/Zed
-  gutter-as-a-list shape. Not taken *yet* because it rewrites two well-covered
-  paint paths in both renderers; sharing the mark cell is its first increment,
-  not a detour around it.
+`max()` on `GutterSeverityLevel` was the retired `Severity` arm's semantics, and
+it survives the unification as priority: **hint 10, info 20, warning 30, error
+40**. `10` is vim's default sign priority and the floor, so a plugin shipping the
+vim default ties with a hint (broken by name, deterministically) and loses to
+everything above it.
+
+Displacing an error means exceeding `DIAGNOSTIC_ERROR_PRIORITY`. That is a
+stricter bar than SG.2b's, where any priority above 10 did it — and the stricter
+reading is the right one: a sign that hides a compiler error had better mean it.
+A debugger stopped on this very line qualifies.
+
+### The glyph options write through the registry
+
+`ui.diagnostic-*-glyph` are live options the renderers used to read per frame. A
+definition is static by design — that is what keeps the render path free of
+per-line option reads — so `rebuild_option_cache` re-registers the built-ins when
+a glyph moves. Redefinition keeps the id (§1), which is what makes that safe with
+placements already in flight. The write is skipped when no glyph actually
+changed, because the registry is read on the render path and an unconditional
+store would hand the renderer a fresh `Arc` on every `:set` of any kind.
 
 ## 4. The render path
 
 Per pane, per frame, in both renderers (`lattice-ui-tui/src/render.rs`,
 `lattice-ui-gpui/src/window.rs`):
 
-1. The decoration walk partitions `GutterDecoration`s into `diff_map`,
-   `sev_map` and `sign_map`. Sign contention is resolved **here**, as placements
-   arrive, by `winning_sign` — not by whoever paints last.
-2. The mark cell resolves sign-vs-severity via `sign_beats_severity`.
+1. The decoration walk partitions every `GutterDecoration::Sign` into ONE map
+   per column, resolving contention **as placements arrive** via `winning_sign`
+   — not by whoever paints last.
+2. Each column's winning sign becomes one cell, left to right.
 3. The glyph comes from `glyph_char(nerd_fonts)`; the colour from the
    pre-resolved element.
+
+There is exactly one cell renderer. The separate severity and diff-sign paths
+are gone with the variants they served.
 
 Nothing on this path hashes a string or looks a theme element up by name.
 `RenderState::signs` (`SignsRenderState`) carries the definition snapshot **and**
@@ -198,5 +216,10 @@ decision at every site rather than being dropped silently.
 
 ## 8. Open
 
-- **Subsuming severity and diff** (§3) stays open, and is the direction this
-  mechanism is pointed at.
+- **A user-configurable column list** (§3). The list is a host constant today;
+  making it configurable changes the gutter's width, which every scroll, wrap
+  and cursor-column calculation reads.
+- **The diff row TINT** is still a separate path — it reads `diff.sign_maps`
+  directly rather than going through the registry. That is arguably correct: a
+  tint is a property of the row, not a mark in a column, and a sign has no
+  background. Worth revisiting only if a plugin ever needs to tint a row.

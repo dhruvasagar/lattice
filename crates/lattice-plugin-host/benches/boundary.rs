@@ -250,33 +250,55 @@ fn event_round_trip(c: &mut Criterion) {
 }
 
 /// PH7.9a: the decoration boundary marshalling — the cost the host pays to
-/// convert a producer's `gutter-decoration` back to native `GutterDecoration`
-/// before caching it. Per-line scalars, so this is the fixed per-decoration
-/// overhead; the producer's own compute is bounded by the decoration budget
-/// (PH7.9d). Both arms (`Diff` / `Severity`).
+/// convert a producer's `gutter-decoration` to native before caching it. Per-
+/// line scalars, so this is the fixed per-decoration overhead; the producer's
+/// own compute is bounded by the decoration budget (PH7.9d).
+///
+/// SG.4b: the conversion is registry-aware now — every arm resolves a NAME to
+/// an interned `SignId`, which is what keeps the native placement `Copy` and
+/// free of a per-line `String`. That resolution is the cost this benchmark
+/// exists to keep honest, and it is a `HashMap<String, _>` probe: measured
+/// here, at the boundary, precisely so it can never quietly move onto the
+/// render path.
+///
+/// Both shapes: a `sign` arm naming a definition directly, and a `diff` arm
+/// naming a built-in through the wire's sugar.
 fn decoration_round_trip(c: &mut Criterion) {
-    use lattice_mode::{GutterDecoration, GutterDiffKind, GutterSeverityLevel};
-
-    let diff = GutterDecoration::Diff {
-        line: 128,
-        kind: GutterDiffKind::Change,
+    use lattice_plugin_host::boundary_decoration::decoration_from_wit;
+    use lattice_plugin_host::lattice::plugin_host::types::{
+        GutterDecoration as WitGutterDecoration, GutterDiff as WitGutterDiff,
+        GutterDiffKind as WitGutterDiffKind, GutterSign as WitGutterSign,
     };
-    c.bench_function("boundary_decoration_diff_round_trip", |b| {
+
+    let mut registry = lattice_mode::SignRegistry::new();
+    lattice_mode::register_builtin_signs(&mut registry, lattice_mode::DiagnosticGlyphs::default());
+    registry.define(lattice_mode::SignDefinition {
+        name: "bench.mark".into(),
+        text: "●".into(),
+        fallback: "●".into(),
+        theme_element: "gutter.sign".into(),
+        priority: 5,
+        column: lattice_mode::SIGN_COLUMN_MARK.into(),
+    });
+
+    let sign = WitGutterDecoration::Sign(WitGutterSign {
+        line: 128,
+        name: "bench.mark".to_string(),
+    });
+    c.bench_function("boundary_decoration_sign_round_trip", |b| {
         b.iter(|| {
-            let wit = black_box(&diff).to_wit().expect("to_wit");
-            let back = GutterDecoration::from_wit(wit).expect("from_wit");
+            let back = decoration_from_wit(black_box(sign.clone()), &registry).expect("from_wit");
             black_box(back);
         })
     });
 
-    let sev = GutterDecoration::Severity {
+    let diff = WitGutterDecoration::Diff(WitGutterDiff {
         line: 42,
-        level: GutterSeverityLevel::Error,
-    };
-    c.bench_function("boundary_decoration_severity_round_trip", |b| {
+        kind: WitGutterDiffKind::Change,
+    });
+    c.bench_function("boundary_decoration_diff_round_trip", |b| {
         b.iter(|| {
-            let wit = black_box(&sev).to_wit().expect("to_wit");
-            let back = GutterDecoration::from_wit(wit).expect("from_wit");
+            let back = decoration_from_wit(black_box(diff.clone()), &registry).expect("from_wit");
             black_box(back);
         })
     });

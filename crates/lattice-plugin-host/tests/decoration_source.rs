@@ -16,7 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use lattice_mode::{CapabilitySet, GutterDecoration, GutterDiffKind, GutterSeverityLevel};
+use lattice_mode::{CapabilitySet, GutterDecoration};
 use lattice_plugin_host::{
     PluginBudget, PluginHost, PluginManifest, TrustTier, WasmDecorationSource,
 };
@@ -59,9 +59,11 @@ async fn source(host: &PluginHost) -> WasmDecorationSource {
     source_with_signs(host, None).await
 }
 
-/// A registry with the one sign the fixture's defined placement names.
+/// A registry with the built-ins (so the fixture's `diff` / `severity` sugar
+/// arms resolve) plus the one sign its defined placement names.
 fn fixture_signs() -> lattice_mode::SignRegistryHandle {
     let mut r = lattice_mode::SignRegistry::new();
+    lattice_mode::register_builtin_signs(&mut r, lattice_mode::DiagnosticGlyphs::default());
     r.define(lattice_mode::SignDefinition {
         name: "fixture.mark".into(),
         text: "\u{f111}".into(),
@@ -87,34 +89,71 @@ async fn producer_crosses_context_and_returns_gutter_decorations() {
         .gutter_decorations(7, Some(std::path::Path::new("src/lib.rs")), 5)
         .await
         .expect("producer returns decorations");
-    // Three, not five: this harness wires NO sign registry, so BOTH of the
-    // guest's sign placements are skipped and the rest of the batch is
-    // untouched. That degradation is the point — an unwired seam costs its own
-    // marks and nothing else.
-    assert_eq!(decos.len(), 3);
-    assert!(matches!(
+    // SG.4b: with no sign registry wired, NOTHING crosses — not even the
+    // `diff` / `severity` arms, because those are sugar for a built-in sign's
+    // name and a name needs the registry to resolve. In production the
+    // registry is a boot service and always present; a harness without one
+    // gets the same inert degradation every other unwired seam here takes,
+    // and inert is the honest answer rather than marks resolving to whatever
+    // sits at id 0.
+    assert!(
+        decos.is_empty(),
+        "an unwired sign registry contributes no marks: {decos:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_wire_sugar_arms_resolve_to_builtin_signs_end_to_end() {
+    // SG.4b: the guest still says "line 0 is a change" and "line 1 is an
+    // error" in the wire's own vocabulary — it does not have to know the host
+    // spells those `diff.change` and `diagnostic.error`. That mapping happens
+    // at the boundary, which is why the arms were kept as sugar rather than
+    // deleted along with the native variants.
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: decorations fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data")).unwrap();
+    let signs = fixture_signs();
+    let ids = {
+        let snapshot = signs.load();
+        (
+            snapshot.id_of("diff.change").unwrap(),
+            snapshot.id_of("diagnostic.error").unwrap(),
+            snapshot.id_of("diff.add").unwrap(),
+        )
+    };
+    let src = source_with_signs(&host, Some(signs)).await;
+
+    let decos = src
+        .gutter_decorations(7, Some(std::path::Path::new("src/lib.rs")), 5)
+        .await
+        .expect("producer returns decorations");
+
+    assert_eq!(
         decos[0],
-        GutterDecoration::Diff {
+        GutterDecoration::Sign {
             line: 0,
-            kind: GutterDiffKind::Change
+            sign: ids.0
         }
-    ));
-    assert!(matches!(
+    );
+    assert_eq!(
         decos[1],
-        GutterDecoration::Severity {
+        GutterDecoration::Sign {
             line: 1,
-            level: GutterSeverityLevel::Error
+            sign: ids.1
         }
-    ));
+    );
     // The last-line decoration is `line_count - 1` = 4 → proves the projected
     // context (line_count = 5) crossed in and drove the guest.
-    assert!(matches!(
+    assert_eq!(
         decos[2],
-        GutterDecoration::Diff {
+        GutterDecoration::Sign {
             line: 4,
-            kind: GutterDiffKind::Add
+            sign: ids.2
         }
-    ));
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

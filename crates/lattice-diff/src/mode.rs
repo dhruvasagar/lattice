@@ -247,6 +247,11 @@ impl Mode for DiffMode {
         let Some(data) = ctx.service::<DiffDecorationData>() else {
             return Vec::new();
         };
+        // SG.4b: a hunk mark is a sign in the `diff` column now — same
+        // registry, same theme resolution, same priority rule as any other.
+        let Some(ids) = ctx.service::<lattice_mode::BuiltinSignIds>() else {
+            return Vec::new();
+        };
         data.sign_map
             .entries()
             .iter()
@@ -257,9 +262,9 @@ impl Mode for DiffMode {
                     DiffSignKind::Change => GutterDiffKind::Change,
                     DiffSignKind::Conflict => GutterDiffKind::Conflict,
                 };
-                GutterDecoration::Diff {
+                GutterDecoration::Sign {
                     line: *line,
-                    kind: gdk,
+                    sign: ids.for_diff(gdk),
                 }
             })
             .collect()
@@ -1141,6 +1146,16 @@ mod tests {
         ]));
         let mut services = ServiceRegistry::new();
         services.register(DiffDecorationData { sign_map });
+        // SG.4b: a hunk mark is a SIGN now, so the producer needs the interned
+        // built-in ids the renderer injects. Registering a real set here (not
+        // `Default`) is what makes the assertions below mean anything — the
+        // default ids resolve to nothing on purpose.
+        let mut registry = lattice_mode::SignRegistry::new();
+        let ids = lattice_mode::register_builtin_signs(
+            &mut registry,
+            lattice_mode::DiagnosticGlyphs::default(),
+        );
+        services.register(ids);
 
         let ctx = DecorationCtx::new(bid(1), &services);
         let decos = DiffMode.gutter_decorations(&ctx);
@@ -1158,13 +1173,36 @@ mod tests {
         );
         for (deco, (eline, ekind)) in decos.iter().zip(expected) {
             match deco {
-                GutterDecoration::Diff { line, kind } => {
+                GutterDecoration::Sign { line, sign } => {
                     assert_eq!(*line, eline);
-                    assert_eq!(*kind, ekind);
+                    assert_eq!(
+                        *sign,
+                        ids.for_diff(ekind),
+                        "the hunk kind selects the built-in sign for it"
+                    );
+                    // And that sign lands in the diff column, so a diagnostic
+                    // on the same line cannot hide it.
+                    assert_eq!(
+                        registry.get(*sign).unwrap().column,
+                        lattice_mode::SIGN_COLUMN_DIFF
+                    );
                 }
-                other => panic!("expected a Diff gutter decoration, got {other:?}"),
             }
         }
+    }
+
+    /// SG.4b: without the interned built-in ids (a stripped harness), the
+    /// producer contributes nothing rather than placements resolving to
+    /// whatever sits at id 0 — which would be some plugin's sign.
+    #[test]
+    fn gutter_decorations_empty_without_builtin_sign_ids() {
+        use crate::overlay::{DiffSignKind, DiffSignMap};
+        use lattice_mode::ServiceRegistry;
+        let sign_map = std::sync::Arc::new(DiffSignMap::from_entries(vec![(0, DiffSignKind::Add)]));
+        let mut services = ServiceRegistry::new();
+        services.register(DiffDecorationData { sign_map });
+        let ctx = DecorationCtx::new(bid(1), &services);
+        assert!(DiffMode.gutter_decorations(&ctx).is_empty());
     }
 
     /// DX.1: without a `DiffDecorationData` service (the renderer injects it

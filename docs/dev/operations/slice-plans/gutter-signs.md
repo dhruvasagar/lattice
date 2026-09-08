@@ -16,7 +16,7 @@ sign *means*.
 | SG.3a | WIT: a plugin **defines** signs (`signs` interface, `sign-plugin` world, drain + teardown) | ✅ |
 | SG.3b | WIT: a plugin **places** signs (`gutter-sign` variant arm, name→id resolution at the boundary) | ✅ |
 | SG.4a | The built-in signs — `SignDefinition.column`, diagnostics + diff registered at boot, ids interned | ✅ |
-| SG.4b | Producers emit `Sign`; renderers paint columns generically; `GutterDecoration::{Diff,Severity}` deleted | 🚧 |
+| SG.4b | Producers emit `Sign`; renderers paint columns generically; `GutterDecoration::{Diff,Severity}` deleted | ✅ |
 
 ## SG.1 — the model ✅
 
@@ -184,13 +184,60 @@ rather than whatever sits at id 0, which would be some plugin's sign, silently.
 The WIT `sign-spec` gains `column`; an empty string means the mark column, so a
 guest that does not care lands where every sign landed before columns existed.
 
-## SG.4b — the switch 🚧
+## SG.4b — the switch ✅
 
-Producers emit `Sign` placements; the renderers paint an ordered list of
-columns generically; `GutterDecoration::{Diff,Severity}` are deleted. The WIT
-keeps its `diff` / `severity` arms as sugar the boundary maps to built-in sign
-names, so no plugin ABI breaks.
+`GutterDecoration` has ONE variant now. The three native producers
+(`lsp-mode`, `compilation-mode`, `diff-mode`) emit `Sign` placements naming
+built-ins through the interned `BuiltinSignIds` the renderers inject into the
+decoration context; both renderers partition into one map per column and paint
+one cell each; the two hardcoded cell renderers and the two width constants are
+deleted.
 
-Atomic by necessity: deleting the two variants forces every producer, both
-renderers and the boundary at once, and any smaller step leaves the
+Atomic by necessity: removing the variants forces every producer, both
+renderers, the boundary and their tests at once, and any smaller step leaves the
 half-migration shape the mode-ownership rule exists to prevent.
+
+- **The WIT keeps its `diff` / `severity` arms as sugar.** A guest saying "line
+  4 is an addition" should not have to know the host spells that `diff.add`,
+  and deleting the arms would break every decoration plugin for a change
+  entirely internal to the host. The boundary maps them to built-in sign names,
+  so the native side has exactly one kind of decoration.
+- **The context-free `WitBoundary` impl is kept, not deleted.** It refuses both
+  directions by naming the registry-aware pair. That keeps the refusal a
+  compiler-checked total function: a future arm still has to decide there.
+- **A stripped harness now contributes NO marks**, not even sugar ones, because
+  every arm needs the registry to resolve a name. In production the registry is
+  a boot service and always present; inert is the same degradation every other
+  unwired seam takes, and it is honest — the alternative is marks resolving to
+  whatever sits at id 0.
+- **`sign_beats_severity` and `SEVERITY_SIGN_PRIORITY` are deleted.** They
+  encoded "does this sign outrank a diagnostic", which is now just a priority
+  comparison between two signs in one column. A public helper with no
+  production consumer, named after a concept that no longer exists separately,
+  is the orphan the conversion rule forbids leaving behind.
+
+**One contract change, and it is real.** SG.2b let any sign above priority 10
+displace an ERROR, because a diagnostic held the cell at one priority whatever
+its severity. Now the severities span 10..40 and displacing an error means
+beating 40. `a_higher_priority_sign_takes_the_cell_from_a_diagnostic` was
+updated to say so — the only test that had to change meaning rather than shape.
+
+Tests: the three producers each pin that they emit the built-in for their kind
+AND that they contribute nothing without the interned ids (rather than
+placements resolving to id 0); the boundary pins that the sugar arms resolve to
+built-ins and that an unregistered built-in skips; `decoration_drain` and
+`decoration_source` pin the same end-to-end through a real component; the TUI's
+existing diagnostic-glyph and gutter-width tests pass unchanged, which is the
+evidence the unification is invisible to the user.
+
+The boundary benchmark was rewritten rather than deleted: the conversion is
+registry-aware now, so its cost includes a name→id `HashMap` probe. Measuring it
+at the boundary is precisely what keeps it from quietly moving onto the render
+path.
+
+## SG.4 — remaining
+
+A user-configurable column list. Deferred deliberately: it changes the gutter's
+WIDTH, which every scroll, wrap and cursor-column calculation reads.
+`BUILTIN_SIGN_COLUMNS` is the single place the count lives, so a third column
+widens the gutter by construction rather than by someone remembering a constant.

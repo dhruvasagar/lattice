@@ -21,7 +21,7 @@ use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{
     GutterDecoration, GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle,
-    GutterDiffKind, GutterSeverityLevel, ModeRegistry, ModeRegistryHandle, PluginMetaSink,
+    ModeRegistry, ModeRegistryHandle, PluginMetaSink,
 };
 use lattice_picker::PickerRegistryHandle;
 use lattice_picker::source::PickerRegistry;
@@ -73,12 +73,23 @@ struct Rig {
     loader: PluginLoader,
     decorations: GutterDecorationSourceRegistryHandle,
     sink: Arc<RecordingSink>,
+    /// SG.4b: the registry the producer resolves placement NAMES against.
+    /// Wired with the built-ins, because the fixture's `diff` / `severity`
+    /// arms are sugar for built-in sign names now — without them the producer
+    /// resolves nothing and the assertions below would pass vacuously against
+    /// an empty mark set.
+    signs: lattice_mode::SignRegistryHandle,
 }
 
 fn rig(base: &std::path::Path) -> Rig {
     let decorations: GutterDecorationSourceRegistryHandle = Arc::new(
         arc_swap::ArcSwap::from_pointee(GutterDecorationSourceRegistry::new()),
     );
+    let signs: lattice_mode::SignRegistryHandle = {
+        let mut r = lattice_mode::SignRegistry::new();
+        lattice_mode::register_builtin_signs(&mut r, lattice_mode::DiagnosticGlyphs::default());
+        Arc::new(arc_swap::ArcSwap::from_pointee(r))
+    };
     let commands: CommandRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let pickers: PickerRegistryHandle =
@@ -97,6 +108,7 @@ fn rig(base: &std::path::Path) -> Rig {
             mode_registry: Some(modes),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
+            sign_registry: Some(signs.clone()),
             decoration_registry: Some(decorations.clone()),
             context_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 lattice_mode::ContextSourceRegistry::new(),
@@ -113,6 +125,7 @@ fn rig(base: &std::path::Path) -> Rig {
         loader,
         decorations,
         sink,
+        signs,
     }
 }
 
@@ -161,25 +174,27 @@ async fn discovered_decorations_plugin_registers_a_callable_producer() {
         .produce(7, None, 5)
         .await
         .expect("producer yields marks for a non-empty buffer");
+    // SG.4b: every mark is a `Sign` now. The fixture still SAYS "diff/change"
+    // in the wire's own vocabulary — the boundary maps that to the built-in
+    // `diff.change` sign, so a plugin never has to know the host's spelling.
+    let snapshot = rig.signs.load();
+    let sign = |name: &str| lattice_mode::GutterDecoration::Sign {
+        line: 0,
+        sign: snapshot.id_of(name).expect("built-in registered"),
+    };
+    let at = |name: &str, line: u32| match sign(name) {
+        lattice_mode::GutterDecoration::Sign { sign, .. } => GutterDecoration::Sign { line, sign },
+    };
     assert!(
-        marks.contains(&GutterDecoration::Diff {
-            line: 0,
-            kind: GutterDiffKind::Change
-        }),
+        marks.contains(&at("diff.change", 0)),
         "line 0 → diff/change; got {marks:?}"
     );
     assert!(
-        marks.contains(&GutterDecoration::Severity {
-            line: 1,
-            level: GutterSeverityLevel::Error
-        }),
+        marks.contains(&at("diagnostic.error", 1)),
         "line 1 → severity/error; got {marks:?}"
     );
     assert!(
-        marks.contains(&GutterDecoration::Diff {
-            line: 4,
-            kind: GutterDiffKind::Add
-        }),
+        marks.contains(&at("diff.add", 4)),
         "last line → diff/add (line_count crossed); got {marks:?}"
     );
 

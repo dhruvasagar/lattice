@@ -624,14 +624,26 @@ impl Mode for LspMode {
     // (`lsp_content` + the forwarder that accumulates `$/progress` /
     // `serverStatus` and pushes per attached buffer).
 
-    /// MO.4.a: gutter severity column. Reads `LspDiagnosticsData`
-    /// injected by the renderer for this pane's buffer URI.
-    /// Aggregates to max `GutterSeverityLevel` per line.
+    /// MO.4.a: gutter severity marks. Reads `LspDiagnosticsData` injected by
+    /// the renderer for this pane's buffer URI, aggregates to the max
+    /// `GutterSeverityLevel` per line, and emits each as a SIGN (SG.4b).
+    ///
+    /// The aggregation stays here even though per-line contention is now the
+    /// renderer's job via priority: collapsing N diagnostics on a line to one
+    /// mark before crossing is strictly less work than emitting N placements
+    /// for the renderer to reduce, and the answer is the same either way
+    /// because the built-in priorities carry the severity order.
     fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
         let Some(data) = ctx.service::<LspDiagnosticsData>() else {
             return Vec::new();
         };
         let Some(diags) = &data.diagnostics else {
+            return Vec::new();
+        };
+        // SG.4b: the interned built-in sign ids, injected by the renderer.
+        // Absent in a stripped harness — no ids, no marks, rather than marks
+        // resolving to whatever sits at id 0.
+        let Some(ids) = ctx.service::<lattice_mode::BuiltinSignIds>() else {
             return Vec::new();
         };
         let mut per_line: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
@@ -654,7 +666,10 @@ impl Mode for LspMode {
         }
         per_line
             .into_iter()
-            .map(|(line, level)| GutterDecoration::Severity { line, level })
+            .map(|(line, level)| GutterDecoration::Sign {
+                line,
+                sign: ids.for_severity(level),
+            })
             .collect()
     }
 

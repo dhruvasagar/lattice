@@ -4687,11 +4687,11 @@ pub(crate) fn compose_pane_lines(
     // contributions into per-line maps. Replaces per-line RenderState
     // reads from render_diff_sign_cell / render_diagnostic_severity_cell
     // — both now read the maps, not the render-state directly.
-    let (diff_gutter, severity_gutter, sign_gutter) = {
-        use lattice_mode::{
-            DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel, ServiceRegistry,
-            SignId,
-        };
+    // SG.4b: ONE map per gutter column, indexed by column position. Nothing
+    // here knows what a diagnostic or a hunk mark is any more — they are signs
+    // whose definitions name a column, exactly like a plugin's.
+    let sign_gutter: Vec<std::collections::HashMap<u32, lattice_mode::SignId>> = {
+        use lattice_mode::{DecorationCtx, GutterDecoration, ServiceRegistry, SignId};
         let mut services = ServiceRegistry::new();
         let rs_deco = app.render_state.load();
         // D-fix.3b: per-pane gutter signs — register THIS pane's buffer's
@@ -4722,20 +4722,22 @@ pub(crate) fn compose_pane_lines(
                 entries: entries.clone(),
             });
         }
+        // SG.4b: the interned built-in sign ids, so a producer emitting a
+        // mark per visible line names it by field rather than by string.
+        services.register(rs_deco.signs.builtin);
         let deco_ctx = DecorationCtx::new(ctx.buffer_id, &services);
         let modes_rs = rs_deco.modes.clone();
-        let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
-        let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
         // SG.2b: one cell holds one sign, so contention is resolved HERE,
         // as placements arrive, rather than by whoever paints last.
         // `winning_sign` breaks equal priorities on name, so the glyph a
         // line shows does not depend on which producer the mode walk
         // reached first — or on a `HashMap` reseeding between runs.
         let signs_rs = rs_deco.signs.clone();
-        let mut sign_map: std::collections::HashMap<u32, SignId> = Default::default();
+        let mut columns: Vec<std::collections::HashMap<u32, SignId>> =
+            vec![Default::default(); lattice_mode::BUILTIN_SIGN_COLUMNS.len()];
         fn place_sign(
             registry: &lattice_mode::SignRegistry,
-            map: &mut std::collections::HashMap<u32, SignId>,
+            columns: &mut [std::collections::HashMap<u32, SignId>],
             line: u32,
             sign: SignId,
         ) {
@@ -4745,6 +4747,15 @@ pub(crate) fn compose_pane_lines(
             let Some(incoming) = registry.get(sign) else {
                 return;
             };
+            // A definition naming a column the host does not paint lands in
+            // the leftmost one rather than vanishing — the `gutter.sign`
+            // principle, where the failure that loses the information
+            // entirely is the worst one available.
+            let col = lattice_mode::BUILTIN_SIGN_COLUMNS
+                .iter()
+                .position(|c| *c == incoming.column)
+                .unwrap_or(0);
+            let map = &mut columns[col];
             let held = map.get(&line).and_then(|id| registry.get(*id));
             let takes_it = match held {
                 Some(held) => {
@@ -4767,21 +4778,8 @@ pub(crate) fn compose_pane_lines(
                 if let Some(mode) = registry.get(id) {
                     for deco in mode.gutter_decorations(&deco_ctx) {
                         match deco {
-                            GutterDecoration::Diff { line, kind } => {
-                                diff_map.entry(line).or_insert(kind);
-                            }
-                            GutterDecoration::Severity { line, level } => {
-                                sev_map
-                                    .entry(line)
-                                    .and_modify(|e| {
-                                        if level > *e {
-                                            *e = level;
-                                        }
-                                    })
-                                    .or_insert(level);
-                            }
                             GutterDecoration::Sign { line, sign } => {
-                                place_sign(&signs_rs.registry, &mut sign_map, line, sign);
+                                place_sign(&signs_rs.registry, &mut columns, line, sign);
                             }
                         }
                     }
@@ -4798,27 +4796,14 @@ pub(crate) fn compose_pane_lines(
             if let Some(cache) = rs_deco.wasm_gutter_decorations.get_for(ctx.buffer_id) {
                 for deco in &cache.decorations {
                     match deco {
-                        GutterDecoration::Diff { line, kind } => {
-                            diff_map.entry(*line).or_insert(*kind);
-                        }
-                        GutterDecoration::Severity { line, level } => {
-                            sev_map
-                                .entry(*line)
-                                .and_modify(|e| {
-                                    if *level > *e {
-                                        *e = *level;
-                                    }
-                                })
-                                .or_insert(*level);
-                        }
                         GutterDecoration::Sign { line, sign } => {
-                            place_sign(&signs_rs.registry, &mut sign_map, *line, *sign);
+                            place_sign(&signs_rs.registry, &mut columns, *line, *sign);
                         }
                     }
                 }
             }
         }
-        (diff_map, sev_map, sign_map)
+        columns
     };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);
     // Sticky pre-pass: render fixed-top rows before the scrollable content.
@@ -5598,22 +5583,24 @@ pub(crate) fn compose_pane_lines(
         // one cell of gutter width on every frame -- visible
         // even when no diagnostics exist so the layout doesn't
         // shift when one arrives.
-        // DR.3: severity is a buffer-intrinsic decoration — sourced by
-        // `ctx.buffer_id` so an inactive pane shows ITS buffer's
-        // severity glyph (was a blank cell pre-merge). Active pane's
-        // id is the active doc → byte-identical.
-        let severity_cell = render_mark_cell(
-            severity_gutter.get(&line_idx).copied(),
-            sign_gutter.get(&line_idx).copied(),
-            view,
-        );
-        // D.3.d.1: diff sign cell sits LEFT of line numbers
-        // (between severity and gutter) — matches the editor
-        // convention used by Vim signcolumn, Helix, Zed,
-        // VSCode, JetBrains. LSP severity and diff signs
-        // occupy adjacent dedicated columns so the two
-        // decoration types don't compete (Helix-style).
-        let diff_sign_cell = render_diff_sign_cell(diff_gutter.get(&line_idx).copied(), view);
+        // SG.4b: one cell per gutter column, left to right, each showing that
+        // column's winning sign. Diagnostics land in `mark` and hunk marks in
+        // `diff` because their DEFINITIONS say so, not because this loop knows
+        // the difference — which is the whole point of the unification.
+        //
+        // The column order is the host's (a gutter whose columns moved per
+        // buffer would be unreadable); what goes in each one is entirely the
+        // registry's answer. Adjacent dedicated columns rather than one
+        // contended cell is the Helix / Zed shape, and it is what stops a
+        // diagnostic hiding a hunk mark on the lines a user is most likely to
+        // be looking at.
+        //
+        // DR.3: sourced by `ctx.buffer_id`, so an inactive pane shows ITS
+        // buffer's marks. Active pane's id is the active doc → byte-identical.
+        let sign_cells: Vec<Span<'static>> = sign_gutter
+            .iter()
+            .map(|col| render_sign_cell(col.get(&line_idx).copied(), view))
+            .collect();
         // D.3.e: line-background tint. Applied AFTER all other
         // body overlays (whitespace decoration, hlsearch,
         // visual selection, etc.) — the tint sits BEHIND the
@@ -5672,7 +5659,7 @@ pub(crate) fn compose_pane_lines(
             // exact geometry `buffer_w` reserved via
             // `sign_columns_width`. Reserved (default) → byte-identical.
             let sign_prefix = if view.sign_column {
-                vec![severity_cell, diff_sign_cell]
+                sign_cells
             } else {
                 Vec::new()
             };
@@ -5695,7 +5682,7 @@ pub(crate) fn compose_pane_lines(
             // geometry — two blank cells when reserved, none when
             // `signcolumn=no`.
             let cont_sign_prefix = if view.sign_column {
-                vec![Span::raw(" "), Span::raw(" ")]
+                vec![Span::raw(" "); lattice_mode::BUILTIN_SIGN_COLUMNS.len()]
             } else {
                 Vec::new()
             };
@@ -6265,34 +6252,24 @@ fn render_gutter_for(
 }
 
 /// Width of the diagnostic-severity column prepended to the
-/// gutter (Phase 4.1.d.iii). Always 1 cell when LSP is in use --
-/// matches vim's `signcolumn=yes`. Costs one cell of gutter
-/// width but keeps the layout stable when diagnostics
-/// arrive / clear.
-const DIAG_GUTTER_WIDTH: u32 = 1;
-
-/// D.3.d.1 (2026-05-29): width of the diff-sign column,
-/// prepended between the diagnostic-severity column and the
-/// gutter. Always 1 cell — the column stays reserved even
-/// when no diff session is active so the layout doesn't shift
-/// on `:diff` / `:diffoff`. Sign characters: `+` (Add), `~`
-/// (Change), `-` (Remove anchor); blank when no hunk touches
-/// the row. Colours hardcoded for v1 (green / yellow / red);
-/// D.3.e will route them through the theme's `DiffAdd` /
-/// `DiffChange` / `DiffRemove` entries.
-const DIFF_SIGN_GUTTER_WIDTH: u32 = 1;
-
-/// PU.1b-1a (`signcolumn`): total width of the gutter sign columns
-/// (diagnostics severity + diff sign) for `view`, or `0` when the
-/// pane's resolved `signcolumn=no`. The single gate every compose
-/// site reads so the width math (`buffer_w`, cursor `wrap_width` /
-/// `col`) and the per-line prefix cells stay in lockstep — a buffer
-/// with `signcolumn=no` (help-mode, synthetic buffers) drops both
-/// sign cells and renders gutterless, with the renderer never
-/// branching on buffer kind.
+/// PU.1b-1a (`signcolumn`): total width of the gutter sign columns for `view`,
+/// or `0` when the pane's resolved `signcolumn=no`.
+///
+/// SG.4b: ONE cell per registered gutter column — the two hardcoded widths
+/// (`DIAG_GUTTER_WIDTH` + `DIFF_SIGN_GUTTER_WIDTH`) are gone with the two
+/// hardcoded columns. The count is `BUILTIN_SIGN_COLUMNS.len()`, which is 2,
+/// so the geometry is byte-identical to what it replaced; the difference is
+/// that a third column would now widen the gutter by construction rather than
+/// by someone remembering to add a constant here.
+///
+/// The single gate every compose site reads, so the width math (`buffer_w`,
+/// cursor `wrap_width` / `col`) and the per-line prefix cells stay in lockstep
+/// — a buffer with `signcolumn=no` (help-mode, synthetic buffers) drops every
+/// sign cell and renders gutterless, with the renderer never branching on
+/// buffer kind.
 fn sign_columns_width(view: &FrameView<'_>) -> u32 {
     if view.sign_column {
-        DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH
+        lattice_mode::BUILTIN_SIGN_COLUMNS.len() as u32
     } else {
         0
     }
@@ -6607,103 +6584,38 @@ fn apply_compilation_location_tint(
         .collect()
 }
 
-/// D.3.d.1: render the diff-sign cell. MO.4.a: `kind` is the
-/// pre-computed `GutterDiffKind` for this line from the mode-walk
-/// decoration pre-loop; `None` → blank cell.
-fn render_diff_sign_cell(
-    kind: Option<lattice_mode::GutterDiffKind>,
-    view: &FrameView<'_>,
-) -> Span<'static> {
-    use lattice_mode::GutterDiffKind;
+/// SG.4b — the cell for one gutter column on one line.
+///
+/// `sign` is that column's winning placement from the decoration pre-loop, or
+/// `None` for a line nothing marked. There is exactly ONE of these now: the
+/// separate `render_diagnostic_severity_cell` and `render_diff_sign_cell`
+/// paths are gone, because a diagnostic and a hunk mark are signs whose
+/// definitions carry their glyph, their theme element and their column. This
+/// function cannot tell them apart and does not need to.
+///
+/// A retired id paints a BLANK: SG.1 retires ids rather than reusing them so
+/// that a placement produced before an `undefine` paints nothing, where a
+/// reused slot would have painted some later sign's glyph. A blank cell is a
+/// visible absence; the wrong glyph is a lie.
+fn render_sign_cell(sign: Option<lattice_mode::SignId>, view: &FrameView<'_>) -> Span<'static> {
     let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    let Some(kind) = kind else {
+    let Some(sign) = sign else {
         return blank;
     };
-    // D.3.b.3: glyph stays hardcoded (convention), style reads
-    // from theme so bold + colour follow the user's preferences.
-    let (glyph, style) = match kind {
-        GutterDiffKind::Add => ('+', view.app.theme.diff_add_sign_style),
-        GutterDiffKind::Change => ('~', view.app.theme.diff_change_sign_style),
-        // D.3.d.0: Remove kept exhaustive for future classifiers.
-        GutterDiffKind::Remove => ('-', view.app.theme.diff_remove_sign_style),
-        // D.6.f: `?` for three-way Conflict hunks.
-        GutterDiffKind::Conflict => ('?', view.app.theme.diff_conflict_sign_style),
-    };
-    Span::styled(glyph.to_string(), style)
-}
-
-/// Build the gutter's **mark cell**. MO.4.a: `level` is the pre-computed
-/// `GutterSeverityLevel` for this line from the mode-walk decoration
-/// pre-loop. SG.2b: `sign` is that loop's winning `SignId` for the line.
-/// Neither → blank cell.
-///
-/// One cell, shared. A diagnostic and a sign both mark a line, and giving
-/// signs their own column would cost every buffer a column of content
-/// forever for a mechanism most buffers never use — while making a plugin's
-/// sign a second-class occupant of a gutter it should share with the
-/// built-ins. `SignDefinition::priority` is what resolves the contention,
-/// which is the same answer vim gives and the one users arrive with.
-fn render_mark_cell(
-    level: Option<lattice_mode::GutterSeverityLevel>,
-    sign: Option<lattice_mode::SignId>,
-    view: &FrameView<'_>,
-) -> Span<'static> {
-    use lattice_mode::GutterSeverityLevel;
-    let blank = Span::styled(" ".to_string(), TuiStyle::default());
-    // SG.2b: the sign takes the cell when there is no diagnostic to
-    // displace, or when it outranks one. `sign_beats_severity` is
-    // strictly-greater, so a tie leaves the error visible.
-    if let Some(sign) = sign
-        && let Some(cell) = render_sign_cell(sign, level.is_none(), view)
-    {
-        return cell;
-    }
-    let Some(level) = level else {
+    let rs = view.app.render_state.load();
+    let Some(def) = rs.signs.registry.get(sign) else {
         return blank;
     };
-    let theme = &view.app.theme;
-    let (glyph, style) = match level {
-        GutterSeverityLevel::Error => (theme.diagnostic_error_glyph, theme.diagnostic_error_style),
-        GutterSeverityLevel::Warning => (
-            theme.diagnostic_warning_glyph,
-            theme.diagnostic_warning_style,
-        ),
-        GutterSeverityLevel::Info => (theme.diagnostic_info_glyph, theme.diagnostic_info_style),
-        GutterSeverityLevel::Hint => (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style),
-    };
-    Span::styled(glyph.to_string(), style)
-}
-
-/// SG.2b — the mark cell for a placed sign, or `None` when it does not get
-/// the cell.
-///
-/// `cell_is_free` says no diagnostic wants it. When one does, only a sign
-/// that outranks [`lattice_mode::SEVERITY_SIGN_PRIORITY`] takes it.
-///
-/// Returns `None` for a retired id too: SG.1 retires ids rather than
-/// reusing them so that a placement produced before an `undefine` paints
-/// NOTHING, where a reused slot would have painted some later sign's glyph.
-/// A blank cell is a visible absence; the wrong glyph is a lie.
-fn render_sign_cell(
-    sign: lattice_mode::SignId,
-    cell_is_free: bool,
-    view: &FrameView<'_>,
-) -> Option<Span<'static>> {
-    let signs = &view.app.render_state.load().signs;
-    let def = signs.registry.get(sign)?;
-    if !cell_is_free && !lattice_mode::sign_beats_severity(def) {
-        return None;
-    }
     // The theme decides the COLOUR, the font capability decides the GLYPH.
     // Both palettes are the same cell width by the icon-degradation rule, so
     // toggling `ui.nerd_fonts` cannot shift the gutter's geometry.
     let glyph = def.glyph_char(view.app.theme.nerd_fonts).to_string();
-    let rs = view.app.render_state.load();
     // An unregistered element falls back to `gutter.sign` rather than to no
     // style: a sign was placed to tell the user something, and painting it
     // invisibly is the one outcome that loses the information entirely
     // rather than merely showing it in the wrong tone.
-    let element = signs
+    let element = rs
+        .signs
         .elements
         .get(&sign)
         .copied()
@@ -6715,7 +6627,7 @@ fn render_sign_cell(
         .map(crate::theme::host_color_to_ratatui)
         .map(|c| TuiStyle::default().fg(c))
         .unwrap_or_default();
-    Some(Span::styled(glyph, style))
+    Span::styled(glyph, style)
 }
 
 /// Diagnostics that overlap `line_idx` of `buffer_id`. Used by the
@@ -9831,7 +9743,7 @@ mod tests {
                     } else {
                         GUTTER_TRAILING_PAD
                     }) + if signs {
-                        DIAG_GUTTER_WIDTH + DIFF_SIGN_GUTTER_WIDTH
+                        lattice_mode::BUILTIN_SIGN_COLUMNS.len() as u32
                     } else {
                         0
                     };
@@ -12402,10 +12314,10 @@ mod tests {
 
     #[test]
     fn a_default_priority_sign_yields_the_cell_to_a_diagnostic() {
-        // The two share one cell, so one of them loses it. `sign_beats_severity`
-        // is strictly-greater: a sign at vim's default priority ties with the
-        // diagnostic and the ERROR stays visible, because an error is a state
-        // of the user's code they did not ask for and must not lose.
+        // The two share one cell, so one of them loses it. A sign at vim's
+        // default priority (10, level with the LOWEST diagnostic) loses to an
+        // error outright — an error is a state of the user's code they did not
+        // ask for, and it must not be hidden by a mark somebody chose to show.
         let mut app = app_with("fn main() {}\n", 5);
         seed_diagnostic(
             &mut app,
@@ -12415,7 +12327,7 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "boom",
         );
-        let id = define_sign(&app, "tie", '◆', lattice_mode::SEVERITY_SIGN_PRIORITY);
+        let id = define_sign(&app, "tie", '◆', lattice_mode::DIAGNOSTIC_HINT_PRIORITY);
         place_signs(&mut app, &[(0, id)]);
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
@@ -12427,7 +12339,15 @@ mod tests {
     fn a_higher_priority_sign_takes_the_cell_from_a_diagnostic() {
         // The escape hatch for a producer that genuinely outranks an error —
         // a debugger stopped on this very line. It says so by exceeding
-        // `SEVERITY_SIGN_PRIORITY`, not by being placed later.
+        // `DIAGNOSTIC_ERROR_PRIORITY`, not by being placed later.
+        //
+        // SG.4b raised that bar. A diagnostic used to hold the cell at one
+        // priority (`SEVERITY_SIGN_PRIORITY`, 10) whatever its severity, so
+        // any sign above 10 displaced an ERROR. Now the severities span
+        // 10..40 — which is what carries "most severe wins" through the
+        // unification — and displacing an error means beating 40. The
+        // stricter reading is the right one: a sign that hides a compiler
+        // error had better mean it.
         let mut app = app_with("fn main() {}\n", 5);
         seed_diagnostic(
             &mut app,
@@ -12437,7 +12357,12 @@ mod tests {
             lattice_lsp::DiagnosticSeverity::ERROR,
             "boom",
         );
-        let id = define_sign(&app, "stop", '◆', lattice_mode::SEVERITY_SIGN_PRIORITY + 1);
+        let id = define_sign(
+            &app,
+            "stop",
+            '◆',
+            lattice_mode::DIAGNOSTIC_ERROR_PRIORITY + 1,
+        );
         place_signs(&mut app, &[(0, id)]);
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);

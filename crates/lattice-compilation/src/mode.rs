@@ -313,11 +313,17 @@ impl Mode for CompilationMode {
         let Some(data) = ctx.service::<CompilationSeverityData>() else {
             return Vec::new();
         };
+        // SG.4b: the SAME built-in signs LSP diagnostics use, so a compilation
+        // error and a language-server error are one mark in one column with
+        // no host code that knows the difference.
+        let Some(ids) = ctx.service::<lattice_mode::BuiltinSignIds>() else {
+            return Vec::new();
+        };
         data.entries
             .iter()
-            .map(|(line, level)| GutterDecoration::Severity {
+            .map(|(line, level)| GutterDecoration::Sign {
                 line: *line,
-                level: *level,
+                sign: ids.for_severity(*level),
             })
             .collect()
     }
@@ -904,21 +910,47 @@ mod tests {
                 (5, GutterSeverityLevel::Warning),
             ]),
         });
+        // SG.4b: a severity mark is a SIGN now — and the SAME built-in sign
+        // an LSP diagnostic uses, so a compilation error and a language-server
+        // error are one mark in one column with no host code that knows the
+        // difference.
+        let mut registry = lattice_mode::SignRegistry::new();
+        let ids = lattice_mode::register_builtin_signs(
+            &mut registry,
+            lattice_mode::DiagnosticGlyphs::default(),
+        );
+        services.register(ids);
         let ctx = DecorationCtx::new(lattice_core::BufferId(7), &services);
         let decos = CompilationMode.gutter_decorations(&ctx);
         assert_eq!(
             decos,
             vec![
-                GutterDecoration::Severity {
+                GutterDecoration::Sign {
                     line: 2,
-                    level: GutterSeverityLevel::Error
+                    sign: ids.diagnostic_error
                 },
-                GutterDecoration::Severity {
+                GutterDecoration::Sign {
                     line: 5,
-                    level: GutterSeverityLevel::Warning
+                    sign: ids.diagnostic_warning
                 },
             ]
         );
+    }
+
+    /// SG.4b: without the interned built-in ids (a stripped harness), the
+    /// producer contributes nothing rather than placements resolving to
+    /// whatever sits at id 0.
+    #[test]
+    fn gutter_decorations_empty_without_builtin_sign_ids() {
+        use lattice_mode::{
+            CompilationSeverityData, DecorationCtx, GutterSeverityLevel, ServiceRegistry,
+        };
+        let mut services = ServiceRegistry::new();
+        services.register(CompilationSeverityData {
+            entries: std::sync::Arc::new(vec![(2, GutterSeverityLevel::Error)]),
+        });
+        let ctx = DecorationCtx::new(lattice_core::BufferId(7), &services);
+        assert!(CompilationMode.gutter_decorations(&ctx).is_empty());
     }
 
     #[test]

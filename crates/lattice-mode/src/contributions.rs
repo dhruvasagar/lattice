@@ -74,14 +74,15 @@ pub enum GutterSeverityLevel {
 /// Each variant maps to one physical gutter column.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GutterDecoration {
-    /// Diff-sign column (between severity and line numbers).
-    Diff { line: u32, kind: GutterDiffKind },
-    /// LSP diagnostic severity column (leftmost gutter cell).
-    Severity {
-        line: u32,
-        level: GutterSeverityLevel,
-    },
-    /// SG.1: a generic sign placement — vim's `:sign place`.
+    /// SG.1: a sign placement — vim's `:sign place`, and since SG.4b the ONLY
+    /// kind of gutter decoration there is.
+    ///
+    /// `Diff` and `Severity` used to sit beside this. They were deleted rather
+    /// than deprecated because leaving them would have left the host with two
+    /// privileged gutter paths and a mechanism pretending to be general — the
+    /// exact half-migration shape that makes a "generic" seam quietly untrue.
+    /// A diff mark and a diagnostic are now definitions in the same registry a
+    /// plugin writes, named by their producers.
     ///
     /// Carries only the line and the definition's NAME; the glyph, its theme
     /// element and its priority live in the [`SignRegistry`]. A placement is
@@ -363,21 +364,6 @@ impl SignRegistry {
 /// rule).
 pub type SignRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<SignRegistry>>;
 
-/// SG.2b — the priority at which the built-in diagnostic severity mark holds
-/// the gutter's mark cell.
-///
-/// Signs and diagnostics share ONE cell rather than each getting a column,
-/// because a column costs every buffer a column of content forever whether or
-/// not anything is ever placed in it, and because a diagnostic *is* a mark —
-/// giving plugin signs a segregated column beside it would make them
-/// second-class occupants of a gutter they should share. Contention is what
-/// `priority` is for, and vim resolves exactly this contention the same way.
-///
-/// `10` is vim's default sign priority, so a producer that ships the vim
-/// default lands level with diagnostics, which is the intuition a user
-/// carries in.
-pub const SEVERITY_SIGN_PRIORITY: i32 = 10;
-
 // ── SG.4a: the built-in signs ───────────────────────────────────────────────
 //
 // Diagnostics and diff marks are signs like any other. Nothing about them is
@@ -577,19 +563,6 @@ impl Default for DiagnosticGlyphs {
     }
 }
 
-/// SG.2b — may this sign take the mark cell from a diagnostic on the same
-/// line?
-///
-/// **Strictly greater**, so a tie goes to the diagnostic. A diagnostic is a
-/// state of the user's code that they need to see and did not ask for; a sign
-/// is something a producer chose to show. When neither has a claim the
-/// other lacks, hiding the error is the more expensive mistake. A producer
-/// that genuinely outranks an error — a debugger stopped on this very line —
-/// says so by exceeding [`SEVERITY_SIGN_PRIORITY`].
-pub fn sign_beats_severity(def: &SignDefinition) -> bool {
-    def.priority > SEVERITY_SIGN_PRIORITY
-}
-
 /// SG.1 — pick the winner when several signs land on one line.
 ///
 /// Higher priority wins; equal priorities break on name. The tiebreak is not
@@ -741,103 +714,21 @@ mod sign_tests {
         assert_eq!(d.glyph_char(false), ' ');
     }
 
-    /// SG.2b: signs and diagnostics share one cell, and the tie goes to the
-    /// diagnostic. An error is a state of the user's code they did not ask
-    /// for; when neither has a claim the other lacks, hiding the error is
-    /// the more expensive mistake.
+    /// SG.4b: a sign and a diagnostic contend by ORDINARY priority now —
+    /// there is no separate "does this beat a severity" rule, because a
+    /// diagnostic IS a sign. A plugin shipping vim's default (10) ties with a
+    /// hint and loses to everything above it.
     #[test]
-    fn a_tie_with_a_diagnostic_leaves_the_error_visible() {
-        assert!(!sign_beats_severity(&def("tie", SEVERITY_SIGN_PRIORITY)));
-        assert!(!sign_beats_severity(&def(
-            "below",
-            SEVERITY_SIGN_PRIORITY - 1
-        )));
-        assert!(sign_beats_severity(&def(
-            "above",
-            SEVERITY_SIGN_PRIORITY + 1
-        )));
-    }
-
-    /// SG.4a: the built-ins are signs like any other — same registry, same
-    /// theme resolution, same priority rule. Nothing about them is privileged.
-    #[test]
-    fn the_builtins_register_as_ordinary_signs() {
+    fn a_vim_default_sign_sits_at_the_bottom_of_the_diagnostics() {
         let mut r = SignRegistry::new();
         let ids = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
-        assert_eq!(r.len(), 8, "four diagnostics + four diff kinds");
-        assert_eq!(r.id_of("diagnostic.error"), Some(ids.diagnostic_error));
-        assert_eq!(r.id_of("diff.add"), Some(ids.diff_add));
-        // Each lands in the column its meaning belongs to. A diagnostic and a
-        // hunk mark answer different questions, so they must not contend.
-        assert_eq!(
-            r.get(ids.diagnostic_error).unwrap().column,
-            SIGN_COLUMN_MARK
-        );
-        assert_eq!(r.get(ids.diff_add).unwrap().column, SIGN_COLUMN_DIFF);
-    }
-
-    /// "Most severe wins" was the semantics the retired `Severity` arm's
-    /// `max()` gave, and it has to survive the unification — now expressed as
-    /// priority, like every other sign's.
-    #[test]
-    fn diagnostic_priorities_preserve_the_severity_order() {
-        let mut r = SignRegistry::new();
-        let ids = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
-        let p = |id: SignId| r.get(id).unwrap().priority;
-        assert!(p(ids.diagnostic_error) > p(ids.diagnostic_warning));
-        assert!(p(ids.diagnostic_warning) > p(ids.diagnostic_info));
-        assert!(p(ids.diagnostic_hint) < p(ids.diagnostic_info));
-        // And an error is what a sign must EXCEED to take the cell — a
-        // stricter bar than SG.2b's, where any priority above 10 did it.
-        assert_eq!(p(ids.diagnostic_error), DIAGNOSTIC_ERROR_PRIORITY);
-        for (a, b) in [
-            (ids.diagnostic_error, ids.diagnostic_warning),
-            (ids.diagnostic_warning, ids.diagnostic_info),
-            (ids.diagnostic_info, ids.diagnostic_hint),
-        ] {
-            let (a, b) = (r.get(a).unwrap(), r.get(b).unwrap());
-            assert_eq!(
-                winning_sign(a, b).name,
-                a.name,
-                "the more severe diagnostic takes the cell"
-            );
-        }
-    }
-
-    /// Re-registering with new glyphs is what a `:set ui.diagnostic-*-glyph`
-    /// does. The ids must NOT move, or every placement already in flight would
-    /// resolve to nothing and the marks would blink out on an option change.
-    #[test]
-    fn re_registering_with_new_glyphs_keeps_every_id() {
-        let mut r = SignRegistry::new();
-        let first = register_builtin_signs(&mut r, DiagnosticGlyphs::default());
-        let second = register_builtin_signs(
-            &mut r,
-            DiagnosticGlyphs {
-                error: 'E',
-                warning: 'W',
-                info: 'I',
-                hint: 'H',
-            },
-        );
-        assert_eq!(first, second, "ids are stable across a redefinition");
-        assert_eq!(r.len(), 8, "and no duplicates were minted");
-        assert_eq!(
-            r.get(first.diagnostic_error).unwrap().glyph_char(false),
-            'E'
-        );
-    }
-
-    /// A host that never registered the built-ins must paint NOTHING for them,
-    /// not whatever happens to sit at id 0 — which would be some plugin's
-    /// sign, silently, in exactly the configurations nobody looks at.
-    #[test]
-    fn unregistered_builtin_ids_resolve_to_nothing() {
-        let mut r = SignRegistry::new();
-        r.define(def("a-plugins-sign", 1));
-        let ids = BuiltinSignIds::default();
-        assert!(r.get(ids.diagnostic_error).is_none());
-        assert!(r.get(ids.diff_add).is_none());
+        let plugin = std::sync::Arc::new(def("a-plugin.mark", DIAGNOSTIC_HINT_PRIORITY));
+        let hint = r.get(ids.diagnostic_hint).unwrap();
+        let error = r.get(ids.diagnostic_error).unwrap();
+        // Ties with the hint (broken by name, deterministically) and loses to
+        // the error outright.
+        assert_eq!(plugin.priority, hint.priority);
+        assert_eq!(winning_sign(error, &plugin).name, error.name);
     }
 
     /// The publish path pre-resolves one theme element per DEFINITION, so it

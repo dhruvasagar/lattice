@@ -168,7 +168,6 @@ pub use crate::contributions::{
     GutterSeverityLevel,
     Keymap,
     KeymapBinding,
-    SEVERITY_SIGN_PRIORITY,
     SIGN_COLUMN_DIFF,
     SIGN_COLUMN_MARK,
     SignDefinition,
@@ -177,7 +176,6 @@ pub use crate::contributions::{
     SignRegistryHandle,
     Subscription, // MO.4.c: real RAII type; use in mode Guards
     register_builtin_signs,
-    sign_beats_severity,
     winning_sign,
 };
 pub use crate::decoration_source::{

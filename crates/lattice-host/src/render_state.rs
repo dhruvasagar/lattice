@@ -2252,6 +2252,11 @@ pub struct SignsRenderState {
     pub elements: std::sync::Arc<
         std::collections::HashMap<lattice_mode::SignId, crate::ui::theme::ElementId>,
     >,
+    /// SG.4b: the interned built-in sign ids, so a renderer can hand them to
+    /// the decoration context without reaching into `Editor` — GPUI reads only
+    /// this published snapshot, and a renderer that had to reach further would
+    /// be the seam leaking.
+    pub builtin: lattice_mode::BuiltinSignIds,
 }
 
 /// Typed-options registry handle. Slice 3c.final.B.10 — drops the

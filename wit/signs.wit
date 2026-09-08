@@ -41,18 +41,20 @@ interface signs {
         /// something, and painting it invisibly is the one outcome that loses
         /// the information entirely rather than showing it in the wrong tone.
         theme-element: string,
-        /// Which sign wins when two land on one line, and whether this one
-        /// takes the cell from a diagnostic. Higher wins; ties break on name,
-        /// so the painted glyph is stable rather than incidental to hash
-        /// order.
+        /// Which sign wins when two land on one line OF THE SAME COLUMN.
+        /// Higher wins; ties break on name, so the painted glyph is stable
+        /// rather than incidental to hash order.
         ///
-        /// `10` is vim's default and the priority diagnostics hold the cell
-        /// at. The comparison against a diagnostic is STRICTLY greater, so a
-        /// sign at 10 leaves the error visible: an error is a state of the
-        /// user's code they did not ask for, and when neither mark has a claim
-        /// the other lacks, hiding it is the more expensive mistake. Exceed 10
-        /// only for something that genuinely outranks an error — a debugger
-        /// stopped on this very line.
+        /// Diagnostics are signs too, and they span `10..40` — hint 10, info
+        /// 20, warning 30, error 40 — which is how "most severe wins" is
+        /// expressed now that there is no separate severity mechanism. `10` is
+        /// vim's default sign priority and the floor: a sign shipping it ties
+        /// with a hint and loses to everything above.
+        ///
+        /// Exceed `40` only for something that genuinely outranks a compiler
+        /// error — a debugger stopped on this very line. Displacing an error
+        /// hides a state of the user's code they did not ask for, so the bar
+        /// is deliberately high.
         priority: s32,
         /// SG.4a: which gutter column this sign paints in.
         ///

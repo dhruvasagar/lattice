@@ -22,9 +22,23 @@ use lattice_host::per_buffer_cache::PerBufferCacheExt;
 use lattice_host::wasm_decorations::{WasmDecorationState, WasmGutterDecorationCache};
 use lattice_mode::{
     AsyncGutterDecorationSource, DecorationFuture, GutterDecoration,
-    GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle, GutterDiffKind,
-    GutterSeverityLevel,
+    GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle,
 };
+
+/// SG.4b: every gutter decoration is a `Sign` now, so a test that wants a
+/// "diff/change mark" asks the boot-registered registry for the built-in of
+/// that name. `Editor::boot` registers them, so this resolves in any test
+/// built on a real boot — which is also what makes these assertions mean
+/// something rather than comparing two `Default` ids.
+fn builtin_sign(editor: &Editor, name: &str) -> lattice_mode::SignId {
+    editor
+        .services
+        .get::<lattice_mode::SignRegistryHandle>()
+        .expect("boot registers the sign registry")
+        .load()
+        .id_of(name)
+        .unwrap_or_else(|| panic!("`{name}` is a registered built-in sign"))
+}
 
 /// A native decoration producer standing in for a WASM one. Either yields a
 /// fixed mark set or errs — enough to exercise the write path and the
@@ -79,13 +93,13 @@ async fn refresh_populates_the_cache_off_the_render_path_and_wakes_paint() {
     let mut editor = Editor::boot(CoreDocument::from_text("a\nb\nc\nd\ne\n"));
     let buffer = editor.document_buffer_id;
     let marks = vec![
-        GutterDecoration::Diff {
+        GutterDecoration::Sign {
             line: 0,
-            kind: GutterDiffKind::Change,
+            sign: builtin_sign(&editor, "diff.change"),
         },
-        GutterDecoration::Severity {
+        GutterDecoration::Sign {
             line: 1,
-            level: GutterSeverityLevel::Error,
+            sign: builtin_sign(&editor, "diagnostic.error"),
         },
     ];
     let calls = Arc::new(AtomicU64::new(0));
@@ -143,9 +157,9 @@ async fn erroring_producer_keeps_the_prior_snapshot_zero_flicker() {
     // Seed a prior good snapshot (as if an earlier refresh landed).
     let prior = WasmGutterDecorationCache {
         document_version: 0,
-        decorations: vec![GutterDecoration::Diff {
+        decorations: vec![GutterDecoration::Sign {
             line: 0,
-            kind: GutterDiffKind::Add,
+            sign: builtin_sign(&editor, "diff.add"),
         }],
     };
     let calls = Arc::new(AtomicU64::new(0));
@@ -205,9 +219,9 @@ async fn a_guest_refresh_request_re_runs_the_producer_at_the_same_version() {
         Arc::new(lattice_mode::DecorationEpoch::default());
     editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
         id: 1,
-        result: Ok(vec![GutterDecoration::Diff {
+        result: Ok(vec![GutterDecoration::Sign {
             line: 0,
-            kind: GutterDiffKind::Change,
+            sign: builtin_sign(&editor, "diff.change"),
         }]),
         calls: calls.clone(),
     }))
@@ -267,9 +281,9 @@ async fn a_redraw_re_asks_the_producer() {
         Arc::new(lattice_mode::DecorationEpoch::default());
     editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
         id: 1,
-        result: Ok(vec![GutterDecoration::Diff {
+        result: Ok(vec![GutterDecoration::Sign {
             line: 0,
-            kind: GutterDiffKind::Change,
+            sign: builtin_sign(&editor, "diff.change"),
         }]),
         calls: calls.clone(),
     }))

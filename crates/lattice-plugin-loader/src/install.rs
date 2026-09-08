@@ -170,6 +170,22 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("excerpt-source seam unwired: no multibuffer registry");
     }
+    // OA.27: what answers "what is this provider view showing".
+    //
+    // The per-view scan state, which already holds the arguments the view was
+    // opened with and carries them across every re-open. Unwired leaves
+    // `view-args` answering an empty list — and a guest reads that as a fresh
+    // view, so every chord that walks a view starts over from the default with
+    // no error anywhere. That silence is why this wiring has a boot pin.
+    if let Some(scan_views) =
+        boot.service::<lattice_multibuffer::providers::scan_view::ScanViewServiceHandle>()
+    {
+        host.set_view_args_resolver(std::sync::Arc::new(
+            lattice_multibuffer::providers::scan_view::ScanViewArgs::new((*scan_views).clone()),
+        ));
+    } else {
+        tracing::debug!("view-args seam unwired: no scan-view service");
+    }
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.

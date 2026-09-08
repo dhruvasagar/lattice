@@ -66,6 +66,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.25 | Schedule + deadline, in files AND the agenda **(plugin)** | ✅ |
 | OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | ✅ |
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
+| OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | 🚧 |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1535,6 +1536,56 @@ Two tests, because a keymap move fails silently both ways: each emacs/vim pair
 must resolve to the SAME command (a three-chord sequence that does not parse
 reaches nothing and reads as unbound), and the old flat chords must be GONE (a
 move that leaves them working is two ways to clock in, one undocumented).
+
+---
+
+### OA.28 — `view-args`, so a chord can read its own view **(cross-repo)** 🚧
+
+Design: `docs/dev/architecture/plugin-multibuffer-views.md` §9.
+
+**The defect.** Every OA.20/OA.21 chord is "re-open this view with one argument
+different", and org implemented the "other arguments" half with a guest
+`thread_local` written by `begin`. `begin` runs on the `scanned-excerpt-source`
+seam; the chords run on the grammar seam. Separate `wasmtime::Store`s, separate
+memory — so the chords read a DEFAULT view on every press.
+
+Reproduced end-to-end before the fix:
+
+```
+gD m  → Month 2026-09-07 – 2026-10-06     the span key works
+f     → Week  2026-09-08 – 2026-09-14     span lost; stepped 1 day, not 30
+f     → Week  2026-09-08 – 2026-09-14     …and pinned there forever
+|     → Week  2026-09-07 – 2026-09-13     the filter clears, the span goes too
+```
+
+The user-visible report was "`|` also resets the span", which is the shallowest
+symptom of it: `|` was never the bug, and neither was filtering.
+
+**Why the tests did not catch it.** Each chord was tested by pressing it once
+from a fresh view, which is the one case a default-view read answers correctly.
+The regression tests added here press a *sequence* — walk, then filter, then
+clear — because that is the only shape in which the defect exists.
+
+**The slice.**
+
+- `wit/host-services.wit`: `view-args: func(buffer: u64) -> list<string>`, on
+  `host-services` rather than `multibuffer-view-registry` because the grammar
+  seam must resolve it and `host-services` is already wired on both linkers
+  (the OC.2 scar, §9).
+- `lattice-core`: `ViewArgsResolver` + handle, beside `ExcerptSourceResolver`
+  and abstract for its reason — the plugin host answers without depending on
+  `lattice-multibuffer`.
+- `lattice-multibuffer`: `ScanViewArgs` over `ScanViewServiceHandle`, reading
+  the `scan_args` the trigger already carries across every re-open.
+- `lattice-plugin-loader`: wired in `install` beside the excerpt-source
+  resolver; `WiredSeams::view_args` pins it at boot, because an unwired seam
+  reinstates the original bug in silence.
+- org: the five handlers read the seam instead of the `thread_local`; the `/`
+  opener stashes its `buffer_id` for the prompt-submit continuation (§9).
+
+**Not a new crate, not a new interface.** Both were considered and both fail the
+same test: `host-services` already carries the seam's peers, is already imported
+by every world that needs it, and is already wired on both linkers.
 
 ---
 

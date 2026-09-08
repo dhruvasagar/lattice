@@ -775,3 +775,29 @@ pub trait ExcerptSourceResolver: Send + Sync + std::fmt::Debug {
 
 /// Shared handle to an [`ExcerptSourceResolver`].
 pub type ExcerptSourceResolverHandle = Arc<dyn ExcerptSourceResolver>;
+
+/// OA.27 — what arguments a provider view is currently showing.
+///
+/// A scan view is opened with arguments the host routes verbatim to the
+/// provider and then KEEPS, so they are the whole of what the view displays:
+/// which command, which span, which day, which filters. Whoever owns the view
+/// owns them, and that is the host — a provider that tried to remember them
+/// instead has nowhere consistent to do it (a WASM provider is several
+/// `wasmtime::Store`s with separate memory, so "remember them in the guest"
+/// means one copy per seam, silently diverging).
+///
+/// Abstract for [`ExcerptSourceResolver`]'s reason: the plugin host must answer
+/// this without depending on `lattice-multibuffer`, which sits above it.
+/// Whoever owns provider views implements this and wires it at boot; a host
+/// with none wired answers `None`, which is the honest degradation.
+pub trait ViewArgsResolver: Send + Sync + std::fmt::Debug {
+    /// The arguments the view in `buffer` is showing.
+    ///
+    /// `None` when `buffer` is not a provider view, or is one the host holds no
+    /// state for. Both are ordinary answers: a caller asks about the buffer a
+    /// chord fired in, and a chord can fire anywhere.
+    fn view_args(&self, buffer: crate::buffers::BufferId) -> Option<Vec<String>>;
+}
+
+/// Shared handle to a [`ViewArgsResolver`].
+pub type ViewArgsResolverHandle = Arc<dyn ViewArgsResolver>;

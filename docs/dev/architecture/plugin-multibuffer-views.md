@@ -316,3 +316,79 @@ sync grammar one (`PluginHost::new`). An import absent from a linker a
 component is instantiated against fails the WHOLE component, silently, not just
 the one seam; one `logging::log` call once took org down entirely. An import is
 added to a world only once its seam is known to resolve everywhere.
+
+## 9. `view-args` — reading what a view is showing (OA.28)
+
+§8 gave a guest a way to *change* its view from outside a trigger. This is the
+other half: a way to *read* what the view is currently showing.
+
+```wit
+view-args: func(buffer: u64) -> list<string>;
+```
+
+### The state is the host's, and it always was
+
+A scan view is opened with `scan-args` the host routes verbatim to the provider
+and then keeps (`ScanViewState.options.scan_args`) — that is what makes `gr` a
+refresh rather than a reset. So the arguments are not a copy of the view's
+state; they *are* the view's state, held by the thing that owns the view. What
+was missing was any way for the provider to read them back.
+
+Without it, a chord like "one span forward" is unimplementable as specified. It
+means "re-open this view with one argument different", which requires the other
+arguments — and a guest that cannot ask has to remember, which it cannot do.
+
+### Why a guest cannot remember them
+
+A component is instantiated once per seam, each with its own
+`wasmtime::Store` and its own linear memory. The arguments arrive on
+`scanned-excerpt-source` (`begin`); the chords run on the grammar seam; a mode
+lifecycle handler runs on the events seam. A `thread_local` holding "the current
+view" is therefore three unrelated variables that never see each other's writes.
+
+**The failure is silent and looks like partial success.** Every chord that only
+*writes* an argument works — setting a span works, adding a filter works — while
+every chord that must *read* one starts from a default view. Org shipped exactly
+this: `f` stepped one day forward from today no matter which span or day was on
+screen, and did it again on every press; `|` dropped the filter *and* the span.
+Each key looked correct in isolation, which is why it survived review, a slice
+plan, and a suite of tests that pressed one key at a time.
+
+`host-services` already documents this drift for its store functions. This seam
+removes the need to work around it for the one thing a view provider always
+needs.
+
+### Keyed on `buffer`, not on a provider name
+
+`excerpt-source`'s shape, for its reason: the caller has a buffer id in hand and
+nothing else identifies *which* view unambiguously. `ActionContext.buffer_id`
+carries one, and so does `event-mode-lifecycle.buffer` — so a chord handler and
+a mode's activation handler can both ask without a second lookup. A
+provider-name key would have to guess between two views of the same provider,
+which is a wrong answer rather than a missing one.
+
+The one caller that has no view buffer in hand is a **prompt submission**: the
+chord opens a minibuffer and the submit handler fires in *that* buffer. It is a
+continuation of the chord that opened it, on the same seam, so the opener stashes
+its `buffer_id` guest-side and the submit reads it back. A `thread_local` is the
+right carrier there precisely because both halves are one seam — which is the
+distinction the rest of this section is about.
+
+### Failure behaviour
+
+An empty list for: no resolver wired, a buffer that is not a provider view, and
+a view the host holds no state for. All three mean "no arguments", which is what
+a fresh view has and what a guest parses a default from — an `option` would
+offer a distinction with no different action behind it.
+
+That is a real degradation, though, and an invisible one: an unwired seam makes
+every view-walking chord restart from the default with no error on any path. So
+the wiring is asserted at boot rather than trusted — `WiredSeams::view_args`,
+checked by `plugin_loader_captures_every_drain_service`.
+
+### Why no benchmark
+
+One host call per chord — a `HashMap` lookup and a `Vec<String>` clone behind an
+`RwLock` read, on the dispatch path of a key the user pressed once. The
+per-call WASM overhead budget (`typed call < 500ns p99`) already covers the
+crossing, and there is no per-frame or per-keystroke-burst path here to measure.

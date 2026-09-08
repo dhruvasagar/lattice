@@ -416,6 +416,15 @@ pub struct WiredSeams {
     /// "this line is not composed", so a guest standing on an agenda row cannot
     /// tell a boot-ordering regression from an ordinary miss.
     pub excerpt_source: bool,
+    /// OA.27: whether the HOST carries a view-args resolver.
+    ///
+    /// Reported for `excerpt_source`'s reason, and the invisibility is worse
+    /// here: an unwired seam answers an EMPTY LIST, which a guest parses as a
+    /// view showing nothing in particular — so every chord that walks a view
+    /// silently restarts from the default span, day and filter set, with no
+    /// error on any path. That is the bug the seam replaces; a boot-ordering
+    /// regression would reinstate it unnoticed.
+    pub view_args: bool,
 }
 
 impl WiredSeams {
@@ -441,6 +450,7 @@ impl WiredSeams {
             && self.transient_registry
             && self.multibuffer_registry
             && self.excerpt_source
+            && self.view_args
     }
 }
 
@@ -672,6 +682,7 @@ impl PluginLoader {
             transient_registry: self.env.transient_registry.is_some(),
             multibuffer_registry: self.env.multibuffer_registry.is_some(),
             excerpt_source: self.host.excerpt_source_wired(),
+            view_args: self.host.view_args_wired(),
         }
     }
 

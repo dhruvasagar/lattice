@@ -88,6 +88,33 @@ interface host-services {
     /// the view does not compose.
     source-line: func(buffer: u32, line: u32) -> option<string>;
 
+    /// OA.27: the scan arguments the provider view in `buffer` is showing.
+    ///
+    /// **A view's arguments are HOST state, and this is the only way a guest
+    /// can read them back.** A scan view is opened with `scan-args` the host
+    /// routes verbatim and then keeps (`gr` re-scans with them), so they are
+    /// the whole of what the view is displaying: which command, which span,
+    /// which day, which filters. A chord that changes one of them is "re-open
+    /// this view with one argument different", and that requires reading the
+    /// other arguments first.
+    ///
+    /// **Why the guest cannot just remember them.** It has nowhere to. The
+    /// arguments arrive on the `scanned-excerpt-source` seam (`begin`) and the
+    /// chord runs on the grammar seam, and those are separate
+    /// `wasmtime::Store`s with separate linear memory — the same N-copies drift
+    /// the store functions below document. A guest that parked them in a
+    /// `thread_local` reads a DEFAULT view on every chord: each key looks right
+    /// in isolation (setting a span works, adding a filter works) while
+    /// anything that has to read prior state silently starts over. That is the
+    /// bug this exists to make unrepresentable, and org shipped it.
+    ///
+    /// An empty list for a buffer that is not a provider view, for a view the
+    /// host has no state for, and when nothing wired a resolver. All three are
+    /// ordinary: a guest asks about the buffer its chord fired in, and a chord
+    /// can fire anywhere. An empty list parses as "no arguments", which is what
+    /// a fresh view has.
+    view-args: func(buffer: u64) -> list<string>;
+
     /// Read a UTF-8 file, capability-gated the same way `walk` is.
     ///
     /// **This exists because the guest's own WASI filesystem view cannot serve

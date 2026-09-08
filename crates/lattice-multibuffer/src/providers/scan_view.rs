@@ -219,6 +219,35 @@ impl ScanViewService for InMemoryScanViewService {
     }
 }
 
+/// OA.27 — [`lattice_core::ViewArgsResolver`] over the per-view scan state.
+///
+/// The state this reads is the same `options.scan_args` the trigger carries
+/// forward on every re-open, which is what makes it the truth rather than a
+/// second copy of it: a view that re-scanned with different arguments has them
+/// here before its first row lands.
+///
+/// Wired at boot beside the excerpt-source resolver. A host with no
+/// `ScanViewService` cannot have a scan view open either, so `None` is not a
+/// degradation there — it is the accurate answer.
+#[derive(Debug)]
+pub struct ScanViewArgs {
+    service: ScanViewServiceHandle,
+}
+
+impl ScanViewArgs {
+    pub fn new(service: ScanViewServiceHandle) -> Self {
+        Self { service }
+    }
+}
+
+impl lattice_core::ViewArgsResolver for ScanViewArgs {
+    fn view_args(&self, buffer: BufferId) -> Option<Vec<String>> {
+        let state = self.service.state(buffer)?;
+        let read = state.read().ok()?;
+        Some(read.options.scan_args.clone())
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // The trigger
 // ─────────────────────────────────────────────────────────────────
@@ -1660,6 +1689,69 @@ pub fn register_scan_view_service(services: &mut ServiceRegistry) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use lattice_core::ViewArgsResolver as _;
+
+    fn state_with_args(args: &[&str]) -> ScanViewState {
+        ScanViewState {
+            provider: "agenda".to_string(),
+            options: ScanViewOptions {
+                scan_args: args.iter().map(|a| a.to_string()).collect(),
+                ..Default::default()
+            },
+            clock: Vec::new(),
+            annotations: Vec::new(),
+            annotations_version: 0,
+        }
+    }
+
+    /// OA.27: the resolver answers a view's own arguments.
+    ///
+    /// The arguments ARE what the view is showing — span, day, filters, command
+    /// — so a chord that changes one has to read the rest back. This is the
+    /// read; the trigger already writes it on every open.
+    #[test]
+    fn the_resolver_answers_the_args_the_view_was_opened_with() {
+        let service = InMemoryScanViewService::handle();
+        let view = BufferId(7);
+        service.set_state(view, state_with_args(&["", "span=30", "tag:work"]));
+
+        let resolver = ScanViewArgs::new(service);
+        assert_eq!(
+            resolver.view_args(view),
+            Some(vec![
+                String::new(),
+                "span=30".to_string(),
+                "tag:work".to_string()
+            ])
+        );
+    }
+
+    /// A buffer that is not a scan view is `None`, not an empty list.
+    ///
+    /// The distinction dies at the WIT boundary (both cross as "no arguments")
+    /// and is kept here because a resolver that answered `Some(vec![])` for
+    /// every buffer in the editor would be indistinguishable from one that
+    /// works, in exactly the tests meant to catch that.
+    #[test]
+    fn a_buffer_that_is_not_a_view_is_none() {
+        let service = InMemoryScanViewService::handle();
+        service.set_state(BufferId(7), state_with_args(&["", "span=30"]));
+
+        let resolver = ScanViewArgs::new(service);
+        assert_eq!(resolver.view_args(BufferId(8)), None);
+    }
+
+    /// A view opened with no arguments answers an empty list rather than
+    /// `None` — it IS a view, and it is showing the default.
+    #[test]
+    fn a_view_with_no_args_is_some_and_empty() {
+        let service = InMemoryScanViewService::handle();
+        let view = BufferId(3);
+        service.set_state(view, state_with_args(&[]));
+
+        let resolver = ScanViewArgs::new(service);
+        assert_eq!(resolver.view_args(view), Some(Vec::new()));
+    }
 
     /// A unique scratch directory. Timestamp alone collides under parallel
     /// `cargo test`, so a counter rides with it.

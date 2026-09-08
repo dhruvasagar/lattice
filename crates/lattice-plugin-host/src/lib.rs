@@ -1093,6 +1093,9 @@ struct PluginState {
     /// no multibuffer owner wired one, which answers `none` rather than
     /// pretending.
     excerpt_source: Option<lattice_core::ExcerptSourceResolverHandle>,
+    /// OA.27: what a provider view is currently showing. `None` when no view
+    /// owner wired one, which answers an empty list rather than pretending.
+    view_args: Option<lattice_core::ViewArgsResolverHandle>,
     /// CG.4: the foreground-cancel registry, stamped once per store.
     /// `arm_store` takes the lock once per guest call to refresh
     /// [`Self::cancel_token`]; the epoch callback never touches it.
@@ -1245,6 +1248,20 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         self.excerpt_source
             .as_ref()?
             .source_line(lattice_core::BufferId(buffer), line)
+    }
+
+    /// OA.27 `view-args`: forwards to the wired resolver.
+    ///
+    /// An EMPTY LIST rather than an `option` on the wire, and the WIT says why:
+    /// every way of not knowing — no resolver, not a provider view, a view the
+    /// host holds no state for — means "no arguments", which is exactly what a
+    /// fresh view has and what a guest parses a default from. An `option` would
+    /// offer a distinction with no different action behind it.
+    fn view_args(&mut self, buffer: u64) -> Vec<String> {
+        self.view_args
+            .as_ref()
+            .and_then(|r| r.view_args(lattice_core::BufferId(buffer as u32)))
+            .unwrap_or_default()
     }
 
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
@@ -3012,6 +3029,8 @@ pub struct PluginHost {
     // is the honest degradation: a guest asking about an excerpt in a host
     // with no multibuffers is asking about something that is not there.
     excerpt_source: std::sync::OnceLock<lattice_core::ExcerptSourceResolverHandle>,
+    /// OA.27: what a provider view is showing, for the `view-args` seam.
+    view_args: std::sync::OnceLock<lattice_core::ViewArgsResolverHandle>,
     // OC.3 / ML.6: what the `ui` seam acts on — the modeline element registry
     // and the bus content updates publish onto. Both halves are required (a
     // registry with no bus registers descriptors nothing ever repaints), so
@@ -3431,6 +3450,7 @@ impl PluginHost {
             sleeper: std::sync::OnceLock::new(),
             config: std::sync::OnceLock::new(),
             excerpt_source: std::sync::OnceLock::new(),
+            view_args: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
             stores: Mutex::new(std::collections::HashMap::new()),
             _epoch_ticker: epoch_ticker,
@@ -3576,6 +3596,25 @@ impl PluginHost {
     /// boot pin can assert the wiring rather than a reading of `install`.
     pub fn excerpt_source_wired(&self) -> bool {
         self.excerpt_source.get().is_some()
+    }
+
+    /// OA.27: hand the host what answers "what is this provider view showing".
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_view_args_resolver(&self, resolver: lattice_core::ViewArgsResolverHandle) {
+        let _ = self.view_args.set(resolver);
+    }
+
+    /// OA.27: whether a resolver was ever wired.
+    ///
+    /// Exposed for [`excerpt_source_wired`](Self::excerpt_source_wired)'s
+    /// reason, and it bites harder here: an unwired `view-args` answers an
+    /// empty list, a guest parses that as a fresh view, and every chord that
+    /// walks the view then silently starts over from the default. There is no
+    /// error anywhere on that path — which is precisely how the bug this seam
+    /// replaces survived.
+    pub fn view_args_wired(&self) -> bool {
+        self.view_args.get().is_some()
     }
 
     /// OC.3 / ML.6: hand the host what a plugin's `ui` modeline calls act on.
@@ -3780,6 +3819,12 @@ impl PluginHost {
             // reason — resolving a composed line needs no plugin id, so there
             // is nothing to wait for and no spawn path that can forget it.
             excerpt_source: self.excerpt_source.get().cloned(),
+            // OA.27: stamped for every store, on the `excerpt_source` reasoning
+            // — resolving a view's arguments needs no plugin id, so there is
+            // nothing to wait for and no spawn path that can forget it. It has
+            // to reach the GRAMMAR store above all, which is where the chords
+            // that read a view's arguments actually run.
+            view_args: self.view_args.get().cloned(),
             cancel: self.cancel.get().cloned(),
             cancel_token: None,
             epoch_spent: 0,

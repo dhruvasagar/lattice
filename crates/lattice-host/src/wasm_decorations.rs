@@ -98,6 +98,22 @@ impl WasmDecorationState {
         }
     }
 
+    /// SG.1 / DR.2: force the next tick to re-ask every producer.
+    ///
+    /// `:redraw` / `<C-l>` is the user's escape hatch for a display that has
+    /// gone wrong, and it already re-derives every visible pane from a clean
+    /// slate. A cached decoration set is part of that display: without this a
+    /// stale sign — the one thing `<C-l>` exists to fix — survives the redraw,
+    /// because the pump's two ordinary triggers (registry, document version)
+    /// are both unchanged by a redraw.
+    ///
+    /// A no-op when no counter is wired, like every other degradation here.
+    pub fn request_refresh(&self) {
+        if let Some(epoch) = self.decoration_epoch.as_ref() {
+            epoch.bump();
+        }
+    }
+
     /// OA.30: attach the guest-driven refresh counter. Separate from
     /// [`with_registry`](Self::with_registry) because a harness may wire one
     /// without the other, and neither is a precondition for the other working.

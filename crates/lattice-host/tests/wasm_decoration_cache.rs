@@ -251,3 +251,45 @@ async fn a_guest_refresh_request_re_runs_the_producer_at_the_same_version() {
         "one bump is one refresh, not a permanent re-poll"
     );
 }
+
+/// SG.1 — `<C-l>` re-asks every producer.
+///
+/// `:redraw` is the escape hatch for a display that has gone wrong, and a
+/// producer's signs are part of that display. Neither of the pump's ordinary
+/// triggers moves on a redraw — the registry is unchanged and the document
+/// version is unchanged — so without an explicit request the one thing the user
+/// pressed the key to fix is the one thing that survives it.
+#[tokio::test]
+async fn a_redraw_re_asks_the_producer() {
+    let mut editor = Editor::boot(CoreDocument::from_text("a\nb\nc\n"));
+    let calls = Arc::new(AtomicU64::new(0));
+    let epoch: lattice_mode::DecorationEpochHandle =
+        Arc::new(lattice_mode::DecorationEpoch::default());
+    editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
+        id: 1,
+        result: Ok(vec![GutterDecoration::Diff {
+            line: 0,
+            kind: GutterDiffKind::Change,
+        }]),
+        calls: calls.clone(),
+    }))
+    .with_decoration_epoch(epoch.clone());
+    settle(&editor).await;
+
+    editor.maybe_refresh_wasm_decorations();
+    assert!(landed_within(&editor, 2).await);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    editor.do_redraw_screen();
+    editor.maybe_refresh_wasm_decorations();
+    assert!(
+        landed_within(&editor, 2).await,
+        "the redraw's refetch must land without a keystroke"
+    );
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "`<C-l>` must re-ask the producer — a stale sign is exactly what it is \
+         pressed to fix"
+    );
+}

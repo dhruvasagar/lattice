@@ -22624,6 +22624,12 @@ impl Editor {
     /// on its next wake.
     pub fn do_redraw_screen(&mut self) {
         self.last_parsed_text_version = u64::MAX;
+        // SG.1: and the decoration/sign cache with it. A producer's marks are
+        // part of the display `<C-l>` is being asked to fix, and neither of the
+        // refresh pump's ordinary triggers — the producer registry, the
+        // document version — is moved by a redraw. Without this the one thing
+        // the user pressed the key for is the one thing that survives it.
+        self.wasm_decorations.request_refresh();
         // DR.2 (decoration-retention): `:redraw` / <C-l> is the user's
         // forceful escape hatch for a corrupted display, so — unlike a
         // routine focus change, which recomputes nothing — it re-derives

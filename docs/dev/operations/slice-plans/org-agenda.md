@@ -67,6 +67,7 @@ the shared minor). Catalogue entry: the agenda in
 | OA.26 | `<` filter-by-file and `org-agenda-goto`, on OA.23's seam **(plugin)** | ✅ |
 | OA.27 | The `<leader>o` reorganisation — clock under `ox…` **(plugin)** | ✅ |
 | OA.28 | `view-args` — a guest can read what its view is showing **(cross-repo)** | ✅ |
+| OA.29 | Filtering moves to `s`; `/` is search again **(plugin)** | ✅ |
 
 Phases 3–4 are independent of phase 2 and can interleave. Phase 5 depends on
 OA.14 proving the pattern; OA.16 additionally depends on OA.14b, which is why
@@ -1586,6 +1587,41 @@ clear — because that is the only shape in which the defect exists.
 **Not a new crate, not a new interface.** Both were considered and both fail the
 same test: `host-services` already carries the seam's peers, is already imported
 by every world that needs it, and is already wired on both linkers.
+
+---
+
+### OA.29 — Filtering moves to `s`, and `/` goes back to search **(plugin)** ✅
+
+Design: `docs/dev/architecture/org-agenda.md` §8b.
+
+OA.21 bound `/` to the tag filter because that is emacs' spelling. Emacs has no
+`/`-as-search to lose; vim does, and the agenda is a buffer people want to
+search. evil-org-agenda already puts filtering under `s` for exactly this
+reason, so the keys move there and `/` is the builtin forward search again.
+
+Six filters where there were two: `st` tag, `sc` category, `sr` regexp (all
+evil-org's letters), plus `sT` title, `sb` body, `sf` file. `S` joins `|` as
+remove-all. `\` (narrow by another tag) is unchanged.
+
+`sc` is **category**, not content — evil-org's meaning. Content is `sb`. The one
+letter both editors define had to keep meaning one thing.
+
+`FilterTerm` gains four variants, so all six round-trip through `scan_args`,
+name themselves in the headerline and survive `gr`. `regex-lite` is a new guest
+dependency for `sr`; a pattern that does not compile is refused at the prompt
+and, if it arrives in written args, dropped and named rather than applied.
+
+Tests: 13 model tests (`row_filter_tests`), 9 extractor tests
+(`oa29_text_tests`), and three end-to-end — `/` no longer reaches a filter
+prompt, all seven chords open the prompt they should, and the four text filters
+narrow a real agenda while `S` restores it. The end-to-end set asserts
+`0 < n < baseline` rather than exact counts: a row fans across every section
+that admits it (AS.1), so an exact number would pin the section set rather than
+the filter.
+
+**Not done: `<`.** Emacs binds it to `org-agenda-filter-by-category`; lattice
+binds it to "restrict to the row's file". The divergence is live now that
+category filtering exists, and is recorded in §8b rather than changed.
 
 ---
 

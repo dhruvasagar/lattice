@@ -443,6 +443,102 @@ established.
 
 ---
 
+## 8b. Filtering: `s` is the prefix, and `/` stays search (OA.29)
+
+Filtering was bound the way emacs binds it in the agenda — `/` for the tag
+filter, `\` to narrow, `|` to clear. That is correct for emacs and wrong here,
+because emacs has no `/`-as-search to lose and vim does. Taking the most-used
+key in the editor away inside one buffer buys one filter and costs every
+search, in the buffer people most want to search.
+
+evil-org-agenda already solved this: filtering lives under an `s` prefix
+precisely so `/` does not have to move. So `st` is the tag filter and `/` is the
+builtin forward search again.
+
+### The letters
+
+| chord | filter | source |
+|---|---|---|
+| `st` | tag | evil-org |
+| `sc` | **category** | evil-org |
+| `sr` | regexp | evil-org |
+| `sT` | title | new |
+| `sb` | body | new |
+| `sf` | file | new |
+| `S` | remove all | evil-org |
+| `\` | narrow by another tag | org |
+| `|` | remove all | org |
+
+Where evil-org has an opinion it wins, and `sc` is the case that matters: it
+means **category** there, and category is a real org concept with a real
+resolution order. Binding it to a content search would have made the one letter
+both editors define mean two different things — the cost muscle memory charges,
+on a surface where muscle memory is the dominant cost. The content search is
+`sb` (body), which reads as the other half of `sT` (title) rather than as a
+near-miss of someone else's key.
+
+`s` is a **prefix**, so nothing binds it alone in that layer: `KeymapTrie::lookup`
+answers `Bound` at the first node carrying a binding and never consults its
+children, so a bare `s` would leave all six chords dead — quietly, since the
+trailing letter falls through to the grammar in a read-only view. Same rule that
+reshaped `gD` at OA.18; third time it has been load-bearing.
+
+### What each term matches
+
+`FilterTerm` gains `Title`, `Body`, `Category` and `Regexp` beside `Tag` and
+`File`, so all six round-trip through `scan_args`, appear in the headerline, and
+survive `gr` — the model was already right, it just had two variants.
+
+- **Title** — the headline's own text, keyword / priority / tags stripped
+  (`todo::Headline.title`, which already existed). Case-insensitive substring.
+- **Body** — the entry's text below the headline, down to the next headline.
+  The one filter that reads text no row displays, which is the point: "the task
+  where I wrote the account number" is unanswerable from the agenda's own lines.
+  Includes the planning and properties lines, because excluding them would make
+  `body:SCHEDULED` mean nothing while ordinary prose works.
+- **Category** — org's precedence: the headline's `CATEGORY` property, else the
+  file's `#+CATEGORY:`, else the file's stem. The stem fallback is why `sc` is
+  useful with no configuration at all.
+- **Regexp** — the row's **source line**, which is what the view renders and so
+  the nearest thing here to the agenda line emacs matches.
+
+Substrings fold case and regexps do not. Not an inconsistency: a substring
+filter is someone half-remembering prose, a regexp is someone stating a pattern
+exactly — and a `re:` that folded case could not express "the SHOUTING ones"
+with no way to ask for it back. `(?i)` is the spelling its users already know.
+
+Tags AND (each narrows). Files and categories OR — a row has exactly one of
+each, so an AND of two would be unsatisfiable. Titles and bodies AND.
+
+Every `s?` key **replaces its own kind**; `\` is the only one that adds.
+Pressing a filter key twice is how a person corrects a typo, not how they build
+a query.
+
+### Cost and failure behaviour
+
+`regex-lite` rather than `regex`: this component is built on boot by the plugin
+manager and already ships at 1.3M, and `regex`'s unicode tables are most of a
+megabyte spent on classes an agenda filter does not reach for. The cost is no
+`\p{…}` and no look-around — patterns using them fail to compile.
+
+A pattern that does not compile is **refused at the prompt**, where the person
+who typed it is looking. One that arrives in written args instead is dropped and
+named in the headerline. Neither is kept: a filter that matches nothing empties
+the agenda while the header says it is filtered, which is the worst thing this
+view can say incorrectly, and one that matches everything is the same lie the
+other way round.
+
+The text filters are compiled **once per scan** (`RowMatcher`) and consulted only
+when one is active — an agenda filtering on tags alone, which is most of them,
+builds no row text at all.
+
+### Not done here: `<`
+
+Emacs binds `<` in the agenda to `org-agenda-filter-by-category`. Lattice binds
+it to "restrict to the row's file", which is a different thing under the same
+key. Now that category filtering exists the divergence is live, but changing it
+is a behaviour change nobody asked for — recorded here rather than made.
+
 ## 9. Deferred, with the cost recorded
 
 - **Actionable computed rows.** Clock-report lines are virtual and

@@ -490,7 +490,10 @@ Added after the plan was first closed. Both landed; the gap below did not.
 |---|---|---|
 | OC.9 | `Effect::WriteToFile` grows `save`, and capture asks for it | ✅ |
 | OC.10 | `<C-c><C-c>` / `<C-c><C-k>` work in Insert too | ✅ |
-| OC.11 | A REJECTED option is distinguishable from an unset one | ⛔ |
+| OC.11a | Config diagnostics survive the moment they happened **(host)** | ✅ |
+| OC.11b | The legacy capture path says which file it filed through | ✅ |
+| OC.11c | A REJECTED option is distinguishable from an unset one | ⛔ |
+| OC.11d | The template MENU refuses instead of falling back | 📝 |
 
 ### OC.9 — capture's target is saved ✅
 
@@ -521,7 +524,71 @@ field, so deleting the capture buffer from Insert left the SUCCESSOR buffer
 receiving keystrokes as text. Fixed in `do_buffer_delete`, not in org: any mode
 binding a buffer-closing chord in Insert hits it.
 
-### OC.11 — a rejected option is not an unset one ⛔
+### OC.11a — config diagnostics survive ✅
+
+**Investigating OC.11 changed what it should be.** Three findings:
+
+- The guest ALREADY distinguishes the cases. `capture_templates::read()`
+  answers `Some(Ok)` / `Some(Err)` / `None`, and `TemplateError` separates
+  `Unset` from `Malformed` on purpose. No seam is missing there.
+- It collapses for a duller reason: `capture-templates` is registered with an
+  empty-list default, a refused `:set` is a no-op (vim's rule), so the guest
+  reads the default and `from_declared` maps empty → `Unset`. `OptionOrigin`
+  exists but names the winning LAYER, and a refused set leaves it `Default`.
+- **The harm is narrower than filed.** `DEFAULT_CAPTURE_FILE` is `""`, so a
+  broken templates option ALONE makes capture refuse and name the right
+  option. The silent wrong write needs a legacy `capture-file` too.
+
+And a bigger defect sat next to it, org-shaped in no way at all:
+`load_persistent_config` collected N `LoadMessage`s, echoed ONE with a count,
+and dropped the vector. Two of three refused options left no trace, and the
+one that did left a status line the next keystroke overwrites — at boot, gone
+before the user has done anything.
+
+Each diagnostic is now logged, so `:messages` answers "what did it refuse, and
+where" for the session; the summary echo names `:messages` so the record is
+discoverable. Emacs puts init errors in `*Messages*`/`*Warnings*`, vim keeps
+`:messages`; neither makes you catch a diagnostic as it goes past. No WIT
+change, no new registry state, no divergence from "a failed `:set` is a no-op".
+
+### OC.11b — the legacy path names the file it filed through ✅
+
+The OM.11 fallback was silent, which is what made a refused option cost a note.
+It now echoes at Info: *"org: no capture templates; filing via
+org.capture-file → &lt;path&gt;"*. Info rather than Warn because someone
+deliberately on the simple path has nothing wrong — a warning per capture
+trains them to ignore it. Leading, not trailing, so it never overwrites a
+failed `WriteToFile`'s message.
+
+A CONFIGURED set stays silent, which is the half that keeps this from being
+noise.
+
+### OC.11d — the template menu refuses instead of falling back 📝
+
+**Found while testing OC.11b, not fixed here.** `<leader>oc` opens OC.3's
+template menu, and the menu does `capture_templates::read().map_err(…)?` — so
+with no templates it refuses with *"no capture templates — set
+`org.capture-templates`"* and never reaches the OM.11 fallback. A user whose
+only capture config is `org.capture-file` therefore **cannot capture from the
+shipped chord at all**; the legacy path is reachable only by binding
+`action:org-capture` by hand.
+
+Two readings, and they point opposite ways, which is why this is filed rather
+than fixed:
+
+- **Refusing is safer.** For the mid-migration user (broken templates, legacy
+  file still set) the refusal writes nothing and names the option that is not
+  in play. Falling back would file the note into the old file.
+- **Refusing breaks a documented path.** OM.11 says `org.capture-file` alone is
+  a supported configuration, and it is unreachable from the only chord that
+  ships.
+
+Deciding needs a call about whether OM.11 is still a supported configuration or
+a compatibility shim on its way out. Worth an explicit answer either way; the
+current state is neither, and the message is wrong under both readings (it
+tells a user with a valid legacy config to set a different option).
+
+### OC.11c — a rejected option is not an unset one ⛔
 
 **Open, and the reason a test changed its name rather than its assertion.**
 
@@ -549,3 +616,12 @@ and refused", which no seam expresses today — `config` carries values, not
 validation history. Not carved here because it is an option-system design
 question rather than a capture one, and guessing at its shape from capture's
 end is how a seam gets built for one caller.
+
+**Re-judge it against OC.11a/b before building it.** With the diagnostics
+durable and the fallback announcing itself, the remaining gap is narrow: the
+guest still cannot REFUSE on a rejected set, but the user can now find out what
+was refused and can see which path capture took. Whether that residue is worth
+guest-visible option state — with its lifetime questions (cleared on the next
+successful set? on reload? per source?) and a divergence from vim's "a failed
+`:set` is a no-op" — is the question to answer, and it is a smaller one than it
+was when this was filed.

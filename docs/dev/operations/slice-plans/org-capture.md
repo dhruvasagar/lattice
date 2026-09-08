@@ -493,7 +493,7 @@ Added after the plan was first closed. Both landed; the gap below did not.
 | OC.11a | Config diagnostics survive the moment they happened **(host)** | ✅ |
 | OC.11b | The legacy capture path says which file it filed through | ✅ |
 | OC.11c | A REJECTED option is distinguishable from an unset one | ⛔ |
-| OC.11d | The template MENU refuses instead of falling back | 📝 |
+| OC.11d | The menu substitutes emacs's default row instead of refusing | ✅ |
 
 ### OC.9 — capture's target is saved ✅
 
@@ -563,30 +563,59 @@ failed `WriteToFile`'s message.
 A CONFIGURED set stays silent, which is the half that keeps this from being
 noise.
 
-### OC.11d — the template menu refuses instead of falling back 📝
+### OC.11d — an unset set is emacs's default template, not an error ✅
 
-**Found while testing OC.11b, not fixed here.** `<leader>oc` opens OC.3's
-template menu, and the menu does `capture_templates::read().map_err(…)?` — so
-with no templates it refuses with *"no capture templates — set
-`org.capture-templates`"* and never reaches the OM.11 fallback. A user whose
-only capture config is `org.capture-file` therefore **cannot capture from the
-shipped chord at all**; the legacy path is reachable only by binding
-`action:org-capture` by hand.
+**Found while testing OC.11b.** `<leader>oc` opens OC.3's template menu, and
+the menu did `capture_templates::read().map_err(…)?` — so with no templates it
+refused with *"no capture templates — set `org.capture-templates`"* and never
+reached the OM.11 fallback. A user whose only capture config is
+`org.capture-file` **could not capture from the shipped chord at all**.
 
-Two readings, and they point opposite ways, which is why this is filed rather
-than fixed:
+It was filed with two readings pointing opposite ways (refusing is safer for
+the mid-migration user; refusing breaks a documented configuration) and
+resolved by the instruction to keep capture close to emacs. Emacs settles it,
+in `org-capture-select-template`:
 
-- **Refusing is safer.** For the mid-migration user (broken templates, legacy
-  file still set) the refusal writes nothing and names the option that is not
-  in play. Falling back would file the note into the old file.
-- **Refusing breaks a documented path.** OM.11 says `org.capture-file` alone is
-  a supported configuration, and it is unreachable from the only chord that
-  ships.
+```elisp
+(let ((org-capture-templates
+       (or (org-contextualize-keys …)
+           '(("t" "Task" entry (file+headline "" "Tasks")
+              "* TODO %?\n  %u\n  %a")))))
+```
 
-Deciding needs a call about whether OM.11 is still a supported configuration or
-a compatibility shim on its way out. Worth an explicit answer either way; the
-current state is neither, and the message is wrong under both readings (it
-tells a user with a valid legacy config to set a different option).
+With `org-capture-templates` nil emacs **substitutes a built-in row** and opens
+the menu anyway; it never reports "no capture templates". The `""` file in that
+target is `org-default-notes-file`, which is precisely what `org.capture-file`
+is here. So refusing was the divergence, and the menu now shows one row keyed
+`t` labelled `Task` — emacs's own key and description — targeting
+`org.capture-file`.
+
+**a and b are what make d safe.** The user this could hurt is mid-migration: a
+malformed set is refused at `:set`, leaves the option at its empty default, and
+reaches the guest as `Unset` rather than `Malformed`. They now get the rejection
+durably in `*messages*` (a) and an echo naming the file the capture used (b), so
+the fallback announces itself twice instead of being a silent write to the old
+file. Landing d first would have been the bad version of this.
+
+**A malformed or empty set still refuses.** Emacs substitutes only when the
+variable is nil; a value that exists and does not work is a thing to fix, and
+there is no reading under which the user meant the legacy path.
+
+**Still divergent, deliberately:** with no `org.capture-file` either, emacs
+falls back to `~/.notes` and this refuses. `DEFAULT_CAPTURE_FILE`'s reasoning
+stands — a path nobody named scatters notes somewhere they will not think to
+look — and the refusal message already names both options.
+
+Two placement details the tests pin, because both were wrong first:
+
+- **The note goes LAST on the buffer path and FIRST on the filing path.**
+  Opening the draft sets its own `switched to buffer …` chrome, which
+  overwrote a leading note; filing can FAIL and say so, and that must be what
+  is left standing. The rule is the same in both — the last message is the most
+  important thing that happened.
+- **The test harness swallowed `Effect::Echo`** (`_ => {}`), so the note landed
+  in production and was invisible to tests — the same dropped-effect trap each
+  of the other arms in `apply_renderer_effects` was added for.
 
 ### OC.11c — a rejected option is not an unset one ⛔
 

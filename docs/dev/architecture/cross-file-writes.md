@@ -235,16 +235,64 @@ in `:ls`, `:w` saves it, `:bd` closes it, and the active pane does not move.
 That last part matters. A plugin's write must not steal focus — the user
 pressed `<leader>o$` to archive a subtree, not to navigate somewhere.
 
-**Not saved**, and this is convention-following rather than laziness: emacs's
-`org-refile` and `org-archive-subtree` both leave the target buffer modified,
-with saving behind a separate option. The user reviews and writes. A plugin
-that silently writes files is a different and much larger authority than one
-that edits buffers, and it should be an explicit later decision if it is ever
-wanted.
+**Not saved by default**, and this is convention-following rather than
+laziness: emacs's `org-refile` and `org-archive-subtree` both leave the target
+buffer modified, with saving behind a separate option. The user reviews and
+writes. A plugin that silently writes files is a different and much larger
+authority than one that edits buffers.
 
-**Rejected: a `save: bool` in the payload.** It costs nothing to add and it
-quietly moves the "did a plugin touch my disk" line. Leaving it out means the
-answer is uniformly no, which is an easier thing for a user to know.
+### 7.1 `save: bool` — the reversal, and what it cost
+
+This section previously read **"Rejected: a `save: bool` in the payload. It
+costs nothing to add and it quietly moves the 'did a plugin touch my disk'
+line. Leaving it out means the answer is uniformly no, which is an easier thing
+for a user to know."**
+
+OC.9 reversed that, and the paragraph is kept above rather than deleted because
+the argument in it is still correct — for the producers that existed when it
+was written. What it missed is a producer whose *entire contract is
+durability*.
+
+**org-capture is that producer, and emacs is unambiguous about it.**
+`org-capture-finalize` runs `(unless (org-capture-get :no-save) (save-buffer))`
+— saving is the DEFAULT there, and `:no-save` exists as the opt-out. The
+asymmetry with `org-refile` is not an inconsistency in emacs: a refile moves
+text you are looking at and can review, a capture files text you are finished
+with and have already dismissed the buffer for. So the convention evidence that
+justified "not saved" for refile and archive points the *other way* for
+capture, and reading it as one uniform rule was the error.
+
+There is also a consequence the original rejection could not have weighed,
+because the agenda did not exist yet: **anything that reads the FILE cannot see
+an unsaved write.** The org agenda scan reads through `host-services.read-file`
+— from disk — so a captured `TODO` was invisible to a refresh no matter how
+correct the target buffer was. "The user can press `:w`" is not an answer when
+the user never sees the buffer.
+
+What the flag actually costs, stated plainly rather than smuggled:
+
+- **The uniform answer is gone.** "Did a plugin touch my disk" is now
+  per-producer rather than a flat no. That is a real loss and it is the thing
+  the original paragraph was protecting.
+- **It is bounded by the same grant.** `save` reaches disk only where `path`'s
+  `fs:write` check already let the guest create or overwrite the file, so it
+  widens *when* the write becomes durable, never *what* is reachable.
+- **It cannot persist a failure.** The save runs last — after the insert and
+  after any `cut` — and the failed-insert branch returns before reaching it, so
+  a write that did not land saves nothing.
+- **The default did not move.** Every producer that does not ask keeps §7's
+  behaviour exactly. `false` remains the rule; refile and archive still pass it.
+
+**Rejected instead: a separate `Effect::SaveFile { path }`.** It looks more
+composable and is a strictly larger authority — "save any granted file at any
+time" rather than "persist the file I just wrote" — and as a second effect it
+would run whether or not the write it follows had landed, which is the coupling
+this vocabulary spends `cut` to avoid. Durability is a property of the write,
+so it belongs on the write.
+
+**Rejected: saving unconditionally in the applier.** No ABI change, but it
+converts refile and archive to disk-writers too, against both emacs convention
+and the whole of §7.
 
 **Rejected: `host-services.write-file`.** A host-services import would be a
 direct disk write and would bypass everything §2 argues for — the open buffer

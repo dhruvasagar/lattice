@@ -140,6 +140,7 @@ fn boot(target: PathBuf) -> Editor {
                         text: "#+title: New note\n".to_string(),
                         cut: None,
                         create_parents: false,
+                        save: false,
                     },
                     Effect::OpenBufferAt {
                         path: Some(target_for_action.clone()),

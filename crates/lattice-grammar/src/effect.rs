@@ -327,6 +327,38 @@ pub enum Effect {
         /// grant at the boundary before this is read, so asking widens what is
         /// created inside the grant and never what is reachable.
         create_parents: bool,
+        /// OC.9: persist the target to disk once the write has landed, instead
+        /// of leaving the buffer modified.
+        ///
+        /// **Off by default, and the default is the rule.**
+        /// `cross-file-writes.md` §7 leaves a target open, listed and MODIFIED
+        /// — which is what emacs's `org-refile` and `org-archive-subtree` do,
+        /// and the user writes it themselves after reviewing. Every producer
+        /// that does not ask keeps exactly that.
+        ///
+        /// A producer asks when its whole operation *is* "commit this
+        /// somewhere". org-capture is that case, and emacs agrees loudly:
+        /// `org-capture-finalize` runs
+        /// `(unless (org-capture-get :no-save) (save-buffer))`, so saving is
+        /// the default there and `:no-save` is the opt-OUT. The asymmetry with
+        /// refile is not an inconsistency — a refile moves text you are
+        /// looking at, a capture files text you are finished with.
+        ///
+        /// It is also what decides whether readers of the FILE ever see the
+        /// write. The org agenda scans from disk, so an unsaved capture cannot
+        /// appear in a refresh however correct the buffer is.
+        ///
+        /// §7 recorded a `save: bool` as **rejected** ("the answer is uniformly
+        /// no, which is an easier thing for a user to know"). That argument was
+        /// sound for the producers that existed when it was written and wrong
+        /// for capture, whose entire contract is durability; the flag keeps the
+        /// uniform answer for everyone who does not opt in, and the design doc
+        /// records the reversal rather than dropping the paragraph.
+        ///
+        /// **Only after a landed insert**, and after any `cut`. The ordering
+        /// `cut` documents extends here: a write that failed saves nothing, so
+        /// this can never persist a half-applied effect.
+        save: bool,
     },
     SelectionChange(SelectionSet),
     /// Move the cursor to `target` without affecting the selection.
@@ -1461,6 +1493,7 @@ mod tests {
             text: "* Done\n".to_string(),
             cut: None,
             create_parents: false,
+            save: false,
         };
         assert!(matches!(base, Effect::WriteToFile { cut: None, .. }));
 
@@ -1473,8 +1506,26 @@ mod tests {
                 lattice_protocol::position::Position::new(5, 0),
             )),
             create_parents: false,
+            save: false,
         };
         assert!(matches!(moving, Effect::WriteToFile { cut: Some(_), .. }));
+    }
+
+    /// OC.9: `save` is a per-call decision, not a property of the effect —
+    /// capture asks for it and refile / archive do not, from the same
+    /// constructor. Pinned because the whole point of the flag over a blanket
+    /// host-side save is that two producers can disagree.
+    #[test]
+    fn write_to_file_carries_the_callers_save_choice() {
+        let committing = Effect::WriteToFile {
+            path: std::path::PathBuf::from("/tmp/inbox.org"),
+            anchor: FileAnchor::End,
+            text: "* TODO Captured\n".to_string(),
+            cut: None,
+            create_parents: false,
+            save: true,
+        };
+        assert!(matches!(committing, Effect::WriteToFile { save: true, .. }));
     }
 
     #[test]

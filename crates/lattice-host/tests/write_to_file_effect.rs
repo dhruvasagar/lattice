@@ -69,6 +69,7 @@ fn text_lands_at_the_end_of_an_unopened_file() {
         text: "* Archived\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* Old\n* Archived\n");
@@ -88,6 +89,7 @@ fn start_puts_the_text_first() {
         text: "* First\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* First\n* Old\n");
@@ -107,6 +109,7 @@ fn a_nonexistent_target_is_created_and_written() {
         text: "* Captured\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &capture), "* Captured\n");
@@ -132,6 +135,7 @@ fn appending_to_a_file_without_a_trailing_newline_starts_a_new_line() {
         text: "* Archived\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(
@@ -157,6 +161,7 @@ fn appending_to_a_file_with_a_trailing_newline_adds_no_blank_line() {
             text: "* Archived\n".to_string(),
             cut: None,
             create_parents: false,
+            save: false,
         });
     }
 
@@ -182,6 +187,7 @@ fn a_line_anchor_past_the_end_appends() {
         text: "three\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "one\ntwo\nthree\n");
@@ -201,6 +207,7 @@ fn a_cut_moves_the_text_rather_than_copying_it() {
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &archive), "* Move me\n");
@@ -230,6 +237,7 @@ fn a_failed_insert_leaves_the_source_untouched() {
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(
@@ -256,6 +264,7 @@ fn a_directory_target_also_leaves_the_source_untouched() {
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(source_text(&editor), before);
@@ -289,6 +298,7 @@ fn an_already_open_target_is_written_in_place() {
         text: "appended\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     let after = editor
@@ -321,6 +331,7 @@ fn the_target_is_left_unsaved_so_the_disk_is_untouched() {
         text: "* Archived\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert_eq!(
@@ -347,6 +358,7 @@ fn each_buffer_undoes_its_own_half_of_the_move() {
         text: "* Move me\n".to_string(),
         cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
         create_parents: false,
+        save: false,
     });
     assert_eq!(source_text(&editor), "* Keep\n");
 
@@ -377,6 +389,7 @@ fn a_missing_parent_directory_is_refused_by_default() {
         text: "* Filed\n".to_string(),
         cut: None,
         create_parents: false,
+        save: false,
     });
 
     assert!(
@@ -411,6 +424,7 @@ fn create_parents_makes_the_directory_the_producer_owns() {
         text: "#+title: 2026-08-30\n".to_string(),
         cut: None,
         create_parents: true,
+        save: false,
     });
 
     assert!(
@@ -434,7 +448,175 @@ fn create_parents_builds_every_missing_level() {
         text: "* Filed\n".to_string(),
         cut: None,
         create_parents: true,
+        save: false,
     });
 
     assert_eq!(target_text(&editor, &target), "* Filed\n");
+}
+
+// ── OC.9: `save` ────────────────────────────────────────────────────────────
+//
+// The flag exists so a producer whose operation IS a commit (org-capture) can
+// persist its target, while refile and archive keep §7's "left modified".
+// Every test below asserts BOTH halves — what is in the buffer and what is on
+// disk — because those are exactly the two things the flag decouples, and a
+// test that checked only the buffer would pass whether or not anything was
+// written.
+
+/// What the file on disk holds, which is a different question from
+/// [`target_text`] the moment a buffer is dirty. Read straight through
+/// `std::fs` rather than through the editor: the point is to leave the
+/// editor's own view out of the answer.
+fn on_disk(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+fn target_is_dirty(editor: &Editor, path: &std::path::Path) -> bool {
+    let id = editor
+        .find_document_by_path(path)
+        .expect("the target was opened");
+    editor.buffers.document_handle(id).unwrap().snapshot().dirty
+}
+
+/// `save: true` puts the text on disk, and leaves the buffer clean.
+///
+/// Capture's whole shape. The disk assertion is the one that matters — an
+/// agenda refresh scans files, so a write that stops at the buffer is a write
+/// the feature cannot see.
+#[test]
+fn save_persists_the_target_to_disk() {
+    let dir = tmp("save-on");
+    let inbox = dir.join("inbox.org");
+    std::fs::write(&inbox, "* Old\n").unwrap();
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: inbox.clone(),
+        anchor: FileAnchor::End,
+        text: "* TODO Captured\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: true,
+    });
+
+    assert_eq!(target_text(&editor, &inbox), "* Old\n* TODO Captured\n");
+    assert_eq!(
+        on_disk(&inbox),
+        "* Old\n* TODO Captured\n",
+        "the capture reached the FILE, which is what a disk-reading scan sees"
+    );
+    assert!(
+        !target_is_dirty(&editor, &inbox),
+        "a saved buffer must not still be modified — a stray dirty buffer is \
+         what the user would be asked about at `:q`"
+    );
+}
+
+/// The peer, and the reason this is a flag rather than a behaviour change:
+/// `save: false` must still leave §7 exactly as it was.
+///
+/// Written as its own test rather than an assertion inside the one above
+/// because it is the REGRESSION guard for archive and refile — if this ever
+/// goes green by writing to disk, those two silently became disk-writers.
+#[test]
+fn without_save_the_target_stays_modified_and_the_file_is_untouched() {
+    let dir = tmp("save-off");
+    let archive = dir.join("archive.org");
+    std::fs::write(&archive, "* Old\n").unwrap();
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: archive.clone(),
+        anchor: FileAnchor::End,
+        text: "* Archived\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: false,
+    });
+
+    assert_eq!(target_text(&editor, &archive), "* Old\n* Archived\n");
+    assert_eq!(
+        on_disk(&archive),
+        "* Old\n",
+        "§7: the target is left modified, and the user writes it"
+    );
+    assert!(target_is_dirty(&editor, &archive));
+}
+
+/// A file the editor CREATED — capture's first run against a fresh target.
+///
+/// Distinct from the case above because the buffer is built by
+/// `resolve_path_to_buffer_creating` rather than read from disk, so "saving"
+/// here has to actually bring the file into existence rather than update one.
+#[test]
+fn save_creates_the_file_when_the_capture_target_is_new() {
+    let dir = tmp("save-new");
+    let inbox = dir.join("inbox.org");
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: inbox.clone(),
+        anchor: FileAnchor::End,
+        text: "* TODO First ever\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: true,
+    });
+
+    assert!(inbox.exists(), "the first capture created the file");
+    assert_eq!(on_disk(&inbox), "* TODO First ever\n");
+}
+
+/// **A failed insert saves nothing.** The ordering guarantee, extended.
+///
+/// `save` runs last precisely so it inherits the failed-insert return — a
+/// write that did not land must not be made durable. Driven through a
+/// directory, which `resolve_path_to_buffer` refuses, so the effect fails
+/// before any buffer exists.
+#[test]
+fn a_write_that_never_landed_is_not_saved() {
+    let dir = tmp("save-fail");
+    let target = dir.join("subdir");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let mut editor = boot("* Keep\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: target.clone(),
+        anchor: FileAnchor::End,
+        text: "* Nope\n".to_string(),
+        cut: None,
+        create_parents: false,
+        save: true,
+    });
+
+    assert!(
+        target.is_dir(),
+        "the directory is still a directory — nothing was written over it"
+    );
+    assert_eq!(source_text(&editor), "* Keep\n");
+}
+
+/// `save` with a `cut` runs AFTER the cut, so a move is persisted whole.
+///
+/// Refile's shape with durability asked for. The source is deliberately not
+/// saved — only the target was named, and saving the buffer the user is
+/// sitting in is a different authority they did not grant.
+#[test]
+fn save_runs_after_the_cut_so_the_persisted_target_is_complete() {
+    let dir = tmp("save-cut");
+    let target = dir.join("done.org");
+    std::fs::write(&target, "* Archive\n").unwrap();
+
+    let mut editor = boot("* Keep\n* Move me\n");
+    editor.handle_effect(Effect::WriteToFile {
+        path: target.clone(),
+        anchor: FileAnchor::End,
+        text: "* Move me\n".to_string(),
+        cut: Some(Range::new(Position::new(1, 0), Position::new(2, 0))),
+        create_parents: false,
+        save: true,
+    });
+
+    assert_eq!(on_disk(&target), "* Archive\n* Move me\n");
+    assert_eq!(source_text(&editor), "* Keep\n", "the cut still ran");
 }

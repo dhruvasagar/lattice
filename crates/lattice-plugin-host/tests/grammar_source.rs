@@ -62,14 +62,14 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
-    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 4 actions
+    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 5 actions
     // (read-at-cursor, AP.0.1; open-files-picker, PH7.4e; archive-to, XF.5;
-    // archive-beside-me, OM.6b).
+    // archive-beside-me, OM.6b; capture-to, OC.9).
     assert_eq!(
         set.len(),
-        8,
+        9,
         "guest contributed down-n + to-cursor + fails + traps + read-at-cursor \
-         + open-files-picker + archive-to + archive-beside-me"
+         + open-files-picker + archive-to + archive-beside-me + capture-to"
     );
 
     let mut registry = CommandRegistry::new();
@@ -329,6 +329,23 @@ fn run_archive_to(registry: &CommandRegistry, path: &std::path::Path) -> lattice
     .expect("the action dispatches")
 }
 
+/// OC.9: `run_archive_to`'s twin, firing the action that asks to be saved.
+fn run_capture_to(registry: &CommandRegistry, path: &std::path::Path) -> lattice_grammar::Effect {
+    let action_id = registry.id_by_name("capture-to").unwrap();
+    let mut document = lattice_core::Document::from_text("* Keep\n");
+    let cancel = CancellationToken::never();
+    lattice_grammar::dispatcher::execute(
+        registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(action_id)
+            .with_args(lattice_grammar::Args::String(path.display().to_string())),
+        &cancel,
+    )
+    .expect("the action dispatches")
+}
+
 /// OM.6b: fire `archive-beside-me` in a document backed by `path`, and return
 /// whatever effect came back. Nothing about the TARGET is supplied here — the
 /// guest derives it from `document.path()`, which is exactly the capability
@@ -448,6 +465,48 @@ fn a_granted_plugin_can_return_a_cross_file_write() {
             assert_eq!(path, target);
             assert_eq!(anchor, lattice_grammar::FileAnchor::End);
             assert_eq!(text, "* Archived by the fixture\n");
+        }
+        other => panic!("expected a WriteToFile, got {other:?}"),
+    }
+}
+
+/// OC.9: `save` crosses the boundary as the guest set it, both ways.
+///
+/// Two actions differing in exactly one field, run against the same grant and
+/// the same directory, so the assertion is about the FLAG rather than about
+/// anything else in how the two effects were built. Asserting only the `true`
+/// side would pass against a boundary that hardcoded `true`; asserting only
+/// the `false` side would pass against one that dropped the field entirely.
+#[test]
+fn the_save_flag_crosses_the_boundary_in_both_states() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let target = notes.join("inbox.org");
+
+    let registry = load_with_caps(
+        &dir,
+        vec![lattice_plugin_host::Capability::FsWrite(notes.clone())],
+    );
+
+    match run_capture_to(&registry, &target) {
+        lattice_grammar::Effect::WriteToFile { save, text, .. } => {
+            assert!(save, "the guest asked to persist and the host must hear it");
+            assert_eq!(text, "* Captured by the fixture\n");
+        }
+        other => panic!("expected a WriteToFile, got {other:?}"),
+    }
+
+    match run_archive_to(&registry, &target) {
+        lattice_grammar::Effect::WriteToFile { save, .. } => {
+            assert!(
+                !save,
+                "the archive shape did not ask to be saved; §7's default must survive the crossing"
+            );
         }
         other => panic!("expected a WriteToFile, got {other:?}"),
     }

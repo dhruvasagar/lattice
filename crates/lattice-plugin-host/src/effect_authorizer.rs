@@ -212,6 +212,7 @@ mod tests {
             text: "x\n".to_string(),
             cut: None,
             create_parents: false,
+            save: false,
         }
     }
 

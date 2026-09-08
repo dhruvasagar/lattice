@@ -536,6 +536,32 @@ interface types {
         /// this is read. Asking widens what is created inside the grant, never
         /// what is reachable outside it.
         create-parents: bool,
+        /// OC.9: persist the target to disk once the write has landed, rather
+        /// than leaving the buffer modified.
+        ///
+        /// **False is the rule.** `cross-file-writes.md` §7 leaves a target
+        /// open, listed and MODIFIED, and that is what emacs's `org-refile` and
+        /// `org-archive-subtree` do: the user reviews the change and writes it
+        /// themselves. Every guest that does not ask keeps that behaviour.
+        ///
+        /// A guest asks when its whole operation is "commit this somewhere",
+        /// and org-capture is that case — `org-capture.el`'s finalize runs
+        /// `(unless (org-capture-get :no-save) (save-buffer))`, so saving is
+        /// emacs's DEFAULT there and `:no-save` exists to opt out of it. The
+        /// asymmetry with refile is not an inconsistency in either editor: a
+        /// refile moves text you are looking at, a capture files text you are
+        /// done with.
+        ///
+        /// It also decides whether anything that reads the FILE can see the
+        /// write. The agenda scan reads from disk, so an unsaved capture is
+        /// invisible to a refresh no matter how correct the buffer is.
+        ///
+        /// **Only after a landed insert**, and after `cut` — the ordering
+        /// `cut` already documents extends to this. A write that failed saves
+        /// nothing, so the flag can never persist a half-applied effect.
+        /// Bounded by the same `fs:write` grant as `path`: this reaches disk
+        /// only where the guest could already have created the file.
+        save: bool,
     }
 
     record apply-edit-payload {

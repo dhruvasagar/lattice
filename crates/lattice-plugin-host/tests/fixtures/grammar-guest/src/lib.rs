@@ -123,6 +123,17 @@ impl Guest for Component {
             },
             8,
         );
+        // OC.9: `archive-to`'s twin, differing only in `save: true`. Paired so
+        // a test can run both against the same path and attribute the
+        // difference on disk to the flag alone.
+        grammar::register_action(
+            "capture-to",
+            "write a line into another file and save it (fixture)",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            9,
+        );
         grammar::register_action(
             "open-files-picker",
             "open the host's `files` picker (fixture)",
@@ -224,6 +235,9 @@ impl Callbacks for Component {
                     text: "* Archived by the fixture\n".to_string(),
                     cut: None,
                     create_parents: false,
+                    // The archive shape: written into the buffer, left for the
+                    // user to save. Callback 9 is the capture shape.
+                    save: false,
                 })])
             }
             // OM.6b: `<this file>_archive`, named from the document handle.
@@ -237,6 +251,25 @@ impl Callbacks for Component {
                     text: "* Archived beside me\n".to_string(),
                     cut: None,
                     create_parents: false,
+                    save: false,
+                })])
+            }
+            // OC.9: the same write, asking to be PERSISTED. Callback 7's twin
+            // on purpose — the two differ in exactly one field, so a test that
+            // runs both proves the flag is what reached disk rather than
+            // something else about how the effect was built.
+            9 => {
+                let path = match &ctx.args {
+                    Args::String(s) => s.clone(),
+                    _ => return Err("fixture: capture-to needs a path".to_string()),
+                };
+                Ok(vec![Effect::WriteToFile(WriteToFilePayload {
+                    path,
+                    anchor: FileAnchor::End,
+                    text: "* Captured by the fixture\n".to_string(),
+                    cut: None,
+                    create_parents: false,
+                    save: true,
                 })])
             }
             other => Err(format!("fixture: unknown action callback {other}")),

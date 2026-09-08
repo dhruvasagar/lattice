@@ -4232,8 +4232,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             text,
             cut,
             create_parents,
+            save,
         } => {
-            editor.apply_write_to_file(path, anchor, text, cut, create_parents);
+            editor.apply_write_to_file(path, anchor, text, cut, create_parents, save);
         }
         Effect::EnterMode(mode) => {
             // 5.5.G.23.macros: operators that flip mode (`c` ->
@@ -22917,6 +22918,20 @@ impl Editor {
     /// A failed *cut* after a landed insert is logged and left: the text now
     /// exists in both places. Duplicated text is recoverable by hand; lost
     /// text is not, so the asymmetry is deliberate rather than an oversight.
+    ///
+    /// ## `save`, and where it sits in that order
+    ///
+    /// OC.9. The target is left MODIFIED by default — `cross-file-writes.md`
+    /// §7, matching emacs's `org-refile` / `org-archive-subtree`. A producer
+    /// whose operation *is* a commit passes `save: true` and the target is
+    /// written to disk, which is what emacs's `org-capture-finalize` does
+    /// unless `:no-save`.
+    ///
+    /// It runs LAST, so it inherits the ordering the rest of this function
+    /// establishes: the failed-insert branch returns first, so `save` can
+    /// never persist a write that did not land. See
+    /// [`Self::save_target_to_disk`] for why this cannot reuse
+    /// `save_blocking`.
     pub fn apply_write_to_file(
         &mut self,
         path: std::path::PathBuf,
@@ -22924,6 +22939,7 @@ impl Editor {
         text: String,
         cut: Option<lattice_protocol::position::Range>,
         create_parents: bool,
+        save: bool,
     ) {
         // Captured BEFORE resolving: opening the target must not move focus
         // (XF.2), but reading the source id first means this is correct even
@@ -22995,23 +23011,94 @@ impl Editor {
             return;
         }
 
-        let Some(range) = cut else { return };
-        if let Err(err) =
-            self.apply_targeted_edit(source, lattice_protocol::edit::Edit::delete(range))
-        {
-            // `warn!`, not `debug!`: the text is now in two places and the
-            // user is the only one who can resolve that. One-shot and
-            // user-actionable is exactly the `info`/`warn` case.
-            tracing::warn!(
-                path = %path.display(),
-                ?err,
-                "write-to-file: the text was written but could not be removed from the source; \
-                 it now exists in both places"
-            );
-            self.set_message(
-                EchoLevel::Warn,
-                "write-to-file: written, but the original could not be removed".to_string(),
-            );
+        if let Some(range) = cut {
+            if let Err(err) =
+                self.apply_targeted_edit(source, lattice_protocol::edit::Edit::delete(range))
+            {
+                // `warn!`, not `debug!`: the text is now in two places and the
+                // user is the only one who can resolve that. One-shot and
+                // user-actionable is exactly the `info`/`warn` case.
+                tracing::warn!(
+                    path = %path.display(),
+                    ?err,
+                    "write-to-file: the text was written but could not be removed from the source; \
+                     it now exists in both places"
+                );
+                self.set_message(
+                    EchoLevel::Warn,
+                    "write-to-file: written, but the original could not be removed".to_string(),
+                );
+            }
+        }
+
+        // OC.9. LAST, and after the cut rather than beside the insert: the
+        // failed-insert branch above returns before reaching here, so a write
+        // that did not land can never be persisted. A failed *cut* still
+        // saves, which is the same asymmetry the cut's own handler takes —
+        // the target's copy is correct either way, and refusing to save it
+        // would turn "the text is in two places" into "the text is in two
+        // places and one of them is only in memory".
+        if save {
+            self.save_target_to_disk(target, &path);
+        }
+    }
+
+    /// OC.9: persist a cross-file write's TARGET — a buffer that is, by
+    /// construction, not the focused one.
+    ///
+    /// Separate from [`Self::save_blocking`] because that one saves
+    /// `self.document`, the ACTIVE document, and the whole point of
+    /// `apply_write_to_file` is that the target is somewhere the user is not.
+    /// Calling it here would save the buffer the user is looking at and leave
+    /// the one just written still dirty — the exact inversion of the intent,
+    /// and silent.
+    ///
+    /// The LSP fan-out (`willSave` / `willSaveWaitUntil` / `didSave`) is
+    /// deliberately NOT reproduced. Those helpers notify about the active
+    /// document, and `willSaveWaitUntil` in particular *blocks on the server
+    /// for edits to apply* — running it for a background target would put a
+    /// synchronous round-trip on a capture's finalize, against paramount #1,
+    /// to serve a formatter the user cannot see acting on a file they did not
+    /// open. `Event::DocumentSaved` still publishes, so in-editor subscribers
+    /// (autoread's fingerprint, `:ls` state, any mode watching the bus) see
+    /// the save.
+    fn save_target_to_disk(&mut self, target: BufferId, path: &std::path::Path) {
+        let Some(handle) = self.buffers.document_handle(target) else {
+            return;
+        };
+        let snap = handle.snapshot();
+        self.event_bus.publish(Event::BeforeSave {
+            id: snap.id,
+            path: path.to_path_buf(),
+        });
+        match lattice_runtime::block_on(handle.save()) {
+            Ok(written) => {
+                // AR.0: re-stamp so the autoread watcher recognises the
+                // resulting filesystem event as ours rather than as somebody
+                // editing the file underneath us. Skipping this is how a
+                // capture ends with a spurious "file changed on disk" prompt.
+                let text = handle.snapshot().buffer.as_string();
+                self.stamp_on_disk_fingerprint(target, &written, &text);
+                self.event_bus.publish(Event::DocumentSaved {
+                    id: snap.id,
+                    path: written,
+                });
+            }
+            Err(err) => {
+                // Warn rather than swallow: the buffer still holds the text,
+                // so nothing is lost — but the user asked for a durable write
+                // and did not get one, and anything reading the FILE (the
+                // agenda scan) will not see it.
+                tracing::warn!(
+                    path = %path.display(),
+                    ?err,
+                    "write-to-file: the write landed in the buffer but could not be saved to disk"
+                );
+                self.set_message(
+                    EchoLevel::Warn,
+                    format!("write-to-file: {} written, but not saved", path.display()),
+                );
+            }
         }
     }
 

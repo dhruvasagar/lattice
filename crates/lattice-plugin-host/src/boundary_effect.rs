@@ -568,6 +568,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             text,
             cut,
             create_parents,
+            save,
         } => WitEffect::WriteToFile(WitWriteToFilePayload {
             // Lossy only for a non-UTF-8 path, which cannot cross a WIT
             // `string` at all — refused rather than mangled, so a guest never
@@ -582,6 +583,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             text: text.clone(),
             cut: cut.as_ref().map(|r| r.to_wit()).transpose()?,
             create_parents: *create_parents,
+            save: *save,
         }),
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
@@ -975,6 +977,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             text: p.text,
             cut: p.cut.map(NativeRange::from_wit).transpose()?,
             create_parents: p.create_parents,
+            save: p.save,
         },
         WitEffect::ApplyEdit(p) => NativeEffect::ApplyEdit {
             target: BufferId(p.target),
@@ -1308,6 +1311,7 @@ mod tests {
             text: "* Archived\n".to_string(),
             cut,
             create_parents: false,
+            save: false,
         }
     }
 
@@ -1363,6 +1367,7 @@ mod tests {
                 text: "x".to_string(),
                 cut: None,
                 create_parents: false,
+                save: false,
             };
             let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
             match back {
@@ -1387,6 +1392,7 @@ mod tests {
                 text: "x".to_string(),
                 cut: None,
                 create_parents: false,
+                save: false,
             };
             let err = effect_to_wit(&native).expect_err("must refuse");
             assert!(err.contains("not UTF-8"), "got {err}");

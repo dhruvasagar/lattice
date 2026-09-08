@@ -8,7 +8,7 @@
 > contributes through — see [`plugin-host.md`](plugin-host.md).
 
 Status: design fragment (2026-08-29). Slice plan:
-`../operations/slice-plans/org-roam.md`.
+`../operations/slice-plans/archive/org-roam.md`.
 
 Builds on [`org-mode.md`](org-mode.md) §7 (links — `id:` is recognised there and
 resolved here), [`conceal.md`](conceal.md) (an `id:` link is unreadable until it

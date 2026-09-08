@@ -6900,7 +6900,7 @@ meant to exist.
 | OR.7c | `:org-roam-insert-node` as a picker — `C-c n i` | ✅ |
 
 Design: [`../architecture/org-roam.md`](../architecture/org-roam.md).
-Slice plan: [`slice-plans/org-roam.md`](slice-plans/org-roam.md).
+Slice plan: [`slice-plans/archive/org-roam.md`](slice-plans/archive/org-roam.md).
 
 **OR.7c landed 2026-09-08**, closing the plan. It was deferred with a condition
 attached — "revisit only if completion proves insufficient" — and completion

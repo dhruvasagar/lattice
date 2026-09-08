@@ -128,7 +128,7 @@ unlinked references additionally wants a term map the index does not carry.
 | OR.16 | an async picker accept stops dropping renderer effects **(host)** | ✅ |
 | OR.17 | `%^{…}` is asked one question at a time, not as a form **(plugin)** | ✅ |
 
-### OR.17 — `%^{…}` is asked one question at a time **(plugin)** 📝
+### OR.17 — `%^{…}` is asked one question at a time **(plugin)** ✅
 
 **Opened 2026-09-06 from use.** Dhruva ran the roam create flow end to end:
 *"the roam capture asked the questions for all fields using a single transient
@@ -239,7 +239,7 @@ module header already argues the same way from the other side. The gap that
 remains is real but is a *configuration* gap, and OR.14 is what makes filling
 it pleasant.
 
-### OR.13 — the stub create OPENS its draft **(plugin)** 📝
+### OR.13 — the stub create OPENS its draft **(plugin)** ✅
 
 **Deps:** none.
 
@@ -276,7 +276,7 @@ lacked. Keep the registry assertion too; they answer different questions.
 resolves a path to a buffer, it does **not** open or focus one — say which
 effect does, so the next reader does not repeat this.
 
-### OR.14 — `body-file` — a template body sourced from a file **(plugin)** 📝
+### OR.14 — `body-file` — a template body sourced from a file **(plugin)** ✅
 
 **Deps:** none. Independent of OR.13.
 
@@ -305,7 +305,7 @@ path is the same shape).
   `architecture/org-roam.md` §6.3 fragment gains the mutual-exclusion and
   skip-on-unreadable rules.
 
-### OR.16 — an async picker accept stops dropping renderer effects **(host)** 📝
+### OR.16 — an async picker accept stops dropping renderer effects **(host)** ✅
 
 **Deps:** none. **Blocks OR.13 being user-visible.**
 
@@ -345,7 +345,7 @@ the sync one — that asymmetry is the bug. OR.13 left
 `creating_a_note_opens_a_draft_with_an_id_and_title` `#[ignore]`d naming this
 slice; removing that ignore and having it pass is the acceptance criterion.
 
-### OR.15 — the picker's `(loading)` echo is cleared when it seats **(host)** 📝
+### OR.15 — the picker's `(loading)` echo is cleared when it seats **(host)** ✅
 
 **Deps:** none. Independent of both above.
 

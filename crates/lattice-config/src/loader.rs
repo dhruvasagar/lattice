@@ -112,6 +112,22 @@ pub struct LoadMessage {
     pub level: LoadMessageLevel,
     pub source: PathBuf,
     pub body: String,
+    /// OC.11c: the dotted option name this diagnostic is ABOUT, when it is
+    /// about one.
+    ///
+    /// The name was always available at every site that builds one of these —
+    /// it is `dotted`, and it was being formatted into [`body`](Self::body)
+    /// and nowhere else. Keeping it structurally is what lets a consumer ask
+    /// "did MY option fail to load" without matching a substring against a
+    /// message written for a human.
+    ///
+    /// `None` for a diagnostic that is not about a single option: a file that
+    /// could not be read, or whose TOML did not parse. **Those are not
+    /// per-option failures and must not be attributed to one** — a syntax
+    /// error loses the WHOLE file, every option in it, and reporting it
+    /// against whichever option happened to be nearby would be worse than
+    /// saying nothing.
+    pub option: std::option::Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +224,13 @@ pub fn load_default_paths(
     structural_prefixes: &[&str],
 ) -> LoadOutcome {
     let mut out = LoadOutcome::default();
+    // OC.11c: cleared ONCE per load, not once per file. A load is a fresh
+    // reading of the whole configuration, so the previous reading's failures
+    // go wholesale — an option whose failing line the user DELETED produces no
+    // message at all, and a per-message update would leave its record behind
+    // forever. Clearing inside `load_file` would instead have the PROJECT
+    // config wipe what the user config just recorded.
+    registry.clear_all_failed_assignments();
     if let Some(user) = default_user_config_path()
         && user.exists()
     {
@@ -217,6 +240,19 @@ pub fn load_default_paths(
         let proj = project_config_path(root);
         if proj.exists() {
             out.extend(load_file(registry, &proj, structural_prefixes));
+        }
+    }
+    // Recorded from the messages rather than at each push site: the loader
+    // stays IO-agnostic and builds `LoadMessage`s in a dozen places, and one
+    // pass over the result is both simpler and impossible to miss an arm of.
+    // Later files win, which is the precedence the loads themselves have.
+    for message in &out.messages {
+        if let Some(option) = &message.option {
+            registry.record_failed_assignment(
+                option,
+                message.body.clone(),
+                Some(message.source.clone()),
+            );
         }
     }
     out
@@ -239,6 +275,8 @@ pub fn load_file(
                 level: LoadMessageLevel::Error,
                 source: path.to_path_buf(),
                 body: format!("read failed: {e}"),
+                // The FILE could not be read — not one option's failure.
+                option: None,
             });
             return out;
         }
@@ -252,6 +290,9 @@ pub fn load_file(
                 level: LoadMessageLevel::Error,
                 source: path.to_path_buf(),
                 body: format!("parse failed: {e}"),
+                // A syntax error loses every option in the file, so this
+                // diagnostic belongs to none of them.
+                option: None,
             });
             return out;
         }
@@ -342,6 +383,7 @@ fn record_namespace_children(
                         "`{dotted}`: structural namespace `{namespace_dotted}` \
                          expected a sub-table; got a scalar",
                     ),
+                    option: Some(dotted.to_string()),
                 });
             }
         }
@@ -389,6 +431,7 @@ fn apply_scalar(
                      applicable to scalar options; move it under a \
                      structural section",
                 ),
+                option: Some(dotted.to_string()),
             });
             return;
         }
@@ -424,6 +467,7 @@ fn apply_array(
                  applicable to scalar options; move it under a \
                  structural section",
             ),
+            option: Some(dotted.to_string()),
         });
         return;
     }
@@ -439,6 +483,7 @@ fn apply_array(
                         "`{dotted}`: nested list / table values aren't \
                          valid list elements",
                     ),
+                    option: Some(dotted.to_string()),
                 });
                 return;
             }
@@ -472,6 +517,7 @@ fn apply_assignment(
             level: LoadMessageLevel::Warning,
             source: source.to_path_buf(),
             body,
+            option: Some(dotted.to_string()),
         });
     }
 }
@@ -507,6 +553,7 @@ fn apply_tree_if_composite(
                 level: LoadMessageLevel::Warning,
                 source: source.to_path_buf(),
                 body: format!("`{dotted}{}`: {}", err.path, err.message),
+                option: Some(dotted.to_string()),
             });
             return true;
         }
@@ -523,6 +570,7 @@ fn apply_tree_if_composite(
             level: LoadMessageLevel::Warning,
             source: source.to_path_buf(),
             body: format!("`{dotted}{}`: {}", dot_path(&err.path), err.message),
+            option: Some(dotted.to_string()),
         });
         return true;
     }
@@ -531,6 +579,7 @@ fn apply_tree_if_composite(
             level: LoadMessageLevel::Warning,
             source: source.to_path_buf(),
             body: format!("`{dotted}`: {err}"),
+            option: Some(dotted.to_string()),
         });
     }
     true
@@ -1169,6 +1218,7 @@ mod tests {
             level: LoadMessageLevel::Warning,
             source: PathBuf::from("/a"),
             body: "first".into(),
+            option: None,
         });
         a.structural.insert("k1".into(), toml::Table::new());
         let mut b = LoadOutcome::default();
@@ -1176,6 +1226,7 @@ mod tests {
             level: LoadMessageLevel::Warning,
             source: PathBuf::from("/b"),
             body: "second".into(),
+            option: None,
         });
         b.structural.insert("k2".into(), toml::Table::new());
         a.extend(b);

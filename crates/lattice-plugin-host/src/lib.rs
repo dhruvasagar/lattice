@@ -2651,6 +2651,42 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
         registry.lookup(&name).map(|opt| opt.get_formatted())
     }
 
+    /// OC.11c: `option-diagnostic` — did the last assignment to this option
+    /// fail, and what did it say?
+    ///
+    /// The seam exists because a failed assignment is a NO-OP: the option
+    /// keeps its previous value, so a plugin reading it back cannot tell "the
+    /// user configured this and it did not parse" from "the user never
+    /// configured this". org-capture filed notes through a legacy fallback for
+    /// exactly that reason.
+    ///
+    /// Own namespace first, then the raw name — `get-option`'s resolution, so
+    /// a plugin asks about its own option with the short name it declared.
+    fn option_diagnostic(
+        &mut self,
+        name: String,
+    ) -> Option<crate::config_host::bindings::lattice::plugin_host::config::ConfigDiagnostic> {
+        let registry = self.config_registry.as_ref()?;
+        let found = self
+            .plugin_name
+            .as_ref()
+            .and_then(|id| registry.failed_assignment(&format!("{id}.{name}")))
+            .or_else(|| registry.failed_assignment(&name))?;
+        Some(
+            crate::config_host::bindings::lattice::plugin_host::config::ConfigDiagnostic {
+                message: found.message,
+                // Empty rather than optional across the boundary: WIT has
+                // `option<string>` but an absent source and an empty one mean
+                // the same thing to every caller — "not from a file" — and one
+                // representation is one fewer thing for a guest to get wrong.
+                source: found
+                    .source
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            },
+        )
+    }
+
     /// TC.3: `register-structured-option` — declare an option whose value has
     /// structure. The schema-taking peer of `register-option`, with the same
     /// namespacing and the same collision rule.

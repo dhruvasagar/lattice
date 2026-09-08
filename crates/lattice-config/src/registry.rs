@@ -53,8 +53,41 @@ pub struct ConfigRegistry {
     inner: Mutex<Inner>,
 }
 
+/// OC.11c: one failed assignment to a named option.
+///
+/// A failed assignment is a NO-OP — vim's rule, which lattice keeps — so the
+/// option keeps whatever it had, and for one never successfully set that is
+/// its registered default. Reading the value therefore cannot tell "the user
+/// configured this and it did not parse" from "the user never configured
+/// this". This record is what can.
+///
+/// **It is not a state the option carries.** The option has no such state; an
+/// assignment errored, which is an event, and this is the record of that
+/// event. It is dropped the moment a later assignment to the same option
+/// succeeds, because at that point it describes something untrue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigDiagnostic {
+    /// The message the loader or this registry produced, verbatim. For a
+    /// composite it carries the schema PATH (`[2].target.file: expected
+    /// string, got integer`), which is the whole reason this is worth
+    /// surfacing rather than a bare "it failed".
+    pub message: String,
+    /// The config file it came from, or `None` for a runtime `:set`. That is
+    /// the difference between "go fix your config" and "what you just typed
+    /// did not take".
+    pub source: std::option::Option<std::path::PathBuf>,
+}
+
 #[derive(Default)]
 struct Inner {
+    /// OC.11c: failed assignments, keyed by CANONICAL option name.
+    ///
+    /// Here rather than on `Editor` because its lifetime is the registry's:
+    /// it is written by the two paths that assign options and invalidated by
+    /// the same events that change them. Holding it a layer up meant the
+    /// clear-on-success had to be remembered by every caller, which is the
+    /// shape that gets forgotten.
+    diagnostics: HashMap<String, ConfigDiagnostic>,
     /// Indexed by [`OptionHandle::idx`]. A slot is `Some` while the
     /// option is live and `None` once unregistered (PH7.12b): the
     /// index IS the handle, so a slot can never shift or be reused
@@ -548,8 +581,93 @@ impl ConfigRegistry {
     /// - `:set nofoo` -- sets bool to false.
     /// - `:set foo=value` -- parses + sets.
     /// - `:set foo?` -- always echoes the current value.
+    /// OC.11c: record that an assignment to `name` failed.
+    ///
+    /// `name` is canonicalised here so an alias (`:set ts=999`) records under
+    /// the name the option was declared with — a plugin asking about its own
+    /// config would never think to ask about an alias, and an alias-keyed
+    /// record is invisible to every reader.
+    pub fn record_failed_assignment(
+        &self,
+        name: &str,
+        message: String,
+        source: std::option::Option<std::path::PathBuf>,
+    ) {
+        let canonical = self
+            .lookup(name)
+            .map(|o| o.name().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner
+            .diagnostics
+            .insert(canonical, ConfigDiagnostic { message, source });
+    }
+
+    /// OC.11c: forget any failure recorded for `name` — an assignment to it
+    /// has since succeeded, so the record describes something untrue.
+    pub fn clear_failed_assignment(&self, name: &str) {
+        let canonical = self
+            .lookup(name)
+            .map(|o| o.name().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner.diagnostics.remove(&canonical);
+    }
+
+    /// OC.11c: drop every recorded failure.
+    ///
+    /// Called at the start of a config LOAD, which is a fresh reading of the
+    /// whole file: an option whose failing line the user deleted produces no
+    /// message at all, so a per-message update would leave its diagnostic
+    /// behind forever.
+    pub fn clear_all_failed_assignments(&self) {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner.diagnostics.clear();
+    }
+
+    /// OC.11c: the failure recorded against `name`, if the last assignment to
+    /// it failed.
+    ///
+    /// `None` means the last assignment succeeded or there never was one —
+    /// not distinguished, deliberately: the caller's question is "can I trust
+    /// this value", and both answers are yes.
+    pub fn failed_assignment(&self, name: &str) -> std::option::Option<ConfigDiagnostic> {
+        let canonical = self
+            .lookup(name)
+            .map(|o| o.name().to_string())
+            .unwrap_or_else(|| name.to_string());
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner.diagnostics.get(&canonical).cloned()
+    }
+
     pub fn parse_and_set_command(&self, input: &str) -> Result<String, ConfigError> {
         let parsed = parse_set(input).map_err(ConfigError::Parse)?;
+        // OC.11c: the outcome of THIS assignment replaces whatever was
+        // recorded for the option, at the one chokepoint every `:set` goes
+        // through — so no caller has to remember to clear it. An
+        // `UnknownOption` records nothing: there is no option for a diagnostic
+        // to be about, and keying one under a typo would let it shadow the
+        // real option a plugin later asks about.
+        let touched = match &parsed {
+            ParsedSet::Assign { name, .. } => Some(name.clone()),
+            ParsedSet::Negate(name) | ParsedSet::NameOnly(name) | ParsedSet::Reset(name) => {
+                Some(name.clone())
+            }
+            ParsedSet::Query(_) => None,
+        }
+        .filter(|n| !n.is_empty());
+        let outcome = self.parse_and_set_command_inner(parsed);
+        if let Some(name) = touched {
+            match &outcome {
+                Ok(_) => self.clear_failed_assignment(&name),
+                Err(ConfigError::UnknownOption(_)) => {}
+                Err(err) => self.record_failed_assignment(&name, err.to_string(), None),
+            }
+        }
+        outcome
+    }
+
+    fn parse_and_set_command_inner(&self, parsed: ParsedSet) -> Result<String, ConfigError> {
         match parsed {
             ParsedSet::NameOnly(name) => {
                 let opt = self

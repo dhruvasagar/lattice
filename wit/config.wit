@@ -171,6 +171,47 @@ interface config {
     /// the raw name — so a plugin reads its own options with short names AND can
     /// still read a core option (`tabstop`) that isn't in its namespace.
     get-option: func(name: string) -> option<string>;
+
+    /// OC.11c: one failed assignment to an option.
+    record config-diagnostic {
+        /// The message the loader or the registry produced, verbatim. For a
+        /// composite it carries the schema PATH —
+        /// `[2].target.file: expected string, got integer` — which is the
+        /// whole reason this is worth surfacing over a bare "it failed".
+        message: string,
+        /// The config file the assignment came from, or empty for a runtime
+        /// `:set`. That distinction is "go fix your config" versus "the thing
+        /// you just typed did not take", and a guest reporting one as the
+        /// other sends the user to the wrong place.
+        source: string,
+    }
+
+    /// **Did the last assignment to `name` fail, and what did it say?**
+    ///
+    /// A failed assignment is a no-op — vim's rule, which lattice keeps — so
+    /// the option is left holding whatever it had, and for one that was never
+    /// successfully set that is its registered DEFAULT. Reading the value
+    /// therefore cannot distinguish "the user configured this and it did not
+    /// parse" from "the user never configured this". This can.
+    ///
+    /// org-capture is the case that forced it: a `capture-templates` whose
+    /// TOML did not fit its schema read back as the empty default, so capture
+    /// filed through the legacy `capture-file` believing nothing had been
+    /// configured — and the user's note went somewhere they thought they had
+    /// stopped using.
+    ///
+    /// **This is not a status the option carries.** The option has no such
+    /// state; an assignment errored, which is an event, and this is the record
+    /// of it. `none` means the last assignment succeeded, or there was never
+    /// one — those two are not distinguished, and deliberately: a plugin's
+    /// question is "can I trust this value", and both answers are yes.
+    ///
+    /// Cleared for a name as soon as an assignment to it succeeds, and the
+    /// whole record is rebuilt on each config load, so a user who fixes their
+    /// file stops being told it is broken.
+    ///
+    /// Resolves the caller's OWN namespace first, like `get-option`.
+    option-diagnostic: func(name: string) -> option<config-diagnostic>;
 }
 
 /// The world a config/options plugin implements. Imports the `config` register +

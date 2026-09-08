@@ -35558,6 +35558,9 @@ impl Editor {
         let echo = match self.config.parse_and_set_command(option) {
             Ok(echo) => echo,
             Err(err) => {
+                // OC.11c records this, inside `parse_and_set_command` — the
+                // one chokepoint every `:set` goes through, so no caller has
+                // to remember to.
                 self.set_message(EchoLevel::Error, err.to_string());
                 return Vec::new();
             }

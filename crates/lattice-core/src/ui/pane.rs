@@ -519,10 +519,63 @@ impl PaneTree {
     /// active leaf index, or `None` if there's no neighbour in that
     /// direction. Geometry comes from [`Self::compute_rects`] so
     /// the navigation matches what the renderer drew.
+    /// A candidate must also OVERLAP the source on the perpendicular axis,
+    /// and among those that do, the source's cursor decides. Both halves are
+    /// load-bearing, and their absence was one bug:
+    ///
+    /// In a 2×2 grid every pane below the top row starts at the same `y`, so
+    /// ranking by travel distance alone left every candidate tied — and the
+    /// winner fell out of leaf iteration order, which is tree order, not
+    /// screen order. `<C-w>j` from the top-RIGHT pane landed in the bottom-
+    /// LEFT one, and so did `<C-w>j` from the top-left, which is how the bug
+    /// reads to a user: the direction keys ignore where you are.
+    ///
+    /// Overlap alone is not enough either. One wide pane above two narrow ones
+    /// overlaps both, so vim breaks that tie with the cursor's screen
+    /// position — you go down into the pane under your cursor — and that is
+    /// the behaviour muscle memory expects.
     pub fn navigate(&self, direction: PaneDirection, area: PaneRect) -> Option<usize> {
         let rects = self.compute_rects(area);
         let from = rects.iter().find(|(idx, _)| *idx == self.active)?.1;
-        let mut best: Option<(usize, i32)> = None;
+        let vertical = matches!(direction, PaneDirection::Up | PaneDirection::Down);
+        // The perpendicular span of a rect: the horizontal one when travelling
+        // vertically, and vice versa.
+        let span = |r: &PaneRect| -> (u16, u16) {
+            if vertical {
+                (r.x, r.x + r.width)
+            } else {
+                (r.y, r.y + r.height)
+            }
+        };
+        let (from_lo, from_hi) = span(&from);
+        // Where the cursor sits along that span, APPROXIMATELY, and the two
+        // approximations are worth naming rather than hiding.
+        //
+        // The gutter is not modelled: `lattice-core` does not know its width,
+        // so a horizontal position is short by a few cells. And `Position`
+        // carries a byte offset, not a display column, so a line with
+        // multi-byte characters or tabs reads wider than it paints.
+        //
+        // Both only ever decide a TIE between candidates that already overlap
+        // the source, so the cost of being off is picking the neighbour next
+        // door when the cursor sits within a few cells of their shared edge.
+        // Approximately right beats tree order, which is not right at all.
+        let cursor_at = self.leaves.get(self.active).map(|s| {
+            let along = if vertical {
+                s.cursor.byte.saturating_sub(s.leftcol)
+            } else {
+                s.cursor.line.saturating_sub(s.scroll)
+            };
+            let along = u16::try_from(along).unwrap_or(u16::MAX);
+            from_lo.saturating_add(along).min(from_hi.saturating_sub(1))
+        });
+        // Ranked ascending, so a smaller key wins:
+        //   0. travel distance — the adjacent row/column first;
+        //   1. does the candidate hold the cursor (0 yes, 1 no);
+        //   2. how much of the source it covers, negated so more wins;
+        //   3. its start coordinate, purely so equals resolve the same way
+        //      every run rather than by hash or tree order.
+        let mut best: Option<(usize, (i32, u8, i32, u16))> = None;
         for (idx, r) in rects.iter() {
             if *idx == self.active {
                 continue;
@@ -548,9 +601,20 @@ impl PaneTree {
             if !qualifies {
                 continue;
             }
-            match best {
-                None => best = Some((*idx, distance)),
-                Some((_, d)) if distance < d => best = Some((*idx, distance)),
+            let (lo, hi) = span(r);
+            let overlap = hi.min(from_hi).saturating_sub(lo.max(from_lo));
+            if overlap == 0 {
+                // Diagonal: it is in that direction, but not from HERE. Vim
+                // reports "no window in that direction" rather than jumping
+                // sideways, and so do we — landing somewhere the user was not
+                // pointing is worse than not moving.
+                continue;
+            }
+            let holds_cursor = cursor_at.is_some_and(|c| c >= lo && c < hi);
+            let key = (distance, u8::from(!holds_cursor), -(overlap as i32), lo);
+            match &best {
+                None => best = Some((*idx, key)),
+                Some((_, b)) if key < *b => best = Some((*idx, key)),
                 _ => {}
             }
         }
@@ -953,6 +1017,86 @@ mod tests {
             },
         );
         assert_eq!(target, Some(0));
+    }
+
+    /// Build the 2x2 grid: split vertically, then split each column
+    /// horizontally. The resulting leaf indices are asserted in
+    /// [`the_2x2_grid_is_laid_out_as_expected`] rather than assumed here — a
+    /// split appends its new leaf, so the numbering is not the reading order.
+    fn grid_2x2() -> PaneTree {
+        let mut t = PaneTree::single(doc_state());
+        t.split_active(SplitOrientation::Vertical); // 0 = left, 1 = right
+        t.set_active(0);
+        t.split_active(SplitOrientation::Horizontal); // left column -> 0 over 2
+        t.set_active(1);
+        t.split_active(SplitOrientation::Horizontal); // right column -> 1 over 3
+        t
+    }
+
+    /// The geometry every navigation assertion below depends on. Pinned
+    /// separately so a layout change fails HERE, loudly, rather than making
+    /// the navigation tests quietly vacuous.
+    #[test]
+    fn the_2x2_grid_is_laid_out_as_expected() {
+        let rects = grid_2x2().compute_rects(area());
+        let at = |i: usize| {
+            let r = rects.iter().find(|(idx, _)| *idx == i).unwrap().1;
+            (r.x, r.y)
+        };
+        assert_eq!(at(0), (0, 0), "leaf 0 is top-left");
+        assert_eq!(at(2), (0, 20), "leaf 2 is bottom-left");
+        assert_eq!(at(1), (50, 0), "leaf 1 is top-right");
+        assert_eq!(at(3), (50, 20), "leaf 3 is bottom-right");
+    }
+
+    fn area() -> PaneRect {
+        PaneRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        }
+    }
+
+    /// **`<C-w>j` from the TOP-RIGHT pane must land in the BOTTOM-RIGHT one.**
+    ///
+    /// Reported against a 2x2 grid: going down from EITHER top pane landed in
+    /// the bottom-LEFT. Both bottom panes start at the same `y`, so both are
+    /// equidistant, and the winner was decided by leaf iteration order rather
+    /// than by which pane is actually below the one you are in.
+    #[test]
+    fn navigate_down_in_a_grid_stays_in_its_column() {
+        let mut t = grid_2x2();
+        t.set_active(1); // top-right
+        assert_eq!(
+            t.navigate(PaneDirection::Down, area()),
+            Some(3),
+            "down from the top-right pane is the bottom-RIGHT one"
+        );
+    }
+
+    /// The mirror: up from the bottom-right must not drift to the top-left.
+    #[test]
+    fn navigate_up_in_a_grid_stays_in_its_column() {
+        let mut t = grid_2x2();
+        t.set_active(3); // bottom-right
+        assert_eq!(t.navigate(PaneDirection::Up, area()), Some(1));
+    }
+
+    /// And the same on the other axis: right from the bottom-left must be the
+    /// bottom-right, not the top-right.
+    #[test]
+    fn navigate_right_in_a_grid_stays_in_its_row() {
+        let mut t = grid_2x2();
+        t.set_active(2); // bottom-left
+        assert_eq!(t.navigate(PaneDirection::Right, area()), Some(3));
+    }
+
+    #[test]
+    fn navigate_left_in_a_grid_stays_in_its_row() {
+        let mut t = grid_2x2();
+        t.set_active(3); // bottom-right
+        assert_eq!(t.navigate(PaneDirection::Left, area()), Some(2));
     }
 
     #[test]

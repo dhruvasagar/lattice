@@ -254,6 +254,12 @@ impl Mode for MagitCommitMode {
         lattice_config::overrides! {
             lattice_config::NoFile = true,
             lattice_config::Number = false,
+            // RF.4: a commit message is prose, and the 72-column
+            // convention for the body is the most widely followed
+            // wrapping rule in software. `git commit` itself does not
+            // wrap; every editor integration is expected to.
+            lattice_config::AutoWrapOption = lattice_core::AutoWrap::All,
+            lattice_config::TextWidth = 72,
         }
     }
 
@@ -556,6 +562,24 @@ mod tests {
     /// buffer to write a message, so the cursor must land where you
     /// type rather than after a diff that can be hundreds of lines.
     /// Matches `git commit --verbose` and Emacs magit.
+    /// RF.4: a commit message is prose at 72 columns — the most widely
+    /// followed wrapping convention in software, and one `git commit`
+    /// itself does not apply, so the editor is expected to.
+    #[test]
+    fn commit_messages_wrap_at_seventy_two() {
+        use std::any::TypeId;
+        let opts = MagitCommitMode.options();
+        for want in [
+            TypeId::of::<lattice_config::AutoWrapOption>(),
+            TypeId::of::<lattice_config::TextWidth>(),
+        ] {
+            assert!(
+                opts.iter().any(|o| o.option_type_id == want),
+                "magit-commit-mode must set both autowrap and textwidth"
+            );
+        }
+    }
+
     #[test]
     fn the_message_area_comes_before_the_diff() {
         let buffer = format!("subject line\n\n{DIFF_MARKER}\ndiff --git a/x b/x\n+added\n");

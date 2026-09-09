@@ -16,7 +16,9 @@
 //! those modes can `implies` text-mode if they want the
 //! default keymap, or specify their own from scratch.
 
-use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+use crate::{
+    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
+};
 
 /// Catch-all major mode for plain-text content.
 pub struct TextMode;
@@ -46,6 +48,19 @@ impl Mode for TextMode {
         CapabilitySet::empty()
     }
 
+    /// RF.4: plain text is prose, so `autowrap` covers every line.
+    ///
+    /// The one override this mode carries, and it does not contradict
+    /// the module docs above ("no mode-scoped option overrides"): that
+    /// described a mode with nothing to say, and prose-versus-code IS
+    /// something a catch-all text major can say. A `.txt` buffer that
+    /// does not wrap while a `.md` one does would be an arbitrary split.
+    fn options(&self) -> OptionOverrideSet {
+        lattice_config::overrides! {
+            lattice_config::AutoWrapOption = lattice_core::AutoWrap::All,
+        }
+    }
+
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
         // No setup work; text-mode is content-free.
         Box::pin(async { Ok(()) })
@@ -62,6 +77,19 @@ mod tests {
         assert_eq!(m.id(), TextMode::mode_id());
         assert_eq!(m.id().as_str(), "text-mode");
         assert_eq!(m.kind(), ModeKind::Major);
+    }
+
+    /// RF.4: plain text is prose. A `.txt` buffer that does not wrap
+    /// while a `.md` one does would be an arbitrary split.
+    #[test]
+    fn text_mode_wraps_prose() {
+        let opts = TextMode.options();
+        assert!(
+            opts.iter()
+                .any(|o| o.option_type_id
+                    == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
+            "text-mode must override autowrap to `all`"
+        );
     }
 
     #[test]

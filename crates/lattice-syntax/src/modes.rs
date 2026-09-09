@@ -52,6 +52,17 @@ macro_rules! lang_mode {
     ($struct_name:ident, $mode_name:literal, options = { $($opt:tt)* }) => {
         lang_mode!(@impl $struct_name, $mode_name, None, { $($opt)* });
     };
+    // RF.4: the fourth combination. `markdown-mode` is the first mode to
+    // need BOTH a target kind and option overrides, and the macro had
+    // three arms covering every other pairing.
+    (
+        $struct_name:ident,
+        $mode_name:literal,
+        target_kind = $kind:expr,
+        options = { $($opt:tt)* }
+    ) => {
+        lang_mode!(@impl $struct_name, $mode_name, Some($kind), { $($opt)* });
+    };
     (@impl $struct_name:ident, $mode_name:literal, $target_kind:expr, { $($opt:tt)* }) => {
         pub struct $struct_name;
 
@@ -204,7 +215,16 @@ lang_mode!(
 lang_mode!(
     MarkdownMode,
     "markdown-mode",
-    target_kind = BufferKind::Help
+    target_kind = BufferKind::Help,
+    options = {
+        // RF.4: markdown IS prose, so wrapping while typing applies to
+        // every line rather than only to comments (there are none). The
+        // global default is the conservative `comments` rung because a
+        // code line broken mid-expression is destructive in a way a
+        // broken sentence is not; a prose major has no such hazard and
+        // opts up.
+        lattice_config::AutoWrapOption = lattice_core::AutoWrap::All,
+    }
 );
 
 /// Resolve a [`Lang`] to its corresponding major-mode id.
@@ -588,6 +608,35 @@ mod tests {
         for id in all_lang_mode_ids() {
             assert!(registry.is_registered(id), "mode not registered: {id:?}");
         }
+    }
+
+    /// RF.4: prose majors opt UP to `autowrap=all`.
+    ///
+    /// The global default is `comments`, the conservative rung — a code
+    /// line broken mid-expression is destructive in a way a broken
+    /// sentence is not. Markdown has no comments to speak of and is
+    /// entirely prose, so `comments` there would mean "never wrap",
+    /// which is the wrong answer for the one file type most likely to
+    /// want it.
+    #[test]
+    fn markdown_wraps_prose_while_code_majors_wrap_only_comments() {
+        use lattice_mode::Mode;
+        let opts = MarkdownMode.options();
+        let found = opts
+            .iter()
+            .any(|o| o.option_type_id == std::any::TypeId::of::<lattice_config::AutoWrapOption>());
+        assert!(found, "markdown-mode must override autowrap");
+
+        // A code major must NOT — it inherits the conservative default,
+        // and an override here would be the bug this test exists for.
+        assert!(
+            !RustMode
+                .options()
+                .iter()
+                .any(|o| o.option_type_id
+                    == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
+            "rust-mode must inherit `autowrap=comments`, not override it"
+        );
     }
 
     #[test]

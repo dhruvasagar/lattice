@@ -92,19 +92,45 @@ pub struct ReflowConfig<'a> {
 /// Split `lines` into paragraphs (§4.1).
 ///
 /// A new paragraph begins at a blank line, a leader-only line, a change
-/// of prefix, or a change of indent. Blank and leader-only runs come
-/// back as `fillable: false` so they survive the round trip verbatim —
-/// carrying them in the same list as the fillable runs is what makes it
-/// impossible to drop them by forgetting a branch.
+/// of prefix, a change of indent, or a list marker. Blank, leader-only
+/// and fenced runs come back as `fillable: false` so they survive the
+/// round trip verbatim — carrying them in the same list as the fillable
+/// runs is what makes it impossible to drop them by forgetting a branch.
 pub fn paragraphs(lines: &[&str], cfg: ReflowConfig<'_>) -> Vec<Paragraph> {
     let mut out: Vec<Paragraph> = Vec::new();
     let mut i = 0usize;
+    // §4.5: inside a fence, line breaks are content. Tracked as a walk
+    // state rather than looked up per line because a fence is defined by
+    // its opener, and only a scan from the top of the range knows.
+    let mut fenced = false;
     while i < lines.len() {
         let start = i;
-        let sep = is_separator(lines[i], cfg);
-        if sep {
+
+        if fenced || is_fence_delimiter(lines[i]) {
+            // Carry the opener, the body and the closer through
+            // untouched. `fenced` flips on the opener and off on the
+            // next delimiter.
+            loop {
+                if is_fence_delimiter(lines[i]) {
+                    fenced = !fenced;
+                }
+                i += 1;
+                if i >= lines.len() || !fenced {
+                    break;
+                }
+            }
+            out.push(Paragraph {
+                start,
+                end: i,
+                prefix: Prefix::default(),
+                fillable: false,
+            });
+            continue;
+        }
+
+        if is_separator(lines[i], cfg) {
             // A run of separators is carried through untouched.
-            while i < lines.len() && is_separator(lines[i], cfg) {
+            while i < lines.len() && is_separator(lines[i], cfg) && !is_fence_delimiter(lines[i]) {
                 i += 1;
             }
             out.push(Paragraph {
@@ -115,13 +141,15 @@ pub fn paragraphs(lines: &[&str], cfg: ReflowConfig<'_>) -> Vec<Paragraph> {
             });
             continue;
         }
-        // A fillable run: extend while the next line is not a separator
-        // and agrees about its prefix.
-        let head = line_prefix(lines[i], cfg);
+
+        // A fillable run: extend while the next line is not a separator,
+        // not a fence, and continues this paragraph.
+        let head = LineParts::of(lines[i], cfg);
         i += 1;
         while i < lines.len()
             && !is_separator(lines[i], cfg)
-            && continues_paragraph(&head, lines[i], cfg)
+            && !is_fence_delimiter(lines[i])
+            && head.continues(lines[i], cfg)
         {
             i += 1;
         }
@@ -347,6 +375,129 @@ fn line_prefix(line: &str, cfg: ReflowConfig<'_>) -> String {
     format!("{indent}{marker}")
 }
 
+/// A list marker at the start of `content`, if any — `- `, `* `, `+ `,
+/// `1. `, `1) `.
+///
+/// Returns the marker INCLUDING its trailing spaces, because that width
+/// is exactly the hanging indent continuation lines need.
+///
+/// Vim needs `formatoptions+=n` and a `formatlistpat` regex for this;
+/// every modern rewrap does it unconditionally, and org and markdown are
+/// first-class here.
+fn list_marker_of(content: &str) -> &str {
+    let b = content.as_bytes();
+    let mut i = 0usize;
+    if matches!(b.first(), Some(b'-' | b'*' | b'+')) {
+        i = 1;
+    } else {
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == 0 || !matches!(b.get(i), Some(b'.' | b')')) {
+            return "";
+        }
+        i += 1;
+    }
+    // A marker must be followed by whitespace and then something. `-`
+    // alone is a lone dash, and `---` is a horizontal rule, not a
+    // bullet.
+    let after = i;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    if i == after || i == b.len() {
+        return "";
+    }
+    &content[..i]
+}
+
+/// One line decomposed into the four things reflow cares about.
+struct LineParts<'a> {
+    indent: &'a str,
+    marker: &'a str,
+    /// Whitespace between the comment marker and the text.
+    gap: &'a str,
+    list: &'a str,
+}
+
+impl<'a> LineParts<'a> {
+    fn of(line: &'a str, cfg: ReflowConfig<'_>) -> Self {
+        let indent = indent_of(line);
+        let after_indent = &line[indent.len()..];
+        let marker = marker_of(after_indent, cfg.line_comment);
+        let after_marker = &after_indent[marker.len()..];
+        let gap_end = after_marker
+            .find(|c: char| c != ' ' && c != '\t')
+            .unwrap_or(after_marker.len());
+        // Only separate a gap when there IS a marker; otherwise the
+        // leading whitespace is the indent and has already been taken.
+        let gap = if marker.is_empty() {
+            ""
+        } else {
+            &after_marker[..gap_end]
+        };
+        let content = &after_marker[gap.len()..];
+        LineParts {
+            indent,
+            marker,
+            gap,
+            list: list_marker_of(content),
+        }
+    }
+
+    /// What the paragraph's FIRST output line starts with.
+    fn first_prefix(&self) -> String {
+        format!("{}{}{}{}", self.indent, self.marker, self.gap, self.list)
+    }
+
+    /// What every SUBSEQUENT output line starts with — the hanging
+    /// indent: the marker column blanked out so continuation text lines
+    /// up under the item's text rather than under its bullet.
+    fn rest_prefix(&self) -> String {
+        format!(
+            "{}{}{}{}",
+            self.indent,
+            self.marker,
+            self.gap,
+            " ".repeat(display_width(self.list))
+        )
+    }
+
+    /// Whether `next` continues the paragraph this line opened.
+    ///
+    /// Requires the same comment marker, no list marker of its own (a
+    /// bullet always starts a new item), and an indent that is either
+    /// the head's or the head's hanging column.
+    fn continues(&self, next: &str, cfg: ReflowConfig<'_>) -> bool {
+        let n = LineParts::of(next, cfg);
+        if n.marker != self.marker || !n.list.is_empty() {
+            return false;
+        }
+        if n.indent == self.indent {
+            return true;
+        }
+        // A wrapped list item's continuation is indented to the text
+        // column. Only accept that when the head actually opened a list;
+        // otherwise a change of indent is a new paragraph, as before.
+        !self.list.is_empty()
+            && display_width(n.indent) == display_width(self.indent) + display_width(self.list)
+    }
+}
+
+/// A markdown or org fence delimiter — a line whose breaks are content
+/// rather than formatting (§4.5).
+///
+/// Lexical, deliberately: the operator has to work on a buffer with no
+/// parse, and this runs inside it.
+fn is_fence_delimiter(line: &str) -> bool {
+    let t = line.trim_start();
+    if t.starts_with("```") || t.starts_with("~~~") {
+        return true;
+    }
+    let lower = t.to_ascii_lowercase();
+    lower.starts_with("#+begin_") || lower.starts_with("#+end_")
+}
+
 /// A line is a paragraph separator when it is blank, or when it is a
 /// comment leader with no text after it.
 ///
@@ -363,26 +514,20 @@ fn is_separator(line: &str, cfg: ReflowConfig<'_>) -> bool {
     !marker.is_empty() && t[marker.len()..].trim().is_empty()
 }
 
-/// Whether `line` continues a paragraph whose first line had prefix
-/// `head`.
-///
-/// Requires the same indent-plus-marker. A change of either starts a new
-/// paragraph — a `///` line after a `//` line is a different comment, and
-/// a differently-indented line is a different block.
-fn continues_paragraph(head: &str, line: &str, cfg: ReflowConfig<'_>) -> bool {
-    line_prefix(line, cfg) == head
-}
-
 /// The prefix a paragraph's output lines carry.
 ///
-/// The **longest common prefix** of its lines' `indent + marker`, which
-/// is the rule that makes `///` and `//!` blocks come back as
-/// themselves, handles `#` / `##` with no special case, and degrades a
-/// mixed block to the shared part rather than to a guess.
+/// The comment part is the **longest common prefix** of its lines'
+/// `indent + marker`, which is the rule that makes `///` and `//!`
+/// blocks come back as themselves, handles `#` / `##` with no special
+/// case, and degrades a mixed block to the shared part rather than to a
+/// guess.
 ///
-/// A single trailing space is appended when the marker is non-empty, so
-/// `///` becomes `/// ` and text does not weld to the slashes.
+/// The list part comes from the FIRST line only — that is what a hanging
+/// indent means.
 fn paragraph_prefix(lines: &[&str], cfg: ReflowConfig<'_>) -> Prefix {
+    let Some(head) = lines.first().map(|l| LineParts::of(l, cfg)) else {
+        return Prefix::default();
+    };
     let mut common: Option<String> = None;
     for l in lines {
         let p = line_prefix(l, cfg);
@@ -391,13 +536,23 @@ fn paragraph_prefix(lines: &[&str], cfg: ReflowConfig<'_>) -> Prefix {
             Some(c) => longest_common_prefix(&c, &p).to_string(),
         });
     }
-    let mut base = common.unwrap_or_default();
-    let indent = lines.first().map(|l| indent_of(l)).unwrap_or("");
-    if base.len() > indent.len() {
-        // There is a marker; separate it from the text.
-        base.push(' ');
+    let shared = common.unwrap_or_default();
+    // When the lines disagree about their marker, the shared part is
+    // shorter than the head's — fall back to it uniformly rather than
+    // emitting a hanging indent computed from a marker not every line
+    // has.
+    if shared != format!("{}{}", head.indent, head.marker) {
+        let mut base = shared;
+        let indent = lines.first().map(|l| indent_of(l)).unwrap_or("");
+        if base.len() > indent.len() {
+            base.push(' ');
+        }
+        return Prefix::uniform(base);
     }
-    Prefix::uniform(base)
+    Prefix {
+        first: head.first_prefix(),
+        rest: head.rest_prefix(),
+    }
 }
 
 fn longest_common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
@@ -598,6 +753,114 @@ mod tests {
         // Every word survives, in order.
         let words: Vec<&str> = out.iter().flat_map(|l| l.split_whitespace()).collect();
         assert_eq!(words, vec!["let", "x", "=", "1;", "let", "y", "=", "2;"]);
+    }
+
+    // ---- RF.4: lists, hanging indent, fences ----
+
+    /// The hanging indent: continuation lines align under the item's
+    /// TEXT, not under its bullet. Wrapping to column 0 would make the
+    /// second line read as a new paragraph.
+    #[test]
+    fn a_bullet_wraps_to_its_text_column() {
+        let out = reflow(&["- aaa bbb ccc ddd"], 9, None);
+        assert_eq!(out, vec!["- aaa bbb", "  ccc ddd"]);
+    }
+
+    #[test]
+    fn ordered_list_markers_hang_by_their_own_width() {
+        assert_eq!(
+            reflow(&["1. aaa bbb ccc"], 10, None),
+            vec!["1. aaa bbb", "   ccc"]
+        );
+        assert_eq!(
+            reflow(&["10) aaa bbb ccc"], 11, None),
+            vec!["10) aaa bbb", "    ccc"]
+        );
+    }
+
+    /// A second bullet is a second item, not a continuation — otherwise
+    /// `gqap` over a list welds every item into one paragraph.
+    #[test]
+    fn a_second_bullet_starts_a_new_item() {
+        let out = reflow(&["- aaa", "- bbb"], 40, None);
+        assert_eq!(out, vec!["- aaa", "- bbb"]);
+    }
+
+    /// An already-wrapped item is re-joined and re-filled as one item,
+    /// which is what makes `gq` idempotent on a list.
+    #[test]
+    fn an_already_wrapped_item_rejoins_as_one() {
+        let out = reflow(&["- aaa bbb", "  ccc ddd"], 40, None);
+        assert_eq!(out, vec!["- aaa bbb ccc ddd"]);
+    }
+
+    #[test]
+    fn a_bullet_inside_a_comment_block_keeps_both_prefixes() {
+        let out = reflow(&["/// - aaa bbb ccc"], 13, Some("//"));
+        assert_eq!(out, vec!["/// - aaa bbb", "///   ccc"]);
+    }
+
+    /// `-` alone is a dash and `---` is a horizontal rule; neither is a
+    /// bullet. A marker needs whitespace and then text after it.
+    #[test]
+    fn a_lone_dash_or_a_rule_is_not_a_list_marker() {
+        assert_eq!(list_marker_of("---"), "");
+        assert_eq!(list_marker_of("-"), "");
+        assert_eq!(list_marker_of("- "), "");
+        assert_eq!(list_marker_of("- x"), "- ");
+        assert_eq!(list_marker_of("1. x"), "1. ");
+        assert_eq!(list_marker_of("1.x"), "", "a marker needs a space");
+        assert_eq!(list_marker_of("word"), "");
+    }
+
+    /// §4.5: inside a fence the line breaks ARE the content. Reflowing
+    /// them would corrupt a code sample.
+    #[test]
+    fn a_fenced_block_is_carried_through_verbatim() {
+        let input = [
+            "aaa bbb ccc",
+            "```",
+            "fn main() { let x = 1; }",
+            "let y = 2;",
+            "```",
+            "ddd eee fff",
+        ];
+        let out = reflow(&input, 7, None);
+        assert_eq!(
+            out,
+            vec![
+                "aaa bbb",
+                "ccc",
+                "```",
+                "fn main() { let x = 1; }",
+                "let y = 2;",
+                "```",
+                "ddd eee",
+                "fff",
+            ],
+            "prose either side reflows; the fenced body does not"
+        );
+    }
+
+    #[test]
+    fn org_blocks_are_fences_too() {
+        let input = ["#+begin_src rust", "let x = 1; let y = 2;", "#+end_src"];
+        assert_eq!(
+            reflow(&input, 7, None),
+            input.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    /// An unterminated fence swallows the rest of the range rather than
+    /// reflowing content the user thinks is code. Degrading toward "do
+    /// nothing" is the right direction for an operator that rewrites.
+    #[test]
+    fn an_unclosed_fence_protects_everything_after_it() {
+        let input = ["```", "let x = 1; let y = 2;"];
+        assert_eq!(
+            reflow(&input, 7, None),
+            input.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
     }
 
     // ---- RF.3: the auto-wrap break point ----

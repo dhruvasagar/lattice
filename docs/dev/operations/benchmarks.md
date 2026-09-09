@@ -3621,6 +3621,27 @@ sweep exists for: per-frame cost is still flat in directory size, 5,000
 entries costing no more than 500. Re-run on the §8.2 reference hardware before
 quoting any per-frame figure from this row.
 
+## Text reflow (`crates/lattice-grammar/benches/reflow.rs`, RF.1)
+
+The engine behind `gq` / `gw`, and — at RF.3 — behind wrapping while you type.
+Two shapes, because they answer different questions and only one of them has a
+budget.
+
+⚠️ **Provisional — off-box.** Developer machine, not the §8.2 reference
+hardware.
+
+| Workload | Provisional | Notes |
+| --- | --- | --- |
+| `reflow_paragraph/10_lines` | ~18.8 µs | A `gqap`-sized fill of a doc comment. |
+| `reflow_paragraph/200_lines` | ~365 µs | **The assertion is the ratio.** 20× the lines for 19.4× the time — the fill is linear, and a later change that makes it quadratic shows up here rather than on a large file. |
+| `reflow_break_point/one_line` | ~2.17 µs | **This one has a budget.** It is the work auto-wrap does per character typed past `textwidth` (RF.3) — one line, find the break. 2.17 µs is ~0.026% of a 120 Hz frame. |
+
+The paragraph numbers are user-initiated and have no frame budget; they exist
+so the linearity claim is measured rather than assumed. The break-point number
+is the one paramount #1 constrains, and it is the reason §9 of
+`text-reflow.md` rules out a tree-sitter query for the "is this a comment"
+test: the whole operation has to stay in this range, and a parse does not.
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

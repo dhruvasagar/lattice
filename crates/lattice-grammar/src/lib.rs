@@ -33,6 +33,11 @@ pub mod ex_commands;
 pub mod introspect;
 pub mod modal;
 pub mod range;
+// RF.1: the text-reflow engine. Here rather than in a crate of its own
+// (heuristic #6: it carves out no dependency surface) and here rather
+// than in `lattice-format` (that crate is process spawning and diffing —
+// a different mechanism that shares a word).
+pub mod reflow;
 pub mod register;
 pub mod registry;
 pub mod source;

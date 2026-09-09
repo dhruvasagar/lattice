@@ -352,9 +352,26 @@ correct rather than historical.
 
 So:
 
-- `=`, `==`, `=ap`, visual `=` → tree-sitter indent engine, or `equalprg` if
-  set. Leading whitespace only. One undo unit for the whole range.
+- `=`, `==`, `=ap`, visual `=` → tree-sitter indent engine. Leading whitespace
+  only. One undo unit for the whole range.
 - `:format` / format-on-save → the full cascade in §8.
+
+> **Amended 2026-09-09 by [`text-reflow.md`](text-reflow.md) §6.** The
+> conclusion above stands and is the shipped default. What changed is that it
+> is a **default rather than a hardcode**: `=` resolves the `format.indent`
+> provider chain, which defaults to `[native]`. A user may put `lsp` or an
+> external filter in that chain and get exactly the unbounded rewriting this
+> section warns about — documented at the option, and their call to make. A
+> policy the host enforces is a policy a plugin cannot extend (paramount #2).
+>
+> `text-reflow.md` §5 also adds the converse of this section's argument, which
+> was not stated here: LSP cannot back `=` *or* `gq` faithfully, because the
+> protocol has no indent-only and no reflow request. Delegating either would
+> no-op silently rather than misbehave loudly.
+>
+> `equalprg` is **deleted** at RF.5 rather than implemented — it had zero
+> consumers, and an external indent-only filter is now one entry in the
+> `format.indent` chain.
 
 Because indent comes from the tree rather than from the preceding line's actual
 text, reindenting a range has no order dependency between lines. The tree must
@@ -378,6 +395,23 @@ catch-up parse — §5's budget applies to the keystroke path only.
   formatprg set, or a default-table entry on PATH → external process
   neither                                         → error naming what was tried
 ```
+
+> **Amended 2026-09-09 by [`text-reflow.md`](text-reflow.md) §6.** This cascade
+> is correct and is the shipped default order — it becomes the default value of
+> the `format.reformat` **provider chain** rather than a two-rung `if` in
+> `do_format_request`. `formatprg` retires into that chain (one release with a
+> deprecation alias); `FormatterSpec` and the per-language table below become
+> chain *entries*, unchanged in content.
+>
+> The reason is extensibility, not tidiness: with the order in Rust, every new
+> formatter placement — "prettier for markdown but the server for TypeScript",
+> or a WASM plugin supplying a formatter — is a host patch. `text-reflow.md`
+> §6.2 has the cross-editor evidence that typed provider lists are where the
+> field landed.
+>
+> `g=` (`operator:reformat`, RF.6) drives the same chain over an operator
+> range. It exists because `:format` had no operator form, which is why users
+> reach for `gq` and are disappointed — see `text-reflow.md` §5.
 
 `:format` looks like it violates the dashed-and-namespaced ex-command rule
 ("no generic-name aliases — `format`, `rename`, `complete`"). It does not, and
@@ -563,5 +597,10 @@ out of scope for v1 — see §13.
   `.editorconfig` — both or neither.
 - **`softtabstop`** — `<Tab>` / `<BS>` operating on virtual indent stops.
 - **`gq` / `formatexpr`** — text reflow is a separate verb and a separate
-  feature.
+  feature. ✅ **Taken up 2026-09-09** as
+  [`text-reflow.md`](text-reflow.md) / slice plan
+  [`text-reflow.md`](../operations/slice-plans/text-reflow.md) (RF.0–RF.7).
+  `gq` and `gw` collapse to one operator there, and the fragment also carries
+  `textwidth` / `autowrap` and the provider-chain generalisation that amends
+  §7 and §8 above.
 - **Indent guides** — a rendering concern, not this fragment.

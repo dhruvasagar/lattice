@@ -70,6 +70,7 @@ description = "The vim grammar as implemented: operators, text objects, indentat
 [[section.group]]
 docs = [
   "architecture/auto-indent",
+  "architecture/text-reflow",
   "architecture/surround-mode",
   "architecture/table-mode",
   "architecture/select-mode",

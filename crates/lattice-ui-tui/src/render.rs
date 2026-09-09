@@ -5418,7 +5418,7 @@ pub(crate) fn compose_pane_lines(
                     body,
                     map_ob((h.byte as usize).min(line_len)),
                     h.text.clone(),
-                    inlay_hint_style(overlay_resolved, overlay_ids),
+                    inlay_row_style(overlay_resolved, overlay_ids, h.style),
                 );
             }
         }
@@ -5976,6 +5976,53 @@ fn inlay_hint_style(
         .map(crate::theme::host_color_to_ratatui)
         .unwrap_or(Color::DarkGray);
     TuiStyle::default().fg(fg).add_modifier(Modifier::ITALIC)
+}
+
+/// Style for ONE spliced inlay row — the row's own element, not a
+/// blanket `inlay.hint`.
+///
+/// The splice above re-inserts virtual text that
+/// `display_line_to_source_spans` deliberately dropped, so the run's
+/// style does not survive the round trip and has to be resolved again
+/// here. It was resolved as [`inlay_hint_style`] unconditionally, which
+/// is right for an LSP hint and wrong for every other producer: DL.3a
+/// gave `InlayHintRow` a real style precisely so a producer with its own
+/// vocabulary paints in it, and the cells worker and GPUI's
+/// `display_run_to_synthetic_cell` both honour it. This peer did not, so
+/// `directory-listing-mode`'s per-language icons all painted one grey —
+/// the published data was correct and only the TUI's paint discarded it.
+///
+/// Italic stays exclusive to [`lattice_syntax::Style::InlayHint`]. It is
+/// the "annotation, not buffer content" cue for an LSP hint; a listing's
+/// icon glyph IS the row's content, and slanting a devicon just smears it.
+fn inlay_row_style(
+    resolved: &lattice_host::ui::theme::ResolvedTheme,
+    ids: &lattice_host::ui::theme::BuiltinElementIds,
+    style: lattice_syntax::Style,
+) -> TuiStyle {
+    if matches!(style, lattice_syntax::Style::InlayHint) {
+        return inlay_hint_style(resolved, ids);
+    }
+    let s = lattice_host::ui::theme::resolve_syntax_style(resolved, ids, style);
+    let mut out = TuiStyle::default();
+    if let Some(fg) = s.fg {
+        out = out.fg(crate::theme::host_color_to_ratatui(fg));
+    }
+    // An element may carry weight/emphasis of its own (`listing.dir` is
+    // bold), and dropping those would make a themed element half-applied.
+    if s.modifiers.bold {
+        out = out.add_modifier(Modifier::BOLD);
+    }
+    if s.modifiers.italic {
+        out = out.add_modifier(Modifier::ITALIC);
+    }
+    if s.modifiers.dim {
+        out = out.add_modifier(Modifier::DIM);
+    }
+    if s.modifiers.underline {
+        out = out.add_modifier(Modifier::UNDERLINED);
+    }
+    out
 }
 
 /// L4a.3 (lsp-architecture.md §15): style for the inline end-of-line
@@ -8344,6 +8391,161 @@ mod tests {
                  cursor.line={cursor_line}",
             );
         }
+    }
+
+    /// **A listing icon paints in its OWN theme element, not one blanket
+    /// `inlay.hint` grey.**
+    ///
+    /// `directory-listing-mode` publishes one icon per row carrying
+    /// `Style::Element(listing.file.rust)` / `…python` / `listing.dir`
+    /// (DL.3b), and the cells worker and GPUI both resolve that style.
+    /// The TUI's post-hoc splice did not: it re-inserted the virtual text
+    /// that `display_line_to_source_spans` drops and re-styled every row
+    /// with `inlay_hint_style`, so a `.rs`, a `.py` and a directory all
+    /// painted `#7f849c`. The published data was correct the whole time —
+    /// only this paint discarded it, which is why the host-side
+    /// `listing_icons_resolve_their_element_before_the_mode_cascade_runs`
+    /// test passed while the screen showed one colour.
+    ///
+    /// Asserted on the PAINTED frame, and against the resolved elements
+    /// rather than literals: "the icons differ from each other" alone
+    /// would pass on any palette, and hardcoded RGB would re-break the
+    /// moment a theme retunes `listing.*` — which is the entire point of
+    /// having rooted them in the theme.
+    #[tokio::test]
+    async fn a_listing_icon_paints_in_its_own_element_not_one_inlay_grey() {
+        use lattice_host::ui::theme::{ElementName, ThemeRegistryHandle};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let dir = {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let d = std::env::temp_dir().join(format!(
+                "lattice-listing-icon-colour-{nanos}-{}",
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        };
+        std::fs::create_dir_all(dir.join("subdir")).unwrap();
+        std::fs::write(dir.join("main.rs"), "x").unwrap();
+        std::fs::write(dir.join("script.py"), "x").unwrap();
+
+        let (tw, th): (u16, u16) = (60, 24);
+        let mut a = app_with("scratch\n", 20);
+        let target = dir.clone();
+        let signals = a.mutate_editor_with(move |e: &mut lattice_host::editor::Editor| {
+            e.do_open_file_tree(Some(target))
+        });
+        for s in signals {
+            a.handle_renderer_signal(s);
+        }
+        // Icons reach the frame through `PendingInlays` → `ExtraInlays`,
+        // drained on a tick — not on the open call. Settling on the mode
+        // is the same wait the CV.5 test above makes.
+        {
+            let mode = lattice_listing::listing_mode::DirectoryListingMode::mode_id();
+            let bid = a.editor.active_pane_buffer_id();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if a.editor
+                    .active_modes
+                    .get(&bid)
+                    .map(|m| m.is_active(mode))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let signals = a.editor.run_tick_pending();
+                for sig in signals {
+                    a.handle_renderer_signal(sig);
+                }
+            }
+        }
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            e.publish_render_state();
+        });
+
+        // What the theme says each element should paint as.
+        let theme = a
+            .editor
+            .services
+            .get::<ThemeRegistryHandle>()
+            .expect("the theme registry is a boot service");
+        let resolved = theme.resolved();
+        let want = |name: &'static str| -> Color {
+            let id = theme
+                .id(&ElementName::from_static(name))
+                .unwrap_or_else(|| panic!("{name} must be registered by the listing mode"));
+            crate::theme::host_color_to_ratatui(
+                resolved
+                    .get(id)
+                    .fg
+                    .unwrap_or_else(|| panic!("{name} must resolve a foreground")),
+            )
+        };
+        let want_dir = want(lattice_listing::listing_mode::ELEM_LISTING_DIR);
+        let want_rust = want("listing.file.rust");
+        let want_python = want("listing.file.python");
+        assert!(
+            want_rust != want_python && want_rust != want_dir,
+            "precondition: the three elements resolve to different colours \
+             ({want_rust:?} / {want_python:?} / {want_dir:?}) — if the palette \
+             collapsed them this test could not tell a fix from the bug"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(tw, th)).unwrap();
+        let snap = a.ad().snapshot.clone();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // The painted fg of the icon on the row whose text contains
+        // `name`. The icon is virtual text, so it is not in the rope and
+        // cannot be located by byte — find the row by its name, then take
+        // the cell just left of where the name starts.
+        let icon_fg = |name: &str| -> Color {
+            for y in 0..th {
+                // Searched per COLUMN, not per byte: the icon glyph is
+                // multi-byte, so a byte offset into the row's text is not
+                // the column the name starts at — and the cell two to its
+                // left would be some interior byte of the name.
+                let cols: Vec<String> = (0..tw).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                for c in 0..cols.len() {
+                    if cols[c..].concat().starts_with(name) {
+                        // Back over the icon's trailing space onto the glyph.
+                        return buf[(c.saturating_sub(2) as u16, y)].fg;
+                    }
+                }
+            }
+            panic!("no painted row contains {name:?}");
+        };
+
+        let (rust, python, subdir) = (icon_fg("main.rs"), icon_fg("script.py"), icon_fg("subdir"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            rust, want_rust,
+            "the .rs icon must paint `listing.file.rust`; painting the \
+             blanket `inlay.hint` grey here is the reported bug"
+        );
+        assert_eq!(
+            python, want_python,
+            "the .py icon must paint `listing.file.python`"
+        );
+        assert_eq!(
+            subdir, want_dir,
+            "a directory icon must paint `listing.dir`"
+        );
     }
 
     /// **CV.2: a file that ends in a newline must not paint an extra

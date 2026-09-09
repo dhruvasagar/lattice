@@ -768,6 +768,25 @@ impl PaneTree {
         self.compute_rects_layout(area)
     }
 
+    /// ZP.3: the node a renderer should paint — the zoomed leaf when
+    /// zoomed, otherwise the real root.
+    ///
+    /// For renderers that recurse over [`PaneNode`] themselves rather
+    /// than calling [`Self::compute_rects`] (the GPUI peer's
+    /// `collect_pane_geometries` and `paint_pane_tree`). Expressing
+    /// zoom as "the tree is one leaf" means those walks stay exactly
+    /// as they were — no zoom branch inside the recursion, where it
+    /// would have to be re-checked at every level.
+    ///
+    /// Allocation-free in both arms: borrowed for the real root, and
+    /// the owned arm is a bare `Leaf(usize)` with no boxed children.
+    pub fn render_root(&self) -> std::borrow::Cow<'_, PaneNode> {
+        match self.zoomed_index() {
+            Some(idx) => std::borrow::Cow::Owned(PaneNode::Leaf(idx)),
+            None => std::borrow::Cow::Borrowed(&self.root),
+        }
+    }
+
     /// ZP.1: the always-unzoomed peer of [`Self::compute_rects`] —
     /// the full split layout, whatever the zoom state.
     ///
@@ -1470,6 +1489,43 @@ mod tests {
 
         std::mem::swap(&mut live, &mut stashed);
         assert!(live.is_zoomed(), "and gets it back on return");
+    }
+
+    /// ZP.3: the cross-renderer contract in one assertion.
+    ///
+    /// The TUI reaches zoom through `compute_rects`; the GPUI peer
+    /// recurses over `PaneNode` from `render_root`. Two code paths,
+    /// and the thing that must not drift between them is *which
+    /// leaves are visible*. Anything else — a renderer showing a pane
+    /// the other hides — is the pixel-level divergence the
+    /// lockstep-parity rule exists to prevent.
+    #[test]
+    fn render_root_and_compute_rects_agree_on_the_visible_leaves() {
+        let mut t = PaneTree::single(doc_state());
+        t.split_active(SplitOrientation::Vertical);
+        let third = t.split_active(SplitOrientation::Horizontal);
+        t.set_active(third);
+
+        for zoom in [false, true] {
+            if zoom {
+                assert!(t.toggle_zoom());
+            }
+
+            let mut from_rects: Vec<usize> = t
+                .compute_rects(area())
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect();
+            let mut from_root = Vec::new();
+            t.render_root().for_each_leaf(&mut |i| from_root.push(i));
+
+            from_rects.sort_unstable();
+            from_root.sort_unstable();
+            assert_eq!(
+                from_rects, from_root,
+                "TUI and GPUI must paint the same leaf set (zoomed = {zoom})"
+            );
+        }
     }
 
     /// `close_active` renumbers every leaf index above the removed

@@ -3496,7 +3496,21 @@ impl Render for EditorView {
             (f32::from(viewport_px.height) - global_chrome_v_px - strip_rows_px - tabline_h_px)
                 .max(0.0);
         let avail_w_px = f32::from(viewport_px.width);
-        let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
+        // ZP.3: `render_root` — the zoomed leaf when a pane is zoomed,
+        // the real root otherwise. Zoom has to be honoured HERE and not
+        // just in the paint walk below: this is the loop that fires
+        // `set_pane_viewport` per leaf, which resizes a terminal pane's
+        // alacritty grid and PTY. Sizing hidden panes against the split
+        // layout while the zoomed one gets the full window would leave a
+        // zoomed terminal wrapped to a fraction of its visible width.
+        let pane_tree_root = self
+            .app
+            .render_state
+            .load()
+            .panes
+            .tree
+            .render_root()
+            .into_owned();
         let mut pane_geometries: Vec<(usize, u32, u32)> = Vec::new();
         collect_pane_geometries(
             &pane_tree_root,
@@ -3803,7 +3817,9 @@ impl Render for EditorView {
             .collect();
         let document_area = self
             .paint_pane_tree(
-                render_state.panes.tree.root(),
+                // ZP.3: zoom, expressed as "for painting, the tree is
+                // one leaf" — the recursion below stays untouched.
+                &render_state.panes.tree.render_root(),
                 &theme,
                 active_idx,
                 estimated_row_px,
@@ -5735,7 +5751,45 @@ mod popup_geometry_tests {
 #[cfg(test)]
 mod pane_geometry_split_tests {
     use super::{collect_pane_geometries, default_ui_row_px};
-    use lattice_core::ui::pane::PaneNode;
+    use lattice_core::ui::pane::{PaneNode, PaneState, PaneTree, SplitOrientation};
+
+    /// ZP.3: the GPUI half of the zoom contract. This peer does not
+    /// call `compute_rects` — it recurses over `PaneNode` itself — so
+    /// "the TUI honours zoom" says nothing about it. What makes the
+    /// two agree is that both start from the tree's `render_root`.
+    ///
+    /// Asserted on `collect_pane_geometries` specifically, because it
+    /// is the loop that fires `set_pane_viewport` per leaf and so
+    /// resizes a terminal pane's alacritty grid and PTY. A zoom
+    /// honoured only in the paint walk would leave a zoomed terminal
+    /// still wrapped to its unzoomed width.
+    #[test]
+    fn zoom_hands_the_gpui_walk_a_single_full_size_leaf() {
+        let mut tree = PaneTree::single(PaneState::default());
+        let right = tree.split_active(SplitOrientation::Vertical);
+        tree.set_active(right);
+
+        let (w, h, row_px, col_px) = (1200.0_f32, 800.0_f32, 20.0_f32, 8.0_f32);
+        let geoms = |root: &PaneNode| {
+            let mut out = Vec::new();
+            collect_pane_geometries(root, w, h, 0.0, 0.0, row_px, col_px, &mut out);
+            out
+        };
+
+        let unzoomed = geoms(&tree.render_root());
+        assert_eq!(unzoomed.len(), 2, "sanity: both panes sized when split");
+
+        assert!(tree.toggle_zoom());
+        let zoomed = geoms(&tree.render_root());
+        assert_eq!(
+            zoomed,
+            vec![(right, (h / row_px) as u32, (w / col_px) as u32)],
+            "zoomed: one leaf, the active one, sized to the whole area"
+        );
+
+        assert!(tree.toggle_zoom());
+        assert_eq!(geoms(&tree.render_root()), unzoomed, "restored verbatim");
+    }
 
     fn leaf(idx: usize) -> PaneNode {
         PaneNode::Leaf(idx)

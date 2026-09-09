@@ -65,6 +65,7 @@ docs = [
   "command-line-mode",
   "ex-commands",
   "surround-mode",
+  "formatting",
 ]
 
 [[section]]

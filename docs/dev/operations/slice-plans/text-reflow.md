@@ -11,14 +11,18 @@
 
 | Slice | Title | Status |
 |---|---|---|
-| RF.0 | The option surface — `textwidth`, `autowrap`, the three chains | 📝 |
-| RF.1 | The reflow engine — pure, tested, benched | 📝 |
-| RF.2 | `operator:reflow` on `gq` **and** `gw` | 📝 |
-| RF.3 | Auto-wrap on the insert path | 📝 |
-| RF.4 | Lists, hanging indent, fenced blocks; per-major defaults | 📝 |
-| RF.5 | Provider chains replace the hardcoded cascade | 📝 |
-| RF.6 | `operator:reformat` on `g=` | 📝 |
-| RF.7 | Docs, site sync, benches, parity audit | 📝 |
+| RF.0 | The option surface — `textwidth`, `autowrap`, the three chains | ✅ |
+| RF.1 | The reflow engine — pure, tested, benched | ✅ |
+| RF.2 | `operator:reflow` on `gq` **and** `gw` | ✅ |
+| RF.3 | Auto-wrap on the insert path | ✅ |
+| RF.4 | Lists, hanging indent, fenced blocks; per-major defaults | ✅ |
+| RF.5a | `format.reformat` chain replaces `:format`'s cascade | ✅ |
+| RF.5b | `=` / `gq` route through `format.indent` / `format.reflow` | ⛔ |
+| RF.6 | `operator:reformat` on `g=` | ⛔ |
+| RF.7 | Docs, site sync, benches, parity audit | ✅ |
+
+**NOT ARCHIVABLE.** RF.5b and RF.6 are ⛔ deferred, not dropped — both are
+still wanted, and §12 below names what unblocks them.
 
 ## Shape of the sequence
 
@@ -49,7 +53,7 @@ range; before RF.5 there is no chain for it to drive.
 
 ---
 
-## RF.0 — the option surface 📝
+## RF.0 — the option surface ✅
 
 `textwidth: i64 = 80` (validated `> 0`), `autowrap: AutoWrap = Comments`
 (`off｜comments｜all`, following `IndentMethod`'s `OptionType` +
@@ -72,7 +76,7 @@ Nothing honours the chains yet — RF.5 does. `textwidth` is honoured by RF.2,
 rejected value that leaves the previous chain in place (`§4.1` of the config
 docs); `:describe-option` renders each.
 
-## RF.1 — the reflow engine 📝
+## RF.1 — the reflow engine ✅
 
 `lattice-grammar/src/reflow.rs`. Pure functions, no I/O, no tree.
 
@@ -98,19 +102,27 @@ an empty range and a single-word range are no-ops.
 **Bench:** fill a 200-line paragraph — the number RF.3's keystroke budget is
 read against.
 
-## RF.2 — `operator:reflow` on `gq` and `gw` 📝
+## RF.2 — `operator:reflow` on `gq` and `gw` ✅
 
 Registered beside `operator:reindent` with `blockwise_per_row: false`
 (reflow is a whole-line operation, like `=`). Both chords bind to the one
-operator; `gqq` / `gww` / `gqw` / `gwq` are the current-line forms. Cursor
-preserved. One undo unit for the range.
+operator; `gqq` / `gww` are the current-line forms. Cursor preserved. One
+undo unit for the range.
+
+**Corrected while building:** the plan said `gqw` / `gwq` should also mean
+the current line, following Zed. They must not — `gq` is linewise in vim,
+so `gqw` already formats the whole line, and binding it as a fixed
+current-line chord would spend the `gq{motion}` composition to gain a
+second spelling of `gqq`. Also: `[g, q]` must stay an INTERNAL trie node.
+A depth-2 terminal there resolves as `Bound` before the walk descends and
+silently kills `gqq`, `gqap`, `gqi(`.
 
 **Tests:** `gqap`, `gqaC` (the comment text object, N.1.6), visual `gq`,
 `3gqq`, and each doubled form; the cursor is where it started; one `u`
 reverses the whole range. Plus the `magit-blame-mode` shadow — `gq` in a blame
 buffer still quits blame, because a mode layer resolves before `Builtin`.
 
-## RF.3 — auto-wrap on the insert path 📝
+## RF.3 — auto-wrap on the insert path ✅
 
 Honours `autowrap` + `textwidth`. Lexical comment detection per §9 — a prefix
 compare on the current line, never a tree query on a keystroke. Same undo unit
@@ -124,7 +136,7 @@ undoes character *and* break together.
 **Bench:** the keystroke-path number, against the §8.2 budget. This is the
 slice with a latency claim to defend.
 
-## RF.4 — lists, hanging indent, fenced blocks 📝
+## RF.4 — lists, hanging indent, fenced blocks ✅
 
 §4.3 markers (`-`, `*`, `+`, `1.`, `1)`) with continuation indented to the
 text column; §4.5 fence detection so reflow is a no-op inside ```` ``` ````
@@ -136,12 +148,12 @@ and `#+begin_…`. Per-major `autowrap` defaults land here
 keeps its depth; an ordered list survives; a fenced block inside a `gqip`
 range is untouched; org `#+begin_src` likewise.
 
-## RF.5 — provider chains replace the hardcoded cascade 📝
+## RF.5a — `format.reformat` replaces the hardcoded cascade ✅
 
 The refactor. `do_format_request`'s two-rung `if` becomes a chain resolver;
-`FormatterSpec` + the per-language table become chain entries; `format.indent`
-and `format.reflow` route `=` and `gq` through the same resolver with
-`[native]` defaults.
+`FormatterSpec` + the per-language table become chain entries.
+`format.indent` and `format.reflow` are declared and default to
+`[native]`; ROUTING them to a non-native rung is RF.5b below.
 
 Migration per §6.3: **delete `equalprg`** (zero consumers, ⛔ deferred at
 IN.9); **retire `formatprg`** into `format.reformat` with a one-release
@@ -153,12 +165,42 @@ survive as defaults, neither survives as a hardcode, and leaving the fragment
 asserting a cascade the code no longer has is how docs rot.
 
 **Tests:** each provider kind resolves; a failing rung falls through to the
-next and an exhausted chain names what it tried; `reflow = ["lsp","native"]`
+next and an exhausted chain names every rung it tried; reordering the chain
+changes which formatter wins (the extensibility claim, asserted rather than
+asserted-about); a `formatprg` in an existing config still works as the
+first rung. Deferred to RF.5b: `reflow = ["lsp","native"]`
 actually routes `gq` to the server (the flexibility claim, asserted rather
 than asserted-about); a `formatprg` in an existing config still works and says
 so once.
 
-## RF.6 — `operator:reformat` on `g=` 📝
+## RF.5b — `=` / `gq` route through their own chains ⛔
+
+**Deferred 2026-09-09, and this is what unblocks it.** The chains are
+declared, default to `[native]`, and are honoured in the sense that the
+native path is what runs. What is missing is delegation: a chain whose
+first rung is `lsp` / `external` / `plugin` still runs the native engine.
+
+The obstacle is structural rather than incidental. The operator computes
+its range inside the grammar layer and applies its edit there; a
+non-native rung needs that range to reach the host, and every route to it
+crosses a boundary:
+
+- a new `AppEffect` variant — costs `wit/types.wit`, the
+  `boundary_app_effect.rs` mapping, and both renderers' classifiers;
+- a new `LspRequest` arm — the cheaper and in-grain option
+  (`effect.rs`'s own comment on `ReferencesView` says "a further LSP
+  surface adds an arm here, not a host `Action`, not a renderer
+  classifier entry"), but still `wit/types.wit` plus the boundary map,
+  and it only covers the `lsp` rung.
+
+Neither is hard; both are a different review surface from the rest of
+this plan, which is why they were split out rather than folded in. Do
+them together with RF.6, which needs the same channel.
+
+Until then the user docs say so plainly rather than implying the chains
+are live for all three intents.
+
+## RF.6 — `operator:reformat` on `g=` ⛔
 
 The operator form of `:format` over a range. LSP path uses
 `do_lsp_format_request(is_range: true)`, which already exists; the external
@@ -170,7 +212,29 @@ path feeds the range to the filter. Result lands through
 presses a key first passes on the broken version too); cursor and folds
 survive; no unedited line is re-emitted.
 
-## RF.7 — docs, site sync, benches, parity audit 📝
+**Deferred with RF.5b**, and blocked on the same thing: `g=` IS the
+`format.reformat` chain with an operator range, so it needs the same
+range→host channel. `do_lsp_format_request(is_range: true)` already
+exists but takes its range from the visual anchor, so `g=` works in
+Visual mode by construction and `g={motion}` is what needs the channel.
+
+## RF.7 — docs, site sync, benches, parity audit ✅
+
+`docs/user/formatting.md` covers all three verbs, `textwidth` /
+`autowrap`, the chain syntax, the `:setlocal` escape hatch, and the
+replaced settings; added to `site/data/nav.toml` and synced.
+
+Benches landed with their slices rather than here (RF.1's fill, RF.3's
+break point) so the numbers were recorded while fresh.
+
+**GPUI parity audit: empty, and structurally so.** No `Effect` variant
+was added, no theme element, no renderer match arm — reflow produces
+ordinary `Edit`s and `autowrap` produces one more. `grep -rn
+"reflow\|autowrap\|textwidth\|AutoWrap\|WrapWidth\|ProviderChain"
+crates/lattice-ui-gpui/src/` returns only two pre-existing comments
+about image layout. Recorded here because "no GPUI change" that is not
+written down is indistinguishable from the parity rule having been
+skipped.
 
 User docs for `textwidth`, `autowrap`, the three chains, and the three verbs;
 `site/data/nav.toml` + `python3 site/scripts/sync-docs.sh` (a `docs/` change is

@@ -46,7 +46,7 @@
     - [X] commands
     - [X] pane buffers
     - [X] searches
-    - [ ] yank
+    - [X] yank
     - [ ] macros
 - [X] auto indent
 - [ ] auto formatting
@@ -240,5 +240,5 @@
 - [X] K.4 — multibuffer-is-a-regular-buffer audit
 - [X] M.7/M.8 — excerpt and file-boundary fold providers
 - [ ] LSP phase 4 — still in progress (4.5 wire complete, some trigger-UX rows deferred)
-- [ ] Completion — :complete picker bridge
+- [X] Completion — :complete picker bridge
 - [ ] Multibuffer View Providers

@@ -28,6 +28,33 @@ pub struct LayerHit {
     pub active: bool,
 }
 
+/// DK.4: one binding registered BELOW a queried prefix. Returned by
+/// `KeymapHandle::continuations`, which `:describe-key` renders when the
+/// chord it was asked about is a prefix rather than a binding.
+///
+/// "`<C-c><C-x>` is not bound in any mode" is technically true and
+/// useless; the answer the user came for is the subtree — what may
+/// follow, what each continuation runs, and which of them can fire in
+/// the buffer they asked from.
+#[derive(Debug, Clone)]
+pub struct Continuation {
+    /// The binding mode this continuation is registered in.
+    pub mode: BindingMode,
+    /// The chords that follow the queried prefix, already rendered
+    /// (`<C-b>`, `p`, `{char}` for a wildcard descent).
+    pub suffix: String,
+    /// The layer the continuation lives in.
+    pub layer: KeymapLayer,
+    /// The bound command at the end of the suffix.
+    pub command: Arc<BoundCommand>,
+    /// Whether this layer is active on the buffer that was described.
+    /// Inactive continuations are still listed — that is the point of
+    /// "describe-key answers for every key, not just the active ones" —
+    /// but they are marked, so the reader can tell "this exists" from
+    /// "this fires here".
+    pub active: bool,
+}
+
 /// Full trace of all layer hits for a chord sequence in one
 /// `BindingMode`. Returned by `KeymapHandle::resolve_trace`.
 ///

@@ -284,6 +284,62 @@ impl KeymapTrie {
         }
     }
 
+    /// Descend `chords` and return the node reached, or `None` when
+    /// the path leaves the trie. Same precedence as [`Self::lookup`]
+    /// (exact child first, then `char_wildcard` for a bare char), so
+    /// the two agree on which node a sequence names.
+    fn descend(&self, chords: &[KeyChord]) -> Option<&TrieNode> {
+        let mut node = &self.root;
+        for chord in chords {
+            if let Some(next) = node.children.get(chord) {
+                node = next;
+                continue;
+            }
+            if chord.mods.is_empty()
+                && matches!(chord.key, KeyKind::Char(_))
+                && let Some(wild) = node.char_wildcard.as_deref()
+            {
+                node = wild;
+                continue;
+            }
+            return None;
+        }
+        Some(node)
+    }
+
+    /// DK.4: walk every binding registered strictly BELOW `prefix`,
+    /// invoking `f` with the SUFFIX path (the chords that follow
+    /// `prefix`) and the binding at that path.
+    ///
+    /// This is the subtree `:describe-key` renders when the chord it
+    /// was asked about is a prefix rather than a binding — the answer
+    /// "`<C-c><C-x>` is not bound" is true and useless, "it is a prefix
+    /// with eight continuations" is the answer the user came for.
+    ///
+    /// A binding sitting exactly AT `prefix` is not emitted; that is
+    /// the [`Self::lookup`] answer and is reported separately.
+    ///
+    /// O(subtree) walk. Telemetry path; never on the keystroke path.
+    pub fn walk_continuations<F>(&self, prefix: &[KeyChord], mut f: F)
+    where
+        F: FnMut(&[ChordPattern], &Arc<BoundCommand>),
+    {
+        let Some(node) = self.descend(prefix) else {
+            return;
+        };
+        let mut path: Vec<ChordPattern> = Vec::new();
+        for (chord, child) in &node.children {
+            path.push(ChordPattern::Literal(*chord));
+            walk_node(child, &mut path, &mut f);
+            path.pop();
+        }
+        if let Some(wild) = node.char_wildcard.as_deref() {
+            path.push(ChordPattern::CharLiteral);
+            walk_node(wild, &mut path, &mut f);
+            path.pop();
+        }
+    }
+
     /// Overlay `other` on top of `self`. `other`'s bindings win
     /// on conflict; the merge is structural so paths in `other`
     /// that don't conflict simply add to `self`'s tree.

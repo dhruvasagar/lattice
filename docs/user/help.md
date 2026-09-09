@@ -47,6 +47,12 @@ Shows every layer that has a binding for CHORD, marks which layer
 fires under the current buffer's active modes, and links to the
 source location where the binding was declared.
 
+It answers for **every key, not only the keys active where you are**.
+A chord owned by a mode you are not in is listed and marked
+`[inactive]` rather than reported as unbound — `:describe-key` is how
+you find out that a chord exists and where it works, not only what it
+does here.
+
 ### Mode-prefix syntax
 
 By default `:describe-key` queries **all binding modes** at once. To
@@ -110,10 +116,45 @@ you can see both the winner and what it shadows.
 Source links are live: pressing `<CR>` on a source line opens the
 file at that line in a new split.
 
+### Prefixes describe their subtree
+
+A chord that only *starts* a sequence has no binding of its own. Asking
+about one lists what can follow it instead:
+
+```
+:describe-key <C-c><C-x>
+
+<C-c><C-x> is a PREFIX — 8 continuation(s), no binding of its own.
+
+─── Continuations of <C-c><C-x> ───
+
+[Normal mode]
+  <C-c><C-x><C-b> → org-toggle-checkbox-set [inactive]
+    layer: Major mode: org-mode   source: …
+```
+
+Each continuation is a live link: press `<CR>` on one to describe it.
+This is how you explore an unfamiliar prefix — `:describe-key <Space>`
+lists your whole leader map, `:describe-key g` the `g` family.
+
+The same list appears under a chord that *is* bound but also has longer
+chords beneath it, headed "reachable only where the binding above is
+inactive". Those chords can never fire while the shorter binding is
+active — dispatch stops at the first binding — and this is the only
+place that trap is visible without reading keymap source.
+
 ### Via the `<C-h>` map
 
-In Normal mode, press `<C-h> k` — a prompt appears. Type the chord
-you want to describe (with optional mode prefix) and press `<Enter>`.
+In Normal mode, press `<C-h> k`, then press the chord itself. Every key
+describes itself — nothing is reserved as a terminator, so `<CR>`,
+`<Esc>` and `<BS>` all describe normally. Multi-key chords read key by
+key and the keymap decides when the sequence is complete, so
+`<C-c> <C-x> <C-b>` describes all three keys as one chord and `j`
+describes on the first.
+
+Chords that only start a sequence (`<Space>`, `g`) cannot be captured
+this way — capture is still waiting for the rest. Use the typed form
+above for those.
 
 ---
 

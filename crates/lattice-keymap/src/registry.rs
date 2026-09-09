@@ -44,7 +44,7 @@ use arc_swap::ArcSwap;
 use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
 use lattice_protocol::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 
-use crate::resolution::{KeymapResolution, LayerHit};
+use crate::resolution::{Continuation, KeymapResolution, LayerHit};
 use crate::{
     BindingMode, BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult, ModeId,
 };
@@ -552,6 +552,56 @@ fn build_reverse_cache_from_merged(
     out
 }
 
+/// Is a binding in `layer` active on a buffer whose gated modes are
+/// `active_modes`? Shared by [`KeymapHandle::resolve_trace`] and
+/// [`KeymapHandle::continuations`] so the two never drift.
+///
+/// - Builtin / User / Buffer are always-on (they live in the always-on
+///   merged trie `lookup_with_context` starts from).
+/// - K.1.c fix (210da76c): a `MajorMode` layer is NOT always-on —
+///   `build_always_on_merged` excludes it, and `lookup_with_context` folds it
+///   in only when the buffer's active-mode slice names it. So a major-mode
+///   binding is active iff it is THIS buffer's active major. Gate it exactly
+///   like a minor (callers pass `ActiveModes::keymap_gated_ids()` — active
+///   major first, then active minors). Hard-coding `MajorMode → true` made
+///   `:describe-key` report every major's chords as firing in every buffer
+///   (`i` → ai-conv-focus-prompt shown globally) — the introspection half of
+///   the same bug 210da76c fixed on the dispatch side.
+///
+/// **Invariant:** this must agree with `lookup_with_context` for the same
+/// `(layer, active_modes)` pair, or introspection contradicts dispatch.
+fn layer_is_active(layer: KeymapLayer, active_modes: &[ModeId]) -> bool {
+    match layer {
+        KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
+        KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => active_modes.contains(&id),
+    }
+}
+
+/// Render a trie path for display: literals through `Display for KeyChord`
+/// (which escapes `<` and a bare space), wildcard descents as `{char}` —
+/// the spelling `:describe-key` and `:keymap` already use for `f{char}` /
+/// `'{mark}` style bindings.
+fn render_chord_path(path: &[ChordPattern]) -> String {
+    let mut out = String::new();
+    for seg in path {
+        match seg {
+            ChordPattern::Literal(c) => out.push_str(&c.to_string()),
+            ChordPattern::CharLiteral => out.push_str("{char}"),
+        }
+    }
+    out
+}
+
+/// Position of `mode` in [`BindingMode::all`] — the declaration order the
+/// help output groups by, so continuation listings read Normal-first rather
+/// than in `HashMap` order.
+fn mode_order(mode: BindingMode) -> usize {
+    BindingMode::all()
+        .iter()
+        .position(|&m| m == mode)
+        .unwrap_or(usize::MAX)
+}
+
 /// Editor-facing handle to the keymap registry.
 ///
 /// **Reads are wait-free.** [`Self::lookup`] does one
@@ -1024,32 +1074,10 @@ impl KeymapHandle {
         let pairs = self.enumerate_chord_bindings(mode, chords);
         let hits = pairs
             .into_iter()
-            .map(|(layer, command)| {
-                let active = match layer {
-                    // Builtin / User / Buffer are always-on (they live in the
-                    // always_on merged trie `lookup_with_context` starts from).
-                    KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
-                    // K.1.c fix (210da76c): a MajorMode layer is NOT always-on —
-                    // `build_always_on_merged` excludes it, and
-                    // `lookup_with_context` folds it in only when the buffer's
-                    // active-mode slice names it. So a major-mode binding is
-                    // active iff it is THIS buffer's active major. Gate it
-                    // exactly like a minor (the caller passes
-                    // `ActiveModes::keymap_gated_ids()` — active major first,
-                    // then active minors). The old code hard-coded MajorMode →
-                    // true, so `:describe-key` reported every major's chords as
-                    // firing in every buffer (`i` → ai-conv-focus-prompt shown
-                    // globally) — the introspection half of the same bug
-                    // 210da76c fixed on the dispatch side.
-                    KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => {
-                        active_modes.contains(&id)
-                    }
-                };
-                LayerHit {
-                    layer,
-                    command,
-                    active,
-                }
+            .map(|(layer, command)| LayerHit {
+                layer,
+                command,
+                active: layer_is_active(layer, active_modes),
             })
             .collect();
         KeymapResolution { mode, hits }
@@ -1075,7 +1103,8 @@ impl KeymapHandle {
             .collect()
     }
 
-    /// Is `chords` still an INCOMPLETE prefix in at least one binding mode?
+    /// Is `chords` still an INCOMPLETE prefix of some REGISTERED binding —
+    /// in any binding mode, in any layer, active here or not?
     ///
     /// This is the question that lets `:describe-key`'s chord capture end a
     /// sequence without reserving a terminator key. A chord argument is a
@@ -1085,24 +1114,85 @@ impl KeymapHandle {
     /// that is exactly the distinction capture needs. Asking here is what frees
     /// `<CR>` / `<Esc>` / `<BS>` to be describable keys rather than controls.
     ///
-    /// **Any mode, not the current one.** `:describe-key` reports across every
-    /// mode (`resolve_trace_all_modes`), so capture must keep reading while any
-    /// mode could still extend the sequence — otherwise an Insert-mode-only
-    /// prefix would submit early while the user was still typing it.
+    /// **Any LAYER, not the active ones (DK.4).** This deliberately does not
+    /// take an `active_modes` slice, and the omission is the fix for a
+    /// user-reported truncation: capture runs while the `*command-line*`
+    /// buffer is focused, so an activation-gated query resolves against the
+    /// MINIBUFFER's modes — which are never the org / magit / plugin modes
+    /// whose chords the user is asking about. `<C-c><C-x><C-b>` submitted
+    /// after two chords and described `<C-c><C-x>`, because org-mode's
+    /// `MajorMode` layer was invisible to the question. No multi-chord
+    /// binding owned by a major mode or a plugin could be captured at all.
+    ///
+    /// The rule that replaces it: `:describe-key` answers for EVERY key, not
+    /// only the keys active where you stand — so capture keeps reading while
+    /// any registered binding anywhere could extend the sequence, and the
+    /// rendered answer marks each layer `[active]` / `[inactive]` for the
+    /// buffer the prompt was opened from. Sequence SHAPE is a property of the
+    /// keymap; what FIRES is a property of the buffer. Only the second one is
+    /// contextual.
+    ///
+    /// **Any mode, not the current one**, for the same reason: an
+    /// Insert-mode-only prefix must not submit early mid-sequence.
     ///
     /// `Unbound` deliberately terminates. "This key does nothing" is a first-
     /// class answer — it is the one a user asking why `<M-k>` did nothing
     /// needs — and treating it as "keep waiting" would hang capture on exactly
-    /// the query that motivated it.
+    /// the query that motivated it. A chord that is BOUND at this depth also
+    /// terminates, matching dispatch: the trie stops at the first binding, so
+    /// anything grown beneath it can never fire (the continuations are still
+    /// listed in the answer, flagged as unreachable).
     ///
     /// Telemetry path; not on the keystroke hot path.
-    pub fn any_mode_expects_more(&self, chords: &[KeyChord], active_modes: &[ModeId]) -> bool {
-        BindingMode::all().iter().any(|&mode| {
-            matches!(
-                self.lookup_with_context(mode, chords, active_modes),
-                LookupResult::Partial
-            )
+    pub fn any_layer_expects_more(&self, chords: &[KeyChord]) -> bool {
+        let inner = self.registry.inner.lock().expect("registry mutex");
+        inner.layers.iter().any(|layer| {
+            layer
+                .modes
+                .values()
+                .any(|trie| matches!(trie.lookup(chords), LookupResult::Partial))
         })
+    }
+
+    /// DK.4: every binding registered strictly BELOW `chords`, across all
+    /// layers and all binding modes, annotated with whether its layer is
+    /// active on the buffer described by `active_modes`.
+    ///
+    /// The prefix half of "`:describe-key` answers for every key". A prefix
+    /// has no binding of its own, so the layer trace is empty and the honest
+    /// answer is its subtree: what can follow, what each continuation runs,
+    /// and which of them can fire here.
+    ///
+    /// Results are sorted by binding mode (declaration order), then by
+    /// rendered chord suffix, so the output is stable across runs.
+    /// Continuations whose path crosses a `CharLiteral` wildcard (`f{char}`,
+    /// `'{mark}`) are included with the wildcard rendered as `{char}`.
+    ///
+    /// Telemetry path; not on the keystroke hot path.
+    pub fn continuations(&self, chords: &[KeyChord], active_modes: &[ModeId]) -> Vec<Continuation> {
+        let inner = self.registry.inner.lock().expect("registry mutex");
+        let mut out: Vec<Continuation> = Vec::new();
+        for layer in &inner.layers {
+            for (&mode, trie) in &layer.modes {
+                trie.walk_continuations(chords, |suffix, bound| {
+                    out.push(Continuation {
+                        mode,
+                        suffix: render_chord_path(suffix),
+                        layer: layer.layer,
+                        command: Arc::clone(bound),
+                        active: layer_is_active(layer.layer, active_modes),
+                    });
+                });
+            }
+        }
+        drop(inner);
+        out.sort_by(|a, b| {
+            mode_order(a.mode)
+                .cmp(&mode_order(b.mode))
+                .then_with(|| a.suffix.cmp(&b.suffix))
+                .then_with(|| a.layer.cmp(&b.layer))
+        });
+        out
     }
 
     /// Human-readable label for a `KeymapLayer`, derived from the layer's
@@ -1413,6 +1503,10 @@ mod tests {
         KeyChord::char(c)
     }
 
+    fn ctrl(c: char) -> KeyChord {
+        KeyChord::ctrl(c)
+    }
+
     #[test]
     fn lookup_returns_bound_after_bind() {
         let h = KeymapHandle::new();
@@ -1694,6 +1788,172 @@ mod tests {
         let h = KeymapHandle::new();
         let r = h.lookup(BindingMode::Normal, &[pressed('j')]);
         assert!(matches!(r, LookupResult::Unbound), "got {r:?}");
+    }
+
+    // ---- DK.4: sequence SHAPE is activation-agnostic ----------------
+    //
+    // `:describe-key` answers for every key, not only the keys active where
+    // the user stands. These pin the two halves of that: capture keeps
+    // reading while any REGISTERED layer can extend the sequence, and a
+    // prefix reports its subtree with each continuation flagged
+    // active/inactive for the buffer described.
+
+    /// A three-chord binding owned by a MAJOR mode (org's
+    /// `<C-c><C-x><C-b>`), asked about with NO modes active — which is
+    /// exactly the context chord capture runs in, because the focused
+    /// buffer while the prompt is open is `*command-line*`.
+    ///
+    /// The activation-gated question answers "nothing follows `<C-c><C-x>`"
+    /// and capture submits two chords early. The shape question answers
+    /// "org can still extend this", which is the truth about the keymap.
+    #[test]
+    fn expects_more_sees_layers_that_are_not_active() {
+        let h = KeymapHandle::new();
+        let org = ModeId::new("org-mode");
+        h.bind(
+            KeymapLayer::MajorMode(org),
+            BindingMode::Normal,
+            &[
+                ChordPattern::Literal(ctrl('c')),
+                ChordPattern::Literal(ctrl('x')),
+                ChordPattern::Literal(ctrl('b')),
+            ],
+            invocation(1),
+            src("org"),
+        );
+        let prefix = [ctrl('c'), ctrl('x')];
+        // The old activation-gated query, with the minibuffer's (empty)
+        // mode set — this is the truncation the user reported.
+        assert!(
+            !matches!(
+                h.lookup_with_context(BindingMode::Normal, &prefix, &[]),
+                LookupResult::Partial
+            ),
+            "precondition: an inactive major is invisible to a gated lookup"
+        );
+        assert!(
+            h.any_layer_expects_more(&prefix),
+            "capture must keep reading: org's layer can still extend <C-c><C-x>"
+        );
+        assert!(
+            h.any_layer_expects_more(&[ctrl('c')]),
+            "…and at every shorter depth of the same sequence"
+        );
+        assert!(
+            !h.any_layer_expects_more(&[ctrl('c'), ctrl('x'), ctrl('b')]),
+            "the complete sequence terminates — nothing is grown beneath it"
+        );
+        assert!(
+            !h.any_layer_expects_more(&[ctrl('q')]),
+            "an unregistered chord terminates immediately ('it does nothing' \
+             is the answer that motivated capture)"
+        );
+    }
+
+    /// A chord that is BOUND at this depth terminates capture even though
+    /// longer chords exist beneath it — matching dispatch, which stops at
+    /// the first binding and never consults children. The continuations are
+    /// still reported (flagged unreachable by the caller), because a chord
+    /// silently killing the family below it is precisely what a user needs
+    /// `:describe-key` to tell them.
+    #[test]
+    fn a_bound_prefix_terminates_capture_but_keeps_its_subtree_visible() {
+        let h = KeymapHandle::new();
+        let mode = ModeId::new("some-mode");
+        h.bind(
+            KeymapLayer::MinorMode(mode),
+            BindingMode::Normal,
+            &[lit('g'), lit('D')],
+            invocation(1),
+            src("bound-prefix"),
+        );
+        h.bind(
+            KeymapLayer::MinorMode(mode),
+            BindingMode::Normal,
+            &[lit('g'), lit('D'), lit('d')],
+            invocation(2),
+            src("unreachable"),
+        );
+        assert!(
+            !h.any_layer_expects_more(&[pressed('g'), pressed('D')]),
+            "bound at this depth ⇒ capture submits, as dispatch would fire"
+        );
+        let cont = h.continuations(&[pressed('g'), pressed('D')], &[]);
+        assert_eq!(cont.len(), 1, "the shadowed continuation is still listed");
+        assert_eq!(cont[0].suffix, "d");
+    }
+
+    /// The prefix answer itself: suffixes, layers, and an `active` flag that
+    /// tracks the DESCRIBED buffer's modes rather than the query.
+    #[test]
+    fn continuations_list_every_layer_and_flag_the_active_ones() {
+        let h = KeymapHandle::new();
+        let org = ModeId::new("org-mode");
+        let other = ModeId::new("other-mode");
+        h.bind(
+            KeymapLayer::MajorMode(org),
+            BindingMode::Normal,
+            &[
+                ChordPattern::Literal(ctrl('c')),
+                ChordPattern::Literal(ctrl('x')),
+                ChordPattern::Literal(ctrl('b')),
+            ],
+            invocation(1),
+            src("org"),
+        );
+        h.bind(
+            KeymapLayer::MinorMode(other),
+            BindingMode::Insert,
+            &[
+                ChordPattern::Literal(ctrl('c')),
+                ChordPattern::Literal(ctrl('x')),
+                lit('p'),
+            ],
+            invocation(2),
+            src("other"),
+        );
+        let prefix = [ctrl('c'), ctrl('x')];
+
+        let none_active = h.continuations(&prefix, &[]);
+        assert_eq!(
+            none_active
+                .iter()
+                .map(|c| c.suffix.as_str())
+                .collect::<Vec<_>>(),
+            vec!["<C-b>", "p"],
+            "both continuations are reported even with no mode active — \
+             describe-key answers for every key"
+        );
+        assert!(
+            none_active.iter().all(|c| !c.active),
+            "…flagged inactive, so 'exists' is distinguishable from 'fires here'"
+        );
+        // Normal-mode entry sorts before the Insert-mode one.
+        assert_eq!(none_active[0].mode, BindingMode::Normal);
+        assert_eq!(none_active[1].mode, BindingMode::Insert);
+
+        let in_org = h.continuations(&prefix, &[org]);
+        assert!(
+            in_org[0].active && !in_org[1].active,
+            "in an org buffer, org's continuation fires and the other does not"
+        );
+    }
+
+    /// A wildcard descent (`f{char}`, `'{mark}`) renders as `{char}` rather
+    /// than being dropped from the listing.
+    #[test]
+    fn continuations_render_wildcard_descents() {
+        let h = KeymapHandle::new();
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit('g'), lit('\''), ChordPattern::CharLiteral],
+            invocation(1),
+            src("mark"),
+        );
+        let cont = h.continuations(&[pressed('g')], &[]);
+        assert_eq!(cont.len(), 1);
+        assert_eq!(cont[0].suffix, "'{char}");
     }
 
     #[test]

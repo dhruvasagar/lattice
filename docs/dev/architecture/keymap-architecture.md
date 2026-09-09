@@ -1922,7 +1922,7 @@ lattice-keymap          ← owns: ModeId, BindingMode, KeymapEntry, keymap_entry
       ↓                           Keymap, KeymapBinding, KeymapTrie, KeymapLayer,
 lattice-mode            ←         BoundCommand, LookupResult, KeymapRegistry,
       ↓                           KeymapHandle, KeymapCapability, KeymapResolution,
-lattice-host            ←         LayerHit, parse_describe_key_arg
+lattice-host            ←         LayerHit, Continuation, parse_describe_key_arg
 ```
 
 Types that stayed in `lattice-host` (circular-dep barrier):
@@ -2011,8 +2011,9 @@ answers a question the other cannot:
 
 - **String form** — `:describe-key <chord>`, typed as text. Vim's `:map <key>`.
   Answers for chords the user cannot press right now, and for **bare
-  prefixes**: `:describe-key <Space>` reports the leader itself, which no
-  interactive capture can, because pressing it only starts a sequence.
+  prefixes**: `:describe-key <Space>` reports the leader's continuation
+  subtree (§13.2.b), which no interactive capture can, because pressing it
+  only starts a sequence.
 - **Interactive capture** — the `<C-h> k` prompt. Emacs's `C-h k`. Answers "I
   pressed *this* — what happened?", including for keys whose spelling the user
   does not know, and for keys that turn out to be **unbound**, which is the
@@ -2030,15 +2031,15 @@ Both problems come from asking the **user** to say when a sequence ends. The
 trie already knows: `Partial` versus `Bound`/`Unbound` is the same question the
 dispatch loop answers on every keystroke.
 
-	KeymapHandle::any_mode_expects_more(chords, active_modes) -> bool
-	    // true  => at least one BindingMode returns Partial; keep reading
+	KeymapHandle::any_layer_expects_more(chords) -> bool
+	    // true  => some layer, in some BindingMode, returns Partial; keep reading
 	    // false => Bound or Unbound everywhere; submit now
 
 So capture reserves **nothing**. `g` waits; `gg` submits; `j` submits on one
-key; `<CR>` describes Enter; `<M-k>` in a buffer that does not bind it submits
-immediately and says "not bound in any mode".
+key; `<CR>` describes Enter; `<M-k>` that nothing binds submits immediately and
+says "not bound in any mode".
 
-Two properties that are deliberate rather than incidental:
+Three properties that are deliberate rather than incidental:
 
 - **`Unbound` terminates.** "This key does nothing" is a first-class answer —
   the one a user asking why a key did nothing came for — so treating it as
@@ -2046,14 +2047,94 @@ Two properties that are deliberate rather than incidental:
 - **Any mode, not the current one.** `:describe-key` reports across every
   binding mode, so capture keeps reading while *any* mode could extend the
   sequence; otherwise an Insert-only prefix would submit early mid-sequence.
+- **Any LAYER, not the active ones (DK.4, 2026-09-09).** The question takes no
+  `active_modes` slice, and the omission is load-bearing — see below.
 
 The trade accepted: there is no mid-sequence abort. The sequence ends within a
 keystroke or two regardless, and dismissing an unwanted description costs one
 `q`. Emacs makes the same trade (`C-h k C-g` describes `C-g`).
 
 Not benched. The lookup runs once per keystroke *while a chord prompt is open*
-— never on the editing hot path — and is the same `lookup_with_context` call
-dispatch already makes per keystroke.
+— never on the editing hot path — and walks the layer stack the same way
+`resolve_trace` already does per description.
+
+#### Shape is not contextual — DK.4 (2026-09-09) ✅ landed
+
+Capture originally asked the **activation-gated** form of the question,
+`any_mode_expects_more(chords, active_modes)`, with `active_modes` read from
+`App::active_modes[active_buffer_id()]` per the §13.3 rule. That rule is right
+for dispatch and wrong here, and the difference is *which buffer is focused
+while a chord prompt is open*: `open_command_line` focuses the
+`*command-line*` buffer, so the gated query resolves against the
+**minibuffer's** modes. Every `MajorMode` / `MinorMode` layer belonging to the
+buffer the user came from is invisible to it.
+
+The user-visible failure: org's `<C-c><C-x><C-b>` (toggle checkbox set) could
+not be described. `<C-c>` read as `Partial` only because a globally-active
+minor happens to bind `<C-c>g`; `<C-c><C-x>` then had no continuation in that
+reduced context, so capture submitted and described `<C-c><C-x>` — a prefix,
+which at the time rendered as "not bound in any mode". Generalised: **no
+multi-chord binding owned by a major mode or contributed by a plugin could be
+captured at all.** `gg` worked only because Builtin is always-on, which is why
+every existing test passed.
+
+The rule that replaces it:
+
+> **`:describe-key` answers for every key, not only the keys active where you
+> stand.** Sequence SHAPE is a property of the keymap; what FIRES is a
+> property of the buffer. Only the second one is contextual.
+
+So capture keeps reading while any registered binding anywhere could extend
+the sequence, and `build_describe_key_content` still resolves activation
+against the buffer the prompt was opened from (submit calls
+`restore_editing_buffer()` before dispatching, so `active_buffer_id()` is the
+user's buffer again by then), marking each layer `[active]` / `[inactive]`.
+
+Two consequences worth stating plainly:
+
+- A chord that is a prefix **anywhere** can no longer be captured on its own.
+  `<Space>` is the leader, so it waits — as it did before for any buffer where
+  a leader binding was active. The string form covers it, and now answers with
+  the subtree rather than "not bound".
+- A chord that is **bound** at its depth still terminates capture even when
+  longer chords exist beneath it, matching dispatch (the trie stops at the
+  first binding and never consults children). Those unreachable continuations
+  are listed in the description, flagged — see §13.2.b.
+
+### 13.2.b A prefix answers with its subtree (DK.4) ✅ landed
+
+	KeymapHandle::continuations(chords, active_modes) -> Vec<Continuation>
+	    // every binding registered strictly BELOW `chords`,
+	    // across all layers and all binding modes, each carrying
+	    // { mode, suffix, layer, command, active }
+
+A prefix has no terminal binding, so its layer trace is empty and the honest
+answer used to be "`<C-c><C-x>` is not bound in any mode" — true, and useless
+when eight chords hang off it. `:describe-key` now renders the subtree:
+
+	<C-c><C-x> is a PREFIX — 8 continuation(s), no binding of its own.
+
+	─── Continuations of <C-c><C-x> ───
+
+	[Normal mode]
+	  <C-c><C-x><C-b> → org-toggle-checkbox-set [inactive]
+	    layer: major-mode:org-mode   source: …
+
+Each row's chord is a `key_link`, so `<CR>` on it re-runs `:describe-key` for
+that continuation — the listing is a drill-down, not a dead end. Inactive rows
+are listed rather than filtered, for the same reason capture is
+activation-agnostic: existence and applicability are different questions, and
+the reader is asking the first one.
+
+The same section renders under a chord that IS bound, with the header naming
+why those chords do not fire ("reachable only where the binding above is
+inactive"). That is the trap §14's `bind("<C-c><C-c>", …)` comment warns about
+— a terminal node kills any longer chord grown beneath it — made visible at
+the point of asking instead of discoverable by reading keymap source.
+
+`continuations` is the query a which-key popup and a future
+`:describe-bindings` drill-down both want, which is why it lives on
+`KeymapHandle` rather than inline in the `:describe-key` handler.
 
 **Chord rendering.** `Display for KeyChord` escapes a literal space as
 `<Space>`, the rule already applied to `<` as `<lt>` and for a superset of the
@@ -2076,6 +2157,16 @@ must read the active-mode set from `App::active_modes[active_buffer_id()]`,
 not from any document-specific field. Non-Document panes
 (Multibuffer, Terminal, etc.) have their own `ActiveModes` entries
 in `App::active_modes` and must not borrow a Document pane's state.
+
+**And its boundary (DK.4)**: the rule governs queries that are *supposed* to
+be context-sensitive. Not every keymap query is. A minibuffer is a buffer, so
+while a prompt is open `active_buffer_id()` is the `*command-line*` buffer —
+correct for "what does this keystroke do right now", wrong for "what shape is
+this chord sequence", which is a property of the keymap and not of any buffer.
+`any_layer_expects_more` therefore takes no active-mode slice at all. Before
+applying this rule to a new query, ask whether the answer should change when
+focus moves to a prompt; if it should not, the query is not context-sensitive
+and gating it produces §13.2.a's truncation bug.
 
 **Two bugs found and fixed** during the T10-T13 implementation
 (commit `eb219c5`):

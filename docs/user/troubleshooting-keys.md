@@ -28,10 +28,20 @@ keymap directly. It reports every mode with a binding, which layer each
 one came from, and which fires now.
 
 - **It names a command** → the binding exists. Your problem is step 2.
-- **"is not bound in any mode"** → genuinely unbound *for this buffer*.
-  Bindings from a major or minor mode only exist while that mode is
-  active, so check you are in the right buffer — an `org-mode` chord is
-  correctly "not bound" in a `.txt` file.
+- **It names a command marked `[inactive]`** → the binding exists, but the
+  mode that owns it is not active on this buffer. An `org-mode` chord
+  reported from a `.txt` file looks like this; open the org file and it
+  becomes `[active]`.
+- **"is a PREFIX — N continuation(s)"** → the chord starts a sequence but
+  is not a binding on its own. The listed continuations are the chords
+  that finish it; press `<CR>` on one to describe it.
+- **"is not bound in any mode"** → genuinely unregistered, everywhere.
+
+The report covers **every key, not just the keys active here** — a
+binding on an inactive mode is listed and flagged, never hidden. That is
+deliberate: "does this exist" and "does this fire here" are different
+questions, and a chord that answers `[inactive]` tells you to switch
+buffers, while one that answers "not bound" tells you to bind it.
 
 `:describe-key` accepts a mode prefix (`n_` Normal, `i_` Insert, `v_`
 Visual, `r_` Replace, `c_` Command, `s_` Search) to narrow the report:
@@ -43,11 +53,17 @@ Visual, `r_` Replace, `c_` Command, `s_` Search) to narrow the report:
 Press `<C-h> k` and then press the key itself.
 
 Capture reserves nothing, so every key describes itself — including
-`<CR>`, `<Esc>`, `<BS>` and `<Space>`. Multi-key chords work by pressing
-each key in turn; the keymap ends the sequence on its own, so there is no
-terminator to press. (One consequence: a bare prefix like `<Space>` alone
-cannot be captured — capture is still waiting for the rest of it. Use the
-string form from step 1 for those.)
+`<CR>`, `<Esc>` and `<BS>`. Multi-key chords work by pressing each key in
+turn; the keymap ends the sequence on its own, so there is no terminator
+to press. This works for chords of any length and from any buffer:
+`<C-c> <C-x> <C-b>` reads all three keys whether or not you are in an org
+buffer, because where a sequence ENDS is a fact about the keymap, not
+about where you are standing.
+
+One consequence: a chord that merely *starts* a sequence — `<Space>`,
+`g`, `<C-w>` — cannot be captured on its own, because capture is still
+waiting for the rest of it. Use the string form from step 1 for those;
+it answers with the list of chords that continue the prefix.
 
 Read the result against what you pressed:
 

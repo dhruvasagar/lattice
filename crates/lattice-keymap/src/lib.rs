@@ -28,4 +28,4 @@ pub use registry::{
 };
 
 pub mod resolution;
-pub use resolution::{KeymapResolution, LayerHit, parse_describe_key_arg};
+pub use resolution::{Continuation, KeymapResolution, LayerHit, parse_describe_key_arg};

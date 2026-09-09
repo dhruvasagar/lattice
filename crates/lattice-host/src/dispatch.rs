@@ -9582,14 +9582,30 @@ impl Editor {
     /// The trie already knows — it is the `Partial` vs `Bound`/`Unbound`
     /// question the dispatch loop answers on every keystroke — so capture asks
     /// it instead. `gg` reads two chords because `g` is `Partial`; `j` submits
-    /// on one because it is `Bound`; `<M-k>` in a buffer that does not bind it
-    /// submits on one because it is `Unbound`, which is the answer the user
-    /// asking "why did that key do nothing" came for. This is emacs `C-h k`.
+    /// on one because it is `Bound`; `<M-k>` that nothing binds submits on one
+    /// because it is `Unbound`, which is the answer the user asking "why did
+    /// that key do nothing" came for. This is emacs `C-h k`.
+    ///
+    /// ## Which keymap the question is asked OF (DK.4)
+    ///
+    /// The trie is asked across every LAYER, not just the layers active where
+    /// the user stands — [`lattice_keymap::KeymapHandle::any_layer_expects_more`].
+    /// Asking the activation-gated question here truncated any chord owned by
+    /// a major mode or a plugin, because a chord prompt focuses the
+    /// `*command-line*` buffer and the gated query then resolves against the
+    /// MINIBUFFER's modes. Org's `<C-c><C-x><C-b>` submitted after two chords
+    /// and described `<C-c><C-x>`; `gg` only ever worked because Builtin is
+    /// always-on.
+    ///
+    /// Sequence shape is a property of the keymap; what FIRES is a property of
+    /// the buffer. `build_describe_key_content` still resolves the second one
+    /// against the buffer the prompt was opened from (submit restores it
+    /// before dispatching) and marks each layer `[active]` / `[inactive]`.
     ///
     /// A bare PREFIX (`<Space>`, `g`) still cannot be captured on its own —
     /// capture waits, correctly, for the rest. The string form
-    /// (`:describe-key <Space>`) covers that, so the two entry points are
-    /// complementary rather than redundant.
+    /// (`:describe-key <Space>`) covers that, and now answers with the
+    /// prefix's continuation subtree rather than "not bound in any mode".
     pub fn do_command_line_append_chord(&mut self, token: String, out: &mut DispatchOutcome) {
         if !self.ensure_command_line_focus() {
             return;
@@ -9616,15 +9632,14 @@ impl Editor {
             }
         }
 
-        let active_modes: Vec<lattice_mode::mode::ModeId> = self
-            .active_modes
-            .get(&self.active_buffer_id())
-            .map(|m| m.keymap_gated_ids())
-            .unwrap_or_default();
-        if self
-            .keymap
-            .any_mode_expects_more(&self.chord_capture_seq, &active_modes)
-        {
+        // DK.4: ask the SHAPE question — can any registered binding, in any
+        // layer, extend this sequence? Deliberately NOT the activation-gated
+        // one: while this prompt is open the focused buffer is
+        // `*command-line*`, so gating on the active buffer's modes asks about
+        // the minibuffer's keymap and every major-mode / plugin chord the user
+        // could be describing is invisible. That is what truncated
+        // `<C-c><C-x><C-b>` to `<C-c><C-x>`.
+        if self.keymap.any_layer_expects_more(&self.chord_capture_seq) {
             return;
         }
         self.do_command_line_submit(out);
@@ -37397,13 +37412,33 @@ impl Editor {
             None => self.keymap.resolve_trace_all_modes(&parsed, &active_modes),
         };
 
+        // DK.4: everything registered BELOW this chord. A prefix has no
+        // binding of its own, so without this the answer for `<C-c><C-x>` was
+        // "not bound in any mode" — true, and useless, when eight chords hang
+        // off it. Filtered by the mode prefix when one was given, so
+        // `:describe-key i_<C-x>` lists only Insert-mode continuations.
+        let continuations: Vec<lattice_keymap::Continuation> = self
+            .keymap
+            .continuations(&parsed, &active_modes)
+            .into_iter()
+            .filter(|c| mode_filter.is_none_or(|m| c.mode == m))
+            .collect();
+
         let mut lines: Vec<String> = Vec::new();
 
         if resolutions.is_empty() {
-            lines.push(format!(
-                "{} is not bound in any mode.",
-                lattice_help::key_link(chord_str),
-            ));
+            if continuations.is_empty() {
+                lines.push(format!(
+                    "{} is not bound in any mode.",
+                    lattice_help::key_link(chord_str),
+                ));
+            } else {
+                lines.push(format!(
+                    "{} is a PREFIX — {} continuation(s), no binding of its own.",
+                    lattice_help::key_link(chord_str),
+                    continuations.len(),
+                ));
+            }
         } else {
             let total: usize = resolutions.iter().map(|r| r.hits.len()).sum();
             lines.push(format!(
@@ -37526,6 +37561,55 @@ impl Editor {
                     ));
                     lines.push(format!("      source: {}", hit.command.source.as_link(),));
                 }
+            }
+        }
+
+        // DK.4: the continuation subtree. For a prefix this IS the answer; for
+        // a chord that is bound AND has chords grown beneath it, it is the
+        // warning — the trie stops at the first binding, so those longer
+        // chords can only ever fire where this binding is inactive, and a
+        // chord silently killing the family below it is exactly what a user
+        // needs `:describe-key` to tell them.
+        if !continuations.is_empty() {
+            lines.push(String::new());
+            lines.push(if resolutions.is_empty() {
+                format!("─── Continuations of {chord_str} ───")
+            } else {
+                format!(
+                    "─── Continuations of {chord_str} (reachable only where the \
+                     binding above is inactive) ───"
+                )
+            });
+            let mut last_mode: Option<lattice_keymap::BindingMode> = None;
+            for cont in &continuations {
+                if last_mode != Some(cont.mode) {
+                    lines.push(String::new());
+                    lines.push(format!("[{} mode]", cont.mode.label()));
+                    last_mode = Some(cont.mode);
+                }
+                let cmd_name = self
+                    .registry
+                    .load()
+                    .lookup(cont.command.command.command)
+                    .map(|spec| spec.name.clone())
+                    .unwrap_or_else(|| format!("{:?}", cont.command.command.command));
+                let status = if cont.active {
+                    "[active]"
+                } else {
+                    "[inactive]"
+                };
+                // The full chord is a `key_link`, so `<CR>` on the row
+                // re-runs `:describe-key` for the continuation — the listing
+                // is a drill-down, not a dead end.
+                lines.push(format!(
+                    "  {} → {cmd_name} {status}",
+                    lattice_help::key_link(&format!("{chord_str}{}", cont.suffix)),
+                ));
+                lines.push(format!(
+                    "    layer: {}   source: {}",
+                    self.keymap.layer_label_string(cont.layer),
+                    cont.command.source.as_link(),
+                ));
             }
         }
 
@@ -50358,6 +50442,120 @@ mod tests {
         );
     }
 
+    /// Bind a chord sequence on a MAJOR-mode layer that is not active on the
+    /// test buffer — the shape org's `<C-c><C-x><C-b>` has from the
+    /// minibuffer's point of view while a chord prompt is open.
+    fn bind_on_inactive_major(editor: &Editor, mode: &str, keys: &str, id: u64) {
+        use lattice_grammar::{CommandInvocation, SourceLocation};
+        use lattice_keymap::KeymapLayer;
+        use lattice_mode::mode::ModeId;
+        use lattice_protocol::ids::CommandId;
+
+        let path: Vec<crate::keymap_trie::ChordPattern> = crate::chord::parse_chord_sequence(keys)
+            .expect("test chord parses")
+            .into_iter()
+            .map(crate::keymap_trie::ChordPattern::Literal)
+            .collect();
+        editor.keymap.bind(
+            KeymapLayer::MajorMode(ModeId::new(mode)),
+            crate::keymap::BindingMode::Normal,
+            &path,
+            CommandInvocation::of(CommandId::new(id)),
+            SourceLocation::synthetic("test:inactive-major"),
+        );
+    }
+
+    /// DK.4, the reported bug: `<C-c><C-x><C-b>` (org's checkbox verb)
+    /// described `<C-c><C-x>` instead, because capture asked the
+    /// activation-gated question and the buffer focused while a chord prompt
+    /// is open is `*command-line*` — so org's major layer, and every other
+    /// mode-owned or plugin-contributed chord, was invisible to it. `gg`
+    /// passed the old tests only because Builtin is always-on.
+    ///
+    /// Pressed through `dispatch_chord` rather than by calling
+    /// `do_command_line_append_chord`, because the whole failure is in what
+    /// the capture path decides between keystrokes.
+    #[test]
+    fn capture_reads_a_chord_owned_by_a_mode_that_is_not_active_here() {
+        let mut editor = armed_describe_key();
+        bind_on_inactive_major(&editor, "org-mode", "<C-c><C-x><C-b>", 0x0C4B);
+
+        assert_eq!(
+            capture(&mut editor, "<C-c>"),
+            None,
+            "`<C-c>` is a prefix of org's chord — capture must wait"
+        );
+        assert_eq!(
+            capture(&mut editor, "<C-x>"),
+            None,
+            "`<C-c><C-x>` is still only a prefix; submitting here is the bug \
+             (the user got help for <C-c><C-x> and could not reach <C-c><C-x><C-b>)"
+        );
+        let content = capture_content(&mut editor, "<C-b>").expect("the third chord submits");
+        assert_eq!(content.buffer.title, "describe-key <C-c><C-x><C-b>");
+        let body = content.buffer.content.as_string();
+        assert!(
+            body.contains("registration(s)"),
+            "the described chord must resolve to org's binding, not to \
+             'not bound in any mode': {body}"
+        );
+    }
+
+    /// The other half of "describe-key answers for every key": a PREFIX is no
+    /// longer reported as unbound. Its subtree is the answer, with each
+    /// continuation marked for whether it fires in the buffer described.
+    #[test]
+    fn a_prefix_reports_its_continuations_instead_of_not_bound() {
+        let editor = armed_describe_key();
+        bind_on_inactive_major(&editor, "org-mode", "<C-c><C-x><C-b>", 0x0C4B);
+        bind_on_inactive_major(&editor, "org-mode", "<C-c><C-x>p", 0x0C50);
+
+        let content = editor.build_describe_key_content("<C-c><C-x>");
+        let body = content.buffer.content.as_string();
+        assert!(
+            !body.contains("is not bound in any mode"),
+            "a prefix with continuations must not be reported as unbound: {body}"
+        );
+        assert!(
+            body.contains("is a PREFIX — 2 continuation(s)"),
+            "the prefix header names how many chords hang off it: {body}"
+        );
+        assert!(
+            body.contains("<C-c><C-x><C-b>") && body.contains("<C-c><C-x>p"),
+            "both continuations are listed by full chord: {body}"
+        );
+        assert!(
+            body.contains("[inactive]"),
+            "org-mode is not active on this buffer, and the listing says so \
+             rather than implying the chords fire here: {body}"
+        );
+    }
+
+    /// A chord that is BOUND and also has chords grown beneath it: the trie
+    /// stops at the first binding, so the longer ones can never fire while
+    /// this one is active. That trap is invisible in the keymap source and is
+    /// exactly what `:describe-key` should surface.
+    #[test]
+    fn a_bound_chord_still_lists_the_subtree_it_shadows() {
+        let editor = armed_describe_key();
+        bind_on_inactive_major(&editor, "org-mode", "gD", 0x9D00);
+        bind_on_inactive_major(&editor, "org-mode", "gDd", 0x9D01);
+
+        let body = editor
+            .build_describe_key_content("gD")
+            .buffer
+            .content
+            .as_string();
+        assert!(
+            body.contains("Continuations of gD"),
+            "the shadowed subtree is reported: {body}"
+        );
+        assert!(
+            body.contains("reachable only where the binding above is inactive"),
+            "…and says why those chords do not fire: {body}"
+        );
+    }
+
     /// An UNBOUND chord terminates immediately. This is the query that
     /// motivated the change — "why did `<M-k>` do nothing" — so treating
     /// unbound as "keep waiting" would hang capture on exactly the question it
@@ -50385,21 +50583,40 @@ mod tests {
     }
 
     /// DK.1 through the real capture path: pressing Space must append a
-    /// `<Space>` TOKEN, not a raw space.
+    /// `<Space>` TOKEN, not a raw space. A raw space splits the argument, so
+    /// the old behaviour submitted `describe-key` with NOTHING after it —
+    /// pressing Space in a chord prompt did nothing at all, which is the
+    /// reported failure.
     ///
-    /// The title is the assertion because it carries the argument the
-    /// ex-parser actually received. A raw space splits the argument, so the
-    /// old behaviour submitted `describe-key` with NOTHING after it — pressing
-    /// Space in a chord prompt did nothing at all, which is the reported
-    /// failure.
+    /// DK.4 moved where this is observable. `<Space>` is the leader, so under
+    /// the activation-agnostic shape rule it is a PREFIX of every
+    /// `<leader>…` binding in the keymap — including the ones on modes that
+    /// are not active here — and capture correctly waits instead of
+    /// submitting. So the token is asserted on the command line (where the
+    /// DK.1 bug actually lived), and the submitted argument is asserted by
+    /// completing a real leader sequence.
     #[test]
     fn capturing_space_appends_a_token_not_whitespace() {
         let mut editor = armed_describe_key();
         assert_eq!(
             capture(&mut editor, "<Space>"),
-            Some("describe-key <Space>".to_string()),
-            "the captured token must survive a whitespace-delimited ex-command \
-             argument"
+            None,
+            "the leader is a prefix — capture waits for the rest of the chord"
+        );
+        assert_eq!(
+            editor.command_line(),
+            "describe-key <Space>",
+            "Space must append a TOKEN; a raw space would split the ex-command \
+             argument and submit an empty one"
+        );
+
+        // Completing the sequence proves the token survives the
+        // whitespace-delimited ex parser all the way to the argument.
+        bind_on_inactive_major(&editor, "test-leader-mode", "<Space>zz", 0x5A5A);
+        assert_eq!(capture(&mut editor, "z"), None);
+        assert_eq!(
+            capture(&mut editor, "z"),
+            Some("describe-key <Space>zz".to_string()),
         );
     }
 

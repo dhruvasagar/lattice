@@ -1,17 +1,19 @@
 # Pane zoom — slice plan
 
-Design fragment: [`architecture/pane-zoom.md`](../../architecture/pane-zoom.md).
+Design fragment: [`architecture/pane-zoom.md`](../../../architecture/pane-zoom.md).
 
 tmux-style non-destructive zoom of the active pane within a tab.
 `<C-w>z` / `<C-w><C-z>` / `:zoom-pane`.
 
+**Status:** ✅ complete (ZP.1–ZP.5, 2026-09-09).
+
 | Slice | Status | Scope |
 |---|---|---|
-| ZP.1 | 📝 | `PaneTree::zoomed` + geometry + invariant enforcement (`lattice-core`) |
-| ZP.2 | 📝 | Host wiring: action, effect, chord, ex-command, catalog entry |
-| ZP.3 | 📝 | GPUI parity: both `PaneNode` walks |
-| ZP.4 | 📝 | Indicators + `pane.zoom-indicator` option |
-| ZP.5 | 📝 | Bench, user page, ledger |
+| ZP.1 | ✅ | `PaneTree::zoomed` + geometry + invariant enforcement (`lattice-core`) |
+| ZP.2 | ✅ | Host wiring: action, effect, chord, ex-command, catalog entry |
+| ZP.3 | ✅ | GPUI parity: both `PaneNode` walks |
+| ZP.4 | ✅ | Indicators + `pane.zoom-indicator` option |
+| ZP.5 | ✅ | Bench, user page, ledger |
 
 ---
 
@@ -92,3 +94,21 @@ present/absent per option; both renderers agree on the marker text.
 - `implementation.md` ledger row; flip this plan's statuses.
 
 **Depends on:** ZP.1–ZP.4.
+
+
+---
+
+## Landed notes
+
+- **ZP.2** found a real gap the chord tests could not: ex-commands
+  resolve through the host's `ALIAS_TABLE`, so registering the
+  `ex:zoom-pane` spec alone left `:zoom-pane` unreachable.
+- **ZP.4** shifted the modeline Right zone's auto order (`core.zoom`
+  is priority 0 there), so three `resolve_layout` tests and the
+  descriptor-count test moved with it.
+- **ZP.5** recorded one number that went the "wrong" way:
+  `render_root`'s zoomed arm is slower than its unzoomed arm and
+  scales with leaf count (1.8 ns → 5.0 ns at 8 panes), because zoom is
+  keyed on `PaneId` and resolving it is a linear `index_of` scan.
+  Kept: caching an index beside the id would reintroduce exactly the
+  staleness the id exists to prevent.

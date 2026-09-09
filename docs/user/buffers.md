@@ -1,6 +1,6 @@
 ---
 summary: "Buffers, panes, splits, file tree, navigation, theme customization."
-related: [buffer, tree, split, pane, ex:e, ex:b]
+related: [buffer, tree, split, pane, zoom, ex:e, ex:b, ex:zoom-pane]
 ---
 
 # Buffers and panes
@@ -45,10 +45,51 @@ into; you arrange them with vim-style window splits.
 | `<C-w>h` / `<C-w>j` / `<C-w>k` / `<C-w>l` | Navigate to spatial neighbour.               |
 | `<C-w>w` / `<C-w><C-w>` / `<C-w><Tab>`    | Cycle to next pane.                          |
 | `<C-w>W` / `<C-w><BackTab>`               | Cycle to previous pane.                      |
+| `<C-w>z` / `<C-w><C-z>`                   | Zoom the active pane (toggle).               |
 
 `<C-o>` / `<C-i>` walk the unified position-history ring across
 buffer boundaries -- so `<C-o>` from inside a help or tree pane
 returns to the document spot you came from.
+
+### Zooming a pane
+
+A split layout keeps two things in view, and is occasionally in the
+way -- you want one file full-screen to read a long function, and then
+you want your layout back. `<C-w>z` (tmux's `prefix z`) gives the
+active pane the whole tab; pressing it again restores the split exactly
+as it was. `:zoom-pane` does the same from the command line.
+
+Nothing is destroyed. This is the difference from `<C-w>o` / `:only`,
+which really does close the other panes:
+
+| | `<C-w>z` | `<C-w>o` / `:only` |
+|---|---|---|
+| Other panes | Hidden | Closed |
+| Second press | Restores the layout | Nothing left to restore |
+
+**Navigation gets you out.** `<C-w>h` / `j` / `k` / `l` while zoomed
+drop the zoom and move to the pane that is spatially there in the real
+layout -- you do not have to unzoom first. Splitting while zoomed also
+unzooms, since the new pane exists to be looked at.
+
+**Zoom is per tab.** Each tab remembers its own zoom, so switching
+away and back returns you to a zoomed pane still zoomed.
+
+Resizing chords (`<C-w>+`, `<C-w>-`, `<C-w>>`, `<C-w><`, `<C-w>=`) do
+nothing while zoomed, rather than silently reshaping a layout you
+cannot see and handing it back changed.
+
+A `Z` marks the zoomed pane on its modeline and its tab. The tabline
+marker is the one that matters when you have several tabs open: it is
+the only way to tell a backgrounded tab is zoomed without switching to
+it. Control it with:
+
+```
+:set pane.zoom-indicator=both       " default -- modeline and tabline
+:set pane.zoom-indicator=modeline
+:set pane.zoom-indicator=tabline
+:set pane.zoom-indicator=none
+```
 
 ### Walking a pane's buffer history
 

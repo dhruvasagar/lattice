@@ -1,7 +1,7 @@
 # Pane zoom
 
-**Status:** 🚧 in progress (ZP.1–ZP.5). Slice plan:
-[`slice-plans/pane-zoom.md`](../operations/slice-plans/pane-zoom.md).
+**Status:** ✅ implemented (ZP.1–ZP.5). Slice plan:
+[`slice-plans/archive/pane-zoom.md`](../operations/slice-plans/archive/pane-zoom.md).
 
 Temporarily give the active pane the whole tab, then give the split
 layout back exactly as it was. tmux's `prefix z`, bound to `<C-w>z`.

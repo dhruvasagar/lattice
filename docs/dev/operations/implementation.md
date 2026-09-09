@@ -6354,6 +6354,68 @@ Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-archit
 
 ---
 
+## Pane zoom (✅ 2026-09-09, ZP.1–ZP.5)
+
+tmux-style non-destructive zoom of the active pane within a tab.
+`<C-w>z` / `<C-w><C-z>` / `:zoom-pane` give the active pane the whole
+tab and the second toggle restores the split verbatim — the difference
+from `<C-w>o` / `:only`, which really closes the other panes.
+
+State is `PaneTree.zoomed: Option<PaneId>` rather than a field on
+`Editor`, because `TabSlot` stashes a whole tree and tab switching is a
+`mem::swap`: a flag on the tree is per-tab for free, where an `Editor`
+field would be a second thing every future tab operation has to
+remember to stash. A `PaneId` and not a leaf index, since
+`close_active` renumbers every index above the removed one.
+
+**The whole TUI feature is one branch at the head of
+`compute_rects`**, which is the single canonical layout function — the
+draw path, per-pane viewport sizing (which resizes terminal PTYs),
+mouse hit-testing and the pane-height motions all route through it. It
+also makes zoom *cheaper* than not zooming: hidden panes get no rect,
+so no element fan-out happens for them (ZP.5: flat ~20 ns vs. 65 ns at
+8 panes).
+
+Two things are load-bearing and were not obvious:
+
+1. **Zoomed ⟹ active, enforced inside `PaneTree`** on `set_active` /
+   `split_active` / `close_active` / `collapse_to_active`, not at the
+   call sites. That invariant is why the ~6 existing
+   `rects.iter().find(active_idx)` lookups keep working untouched —
+   under zoom the list has one entry and it is theirs. Without it they
+   fall to their `unwrap_or` defaults and the active pane's height
+   silently becomes the whole screen.
+2. **`navigate` reads an explicitly-unzoomed layout**
+   (`compute_rects_layout`). On the zoom-aware view it would see a
+   one-entry list, find no neighbour in any direction, and `<C-w>j`
+   while zoomed would silently do nothing. Reading the real layout
+   makes the navigation keys the escape hatch out of zoom, matching
+   tmux's `select-pane` and Zed.
+
+Resize and equalize are refused while zoomed rather than applied
+invisibly — unzooming would otherwise hand back a layout reshaped by a
+key pressed against a full-screen pane.
+
+The GPUI peer does not call `compute_rects`; it recurses over
+`PaneNode`. `PaneTree::render_root()` hands both of its walks the node
+to paint, expressing zoom as "for painting, the tree is one leaf" so
+the recursions stay unchanged. `collect_pane_geometries` needed it as
+much as the paint walk: that is the loop firing `set_pane_viewport`,
+so zoom honoured only in paint would leave a zoomed terminal still
+wrapped to its unzoomed width.
+
+A `Z` marks the zoomed pane on its modeline (`core.zoom`) and its tab,
+gated by one `pane.zoom-indicator` option (both | modeline | tabline |
+none) rather than a boolean per surface. The tabline marker is not
+redundant with the modeline one: zoom is per-tab, so it is the only
+surface that can report a *background* tab.
+
+Design: [`../architecture/pane-zoom.md`](../architecture/pane-zoom.md).
+Slice plan: [`slice-plans/archive/pane-zoom.md`](slice-plans/archive/pane-zoom.md)
+(ZP.1–ZP.5).
+
+---
+
 ## Pane buffer history (✅ 2026-08-04, PBH.1–PBH.6)
 
 Per-pane back/forward over the buffers a pane has shown: `<C-6>` back,

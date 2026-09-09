@@ -71,6 +71,50 @@ target rather than just a slower number.
 
 ---
 
+## ZP.5 — pane layout, zoomed vs. unzoomed (2026-09-09)
+
+⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.** `cargo bench -p
+lattice-core --bench pane_layout`.
+
+`PaneTree::compute_rects` is on the per-frame path in both peers — the
+TUI draw path calls it, and so does the per-pane viewport-sizing loop.
+Pane zoom (`<C-w>z`) adds a branch at its head. Design:
+[`../architecture/pane-zoom.md`](../architecture/pane-zoom.md) §8.
+
+| Leaves | `compute_rects` unzoomed | zoomed |
+|---|---|---|
+| 1 | 18.3 ns | — (zoom is a no-op on one pane) |
+| 2 | 22.1 ns | 19.7 ns |
+| 4 | 31.5 ns | 19.7 ns |
+| 8 | 64.7 ns | 21.7 ns |
+
+**Zoom is cheaper than not zooming, and flat in pane count.** That is
+the claim §8 makes and the reason it is worth measuring: the zoomed
+path returns one rect instead of walking N leaves, so it *replaces*
+work rather than adding a check on top of it. The unzoomed column
+roughly doubles from 4 to 8 panes; the zoomed column does not move.
+
+The real saving is downstream and not measured here — a leaf with no
+rect gets no element fan-out and no per-pane content resolution, which
+is a much larger number than the walk itself.
+
+| `render_root` (the GPUI peer's entry) | 2 leaves | 8 leaves |
+|---|---|---|
+| unzoomed | 1.82 ns | 1.81 ns |
+| zoomed | 2.56 ns | 4.95 ns |
+
+**The zoomed arm here is the slower one, and it scales with leaf
+count** — recorded rather than smoothed over. Zoom is keyed on
+`PaneId` (it must be: `close_active` renumbers leaf indices), so
+`render_root` resolves the id through `index_of`, a linear scan of the
+leaves vec. At 5 ns for 8 panes this is far below noticing, and the
+alternative — caching an index alongside the id — would reintroduce
+exactly the staleness the id exists to prevent. Worth revisiting only
+if pane counts ever reach the dozens, which the split grammar does not
+really invite.
+
+---
+
 ## LG.3b — what a wasm grammar costs outside the parse (2026-08-23)
 
 ⚠️ **Apple M1 Pro, macOS 14.5, rustc 1.94.0.**

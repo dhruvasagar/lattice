@@ -124,6 +124,7 @@ docs = [
   "architecture/multibuffer-syntax",
   "architecture/pane-groups",
   "architecture/pane-buffer-history",
+  "architecture/pane-zoom",
   "architecture/picker",
   "architecture/picker-preview-highlight",
   "architecture/preview-isolation",

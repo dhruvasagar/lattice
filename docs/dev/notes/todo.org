@@ -224,11 +224,11 @@
 - [X] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
 - [X] folding still gets messed up when opening a file in vertical split.
 - [ ] `zj` should go to the next visible fold, right now it goes to the next fold and if that fold is nested within the current fold, the cursor remains on that line. `zk` should also follow same concept.
-- [ ] popup actions such as `search` causes cursor jumps in the buffer underneath, the experience should be just like any other buffer, cursor is within the popup and jumps or any interactivity should also be only within this popup, nowhere else
+- [X] popup actions such as `search` causes cursor jumps in the buffer underneath, the experience should be just like any other buffer, cursor is within the popup and jumps or any interactivity should also be only within this popup, nowhere else
 - [ ] % matcher does not seem to be very accurate especially with inline comments, strings, etc. I would prefer more semantic matching maybe leveraging tree-sitter for precision
-- [ ] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
-- [ ] hlsearch bleeds across tabs
-      - [ ] It still bleeds when I open a synthetic buffer like magit, the hlsearch highlight remains and highlights the exact spot where it did in the previous buffer
+- [X] `:describe-key` does not allow <CR>, <BS>, etc. We should see if we can either add these manually or support a way to allow user to input these without breaking <BS>, <CR> functionality (can consider <S-CR> for add <CR> within `:describe-key`)
+- [X] hlsearch bleeds across tabs
+      - [X] It still bleeds when I open a synthetic buffer like magit, the hlsearch highlight remains and highlights the exact spot where it did in the previous buffer
 - [X] window motions C-w left|up|right|down should work better with splits, for instance when there are 4 splits open, C-w down should go to the down split from the buffer above it, right now from either above it goes down to the left window, not based on the cursor position 
 
 * Documentation

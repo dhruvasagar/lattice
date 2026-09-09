@@ -327,7 +327,8 @@ Reachable nvim-orgmode chords are kept verbatim:
 g{             parent headline            (native zp also works)
 <Tab>          cycle subtree              (native z<Space> also works)
 <S-Tab>        global cycle               (native z<Tab> also works)
-<C-Space>      toggle checkbox
+<C-c><C-c>     toggle checkbox at point  (org's; the context dispatcher)
+<C-c><C-x><C-b> set boxes in region/subtree to one state (org's)
 <C-a> <C-x>    timestamp component up / down
 <leader>oa     agenda          <leader>oc  capture
 <leader>or     refile          <leader>oo  open link at point
@@ -352,8 +353,8 @@ TODO cycling is the more frequent verb and `t` the stronger mnemonic for
 it, so tags move to `<leader>o:` — which reads as `:tag:`. Documented in
 `:help org` so a nvim-orgmode user is told rather than surprised.
 
-`<Tab>`, `<S-Tab>`, `<C-Space>`, `<C-a>` and `<C-x>` shadow native
-bindings **inside org buffers only**. That is not new: `lattice-magit`
+`<Tab>`, `<S-Tab>`, `<C-a>` and `<C-x>` shadow native bindings **inside
+org buffers only**. That is not new: `lattice-magit`
 already binds `<Tab>` / `<S-Tab>` / `]]` / `[[` mode-locally.
 
 ### 5.3 Text objects, which are the better half of the trade
@@ -388,7 +389,7 @@ evaluates. It is the most-pressed key in org and lattice does not have
 it.
 
 Every *individual* verb it reaches is already here — `<C-c><C-q>` tags,
-`<C-Space>` checkbox, `<leader>t|` align — so what is missing is the
+`<C-c><C-c>` checkbox, `<leader>t|` align — so what is missing is the
 dispatch, not the work. Sequencing is in
 [`org-entry-editing.md`](../operations/slice-plans/org-entry-editing.md).
 
@@ -662,7 +663,13 @@ recomputes every parent in the list.
 That inclusion is what makes **a parent's box read-only**: you toggle it,
 and it is immediately recomputed from children that did not move. This
 is not a restriction added on top of the model, it *is* the model, and
-org behaves identically. It has one consequence worth stating plainly —
+org behaves identically.
+
+"Toggling a parent is a no-op" is the easy summary and is wrong in one
+case: a parent whose box *disagrees* with its children is CORRECTED
+rather than left alone. A hand-written `[X]` over mixed children becomes
+`[-]` — neither the value it had nor the value the toggle asked for. The
+accurate rule is that a parent always ends at its derived value. It has one consequence worth stating plainly —
 without another way in, a long list could only ever be completed one
 leaf at a time. §5.6.3b is that way in.
 
@@ -677,21 +684,26 @@ Two implementation notes that were each a bug first:
 
 #### 5.6.3b `C-c C-x C-b` — the other verb (OX.2)
 
-Org has two checkbox keys and they mean different things. Lattice's
-`<C-Space>` is the toggle, and OS.10 deliberately made it flip each box
-in a region from *its own* state. Org's `org-toggle-checkbox` drives
-every box it reaches to *one* state, taken from the first box it finds.
+Org has exactly two checkbox keys and lattice now has the same two:
 
-| | `<C-Space>` | `<C-c><C-x><C-b>` |
+| | `<C-c><C-c>` | `<C-c><C-x><C-b>` |
 |---|---|---|
 | one item | toggles it | toggles it |
-| a region | flips each from its own state | drives all to one |
-| a headline | nothing | drives the whole subtree to one |
+| a region | — | drives all to one |
+| a headline | (dispatches on the headline) | drives the whole subtree to one |
 
-Keeping them as separate verbs rather than overloading one key is what
-OS.10 already argued: "forcing a mixed region to all-ticked would be a
-different verb wearing the same key". §5.6.3a is what makes the second
-verb necessary rather than merely convenient.
+§5.6.3a is what makes the second necessary rather than convenient: a
+parent's box cannot be set directly, so without it a long list could
+only be completed one leaf at a time.
+
+**OX.3 retired `<C-Space>`.** It was bound here under a comment calling
+it "org's own binding", which was simply false — `C-SPC` is emacs'
+`set-mark-command`, and evil-org does not rebind checkboxes at all. Its
+Visual peer carried OS.10's per-box region flip, which org has no
+equivalent of and which went with the chord; `toggle_checkbox` lost its
+region branch at the same time, since nothing could reach it. Muscle
+memory is the dominant cost on a surface like this (the UX-convention
+rule), and an invented third chord spends it for nothing.
 
 Neither key adds a checkbox to an item that has none — org does that
 only under `C-u`, and putting a box on every bullet in a subtree because

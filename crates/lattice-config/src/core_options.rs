@@ -30,6 +30,7 @@ use crate::expand_height::ExpandHeight;
 use crate::signcolumn::SignColumn;
 use lattice_core::FoldMethod;
 use lattice_core::IndentMethod;
+use lattice_core::{AutoWrap, FormatProvider, ProviderChain};
 
 // Validators referenced by `#[validate(...)]` on the options
 // below. Plain Rust functions; the macro just records the path.
@@ -103,6 +104,29 @@ fn validate_shiftwidth(i: &i64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("shiftwidth out of range [1, 32]: {i}"))
+    }
+}
+
+/// RF.0: `textwidth` must be a usable column.
+///
+/// **Zero is not accepted, unlike vim's**, and that is the one place
+/// this option deliberately diverges. In vim `textwidth=0` means both
+/// "never auto-wrap" and "`gq` has no target" — one value carrying two
+/// decisions, which is why `gq` then falls back to a hidden 79. Here
+/// `autowrap=off` says the first and `textwidth` only ever means the
+/// second, so it always has to be a real column.
+///
+/// The ceiling is generous rather than principled; past a few hundred
+/// columns nothing is being read by a human.
+fn validate_textwidth(i: &i64) -> Result<(), String> {
+    if (1..=10_000).contains(i) {
+        Ok(())
+    } else {
+        Err(format!(
+            "textwidth out of range [1, 10000]: {i} \
+             (to stop wrapping while you type, set `autowrap=off` — \
+             textwidth stays the target `gq` reflows to)"
+        ))
     }
 }
 
@@ -318,14 +342,96 @@ crate::options! {
     /// (the default) uses the tree-sitter indent engine. An indent
     /// filter adjusts leading whitespace only -- a reformatter
     /// belongs on `formatprg`, not here. Honoured from IN.9.
+    ///
+    /// **Deprecated at RF.0, deleted at RF.5.** It was never honoured
+    /// (⛔ deferred at IN.9, zero consumers), and an external
+    /// indent-only filter is now one rung of `format.indent`:
+    /// `:set format.indent=external:my-indenter`.
     #[name("equalprg")]
     pub EqualPrg: String = String::new();
 
     /// External formatter for `:format` (vim's `formatprg`). Empty
     /// (the default) falls back to the built-in per-language table.
     /// Honoured from IN.9.
+    ///
+    /// **Deprecated at RF.0, retired at RF.5** into `format.reformat`:
+    /// `:set format.reformat=external:prettier --stdin-filepath %`.
+    /// Kept working for one release with a note on `:messages` —
+    /// dropping a config key without saying so is indistinguishable
+    /// from a bug.
     #[name("formatprg")]
     pub FormatPrg: String = String::new();
+
+    // ---- RF.0: reflow + the formatter provider chains ----
+    //
+    // Declared as one block for the same reason the indent surface was
+    // (IN.0): splitting five option declarations across five slices is
+    // five chances for names, defaults, validators and
+    // `:describe-option` metadata to drift. The HONOURED set grows
+    // slice by slice -- `textwidth` at RF.2, `autowrap` at RF.3, the
+    // chains at RF.5 -- while the DECLARED set lands once.
+    //
+    // See `docs/dev/architecture/text-reflow.md` §6 and §8.
+
+    /// Target column for reflow (`gq` / `gw`) and for wrapping while
+    /// typing. One measure for both, so the two can never disagree
+    /// about where the margin is.
+    ///
+    /// Unrelated to `wrap`, which is *soft* wrap -- a display decision
+    /// that changes no bytes. The two compose: a buffer may soft-wrap
+    /// at the window edge while hard-wrapping here. Honoured from RF.2.
+    #[aliases("tw")]
+    // `textwidth`, not the derived `text-width`: its neighbours in this
+    // block are `shiftwidth`, `expandtab`, `foldmethod` and `equalprg`,
+    // and a lone hyphen among them would be the odd one out for no gain.
+    #[name("textwidth")]
+    #[validate(validate_textwidth)]
+    pub TextWidth: i64 = 80;
+
+    /// Whether typing past `textwidth` breaks the line: `off`,
+    /// `comments` (the default -- a long comment wraps, a long string
+    /// literal does not), or `all`.
+    ///
+    /// Prose majors (markdown, org, text, gitcommit) override to `all`
+    /// through `Mode::options()`. Honoured from RF.3.
+    #[aliases("aw")]
+    #[name("autowrap")]
+    pub AutoWrapOption: AutoWrap = AutoWrap::Comments;
+
+    /// Who reindents a range for `=` -- an ordered chain, first
+    /// available rung wins. Defaults to the tree-sitter engine.
+    ///
+    /// `lsp` is *expressible* here and is not the default, deliberately:
+    /// the protocol has no indent-only request, so an `lsp` rung makes
+    /// `=` a reformatter that moves line breaks. That is a legitimate
+    /// thing to want and a bad default. Honoured from RF.5.
+    #[name("format.indent")]
+    pub FormatIndentChain: ProviderChain = ProviderChain::of(FormatProvider::Native);
+
+    /// Who reflows a range for `gq` / `gw`. Defaults to the built-in
+    /// `textwidth` engine.
+    ///
+    /// `lsp` is expressible and not the default for a sharper reason
+    /// than above: the protocol has no reflow request at all, and the
+    /// reformatters behind it mostly leave prose alone (rustfmt's
+    /// `wrap_comments` is off by default; prettier's `proseWrap`
+    /// defaults to `preserve`). An `lsp` rung here silently does
+    /// nothing in the common case. Honoured from RF.5.
+    #[name("format.reflow")]
+    pub FormatReflowChain: ProviderChain = ProviderChain::of(FormatProvider::Native);
+
+    /// Who reformats a range for `:format`, `g=` and format-on-save.
+    /// Defaults to the attached language server, then the built-in
+    /// per-language formatter table -- the exact cascade `:format`
+    /// carried in Rust before RF.5, now as data.
+    ///
+    /// `native` is accepted as a tail rung and means the reflow engine,
+    /// which is a useful last resort for prose: `format.reformat` of
+    /// `external:prettier,native` formats markdown with prettier when it
+    /// is installed and reflows it when it is not. Honoured from RF.5.
+    #[name("format.reformat")]
+    pub FormatReformatChain: ProviderChain =
+        ProviderChain::new(vec![FormatProvider::Lsp, FormatProvider::LangDefault]);
 
     /// Run the `:format` cascade before `:w`. A formatter that
     /// fails, exits non-zero, or times out never blocks the write --
@@ -1213,6 +1319,119 @@ mod tests {
         assert!(r.set_typed::<CompletionSourceLspPriority>(10_000).is_err());
         assert!(r.set_typed::<CompletionSourceLspPriority>(0).is_ok());
         assert!(r.set_typed::<CompletionSourceLspPriority>(9999).is_ok());
+    }
+
+    // ---- RF.0: the reflow + formatter-chain option surface ----
+
+    /// The whole surface is declared in one slice; this is the test that
+    /// makes that worth doing. Names, aliases and defaults asserted
+    /// together, so a later slice lighting one of them up cannot quietly
+    /// rename or re-default it.
+    #[test]
+    fn the_reflow_option_surface_registers_with_its_documented_defaults() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+
+        assert_eq!(*r.get_typed::<TextWidth>().unwrap(), 80);
+        assert_eq!(
+            *r.get_typed::<AutoWrapOption>().unwrap(),
+            AutoWrap::Comments
+        );
+        assert_eq!(r.lookup("tw").unwrap().name(), "textwidth");
+        assert_eq!(r.lookup("aw").unwrap().name(), "autowrap");
+
+        // The two native-by-default intents.
+        for (chain, what) in [
+            (r.get_typed::<FormatIndentChain>().unwrap(), "format.indent"),
+            (r.get_typed::<FormatReflowChain>().unwrap(), "format.reflow"),
+        ] {
+            assert_eq!(
+                *chain,
+                ProviderChain::of(FormatProvider::Native),
+                "{what} defaults to the built-in engine"
+            );
+        }
+
+        // `format.reformat`'s default IS `:format`'s pre-RF.5 cascade,
+        // in order. If this ever drifts, the refactor changed behaviour
+        // rather than relocating it.
+        assert_eq!(
+            *r.get_typed::<FormatReformatChain>().unwrap(),
+            ProviderChain::new(vec![FormatProvider::Lsp, FormatProvider::LangDefault]),
+        );
+    }
+
+    /// `textwidth=0` is vim's "off" and is rejected here, because
+    /// `autowrap=off` already says that and `textwidth` only ever means
+    /// "the column reflow targets". The error has to point at the option
+    /// that actually does what the user was reaching for — a bare "out
+    /// of range" would leave them guessing.
+    #[test]
+    fn textwidth_zero_is_rejected_and_the_message_names_autowrap() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        let err = r.parse_and_set_command("textwidth=0").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("textwidth out of range"), "{msg}");
+        assert!(
+            msg.contains("autowrap=off"),
+            "the message must name the option that turns wrapping off: {msg}"
+        );
+        assert!(r.parse_and_set_command("textwidth=100").is_ok());
+    }
+
+    /// A rejected chain must leave the previous one installed. The
+    /// hazard this guards is a half-applied list: parsing rung by rung
+    /// and committing as it goes would leave `format.reformat=lsp,nativ`
+    /// with a one-rung chain and no error the user connects to it.
+    #[test]
+    fn a_rejected_chain_leaves_the_previous_value_intact() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("format.reformat=lsp,native")
+            .unwrap();
+        let before = (*r.get_typed::<FormatReformatChain>().unwrap()).clone();
+
+        let err = r
+            .parse_and_set_command("format.reformat=lsp,nativ")
+            .unwrap_err();
+        assert!(format!("{err}").contains("nativ"), "{err}");
+        assert_eq!(
+            *r.get_typed::<FormatReformatChain>().unwrap(),
+            before,
+            "a rejected value must not partially apply"
+        );
+    }
+
+    /// The flexibility claim from the design, asserted rather than
+    /// asserted-about: "LSP should drive my reflow" is one `:set`, not a
+    /// code path.
+    #[test]
+    fn routing_reflow_to_the_server_is_one_set_command() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("format.reflow=lsp,native").unwrap();
+        assert_eq!(
+            *r.get_typed::<FormatReflowChain>().unwrap(),
+            ProviderChain::new(vec![FormatProvider::Lsp, FormatProvider::Native])
+        );
+    }
+
+    /// An `external:` rung keeps its whole command line through
+    /// `:set` — including the flags, which is the entire point of it
+    /// being the `formatprg` replacement.
+    #[test]
+    fn an_external_rung_survives_set_with_its_arguments() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.parse_and_set_command("format.reformat=external:prettier --stdin-filepath %")
+            .unwrap();
+        assert_eq!(
+            *r.get_typed::<FormatReformatChain>().unwrap(),
+            ProviderChain::of(FormatProvider::External(
+                "prettier --stdin-filepath %".to_string()
+            ))
+        );
     }
 
     #[test]

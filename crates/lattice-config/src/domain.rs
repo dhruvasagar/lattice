@@ -14,6 +14,7 @@
 use lattice_core::FoldMethod;
 use lattice_core::IndentMethod;
 use lattice_core::ui::display::BufferDisplayPreference;
+use lattice_core::{AutoWrap, ProviderChain};
 
 use crate::option_type::{EnumeratedValue, OptionType};
 
@@ -191,6 +192,80 @@ impl OptionType for lattice_core::ui::tab::TablineShow {
                 })
                 .collect(),
         )
+    }
+}
+
+// RF.0: `:set autowrap=off|comments|all`.
+impl OptionType for AutoWrap {
+    fn parse(s: &str) -> Result<Self, String> {
+        AutoWrap::parse_label(s)
+    }
+
+    fn format(&self) -> String {
+        self.label().to_string()
+    }
+
+    fn type_label() -> &'static str {
+        "autowrap"
+    }
+
+    fn enumerate() -> Option<Vec<&'static str>> {
+        Some(AutoWrap::all().iter().map(|v| v.label()).collect())
+    }
+
+    /// Closed: `parse` accepts the three canonical labels plus the
+    /// boolean-ish aliases, and nothing else — so `:customize` offers a
+    /// picker rather than a text field.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        Some(
+            AutoWrap::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
+    }
+}
+
+// RF.0: `:set format.reformat=lsp,lang-default` and peers.
+//
+// The first LIST-valued option in the editor. Comma-separated rather
+// than a TOML array because the value has to survive `:set name=value`,
+// where vim's own convention for a list is a comma-separated string —
+// so this needs no new config machinery beyond the impl.
+impl OptionType for ProviderChain {
+    fn parse(s: &str) -> Result<Self, String> {
+        ProviderChain::parse(s)
+    }
+
+    fn format(&self) -> String {
+        self.label()
+    }
+
+    fn type_label() -> &'static str {
+        "formatter-chain"
+    }
+
+    /// The bare rungs only. `external:` and `plugin:` carry a payload,
+    /// so they cannot be completion candidates — offering `external:`
+    /// alone would complete to a value that fails to parse.
+    fn enumerate() -> Option<Vec<&'static str>> {
+        Some(vec!["native", "lsp", "lang-default"])
+    }
+
+    /// **Open**, unlike every other enumerated option here: the value is
+    /// a list, and two of its rungs take arbitrary payloads. A
+    /// `:customize` picker over these three forms would be actively
+    /// wrong — it would hide `external:` and offer no way to write a
+    /// chain of more than one.
+    fn enumerate_is_exhaustive() -> bool {
+        false
     }
 }
 

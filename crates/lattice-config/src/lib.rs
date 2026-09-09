@@ -129,18 +129,19 @@ pub use completion::OptionsGenerator;
 // instead of the longer `lattice_config::core_options::Tabstop`.
 pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
-    ClipboardEnabled, CommandLineExpandHeight, CompletionAutoInsertSingle,
+    AutoWrapOption, ClipboardEnabled, CommandLineExpandHeight, CompletionAutoInsertSingle,
     CompletionExtraCommitChars, CompletionGhostText, CompletionSourceBufferWordsPriority,
     CompletionSourceLspPriority, CompletionSourcePathPriority, CompletionSourceSnippetPriority,
     CompletionSourceTreeSitterPriority, CursorLine, DiagnosticsInlineOption,
     DiagnosticsMinSeverityOption, ElectricIndent, EqualPrg, ExpandTab, FoldEnable,
-    FoldMethodOption, FormatOnSave, FormatPrg, HelpAproposDisplay, HelpDescribeDisplay,
-    HelpListDisplay, HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
+    FoldMethodOption, FormatIndentChain, FormatOnSave, FormatPrg, FormatReflowChain,
+    FormatReformatChain, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay,
+    HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
     LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
     ModelinePadding, ModelineRight, ModelineSeparator, MouseEnabled, NoFile, Number,
     PickerResultDisplay, ProjectRootMarkers, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
     Shiftwidth, Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay, TablineShowOption,
-    Tabstop, TerminalEscExits, TerminalScrollbackLines, TransientMaxRows, Whitespace,
+    Tabstop, TerminalEscExits, TerminalScrollbackLines, TextWidth, TransientMaxRows, Whitespace,
     WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;

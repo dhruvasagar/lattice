@@ -17,6 +17,11 @@ pub mod clipboard;
 pub mod document;
 pub mod error;
 pub mod folding;
+// RF.0: the `format.{indent,reflow,reformat}` provider vocabulary. Here
+// for the same reason `indent` is — the resolver lives in the host but
+// the grammar operators and the config layer both name these types, and
+// this crate is the floor both already stand on.
+pub mod format_chain;
 /// `~` expansion, shared so every consumer resolves a home the same way.
 pub mod home;
 // IN.0: `IndentUnit` / `IndentMethod` — the resolved indent value the
@@ -36,6 +41,9 @@ pub mod project;
 pub mod search;
 pub mod ui;
 pub mod undo;
+// RF.0: `autowrap` — wrap-while-typing. Peer of `IndentMethod`; see
+// `wrap.rs` for why it is an option rather than a minor mode.
+pub mod wrap;
 
 pub use crate::buffer::Buffer;
 pub use crate::buffers::{BufferFlags, BufferId, BufferKind};
@@ -46,6 +54,7 @@ pub use crate::folding::{
     Fold, FoldMethod, FoldOverlayService, FoldOverlayServiceHandle, FoldSource, ProviderId,
     ProviderKind,
 };
+pub use crate::format_chain::{FormatProvider, ProviderChain};
 pub use crate::indent::{IndentMethod, IndentUnit};
 pub use crate::indent_blocks::LineShape;
 pub use crate::project::{
@@ -55,5 +64,6 @@ pub use crate::project::{
 };
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
+pub use crate::wrap::AutoWrap;
 
 pub use lattice_protocol as protocol;

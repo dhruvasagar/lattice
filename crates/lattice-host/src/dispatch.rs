@@ -17978,6 +17978,35 @@ impl Editor {
         for effect in effects {
             apply_effect_host(self, effect, &mut out);
         }
+        // A gate fires on an OFF-KEYSTROKE arm, so anything it emits that
+        // `apply_effect_host` deliberately routes to the renderer tail
+        // (`out.effects`) has no one to drain it: the TUI peer has no
+        // `signal_rx` consumer at all, and both peers only drain that tail
+        // after a dispatch. Absorb the popup pair here, host-side — the same
+        // reason and the same shape as `absorb_async_display_signals` (AW.4),
+        // which exists because an async-arriving popup hit this exact hole and
+        // never appeared.
+        //
+        // Dropping them instead is indistinguishable from a broken feature:
+        // the gate runs, the effect is produced, and nothing is on screen.
+        let deferred = std::mem::take(&mut out.effects);
+        for effect in deferred {
+            match effect {
+                lattice_grammar::Effect::OpenPopup {
+                    name,
+                    mode_id,
+                    placement,
+                    focus,
+                } => {
+                    let signals = self.open_popup_named(&name, &mode_id, placement, focus);
+                    out.renderer_signals.extend(signals);
+                }
+                lattice_grammar::Effect::DismissPopup => self.dismiss_popup(),
+                // Anything else a gate emits keeps the old routing: back onto
+                // the tail, in case a peer is in a position to drain it.
+                other => out.effects.push(other),
+            }
+        }
         out.renderer_signals
     }
 

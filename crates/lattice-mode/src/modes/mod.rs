@@ -40,6 +40,7 @@ pub mod messages;
 pub mod surround;
 pub mod table;
 pub mod text;
+pub mod which_key;
 
 pub use completion::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode,
@@ -53,6 +54,9 @@ pub use help::HelpMode;
 pub use hover::HoverMode;
 pub use messages::MessagesMode;
 pub use text::TextMode;
+pub use which_key::{
+    WhichKeyGrid, WhichKeyMode, install as install_which_key, wire as wire_which_key,
+};
 
 use crate::registry::ModeRegistry;
 

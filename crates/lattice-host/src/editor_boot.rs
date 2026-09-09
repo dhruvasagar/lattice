@@ -682,6 +682,12 @@ impl Editor {
         // `Editor::do_open_dashboard`), and the built-in `DashboardRegistry`
         // service. See `lattice_dashboard::install` + dashboard.md §9.
         lattice_dashboard::install(&mut boot);
+        // WK.6: which-key registers `which-key-mode` (the popup buffer's
+        // major) HERE, before the mode registry freezes below; its lifecycle
+        // is wired further down by `wire_which_key`, once the keymap and
+        // command-registry services exist. The split is boot ordering, not
+        // design — see `lattice_mode::modes::which_key::install`.
+        let which_key_grid = lattice_mode::modes::install_which_key(&mut boot);
         // PL8.H.2: the plugin-manager view — registers `plugins-mode` (major,
         // read-only) + the `:plugins` ex-command (returns
         // `Effect::OpenSyntheticBuffer`, applied by `Editor::open_synthetic_buffer`).
@@ -1926,6 +1932,14 @@ impl Editor {
         // visible). Registered as `KeymapHandle` (already a shareable handle — no
         // `Arc<X>` wrapper needed); the loader looks it up under the same type.
         boot.register_service::<crate::keymap_registry::KeymapHandle>(keymap_handle.clone());
+        // WK.6: the other half of which-key's install. Must follow the two
+        // registrations above: the gate handler resolves the keymap (to fold
+        // the composite the dispatcher walks) and the command registry (rungs
+        // 2-3 of the label chain) at popup-build time, and an install-time
+        // `None` for either would degrade every label to `<unbound>` without
+        // failing anything — the silent no-op this ordering comment exists to
+        // prevent.
+        lattice_mode::modes::wire_which_key(&mut boot, which_key_grid);
 
         // OM.4b: after a plugin loads, give any motion / text object it
         // contributed its operator-pending rows.

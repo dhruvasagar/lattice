@@ -28,6 +28,54 @@ use lattice_protocol::position::Position;
 
 use crate::{BufferId, BufferKind};
 
+crate::labeled_enum! {
+    /// ZP.4: `:set pane.zoom-indicator=...` — where the zoom marker
+    /// shows while a pane is zoomed (`<C-w>z`).
+    ///
+    /// One option rather than a boolean per surface: zoom-indication
+    /// is one user concept, and splitting it across the `modeline`
+    /// and `tabline` config groups would read as two independent
+    /// knobs when it is one decision.
+    ///
+    /// The two surfaces are not redundant. The modeline marker sits
+    /// on the zoomed pane itself, where the state applies; the
+    /// tabline marker is the only one that can tell you a
+    /// *background* tab is zoomed before you switch to it, since
+    /// zoom is per-tab state.
+    pub enum ZoomIndicator {
+        /// Marker on both the zoomed pane's modeline and its tab.
+        #[default]
+        Both = "both" => "Show the zoom marker on the modeline and the tabline",
+        /// Modeline only.
+        Modeline = "modeline" => "Show the zoom marker on the modeline only",
+        /// Tabline only.
+        Tabline = "tabline" => "Show the zoom marker on the tabline only",
+        /// No marker anywhere.
+        None = "none" => "Never show a zoom marker",
+    }
+}
+
+impl ZoomIndicator {
+    /// Whether the zoomed pane's modeline carries the marker.
+    pub fn shows_modeline(self) -> bool {
+        matches!(self, Self::Both | Self::Modeline)
+    }
+
+    /// Whether the zoomed tab's tabline entry carries the marker.
+    pub fn shows_tabline(self) -> bool {
+        matches!(self, Self::Both | Self::Tabline)
+    }
+}
+
+/// ZP.4: the zoom marker itself. A plain `Z`, after tmux's
+/// window-status flag.
+///
+/// Deliberately not a Nerd Font glyph: the icon-degradation rule
+/// requires both palettes to occupy the same cell width, and one
+/// ASCII character satisfies that in every terminal font without a
+/// second palette to keep in sync.
+pub const ZOOM_MARKER: &str = "Z";
+
 /// Process-monotonic pane id. Distinct from [`BufferId`]: a pane
 /// holds a buffer + viewport, but two panes can show the same
 /// buffer. Allocated by [`PaneId::next`] at split time.

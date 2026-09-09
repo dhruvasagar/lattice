@@ -861,6 +861,38 @@ pub struct TabRenderItem {
     /// tab's `label` override or, when None, from the active
     /// pane's buffer name (basename of path, or `[scratch]`).
     pub label: std::sync::Arc<str>,
+    /// ZP.4: this tab has a zoomed pane, and `pane.zoom-indicator`
+    /// asks for the tabline marker. Resolved by the publisher so both
+    /// renderer peers paint the same thing without re-deriving it.
+    ///
+    /// This is the only zoom surface that can report a *background*
+    /// tab — zoom is per-tab state stashed in `TabSlot.panes`, so
+    /// without it you cannot tell a zoomed tab from an unzoomed one
+    /// until you switch to it.
+    pub zoomed: bool,
+}
+
+impl TabRenderItem {
+    /// ZP.4: the tab's full display text, including the leading
+    /// 1-based number and the zoom marker.
+    ///
+    /// Host-side because both renderer peers had this format string
+    /// written out by hand, and adding the marker to one of them is
+    /// exactly the kind of divergence that ships unnoticed — the
+    /// tabline is only visible with multiple tabs open, and the marker
+    /// only inside those with a zoomed pane.
+    pub fn tabline_text(&self, index: usize) -> String {
+        if self.zoomed {
+            format!(
+                " {} {} {} ",
+                index + 1,
+                self.label,
+                lattice_core::ui::pane::ZOOM_MARKER
+            )
+        } else {
+            format!(" {} {} ", index + 1, self.label)
+        }
+    }
 }
 
 impl Default for TabsRenderState {

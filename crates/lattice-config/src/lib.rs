@@ -179,7 +179,7 @@ pub use expand_height::ExpandHeight;
 pub use decorations::Decorations;
 // W.2: the `ui.window.*` decl types — GPUI peer window chrome +
 // maximize-on-launch. Value type (`Decorations`) re-exported above.
-pub use pane_options::PaneBufferHistorySize;
+pub use pane_options::{PaneBufferHistorySize, PaneZoomIndicator};
 pub use window_options::{StartMaximized, WindowDecorationsOption};
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated

@@ -26,6 +26,24 @@ crate::options! {
     /// nowhere to store the buffer the pane is currently showing.
     #[name("pane.buffer-history-size")]
     pub PaneBufferHistorySize: i64 = 100;
+
+    /// ZP.4: where the zoom marker shows while a pane is zoomed
+    /// (`<C-w>z` / `:zoom-pane`).
+    ///
+    /// - `both`     — the zoomed pane's modeline AND its tab (default).
+    /// - `modeline` — modeline only.
+    /// - `tabline`  — tabline only.
+    /// - `none`     — no marker.
+    ///
+    /// The two surfaces answer different questions. The modeline
+    /// marker tells you the pane you are looking at is zoomed; the
+    /// tabline marker is the only one that can tell you a *background*
+    /// tab is zoomed, since zoom is per-tab state.
+    ///
+    /// See `docs/dev/architecture/pane-zoom.md` §6.
+    #[name("pane.zoom-indicator")]
+    pub PaneZoomIndicator: lattice_core::ui::pane::ZoomIndicator =
+        lattice_core::ui::pane::ZoomIndicator::Both;
 }
 
 #[cfg(test)]

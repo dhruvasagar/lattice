@@ -47,6 +47,11 @@ pub const CORE_PATH: &str = "core.path";
 pub const CORE_POSITION: &str = "core.position";
 /// Detected language label. Right zone, far right.
 pub const CORE_LANG: &str = "core.lang";
+/// ZP.4: zoom marker (`Z`) on the zoomed pane. Right zone, ahead of
+/// position — the marker is state about the pane, not about where the
+/// cursor is in it, so it reads better beside the mode tag's side of
+/// the row than buried past `line:col`.
+pub const CORE_ZOOM: &str = "core.zoom";
 
 // --- Theme roles ------------------------------------------------------
 // Assigned now so ML.1b is a pure theme-lookup change (the renderer
@@ -57,6 +62,10 @@ pub const ROLE_MODE: &str = "modeline.mode";
 pub const ROLE_PATH: &str = "modeline.path";
 pub const ROLE_POSITION: &str = "modeline.position";
 pub const ROLE_LANG: &str = "modeline.lang";
+/// ZP.4: the zoom marker's role. Reuses the mode role's slot in the
+/// theme rather than minting a colour: the marker is modal state about
+/// the pane, and matching the mode tag is what says so.
+pub const ROLE_ZOOM: &str = ROLE_MODE;
 // DX.4 (BC.6): `ROLE_MODE_ITEM` moved DOWN to `lattice-mode`'s modeline
 // module (it is the role *modes* tag contributed content with, so
 // `lattice-diff` can reach it without the host). Re-exported here so
@@ -90,6 +99,14 @@ pub fn register_builtin_elements(svc: &ModelineService) {
         ElementId::new(CORE_LANG),
         Zone::Right,
         20,
+    ));
+    // ZP.4: priority 0 puts the marker leftmost in the Right zone,
+    // ahead of `line:col`. It is absent entirely on unzoomed panes,
+    // so it costs no columns in the common case.
+    svc.register(ModelineElement::new(
+        ElementId::new(CORE_ZOOM),
+        Zone::Right,
+        0,
     ));
 }
 
@@ -283,6 +300,33 @@ pub fn resolve_builtin_content(
                 ElementContent::default()
             } else {
                 ElementContent::text(lang, ModelineRole::new(ROLE_LANG))
+            }
+        }
+        CORE_ZOOM => {
+            // Shown on the ZOOMED pane only, which under the
+            // zoomed-is-active invariant is the active one. Guarding on
+            // both is not redundant: `is_active` is what the renderer
+            // knows, `zoomed_index` is what the tree knows, and an
+            // inactive pane painting a zoom marker would claim the
+            // wrong thing about itself if the two ever drifted.
+            let zoomed = rs
+                .panes
+                .tree
+                .zoomed_index()
+                .and_then(|i| rs.panes.tree.leaves().get(i))
+                .is_some_and(|z| z.id == pane.id);
+            if !(zoomed && is_active) {
+                return ElementContent::default();
+            }
+            let indicator =
+                rs.resolved_option_for::<lattice_config::PaneZoomIndicator>(pane.committed_id());
+            if indicator.shows_modeline() {
+                ElementContent::text(
+                    lattice_core::ui::pane::ZOOM_MARKER,
+                    ModelineRole::new(ROLE_ZOOM),
+                )
+            } else {
+                ElementContent::default()
             }
         }
         _ => ElementContent::default(),
@@ -683,7 +727,13 @@ mod tests {
         let cfg = modeline_config();
         let layout = resolve_layout(&reg, &cfg);
         assert_eq!(zone_ids(&layout.left), ["core.mode", "core.path"]);
-        assert_eq!(zone_ids(&layout.right), ["core.position", "core.lang"]);
+        // ZP.4: `core.zoom` sits at priority 0 — leftmost in Right,
+        // ahead of `line:col`. It resolves to empty content unless a
+        // pane is zoomed, so it costs no columns in the common case.
+        assert_eq!(
+            zone_ids(&layout.right),
+            ["core.zoom", "core.position", "core.lang"]
+        );
         assert!(layout.center.is_empty());
         assert_eq!(layout.separator, " ");
     }
@@ -739,9 +789,10 @@ mod tests {
         let layout = resolve_layout(&reg, &modeline_config());
         assert_eq!(
             zone_ids(&layout.right),
-            ["org.clock", "core.position", "core.lang"],
+            ["core.zoom", "org.clock", "core.position", "core.lang"],
             "priority orders a plugin element among the built-ins with no \
-             special case — 7 sits below core.position's 10"
+             special case — 7 sits below core.position's 10 and above \
+             core.zoom's 0"
         );
 
         // And its content resolves for whichever buffer a pane happens to show,
@@ -797,8 +848,8 @@ mod tests {
             zone_ids(&layout.left),
             ["core.mode", "core.path", "core.position"]
         );
-        // Right is Auto, but core.position is claimed by Left → only lang.
-        assert_eq!(zone_ids(&layout.right), ["core.lang"]);
+        // Right is Auto, but core.position is claimed by Left → zoom + lang.
+        assert_eq!(zone_ids(&layout.right), ["core.zoom", "core.lang"]);
     }
 
     /// An explicitly-empty list (`[]` / `:set ui.modeline.right=`)
@@ -847,7 +898,7 @@ mod tests {
         assert_eq!(resolve_layout(&reg, &cfg).padding, 0, "flush to edges");
     }
 
-    /// Boot registers the four built-ins with the spec'd zones +
+    /// Boot registers the built-ins with the spec'd zones +
     /// priorities (modeline.md §3 / slice plan ML.1a-render).
     #[test]
     fn boot_registers_builtin_descriptors() {
@@ -855,10 +906,10 @@ mod tests {
         let editor = crate::editor::Editor::boot(document);
         let snap = editor.modeline.snapshot();
         let reg = &snap.registry;
-        // Four `core.*` built-ins + the diff subsystem's `diff` element
-        // (ML.3b) + lattice-lsp's `lsp` element (ML.3c), all registered at
-        // boot by their owners.
-        assert_eq!(reg.len(), 6, "four core built-ins + diff + lsp");
+        // Five `core.*` built-ins (ZP.4 added `core.zoom`) + the diff
+        // subsystem's `diff` element (ML.3b) + lattice-lsp's `lsp`
+        // element (ML.3c), all registered at boot by their owners.
+        assert_eq!(reg.len(), 7, "five core built-ins + diff + lsp");
 
         let mode = reg.get(&ElementId::new(CORE_MODE)).unwrap();
         assert_eq!((mode.zone, mode.priority), (Zone::Left, 0));
@@ -868,6 +919,10 @@ mod tests {
         assert_eq!((pos.zone, pos.priority), (Zone::Right, 10));
         let lang = reg.get(&ElementId::new(CORE_LANG)).unwrap();
         assert_eq!((lang.zone, lang.priority), (Zone::Right, 20));
+        // ZP.4: priority 0 in the Right zone puts the zoom marker
+        // leftmost there, ahead of `line:col`.
+        let zoom = reg.get(&ElementId::new(CORE_ZOOM)).unwrap();
+        assert_eq!((zoom.zone, zoom.priority), (Zone::Right, 0));
     }
 
     /// `core.mode` shows the modal label only on the active pane (it is

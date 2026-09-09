@@ -27288,6 +27288,16 @@ impl Editor {
             lattice_core::ui::tab::TablineShow::Always => true,
             lattice_core::ui::tab::TablineShow::Auto => self.tabs.len() > 1,
         };
+        // ZP.4: `pane.zoom-indicator`, read the same defensive way as
+        // `tabline.show` above — publish runs in test fixtures that
+        // boot without linkme submissions, so a missing registration
+        // falls back to the default rather than panicking.
+        let zoom_marker = self
+            .config
+            .get_typed::<lattice_config::PaneZoomIndicator>()
+            .map(|arc| *arc)
+            .unwrap_or_default()
+            .shows_tabline();
         let items: Vec<TabRenderItem> = self
             .tabs
             .iter()
@@ -27308,7 +27318,19 @@ impl Editor {
                     let derived = self.buffer_label_for_tab(buffer_id);
                     std::sync::Arc::<str>::from(derived)
                 };
-                TabRenderItem { id: slot.id, label }
+                // ZP.4: the active tab's live tree is on
+                // `editor.pane_tree`; inactive tabs keep theirs on
+                // the slot. Same split as the label derivation above.
+                let is_zoomed = if idx == self.active_tab {
+                    self.pane_tree.is_zoomed()
+                } else {
+                    slot.panes.is_zoomed()
+                };
+                TabRenderItem {
+                    id: slot.id,
+                    label,
+                    zoomed: is_zoomed && zoom_marker,
+                }
             })
             .collect();
         TabsRenderState {

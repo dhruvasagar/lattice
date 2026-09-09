@@ -195,6 +195,48 @@ impl OptionType for lattice_core::ui::tab::TablineShow {
     }
 }
 
+// ZP.4: `:set pane.zoom-indicator=both|modeline|tabline|none`.
+impl OptionType for lattice_core::ui::pane::ZoomIndicator {
+    fn parse(s: &str) -> Result<Self, String> {
+        lattice_core::ui::pane::ZoomIndicator::parse_label(s)
+    }
+
+    fn format(&self) -> String {
+        self.label().to_string()
+    }
+
+    fn type_label() -> &'static str {
+        "zoom-indicator"
+    }
+
+    fn enumerate() -> Option<Vec<&'static str>> {
+        Some(
+            lattice_core::ui::pane::ZoomIndicator::all()
+                .iter()
+                .map(|v| v.label())
+                .collect(),
+        )
+    }
+
+    /// Closed — `parse` accepts these four forms and nothing else, so
+    /// `:customize` can offer a picker rather than a free-text field.
+    fn enumerate_is_exhaustive() -> bool {
+        true
+    }
+
+    fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
+        Some(
+            lattice_core::ui::pane::ZoomIndicator::all()
+                .iter()
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
+                .collect(),
+        )
+    }
+}
+
 // RF.0: `:set autowrap=off|comments|all`.
 impl OptionType for AutoWrap {
     fn parse(s: &str) -> Result<Self, String> {

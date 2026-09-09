@@ -4764,7 +4764,7 @@ impl Render for EditorView {
                 .bg(rgb(theme.status_background))
                 .text_color(rgb(theme.status_foreground));
             for (idx, item) in tabs_rs.items.iter().enumerate() {
-                let label = format!(" {} {} ", idx + 1, item.label);
+                let label = item.tabline_text(idx);
                 // Slice 3 (2026-05-22): mouse click → switch
                 // tab. The click handler dispatches
                 // `Action::GoToTab(idx + 1)` so the same

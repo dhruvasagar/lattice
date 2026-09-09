@@ -544,7 +544,7 @@ fn draw_tabline(frame: &mut Frame, area: Rect, app: &App) {
     let inactive_style = app.theme.pane_status_inactive;
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.items.len() * 2);
     for (idx, item) in tabs.items.iter().enumerate() {
-        let label = format!(" {} {} ", idx + 1, item.label);
+        let label = item.tabline_text(idx);
         let style = if idx == tabs.active {
             active_style
         } else {

@@ -1635,6 +1635,12 @@ pub struct Editor {
     pub inline_diag_line: Option<u32>,
     pub inline_diag_deadline: Option<tokio::time::Instant>,
     pub inline_diag_visible: bool,
+    /// WK.4: the last `PartialChordPending` published, so the publisher
+    /// can skip republishing an unchanged tuple. This is the publisher's
+    /// own dedup cache — not subsystem state — and it is what keeps an
+    /// ORDINARY keystroke's cost at a tuple compare that short-circuits
+    /// on two empty slices. See `publish_partial_chord_pending`.
+    pub last_partial_chord_event: Option<lattice_keymap::PartialChordPending>,
     pub lsp_logger: LspLogger,
     /// 4.4.l.2 / 5.8.AA.o / 5.8.AF.5: file-watcher service handle.
     /// `None` until the first actor with `workspace/didChangeWatchedFiles`

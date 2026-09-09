@@ -1933,6 +1933,63 @@ impl Editor {
     ///   visibility untouched, so an in-place edit refreshes the text
     ///   via `build_render_state` without restarting the timer.
     ///
+    /// WK.4: which `BindingMode` the next keystroke resolves in, derived from
+    /// the current modal state. The same mapping the dispatcher's decline path
+    /// makes; hoisted so the pending-chord publisher cannot drift from it.
+    pub fn binding_mode_for_modal(&self) -> crate::keymap::BindingMode {
+        match self.modal {
+            lattice_grammar::ModalState::Insert => crate::keymap::BindingMode::Insert,
+            lattice_grammar::ModalState::Visual(_) | lattice_grammar::ModalState::Select(_) => {
+                crate::keymap::BindingMode::Visual
+            }
+            lattice_grammar::ModalState::OperatorPending => {
+                crate::keymap::BindingMode::OperatorPending
+            }
+            lattice_grammar::ModalState::Replace => crate::keymap::BindingMode::Replace,
+            _ => crate::keymap::BindingMode::Normal,
+        }
+    }
+
+    /// WK.4: publish [`PartialChordPending`] when the pending-chord tuple
+    /// changes — a prefix entered, extended, resolved or aborted.
+    ///
+    /// **Keystroke-path cost.** An ordinary keystroke pays a tuple compare
+    /// that short-circuits on two empty slices — single-digit ns. Only a
+    /// *prefix* keystroke pays the payload build and the publish, and that is
+    /// the whole cost this feature adds to the hot path (design §10).
+    ///
+    /// The payload rides on the event rather than being read back from the
+    /// published state: tick callbacks run BEFORE the publish in both actor
+    /// arms, so a subscriber reading published state would see the previous
+    /// keystroke's prefix and arm one keystroke late.
+    fn publish_partial_chord_pending(&mut self) {
+        let chords: &[crate::chord::KeyChord] = &self.partial_chord;
+        let active_modes: Vec<lattice_mode::mode::ModeId> = if chords.is_empty() {
+            // Nothing pending: the payload's only job is to say so, and
+            // building a mode vec for an empty chord would be work on the
+            // ordinary-keystroke path for no reader.
+            Vec::new()
+        } else {
+            self.active_modes
+                .get(&self.active_buffer_id())
+                .map(|m| m.keymap_gated_ids())
+                .unwrap_or_default()
+        };
+        let binding_mode = self.binding_mode_for_modal();
+        let pane_width = self.pane_tree.active().viewport_width.min(u16::MAX as u32) as u16;
+        let event = lattice_keymap::PartialChordPending {
+            chords: chords.to_vec(),
+            binding_mode,
+            active_modes,
+            pane_width,
+        };
+        if self.last_partial_chord_event.as_ref() == Some(&event) {
+            return;
+        }
+        self.last_partial_chord_event = Some(event.clone());
+        self.event_bus.publish_typed(event);
+    }
+
     /// `All` scope is treated as cursor-line here; the all-viewport
     /// fan-out is L5.
     pub fn update_inline_diag_gate(&mut self) {
@@ -2057,6 +2114,11 @@ impl Editor {
         // an active 2-pane diff group is two indexed lookups
         // plus one mapper call).
         self.propagate_pane_group_scroll();
+        // WK.4: tell subscribers what chord is pending, if that changed.
+        // Publishing HERE (rather than from the chord dispatcher) is what
+        // makes the payload correct: this runs after the keystroke has been
+        // fully applied, so `partial_chord` and the active-mode set agree.
+        self.publish_partial_chord_pending();
         let next = self.build_render_state();
         // B2.3 (2026-06-04): bring each pane's canonical `DisplayMatrix`
         // text-current synchronously BEFORE publishing, so the renderer
@@ -50370,6 +50432,118 @@ mod tests {
             base_handle.snapshot().buffer.to_rope().to_string(),
             "aaa\nbbb\nccc\n",
             "base buffer must remain unmutated by :diffput"
+        );
+    }
+
+    // ── WK.4: PartialChordPending ──────────────────────────────
+
+    /// Subscribe to `PartialChordPending` and return the receiver.
+    fn subscribe_partial_chord(
+        editor: &Editor,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<lattice_keymap::PartialChordPending> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        editor.event_bus.subscribe_typed(tx);
+        rx
+    }
+
+    fn drain<T>(rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>) -> Vec<T> {
+        let mut out = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            out.push(item);
+        }
+        out
+    }
+
+    /// Entering a prefix publishes the pending chord, with the payload the
+    /// subscriber needs to resolve it — chords, binding mode, the active
+    /// buffer's gated modes, and the pane width.
+    ///
+    /// The payload RIDES on the event rather than being read back from the
+    /// published render state, and that is load-bearing: tick callbacks run
+    /// before the publish in both actor arms, so a subscriber reading
+    /// published state would see the previous keystroke's prefix and arm one
+    /// keystroke late.
+    #[tokio::test]
+    async fn a_pending_prefix_publishes_its_payload() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        // A real pane has a width; a freshly booted one is 0 until a renderer
+        // reports its geometry, and which-key suppresses on a narrow pane.
+        editor.pane_tree.leaves_mut()[0].viewport_width = 80;
+        let mut rx = subscribe_partial_chord(&editor);
+
+        // `Action::AbsorbPartialChord` is what the input layer emits when the
+        // trie answers `Partial`, and it flows through `Editor::dispatch`,
+        // whose tail is the publish. Driving the ACTION rather than
+        // `dispatch_chord_with_outcome` is deliberate: that lower entry point
+        // calls `handle_action` directly and never publishes, so a test built
+        // on it would pass against a publisher wired to nothing.
+        let _ = editor.dispatch(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'g',
+        )));
+
+        let events = drain(&mut rx);
+        let last = events.last().expect("a prefix keystroke publishes");
+        assert_eq!(
+            last.chords,
+            vec![crate::chord::KeyChord::char('g')],
+            "the pending prefix itself"
+        );
+        assert_eq!(last.binding_mode, crate::keymap::BindingMode::Normal);
+        assert!(
+            last.pane_width > 0,
+            "the pane width rides along so the grid can be laid out off the \
+             renderer"
+        );
+    }
+
+    /// Resolving the chord publishes an EMPTY list — the dismissal signal.
+    #[tokio::test]
+    async fn resolving_the_chord_publishes_an_empty_pending_list() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\nworld\n"));
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        let _ = editor.dispatch(Action::AbsorbPartialChord(crate::chord::KeyChord::char(
+            'g',
+        )));
+
+        let mut rx = subscribe_partial_chord(&editor);
+        // Any non-absorbing action clears `partial_chord` in the dispatch
+        // preamble — which is exactly what resolving or aborting a chord does.
+        let _ = editor.dispatch(Action::ScrollLineDown);
+        let events = drain(&mut rx);
+        assert!(
+            events.last().is_some_and(|e| e.chords.is_empty()),
+            "`gg` resolved — subscribers key their dismissal off the empty \
+             list: {events:?}"
+        );
+    }
+
+    /// The keystroke-path property from design §10: an ordinary keystroke
+    /// pays a tuple compare that short-circuits on two empty slices, and
+    /// publishes NOTHING. Without the dedup every keystroke in a session
+    /// would fan out an event to every subscriber.
+    #[tokio::test]
+    async fn an_ordinary_keystroke_publishes_nothing() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\nworld\n"));
+        let id = editor.document_buffer_id;
+        let _ = editor.activate_major_for_buffer_kind(id, lattice_core::BufferKind::Document);
+        // Settle the initial publish, then subscribe.
+        let _ = editor.dispatch(Action::ScrollLineDown);
+        let mut rx = subscribe_partial_chord(&editor);
+
+        for action in [
+            Action::ScrollLineDown,
+            Action::ScrollLineUp,
+            Action::ScrollLineDown,
+        ] {
+            let _ = editor.dispatch(action);
+        }
+        assert!(
+            drain(&mut rx).is_empty(),
+            "nothing pending before or after — the tuple never changed, so \
+             no event is published"
         );
     }
 

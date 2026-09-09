@@ -11,6 +11,11 @@ lattice-grammar  = { path = "../lattice-grammar" }
 internment       = { workspace = true }
 arc-swap         = { workspace = true }
 tracing          = { workspace = true }
+# WK.4: `register_event!` expands to a `linkme::distributed_slice` entry,
+# and proc-macro attribute paths cannot route through a re-export — so
+# every crate that declares a typed event needs linkme directly (the same
+# constraint `lattice-config`'s option callers face).
+linkme           = { workspace = true }
 
 [lints]
 workspace = true

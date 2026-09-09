@@ -5574,6 +5574,7 @@ dependencies = [
  "internment",
  "lattice-grammar",
  "lattice-protocol",
+ "linkme",
  "tracing",
 ]
 

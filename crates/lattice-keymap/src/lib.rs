@@ -30,6 +30,9 @@ pub use registry::{
 pub mod resolution;
 pub use resolution::{Continuation, KeymapResolution, LayerHit, parse_describe_key_arg};
 
+pub mod events;
+pub use events::PartialChordPending;
+
 pub mod which_key;
 pub use trie::{ChildView, NodeView};
 pub use which_key::{Entry, EntryKind, Sort, WhichKeyModel, build_model};

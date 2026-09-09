@@ -619,6 +619,12 @@ pub enum AppEffect {
     /// except the active one (collapse the tree to the active leaf).
     /// No-op when only one pane is open. S3b (2026-06-22).
     OnlyPane,
+    /// ZP.2: `<C-w>z` / `<C-w><C-z>` / `:zoom-pane` — toggle
+    /// tmux-style zoom on the active pane. Non-destructive, unlike
+    /// [`Self::OnlyPane`]: the split layout is preserved and the
+    /// second toggle restores it verbatim. No-op on a single-pane
+    /// tab. See `docs/dev/architecture/pane-zoom.md`.
+    ToggleZoomPane,
     /// Vim's `<C-w>h/j/k/l` (and arrow / `<BS>` aliases): move
     /// focus to the pane in the named direction. Promoted from
     /// `Action::NavigatePane(_)` in slice 8.i.4.d.

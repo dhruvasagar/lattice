@@ -1436,6 +1436,12 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle, actions: &ActionIds) {
         (&[lit_char('<')], actions.shrink_pane_width),
         // T4 (2026-05-25): `<C-w>T` — move active pane to new tab.
         (&[lit_char('T')], actions.move_pane_to_new_tab),
+        // ZP.2: `<C-w>z` — tmux's `prefix z`. `z` was free in this
+        // layer, and it is the mnemonic every terminal user already
+        // has. Deliberately NOT `o`: that is vim's destructive
+        // `:only`, and a non-destructive command wearing it looks
+        // identical on the first press and diverges on the second.
+        (&[lit_char('z')], actions.toggle_zoom_pane),
     ];
     for (chords, action_id) in bare_table {
         for chord in chords.iter() {
@@ -1466,6 +1472,10 @@ fn register_ctrl_w_sub_tree(handle: &KeymapHandle, actions: &ActionIds) {
         ('v', actions.split_pane_vertical),
         ('c', actions.close_pane),
         ('q', actions.close_pane),
+        // ZP.2: `<C-w><C-z>`, for parity with the ctrl-modified
+        // twins above — a held Ctrl should not change what the
+        // chord means.
+        ('z', actions.toggle_zoom_pane),
     ];
     for (c, action_id) in ctrl_table {
         handle.bind(

@@ -312,6 +312,7 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::SplitPaneVertical => WitAppEffect::SplitPaneVertical,
             NativeAppEffect::ClosePane => WitAppEffect::ClosePane,
             NativeAppEffect::OnlyPane => WitAppEffect::OnlyPane,
+            NativeAppEffect::ToggleZoomPane => WitAppEffect::ToggleZoomPane,
             NativeAppEffect::NavigatePane(d) => WitAppEffect::NavigatePane(d.to_wit()?),
             NativeAppEffect::NextPane => WitAppEffect::NextPane,
             NativeAppEffect::PrevPane => WitAppEffect::PrevPane,
@@ -692,6 +693,7 @@ impl WitBoundary for NativeAppEffect {
             WitAppEffect::SplitPaneVertical => NativeAppEffect::SplitPaneVertical,
             WitAppEffect::ClosePane => NativeAppEffect::ClosePane,
             WitAppEffect::OnlyPane => NativeAppEffect::OnlyPane,
+            WitAppEffect::ToggleZoomPane => NativeAppEffect::ToggleZoomPane,
             WitAppEffect::NavigatePane(d) => {
                 NativeAppEffect::NavigatePane(NativePaneDirection::from_wit(d)?)
             }

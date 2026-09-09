@@ -1017,6 +1017,7 @@ interface types {
         split-pane-vertical,
         close-pane,
         only-pane,
+        toggle-zoom-pane,
         navigate-pane(pane-direction),
         next-pane,
         prev-pane,

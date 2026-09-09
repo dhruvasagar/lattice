@@ -229,6 +229,23 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // ZP.2: `:zoom-pane` -- the non-destructive counterpart of
+    // `:only`. Dashed + namespaced per the ex-command naming rule:
+    // the bare `:zoom` slot stays free for a future font/UI scale
+    // command in the GPUI peer, which is the plausible claimant.
+    let _zoom_pane = registry.register_ex_command(
+        "ex:zoom-pane",
+        "Toggle tmux-style zoom on the active pane (`:zoom-pane`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::ToggleZoomPane))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     // Pane-management ex-commands (vim `:sp` / `:vs` / `:clo`, emacs
     // `C-x 2` / `C-x 3` / `C-x 0`). No-arg today: the split shows the
     // current buffer (an optional `[file]` arg is a future addition).
@@ -3148,6 +3165,9 @@ mod tests {
             ("ex:split", AppEffect::SplitPaneHorizontal),
             ("ex:vsplit", AppEffect::SplitPaneVertical),
             ("ex:close", AppEffect::ClosePane),
+            // ZP.2: `:zoom-pane` is the same shape — a pane op that
+            // emits its carrier, not an editing command.
+            ("ex:zoom-pane", AppEffect::ToggleZoomPane),
         ] {
             let id = registry
                 .id_by_name(name)

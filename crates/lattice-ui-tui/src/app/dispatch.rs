@@ -361,6 +361,9 @@ impl App {
             | Action::SplitPaneVertical
             | Action::ClosePane
             | Action::OnlyPane
+            // ZP.2: zoom is host-resident tree state read back
+            // through the published `PaneTree`; nothing app-side.
+            | Action::ToggleZoomPane
             | Action::NavigatePane(_)
             | Action::NextPane
             | Action::PrevPane

@@ -2843,6 +2843,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         Action::ClosePane => editor.do_close_pane(),
         Action::OnlyPane => editor.do_only_pane(),
+        Action::ToggleZoomPane => editor.do_toggle_zoom_pane(),
         Action::NavigatePane(dir) => editor.do_navigate_pane(dir),
         Action::EqualizePanes => {
             // Issue #28 (2026-05-22): <C-w>= — reset every
@@ -10019,6 +10020,7 @@ impl Editor {
                 self.partial_chord.extend(prefix);
             }
             AppEffect::SplitPaneHorizontal => out.next_actions.push(Action::SplitPaneHorizontal),
+            AppEffect::ToggleZoomPane => out.next_actions.push(Action::ToggleZoomPane),
             AppEffect::SplitPaneVertical => out.next_actions.push(Action::SplitPaneVertical),
             AppEffect::ClosePane => out.next_actions.push(Action::ClosePane),
             AppEffect::OnlyPane => out.next_actions.push(Action::OnlyPane),
@@ -27959,6 +27961,31 @@ impl Editor {
             return;
         }
         self.load_active_pane();
+    }
+
+    /// ZP.2: `<C-w>z` / `<C-w><C-z>` / `:zoom-pane` -- toggle
+    /// tmux-style zoom on the active pane.
+    ///
+    /// No `snapshot_active_pane` / `load_active_pane` pair, unlike
+    /// its neighbours here: zoom changes only which rect the pane is
+    /// painted into. The active pane does not change, no leaf is
+    /// created or dropped, and no buffer is swapped -- so there is
+    /// nothing to snapshot out of or re-hydrate into. The tail of
+    /// `dispatch` publishes the new tree and the renderer re-lays out
+    /// from it.
+    pub fn do_toggle_zoom_pane(&mut self) {
+        if !self.pane_tree.toggle_zoom() {
+            // The only way to get here: a single-pane tab. Say so --
+            // a chord that silently does nothing reads as a broken
+            // binding.
+            self.set_message(EchoLevel::Warn, "Only one pane to zoom".to_string());
+            return;
+        }
+        if self.pane_tree.is_zoomed() {
+            self.set_message(EchoLevel::Info, "Pane zoomed".to_string());
+        } else {
+            self.set_message(EchoLevel::Info, "Pane unzoomed".to_string());
+        }
     }
 
     /// `:q[uit]` (`scope = Pane`) / `:qa[ll]` (`scope = All`) -- quit.

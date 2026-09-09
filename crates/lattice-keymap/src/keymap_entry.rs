@@ -385,6 +385,9 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>l", doc: "Navigate to pane on the right" },
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>w", doc: "Cycle to next pane" },
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>W", doc: "Cycle to previous pane" },
+        // ZP.2 (2026-09-09): tmux-style zoom. Non-destructive, unlike
+        // `<C-w>o` / `:only` — the split layout is restored verbatim.
+        keymap_entry! { mode: AfterCtrlW, chord: "<C-w>z", doc: "Toggle zoom on the active pane (layout preserved; tmux `prefix z`)" },
         // Issue #28 (2026-05-22): split ratio adjustment.
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>=", doc: "Equalize all split ratios (reset to 50/50)" },
         keymap_entry! { mode: AfterCtrlW, chord: "<C-w>+", doc: "Grow active pane vertically" },

@@ -431,6 +431,12 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("vs", "ex:vsplit"),
     ("close", "ex:close"),
     ("clo", "ex:close"),
+    // ZP.2: `:zoom-pane` -- the non-destructive `:only`. One alias,
+    // the dashed namespaced form: no vim-tradition short, because
+    // the 1-2 letter slots are scarce and reserved for
+    // vim-canonical commands, and no bare `:zoom`, which a future
+    // font/UI scale command in the GPUI peer has the better claim on.
+    ("zoom-pane", "ex:zoom-pane"),
     ("noh", "ex:nohlsearch"),
     ("nohl", "ex:nohlsearch"),
     ("nohlsearch", "ex:nohlsearch"),

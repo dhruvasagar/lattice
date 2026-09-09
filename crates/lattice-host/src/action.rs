@@ -585,6 +585,11 @@ pub enum Action {
     /// `<C-w>o` / `:only` / emacs `C-x 1` -- close every pane except
     /// the active one. S3b (2026-06-22).
     OnlyPane,
+    /// ZP.2: `<C-w>z` / `<C-w><C-z>` / `:zoom-pane` -- toggle
+    /// tmux-style zoom on the active pane. The non-destructive
+    /// counterpart of [`Self::OnlyPane`]: the split layout survives
+    /// and the second toggle restores it verbatim.
+    ToggleZoomPane,
     /// `<C-w>{h,j,k,l}` -- move the active pane cardinally.
     NavigatePane(PaneDirection),
     /// `<C-w>w` -- cycle to the next pane in declaration order.

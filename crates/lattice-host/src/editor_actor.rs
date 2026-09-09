@@ -604,6 +604,16 @@ async fn run_actor(
     // (paramount #1 — never the UI thread).
     let inline_diag_sleep = tokio::time::sleep(std::time::Duration::from_secs(60 * 60));
     tokio::pin!(inline_diag_sleep);
+    // WK.3: the generic idle-gate registry's sleep — the same shape as the
+    // one above, but targeting the earliest deadline armed by ANY subsystem
+    // (which-key's pending-chord delay is the first). A second pinned sleep
+    // rather than a shared one, because the inline-diagnostic gate is not
+    // migrated into the registry yet (which-key.md §9: its arm decision lives
+    // inside `publish_render_state` and needs a `CursorSettled` event that
+    // does not exist). When that migration lands this arm absorbs the one
+    // above.
+    let idle_gate_sleep = tokio::time::sleep(std::time::Duration::from_secs(60 * 60));
+    tokio::pin!(idle_gate_sleep);
     loop {
         // Retarget the idle-gate sleep to the current deadline. Cheap;
         // when disarmed we point it an hour out and the `is_some()`
@@ -611,6 +621,12 @@ async fn run_actor(
         inline_diag_sleep
             .as_mut()
             .reset(editor.inline_diag_deadline.unwrap_or_else(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(60 * 60)
+            }));
+        let idle_gate_deadline = editor.idle_gate_deadline();
+        idle_gate_sleep
+            .as_mut()
+            .reset(idle_gate_deadline.unwrap_or_else(|| {
                 tokio::time::Instant::now() + std::time::Duration::from_secs(60 * 60)
             }));
         let cmd = tokio::select! {
@@ -665,6 +681,26 @@ async fn run_actor(
             // same `AsyncRenderStatePublished` bridge the async_landed
             // arm uses. No `run_tick_pending` — the gate only changes
             // presentation, not pending async work.
+            // WK.3: a subsystem's armed deadline elapsed. Run every due
+            // gate, apply its effects, republish and repaint — all on the
+            // actor thread, and all WITHOUT a keystroke, which is the whole
+            // point of the primitive (a popup that only appears once the
+            // user presses something is not a hint, it is a bug).
+            _ = &mut idle_gate_sleep, if idle_gate_deadline.is_some() => {
+                let signals = editor.fire_idle_gates();
+                let forward = editor.absorb_async_display_signals(signals);
+                let painted = editor.publish_render_state();
+                if painted {
+                    editor.paint_request.notify_one();
+                }
+                editor.event_bus.publish_typed(
+                    crate::events::AsyncRenderStatePublished,
+                );
+                for sig in forward {
+                    let _ = signal_tx.send(sig);
+                }
+                continue;
+            }
             _ = &mut inline_diag_sleep, if editor.inline_diag_deadline.is_some() => {
                 editor.fire_inline_diag_gate();
                 // §12 paint gate: the idle gate flips the inline summary

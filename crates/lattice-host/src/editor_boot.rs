@@ -255,6 +255,13 @@ impl Editor {
             let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers.clone());
             lattice_mode::BufferStoreHandle::new(store)
         };
+        // WK.3: the idle-gate registry — subsystem-armed deadlines. Built
+        // here in Phase A (like `tick_callbacks`) because both `boot` and the
+        // `Editor` literal need the same `Arc`: subsystems register gates
+        // through `boot`, and the actor loop reads `earliest()` off the
+        // editor to target its pinned sleep.
+        let idle_gates: lattice_mode::idle_gate::IdleGateRegistryHandle =
+            Arc::new(lattice_mode::idle_gate::IdleGateRegistry::new());
         let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle = Arc::new(
             crate::diagnostics_query::HostDiagnosticsQuery::new(render_state_arc.clone()),
         );
@@ -269,6 +276,7 @@ impl Editor {
             async_landed.clone(),
             runtime_handle.clone(),
             buffer_store_handle.clone(),
+            idle_gates.clone(),
             CommandRegistry::new(),
             ModeRegistry::new(),
             ServiceRegistry::new(),
@@ -1882,6 +1890,13 @@ impl Editor {
         // `Editor::drain_tick_callbacks`; written by modes' `on_activate` via
         // `ctx.service::<TickCallbackRegistryHandle>()`.
         boot.register_service::<lattice_mode::TickCallbackRegistryHandle>(tick_callbacks.clone());
+        // WK.3: the idle-gate registry's peer registration. The actor reads
+        // it through `Editor::idle_gate_deadline` / `fire_idle_gates`, which
+        // look it up here by the same `T` they were registered under (per the
+        // ServiceRegistry Arc/TypeId rule).
+        boot.register_service::<lattice_mode::idle_gate::IdleGateRegistryHandle>(
+            idle_gates.clone(),
+        );
         // MG.2: shared map for pending synthetic-buffer highlight spans
         // (magit status, etc.). The async refresh writes per-line StyledSpan
         // entries here; the Editor drains them in run_tick_pending to set

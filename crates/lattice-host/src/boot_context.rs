@@ -46,6 +46,7 @@ use std::any::Any;
 
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::effect::Effect;
+use lattice_mode::idle_gate::{IdleGateHandle, IdleGateHandler, IdleGateRegistryHandle};
 use lattice_mode::inbound::{InboundBus, make_inbound, make_inbound_raw};
 use lattice_mode::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistryHandle,
@@ -110,6 +111,10 @@ pub struct BootContext {
     /// [`SubsystemBoot::service`] lookup, keeping the trait free of lattice-lsp
     /// types; the host registers it as a Phase-A service.)
     buffer_store: BufferStoreHandle,
+    /// WK.3 — the idle-gate registry: subsystem-armed deadlines the actor
+    /// sleeps to. Shared with the `Editor` (which hands it to the actor loop),
+    /// so a gate armed by a subsystem's handler reaches the actor's `select!`.
+    idle_gates: IdleGateRegistryHandle,
     /// BC.3a — owned registries, `None` once frozen (taken by `freeze_*`).
     command_registry: Option<CommandRegistry>,
     mode_registry: Option<ModeRegistry>,
@@ -128,6 +133,7 @@ impl BootContext {
         async_landed: Arc<Notify>,
         runtime_handle: Handle,
         buffer_store: BufferStoreHandle,
+        idle_gates: IdleGateRegistryHandle,
         command_registry: CommandRegistry,
         mode_registry: ModeRegistry,
         service_registry: ServiceRegistry,
@@ -139,6 +145,7 @@ impl BootContext {
             runtime_handle,
             registrations: Vec::new(),
             buffer_store,
+            idle_gates,
             command_registry: Some(command_registry),
             mode_registry: Some(mode_registry),
             service_registry: Some(service_registry),
@@ -169,6 +176,13 @@ impl BootContext {
     /// The shared tick-callback registry (run once per tick by the host).
     pub fn tick_callbacks(&self) -> &TickCallbackRegistryHandle {
         &self.tick_callbacks
+    }
+
+    /// WK.3: the shared idle-gate registry. The host seats this on the
+    /// `Editor` so the actor loop can point its pinned sleep at
+    /// `earliest()` and fire the due gates when it elapses.
+    pub fn idle_gates(&self) -> &IdleGateRegistryHandle {
+        &self.idle_gates
     }
 
     /// Freeze the command registry into its shared runtime-mutable handle
@@ -283,6 +297,10 @@ impl SubsystemBoot for BootContext {
         self.registrations.push(reg);
     }
 
+    fn idle_gate(&mut self, name: &'static str, handler: IdleGateHandler) -> IdleGateHandle {
+        self.idle_gates.register(name, handler)
+    }
+
     fn event_bus(&self) -> &Arc<EventBus> {
         &self.event_bus
     }
@@ -314,6 +332,7 @@ mod tests {
             Arc::new(Notify::new()),
             Handle::current(),
             buffer_store,
+            Arc::new(lattice_mode::idle_gate::IdleGateRegistry::new()),
             CommandRegistry::new(),
             ModeRegistry::new(),
             ServiceRegistry::new(),

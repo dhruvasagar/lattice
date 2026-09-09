@@ -17883,6 +17883,42 @@ impl Editor {
     /// `apply_effect_host` pipeline mode action handlers use, so
     /// renderer-coupled effects land on `out` and host-side signals are
     /// returned for the actor to forward.
+    /// WK.3: the earliest armed idle-gate deadline, for the actor's pinned
+    /// sleep. `None` when every gate is disarmed (or none is registered), in
+    /// which case the actor parks the sleep far out and its guard keeps the
+    /// arm dormant.
+    pub fn idle_gate_deadline(&self) -> Option<tokio::time::Instant> {
+        self.services
+            .get::<lattice_mode::idle_gate::IdleGateRegistryHandle>()
+            .and_then(|r| r.earliest())
+    }
+
+    /// WK.3: run every idle gate whose deadline has elapsed and apply its
+    /// `Effect`s through the same `apply_effect_host` pipeline tick callbacks
+    /// use. Called from the actor when the pinned sleep fires.
+    ///
+    /// This is the time-domain peer of [`Self::drain_tick_callbacks`], and it
+    /// exists for the same reason: rather than an `Option<Instant>` field and
+    /// a bespoke `select!` arm per subsystem, subsystems register a gate and
+    /// the host runs the due ones.
+    pub fn fire_idle_gates(&mut self) -> Vec<RendererSignal> {
+        let Some(registry) = self
+            .services
+            .get::<lattice_mode::idle_gate::IdleGateRegistryHandle>()
+        else {
+            return Vec::new();
+        };
+        let effects = registry.fire_elapsed(tokio::time::Instant::now());
+        if effects.is_empty() {
+            return Vec::new();
+        }
+        let mut out = DispatchOutcome::default();
+        for effect in effects {
+            apply_effect_host(self, effect, &mut out);
+        }
+        out.renderer_signals
+    }
+
     fn drain_tick_callbacks(&mut self) -> Vec<RendererSignal> {
         let Some(registry) = self
             .services

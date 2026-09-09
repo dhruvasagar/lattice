@@ -77,11 +77,16 @@ tracing = { workspace = true }
 arc-swap = { workspace = true }
 # Boot-composition BC.1: the `inbound` primitive (`src/inbound.rs`) is
 # library code (not just tests), so `tokio::sync::{Notify, mpsc}` must be a
-# regular dependency. Only `sync` is needed here — the wake is an
-# `Arc<tokio::sync::Notify>` and the channel an unbounded mpsc. The
-# dev-dependency below additively adds `macros`/`rt`/`time` for the
-# `#[tokio::test]` suites.
-tokio = { workspace = true, features = ["sync"] }
+# regular dependency. The wake is an `Arc<tokio::sync::Notify>` and the
+# channel an unbounded mpsc.
+#
+# WK.3 adds `time`: the idle-gate registry (`src/idle_gate.rs`) stores
+# `tokio::time::Instant` deadlines, so the actor can point its pinned
+# sleep straight at `earliest()` without converting clocks — and so
+# `tokio::time::pause()` controls the gate in tests, which is what lets
+# the lifecycle suite assert a popup appears with no further keystroke.
+# The dev-dependency below additively adds `macros`/`rt`.
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 # M-async.2: registry tests are `#[tokio::test]` so they can

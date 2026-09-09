@@ -40,6 +40,7 @@ use lattice_protocol::event_registry::Event as TypedEvent;
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
 
+use crate::idle_gate::{IdleGateHandle, IdleGateHandler};
 use crate::inbound::InboundBus;
 use crate::tick_callback::TickCallback;
 use crate::{BufferStoreHandle, ModeRegistry, ServiceRegistry};
@@ -95,6 +96,18 @@ pub trait SubsystemBoot {
     /// inbound buses, e.g. a state-poll). The registration is retained for the
     /// editor's lifetime by the host.
     fn tick_callback(&mut self, callback: TickCallback);
+
+    /// WK.3: register an **idle gate** — a handler the editor actor runs when
+    /// an armed deadline elapses, applying the `Effect`s it returns and
+    /// repainting. The subsystem arms it from its own event handler
+    /// (`handle.arm(Instant::now() + delay)`) and disarms when the reason
+    /// evaporates.
+    ///
+    /// This is the time-domain peer of [`inbound`](Self::inbound): the wake is
+    /// inside the primitive, so a gate's effects reach the screen WITHOUT a
+    /// keystroke. Registering a bare deadline field on the editor instead is
+    /// the smell this replaces — see `idle_gate`'s module docs.
+    fn idle_gate(&mut self, name: &'static str, handler: IdleGateHandler) -> IdleGateHandle;
 
     /// The typed event bus (subscribe / publish).
     fn event_bus(&self) -> &Arc<EventBus>;

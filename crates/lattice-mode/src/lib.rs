@@ -97,6 +97,7 @@ pub mod repl_mode;
 // through a handler. Pairs with `tick_callback`; generalizes the I3
 // `ClaudeCodeInboundBus` + LSP's hand-rolled inbound buses. The wake is baked
 // into the sender so it cannot be forgotten (`boot-composition.md` §3).
+pub mod idle_gate;
 pub mod inbound;
 // K.3 (2026-06-07): `KeymapEntry` + `keymap_entry!` live in
 // `lattice-keymap::keymap_entry`. lattice-mode re-exports the MODULE and

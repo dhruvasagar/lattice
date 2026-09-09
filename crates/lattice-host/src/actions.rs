@@ -223,6 +223,8 @@ pub struct ActionIds {
     pub absorb_operator_indent_left: CommandId,
     /// IN.7: vim's `=` operator-pending prefix.
     pub absorb_operator_reindent: CommandId,
+    /// RF.2: vim's `gq` and `gw` — one action, both chords.
+    pub absorb_operator_reflow: CommandId,
     pub absorb_operator_upper: CommandId,
     pub absorb_operator_lower: CommandId,
     pub absorb_operator_toggle_case: CommandId,
@@ -1279,6 +1281,17 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Vim's `=`: arm operator-pending for reindent.",
             builtins.reindent,
         ),
+        // RF.2: ONE prefix action behind BOTH `gq` and `gw`. Vim's
+        // two operators differ only in cursor placement, which is two
+        // mnemonics for one operation; keeping one action means the
+        // doubled forms (`gqq`, `gww`, and the mixed `gqw` / `gwq`) all
+        // resolve to the same current-line reflow with no extra wiring.
+        absorb_operator_reflow: register_operator_prefix(
+            registry,
+            "action:absorb-operator-reflow",
+            "Vim's `gq` / `gw`: arm operator-pending for reflow.",
+            builtins.reflow,
+        ),
         absorb_operator_upper: register_operator_prefix(
             registry,
             "action:absorb-operator-upper",
@@ -1951,6 +1964,7 @@ mod tests {
                 ids.absorb_operator_reindent,
                 "action:absorb-operator-reindent",
             ),
+            (ids.absorb_operator_reflow, "action:absorb-operator-reflow"),
             (ids.absorb_operator_upper, "action:absorb-operator-upper"),
             (ids.absorb_operator_lower, "action:absorb-operator-lower"),
             (

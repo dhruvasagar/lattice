@@ -466,6 +466,21 @@ pub fn register_normal_bindings(
         CommandInvocation::of(builtins.goto_first_line.0),
         source(),
     );
+    // RF.2: `gq` / `gw` get NO depth-2 terminal binding here, and that
+    // omission is deliberate.
+    //
+    // A node with a terminal binding resolves as `Bound` before the walk
+    // descends, so binding `[g, q]` to an operator-prefix action KILLS
+    // every longer chord under it: `gqq`, `gqap`, `gqi(` all became
+    // unreachable, silently, while the trie still reported them as
+    // bound. The operator-pending cross-product below
+    // (`register_operator_bindings`) is what makes `gq{motion}` work,
+    // and it needs `[g, q]` to stay an internal node.
+    //
+    // Found by a test that pressed the keys rather than invoking the
+    // operator — the trie lookup for `gqq` answered `Bound` the whole
+    // time, so nothing short of a real keystroke would have caught it.
+    // See `a-bound-prefix-kills-its-longer-chords`.
     handle.bind(
         layer,
         mode,
@@ -942,6 +957,29 @@ pub fn register_normal_bindings(
         syntax_motions,
         false,
     );
+    // RF.2: reflow. TWO prefixes, ONE operator -- `gq` and `gw` are
+    // the same verb, so both get the full operator-pending
+    // cross-product and `gq{motion}` / `gw{motion}` / `gqi{obj}` all
+    // compose.
+    //
+    // The doubled forms are `gqq` and `gww`, NOT the mixed `gqw` /
+    // `gwq`. Zed collapses all four, and that is the one place this
+    // does not follow it: `gqw` is "reflow over the `w` motion" in vim
+    // and composes like every other operator+motion pair. Spending a
+    // composition to gain a second spelling of `gqq` is a bad trade
+    // against paramount #3, and nobody asked for the second spelling.
+    for (prefix_char, doubled) in [('q', 'q'), ('w', 'w')] {
+        register_operator_bindings(
+            handle,
+            &[lit_char('g'), lit_char(prefix_char)],
+            builtins.reflow,
+            ChordPattern::Literal(KeyChord::char(doubled)),
+            builtins,
+            syntax_textobjects,
+            syntax_motions,
+            false,
+        );
+    }
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
     // operate on the current line.
@@ -2481,6 +2519,66 @@ mod syntax_motion_tests {
             &syntax_motions,
         );
         (h, syntax_motions)
+    }
+
+    /// **RF.2: `[g, q]` and `[g, w]` must stay INTERNAL nodes.**
+    ///
+    /// A node carrying a terminal binding resolves as `Bound` before the
+    /// walk descends, so a depth-2 `gq` binding kills every longer chord
+    /// under it — `gqq`, `gqap`, `gqi(` all become unreachable, and
+    /// silently: the trie still answers `Bound` for them, because the
+    /// binding is there; nothing but a real keystroke walks the prefix.
+    /// That is exactly what the first cut of RF.2 did, and what
+    /// `a-bound-prefix-kills-its-longer-chords` records.
+    ///
+    /// Asserted as a *structural* property rather than by pressing keys
+    /// because the keystroke tests live a crate away, and this is the
+    /// invariant they depend on.
+    ///
+    /// It doubles as the guard for `magit-blame-mode`'s `gq` (stop
+    /// blaming). That shadow is deliberate and safe — a MajorMode layer
+    /// resolves before Builtin, and a blame buffer is read-only — but it
+    /// is only *clean* while Builtin leaves `[g, q]` un-terminated.
+    #[test]
+    fn gq_and_gw_stay_internal_nodes_so_their_longer_chords_survive() {
+        let (h, _) = populated_handle();
+        for prefix in ['q', 'w'] {
+            let two = [KeyChord::char('g'), KeyChord::char(prefix)];
+            assert!(
+                matches!(h.lookup(BindingMode::Normal, &two), LookupResult::Partial),
+                "`g{prefix}` must be PARTIAL — a terminal here shadows every \
+                 longer reflow chord, and does it silently"
+            );
+            // …and the doubled form really is reachable underneath.
+            let three = [
+                KeyChord::char('g'),
+                KeyChord::char(prefix),
+                KeyChord::char(prefix),
+            ];
+            assert!(
+                matches!(
+                    h.lookup(BindingMode::Normal, &three),
+                    LookupResult::Bound { .. }
+                ),
+                "`g{prefix}{prefix}` must be bound"
+            );
+        }
+    }
+
+    /// `gq` and `gw` resolve to the SAME operator — one verb, two
+    /// spellings. If these ever diverge, vim's cursor-placement
+    /// distinction has crept back in as two operators.
+    #[test]
+    fn gq_and_gw_resolve_to_one_operator() {
+        let (h, _) = populated_handle();
+        let id = |c: char| match h.lookup(
+            BindingMode::Normal,
+            &[KeyChord::char('g'), KeyChord::char(c), KeyChord::char(c)],
+        ) {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("g{c}{c} must be bound, got {other:?}"),
+        };
+        assert_eq!(id('q'), id('w'));
     }
 
     #[test]

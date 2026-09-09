@@ -2440,6 +2440,14 @@ impl MultibufferDocumentHandle {
                 // N.1.5 built for text objects. Deferred; `=` is a
                 // no-op there rather than wrong.
                 indent_resolver: None,
+                // RF.2: `gq` in a composed view reflows the COMPOSED text,
+                // which is the right thing -- unlike `=` above it needs no
+                // source mapping, because filling is a property of the lines
+                // in front of the user. The width is the registered default
+                // rather than the source buffer's `:setlocal textwidth`;
+                // resolving that per excerpt is the same deferred mapping,
+                // and a wrong-by-a-column reflow beats no reflow.
+                textwidth: lattice_core::WrapWidth::default(),
                 // OS.2: a composed view's region would need the same
                 // composed->source mapping the resolver above is deferred for
                 // -- a selection in composed coordinates handed to an action

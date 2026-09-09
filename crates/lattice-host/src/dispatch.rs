@@ -20210,6 +20210,9 @@ impl Editor {
                 // `:setlocal shiftwidth=2` and a major mode's
                 // contribution both apply.
                 indent: self.indent_unit(self.active_buffer_id()),
+                // RF.2: resolved through the same buffer-local stack, so
+                // `:setlocal textwidth=100` moves `gq` in that buffer only.
+                textwidth: self.wrap_width(self.active_buffer_id()),
                 // IN.7: `=` reads this. Only supplied when the
                 // published snapshot actually reflects the buffer --
                 // reindenting an existing range against a stale tree
@@ -35231,6 +35234,20 @@ impl Editor {
         let tabstop = (*self.resolved_option::<Tabstop>(buffer)).clamp(1, 32) as u8;
         let expand_tabs = *self.resolved_option::<ExpandTab>(buffer);
         lattice_core::IndentUnit::new(width, expand_tabs, tabstop)
+    }
+
+    /// RF.2: the buffer's `textwidth`, resolved through the same
+    /// buffer-local stack as [`Self::indent_unit`] — so `:setlocal
+    /// textwidth=100` moves `gq` in that buffer and nowhere else.
+    ///
+    /// The option validates to `1..=10_000`, so the cast cannot lose a
+    /// legal value; the `max(1)` covers a hypothetical out-of-band write
+    /// rather than trusting the validator from a distance, exactly as
+    /// `indent_unit`'s clamp does.
+    pub fn wrap_width(&self, buffer: BufferId) -> lattice_core::WrapWidth {
+        let cols =
+            (*self.resolved_option::<lattice_config::core_options::TextWidth>(buffer)).max(1);
+        lattice_core::WrapWidth(cols as usize)
     }
 
     /// IG.2: the indentation-guide inputs for `buffer`, resolved through

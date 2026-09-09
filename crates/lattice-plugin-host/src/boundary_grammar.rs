@@ -274,6 +274,8 @@ mod tests {
             cancel: &CancellationToken::never(),
             indent: Default::default(),
             indent_resolver: None,
+            textwidth: Default::default(),
+            comment_syntax: None,
         };
         let wit = project_operator_context(&ctx).unwrap();
         assert_eq!(wit.range.start.byte, 0);

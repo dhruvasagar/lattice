@@ -267,6 +267,133 @@ mod tests {
     use lattice_protocol::edit::Edit;
     use lattice_protocol::selection::VisualMode;
 
+    // ---- RF.2: `gq` / `gw` through real keystrokes ----
+
+    /// Both chords reach the same reflow, through the real trie.
+    ///
+    /// Driven with `press_chars` rather than by invoking the operator:
+    /// the claim is that TWO CHORDS reach ONE operator, and only the
+    /// keymap can be wrong about that. A test that invoked `b.reflow`
+    /// directly would pass with `gw` bound to nothing at all.
+    #[test]
+    fn gq_and_gw_both_reflow_and_agree() {
+        use crate::app::test_helpers::press_chars;
+        let text = "aaa bbb ccc ddd eee fff\n";
+        let mut out = Vec::new();
+        for chord in ["gqq", "gww"] {
+            let mut a = app_with(text, 10);
+            a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                let _ = e.config.parse_and_set_command("textwidth=11");
+            });
+            press_chars(&mut a, chord);
+            out.push(a.editor.document.text().to_string());
+        }
+        assert_eq!(
+            out[0], "aaa bbb ccc\nddd eee fff\n",
+            "`gqq` must reflow the current line to textwidth"
+        );
+        assert_eq!(
+            out[0], out[1],
+            "`gw` is the same operator as `gq` — if these ever differ, the \
+             cursor-placement distinction vim carries has crept back in"
+        );
+    }
+
+    /// `gq` composes with motions, and it is **linewise** — vim's own
+    /// semantics ("format the lines that {motion} moves over").
+    ///
+    /// Two things this pins, both of which the first version of it got
+    /// wrong and the failures corrected:
+    ///
+    /// 1. `gqw` formats the whole current line, not the word. `gq` is
+    ///    linewise in vim, so a within-line motion still covers the
+    ///    line. That is why lattice does NOT follow Zed in collapsing
+    ///    `gqw` into an alias for `gqq` — it does not need to; the two
+    ///    already agree here, while `gqj` still spans two lines.
+    /// 2. A multi-line motion really does reach more lines, which is
+    ///    the composition that would be lost if `gq` were bound as a
+    ///    fixed current-line chord.
+    #[test]
+    fn gq_is_linewise_and_composes_with_a_multi_line_motion() {
+        use crate::app::test_helpers::press_chars;
+        let text = "aaa bbb ccc\nxx yy\n";
+        let tw = |a: &mut App| {
+            a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+                let _ = e.config.parse_and_set_command("textwidth=7");
+            });
+        };
+
+        // Current line only.
+        let mut a = app_with(text, 10);
+        tw(&mut a);
+        press_chars(&mut a, "gqq");
+        assert_eq!(a.editor.document.text(), "aaa bbb\nccc\nxx yy\n");
+
+        // `w` stays on the line, and `gq` is linewise — same result.
+        let mut b = app_with(text, 10);
+        tw(&mut b);
+        press_chars(&mut b, "gqw");
+        assert_eq!(
+            b.editor.document.text(),
+            a.editor.document.text(),
+            "`gq` is linewise, so a within-line motion covers the line"
+        );
+
+        // `j` reaches the second line, which joins the paragraph and
+        // refills across both — the composition a fixed current-line
+        // binding would have cost.
+        let mut c = app_with(text, 10);
+        tw(&mut c);
+        press_chars(&mut c, "gqj");
+        assert_eq!(
+            c.editor.document.text(),
+            "aaa bbb\nccc xx\nyy\n",
+            "`gqj` must span two lines; if this equals the `gqq` result the \
+             motion is not reaching the operator"
+        );
+        assert_ne!(c.editor.document.text(), a.editor.document.text());
+    }
+
+    /// `:setlocal textwidth` moves `gq` in that buffer, which is the
+    /// whole reason the width is resolved through the buffer-local stack
+    /// rather than read from the global registry.
+    #[test]
+    fn reflow_honours_the_buffers_own_textwidth() {
+        use crate::app::test_helpers::press_chars;
+        let mut a = app_with("aaa bbb ccc ddd eee\n", 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.config.parse_and_set_command("textwidth=7");
+        });
+        press_chars(&mut a, "gqq");
+        assert_eq!(a.editor.document.text(), "aaa bbb\nccc ddd\neee\n");
+    }
+
+    /// One undo unit for the whole range — asserted by pressing `u`,
+    /// not by counting edits. The edit-batch shape and the user-visible
+    /// undo step are two different claims, and only the second is what
+    /// the user experiences.
+    #[test]
+    fn one_undo_reverses_a_whole_reflow() {
+        use crate::app::test_helpers::press_chars;
+        let before = "aaa bbb ccc ddd eee fff\n";
+        let mut a = app_with(before, 10);
+        a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
+            let _ = e.config.parse_and_set_command("textwidth=11");
+        });
+        press_chars(&mut a, "gqq");
+        assert_ne!(
+            a.editor.document.text(),
+            before,
+            "precondition: it reflowed"
+        );
+        press_chars(&mut a, "u");
+        assert_eq!(
+            a.editor.document.text(),
+            before,
+            "a single `u` must undo the whole reflow"
+        );
+    }
+
     #[test]
     fn undo_redo_accumulate_inverse_deltas() {
         // Forward edit + undo + redo each push a delta. The

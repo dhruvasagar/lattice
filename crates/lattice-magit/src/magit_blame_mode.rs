@@ -67,9 +67,18 @@ fn magit_blame_keymap_entries() -> &'static [KeymapEntry] {
             // already binds `q` to close the buffer — two minors
             // binding one chord on one buffer resolves by registration
             // order, which is not a contract anyone should depend on.
-            // `g` is a prefix, so `gq` shadows nothing (vim's `gq` is
-            // the format operator, inert in a read-only buffer) and it
-            // sits beside `gr` in the same namespace.
+            // `gq` DOES shadow something as of RF.2 — it is the reflow
+            // operator now, where when this was written it was
+            // unimplemented. The shadow is still the right call and is
+            // now deliberate rather than incidental: a MajorMode layer
+            // resolves before Builtin, and a blame buffer is read-only,
+            // so the operator has nothing to do here anyway.
+            //
+            // It stays clean only while the Builtin layer leaves
+            // `[g, q]` an internal node (no depth-2 terminal), which
+            // `gq_and_gw_stay_internal_nodes_so_their_longer_chords_survive`
+            // pins from the host side. `gq` also sits beside `gr` in the
+            // same namespace.
             keymap_entry! { mode: Normal, chord: "gq", doc: "Stop blaming (the buffer becomes editable again)", cmd: "action:magit-blame-quit" },
         ]
     })

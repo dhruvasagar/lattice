@@ -165,6 +165,20 @@ pub struct OperatorContext<'a> {
     /// source and leaves lines alone -- the same graceful-degradation
     /// contract every other env field carries.
     pub indent_resolver: Option<&'a dyn IndentResolver>,
+    /// RF.2: the buffer's `textwidth`, resolved by the host (including
+    /// any `:setlocal`). Read by the reflow operator (`gq` / `gw`).
+    ///
+    /// Not an `Option`, for the same reason [`Self::indent`] is not:
+    /// there is always a defensible answer, and
+    /// `WrapWidth::default()` is the registered option default, so a
+    /// caller that never resolved config reflows like an unconfigured
+    /// buffer rather than not at all.
+    pub textwidth: lattice_core::WrapWidth,
+    /// RF.2: the buffer language's line-comment leader, so reflow can
+    /// keep a comment block's marker. `None` for prose languages and
+    /// for any language whose comment syntax is undeclared -- reflow
+    /// then uses indentation alone, which is the right answer there.
+    pub comment_syntax: Option<&'a CommentSyntax>,
 }
 
 /// An operator's evaluator returns the full `Effect` it produced. Most
@@ -332,6 +346,14 @@ pub struct GrammarEnv<'a> {
     /// source and reindents nothing -- the same graceful-degradation
     /// contract every other env field carries.
     pub indent_resolver: Option<&'a dyn IndentResolver>,
+    /// RF.2: the buffer's `textwidth`, resolved by the host (including
+    /// any `:setlocal`). Read by the reflow operator.
+    ///
+    /// `WrapWidth` rather than a bare `usize` precisely so this struct
+    /// can keep its DERIVED `Default`: a `usize` would default to `0`,
+    /// which is not a column anything wraps at, and all ~40 hand-built
+    /// `default()` envs would silently get a reflow that does nothing.
+    pub textwidth: lattice_core::WrapWidth,
     /// OS.2: the **active region** — the Visual/Select selection extent,
     /// normalised so `start <= end`. `None` in Normal mode and on every
     /// non-chord firing path.

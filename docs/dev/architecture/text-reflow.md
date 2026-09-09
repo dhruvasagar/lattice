@@ -67,12 +67,41 @@ mnemonics for one operation, and the pair is a reliable source of "which one
 was it again".
 
 **Both chords bind to one `operator:reflow`, which preserves the cursor.**
-Doubled forms — `gqq`, `gww`, and the mixed `gqw` / `gwq` — mean the current
-line, as vim's doubled operators do.
+Each gets the full operator-pending cross-product, so `gq{motion}`,
+`gw{motion}` and `gqi{obj}` compose exactly like `d{motion}`. The doubled
+forms are `gqq` and `gww`.
 
 This is not a novel deviation: Zed's vim keymap already maps `"g q"` and
-`"g w"` to the same `vim::Rewrap`, and resolves all four doubled forms to
-`vim::CurrentLine`. Nobody has reported missing the cursor-position variant.
+`"g w"` to the same `vim::Rewrap`. Nobody has reported missing the
+cursor-position variant.
+
+**Where this stops following Zed:** Zed also collapses the mixed `gqw` /
+`gwq` into further spellings of `gqq`. Lattice does not, because it does not
+need to and the collapse costs something. `gq` is **linewise** — vim's "format
+the lines that {motion} moves over" — so `gqw` already formats the whole
+current line; the two agree without giving anything up, while `gqj` still
+spans two lines. Binding `gqw` as a fixed current-line chord would spend a
+real composition to gain a second spelling of a chord that already exists.
+
+> **Paramount goals:** protects #3 twice — the two verbs keep vim's meaning,
+> and the operator+motion composition that makes the grammar a public API is
+> preserved rather than special-cased away.
+
+### `[g, q]` must stay an internal node
+
+A trie node carrying a terminal binding resolves as `Bound` before the walk
+descends. So a depth-2 `gq` → "arm operator-pending" binding **kills every
+longer chord under it** — `gqq`, `gqap`, `gqi(` — and does it silently, since
+a direct trie lookup still answers `Bound` for all of them. Only a real
+keystroke walks the prefix and discovers it.
+
+The operator-pending cross-product is what wires `gq{motion}`; `[g, q]` gets
+no terminal of its own. `gq_and_gw_stay_internal_nodes_so_their_longer_chords_survive`
+pins it, and doubles as the guard for `magit-blame-mode`'s `gq` (stop
+blaming): that shadow is safe because a MajorMode layer resolves before
+Builtin *and* Builtin leaves the node un-terminated.
+
+See `a-bound-prefix-kills-its-longer-chords`.
 
 > **Paramount goals:** protects #3. The grammar is the public command API, and
 > `gq`/`gw` remain in it with vim's meaning; what is dropped is a distinction

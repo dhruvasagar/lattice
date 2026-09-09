@@ -8,6 +8,51 @@
 //!
 //! See `docs/dev/architecture/text-reflow.md` §8.
 
+/// `textwidth`, resolved for a specific buffer — the column reflow
+/// targets and, when `autowrap` allows, the column typing breaks at.
+///
+/// **A newtype rather than a bare `usize`, and that is load-bearing.**
+/// It is carried by two env structs (`GrammarEnv` and the actor's
+/// `DispatchEnv`), both of which derive `Default` for their ~40
+/// hand-built call sites. A bare `usize` defaults to `0`, which is not a
+/// column anything can wrap at — so every one of those sites would
+/// silently get a reflow that does nothing, and the bug would look like
+/// "gq is broken in tests but works in the editor". Giving the *type* a
+/// meaningful default puts the answer in one place and makes a third env
+/// struct impossible to get wrong.
+///
+/// Same reasoning that made [`crate::IndentUnit`] a type rather than
+/// three loose fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WrapWidth(pub usize);
+
+/// The column a buffer wraps at when nobody has resolved config.
+///
+/// Matches `lattice_config::core_options::TextWidth`'s registered
+/// default; `lattice-core` cannot import it (the dependency points the
+/// other way), so a test in `lattice-config` — which can see both —
+/// pins them together.
+pub const DEFAULT_TEXTWIDTH: usize = 80;
+
+impl Default for WrapWidth {
+    fn default() -> Self {
+        WrapWidth(DEFAULT_TEXTWIDTH)
+    }
+}
+
+impl WrapWidth {
+    /// The target column.
+    pub fn columns(self) -> usize {
+        self.0
+    }
+}
+
+impl From<usize> for WrapWidth {
+    fn from(n: usize) -> Self {
+        WrapWidth(n)
+    }
+}
+
 crate::labeled_enum! {
     /// `:set autowrap=...`. Whether inserting a character past
     /// `textwidth` breaks the line and carries the remainder down.

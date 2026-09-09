@@ -110,6 +110,15 @@ pub struct DispatchEnv {
     /// structural source, and `=` reindents nothing rather than
     /// guessing.
     pub indent_resolver: Option<IndentResolverHandle>,
+    /// RF.2: the buffer's `textwidth`, for the reflow operator. Carried
+    /// here for the reason `syntax` and `selection` had to be: `gq`
+    /// reaches the grammar through the ACTOR path on every real
+    /// keystroke, so a field missing here is a field the operator never
+    /// sees no matter how well the direct path is tested.
+    ///
+    /// `WrapWidth`, not `usize`, so this struct keeps its derived
+    /// `Default` and still means 80 rather than 0.
+    pub textwidth: lattice_core::WrapWidth,
     /// OS.2: the active region — the Visual/Select selection extent, or `None`
     /// outside Visual/Select.
     ///

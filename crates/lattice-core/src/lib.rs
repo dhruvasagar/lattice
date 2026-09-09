@@ -64,6 +64,6 @@ pub use crate::project::{
 };
 pub use crate::search::{Direction as SearchDir, SearchHit, find as search_find};
 pub use crate::undo::{UndoEntry, UndoStack};
-pub use crate::wrap::AutoWrap;
+pub use crate::wrap::{AutoWrap, DEFAULT_TEXTWIDTH, WrapWidth};
 
 pub use lattice_protocol as protocol;

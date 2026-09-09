@@ -333,6 +333,21 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             post_motion_char: false,
         },
     );
+    let reflow = registry.register_operator(
+        "operator:reflow",
+        "Reflow each paragraph in the range to `textwidth`, keeping indentation \
+         and any comment leader (vim's `gq` and `gw`, which are one operator here).",
+        OperatorSpec {
+            repeatable: true,
+            apply: Arc::new(operator_reflow),
+            args_schema: vec![],
+            // Linewise, like `=`: filling is a property of whole lines,
+            // and a blockwise visual collapses to one contiguous range
+            // rather than reflowing a rectangle.
+            blockwise_per_row: false,
+            post_motion_char: false,
+        },
+    );
     let indent_right = registry.register_operator(
         "operator:indent-right",
         "Prepend 4 spaces to each line in the range (vim's `>`).",
@@ -649,6 +664,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         yank,
         indent_left,
         reindent,
+        reflow,
         indent_right,
         upper,
         lower,
@@ -716,6 +732,10 @@ pub struct Builtins {
     pub indent_right: OperatorId,
     /// IN.7: vim's `=` — reindent, leading whitespace only.
     pub reindent: OperatorId,
+    /// RF.2: vim's `gq` and `gw` — reflow to `textwidth`. ONE operator
+    /// behind both chords; they differ only in cursor placement in vim,
+    /// and this preserves the cursor (`gw`'s behaviour).
+    pub reflow: OperatorId,
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
@@ -2434,6 +2454,74 @@ fn operator_reindent(ctx: &mut OperatorContext) -> Result<Effect, CommandError> 
     Ok(Effect::Edits(applied))
 }
 
+/// Vim's `gq` **and** `gw` — reflow the range to `textwidth`.
+///
+/// One operator behind two chords. In vim they differ only in cursor
+/// placement (`gq` leaves it on the last formatted line, `gw` restores
+/// it), which is two mnemonics for one operation and a reliable source
+/// of "which one was it again". This preserves the cursor — `gw`'s
+/// behaviour, because it is the one people actually want — and binds
+/// both chords to it. Zed's vim keymap made the identical call.
+///
+/// **Reflow, not reformat.** It moves line breaks and normalises
+/// interior whitespace within a paragraph; it does not reindent, reorder
+/// or parse. That is what keeps it composable with motions, the same
+/// property `=` is protected for in auto-indent.md §7.
+///
+/// A range that reflows to itself produces **no edit at all** rather
+/// than an identical one — pressing `gqap` on an already-filled
+/// paragraph must not push an undo step the user then has to press `u`
+/// to get past.
+///
+/// One undo unit for the whole range, like `=` and its `>` / `<`
+/// siblings.
+fn operator_reflow(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let first_line = ctx.range.start.line;
+
+    let buffer_text = ctx.document.text();
+    let all: Vec<&str> = buffer_text.split('\n').collect();
+    let last_line = ctx.range.end.line.min(all.len().saturating_sub(1) as u32);
+    if first_line > last_line {
+        return Ok(Effect::None);
+    }
+    ctx.cancel.check()?;
+
+    let slice: Vec<&str> = all[first_line as usize..=last_line as usize].to_vec();
+    let cfg = crate::reflow::ReflowConfig {
+        textwidth: ctx.textwidth.columns(),
+        line_comment: ctx.comment_syntax.and_then(|c| c.line.as_deref()),
+    };
+    let out = crate::reflow::reflow_range(&slice, cfg);
+    ctx.cancel.check()?;
+
+    // Identical output ⇒ no edit. Compared line by line rather than as
+    // one joined string so a trailing-newline difference at the range
+    // edge cannot masquerade as a change.
+    if out.len() == slice.len() && out.iter().zip(slice.iter()).all(|(a, b)| a == b) {
+        return Ok(Effect::None);
+    }
+
+    // One replace over the whole range. Output lines do not correspond
+    // one-to-one with input lines (that is what filling means), so a
+    // per-line edit set would have to encode the joins and splits
+    // itself. One edit is also one undo unit by construction.
+    let end_col = all
+        .get(last_line as usize)
+        .map(|l| l.len() as u32)
+        .unwrap_or(0);
+    let range = lattice_protocol::position::Range::new(
+        Position::new(first_line, 0),
+        Position::new(last_line, end_col),
+    );
+    let applied = ctx
+        .document
+        .apply_edit_batch(vec![Edit::replace(range, out.join("\n"))])?;
+    Ok(Effect::Edits(applied))
+}
+
 // ---- Case operators (gU, gu, g~) ----
 
 fn case_transform_in_range<F: Fn(u8) -> u8>(
@@ -2518,6 +2606,124 @@ mod tests {
             Effect::AppAction(crate::app_effect::AppEffect::SearchTrigger { query }) => query,
             other => panic!("expected SearchTrigger, got {other:?}"),
         }
+    }
+
+    // ---- RF.2: the reflow operator (`gq` / `gw`) ----
+
+    /// Run `operator:reflow` over a whole-buffer range and return the
+    /// resulting text. `Range::Whole` is the operator-composition path,
+    /// so this exercises the real dispatch rather than calling `apply`.
+    fn reflow_whole(text: &str, textwidth: usize, leader: Option<&str>) -> (String, Effect) {
+        let (registry, b, mut doc) = fixture(text);
+        let cancel = CancellationToken::never();
+        let cs = leader.map(|l| crate::CommentSyntax {
+            line: Some(l.to_string()),
+            block: None,
+        });
+        let env = crate::registry::GrammarEnv {
+            textwidth: lattice_core::WrapWidth(textwidth),
+            comment_syntax: cs.as_ref(),
+            ..Default::default()
+        };
+        let inv = CommandInvocation::of(b.reflow.0).with_range(crate::Range::Whole);
+        let eff = crate::dispatcher::execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &cancel,
+            env,
+        )
+        .unwrap();
+        (doc.text().to_string(), eff)
+    }
+
+    #[test]
+    fn reflow_fills_a_paragraph_to_textwidth() {
+        let (out, _) = reflow_whole("aaa bbb ccc ddd eee fff\n", 11, None);
+        assert_eq!(out, "aaa bbb ccc\nddd eee fff\n");
+    }
+
+    #[test]
+    fn reflow_keeps_a_comment_leader() {
+        let (out, _) = reflow_whole("/// aaa bbb ccc ddd\n", 12, Some("//"));
+        assert_eq!(out, "/// aaa bbb\n/// ccc ddd\n");
+    }
+
+    /// A `gq` on an already-filled paragraph must produce NO edit — not
+    /// an identical one. An edit that changes nothing still pushes an
+    /// undo step, so the user presses `u` and watches nothing happen,
+    /// twice.
+    #[test]
+    fn reflow_that_changes_nothing_produces_no_edit_at_all() {
+        let (out, eff) = reflow_whole("aaa bbb\n", 80, None);
+        assert_eq!(out, "aaa bbb\n");
+        assert!(
+            matches!(eff, Effect::None),
+            "an already-filled paragraph must not push an undo step, got {eff:?}"
+        );
+    }
+
+    #[test]
+    fn reflow_of_an_empty_range_is_a_noop() {
+        let (registry, b, mut doc) = fixture("");
+        let cancel = CancellationToken::never();
+        let inv = CommandInvocation::of(b.reflow.0)
+            .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 0),
+            inv,
+            &cancel,
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::None), "got {eff:?}");
+    }
+
+    /// The whole range is ONE edit, which is what makes it one undo
+    /// unit. Asserted on the effect rather than by pressing `u`, because
+    /// the grammar layer has no undo — the host's test does that half
+    /// (RF.2's TUI peer).
+    #[test]
+    fn reflow_emits_one_edit_for_the_whole_range() {
+        let (_, eff) = reflow_whole("aaa bbb ccc ddd\n", 7, None);
+        match eff {
+            Effect::Edits(edits) => assert_eq!(
+                edits.len(),
+                1,
+                "filling joins and splits lines, so a per-line edit set would \
+                 have to encode that itself; one edit is also one undo unit \
+                 by construction"
+            ),
+            other => panic!("expected Edits, got {other:?}"),
+        }
+    }
+
+    /// Reflow moves line breaks. It must NOT reindent — that is `=`'s
+    /// job, and the separation is what keeps each verb composable with
+    /// motions (auto-indent.md §7).
+    #[test]
+    fn reflow_does_not_reindent() {
+        let (out, _) = reflow_whole("        aaa bbb ccc ddd\n", 20, None);
+        assert_eq!(
+            out, "        aaa bbb ccc\n        ddd\n",
+            "the paragraph's indent is preserved verbatim, not normalised"
+        );
+    }
+
+    /// `gq` and `gw` are the same operator, so the doubled and mixed
+    /// forms cannot disagree: there is only one id behind all four.
+    #[test]
+    fn gq_and_gw_are_one_operator() {
+        let (_, b, _) = fixture("x\n");
+        // A single `OperatorId` exists; the two chords are bound to one
+        // prefix action in the host (keymap_normal.rs). This pins the
+        // grammar half: nothing here distinguishes a `gq` reflow from a
+        // `gw` one, so `gqq`, `gww`, `gqw` and `gwq` cannot drift.
+        assert_ne!(b.reflow.0, b.reindent.0, "reflow is not reindent");
     }
 
     #[test]
